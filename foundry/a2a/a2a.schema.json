@@ -1,14 +1,31 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://ai4ia/foundry/a2a.schema.json",
-  "title": "AI4IA Foundry A2A exposure manifest",
-  "description": "Declares a deployed Foundry agent to expose over the Agent2Agent (A2A) protocol and front through APIM (see docs/foundry-toolbox.md P7 and https://learn.microsoft.com/azure/foundry/agents/how-to/enable-agent-to-agent-endpoint). scripts/provision-foundry-a2a.py reads this file, prints the APIM-fronted consumer URL, emits the enable + APIM-front commands, and prints an agents.json AgentSpec stub for the app's links (agent-as-tool) seam. A2A is Azure public preview.",
+  "title": "AI4IA Foundry A2A integration design manifest",
+  "description": "Validation and planning contract for a proposed A2A integration. It is deliberately not callable: the repository has no validated protocol/version negotiation, endpoint discovery, backend auth, APIM operation/product/policy, or runtime client wiring. scripts/provision-foundry-a2a.py validates and reports those blockers; it does not emit executable commands or an AgentSpec.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["agentName", "displayName", "description", "linkAs"],
+  "required": ["manifestVersion", "lifecycle", "owner", "sdkContract", "agentName", "displayName", "description", "linkAs", "blockingRequirements"],
   "properties": {
     "$schema": { "type": "string" },
     "_comment": { "type": "string" },
+    "manifestVersion": { "const": "1.0" },
+    "lifecycle": {
+      "const": "design-preview",
+      "description": "Validated design artifact only; no callable integration is provisioned or served."
+    },
+    "owner": { "type": "string", "minLength": 1 },
+    "sdkContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package", "version", "status", "surface"],
+      "properties": {
+        "package": { "const": "azure-ai-projects" },
+        "version": { "const": "2.4.0" },
+        "status": { "const": "not-executable" },
+        "surface": { "const": "no-validated-inbound-a2a-surface" }
+      }
+    },
     "agentName": {
       "type": "string",
       "description": "Name of the deployed Foundry agent to expose over A2A (its endpoint is minted when A2A is enabled).",
@@ -29,6 +46,23 @@
       "type": "string",
       "description": "Local catalog agent name to register the remote A2A agent as, so other agents can delegate to it via their `links`. Lowercase slug.",
       "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$"
+    },
+    "blockingRequirements": {
+      "type": "array",
+      "description": "Executable contracts that must be designed, implemented, and tested before lifecycle may become active.",
+      "uniqueItems": true,
+      "minItems": 7,
+      "items": {
+        "enum": [
+          "protocol-and-version",
+          "endpoint-discovery",
+          "backend-authentication",
+          "apim-operation",
+          "apim-product-and-subscription",
+          "apim-policy",
+          "runtime-client-wiring"
+        ]
+      }
     }
   }
 }

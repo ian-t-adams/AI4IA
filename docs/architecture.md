@@ -114,13 +114,32 @@ flowchart LR
 | Realtime APIM subscription key | FastAPI only | FastAPI relay -> `/openai/realtime` | Realtime API only; cannot invoke the normal model API |
 | Speech Voice Live key (optional) | FastAPI only when enabled | FastAPI relay -> `/speech/voice-live/realtime` | Separate default-off API and subscription; distinct from all three core keys |
 | Official MCP subscription key | FastAPI official MCP service | FastAPI -> official MCP APIM product | MCP APIs only; cannot invoke model/realtime APIs |
-| Code Interpreter identity | FastAPI managed identity (or an optional resource key) | FastAPI -> Foundry `/openai/v1/responses` and `/openai/v1/files` | Data-plane token scoped `https://ai.azure.com/.default`; holds no gateway subscription key, so it cannot reach the model or realtime APIs |
+| Code Interpreter identity | FastAPI managed identity (or an optional resource key) | FastAPI -> Foundry `/openai/v1/responses` and `/openai/v1/files` | The main API UAMI currently holds `Cognitive Services OpenAI User` on every regional Foundry account. That role permits direct inference against any deployment on each account; absence of a gateway key does not constrain direct Foundry access. See the pending decision below. |
 
 Each APIM API validates its own scoped subscription at ingress, removes the
 subscription-key header before the backend hop, and uses managed identity for
 Foundry or the approved AIServices backend. User tokens and gateway keys therefore
 do not flow downstream. Browser-supplied internal identity headers are not
 authoritative.
+
+### Pending decision: isolate direct Code Interpreter authority
+
+`infra/main.bicep` currently places the API UAMI in
+`nativeFoundryPrincipalIds`, and every regional `foundry.bicep` instance grants
+those principals
+[`Cognitive Services OpenAI User`](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/ai-machine-learning#cognitive-services-openai-user).
+Microsoft documents that role as model-inference permission at the resource
+scope; there is no documented deployment-only equivalent. Therefore a compromised API identity can invoke any
+deployment on any regional account directly and bypass SimpleL7Proxy/APIM,
+regardless of the application's gateway-first code paths.
+
+This is a verified authorization gap, not evidence that application code is
+currently violating the gateway invariant. The least-privilege direction is a
+dedicated identity/workload for the direct Responses Code Interpreter exception,
+scoped only to the required Foundry account, followed by removal of broad OpenAI
+inference access from the main API identity. That change creates identity, RBAC,
+deployment, and operational consequences and requires explicit owner approval.
+No RBAC is changed by documenting the decision.
 
 ### Compatible HTTP/SSE lifecycle
 

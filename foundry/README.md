@@ -24,13 +24,14 @@ PR #125, with **zero new runtime code**. APIM injects the managed-identity beare
 | `toolbox.manifest.json` | Canonical definition of the live `ai4ia-toolbox` (a new tenant reproduces it 1:1). |
 | `toolbox.manifest.example.json` | Populated reference manifest with one of every tool (copy-paste starting point). |
 | `toolbox.manifest.schema.json` | JSON Schema for the manifest; validated in CI (`infra-validate`). |
-| `routines/routine.schema.json` + `routines/example.routine.json` | Routine schema + a populated example; a routine's tool calls flow through the APIM-fronted toolbox. |
-| `a2a/a2a.schema.json` + `a2a/example.a2a.json` | A2A exposure schema + example; fronts a deployed agent's A2A endpoint through APIM. |
+| `routines/routine.schema.json` + `routines/example.routine.json` | Design/preview routine contract. It is validated against canonical toolbox names but is not created or served. |
+| `a2a/a2a.schema.json` + `a2a/example.a2a.json` | Design/preview A2A contract with an explicit blocker inventory. It does not create a callable integration. |
 
 ## Reconciliation
 
-`.github/workflows/foundry-assets.yml` uses GitHub OIDC to reconcile these preview
-data-plane assets. It is **not** triggered directly by changes under `foundry/**`:
+`.github/workflows/foundry-assets.yml` uses GitHub OIDC to reconcile the **toolbox**
+data-plane asset. Routine and A2A files are validation-only and are never reconciled.
+The workflow is **not** triggered directly by changes under `foundry/**`:
 it runs on `workflow_run` after the `deploy` workflow completes successfully for a
 push to `main`, and on manual dispatch. That ordering is the point — `deploy` is
 what provisions the project-scoped Foundry User role, so reconciling in parallel
@@ -44,39 +45,38 @@ the workflow; unchanged defaults create no immutable versions.
 
 For a local/operator run:
 
-```bash
-# 0. Install the provisioning-only extra (CI's app-ci.yml api job installs it too, so the
-#    real-SDK toolbox construction tests run there; the runtime container never does).
-uv pip install -e "app/api[foundry]"
+```powershell
+# 0. Install the exact provisioning-only extra from the repository root.
+#    app-ci installs this too; the runtime container never does.
+python -m pip install -e "app/api[foundry]"
 
-# 1. Verify the caller has project-scoped Foundry User data-plane access.
+# 1. Export the azd-produced project endpoint into this shell.
+$projectEndpoint = azd env get-value AZURE_FOUNDRY_PROJECT_ENDPOINT
+$env:AZURE_FOUNDRY_PROJECT_ENDPOINT = $projectEndpoint
+
+# 2. Verify the caller has project-scoped Foundry User data-plane access.
 python scripts/provision-foundry-toolbox.py --check-access
 
-# 2. Populate toolbox.manifest.json, then ensure the toolbox.
+# 3. Populate toolbox.manifest.json, then inspect the reconciliation plan.
 #    Tip: copy toolbox.manifest.example.json (one of every tool) as a starting point.
 python scripts/provision-foundry-toolbox.py            # dry run: prints plan + mcp-servers.json entry
-python scripts/provision-foundry-toolbox.py --create
 
-# 3. Paste the printed entry into infra/mcp-servers.json, set
-#    enableOfficialMcp=true + enableFoundryToolbox=true, and `azd up`.
+# 4. Paste the printed entry into infra/mcp-servers.json, set
+#    enableOfficialMcp=true + enableFoundryToolbox=true, and use the deploy workflow.
 
-# 4. (optional) Inventory the APIM-fronted MCP servers in an Azure API Center
-#    private tool catalog (set enablePrivateToolCatalog=true first).
-azd provision  # apicenter.bicep registers each official MCP server through its APIM consumer URL
+# 5. Validate design-only artifacts. Neither command creates or serves anything.
+python scripts/provision-foundry-routine.py --check
+python scripts/provision-foundry-a2a.py --check
 
-# 5. (optional) Validate a routine and see its plan. Its tool calls target the toolbox, so
-#    they inherit the APIM bridge. Edit foundry/routines/example.routine.json first.
-#    There is no --create: azure-ai-projects 2.4.0's routines surface (an event-trigger model)
-#    cannot faithfully represent this steps-based workflow shape -- see docs/foundry-toolbox.md.
-python scripts/provision-foundry-routine.py          # validates + prints steps and tool calls
-
-# 6. (optional) Expose a deployed agent over A2A, fronted through APIM. Edit
-#    foundry/a2a/example.a2a.json, then emit the enable + APIM-front commands.
-python scripts/provision-foundry-a2a.py              # dry run: prints URLs + agents.json stub
-python scripts/provision-foundry-a2a.py --emit-az    # prints the `az` enable + APIM commands
+# 6. Configure automation only after deploy has provisioned the project RBAC.
+gh variable set AZURE_FOUNDRY_PROJECT_ENDPOINT --body $projectEndpoint
+gh workflow run foundry-assets.yml --ref main
 ```
 
-The scripts default to a **safe offline dry run** and read the project endpoint from
-`--project-endpoint` or the `AZURE_FOUNDRY_PROJECT_ENDPOINT` azd output (emitted when
-`enableFoundryToolbox=true`). Everything here is **public preview**; do not use in production
-without your own validation.
+The toolbox script reads the project endpoint from `--project-endpoint` or
+`AZURE_FOUNDRY_PROJECT_ENDPOINT` (an azd output when `enableFoundryToolbox=true`).
+For a first standup, the workflow is authoritative because it runs after deploy
+has created the OIDC identity's project role. Reserve a local `--create` for an
+explicitly approved repair after confirming the local operator has that same role.
+Routine and A2A scripts are offline design validators. Everything here is public
+preview; do not infer that a schema-valid routine or A2A design is callable.

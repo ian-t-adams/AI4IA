@@ -43,7 +43,7 @@ window.AI4IA_DOCS = {
         { path: "app/api/README.md", title: "API (FastAPI) README", desc: "Backend responsibilities, feature gates and the container image contract." },
         { path: "app/web/README.md", title: "Web (Next.js) README", desc: "Frontend surfaces, runtime feature visibility and the same-origin API proxy." },
         { path: "proxy/README.md", title: "Model proxy README", desc: "The vendored SimpleL7Proxy gateway and the AI4IA Dockerfile." },
-        { path: "foundry/README.md", title: "Foundry manifests", desc: "Toolbox, skills, routine and A2A manifests validated by CI and applied by the provisioning scripts." },
+        { path: "foundry/README.md", title: "Foundry manifests", desc: "The active toolbox contract plus validation-only routine and A2A design artifacts; only the toolbox is reconciled." },
       ],
     },
     {
@@ -53,7 +53,7 @@ window.AI4IA_DOCS = {
         { path: "SECURITY.md", title: "Security policy", desc: "How to report a vulnerability and what is in scope." },
         { path: "CODE_OF_CONDUCT.md", title: "Code of conduct", desc: "Contributor Covenant standards and enforcement for participating in the project." },
         { path: "THIRD_PARTY_NOTICES.md", title: "Third-party notices", desc: "License attribution and provenance for vendored and third-party dependencies the app ships \u2014 compliance reference." },
-        { path: "docs/rai-decision-record.md", title: "Responsible AI decision record", desc: "Approved annotate-only content-safety posture: accountable owner, live approval evidence, compensating controls, annual review, and immediate invalidation triggers." },
+        { path: "docs/rai-decision-record.md", title: "Responsible AI decision record", desc: "Document-complete annotate-only record with an explicitly incomplete modality-scope approval control and the evidence required to close it." },
       ],
     },
     {
@@ -61,7 +61,7 @@ window.AI4IA_DOCS = {
       docs: [
         { path: "docs/repository-audit-2026-08-03.md", title: "Repository audit - 2026-08-03/04", desc: "Evidence-backed review of served capability, runtime behavior, security, Responsible AI, performance, code, documentation, IaC, operations, UX, and prioritized remediation." },
         { path: "docs/roadmap.md", title: "Roadmap & open items", desc: "Living list of outstanding work, accepted tradeoffs, and owner decisions \u2014 what is planned or still needed." },
-        { path: "CHANGELOG.md", title: "Changelog", desc: "Notable, human-readable changes to the deployed application over time." },
+        { path: "CHANGELOG.md", title: "Changelog", desc: "Notable repository changes; merge, deployment, and tagged release remain distinct events." },
       ],
     },
   ],

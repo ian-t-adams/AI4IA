@@ -1,8 +1,26 @@
 {
   "$schema": "./a2a.schema.json",
-  "_comment": "EXAMPLE A2A exposure. Copy/edit and run scripts/provision-foundry-a2a.py to print the APIM-fronted consumer URL, the enable + APIM-front commands, and an agents.json stub. The APIM front reuses the toolbox bridge pattern: APIM injects the Foundry managed-identity bearer for https://ai.azure.com so callers present only the APIM subscription key. Nothing here changes the deploy; A2A is preview.",
+  "_comment": "DESIGN-ONLY A2A example. Copy/edit and run scripts/provision-foundry-a2a.py to validate the proposal and print its unresolved executable contracts. It does not create an endpoint, APIM surface, auth path, product/subscription, policy, or app runtime client.",
+  "manifestVersion": "1.0",
+  "lifecycle": "design-preview",
+  "owner": "repository-owner",
+  "sdkContract": {
+    "package": "azure-ai-projects",
+    "version": "2.4.0",
+    "status": "not-executable",
+    "surface": "no-validated-inbound-a2a-surface"
+  },
   "agentName": "ai4ia-research-agent",
   "displayName": "Research Agent (A2A)",
   "description": "Remote Foundry agent that runs the research-brief routine; delegated to over A2A, gated on APIM auth.",
-  "linkAs": "remote-research"
+  "linkAs": "remote-research",
+  "blockingRequirements": [
+    "protocol-and-version",
+    "endpoint-discovery",
+    "backend-authentication",
+    "apim-operation",
+    "apim-product-and-subscription",
+    "apim-policy",
+    "runtime-client-wiring"
+  ]
 }

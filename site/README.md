@@ -41,9 +41,12 @@ site/
 
 - `inventory.js` and `status.js` are **generated** by
   [`scripts/status-snapshot.ps1`](../scripts/status-snapshot.ps1), which reads the live
-  environment through **Azure Resource Graph** (the authoritative inventory — `az resource
-  list` omits several provider types AI4IA actually uses) plus Azure Resource Health, and
-  probes the public endpoints. The required inventory query must return a non-empty, well-shaped`n  `data` array; CLI, JSON, or shape failures stop before either generated file is replaced.`n  Run it with an `az login` that can read the subscription:
+  environment through **Azure Resource Graph** (the authoritative inventory —
+  `az resource list` omits several provider types AI4IA actually uses) plus Azure
+  Resource Health, and probes the public endpoints. The required inventory query
+  must return a non-empty, well-shaped `data` array; CLI, JSON, or shape failures
+  stop before either generated file is replaced. Run it with an `az login` that
+  can read the subscription:
 
   ```powershell
   ./scripts/status-snapshot.ps1

@@ -370,6 +370,8 @@ check-jsonschema --schemafile foundry/toolbox.manifest.schema.json foundry/toolb
 check-jsonschema --schemafile foundry/toolbox.manifest.schema.json foundry/toolbox.manifest.example.json
 check-jsonschema --schemafile foundry/routines/routine.schema.json foundry/routines/example.routine.json
 check-jsonschema --schemafile foundry/a2a/a2a.schema.json foundry/a2a/example.a2a.json
+python scripts/provision-foundry-routine.py --check
+python scripts/provision-foundry-a2a.py --check
 python scripts/validate-catalog.py
 python scripts/gen-gateway-policy.py --check
 python -m unittest scripts.tests.test_gateway_policy
@@ -408,6 +410,7 @@ python3 -m unittest scripts.tests.test_documented_paths_exist   # machine-readab
 python3 -m unittest scripts.tests.test_markdown_anchors         # Markdown #fragment links must resolve to a real heading
 python3 -m unittest scripts.tests.test_gating_workflows         # required PR checks always report and match the ruleset inventory
 python3 -m unittest scripts.tests.test_markdown_tables          # Markdown tables cannot silently swallow rows/columns
+python3 -m unittest scripts.tests.test_documentation_truth      # governance/Foundry/portal/operator claims stay semantically aligned
 python3 -m unittest scripts.tests.test_base_image_pins          # base images CI builds must be digest-pinned
 python3 -m unittest scripts.tests.test_immutable_image_promotion # legacy filename; content-addressed exact-digest deployment
 python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name azd vars a deploy can actually read

@@ -19,10 +19,12 @@ Design notes:
 
 * **Projection.** Each catalog entry becomes a :class:`UserMcpServer` with
   ``userId="__official__"``, ``authMode=apim_subscription``, ``trusted=True``
-  (curated ⇒ pre-approved, no human gate), ``host`` = the APIM gateway host (so
-  the projected tools' egress allowlist is scoped to APIM), and ``endpoint`` =
-  ``<gateway_url>/<path>``. No per-server secret is stored — the subscription key
-  is app-global and supplied by :meth:`secret_for`.
+  (curated for discovery/attachment, not invocation approval), ``host`` = the
+  APIM gateway host (so the projected tools' egress allowlist is scoped to APIM),
+  and ``endpoint`` = ``<gateway_url>/<path>``. Interactive external/destructive
+  invocations still pass through the exact-argument approval policy used by BYO
+  tools. No per-server secret is stored — the subscription key is app-global and
+  supplied by :meth:`secret_for`.
 * **Lazy, cached discovery.** There is no registration step, so tools are
   discovered the first time the plane is used and cached on the (in-memory)
   records for the process lifetime. A server that fails discovery contributes
@@ -85,8 +87,8 @@ def build_official_servers(
                 host=host,
                 transport=McpTransport.streamable_http,
                 authMode=McpAuthMode.apim_subscription,
-                # Curated/admin-vetted ⇒ trusted ⇒ tools are pre-approved (no
-                # per-call human gate). BYO servers are untrusted by default.
+                # Curated/admin-vetted for discovery. Interactive invocation
+                # approval remains independent and covers both MCP planes.
                 trusted=True,
                 enabled=True,
                 # No per-server secret: the APIM subscription key is app-global

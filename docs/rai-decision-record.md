@@ -1,7 +1,12 @@
 # Responsible AI decision record: annotate-only content filtering
 
-> **STATUS: complete.** Approval evidenced against the live control plane
-> (2026-08-06); owner named; review cadence set below.
+> **DOCUMENT STATUS: complete. CONTROL APPROVAL STATUS: incomplete.**
+> The live control plane proves that Azure accepted the annotate-only policy for
+> the deployed model resources. It does **not** prove that the accountable owner
+> re-approved that risk for image, video, Azure OpenAI Voice Live, or Speech Voice
+> Live. All four modalities are enabled in the current environment, so review
+> trigger 3 has fired. No modality-scope approval artifact is present in this
+> repository; do not infer one.
 >
 > Assembled from the implemented state on 2026-08-05. The review cadence is a
 > judgement rather than a fact — the default recorded here was proposed by the
@@ -20,13 +25,15 @@ the basis of that verdict.
 | Field | Value |
 | --- | --- |
 | Accountable owner | Ian Adams (repository owner; the address on the production alert action group) |
-| Approval evidence | The deployed policy itself — see below |
-| Approval reference | Held by the owner (Azure guardrails-modification approval email); not stored in the repo |
-| Scope | All Foundry model deployments in every region, all users |
-| Next scheduled review | **2027-08-06** (annual) |
+| Azure exception evidence | The deployed text-policy configuration itself — see below |
+| Azure approval reference | Reported as held by the owner (guardrails-modification approval email); not stored in the repo |
+| Decision scope actually reasoned about | Text completions for named, authenticated internal users |
+| Enabled but not re-approved in this record | Image, video, Azure OpenAI Voice Live, Speech Voice Live |
+| Control status | **Incomplete pending modality-scope re-approval and compensating-control evidence** |
+| Next scheduled review | Annual review was proposed for **2027-08-06**, but trigger 3 requires review now rather than waiting |
 | Invalidated immediately by | Any trigger in "Review triggers" below — these do not wait for the annual date |
 
-**Why the deployed policy is the approval artifact.** Azure's control plane refuses
+**What the deployed policy proves.** Azure's control plane refuses
 a RAI policy that disables blocking on the abuse filters unless the subscription
 holds an approved modification request. Verified against the live account
 `mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o` on 2026-08-06:
@@ -40,10 +47,27 @@ holds an approved modification request. Verified against the live account
 A policy turning off blocking on `jailbreak`, `protected_material_text` and
 `protected_material_code` exists, was accepted, and is applied. That state is not
 reachable without the exception, so the claim in
-`scripts/tests/test_rai_policy.py` is evidenced rather than unsupported. What the
-deployed policy does **not** establish is who is accountable, when the exception
-should be revisited, or what would invalidate it — which is the actual purpose of
-this record.
+`scripts/tests/test_rai_policy.py` is evidenced rather than unsupported. What the deployed policy does **not** establish is approval of AI4IA's modality
+scope, who accepted each modality's application risk, or whether modality-specific
+monitoring and escalation are adequate. Azure accepting a resource policy and an
+owner approving how this application uses every enabled modality are separate
+facts.
+
+## Evidence required to close the control
+
+The document is structurally complete; the control is not. Closing it requires
+all of the following without inventing or backdating approval:
+
+1. A dated accountable-owner decision that explicitly names text, image, video,
+   Azure OpenAI Voice Live, and Speech Voice Live.
+2. The Azure guardrails-modification approval reference and its applicable
+   resource/modality scope, retained in the approved evidence system.
+3. Modality-specific abuse cases, user disclosure, monitoring, escalation owner,
+   and response procedure.
+4. Evidence that annotations or equivalent safety signals are collected for each
+   enabled modality, plus a tested alert/escalation path for actionable events.
+5. A recorded accept/mitigate/disable decision for each modality and a new review
+   date after the trigger-driven review completes.
 
 ## What is actually configured
 
@@ -119,7 +143,7 @@ annotate-only posture continues:
 | --- | --- | --- | --- |
 | 1 | A second Entra tenant is allowed, or any unauthenticated access is enabled | The whole justification is "small, known, internal, authenticated". This is also the moment P1-10 (tenant-public means application-public) stops being latent. | Startup already **refuses** when more than one tenant is allowed, so this cannot happen silently — the refusal is the notification. |
 | 2 | A high-severity annotation is observed on a production completion | The premise is that filters would fire on legitimate technical work, not on genuinely harmful content. One high-severity hit is evidence the premise is wrong. | `AppEvents` in the Log Analytics workspace. **Nothing alerts on this today** — see the gap below. |
-| 3 | A new output modality is enabled that this record did not reason about | The decision was made about text completions. Image and video generation have different failure modes and a different blast radius. | A feature flag flip; `docs/runbooks/feature-enablement.md` should point back here. |
+| 3 | A new output modality is enabled that this record did not reason about | The decision was made about text completions. Image, video, and realtime voice have different failure modes and blast radii. **Fired:** image, video, Azure OpenAI Voice Live, and Speech Voice Live are enabled; modality re-approval is not evidenced here. | Repository/deployment feature posture plus the evidence list above. |
 | 4 | The Azure guardrails-modification approval lapses, or a deployment is recreated on a stock policy | The approval *is* the deployed policy. If the policy reverts, the exception has already ended in fact. | `scripts/tests/test_rai_policy.py` pins the posture in IaC; a live drift would need a control-plane read. |
 | 5 | A regulatory or customer commitment requires enforced filtering | External obligation overrides the internal tradeoff. | Owner judgement. |
 

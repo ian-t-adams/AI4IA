@@ -136,22 +136,21 @@ describe("namespaced tool names", () => {
 });
 
 describe("approvalPosture", () => {
-  it("is unavailable (no live prompt) for untrusted servers, and scopes egress to the host", () => {
+  it("separates untrusted discovery posture from invocation approval", () => {
     const p = approvalPosture({ trusted: false, host: "api.example.com" });
     expect(p.requiresApproval).toBe(true);
-    // Must not imply a live in-chat approval prompt exists.
-    expect(p.label).not.toMatch(/on each use/i);
-    expect(p.label).not.toMatch(/prompt/i);
+    expect(p.label).toMatch(/withheld from model/i);
     expect(p.detail).toContain("api.example.com");
-    expect(p.detail).toMatch(/no live approval prompt/i);
-    expect(p.detail).toMatch(/left out of what the model can call/i);
+    expect(p.detail).toMatch(/standing discovery posture/i);
+    expect(p.detail).toMatch(/invocation approval is a separate gate/i);
   });
 
-  it("runs without approval for trusted servers", () => {
+  it("labels trusted servers for discovery without claiming invocation approval", () => {
     const p = approvalPosture({ trusted: true, host: "api.example.com" });
     expect(p.requiresApproval).toBe(false);
-    expect(p.label).toMatch(/trusted/i);
+    expect(p.label).toMatch(/trusted for discovery/i);
     expect(p.detail).toContain("api.example.com");
+    expect(p.detail).toMatch(/default interactive policy holds external\/destructive calls/i);
   });
 
   it("is unavailable when the server is disabled, even if trusted", () => {
@@ -275,14 +274,11 @@ describe("per-tool approval", () => {
     const p = toolApprovalPosture(s, "forecast");
     expect(p.posture).toBe("always");
     expect(p.requiresApproval).toBe(true);
-    // Label consistently as "Unavailable" (not a live per-use prompt), and
-    // don't let it imply trusting the server would fix it — only changing
-    // the override itself does.
     expect(p.label).toMatch(/unavailable/i);
-    expect(p.label).toMatch(/always/i);
-    expect(p.detail).toMatch(/no live approval prompt/i);
+    expect(p.label).toMatch(/withheld from model/i);
+    expect(p.detail).toMatch(/standing posture/i);
     expect(p.detail).toMatch(/even on a trusted server/i);
-    expect(p.detail).not.toMatch(/on each use/i);
+    expect(p.detail).toMatch(/invocation approval is a separate gate/i);
   });
 
   it("honors a `never` override even on an untrusted server", () => {
@@ -291,7 +287,8 @@ describe("per-tool approval", () => {
     const p = toolApprovalPosture(s, "forecast");
     expect(p.posture).toBe("never");
     expect(p.requiresApproval).toBe(false);
-    expect(p.label).toMatch(/pre-approved/i);
+    expect(p.label).toMatch(/attachable/i);
+    expect(p.label).toMatch(/standing grant/i);
   });
 
   it("resolves the default posture on an untrusted server as unavailable, not a per-use prompt", () => {
@@ -299,12 +296,9 @@ describe("per-tool approval", () => {
     const p = toolApprovalPosture(s, "forecast");
     expect(p.posture).toBe("default");
     expect(p.requiresApproval).toBe(true);
-    // No prompt exists at call time — the tool is simply omitted from the
-    // model's schema, so the copy must not claim a per-use approval step.
-    expect(p.label).not.toMatch(/on each use/i);
-    expect(p.label).not.toMatch(/prompt/i);
-    expect(p.detail).toMatch(/no live approval prompt/i);
-    expect(p.detail).toMatch(/left out of what the model can call/i);
+    expect(p.label).toMatch(/withheld from model/i);
+    expect(p.detail).toMatch(/standing discovery posture/i);
+    expect(p.detail).toMatch(/invocation approval is a separate gate/i);
   });
 
   it("only overrides the named tool", () => {
@@ -340,7 +334,7 @@ describe("per-tool approval", () => {
     const fromTool = attachableToolApprovalPosture(tool);
     const fromServer = toolApprovalPosture(s, "forecast");
     expect(fromTool).toEqual(fromServer);
-    expect(fromTool.label).toMatch(/unavailable/i);
+    expect(fromTool.label).toMatch(/withheld from model/i);
   });
 
   it("is unavailable when the server is disabled, even with a `never` override", () => {
@@ -391,26 +385,26 @@ describe("per-tool approval", () => {
 });
 
 describe("MCP_TOOL_APPROVALS copy", () => {
-  it("does not promise a per-use approval prompt for 'always' (chat has none)", () => {
+  it("describes always as standing discovery posture, not invocation approval", () => {
     const always = MCP_TOOL_APPROVALS.find((a) => a.value === "always");
     expect(always).toBeDefined();
     // Must not claim the model/user is prompted for approval on each use.
     expect(always?.hint).not.toMatch(/prompt for approval/i);
     expect(always?.hint).not.toMatch(/on every use/i);
-    // Accurately reflects that the tool is dropped from the model-facing
-    // schema rather than gated behind a live in-chat approval step.
-    expect(always?.hint).toMatch(/no live approval prompt/i);
-    expect(always?.hint).toMatch(/left out of what the model can call/i);
+    expect(always?.hint).toMatch(/standing posture/i);
+    expect(always?.hint).toMatch(/leaves the tool out of what the model can call/i);
+    expect(always?.hint).toMatch(/separate from invocation approval/i);
   });
 
-  it("does not promise a per-use prompt for 'default' either (chat has none)", () => {
+  it("describes default attachment separately from invocation approval", () => {
     const def = MCP_TOOL_APPROVALS.find((a) => a.value === "default");
     expect(def).toBeDefined();
     expect(def?.hint).not.toMatch(/prompt for approval/i);
     expect(def?.hint).not.toMatch(/on every use/i);
     expect(def?.hint).not.toMatch(/on each use/i);
-    expect(def?.hint).toMatch(/no live approval prompt/i);
     expect(def?.hint).toMatch(/left out of what the model can call/i);
+    expect(def?.hint).toMatch(/default interactive policy/i);
+    expect(def?.hint).toMatch(/fresh exact-call approval/i);
   });
 
   it("does not promise a per-use prompt for 'never' either", () => {

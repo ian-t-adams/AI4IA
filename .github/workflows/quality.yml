@@ -400,6 +400,14 @@ jobs:
         env:
           PYYAML_VERSION: 6.0.3
 
+      - name: Run documentation truth contract tests
+        run: |
+          set -euo pipefail
+          # Cross-file governance and operator claims can each be locally true
+          # while contradicting one another. Keep modality approval, MCP approval,
+          # Foundry lifecycle, portal posture, and runbook prerequisites aligned.
+          python3 -m unittest scripts.tests.test_documentation_truth
+
       - name: Run Markdown table shape tests
         run: |
           set -euo pipefail

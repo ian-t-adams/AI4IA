@@ -205,8 +205,10 @@ must reconcile the sentinel.
 
 This local path rebuilds and has no automatic post-deploy rollback. Prefer the
 workflow when the goal is a production release with recorded digest evidence.
-Validate potentially destructive infrastructure changes in a parallel resource
-group first.
+Validate potentially destructive infrastructure changes in an isolated
+environment first. Full-catalog validation requires a separate subscription when
+subscription-wide model quota is consumed; otherwise use the explicitly reduced
+profile and claims in the [teardown runbook](./teardown.md#1-validate-iac-without-pretending-subscription-wide-quota-is-duplicable).
 
 ## 4. APIM policy changes and gateway canaries
 
@@ -227,9 +229,9 @@ full production include chain, deletes only those temporary names in `finally`,
 and verifies cleanup. It never changes a production API, policy, or fragment.
 This runbook does not claim the live harness has been run.
 
-`ca-proxy` uses single-revision mode, so validate gateway changes in a parallel
+`ca-proxy` uses single-revision mode, so validate gateway changes in an isolated
 azd environment rather than attempting weighted traffic inside the production
-app:
+app. Follow the same separate-subscription/reduced-profile quota boundary above:
 
 1. Deploy the branch with a separate proxy hostname.
 2. Verify proxy `/startup`, `/liveness`, and `/readiness`.

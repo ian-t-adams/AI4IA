@@ -88,11 +88,19 @@
     if (!m) return;
     var feat = el("features");
     if (feat) {
-      feat.innerHTML = m.features.map(function (f) {
-        var badge = f.on ? stateBadge("healthy", "on") : stateBadge("unknown", "off");
+      var posture = m.featurePosture || {};
+      var evidence = '<div class="feat"><div class="body"><strong>Evidence boundary</strong><span>' +
+        'Observed ' + esc(posture.observedAt || "date unknown") + ' from ' +
+        esc(posture.observedSource || "an unspecified source") + '. ' +
+        esc(posture.caveat || "") + "</span></div></div>";
+      feat.innerHTML = evidence + m.features.map(function (f) {
+        var badge = f.observedOn ? stateBadge("healthy", "observed on") : stateBadge("unknown", "observed off");
         var core = f.core ? ' <span class="tag">core</span>' : "";
+        var template = f.templateOn !== f.observedOn
+          ? ' <span class="tag">template default ' + (f.templateOn ? "on" : "off") + "</span>"
+          : "";
         return '<div class="feat"><div class="state">' + badge + '</div><div class="body"><strong>' +
-          esc(f.name) + core + "</strong>" + (f.note ? "<span>" + esc(f.note) + "</span>" : "") + "</div></div>";
+          esc(f.name) + core + template + "</strong>" + (f.note ? "<span>" + esc(f.note) + "</span>" : "") + "</div></div>";
       }).join("");
     }
     var stack = el("stack");

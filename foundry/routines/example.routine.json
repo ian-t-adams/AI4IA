@@ -1,6 +1,15 @@
 {
   "$schema": "./routine.schema.json",
   "_comment": "EXAMPLE routine showing the bridge in action: every step's tool calls target the 'ai4ia-toolbox' toolbox, which is fronted by the official-MCP APIM, so the routine inherits that governance with no new APIM surface. Copy/edit this file and run scripts/provision-foundry-routine.py to validate it and print the plan. There is no --create: azure-ai-projects 2.4.0's actual routines surface (project.beta.routines, an event-trigger-invokes-an-existing-agent model) cannot faithfully represent this steps-based shape -- see docs/foundry-toolbox.md's 'Routines' section for why. Nothing here is consumed by the app runtime or the deploy. Preview.",
+  "manifestVersion": "1.0",
+  "lifecycle": "design-preview",
+  "owner": "repository-owner",
+  "sdkContract": {
+    "package": "azure-ai-projects",
+    "version": "2.4.0",
+    "status": "not-executable",
+    "surface": "project.beta.routines.create_or_update"
+  },
   "name": "research-brief",
   "description": "Two-step research brief: gather grounded sources, then synthesize a cited summary. All tool calls route through the APIM-fronted toolbox.",
   "model": "gpt-5",
@@ -8,13 +17,13 @@
   "steps": [
     {
       "name": "gather",
-      "instructions": "Use web_search and azure_ai_search to collect authoritative sources for the user's question. Prefer primary and recent sources; record every URL.",
-      "tools": ["web_search", "ai4ia-rag"]
+      "instructions": "Use web-search to collect authoritative sources for the user's question. Prefer primary and recent sources; record every URL.",
+      "tools": ["web-search"]
     },
     {
       "name": "synthesize",
       "instructions": "Write a concise brief that answers the question. Cite every claim from the gathered sources using the citation format required by the consuming application.",
-      "tools": []
+      "tools": ["code-interpreter"]
     }
   ]
 }

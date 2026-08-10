@@ -44,7 +44,9 @@
           Foundry deployment. Native planes (Content Understanding, Monitor, Cosmos, Storage, Search, Key Vault) are
           called directly with managed identity. Voice Live connects the browser to the API over a WebSocket because
           neither the Next.js HTTP proxy nor SimpleL7Proxy proxies WebSockets; the relay calls the APIM realtime API
-          and still enforces auth, Origin, entitlements and metering.</p>
+          and still enforces auth, Origin, entitlements and metering. Responses-API Code Interpreter is the explicit
+          model exception: FastAPI calls its stateful Foundry sandbox directly with managed identity and re-applies
+          entitlement, <span class="mono">store=false</span>, and attempt metering at that call site.</p>
         <figure class="diagram">
           <pre class="mermaid">
 flowchart TB
@@ -56,6 +58,7 @@ flowchart TB
   API --> Search["Azure AI Search<br/>(optional retrieval)"]
   API --> CU["Content Understanding"]
   API --> Mon["Azure Monitor / App Insights"]
+  API -. "direct MI<br/>Responses API sandbox" .-> Code["Code Interpreter<br/>(explicit exception)"]
   API -->|"proxy-ingress key"| Proxy["SimpleL7Proxy<br/>queue + delayed requeue"]
   Proxy -->|"model-API key"| APIM["Shared apim-mcp<br/>Basic v2 + scoped keys + MI"]
   API -. "realtime key" .-> APIM
@@ -130,7 +133,9 @@ flowchart LR
         <p class="section-sub">Azure service data planes use managed identities and scoped roles. Three
           independently scoped APIM subscription keys separate the proxy-ingress (FastAPI to proxy),
           proxy-to-model, and realtime (FastAPI to APIM) hops, plus an optional fourth for Speech Voice
-          Live, and all remain Container App secrets. The API identity is the most privileged; see
+          Live, and all remain Container App secrets. The API identity is the most privileged: it currently has
+          resource-scoped OpenAI inference on every regional Foundry account for the direct Code Interpreter exception,
+          a pending least-privilege identity-split decision. See
           <a href="requirements.html">Requirements → Permissions</a> for the full map.</p>
         <figure class="diagram">
           <pre class="mermaid">
@@ -145,6 +150,7 @@ flowchart LR
   idproxy["id-proxy"] -->|"AcrPull"| Acr
   idproxy -->|"App Config Data Reader"| Ac
   idapi -->|"AcrPull"| Acr
+  idapi -. "OpenAI User on every account<br/>(pending dedicated CI identity)" .-> Foundry
   apim["APIM (system MI)"] -->|"OpenAI User + Cognitive Services User"| Foundry["Foundry accounts"]
   apim -->|"Cognitive Services User + Foundry User"| SpeechAcct["Selected AIServices account<br/>(Speech Voice Live)"]
           </pre>
@@ -157,13 +163,15 @@ flowchart LR
         <h2 class="section-title">4 · Two MCP tool planes</h2>
         <p class="section-sub">Remote MCP tools reach the model through two independent planes that share one governed
           per-turn executor. On a tool-name collision the official tool wins; a single per-turn budget caps total MCP
-          calls across both planes.</p>
+          calls across both planes. Curated discovery is not invocation approval: under the default interactive policy,
+          external/destructive calls on both planes require exact-argument, single-use approval. Unattended workflows explicitly use
+          <span class="mono">ApprovalPolicy.off</span> because no durable approval channel exists.</p>
         <figure class="diagram">
           <pre class="mermaid">
 flowchart TB
   Turn["Chat turn executor<br/>(per-turn budget + approvals)"]
-  Turn --> Official["Official plane (trusted, pre-approved)"]
-  Turn --> Byo["BYO plane (untrusted, approval-gated)"]
+  Turn --> Official["Official plane<br/>(curated discovery)"]
+  Turn --> Byo["BYO plane<br/>(user registration + SSRF guard)"]
   Official --> ApimMcp["Shared apim-mcp APIM<br/>(Basic v2 + MCP-only product key)"]
   ApimMcp --> Curated["Curated upstream MCP servers<br/>(infra/mcp-servers.json)"]
   Byo -. "SSRF guard (DNS-rebind re-check)" .-> UserSrv["Per-user MCP servers"]
@@ -177,7 +185,7 @@ flowchart TB
       <div class="container">
         <h2 class="section-title">5 · Anatomy of a chat turn</h2>
         <p class="section-sub">The governance order every request passes through: authenticate, gate, plan, route,
-          persist. Telemetry and derived stores are best-effort and never break the turn.</p>
+          persist. Canonical message/session writes must surface failure; only telemetry and derived stores are best-effort.</p>
         <figure class="diagram">
           <pre class="mermaid">
 sequenceDiagram
@@ -196,7 +204,7 @@ sequenceDiagram
   G->>F: managed-identity call to deployment
   F-->>A: streamed tokens
   A-->>B: stream response (via web proxy)
-  A->>C: persist messages + usage ledger (best-effort)
+  A->>C: persist canonical messages + usage ledger (failure is surfaced)
           </pre>
         </figure>
       </div>

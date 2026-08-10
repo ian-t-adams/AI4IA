@@ -89,5 +89,7 @@ Lifecycle checks inventory the target Foundry deployments: an exact existing
 Postprovision then hard-gates model state, gateway topology, App Configuration, and
 enabled Content Understanding defaults.
 
-Validate in a parallel resource group before replacing a live stack; see
+Validate in a separate subscription for full catalog fidelity, or use the
+runbook's explicitly reduced validation profile when subscription-wide model
+quota prevents a duplicate catalog; see
 [`../docs/runbooks/teardown.md`](../docs/runbooks/teardown.md).

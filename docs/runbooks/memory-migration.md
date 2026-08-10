@@ -103,8 +103,9 @@ azd up
 
 > **CI deployment (this repo):** production ships through the `deploy.yml`
 > GitHub Actions workflow, not a local `azd up`. The equivalent freeze is to set
-> the `AI4IA_MEMORY_STORE` repository variable to `disabled` (the workflow already
-> defaults to `disabled` when unset) and run the workflow:
+> the `AI4IA_MEMORY_STORE` repository variable to `disabled` (the normal
+> repository/parameter default is now `cosmos`; the old CI-only `disabled`
+> fallback was removed after cutover) and run the workflow:
 >
 > ```powershell
 > gh variable set AI4IA_MEMORY_STORE --body disabled

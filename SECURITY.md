@@ -21,6 +21,13 @@ Maintainers should acknowledge the report in GitHub, assess severity, prepare a 
 ## Security expectations for contributors
 
 - Do not commit secrets or customer data.
-- Keep HTTP/SSE model traffic behind SimpleL7Proxy -> APIM and realtime behind the authenticated FastAPI relay -> APIM.
+- Keep compatible HTTP/SSE model traffic behind SimpleL7Proxy -> APIM.
+  Realtime/Voice Live WebSockets bypass SimpleL7Proxy only and remain behind the
+  authenticated FastAPI relay -> APIM path.
+- Preserve the one direct model exception: Responses-API Code Interpreter calls
+  Foundry directly because its stateful Azure-managed sandbox is not a routable
+  chat-completions deployment. That call site must keep pre-I/O entitlement
+  enforcement, `store=false`, attempt metering, and managed-identity/resource-key
+  isolation. Any other direct model call is a security architecture change.
 - Preserve Entra/dev-auth boundaries, admin gates, per-user ownership checks, entitlement checks, and SSRF protections.
 - Treat feature enablement as a security and cost change; wire server-side validation before surfacing UI.

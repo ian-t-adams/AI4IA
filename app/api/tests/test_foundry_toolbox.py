@@ -39,6 +39,15 @@ _tb = _load("provision_foundry_toolbox", _TOOLBOX_SCRIPT)
 
 def _valid_manifest() -> dict:
     return {
+        "manifestVersion": "1.0",
+        "lifecycle": "active",
+        "owner": "repository-owner",
+        "sdkContract": {
+            "package": "azure-ai-projects",
+            "version": "2.4.0",
+            "status": "validated",
+            "surface": "project.toolboxes",
+        },
         "name": "ai4ia-toolbox",
         "description": "Web search + code interpreter + tool search",
         "raiPolicyName": "ai4ia-annotate-only",

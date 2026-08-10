@@ -8,14 +8,13 @@ Use the consolidated parameter/env map in
 [`../configuration-reference.md`](../configuration-reference.md) before changing
 feature posture.
 
-> **Before enabling a new output modality**, read
-> [`../rai-decision-record.md`](../rai-decision-record.md). Every content-safety
-> filter on every deployment is **enabled but non-blocking** under an approved
-> Azure guardrails-modification exception, and that decision was reasoned about
-> *text completions*. Turning on image generation, video generation or a new voice
-> provider extends an unfiltered posture to a modality the record did not consider
-> — which is trigger 3 in its review-trigger table and requires the record to be
-> revisited, not just the flag flipped.
+> **The modality review trigger has already fired.** The
+> [Responsible AI decision record](../rai-decision-record.md) is complete as a
+> document but incomplete as a control: its justification reasoned about text
+> completions, while image, video, Azure OpenAI Voice Live, and Speech Voice Live
+> are enabled. The repository contains no owner re-approval evidence for that
+> expanded scope. Do not enable another modality, or describe the current set as
+> fully approved, until the record's evidence checklist is satisfied.
 
 ## Flag inventory
 
@@ -494,8 +493,10 @@ Provision creates/retains the shared `apim-mcp-*` Basic v2 APIM and, when enable
 `https://<mcp-apim>/<name>/mcp`, and wires the gateway URL + subscription key into
 the API (`AI4IA_OFFICIAL_MCP_GATEWAY_URL` plus a Container App secret). Startup
 fails closed if the plane is enabled without both. Official servers are
-**trusted** (pre-approved, no per-call human gate) and merged ahead of BYO tools
-in each turn, sharing one per-turn MCP call budget.
+admin-curated and marked trusted for discovery/attachment; that standing trust is
+**not invocation approval**. Interactive external/destructive calls on both
+official and BYO planes still use the exact-argument approval policy described
+above. Unattended workflows are the explicit `ApprovalPolicy.off` exception.
 
 ### Foundry Agent Service toolbox (bridge)
 
@@ -731,8 +732,10 @@ limit]` marker rather than a silent drop.
 
 ## Operational reminders
 
-- Enabling a feature is a deploy and cost action; validate in a parallel resource
-  group before changing a live environment.
+- Enabling a feature is a deploy and cost action; validate in an isolated
+  environment before changing a live one. A full model catalog may require a
+  separate subscription; a reduced same-subscription profile proves only the
+  capabilities it retains. See the [teardown validation boundary](./teardown.md#1-validate-iac-without-pretending-subscription-wide-quota-is-duplicable).
 - `infra/main.parameters.json` documents this repo's checked-in live posture, not
   the universal defaults.
 - If a feature is disabled, its route/service either refuses with 404/disabled

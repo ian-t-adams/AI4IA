@@ -1,6 +1,15 @@
 {
   "$schema": "./toolbox.manifest.schema.json",
   "_comment": "CANONICAL definition of the live 'ai4ia-toolbox' Foundry toolbox. This is the source of truth a new subscription/tenant reproduces 1:1: run scripts/provision-foundry-toolbox.py --create against the target project to create this exact toolbox, then the foundryToolbox entry in infra/mcp-servers.json fronts it through APIM (its URL is computed by main.bicep per environment). Matches what is deployed in the slurmfactory project. To change the toolbox, edit here and re-run the script (creates a new version). See foundry/toolbox.manifest.example.json for the full set of supported tools, and docs/foundry-toolbox.md.",
+  "manifestVersion": "1.0",
+  "lifecycle": "active",
+  "owner": "repository-owner",
+  "sdkContract": {
+    "package": "azure-ai-projects",
+    "version": "2.4.0",
+    "status": "validated",
+    "surface": "project.toolboxes"
+  },
   "name": "ai4ia-toolbox",
   "description": "AI4IA shared Foundry toolbox: grounding, code execution, tool search. Fronted through the official-MCP APIM.",
   "connections": [],
