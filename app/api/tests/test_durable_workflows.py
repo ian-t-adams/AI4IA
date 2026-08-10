@@ -11,6 +11,7 @@ invisible in our own code and would fail confusingly if they ever changed:
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import sys
 from typing import Any
@@ -29,13 +30,14 @@ from ai4ia_api.workflows.durable import (
     _TRUNCATION_MARKER,
     DurableRunStatus,
     DurableScheduleAcceptanceUnknownError,
+    DurableScheduleRejectedError,
     DurableWorkflowService,
-    DurableWorkflowsUnavailableError,
     _merge_usage,
     _step_from_dict,
     _truncate_for_payload,
     _usage_to_dict,
     build_orchestration_payload,
+    durable_run_fingerprint,
 )
 
 
@@ -190,7 +192,12 @@ def test_durable_run_is_refused_when_the_feature_is_off(client):
 
     resp = client.post(
         "/api/workflows/summarize/run",
-        json={"sessionId": sid, "input": "otters", "durable": True},
+        json={
+            "sessionId": sid,
+            "input": "otters",
+            "durable": True,
+            "idempotencyKey": "feature-off-key",
+        },
     )
     # 422, NOT a silent fall back to a synchronous run: the caller asked for a
     # guarantee we cannot give, so answering 200 would answer a different
@@ -210,7 +217,12 @@ def test_durable_run_returns_202_and_does_not_run_in_request(client):
 
     resp = client.post(
         "/api/workflows/summarize/run",
-        json={"sessionId": sid, "input": "otters", "durable": True},
+        json={
+            "sessionId": sid,
+            "input": "otters",
+            "durable": True,
+            "idempotencyKey": "accepted-run-key",
+        },
     )
     assert resp.status_code == 202, resp.text
     body = resp.json()
@@ -234,10 +246,24 @@ def test_durable_run_returns_202_and_does_not_run_in_request(client):
     assert messages[1]["workflowRunStatus"] == "pending"
 
 
+def test_durable_run_requires_a_caller_key_before_any_persistence(client):
+    sid = _seed(client)
+    stub = _StubDurable()
+    client.app.state.durable_workflows = stub
+    resp = client.post(
+        "/api/workflows/summarize/run",
+        json={"sessionId": sid, "input": "otters", "durable": True},
+    )
+    assert resp.status_code == 422
+    assert "idempotencyKey" in resp.text
+    assert stub.scheduled == []
+    assert client.get(f"/api/sessions/{sid}/messages").json() == []
+
+
 class _DefiniteFailureDurable(_StubDurable):
     async def schedule(self, payload, *, user_id, run_id=None):
         self.scheduled.append((payload, user_id))
-        raise DurableWorkflowsUnavailableError("not running")
+        raise DurableScheduleRejectedError("permission denied")
 
 
 class _AmbiguousThenAcceptedDurable(_StubDurable):
@@ -267,7 +293,7 @@ def test_definite_schedule_failure_persists_one_terminal_failed_run(client):
     assert len(messages) == 2
     assert [message["role"] for message in messages] == ["user", "assistant"]
     assert messages[1]["status"] == "error"
-    assert messages[1]["workflowRunStatus"] == "failed"
+    assert messages[1]["workflowRunStatus"] == "schedule_failed"
 
 
 def test_ambiguous_schedule_retry_reuses_messages_and_run(client):
@@ -298,6 +324,26 @@ def test_ambiguous_schedule_retry_reuses_messages_and_run(client):
     assert len(messages) == 2
     assert len({message["id"] for message in messages}) == 2
     assert messages[1]["workflowRunStatus"] == "pending"
+
+
+def test_same_key_with_different_execution_input_is_rejected(client):
+    sid = _seed(client)
+    stub = _AmbiguousThenAcceptedDurable()
+    client.app.state.durable_workflows = stub
+    body = {
+        "sessionId": sid,
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "fingerprint-key",
+    }
+    assert client.post("/api/workflows/summarize/run", json=body).status_code == 202
+    conflict = client.post(
+        "/api/workflows/summarize/run",
+        json={**body, "input": "badgers"},
+    )
+    assert conflict.status_code == 409
+    assert len(stub.scheduled) == 1
+    assert len(client.get(f"/api/sessions/{sid}/messages").json()) == 2
 
 
 def test_same_idempotency_key_is_scoped_to_one_session_and_workflow(client):
@@ -384,6 +430,48 @@ def test_retry_cannot_overwrite_a_terminal_result_that_lands_after_its_read(clie
     assert assistant["workflowRunStatus"] == "completed"
 
 
+def test_run_failure_replay_is_accepted_not_reported_as_schedule_failure(client):
+    sid = _seed(client)
+    inner = client.app.state.session_repo
+
+    class FailBeforeReplayRead:
+        def __init__(self):
+            self.armed = False
+
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+        async def list_messages(self, user_id, session_id):
+            messages = await inner.list_messages(user_id, session_id)
+            if self.armed:
+                assistant = next(
+                    message
+                    for message in messages
+                    if message.role.value == "assistant"
+                )
+                assistant.status = MessageStatus.error
+                assistant.workflowRunStatus = "run_failed"
+                assistant.content = "step failed"
+            return messages
+
+    repo = FailBeforeReplayRead()
+    client.app.state.session_repo = repo
+    stub = _AmbiguousThenAcceptedDurable()
+    client.app.state.durable_workflows = stub
+    body = {
+        "sessionId": sid,
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "run-failure-replay",
+    }
+    assert client.post("/api/workflows/summarize/run", json=body).status_code == 202
+    repo.armed = True
+    replay = client.post("/api/workflows/summarize/run", json=body)
+    assert replay.status_code == 202
+    assert replay.json()["status"] == "accepted"
+    assert len(stub.scheduled) == 1
+
+
 def test_non_durable_run_still_executes_synchronously(client):
     # The durable branch must not disturb the default path.
     sid = _seed(client)
@@ -402,7 +490,12 @@ def test_status_of_another_users_run_is_404(client):
     client.app.state.durable_workflows = _StubDurable()
     mine = client.post(
         "/api/workflows/summarize/run",
-        json={"sessionId": sid, "input": "otters", "durable": True},
+        json={
+            "sessionId": sid,
+            "input": "otters",
+            "durable": True,
+            "idempotencyKey": "owned-run-key",
+        },
     ).json()["runId"]
 
     assert client.get(f"/api/workflows/runs/{mine}").status_code == 200
@@ -451,6 +544,33 @@ class _AmbiguousClient:
         return self.state
 
 
+class _Code:
+    def __init__(self, name: str):
+        self.name = name
+
+
+class _SchedulerError(RuntimeError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self._code = _Code(code)
+
+    def code(self):
+        return self._code
+
+
+class _RejectedClient:
+    def __init__(self, code: str):
+        self.code = code
+        self.reads = 0
+
+    async def schedule_new_orchestration(self, _name, *, input=None, instance_id=None):
+        raise _SchedulerError(self.code)
+
+    async def get_orchestration_state(self, _run_id):
+        self.reads += 1
+        raise AssertionError("definite rejections must not be point-read as ambiguous")
+
+
 @pytest.mark.anyio
 async def test_schedule_generates_the_run_id_from_the_caller_id():
     """The run id must be minted here, never accepted from the request.
@@ -492,6 +612,85 @@ async def test_schedule_preserves_unknown_acceptance_for_same_id_retry():
     run_id = f"alice{_RUN_ID_SEPARATOR}stable"
     with pytest.raises(DurableScheduleAcceptanceUnknownError):
         await svc.schedule({"steps": []}, user_id="alice", run_id=run_id)
+
+
+@pytest.mark.anyio
+async def test_schedule_classifies_permission_rejection_as_definite():
+    svc = DurableWorkflowService(endpoint="e", task_hub="h", app_state=object())
+    client = _RejectedClient("PERMISSION_DENIED")
+    svc._client = client
+    run_id = f"alice{_RUN_ID_SEPARATOR}stable"
+    with pytest.raises(DurableScheduleRejectedError):
+        await svc.schedule({"steps": []}, user_id="alice", run_id=run_id)
+    assert client.reads == 0
+
+
+@pytest.mark.anyio
+async def test_schedule_treats_already_existing_instance_as_idempotent_success():
+    svc = DurableWorkflowService(endpoint="e", task_hub="h", app_state=object())
+    client = _RejectedClient("ALREADY_EXISTS")
+    svc._client = client
+    run_id = f"alice{_RUN_ID_SEPARATOR}stable"
+    assert (
+        await svc.schedule({"steps": []}, user_id="alice", run_id=run_id)
+        == run_id
+    )
+    assert client.reads == 0
+
+
+def test_run_fingerprint_covers_every_frozen_execution_field():
+    base = {
+        "steps": [{"agent": "writer", "instruction": "Write {input}", "extraTools": []}],
+        "context": {
+            "userId": "u1",
+            "sessionId": "s1",
+            "workflowName": "write",
+            "runInput": "otters",
+            "modelId": "gpt-x",
+            "deployment": "gpt-x-east",
+            "usageTarget": {
+                "provider": "azure_openai",
+                "deployment": "gpt-x-east",
+                "target": "gpt-x-east",
+                "region": "eastus2",
+                "dataZone": "US",
+            },
+            "email": "user@example.com",
+            "libraryDocumentIds": ["doc-1"],
+            "correlationId": "cid-1",
+            "runId": "u1:run",
+            "assistantMessageId": "a1",
+        },
+    }
+    original = durable_run_fingerprint(base)
+    mutations = (
+        ("steps", [{"agent": "writer", "instruction": "Edit {input}", "extraTools": []}]),
+        ("runInput", "badgers"),
+        ("modelId", "gpt-y"),
+        ("deployment", "gpt-x-west"),
+        ("email", "other@example.com"),
+        ("libraryDocumentIds", ["doc-2"]),
+        ("usageTarget", {**base["context"]["usageTarget"], "region": "westus"}),
+        ("usageTarget", {**base["context"]["usageTarget"], "dataZone": "EU"}),
+    )
+    for key, value in mutations:
+        changed = copy.deepcopy(base)
+        if key == "steps":
+            changed["steps"] = value
+        else:
+            changed["context"][key] = value
+        assert durable_run_fingerprint(changed) != original, key
+
+    metadata_only = copy.deepcopy(base)
+    metadata_only["context"].update(
+        {
+            "assistantMessageId": "a2",
+            "correlationId": "cid-2",
+            "runFingerprint": "ignored",
+            "runId": "u1:other",
+        }
+    )
+    assert durable_run_fingerprint(metadata_only) == original
 
 
 @pytest.mark.anyio

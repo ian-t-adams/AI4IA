@@ -9,7 +9,7 @@ be fixed at integration time without code changes.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -835,7 +835,7 @@ class ModelGatewayClient:
         params: dict[str, Any] | None = None,
         correlation_id: str | None = None,
         api: str = "chat",
-    ) -> AsyncIterator[ChatChunk]:
+    ) -> AsyncGenerator[ChatChunk, None]:
         timing = current_chat_timing()
         timing_started = timing.gateway_started() if timing is not None else None
         client: httpx.AsyncClient | None = None
@@ -899,7 +899,7 @@ class ModelGatewayClient:
         messages: Sequence[dict[str, Any]],
         params: dict[str, Any] | None = None,
         correlation_id: str | None = None,
-    ) -> AsyncIterator[ChatChunk]:
+    ) -> AsyncGenerator[ChatChunk, None]:
         """Stream a Responses turn, translating its SSE events into the synthetic
         chat-shaped ``ChatChunk`` stream the router already consumes.
 

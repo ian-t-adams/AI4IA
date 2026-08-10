@@ -119,6 +119,7 @@ def test_chat_latency_query_reports_historical_gaps_as_unavailable_not_nan():
     assert "timingCovered == 0" in CHAT_LATENCY_KQL
     assert '"unavailable"' in CHAT_LATENCY_KQL
     assert "isnotnull(turnTotalMs)" in CHAT_LATENCY_KQL
+    assert "gatewayTimingAvailable == true" in CHAT_LATENCY_KQL
     assert "NaN" not in CHAT_LATENCY_KQL
 
 

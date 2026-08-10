@@ -354,6 +354,7 @@ export interface WorkflowRunAccepted {
   sessionId: string;
   runId: string;
   status: string;
+  idempotencyKey: string;
 }
 
 export interface WorkflowRunStatus {

@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from contextlib import aclosing
 
 from ..agents.activity import persisted_trace, serialize_step
 from ..agents.approvals import (
@@ -536,46 +537,49 @@ async def _plain_gateway_stream(
     terminal_persisted = False
     try:
         yield _stream_metadata(user_message_id, assistant.id, assistant.sources)
-        async for chunk in gateway.stream(
-            deployment=deployment.deploymentName,
-            messages=messages,
-            params=params,
-            correlation_id=correlation_id,
-            api=api,
-        ):
-            if chunk.usage:
-                stream_usage = chunk.usage
-            if chunk.safety is not None:
-                # Prompt verdicts arrive on an early chunk and completion
-                # verdicts on a later one, so the full picture only exists
-                # after merging across the stream.
-                stream_safety = merge_safety(stream_safety, chunk.safety)
-                assistant.safety = stream_safety
-            if chunk.raw and _has_gateway_stream_error(chunk.raw):
-                final = MessageStatus.error
-                assistant.content = "".join(parts)
-                assistant.status = final
-                terminal_persisted = await _persist_terminal_assistant(
-                    repo, user.internal_user_id, assistant
-                )
-                error_payload: dict[str, object] = {"error": "Model stream failed."}
-                if not terminal_persisted:
-                    error_payload = {
-                        "error": "The failed reply could not be saved.",
-                        "persistenceFailed": True,
-                    }
-                yield f"data: {json.dumps(error_payload)}\n\n"
-                return
-            if chunk.delta:
-                parts.append(chunk.delta)
-                timing = current_chat_timing()
-                if timing is not None:
-                    timing.mark_first_content()
-            if chunk.done:
-                saw_done = True
-                break
-            if chunk.raw:
-                yield f"data: {chunk.raw}\n\n"
+        async with aclosing(
+            gateway.stream(
+                deployment=deployment.deploymentName,
+                messages=messages,
+                params=params,
+                correlation_id=correlation_id,
+                api=api,
+            )
+        ) as chunks:
+            async for chunk in chunks:
+                if chunk.usage:
+                    stream_usage = chunk.usage
+                if chunk.safety is not None:
+                    # Prompt verdicts arrive on an early chunk and completion
+                    # verdicts on a later one, so the full picture only exists
+                    # after merging across the stream.
+                    stream_safety = merge_safety(stream_safety, chunk.safety)
+                    assistant.safety = stream_safety
+                if chunk.raw and _has_gateway_stream_error(chunk.raw):
+                    final = MessageStatus.error
+                    assistant.content = "".join(parts)
+                    assistant.status = final
+                    terminal_persisted = await _persist_terminal_assistant(
+                        repo, user.internal_user_id, assistant
+                    )
+                    error_payload: dict[str, object] = {"error": "Model stream failed."}
+                    if not terminal_persisted:
+                        error_payload = {
+                            "error": "The failed reply could not be saved.",
+                            "persistenceFailed": True,
+                        }
+                    yield f"data: {json.dumps(error_payload)}\n\n"
+                    return
+                if chunk.delta:
+                    parts.append(chunk.delta)
+                    timing = current_chat_timing()
+                    if timing is not None:
+                        timing.mark_first_content()
+                if chunk.done:
+                    saw_done = True
+                    break
+                if chunk.raw:
+                    yield f"data: {chunk.raw}\n\n"
         if not saw_done:
             final = MessageStatus.error
         assistant.content = "".join(parts)

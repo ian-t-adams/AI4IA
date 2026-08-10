@@ -24,11 +24,9 @@ The run path mirrors the chat endpoint's hard invariants, in order:
 """
 from __future__ import annotations
 
-from uuid import uuid4
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
@@ -43,9 +41,11 @@ from ..sessions.repository import SessionNotFoundError, SessionRepository
 from ..usage.service import UsageService
 from ..workflows.durable import (
     DurableScheduleAcceptanceUnknownError,
+    DurableScheduleRejectedError,
     DurableWorkflowsUnavailableError,
     build_orchestration_payload,
     durable_message_ids,
+    durable_run_fingerprint,
     durable_run_id,
 )
 from ..workflows.models import (
@@ -85,6 +85,12 @@ class WorkflowRunRequest(BaseModel):
     # durability is never told "done" by a run that cannot survive a restart.
     durable: bool = False
     idempotencyKey: str | None = Field(default=None, min_length=8, max_length=128)
+
+    @model_validator(mode="after")
+    def require_durable_idempotency_key(self) -> WorkflowRunRequest:
+        if self.durable and self.idempotencyKey is None:
+            raise ValueError("idempotencyKey is required when durable is true")
+        return self
 
 
 class WorkflowRunAcceptedResponse(BaseModel):
@@ -290,13 +296,40 @@ async def run_workflow_endpoint(
             )
 
     if durable_service is not None:
-        idempotency_key = body.idempotencyKey or uuid4().hex
+        # The model validator guarantees this before any persistence. A server-
+        # generated key cannot protect a request whose response was lost because
+        # the caller never learned it to reuse on retry.
+        idempotency_key = body.idempotencyKey
+        if idempotency_key is None:  # defensive; rejected by the model validator
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="idempotencyKey is required when durable is true",
+            )
         run_id = durable_run_id(
             uid,
             idempotency_key,
             scope=f"{body.sessionId}\0{workflow.name}",
         )
         user_message_id, assistant_message_id = durable_message_ids(run_id)
+        payload = build_orchestration_payload(
+            workflow,
+            user_id=uid,
+            session_id=body.sessionId,
+            run_input=run_input,
+            model_id=model_id,
+            deployment=deployment,
+            correlation_id=correlation_id,
+            email=user.email,
+            library_document_ids=(
+                list(session.libraryDocumentIds)
+                if session.libraryDocumentIds is not None
+                else None
+            ),
+            run_id=run_id,
+            assistant_message_id=assistant_message_id,
+        )
+        run_fingerprint = durable_run_fingerprint(payload)
+        payload["context"]["runFingerprint"] = run_fingerprint
         prior = await repo.list_messages(uid, body.sessionId)
         existing = [message for message in prior if message.workflowRunId == run_id]
         existing_user = next(
@@ -306,20 +339,25 @@ async def run_workflow_endpoint(
             (message for message in existing if message.role is MessageRole.assistant),
             None,
         )
-        if existing_user is not None and (
-            existing_user.content != run_input or existing_user.agent != agent_attr
+        if (
+            existing_user is not None
+            and existing_user.workflowRunFingerprint != run_fingerprint
         ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Idempotency key was already used for a different workflow run.",
             )
         if existing_assistant is not None:
-            if existing_assistant.workflowRunStatus == "failed":
+            if existing_assistant.workflowRunStatus == "schedule_failed":
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Durable workflow scheduling previously failed.",
                 )
-            if existing_assistant.workflowRunStatus in {"accepted", "completed"}:
+            if existing_assistant.workflowRunStatus in {
+                "accepted",
+                "completed",
+                "run_failed",
+            }:
                 return JSONResponse(
                     status_code=status.HTTP_202_ACCEPTED,
                     content=WorkflowRunAcceptedResponse(
@@ -340,6 +378,7 @@ async def run_workflow_endpoint(
             agent=agent_attr,
             workflowRunId=run_id,
             workflowRunStatus="accepted",
+            workflowRunFingerprint=run_fingerprint,
         )
         pending_assistant = Message(
             id=assistant_message_id,
@@ -352,38 +391,22 @@ async def run_workflow_endpoint(
             agent=agent_attr,
             workflowRunId=run_id,
             workflowRunStatus="pending",
+            workflowRunFingerprint=run_fingerprint,
         )
         if existing_user is None:
             await repo.upsert_message(uid, user_message)
         if existing_assistant is None:
             await repo.upsert_message(uid, pending_assistant)
 
-        payload = build_orchestration_payload(
-            workflow,
-            user_id=uid,
-            session_id=body.sessionId,
-            run_input=run_input,
-            model_id=model_id,
-            deployment=deployment,
-            correlation_id=correlation_id,
-            email=user.email,
-            library_document_ids=(
-                list(session.libraryDocumentIds)
-                if session.libraryDocumentIds is not None
-                else None
-            ),
-            run_id=run_id,
-            assistant_message_id=assistant_message_id,
-        )
         try:
             await durable_service.schedule(payload, user_id=uid, run_id=run_id)
-        except DurableWorkflowsUnavailableError as exc:
+        except (DurableScheduleRejectedError, DurableWorkflowsUnavailableError) as exc:
             pending_assistant.status = MessageStatus.error
             pending_assistant.content = (
                 "The durable workflow could not be scheduled. Retry with a new "
                 "idempotency key after the service recovers."
             )
-            pending_assistant.workflowRunStatus = "failed"
+            pending_assistant.workflowRunStatus = "schedule_failed"
             await repo.upsert_message(uid, pending_assistant)
             await repo.touch_session(uid, session.id)
             raise HTTPException(

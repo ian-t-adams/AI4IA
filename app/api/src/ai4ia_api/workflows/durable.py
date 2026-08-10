@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
@@ -114,6 +115,50 @@ class DurableScheduleAcceptanceUnknownError(RuntimeError):
     """The scheduler call failed after acceptance became unknowable."""
 
 
+class DurableScheduleRejectedError(RuntimeError):
+    """The scheduler definitively rejected the run before acceptance."""
+
+
+_DEFINITE_SCHEDULE_CODES = frozenset(
+    {
+        "FAILED_PRECONDITION",
+        "INVALID_ARGUMENT",
+        "NOT_FOUND",
+        "OUT_OF_RANGE",
+        "PERMISSION_DENIED",
+        "RESOURCE_EXHAUSTED",
+        "UNAUTHENTICATED",
+        "UNIMPLEMENTED",
+    }
+)
+_DEFINITE_AUTH_ERROR_NAMES = frozenset(
+    {"ClientAuthenticationError", "CredentialUnavailableError"}
+)
+
+
+def _schedule_error_code(exc: Exception) -> str | None:
+    code_method = getattr(exc, "code", None)
+    if not callable(code_method):
+        return None
+    try:
+        code = code_method()
+    except Exception:  # noqa: BLE001 - classification must preserve original error
+        return None
+    name = getattr(code, "name", None)
+    if isinstance(name, str):
+        return name.upper()
+    text = str(code).rsplit(".", 1)[-1].upper()
+    return text if text else None
+
+
+def _is_definite_schedule_rejection(exc: Exception) -> bool:
+    return (
+        isinstance(exc, (TypeError, ValueError))
+        or type(exc).__name__ in _DEFINITE_AUTH_ERROR_NAMES
+        or _schedule_error_code(exc) in _DEFINITE_SCHEDULE_CODES
+    )
+
+
 def durable_run_id(
     user_id: str,
     idempotency_key: str | None = None,
@@ -132,6 +177,26 @@ def durable_run_id(
 def durable_message_ids(run_id: str) -> tuple[str, str]:
     digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
     return f"wf-{digest}-user", f"wf-{digest}-assistant"
+
+
+def durable_run_fingerprint(payload: dict[str, Any]) -> str:
+    """Hash only execution-defining orchestration input, never request metadata."""
+    context = dict(payload.get("context") or {})
+    for key in (
+        "assistantMessageId",
+        "correlationId",
+        "runFingerprint",
+        "runId",
+    ):
+        context.pop(key, None)
+    canonical = {"steps": payload.get("steps") or [], "context": context}
+    encoded = json.dumps(
+        canonical,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class DurableWorkflowService:
@@ -270,6 +335,13 @@ class DurableWorkflowService:
                 instance_id=instance_id,
             )
         except Exception as exc:
+            code = _schedule_error_code(exc)
+            if code == "ALREADY_EXISTS":
+                return instance_id
+            if _is_definite_schedule_rejection(exc):
+                raise DurableScheduleRejectedError(
+                    "Durable workflow scheduling was rejected."
+                ) from exc
             # A transport failure can happen after DTS accepted the instance. A
             # point read converts that ambiguity to success when possible; if the
             # read is also inconclusive, the caller must retain pending state and
@@ -599,10 +671,11 @@ class DurableWorkflowService:
             agent=agent_attr,
             workflowRunId=context.get("runId"),
             workflowRunStatus=(
-                "completed" if payload.get("ok") else "failed"
+                "completed" if payload.get("ok") else "run_failed"
             )
             if context.get("runId")
             else None,
+            workflowRunFingerprint=context.get("runFingerprint"),
         )
         await state.session_repo.upsert_message(uid, assistant)
 

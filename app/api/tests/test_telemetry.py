@@ -13,6 +13,7 @@ import pytest
 from ai4ia_api import logging_setup
 from ai4ia_api.chat_timing import ChatTiming
 from ai4ia_api.catalog import DeploymentOption
+from ai4ia_api.gateway.client import ModelGatewayClient
 from ai4ia_api.usage.memory_repo import InMemoryUsageRepository
 from ai4ia_api.usage.models import TokenUsage, UsageTarget
 from ai4ia_api.usage.pricing import PriceRate, PricingBook
@@ -311,6 +312,55 @@ async def test_record_completion_adds_privacy_safe_lifecycle_timing(monkeypatch)
         key.lower() in {"prompt", "output", "url", "filename", "error"}
         for key in attrs
     )
+
+
+class _StreamingResponse:
+    status_code = 200
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def aiter_lines(self):
+        yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
+        yield 'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+        yield "data: [DONE]"
+
+
+class _StreamingHttp:
+    def stream(self, *_args, **_kwargs):
+        return _StreamingResponse()
+
+
+def test_successful_sse_closes_gateway_before_completion_event(client, monkeypatch):
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.usage.service.emit_custom_event",
+        lambda name, attrs: captured.append((name, attrs)),
+    )
+    client.app.state.gateway = ModelGatewayClient(
+        client.app.state.settings,
+        http_client=_StreamingHttp(),  # pyright: ignore[reportArgumentType]
+    )
+    session_id = client.post(
+        "/api/sessions", json={"title": "Timing", "model": "gpt-5.4"}
+    ).json()["id"]
+    response = client.post(
+        "/api/chat",
+        json={
+            "sessionId": session_id,
+            "content": "hello",
+            "stream": True,
+        },
+    )
+    assert response.status_code == 200
+    assert "data: [DONE]" in response.text
+    event = next(attrs for name, attrs in captured if name == "chat_completion")
+    assert event["gatewayCalls"] == 1
+    assert event["gatewayTimingAvailable"] is True
+    assert event["gatewayMs"] >= 0
 
 
 async def test_record_completion_emits_provider_and_managed_target(monkeypatch):

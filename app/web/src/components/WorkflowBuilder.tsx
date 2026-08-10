@@ -439,6 +439,10 @@ export function WorkflowBuilder({
       setRunning(true);
       setRunState({ phase: "running", steps: pendingSteps(stepAgents, "pending") });
       const startedAt = Date.now();
+      const durableRequested = durableAvailable && runDurable;
+      const idempotencyKey = durableRequested
+        ? api.newWorkflowRunIdempotencyKey()
+        : undefined;
       try {
         const session = await api.createSession({
           title: `Run: ${target.displayName || target.name} · ${new Date().toLocaleTimeString()}`,
@@ -455,7 +459,9 @@ export function WorkflowBuilder({
           model: runModel,
           // Only ever sent when the server said it can honour it, so the request
           // cannot be rejected for asking.
-          ...(durableAvailable && runDurable ? { durable: true } : {}),
+          ...(durableRequested
+            ? { durable: true, idempotencyKey }
+            : {}),
         });
 
         if (outcome.scheduled) {

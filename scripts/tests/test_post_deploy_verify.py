@@ -974,6 +974,21 @@ class CanaryTests(unittest.TestCase):
         self.run_canary(http, attempts=1)
         self.assertEqual(http.calls[-1], ("DELETE", "https://api.test/api/sessions/sess-1"))
 
+    def test_ambiguous_session_create_is_never_retried(self) -> None:
+        script = {
+            "GET /api/models": [ok({"models": [{"id": "tiny-fast"}]})],
+            "POST /api/sessions": [
+                pdv.HttpOutcome(status=None, error="TimeoutError"),
+                ok({"id": "orphan-2"}, status=201),
+            ],
+        }
+        http = FakeHttp(script)
+        result = self.run_canary(http, attempts=3)
+        self.assertFalse(result.ok)
+        creates = [call for call in http.calls if call[1].endswith("/api/sessions")]
+        self.assertEqual(len(creates), 1)
+        self.assertFalse(any(call[1].endswith("/api/chat") for call in http.calls))
+
     def test_cleanup_failure_fails_the_canary(self) -> None:
         script = canary_script(
             ok({"message": {"content": "ready", "status": "complete"}})

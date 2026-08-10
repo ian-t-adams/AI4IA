@@ -200,6 +200,10 @@ export async function deleteWorkflow(name: string): Promise<void> {
   }
 }
 
+export function newWorkflowRunIdempotencyKey(): string {
+  return crypto.randomUUID();
+}
+
 // Runs a saved workflow against a chat session. The backend persists the user
 // input + the pipeline's assistant result to the session like a normal turn.
 //
@@ -216,13 +220,24 @@ export async function runWorkflow(
     input: string;
     model?: string | null;
     durable?: boolean;
+    idempotencyKey?: string;
   },
 ): Promise<WorkflowRunOutcome> {
-  const resp = await apiFetch(`/api/workflows/${encodeURIComponent(name)}/run`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
+  const request = () =>
+    apiFetch(`/api/workflows/${encodeURIComponent(name)}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+  let resp: Response;
+  try {
+    resp = await request();
+  } catch (error) {
+    if (!input.durable || !input.idempotencyKey) throw error;
+    // A durable transport failure is acceptance-ambiguous. Retrying once is
+    // safe only because the exact same caller-minted key rides both attempts.
+    resp = await request();
+  }
   if (resp.status === 202) {
     return { scheduled: true, run: await jsonOrThrow<WorkflowRunAccepted>(resp) };
   }

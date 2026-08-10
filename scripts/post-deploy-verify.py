@@ -1024,7 +1024,10 @@ def run_canary(
         headers=json_headers,
         body=json.dumps({"title": CANARY_TITLE, "model": model}).encode("utf-8"),
         accept=lambda outcome: outcome.status == 201,
-        attempts=attempts,
+        # Session creation is not idempotent. A lost response may mean Cosmos
+        # accepted it, so retrying here can create an untracked orphan that this
+        # invocation cannot delete. Fail after the one ambiguous attempt.
+        attempts=1,
         delay=delay,
         timeout=min(timeout, 60.0),
         request=do_request,

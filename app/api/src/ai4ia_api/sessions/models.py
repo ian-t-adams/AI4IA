@@ -116,6 +116,7 @@ class Message(BaseModel):
     # pair used to make scheduling retries idempotent.
     workflowRunId: str | None = None
     workflowRunStatus: str | None = None
+    workflowRunFingerprint: str | None = None
     # True for the local transcript of a slash command (the echoed command and
     # its reply). These are shown in the UI but excluded from model context and
     # from first-turn auto-titling.
