@@ -66,13 +66,20 @@ Seven source files carry AI4IA security/correctness patches over the audited pin
   `string.Equals(..., StringComparison.OrdinalIgnoreCase)`. These keys are opaque, high-entropy
   APIM subscription keys (see `gateway.bicep`'s `sharedProxyIngressSubscription.listSecrets().primaryKey`),
   not case-insensitive identifiers, and a non-constant-time comparison of a secret is a timing
-  side-channel.
+  side-channel. The listener also returns a fixed empty `404` for upstream's privileged legacy
+  `/health`, `/healthdetail`, and `/forcegc` diagnostics before authentication, queueing, or
+  worker dispatch. AI4IA exposes only the side-effect-free `/startup`, `/liveness`, and
+  `/readiness` routes required by Container Apps; this prevents unauthenticated internal-state
+  disclosure, counter resets, and forced blocking Gen-2 collections. The upstream request-null
+  branch is also removed: `HttpListener.GetContextAsync()` and `HttpListenerContext.Request`
+  are non-null contracts, while retaining that dead branch makes request data appear to control
+  whether the later authentication methods execute (CodeQL `cs/user-controlled-bypass`).
 
 All other source files are upstream-identical after line-ending normalization.
 Re-evaluate and drop the `IncomingAuthValidator.cs` patch when refreshing to an
 upstream commit that fixes both behaviors it addresses.
 
-**Provenance validation (2026-08-09):** `upstream-provenance.json` records the
+**Provenance validation (2026-08-10):** `upstream-provenance.json` records the
 canonical LF SHA-256 of every upstream and local file plus the explicit AI4IA
 patch list. Raw upstream hashes remain as evidence, but checkout-specific local
 bytes never gate CI. `scripts/tests/test_proxy_provenance.py` fails for an

@@ -67,6 +67,7 @@ SERVICES = ("api", "web", "proxy")
 APP_NAME_PREFIX = {"api": "ca-api-", "web": "ca-web-", "proxy": "ca-proxy-"}
 DEFAULT_WORKLOAD = "ai4ia"
 DEFAULT_TOKEN_ENV = "AI4IA_DEPLOY_CANARY_TOKEN"
+PROXY_PROBE_PATHS = ("/startup", "/liveness", "/readiness")
 
 # Container Apps' own edge returns these when nothing behind the ingress is
 # serving yet -- which is precisely the scale-to-zero cold start we must retry
@@ -1365,34 +1366,31 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 f"({outcome.status if outcome.status is not None else outcome.error})"
             )
 
-    if not args.proxy_path.startswith("/") or any(
-        c in args.proxy_path for c in ("?", "#", " ")
-    ):
-        raise VerifyInputError("--proxy-path must be a plain absolute path")
     if proxy_base is None:
         failures.append("proxy: no ingress FQDN to probe")
     else:
-        outcome, tries = probe(
-            f"{proxy_base}{args.proxy_path}",
-            accept=ingress_responds,
-            attempts=args.proxy_attempts,
-            delay=args.delay,
-            timeout=args.http_timeout,
-            deadline=deadline,
-        )
-        emit(
-            "probe",
-            target=f"proxy{args.proxy_path}",
-            status=outcome.status,
-            attempts=tries,
-            error=outcome.error,
-        )
-        if not ingress_responds(outcome):
-            failures.append(
-                f"proxy: {args.proxy_path} never answered "
-                f"({outcome.status if outcome.status is not None else outcome.error}); "
-                "the ingress has no serving replica"
+        for path in PROXY_PROBE_PATHS:
+            outcome, tries = probe(
+                f"{proxy_base}{path}",
+                accept=ingress_responds,
+                attempts=args.proxy_attempts,
+                delay=args.delay,
+                timeout=args.http_timeout,
+                deadline=deadline,
             )
+            emit(
+                "probe",
+                target=f"proxy{path}",
+                status=outcome.status,
+                attempts=tries,
+                error=outcome.error,
+            )
+            if not ingress_responds(outcome):
+                failures.append(
+                    f"proxy: {path} never answered "
+                    f"({outcome.status if outcome.status is not None else outcome.error}); "
+                    "the ingress has no serving replica"
+                )
 
     failures.extend(_custom_domain_failures(live))
     failures.extend(_canary_failures(args, api_base, deadline))
@@ -1698,11 +1696,6 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--api-url", default="", help="Override the API base URL.")
     verify.add_argument("--web-url", default="", help="Override the web base URL.")
     verify.add_argument("--proxy-url", default="", help="Override the proxy base URL.")
-    verify.add_argument(
-        "--proxy-path",
-        default="/startup",
-        help="Proxy probe path (SimpleL7Proxy serves /startup, /readiness, /health).",
-    )
     verify.add_argument("--attempts", type=int, default=10, help="Attempts per HTTP probe.")
     verify.add_argument(
         "--expect-image",

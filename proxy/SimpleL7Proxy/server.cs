@@ -20,11 +20,27 @@ using SimpleL7Proxy.Proxy;
 using SimpleL7Proxy.Plugin;
 using SimpleL7Proxy.Async.ServiceBus;
 using System.Text;
+using System.Runtime.CompilerServices;
 
 using Shared.HealthProbe;
 
+[assembly: InternalsVisibleTo("AI4IA.Proxy.Tests")]
 
 namespace SimpleL7Proxy;
+internal enum PreAuthRouteDisposition
+{
+    ContinueToAuthenticatedWorker,
+    Liveness,
+    Readiness,
+    Startup,
+    NotFound,
+}
+
+internal readonly record struct PreAuthRouteResult(
+    bool ContinueToAuthenticatedWorker,
+    HttpStatusCode StatusCode,
+    string? ProbeType);
+
 // This class represents a server that listens for HTTP requests and processes them.
 // It uses a priority queue to manage incoming requests and supports telemetry for monitoring.
 // If the incoming request has the S7PPriorityKey header, it will be assigned a priority based the S7PPriority header.
@@ -289,6 +305,33 @@ public class Server : BackgroundService, IConfigChangeSubscriber
     // Requests are enqueued with a priority based on specific headers.
     // The method runs until a cancellation is requested.
     // Each request is enqueued with a priority into BlockingPriorityQueue.
+    internal static PreAuthRouteDisposition ClassifyPreAuthRoute(string? path) =>
+        path switch
+        {
+            Constants.Liveness => PreAuthRouteDisposition.Liveness,
+            Constants.Readiness => PreAuthRouteDisposition.Readiness,
+            Constants.Startup => PreAuthRouteDisposition.Startup,
+            Constants.Health or Constants.HealthDetail or Constants.ForceGC => PreAuthRouteDisposition.NotFound,
+            _ => PreAuthRouteDisposition.ContinueToAuthenticatedWorker,
+        };
+
+    internal static async Task<PreAuthRouteResult> DispatchPreAuthRouteAsync(
+        string? path,
+        Func<PreAuthRouteDisposition, Task<HttpStatusCode>> serveProbe)
+    {
+        var route = ClassifyPreAuthRoute(path);
+        if (route == PreAuthRouteDisposition.ContinueToAuthenticatedWorker)
+        {
+            return new(true, default, null);
+        }
+        if (route == PreAuthRouteDisposition.NotFound)
+        {
+            return new(false, HttpStatusCode.NotFound, null);
+        }
+
+        return new(false, await serveProbe(route), route.ToString());
+    }
+
     public async Task Run(CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(_httpListener, nameof(_httpListener));
@@ -296,7 +339,6 @@ public class Server : BackgroundService, IConfigChangeSubscriber
         ArgumentNullException.ThrowIfNull(_options, nameof(_options));
 
         long counter = 0;
-        int livenessPriority = _options.PriorityValues.Min();
         bool doUserProfile = _options.UseProfiles;
         // Only enable async mode if configured AND blob storage is available (not using NullBlobWriter)
         bool doAsync = _options.AsyncModeEnabled && !(_blobWriter is NullBlobWriter);
@@ -327,22 +369,29 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                 if (completedTask == getContextTask)
                 {
                     var lc = await getContextTask.ConfigureAwait(false);
-                    if (lc == null || lc.Request == null)
-                    {
-                        continue;
-                    }
-                    var isprobe = false;
-                    var probePath = lc.Request.Url?.PathAndQuery;
-
-                    // Liveness/Readiness/Startup: respond immediately, don't enqueue
-                    if (probePath is Constants.Liveness or Constants.Readiness or Constants.Startup)
-                    {
-                        var (probeType, code) = probePath switch
+                    var preAuthRoute = await DispatchPreAuthRouteAsync(
+                        lc.Request.Url?.AbsolutePath,
+                        route => route switch
                         {
-                            Constants.Liveness  => ("Liveness",  await _probeServer.LivenessResponseAsync(lc)),
-                            Constants.Readiness => ("Readiness", await _probeServer.ReadinessResponseAsync(lc)),
-                            _                   => ("Startup",   await _probeServer.StartupResponseAsync(lc)),
-                        };
+                            PreAuthRouteDisposition.Liveness => _probeServer.LivenessResponseAsync(lc),
+                            PreAuthRouteDisposition.Readiness => _probeServer.ReadinessResponseAsync(lc),
+                            _ => _probeServer.StartupResponseAsync(lc),
+                        });
+
+                    if (!preAuthRoute.ContinueToAuthenticatedWorker)
+                    {
+                        // AI4IA does not expose upstream's privileged legacy diagnostics.
+                        if (preAuthRoute.StatusCode == HttpStatusCode.NotFound)
+                        {
+                            lc.Response.StatusCode = (int)HttpStatusCode.NotFound;
+                            lc.Response.ContentLength64 = 0;
+                            lc.Response.Close();
+                            continue;
+                        }
+
+                        // Container Apps probes respond immediately and never enter the worker queue.
+                        var probeType = preAuthRoute.ProbeType!;
+                        var code = preAuthRoute.StatusCode;
                         _probe.Uri = lc.Request.Url!;
                         _probe["ProbeType"] = probeType;
                         _probe["StatusCode"] = ((int)code).ToString();
@@ -358,13 +407,6 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                         }
                         // Console.WriteLine($"[PROBE] {probeType} probe received, responded with {code}");
                         continue;
-                    }
-                    // Console.WriteLine($"[NOT PROBE] {probePath} received, processing as normal request");
-
-                    // Health/HealthDetail/ForceGC: mark as probe, enqueue for worker to handle and log
-                    if (probePath is Constants.Health or Constants.HealthDetail or Constants.ForceGC)
-                    {
-                        isprobe = true;
                     }
                     
                     int priority = _options.DefaultPriority;
@@ -391,17 +433,6 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                     ed["Path"] = rd.Path ?? "N/A";
                     ed["RequestHost"] = rd.Headers["Host"] ?? "N/A";
                     ed["RequestUserAgent"] = rd.Headers["User-Agent"] ?? "N/A";
-
-                    // if it's a probe, then bypass all the below checks and enqueue the request 
-                    if (isprobe)
-                    {
-                        // /startup runs a priority of 0,   otherwise run at highest priority ( lower is more urgent )
-                        priority = 0;//(rd.Path == Constants.Liveness || rd.Path == Constants.Health) ? livenessPriority : 0;
-
-                        // bypass all the below checks and enqueue the request
-                        _requestsQueue.Enqueue(rd, priority, userPriorityBoost, rd.EnqueueTime, true);
-                        continue;
-                    }
 
                     // Give plugins an early chance to enrich RequestData and decide whether
                     // request processing should continue.
