@@ -6,6 +6,7 @@ signature (RS256), ``aud``, ``iss``, ``tid`` (against an allowed set), and
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -17,6 +18,7 @@ from .userid import InternalUserIdProvider
 
 _PROVIDER = "entra"
 _JWKS_TTL_SECONDS = 3600
+_JWKS_FORCED_REFRESH_COOLDOWN_SECONDS = 60
 _ALLOWED_ALGS = ("RS256",)
 
 
@@ -50,12 +52,10 @@ class EntraAuthProvider:
         self._user_ids = user_ids or InternalUserIdProvider()
         self._http = http_client
         self._jwks_cache: dict[str, tuple[float, dict]] = {}
+        self._jwks_locks: dict[str, asyncio.Lock] = {}
+        self._jwks_last_forced_refresh: dict[str, float] = {}
 
-    async def _jwks(self, tenant_id: str) -> dict:
-        now = time.time()
-        cached = self._jwks_cache.get(tenant_id)
-        if cached and cached[0] > now:
-            return cached[1]
+    async def _fetch_jwks(self, tenant_id: str) -> dict:
         url = f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys"
         client = self._http or httpx.AsyncClient(timeout=10.0)
         try:
@@ -65,8 +65,44 @@ class EntraAuthProvider:
         finally:
             if self._http is None:
                 await client.aclose()
-        self._jwks_cache[tenant_id] = (now + _JWKS_TTL_SECONDS, keys)
+        self._jwks_cache[tenant_id] = (time.time() + _JWKS_TTL_SECONDS, keys)
         return keys
+
+    def _jwks_lock(self, tenant_id: str) -> asyncio.Lock:
+        lock = self._jwks_locks.get(tenant_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._jwks_locks[tenant_id] = lock
+        return lock
+
+    async def _jwks(self, tenant_id: str) -> dict:
+        now = time.time()
+        cached = self._jwks_cache.get(tenant_id)
+        if cached and cached[0] > now:
+            return cached[1]
+        async with self._jwks_lock(tenant_id):
+            cached = self._jwks_cache.get(tenant_id)
+            if cached and cached[0] > time.time():
+                return cached[1]
+            return await self._fetch_jwks(tenant_id)
+
+    async def _refresh_jwks(self, tenant_id: str, stale_keys: dict) -> dict:
+        """Refresh once per cooldown unless another waiter already replaced the keys."""
+        async with self._jwks_lock(tenant_id):
+            cached = self._jwks_cache.get(tenant_id)
+            if cached is not None and cached[1] is not stale_keys:
+                return cached[1]
+            now = time.time()
+            last_refresh = self._jwks_last_forced_refresh.get(tenant_id)
+            if (
+                last_refresh is not None
+                and now - last_refresh < _JWKS_FORCED_REFRESH_COOLDOWN_SECONDS
+            ):
+                return cached[1] if cached is not None else stale_keys
+            # Record the attempt before IO so an unavailable endpoint cannot be
+            # hammered by a stream of attacker-controlled unknown kids.
+            self._jwks_last_forced_refresh[tenant_id] = now
+            return await self._fetch_jwks(tenant_id)
 
     def _signing_key(self, token: str, jwks: dict) -> Any:
         """Resolve the RSA public key for ``token`` from a tenant JWKS by ``kid``.
@@ -97,7 +133,11 @@ class EntraAuthProvider:
         issuer = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
         try:
             # Select the signing key from the tenant JWKS by the token's ``kid``.
-            signing_key = self._signing_key(token, keys)
+            try:
+                signing_key = self._signing_key(token, keys)
+            except jwt.InvalidKeyError:
+                keys = await self._refresh_jwks(tenant_id, keys)
+                signing_key = self._signing_key(token, keys)
             # PyJWT's ``audience`` only accepts a single string, so we disable its
             # check (verify_aud=False) and validate the audience ourselves against
             # the set of accepted forms below. Signature (RS256 only), issuer, and

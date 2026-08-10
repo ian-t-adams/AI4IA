@@ -511,6 +511,12 @@ class DocumentIngestor:
                 "enrich: capping chunks %d -> %d id=%s", len(chunks), max_chunks, doc.id
             )
             chunks = chunks[:max_chunks]
+        if self._chunks is not None:
+            # A failed prior attempt can leave a subset of same-id chunks behind if
+            # its cleanup also failed. Require a truthful purge before any retry can
+            # become ready, including an empty/no-embedder retry that writes no
+            # replacement chunks.
+            await self._chunks.delete_document(user_id, doc.id)
         if not chunks or self._embedder is None or self._chunks is None:
             doc.chunkCount = 0
             return

@@ -237,6 +237,66 @@ async def test_context_block_best_effort_on_repo_failure():
     assert await svc.context_block("u1", "q", nonce="n4") == ""
 
 
+async def test_explicit_ids_resolve_owned_shared_public_and_skip_inaccessible():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    chunks = InMemoryDocChunkStore()
+    svc = _service(
+        library=library,
+        blob=blob,
+        chunks=chunks,
+        embedder=FakeEmbedder(),
+    )
+    owned = await _seed_doc(
+        library, blob, user="viewer", filename="owned.pdf", doc_id="owned"
+    )
+    shared = await _seed_doc(
+        library, blob, user="owner", filename="shared.pdf", doc_id="shared"
+    )
+    shared.visibility = Visibility.shared
+    shared.acl = ["viewer@example.com"]
+    await library.update_document(shared)
+    public = await _seed_doc(
+        library, blob, user="owner", filename="public.pdf", doc_id="public"
+    )
+    public.visibility = Visibility.public
+    await library.update_document(public)
+    private = await _seed_doc(
+        library, blob, user="owner", filename="private.pdf", doc_id="private"
+    )
+    for document, content in (
+        (owned, "OWNED CONTENT"),
+        (shared, "SHARED CONTENT"),
+        (public, "PUBLIC CONTENT"),
+        (private, "PRIVATE CONTENT"),
+    ):
+        await _add_chunk(chunks, document, content=content)
+
+    implicit = await svc.context_block(
+        "viewer",
+        "content",
+        nonce="implicit",
+        email="viewer@example.com",
+    )
+    explicit = await svc.context_block(
+        "viewer",
+        "content",
+        nonce="explicit",
+        email="viewer@example.com",
+        document_ids=["owned", "shared", "public", "private", "missing"],
+    )
+
+    assert "public.pdf" not in implicit
+    assert "owned.pdf" in explicit
+    assert "shared.pdf" in explicit
+    assert "public.pdf" in explicit
+    assert "OWNED CONTENT" in explicit
+    assert "SHARED CONTENT" in explicit
+    assert "PUBLIC CONTENT" in explicit
+    assert "private.pdf" not in explicit
+    assert "PRIVATE CONTENT" not in explicit
+
+
 # --- Tier 3: fetch_document ---
 async def test_fetch_document_returns_windowed_content():
     library = InMemoryDocumentLibraryRepository()

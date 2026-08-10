@@ -9,6 +9,7 @@ async job API so the poll loop is driven with a no-op sleep (no real delay).
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,6 +35,8 @@ class FakeVideoGateway:
 
     def __init__(self) -> None:
         self.error: ModelGatewayError | None = None
+        self.cancel_poll = False
+        self.cancel_download = False
         # By default the first poll already reports success.
         self.poll_statuses: list[dict] = [
             {"status": "succeeded", "generations": [{"id": "gen1"}]}
@@ -58,11 +61,15 @@ class FakeVideoGateway:
         return {"id": "job1", "status": "queued"}
 
     async def get_video_job(self, *, job_id, correlation_id=None):
+        if self.cancel_poll:
+            raise asyncio.CancelledError
         if len(self.poll_statuses) > 1:
             return self.poll_statuses.pop(0)
         return self.poll_statuses[0]
 
     async def get_video_content(self, *, generation_id, correlation_id=None):
+        if self.cancel_download:
+            raise asyncio.CancelledError
         return self.content
 
 
@@ -158,6 +165,184 @@ def test_handler_generates_persists_sinks_and_meters(client):
     assert summary["totalRequests"] >= 1
 
 
+def test_successful_provider_attempt_is_metered_once_as_complete(client):
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with patch.object(
+        client.app.state.usage,
+        "record_completion",
+        new_callable=AsyncMock,
+    ) as meter:
+        _, handlers = _build_capability(client, uid, sink)
+        out = asyncio.run(
+            handlers[GENERATE_VIDEO_TOOL_NAME](
+                {"prompt": "a kite", "model": "sora-2"},
+                ToolContext(),
+            )
+        )
+
+    assert out["status"] == "generated"
+    meter.assert_awaited_once()
+    assert meter.await_args.kwargs["status"] == "complete"
+    assert meter.await_args.kwargs["provider_completed"] is True
+
+
+def test_blob_failure_is_metered_once_as_error(client):
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with (
+        patch.object(
+            client.app.state.video_artifacts,
+            "put",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("blob down"),
+        ),
+        patch.object(
+            client.app.state.usage,
+            "record_completion",
+            new_callable=AsyncMock,
+        ) as meter,
+    ):
+        _, handlers = _build_capability(client, uid, sink)
+        out = asyncio.run(
+            handlers[GENERATE_VIDEO_TOOL_NAME](
+                {"prompt": "a kite", "model": "sora-2"},
+                ToolContext(),
+            )
+        )
+
+    assert out == {"error": "Generated video could not be stored."}
+    assert sink == []
+    meter.assert_awaited_once()
+    assert meter.await_args.kwargs["status"] == "error"
+    assert meter.await_args.kwargs["provider_completed"] is True
+
+
+def test_post_provider_empty_video_is_metered_once_as_error(client):
+    client.app.state.gateway.content = b""
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with patch.object(
+        client.app.state.usage,
+        "record_completion",
+        new_callable=AsyncMock,
+    ) as meter:
+        _, handlers = _build_capability(client, uid, sink)
+        out = asyncio.run(
+            handlers[GENERATE_VIDEO_TOOL_NAME](
+                {"prompt": "a kite", "model": "sora-2"},
+                ToolContext(),
+            )
+        )
+
+    assert out == {"error": "Video generation returned no content."}
+    assert sink == []
+    meter.assert_awaited_once()
+    assert meter.await_args.kwargs["status"] == "error"
+    assert meter.await_args.kwargs["provider_completed"] is True
+
+
+def test_terminal_success_then_download_cancel_is_metered_once(client):
+    client.app.state.gateway.cancel_download = True
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with patch.object(
+        client.app.state.usage,
+        "record_completion",
+        new_callable=AsyncMock,
+    ) as meter:
+        _, handlers = _build_capability(client, uid, sink)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                handlers[GENERATE_VIDEO_TOOL_NAME](
+                    {"prompt": "a kite", "model": "sora-2"},
+                    ToolContext(),
+                )
+            )
+
+    assert sink == []
+    meter.assert_awaited_once()
+    assert meter.await_args.kwargs["status"] == "cancelled"
+    assert meter.await_args.kwargs["provider_completed"] is True
+
+
+def test_pre_terminal_poll_cancel_is_not_metered(client):
+    client.app.state.gateway.cancel_poll = True
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with patch.object(
+        client.app.state.usage,
+        "record_completion",
+        new_callable=AsyncMock,
+    ) as meter:
+        _, handlers = _build_capability(client, uid, sink)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                handlers[GENERATE_VIDEO_TOOL_NAME](
+                    {"prompt": "a kite", "model": "sora-2"},
+                    ToolContext(),
+                )
+            )
+
+    assert sink == []
+    meter.assert_not_awaited()
+
+
+def test_blob_cancellation_is_metered_once_as_cancelled(client):
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with (
+        patch.object(
+            client.app.state.video_artifacts,
+            "put",
+            new_callable=AsyncMock,
+            side_effect=asyncio.CancelledError,
+        ),
+        patch.object(
+            client.app.state.usage,
+            "record_completion",
+            new_callable=AsyncMock,
+        ) as meter,
+    ):
+        _, handlers = _build_capability(client, uid, sink)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                handlers[GENERATE_VIDEO_TOOL_NAME](
+                    {"prompt": "a kite", "model": "sora-2"},
+                    ToolContext(),
+                )
+            )
+
+    assert sink == []
+    meter.assert_awaited_once()
+    assert meter.await_args.kwargs["status"] == "cancelled"
+    assert meter.await_args.kwargs["provider_completed"] is True
+
+
+def test_metering_cancellation_happens_after_attachment_commit(client):
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with patch.object(
+        client.app.state.usage,
+        "record_completion",
+        new_callable=AsyncMock,
+        side_effect=asyncio.CancelledError,
+    ) as meter:
+        _, handlers = _build_capability(client, uid, sink)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                handlers[GENERATE_VIDEO_TOOL_NAME](
+                    {"prompt": "a kite", "model": "sora-2"},
+                    ToolContext(),
+                )
+            )
+
+    assert len(sink) == 1
+    meter.assert_awaited_once()
+    assert meter.await_args.kwargs["status"] == "complete"
+    assert meter.await_args.kwargs["provider_completed"] is True
+
+
 def test_handler_defaults_size_and_seconds(client):
     headers = {"X-Dev-User": "ian"}
     uid = _internal_id(client, headers)
@@ -212,12 +397,20 @@ def test_handler_surfaces_sanitized_upstream_error(client):
     uid = _internal_id(client, headers)
     client.app.state.gateway.error = ModelGatewayError(400, "content policy: nope")
     sink: list[MessageAttachment] = []
-    _, handlers = _build_capability(client, uid, sink)
-    out = asyncio.run(
-        handlers[GENERATE_VIDEO_TOOL_NAME]({"prompt": "x", "model": "sora-2"}, ToolContext())
-    )
+    with patch.object(
+        client.app.state.usage,
+        "record_completion",
+        new_callable=AsyncMock,
+    ) as meter:
+        _, handlers = _build_capability(client, uid, sink)
+        out = asyncio.run(
+            handlers[GENERATE_VIDEO_TOOL_NAME](
+                {"prompt": "x", "model": "sora-2"}, ToolContext()
+            )
+        )
     assert "error" in out
     assert sink == []
+    meter.assert_not_awaited()
 
 
 # ---- service-level orchestration ----

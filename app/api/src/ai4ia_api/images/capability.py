@@ -24,6 +24,7 @@ by fetching the bytes from the authenticated serve endpoint.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from collections.abc import Awaitable, Callable
@@ -34,6 +35,7 @@ from ..agents.tool_exec import ToolContext
 from ..catalog import ModelCatalog
 from ..entitlements.service import EntitlementService
 from ..sessions.models import MessageAttachment
+from ..usage.models import UsageStatus
 from ..usage.service import UsageService
 from .artifacts import ImageArtifactStore
 from .service import ImageGenerationError, ImageGenerationService
@@ -164,47 +166,65 @@ def build_image_capability(
                 correlation_id=ctx.correlation_id,
             )
         except ImageGenerationError as exc:
+            if exc.provider_completion is not None:
+                completion = exc.provider_completion
+                await metering.record_completion(
+                    user_id=user_id,
+                    session_id=session_id,
+                    model_id=completion.model_id,
+                    deployment=completion.deployment,
+                    usage=completion.usage,
+                    status="error",
+                    provider_completed=True,
+                    correlation_id=ctx.correlation_id,
+                )
             return {"error": _one_line(exc.detail)}
         except Exception:  # noqa: BLE001 - a tool must never crash the turn
             logger.warning("generate_image unexpected error user=%s", user_id, exc_info=True)
             return {"error": "Image generation failed."}
 
+        meter_status: UsageStatus = "error"
         try:
-            raw = base64.b64decode(result.images_b64[0])
-        except Exception:  # noqa: BLE001
-            logger.warning("generate_image decode error user=%s", user_id, exc_info=True)
-            return {"error": "Generated image could not be decoded."}
+            try:
+                raw = base64.b64decode(result.images_b64[0])
+            except Exception:  # noqa: BLE001
+                logger.warning("generate_image decode error user=%s", user_id, exc_info=True)
+                return {"error": "Generated image could not be decoded."}
 
-        artifact_id = uuid4().hex
-        try:
-            await artifact_store.put(user_id, artifact_id, raw)
-        except Exception:  # noqa: BLE001
-            logger.warning("generate_image store error user=%s", user_id, exc_info=True)
-            return {"error": "Generated image could not be stored."}
-
-        # Meter the call so rolling rate/token windows include tool-driven image
-        # usage. Best-effort: record_completion never raises.
-        await metering.record_completion(
-            user_id=user_id,
-            session_id=session_id,
-            model_id=result.model_id,
-            deployment=result.deployment,
-            usage=result.usage,
-            status="complete",
-            correlation_id=ctx.correlation_id,
-        )
-
-        sink.append(
-            MessageAttachment(
-                id=artifact_id,
-                kind="image",
-                mimeType="image/png",
-                prompt=prompt[:_PROMPT_KEEP],
-                model=result.model_id,
-                size=result.size,
-                quality=result.quality,
+            artifact_id = uuid4().hex
+            try:
+                await artifact_store.put(user_id, artifact_id, raw)
+            except asyncio.CancelledError:
+                meter_status = "cancelled"
+                raise
+            except Exception:  # noqa: BLE001
+                logger.warning("generate_image store error user=%s", user_id, exc_info=True)
+                return {"error": "Generated image could not be stored."}
+            sink.append(
+                MessageAttachment(
+                    id=artifact_id,
+                    kind="image",
+                    mimeType="image/png",
+                    prompt=prompt[:_PROMPT_KEEP],
+                    model=result.model_id,
+                    size=result.size,
+                    quality=result.quality,
+                )
             )
-        )
+            meter_status = "complete"
+        finally:
+            # Provider work remains chargeable when local decode/persistence fails.
+            await metering.record_completion(
+                user_id=user_id,
+                session_id=session_id,
+                model_id=result.model_id,
+                deployment=result.deployment,
+                usage=result.usage,
+                status=meter_status,
+                provider_completed=True,
+                correlation_id=ctx.correlation_id,
+            )
+
         return {
             "status": "generated",
             "artifact_id": artifact_id,

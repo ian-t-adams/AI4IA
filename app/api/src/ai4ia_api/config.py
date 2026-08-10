@@ -53,6 +53,14 @@ class GatewayAuthMode(str, Enum):
     bearer = "bearer"
 
 
+_DIRECT_MODEL_GATEWAY_HOST_SUFFIXES = (
+    "openai.azure.com",
+    "services.ai.azure.com",
+    "cognitiveservices.azure.com",
+    "azure-api.net",
+)
+
+
 class SessionStoreKind(str, Enum):
     memory = "memory"
     cosmos = "cosmos"
@@ -96,6 +104,9 @@ class Settings(BaseSettings):
     model_gateway_auth_mode: GatewayAuthMode = GatewayAuthMode.none
     model_gateway_api_key: str | None = None
     model_gateway_api_key_header: str = "Ocp-Apim-Subscription-Key"
+    # Server/IaC-owned comma-separated proxy ingress hostnames. Production accepts
+    # the model gateway only when its normalized host exactly matches this set.
+    model_gateway_allowed_hosts: str | None = None
     gateway_provider_style: GatewayProviderStyle = GatewayProviderStyle.azure_openai_native
     gateway_api_version: str = "2025-04-01-preview"
     gateway_timeout_seconds: float = 120.0
@@ -692,6 +703,15 @@ class Settings(BaseSettings):
         return [t.strip() for t in raw.split(",") if t.strip()]
 
     @property
+    def model_gateway_allowed_host_set(self) -> set[str]:
+        raw = self.model_gateway_allowed_hosts or ""
+        return {
+            host.strip().lower().rstrip(".")
+            for host in raw.split(",")
+            if host.strip().rstrip(".")
+        }
+
+    @property
     def auth_provider_is_spoofable(self) -> bool:
         """True when the wired identity is client-controlled and untrustworthy.
 
@@ -879,6 +899,49 @@ class Settings(BaseSettings):
             "single tenant."
         )
 
+    def _validate_model_gateway_posture(self) -> None:
+        """Require the deployed HTTP/SSE path to terminate at SimpleL7Proxy."""
+        if self.env != Environment.prod:
+            return
+
+        parsed = urlparse(self.model_gateway_url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        allowed_hosts = self.model_gateway_allowed_host_set
+        direct_host = any(
+            host == suffix or host.endswith(f".{suffix}")
+            for suffix in _DIRECT_MODEL_GATEWAY_HOST_SUFFIXES
+        )
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path.rstrip("/") != "/openai"
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+            or direct_host
+            or not allowed_hosts
+            or host not in allowed_hosts
+        ):
+            raise RuntimeError(
+                "AI4IA_MODEL_GATEWAY_URL must be the server-owned SimpleL7Proxy "
+                "HTTPS /openai ingress named by AI4IA_MODEL_GATEWAY_ALLOWED_HOSTS "
+                "in prod; unowned, direct Foundry, Azure OpenAI, and APIM model "
+                "endpoints are not permitted."
+            )
+        if (
+            self.model_gateway_auth_mode != GatewayAuthMode.api_key
+            or not self.model_gateway_api_key
+            or self.model_gateway_api_key_header.strip().lower() != "s7p-key"
+        ):
+            raise RuntimeError(
+                "The production model gateway must use the server-owned "
+                "SimpleL7Proxy ingress credential "
+                "(AI4IA_MODEL_GATEWAY_AUTH_MODE=api_key and "
+                "AI4IA_MODEL_GATEWAY_API_KEY_HEADER=S7P-KEY)."
+            )
+
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
         self._validate_data_residency()
@@ -901,6 +964,7 @@ class Settings(BaseSettings):
                 "Model gateway auth must not be 'none' in prod. Configure "
                 "AI4IA_MODEL_GATEWAY_AUTH_MODE=api_key|bearer."
             )
+        self._validate_model_gateway_posture()
         if (
             self.model_gateway_auth_mode == GatewayAuthMode.api_key
             and not self.model_gateway_api_key

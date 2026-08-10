@@ -11,7 +11,7 @@ from ai4ia_api.library.blob_store import (
     blob_path,
     document_prefix,
 )
-from ai4ia_api.library.doc_chunks import InMemoryDocChunkStore
+from ai4ia_api.library.doc_chunks import DocChunkRecord, InMemoryDocChunkStore
 from ai4ia_api.library.ingest import DocumentIngestor, resolve_cu_analyzer_id
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
 from ai4ia_api.library.models import (
@@ -200,6 +200,120 @@ async def test_enrich_cu_failure_degrades_to_failed_and_meters_error(monkeypatch
     assert usage.calls[0]["status"] == "error"
     assert events[-1][0] == "document_ingest_terminal"
     assert events[-1][1]["status"] == "failed"
+
+
+async def test_enrich_partial_chunk_write_fails_and_purges_searchable_chunks():
+    class PartiallyFailingChunkStore(InMemoryDocChunkStore):
+        async def add_many(self, records, vectors):
+            await super().add_many(records[:1], vectors[:1])
+            raise RuntimeError("partial indexing failure")
+
+    library = InMemoryDocumentLibraryRepository()
+    usage = FakeUsage()
+    chunks = PartiallyFailingChunkStore(expected_dim=3)
+    ingestor = _make(
+        cu=FakeCU(result=_succeeded("# T\n\n" + ("word " * 30))),
+        embedder=FakeEmbedder(),
+        chunks=chunks,
+        usage=usage,
+        library=library,
+    )
+    stored = await ingestor.ingest(
+        user_id="u1",
+        filename="d.pdf",
+        content_type="application/pdf",
+        data=b"X",
+    )
+
+    await ingestor.enrich(
+        user_id="u1",
+        document_id=stored.document.id,
+        data=b"X",
+        content_type="application/pdf",
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc.status == DocumentStatus.failed
+    assert "partial indexing failure" in (doc.error or "")
+    assert usage.calls[0]["status"] == "error"
+    assert await chunks.search("u1", [1.0, 1.0, 0.0], top_k=50) == []
+
+
+async def test_enrich_never_reindexes_when_stale_chunk_cleanup_fails():
+    class CleanupFailingChunkStore(InMemoryDocChunkStore):
+        def __init__(self) -> None:
+            super().__init__(expected_dim=3)
+            self.add_calls = 0
+
+        async def delete_document(self, user_id, document_id):
+            raise RuntimeError("stale chunk cleanup failed")
+
+        async def add_many(self, records, vectors):
+            self.add_calls += 1
+            await super().add_many(records, vectors)
+
+    library = InMemoryDocumentLibraryRepository()
+    chunks = CleanupFailingChunkStore()
+    ingestor = _make(
+        cu=FakeCU(result=_succeeded("# T\n\n" + ("word " * 30))),
+        embedder=FakeEmbedder(),
+        chunks=chunks,
+        library=library,
+    )
+    stored = await ingestor.ingest(
+        user_id="u1",
+        filename="d.pdf",
+        content_type="application/pdf",
+        data=b"X",
+    )
+
+    await ingestor.enrich(
+        user_id="u1",
+        document_id=stored.document.id,
+        data=b"X",
+        content_type="application/pdf",
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc.status == DocumentStatus.failed
+    assert "stale chunk cleanup failed" in (doc.error or "")
+    assert chunks.add_calls == 0
+
+
+async def test_enrich_empty_result_purges_stale_chunks_before_ready():
+    library = InMemoryDocumentLibraryRepository()
+    chunks = InMemoryDocChunkStore(expected_dim=3)
+    ingestor = _make(
+        cu=FakeCU(result=_succeeded("")),
+        embedder=FakeEmbedder(),
+        chunks=chunks,
+        library=library,
+    )
+    stored = await ingestor.ingest(
+        user_id="u1",
+        filename="d.pdf",
+        content_type="application/pdf",
+        data=b"X",
+    )
+    stale = DocChunkRecord(
+        user_id="u1",
+        document_id=stored.document.id,
+        chunk_index=0,
+        content="STALE CONTENT",
+    )
+    await chunks.add_many([stale], [[1.0, 0.0, 0.0]])
+
+    await ingestor.enrich(
+        user_id="u1",
+        document_id=stored.document.id,
+        data=b"X",
+        content_type="application/pdf",
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc.status == DocumentStatus.ready
+    assert doc.chunkCount == 0
+    assert await chunks.search("u1", [1.0, 0.0, 0.0], top_k=10) == []
 
 
 async def test_enrich_failed_status_result_degrades():

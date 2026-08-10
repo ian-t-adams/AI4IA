@@ -220,7 +220,14 @@ class CodeInterpreterClient:
                 raise CodeInterpreterError(resp.status_code, "non-JSON response") from exc
             if not isinstance(body, dict):
                 raise CodeInterpreterError(resp.status_code, "unexpected response shape")
-            return parse_response(body)
+            result = parse_response(body)
+            if not result.succeeded:
+                status = result.status.strip() or "missing"
+                raise CodeInterpreterError(
+                    resp.status_code,
+                    f"response did not complete successfully (status={status})",
+                )
+            return result
         finally:
             if owned:
                 await client.aclose()

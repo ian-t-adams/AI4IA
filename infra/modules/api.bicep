@@ -28,8 +28,11 @@ param acrLoginServer string
 @description('Container image for the api; azd replaces the default with the built app/api image.')
 param apiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
-@description('Model gateway base URL (APIM front door + /openai).')
+@description('Model gateway base URL (SimpleL7Proxy front door + /openai).')
 param modelGatewayUrl string
+
+@description('Comma-separated SimpleL7Proxy ingress hostnames the API may call in production.')
+param modelGatewayAllowedHosts string
 
 @description('Inbound auth mode the api uses when calling the model gateway (none|api_key|bearer). Must not be none in prod.')
 @allowed([
@@ -700,6 +703,10 @@ var apiEnv = concat([
   {
     name: 'AI4IA_MODEL_GATEWAY_URL'
     value: modelGatewayUrl
+  }
+  {
+    name: 'AI4IA_MODEL_GATEWAY_ALLOWED_HOSTS'
+    value: modelGatewayAllowedHosts
   }
   {
     name: 'AI4IA_MODEL_GATEWAY_AUTH_MODE'

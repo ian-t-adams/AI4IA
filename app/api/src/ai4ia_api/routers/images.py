@@ -103,6 +103,18 @@ async def generate_images(
             correlation_id=correlation_id,
         )
     except ImageGenerationError as exc:
+        if exc.provider_completion is not None:
+            completion = exc.provider_completion
+            await metering.record_completion(
+                user_id=user.internal_user_id,
+                session_id="image-generation",
+                model_id=completion.model_id,
+                deployment=completion.deployment,
+                usage=completion.usage,
+                status="error",
+                provider_completed=True,
+                correlation_id=correlation_id,
+            )
         headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
         raise HTTPException(
             status_code=exc.status_code, detail=exc.detail, headers=headers

@@ -136,6 +136,12 @@ Normal HTTP/SSE traffic uses
 catalog and routing setup; they rewrite region-specific deployment names and
 reject unknown deployments rather than falling back.
 
+In production, `AI4IA_MODEL_GATEWAY_ALLOWED_HOSTS` is the server-owned,
+comma-separated allowlist of exact SimpleL7Proxy ingress hostnames. IaC derives
+the Container Apps FQDN and adds the configured proxy custom domain; startup
+rejects any model gateway host outside that set, even when it otherwise has a
+valid HTTPS `/openai` shape and the proxy-only `S7P-KEY` header.
+
 Per-model `reasoning_effort` is also catalog-driven. The API only exposes and
 forwards values listed in `infra/models.json` `reasoningEffort`; APIM now treats
 unsupported-value 400s as permanent provider errors and returns the upstream

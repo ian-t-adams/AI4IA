@@ -67,6 +67,51 @@ class _FailSemanticSearchClient(_FakeSearchClient):
         return _FakeResults(self.results)
 
 
+class _IndexingResult:
+    def __init__(
+        self,
+        key: str,
+        *,
+        succeeded: bool,
+        status_code: int,
+        error_message: str | None = None,
+    ) -> None:
+        self.key = key
+        self.succeeded = succeeded
+        self.status_code = status_code
+        self.error_message = error_message
+
+
+class _PartialIndexSearchClient(_FakeSearchClient):
+    async def merge_or_upload_documents(self, documents):
+        docs = list(documents)
+        self.uploaded.append(docs)
+        return [
+            _IndexingResult(docs[0]["key"], succeeded=True, status_code=200),
+            _IndexingResult(
+                docs[1]["key"],
+                succeeded=False,
+                status_code=503,
+                error_message="service unavailable",
+            ),
+        ]
+
+
+class _PartialDeleteSearchClient(_FakeSearchClient):
+    async def delete_documents(self, documents):
+        docs = list(documents)
+        self.deleted.append(docs)
+        return [
+            _IndexingResult(docs[0]["key"], succeeded=True, status_code=200),
+            _IndexingResult(
+                docs[1]["key"],
+                succeeded=False,
+                status_code=503,
+                error_message="delete unavailable",
+            ),
+        ]
+
+
 class _FakeIndexClient:
     def __init__(self):
         self.created: list = []
@@ -135,6 +180,31 @@ async def test_add_many_uploads_encoded_documents():
     assert doc["speaker"] == "S1"
     assert doc["embedding"] == [0.1, 0.2, 0.3]
     assert isinstance(doc["created_at"], str)
+
+
+async def test_add_many_accepts_when_every_indexing_result_succeeds():
+    search_client = _FakeSearchClient()
+    store = _store(search_client=search_client)
+
+    await store.add_many(
+        [_rec(index=0), _rec(index=1)],
+        [[0.1, 0.2, 0.3], [0.3, 0.2, 0.1]],
+    )
+
+    assert len(search_client.uploaded[0]) == 2
+
+
+async def test_add_many_raises_when_any_indexing_result_fails():
+    search_client = _PartialIndexSearchClient()
+    store = _store(search_client=search_client)
+
+    with pytest.raises(RuntimeError, match=r"indexed 1/2.*service unavailable"):
+        await store.add_many(
+            [_rec(index=0), _rec(index=1)],
+            [[0.1, 0.2, 0.3], [0.3, 0.2, 0.1]],
+        )
+
+    assert len(search_client.uploaded[0]) == 2
 
 
 async def test_add_many_length_mismatch_raises():
@@ -228,6 +298,18 @@ async def test_delete_document_collects_keys_then_deletes():
     call = search_client.search_calls[0]
     assert call["filter"] == "user_id eq 'u1' and document_id eq 'd1'"
     assert call["select"] == ["key"]
+    assert search_client.deleted == [[{"key": "k1"}, {"key": "k2"}]]
+
+
+async def test_delete_document_raises_when_any_indexing_result_fails():
+    search_client = _PartialDeleteSearchClient(
+        results=[{"key": "k1"}, {"key": "k2"}]
+    )
+    store = _store(search_client=search_client)
+
+    with pytest.raises(RuntimeError, match=r"deleted 1/2.*delete unavailable"):
+        await store.delete_document("u1", "d1")
+
     assert search_client.deleted == [[{"key": "k1"}, {"key": "k2"}]]
 
 

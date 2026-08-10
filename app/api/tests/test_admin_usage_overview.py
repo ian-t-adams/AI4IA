@@ -282,6 +282,7 @@ def test_rollup_projection_covers_exactly_the_fields_the_aggregates_read():
         "provider",
         "status",
         "billable",
+        "providerCompleted",
         "usageKnown",
         "costKnown",
         "createdAt",
@@ -351,6 +352,7 @@ def test_projected_row_defaults_old_documents_without_optional_fields():
         )
     )
     assert row == reference
+    assert row.providerCompleted is True
     assert row.provider == "azure_openai"
     assert (row.agent, row.deployment, row.region, row.dataZone) == (None, None, None, None)
     assert (row.usageKnown, row.costKnown, row.billable) == (False, False, False)

@@ -24,13 +24,15 @@ class FakeImageGateway:
     def __init__(self) -> None:
         self.error: ModelGatewayError | None = None
         self.usage: dict | None = {"input_tokens": 10, "output_tokens": 100, "total_tokens": 110}
+        self.empty = False
         self.calls: list[dict] = []
 
     async def generate_image(self, *, deployment, prompt, size=None, n=1, extra=None, correlation_id=None):
         self.calls.append({"deployment": deployment, "prompt": prompt, "size": size, "n": n})
         if self.error is not None:
             raise self.error
-        return {"data": [{"b64_json": TINY_PNG_B64} for _ in range(n)], "usage": self.usage}
+        data = [] if self.empty else [{"b64_json": TINY_PNG_B64} for _ in range(n)]
+        return {"data": data, "usage": self.usage}
 
 
 def _client(**settings_overrides) -> TestClient:
@@ -223,3 +225,36 @@ def test_successful_image_is_metered(client):
     assert summary["totalRequests"] >= 1
     # Token usage from the image response is captured (input+output mapped).
     assert summary["totalTokens"] >= 110
+
+
+def test_provider_completed_empty_image_is_metered_once_as_error(client):
+    headers = {"X-Dev-User": "empty-image"}
+    client.app.state.gateway.empty = True
+
+    response = client.post(
+        "/api/images/generations",
+        json={"prompt": "x", "model": "gpt-image-2"},
+        headers=headers,
+    )
+    summary = client.get("/api/usage", headers=headers).json()
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Image generation returned no image."
+    assert summary["totalRequests"] == 1
+    assert summary["totalTokens"] == 110
+    assert summary["billableRequests"] == 1
+
+
+def test_pre_provider_image_failure_is_not_metered(client):
+    headers = {"X-Dev-User": "rejected-image"}
+    client.app.state.gateway.error = ModelGatewayError(400, "request rejected")
+
+    response = client.post(
+        "/api/images/generations",
+        json={"prompt": "x", "model": "gpt-image-2"},
+        headers=headers,
+    )
+    summary = client.get("/api/usage", headers=headers).json()
+
+    assert response.status_code == 400
+    assert summary["totalRequests"] == 0

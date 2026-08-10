@@ -888,7 +888,12 @@ resource proxyDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-prev
   }
 }
 
-var proxyUrl = 'https://${proxyApp.properties.configuration.ingress.fqdn}'
+var proxyFqdn = toLower(proxyApp.properties.configuration.ingress.fqdn)
+var proxyUrl = 'https://${proxyFqdn}'
+var effectiveProxyIngressHosts = union(
+  [ proxyFqdn ],
+  empty(trim(customDomain)) ? [] : [ toLower(trim(customDomain)) ]
+)
 
 output proxyAppName string = proxyApp.name
 output proxyUrl string = proxyUrl
@@ -897,6 +902,7 @@ output modelGatewayUrl string = '${sharedApimGatewayUrl}/openai'
 @secure()
 output modelGatewayKey string = sharedProxyModelSubscription.listSecrets().primaryKey
 output proxyIngressUrl string = '${proxyUrl}/openai'
+output proxyIngressHosts string = join(effectiveProxyIngressHosts, ',')
 @secure()
 output proxyIngressKey string = sharedProxyIngressSubscription.listSecrets().primaryKey
 output realtimeGatewayUrl string = '${sharedApimGatewayUrl}/openai'

@@ -22,62 +22,6 @@ from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
-
-_DDL_EXTENSION = "CREATE EXTENSION IF NOT EXISTS vector"
-_DDL_TABLE = (
-    "CREATE TABLE IF NOT EXISTS doc_chunks ("
-    "id text PRIMARY KEY, "
-    "user_id text NOT NULL, "
-    "document_id text NOT NULL, "
-    "chunk_index int NOT NULL, "
-    "content text NOT NULL, "
-    "heading text, "
-    "char_start int, "
-    "char_end int, "
-    "start_ms int, "
-    "end_ms int, "
-    "speaker text, "
-    "embedding vector({dim}) NOT NULL, "
-    "created_at timestamptz NOT NULL DEFAULT now()"
-    ")"
-)
-_DDL_USER_INDEX = "CREATE INDEX IF NOT EXISTS doc_chunks_user_idx ON doc_chunks (user_id)"
-_DDL_DOC_INDEX = (
-    "CREATE INDEX IF NOT EXISTS doc_chunks_doc_idx ON doc_chunks (user_id, document_id)"
-)
-# Additive migrations so an older doc_chunks table gains the
-# audio/video time-grounding columns without a destructive recreate.
-_DDL_ALTERS = (
-    "ALTER TABLE doc_chunks ADD COLUMN IF NOT EXISTS start_ms int",
-    "ALTER TABLE doc_chunks ADD COLUMN IF NOT EXISTS end_ms int",
-    "ALTER TABLE doc_chunks ADD COLUMN IF NOT EXISTS speaker text",
-)
-
-_INSERT = (
-    "INSERT INTO doc_chunks "
-    "(id, user_id, document_id, chunk_index, content, heading, char_start, char_end, "
-    "start_ms, end_ms, speaker, embedding, created_at) "
-    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::vector, $13) "
-    "ON CONFLICT (id) DO NOTHING"
-)
-# Cosine similarity = 1 - distance, scoped to user_id and (optionally) a set of
-# document ids. $4 NULL => no document filter. Deterministic tie-break for tests.
-_SEARCH = (
-    "SELECT id, user_id, document_id, chunk_index, content, heading, char_start, "
-    "char_end, start_ms, end_ms, speaker, created_at, "
-    "1 - (embedding <=> $2::vector) AS score "
-    "FROM doc_chunks "
-    "WHERE user_id = $1 AND ($4::text[] IS NULL OR document_id = ANY($4)) "
-    "ORDER BY embedding <=> $2::vector, document_id, chunk_index "
-    "LIMIT $3"
-)
-_DELETE_DOCUMENT = (
-    "WITH deleted AS ("
-    "DELETE FROM doc_chunks WHERE user_id = $1 AND document_id = $2 RETURNING 1"
-    ") SELECT count(*) FROM deleted"
-)
-
-
 @dataclass(slots=True)
 class DocChunkRecord:
     user_id: str

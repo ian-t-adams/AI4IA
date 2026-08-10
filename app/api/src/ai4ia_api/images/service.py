@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 from ..catalog import DeploymentOption, ModelCatalog
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
-from ..usage.models import TokenUsage
+from ..usage.models import ProviderCompletion, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +50,19 @@ class ImageGenerationError(Exception):
     optional ``retry_after`` seconds is set for rate-limit (429) cases.
     """
 
-    def __init__(self, status_code: int, detail: str, *, retry_after: int | None = None) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        *,
+        retry_after: int | None = None,
+        provider_completion: ProviderCompletion | None = None,
+    ) -> None:
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
         self.retry_after = retry_after
+        self.provider_completion = provider_completion
 
 
 @dataclass(frozen=True)
@@ -208,13 +216,30 @@ class ImageGenerationService:
             raise ImageGenerationError(502, "Image generation failed.") from exc
 
         data = result.get("data") or []
-        images = [d["b64_json"] for d in data if d.get("b64_json")]
+        completion = ProviderCompletion(
+            model_id=model_id,
+            deployment=deployment,
+            usage=image_token_usage(result.get("usage")),
+        )
+        images = [
+            d["b64_json"]
+            for d in data
+            if isinstance(d, dict) and d.get("b64_json")
+        ]
         if not images:
-            raise ImageGenerationError(502, "Image generation returned no image.")
+            raise ImageGenerationError(
+                502,
+                "Image generation returned no image.",
+                provider_completion=completion,
+            )
 
         total_b64 = sum(len(b) for b in images)
         if total_b64 > MAX_TOTAL_B64_CHARS:
-            raise ImageGenerationError(502, "Generated image was unexpectedly large.")
+            raise ImageGenerationError(
+                502,
+                "Generated image was unexpectedly large.",
+                provider_completion=completion,
+            )
 
         return ImageGenerationResult(
             model_id=model_id,
@@ -222,5 +247,5 @@ class ImageGenerationService:
             size=resolved_size,
             quality=resolved_quality,
             images_b64=images,
-            usage=image_token_usage(result.get("usage")),
+            usage=completion.usage,
         )
