@@ -203,13 +203,14 @@ class DocumentationTruthTests(unittest.TestCase):
         self.assertIn("production environment variables", workflow)
         self.assertNotIn("repository or production-environment variable", workflow)
         self.assertIn(
-            "gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT --env production",
+            "PRODUCTION_PROJECT_ENDPOINT: ${{ vars.AZURE_FOUNDRY_PROJECT_ENDPOINT }}",
             workflow,
         )
         self.assertIn(
-            'echo "AZURE_FOUNDRY_PROJECT_ENDPOINT=$endpoint" >> "$GITHUB_ENV"',
+            'echo "AZURE_FOUNDRY_PROJECT_ENDPOINT=$PRODUCTION_PROJECT_ENDPOINT" >> "$GITHUB_ENV"',
             workflow,
         )
+        self.assertNotIn("gh variable get", workflow)
         self.assertNotRegex(
             workflow,
             r"(?m)^\s{4}env:\s*\n\s+AZURE_FOUNDRY_PROJECT_ENDPOINT:",
@@ -331,10 +332,11 @@ class DocumentationTruthTests(unittest.TestCase):
         changelog = read("CHANGELOG.md")
         self.assertIn("a merge,", changelog)
         self.assertIn("workflow deployment, and GitHub release/tag are distinct events", changelog)
-        self.assertIn("For\n  text chat completions", changelog)
+        normalized = " ".join(changelog.split())
+        self.assertIn("For text chat completions", normalized)
         self.assertIn(
             "This evidence does not cover image, video, or Voice Live modalities",
-            changelog,
+            normalized,
         )
         self.assertNotRegex(changelog, r"(?i)every category on every turn")
 

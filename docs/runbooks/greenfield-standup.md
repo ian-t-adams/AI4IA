@@ -536,9 +536,9 @@ For GitHub reconciliation, Bicep grants that role to the nonempty
 Keep the established order: the deploy workflow provisions RBAC first, then the
 Foundry-assets workflow reconciles the toolbox with the same OIDC identity. Set
 the endpoint as the authoritative `production` environment variable. Do not keep
-a same-named repository variable: the job declares `environment: production`, so
-the environment value wins and an old repository value can mislead an operator
-without affecting the run.
+a same-named repository variable: step-time resolution uses the environment value
+when present, but a missing environment value can fall back to repository scope.
+The check/cleanup below prevents a stale fallback from becoming effective.
 
 ```powershell
 $repoEndpoint = gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT 2>$null

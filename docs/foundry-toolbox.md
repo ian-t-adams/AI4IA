@@ -299,11 +299,12 @@ but adding runtime MCP resource support is separate work.
    push to `main`, `.github/workflows/foundry-assets.yml` checks out the exact deployed
    `workflow_run.head_sha` and reconciles assets. It has no direct push trigger, so it cannot race
    ahead of project creation or Foundry User role propagation. Manual dispatch remains available.
-   Both paths authenticate with OIDC, read `AZURE_FOUNDRY_PROJECT_ENDPOINT` from a repository or
-   production-environment variable, first verify project-scoped Foundry User, then ensure
+   Both paths authenticate with OIDC, read `AZURE_FOUNDRY_PROJECT_ENDPOINT` from
+   the protected `production` environment at step execution, first verify project-scoped Foundry User, then ensure
    `ai4ia-toolbox`. `main.bicep` includes `deploymentPrincipalId` in the primary project's
    assignments; the preflight still fails with remediation if that grant has not reconciled.
-   Unchanged runs are no-ops.
+   A same-named repository variable is forbidden and the greenfield runbook
+   detects/deletes it before dispatch. Unchanged runs are no-ops.
 
 6. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
    and regenerate the packaged runtime catalog:

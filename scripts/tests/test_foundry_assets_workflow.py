@@ -59,7 +59,7 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
     def test_uses_oidc_and_the_production_environment_project_endpoint(self) -> None:
         self.assertEqual(
             self.document["permissions"],
-            {"id-token": "write", "contents": "read", "actions": "read"},
+            {"id-token": "write", "contents": "read"},
         )
         self.assertNotIn("env", self.job)
         self.assertEqual(self.job["environment"], "production")
@@ -73,16 +73,13 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
             for step in self.job["steps"]
             if step.get("name") == "Resolve production project endpoint"
         )
-        self.assertIn(
-            "gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT --env production",
-            resolve["run"],
+        self.assertEqual(
+            resolve["env"]["PRODUCTION_PROJECT_ENDPOINT"],
+            "${{ vars.AZURE_FOUNDRY_PROJECT_ENDPOINT }}",
         )
-        self.assertIn(
-            "gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT 2>/dev/null",
-            resolve["run"],
-        )
+        self.assertIn("PRODUCTION_PROJECT_ENDPOINT", resolve["run"])
         self.assertIn("$GITHUB_ENV", resolve["run"])
-        self.assertEqual(resolve["env"]["GH_TOKEN"], "${{ github.token }}")
+        self.assertNotIn("gh variable get", resolve["run"])
         self.assertNotIn(".services.ai.azure.com/api/projects/", self.raw)
         login = next(
             step for step in self.job["steps"] if step.get("name") == "Log in to Azure (OIDC)"
