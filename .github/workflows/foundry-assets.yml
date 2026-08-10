@@ -55,6 +55,9 @@ jobs:
           pip install -e "app/api[foundry]"
 
       - name: Resolve production project endpoint
+        # Environment-level configuration becomes available in `vars` only after
+        # the runner declares the protected environment. Keep this binding at step
+        # scope; job-level materialization happens too early.
         env:
           PRODUCTION_PROJECT_ENDPOINT: ${{ vars.AZURE_FOUNDRY_PROJECT_ENDPOINT }}
         run: |
