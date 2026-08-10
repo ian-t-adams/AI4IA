@@ -846,6 +846,7 @@ module api 'modules/api.bicep' = {
     // FastAPI calls the proxy with an opaque ingress key; it never receives the
     // shared active model APIM subscription held by SimpleL7Proxy.
     modelGatewayUrl: gateway.outputs.proxyIngressUrl
+    modelGatewayAllowedHosts: gateway.outputs.proxyIngressHosts
     modelGatewayAuthMode: 'api_key'
     modelGatewayApiKey: gateway.outputs.proxyIngressKey
     modelGatewayApiKeyHeader: 'S7P-KEY'

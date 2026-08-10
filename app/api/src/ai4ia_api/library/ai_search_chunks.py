@@ -73,6 +73,27 @@ _SELECT_FIELDS = (
 )
 
 
+def _indexing_succeeded(result: Any) -> bool:
+    if isinstance(result, dict):
+        succeeded = result.get("succeeded")
+        if succeeded is None:
+            succeeded = result.get("status")
+        return succeeded is True
+    return getattr(result, "succeeded", None) is True
+
+
+def _indexing_failure_detail(result: Any) -> str:
+    if isinstance(result, dict):
+        key = result.get("key")
+        status_code = result.get("status_code")
+        error = result.get("error_message") or result.get("error")
+    else:
+        key = getattr(result, "key", None)
+        status_code = getattr(result, "status_code", None)
+        error = getattr(result, "error_message", None)
+    return f"key={key!r} status={status_code!r} error={str(error or '')[:200]!r}"
+
+
 def _encode_key(raw: str) -> str:
     """Encode a chunk id into a valid AI Search document key.
 
@@ -332,9 +353,18 @@ class AzureSearchDocChunkStore:
         client = await self._get_search_client()
         documents = [self._to_document(r, v) for r, v in zip(records, vectors)]
         for start in range(0, len(documents), _UPLOAD_BATCH):
-            await client.merge_or_upload_documents(
-                documents=documents[start : start + _UPLOAD_BATCH]
+            batch = documents[start : start + _UPLOAD_BATCH]
+            results = list(
+                await client.merge_or_upload_documents(documents=batch)
             )
+            failed = [result for result in results if not _indexing_succeeded(result)]
+            if len(results) != len(batch) or failed:
+                detail = "; ".join(_indexing_failure_detail(result) for result in failed[:3])
+                raise RuntimeError(
+                    "Azure AI Search indexed "
+                    f"{len(results) - len(failed)}/{len(batch)} document chunks"
+                    + (f": {detail}" if detail else "")
+                )
 
     async def _collect(self, search_awaitable: Any) -> list[DocChunkRecord]:
         """Await a ``client.search(...)`` call and map its async results in order."""
@@ -423,8 +453,22 @@ class AzureSearchDocChunkStore:
         deleted = 0
         for start in range(0, len(keys), _UPLOAD_BATCH):
             batch = [{"key": key} for key in keys[start : start + _UPLOAD_BATCH]]
-            await client.delete_documents(documents=batch)
-            deleted += len(batch)
+            delete_results = list(await client.delete_documents(documents=batch))
+            failed = [
+                result
+                for result in delete_results
+                if not _indexing_succeeded(result)
+            ]
+            if len(delete_results) != len(batch) or failed:
+                detail = "; ".join(
+                    _indexing_failure_detail(result) for result in failed[:3]
+                )
+                raise RuntimeError(
+                    "Azure AI Search deleted "
+                    f"{len(delete_results) - len(failed)}/{len(batch)} document chunks"
+                    + (f": {detail}" if detail else "")
+                )
+            deleted += len(delete_results)
         return deleted
 
     async def close(self) -> None:

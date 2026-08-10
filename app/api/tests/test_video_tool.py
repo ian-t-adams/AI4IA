@@ -9,6 +9,7 @@ async job API so the poll loop is driven with a no-op sleep (no real delay).
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -156,6 +157,114 @@ def test_handler_generates_persists_sinks_and_meters(client):
     # The call was metered into the usage ledger (rate/budget windows see it).
     summary = client.get("/api/usage", headers=headers).json()
     assert summary["totalRequests"] >= 1
+
+
+def test_successful_provider_attempt_is_metered_once_as_complete(client):
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with patch.object(
+        client.app.state.usage,
+        "record_completion",
+        new_callable=AsyncMock,
+    ) as meter:
+        _, handlers = _build_capability(client, uid, sink)
+        out = asyncio.run(
+            handlers[GENERATE_VIDEO_TOOL_NAME](
+                {"prompt": "a kite", "model": "sora-2"},
+                ToolContext(),
+            )
+        )
+
+    assert out["status"] == "generated"
+    meter.assert_awaited_once()
+    assert meter.await_args.kwargs["status"] == "complete"
+    assert meter.await_args.kwargs["provider_completed"] is True
+
+
+def test_blob_failure_is_metered_once_as_error(client):
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with (
+        patch.object(
+            client.app.state.video_artifacts,
+            "put",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("blob down"),
+        ),
+        patch.object(
+            client.app.state.usage,
+            "record_completion",
+            new_callable=AsyncMock,
+        ) as meter,
+    ):
+        _, handlers = _build_capability(client, uid, sink)
+        out = asyncio.run(
+            handlers[GENERATE_VIDEO_TOOL_NAME](
+                {"prompt": "a kite", "model": "sora-2"},
+                ToolContext(),
+            )
+        )
+
+    assert out == {"error": "Generated video could not be stored."}
+    assert sink == []
+    meter.assert_awaited_once()
+    assert meter.await_args.kwargs["status"] == "error"
+    assert meter.await_args.kwargs["provider_completed"] is True
+
+
+def test_blob_cancellation_is_metered_once_as_cancelled(client):
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with (
+        patch.object(
+            client.app.state.video_artifacts,
+            "put",
+            new_callable=AsyncMock,
+            side_effect=asyncio.CancelledError,
+        ),
+        patch.object(
+            client.app.state.usage,
+            "record_completion",
+            new_callable=AsyncMock,
+        ) as meter,
+    ):
+        _, handlers = _build_capability(client, uid, sink)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                handlers[GENERATE_VIDEO_TOOL_NAME](
+                    {"prompt": "a kite", "model": "sora-2"},
+                    ToolContext(),
+                )
+            )
+
+    assert sink == []
+    meter.assert_awaited_once()
+    assert meter.await_args.kwargs["status"] == "cancelled"
+    assert meter.await_args.kwargs["provider_completed"] is True
+
+
+def test_metering_cancellation_happens_after_attachment_commit(client):
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with patch.object(
+        client.app.state.usage,
+        "record_completion",
+        new_callable=AsyncMock,
+        side_effect=asyncio.CancelledError,
+    ) as meter:
+        _, handlers = _build_capability(client, uid, sink)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                handlers[GENERATE_VIDEO_TOOL_NAME](
+                    {"prompt": "a kite", "model": "sora-2"},
+                    ToolContext(),
+                )
+            )
+
+    assert len(sink) == 1
+    meter.assert_awaited_once()
+    assert meter.await_args.kwargs["status"] == "complete"
+    assert meter.await_args.kwargs["provider_completed"] is True
 
 
 def test_handler_defaults_size_and_seconds(client):

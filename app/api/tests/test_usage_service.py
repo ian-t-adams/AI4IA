@@ -5,7 +5,7 @@ import pytest
 
 from ai4ia_api.catalog import DeploymentOption
 from ai4ia_api.usage.memory_repo import InMemoryUsageRepository
-from ai4ia_api.usage.models import TokenUsage, UsageTarget
+from ai4ia_api.usage.models import TokenUsage, UsageTarget, cost_bearing_attempt
 from ai4ia_api.usage.pricing import PriceRate, PricingBook
 from ai4ia_api.usage.service import MAX_SUMMARY_DAYS, UsageService
 
@@ -130,6 +130,45 @@ def test_build_record_cancelled_is_not_billable_even_if_known():
     assert rec.costKnown is False
 
 
+@pytest.mark.parametrize("status", ["error", "cancelled"])
+def test_provider_completed_media_attempt_keeps_truthful_status_and_cost(status):
+    rec = _service().build_record(
+        user_id="u1",
+        session_id="s1",
+        model_id="gpt-x",
+        deployment=_deployment(),
+        usage=_known_usage(),
+        status=status,
+        provider_completed=True,
+        agent=None,
+        correlation_id=None,
+    )
+    assert rec.status == status
+    assert rec.providerCompleted is True
+    assert rec.billable is True
+    assert rec.costKnown is True
+    assert rec.estCostMicroUsd == 6000
+
+
+def test_provider_completed_unknown_usage_is_a_cost_bearing_attempt():
+    rec = _service().build_record(
+        user_id="u1",
+        session_id="s1",
+        model_id="sora",
+        deployment=_deployment(),
+        usage=TokenUsage(known=False, complete=False, calls=1),
+        status="error",
+        provider_completed=True,
+        agent=None,
+        correlation_id=None,
+    )
+    assert rec.status == "error"
+    assert rec.providerCompleted is True
+    assert rec.billable is False
+    assert rec.costKnown is False
+    assert cost_bearing_attempt(rec) is True
+
+
 def test_build_record_billable_but_unknown_price_marks_cost_unknown():
     svc = _service(pricing=PricingBook({}, currency="USD", version=None))
     rec = svc.build_record(
@@ -163,6 +202,25 @@ async def test_record_completion_persists_and_summarizes():
     assert summary.totalRequests == 1
     assert summary.billableRequests == 1
     assert summary.totalCostMicroUsd == 6000
+
+
+async def test_session_summary_counts_provider_completed_unknown_cost():
+    repo = InMemoryUsageRepository()
+    svc = _service(repo=repo)
+    await svc.record_completion(
+        user_id="u1",
+        session_id="s1",
+        model_id="sora",
+        deployment=_deployment(),
+        usage=TokenUsage(known=False, complete=False, calls=1),
+        status="error",
+        provider_completed=True,
+    )
+
+    summary = await svc.summarize_session("u1", "s1")
+
+    assert summary.totalRequests == 1
+    assert summary.costUnknownRequests == 1
 
 
 async def test_record_completion_disabled_records_nothing():

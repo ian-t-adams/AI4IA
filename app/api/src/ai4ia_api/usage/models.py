@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..catalog import DeploymentOption
 
@@ -46,7 +46,11 @@ def cost_bearing_attempt(rec: "UsageRollupSource") -> bool:
     known ``$0`` with zero unknown-cost requests.
     """
 
-    return rec.billable or rec.provider == CODE_INTERPRETER_PROVIDER
+    return (
+        rec.billable
+        or rec.providerCompleted
+        or rec.provider == CODE_INTERPRETER_PROVIDER
+    )
 #: Target/agent label carried alongside the provider, so the admin agents panel
 #: also shows sandbox executions as their own row.
 CODE_INTERPRETER_TARGET = "code_interpreter"
@@ -191,7 +195,10 @@ class UsageRecord(BaseModel):
     agent: str | None = None
 
     status: UsageStatus = "complete"
-    # A turn is billable only when it completed and reported real usage.
+    # Provider completion is separate from downstream delivery: generated media
+    # can be billed even when local decode/blob persistence later fails.
+    providerCompleted: bool = False
+    # A provider-completed attempt is billable when it reported real usage.
     billable: bool = False
     usageKnown: bool = False
     # False when an agent turn had at least one call without reported usage.
@@ -214,6 +221,17 @@ class UsageRecord(BaseModel):
 
     correlationId: str | None = None
     createdAt: datetime = Field(default_factory=_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_legacy_provider_completion(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "providerCompleted" not in value:
+            normalized = dict(value)
+            normalized["providerCompleted"] = (
+                str(value.get("status") or "complete") == "complete"
+            )
+            return normalized
+        return value
 
     @property
     def estCostUsd(self) -> float | None:
@@ -249,6 +267,8 @@ class UsageRollupSource(Protocol):
     def status(self) -> str: ...
     @property
     def billable(self) -> bool: ...
+    @property
+    def providerCompleted(self) -> bool: ...
     @property
     def usageKnown(self) -> bool: ...
     @property
@@ -335,6 +355,7 @@ class UsageRollupRow:
     usageKnown: bool
     costKnown: bool
     createdAt: datetime
+    providerCompleted: bool = False
     agent: str | None = None
     deployment: str | None = None
     region: str | None = None
@@ -353,6 +374,7 @@ class UsageRollupRow:
             provider=record.provider,
             status=record.status,
             billable=record.billable,
+            providerCompleted=record.providerCompleted,
             usageKnown=record.usageKnown,
             costKnown=record.costKnown,
             createdAt=record.createdAt,
@@ -381,6 +403,12 @@ class UsageRollupRow:
             provider=str(doc.get("provider") or "azure_openai"),
             status=str(doc.get("status") or "complete"),
             billable=bool(doc.get("billable", False)),
+            providerCompleted=bool(
+                doc.get(
+                    "providerCompleted",
+                    str(doc.get("status") or "complete") == "complete",
+                )
+            ),
             usageKnown=bool(doc.get("usageKnown", False)),
             costKnown=bool(doc.get("costKnown", False)),
             createdAt=_coerce_datetime(doc.get("createdAt")),
@@ -403,6 +431,7 @@ ROLLUP_FIELDS: tuple[str, ...] = (
     "provider",
     "status",
     "billable",
+    "providerCompleted",
     "usageKnown",
     "costKnown",
     "createdAt",

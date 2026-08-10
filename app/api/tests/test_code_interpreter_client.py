@@ -295,6 +295,44 @@ async def test_non_json_body_raises():
         await c.run(instructions="i", user_input="u")
 
 
+@pytest.mark.parametrize("status", ["failed", "incomplete"])
+async def test_http_200_non_success_status_raises_typed_error(status: str):
+    fake = FakeAsyncClient(
+        FakeResponse(200, {"status": status, "output_text": ""})
+    )
+    c = _client(_settings(), fake)
+
+    with pytest.raises(CodeInterpreterError) as exc:
+        await c.run(instructions="i", user_input="u")
+
+    assert exc.value.status_code == 200
+    assert f"status={status}" in exc.value.detail
+
+
+async def test_http_200_malformed_status_raises_typed_error():
+    fake = FakeAsyncClient(FakeResponse(200, {"output_text": "looks successful"}))
+    c = _client(_settings(), fake)
+
+    with pytest.raises(CodeInterpreterError) as exc:
+        await c.run(instructions="i", user_input="u")
+
+    assert exc.value.status_code == 200
+    assert "status=missing" in exc.value.detail
+
+
+@pytest.mark.parametrize("status", ["completed", "succeeded"])
+async def test_http_200_success_status_returns_result(status: str):
+    fake = FakeAsyncClient(
+        FakeResponse(200, {"status": status, "output_text": "ok"})
+    )
+    c = _client(_settings(), fake)
+
+    result = await c.run(instructions="i", user_input="u")
+
+    assert result.succeeded is True
+    assert result.output_text == "ok"
+
+
 # --- response parser ---
 def test_parse_top_level_output_text():
     r = parse_response({"status": "completed", "output_text": "the answer is 7"})

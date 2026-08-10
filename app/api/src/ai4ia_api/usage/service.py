@@ -6,8 +6,9 @@ durable :class:`UsageRecord`. Persistence is best-effort and self-contained: a
 failing ledger write or price lookup never propagates to the chat response.
 
 Cost honesty rules (see ``usage`` package docstring):
-- A turn is ``billable`` only when ``status == "complete"`` AND usage was both
-  known and complete (every contributing model call reported usage).
+- A turn is ``billable`` only when provider work completed AND usage was both known
+  and complete (every contributing model call reported usage). Downstream delivery
+  can still end in an error/cancellation after billable provider work.
 - Cost is estimated only for billable turns with a known price; otherwise the
   record is ``costKnown == False`` and the summary counts it as cost-unknown.
 """
@@ -23,6 +24,7 @@ from ..logging_setup import emit_custom_event
 from .models import (
     TokenUsage,
     UsageRecord,
+    cost_bearing_attempt,
     UsageStatus,
     UsageSummary,
     SessionUsageSummary,
@@ -80,9 +82,11 @@ class UsageService:
         status: UsageStatus,
         agent: str | None,
         correlation_id: str | None,
+        provider_completed: bool | None = None,
     ) -> UsageRecord:
         descriptor = self._normalize_target(target, deployment)
-        billable = status == "complete" and usage.known and usage.complete
+        completed = status == "complete" if provider_completed is None else provider_completed
+        billable = completed and usage.known and usage.complete
         rec = UsageRecord(
             userId=user_id,
             sessionId=session_id,
@@ -94,6 +98,7 @@ class UsageService:
             dataZone=descriptor.dataZone,
             agent=agent,
             status=status,
+            providerCompleted=completed,
             billable=billable,
             usageKnown=usage.known,
             usageComplete=usage.complete,
@@ -129,6 +134,7 @@ class UsageService:
         deployment: DeploymentOption | None = None,
         usage: TokenUsage,
         status: UsageStatus = "complete",
+        provider_completed: bool | None = None,
         agent: str | None = None,
         correlation_id: str | None = None,
     ) -> None:
@@ -144,6 +150,7 @@ class UsageService:
                 deployment=deployment,
                 usage=usage,
                 status=status,
+                provider_completed=provider_completed,
                 agent=agent,
                 correlation_id=correlation_id,
             )
@@ -188,6 +195,7 @@ class UsageService:
                 "region": rec.region,
                 "agent": rec.agent,
                 "status": rec.status,
+                "providerCompleted": rec.providerCompleted,
                 "billable": rec.billable,
                 "usageKnown": rec.usageKnown,
                 "usageComplete": rec.usageComplete,
@@ -217,6 +225,7 @@ class UsageService:
             "region": rec.region,
             "agent": rec.agent,
             "status": rec.status,
+            "providerCompleted": rec.providerCompleted,
             "billable": rec.billable,
             "usageKnown": rec.usageKnown,
             "usageComplete": rec.usageComplete,
@@ -269,7 +278,7 @@ class UsageService:
                 summary.unknownUsageRequests += 1
             if record.costKnown and record.estCostMicroUsd is not None:
                 summary.totalCostMicroUsd += record.estCostMicroUsd
-            elif record.billable:
+            elif cost_bearing_attempt(record):
                 summary.costUnknownRequests += 1
         return summary
 

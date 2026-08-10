@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from ..citations import RetrievedSource, SpanRegistry
 from ..config import Settings
 from ..memory.embedder import GatewayEmbedder
-from .access import can_access
+from .access import can_access, get_accessible_document
 from .blob_store import MEDIA_NAME, PARSED_NAME, BlobNotFoundError, BlobStore, blob_path
 from .chunking import format_timestamp
 from .doc_chunks import DocChunkStore
@@ -149,6 +149,32 @@ class DocumentRetrievalService:
         merged.sort(key=lambda d: d.updatedAt, reverse=True)
         return merged
 
+    async def _selected_ready_documents(
+        self,
+        user_id: str,
+        email: str | None,
+        document_ids: list[str],
+    ) -> list[UserDocument]:
+        """Resolve explicit ids through the canonical owner/share/public gate."""
+        ready: list[UserDocument] = []
+        seen: set[str] = set()
+        for document_id in document_ids:
+            if document_id in seen:
+                continue
+            seen.add(document_id)
+            try:
+                document = await get_accessible_document(
+                    self._library,
+                    user_id,
+                    document_id,
+                    email=email,
+                )
+            except DocumentNotFoundError:
+                continue
+            if document.status == DocumentStatus.ready:
+                ready.append(document)
+        return ready
+
     async def context_block(
         self,
         user_id: str,
@@ -184,17 +210,17 @@ class DocumentRetrievalService:
         ``block`` always carries no sources, so a turn that got no context is
         never attested as though it had."""
         try:
-            ready = await self._accessible_ready_documents(user_id, email)
+            if document_ids is None:
+                ready = await self._accessible_ready_documents(user_id, email)
+            else:
+                ready = await self._selected_ready_documents(
+                    user_id, email, document_ids
+                )
         except Exception:  # noqa: BLE001 - retrieval must never break a turn
             logger.warning("library context load failed user=%s", user_id, exc_info=True)
             return RetrievalContext()
         if not ready:
             return RetrievalContext()
-        if document_ids is not None:
-            selected = set(document_ids)
-            ready = [document for document in ready if document.id in selected]
-            if not ready:
-                return RetrievalContext()
 
         cards: list[str] = []
         for doc in ready[: max(0, self._settings.document_context_max_docs)]:

@@ -28,8 +28,11 @@ def _entra_settings(**overrides: object) -> Settings:
         "auth_provider": AuthProviderKind.entra,
         "entra_tenant_id": "11111111-1111-1111-1111-111111111111",
         "entra_audience": "api://ai4ia",
+        "model_gateway_url": "https://proxy.internal.example/openai",
         "model_gateway_auth_mode": "api_key",
         "model_gateway_api_key": "x" * 32,
+        "model_gateway_api_key_header": "S7P-KEY",
+        "model_gateway_allowed_hosts": "proxy.internal.example",
     }
     base.update(overrides)
     return Settings(**base)  # type: ignore[arg-type]
