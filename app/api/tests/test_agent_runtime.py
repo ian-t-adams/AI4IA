@@ -161,7 +161,7 @@ async def test_oversized_actual_tool_schema_fails_before_provider_call():
 
 async def test_tool_result_growth_rebounds_every_iteration_without_overflow():
     async def handler(args, ctx):
-        return {"payload": "r" * 7000}
+        return {"payload": "r" * 500}
 
     definition = ToolDefinition(
         spec=ToolSpec(name="large_result", description="large"),
@@ -199,7 +199,6 @@ async def test_tool_result_growth_rebounds_every_iteration_without_overflow():
     assert result.iterations == 3
     assert "old-u" in gateway.calls[0]["messages"][1]["content"]
     second = gateway.calls[1]
-    assert all("old-u" not in str(message.get("content")) for message in second["messages"])
     assert any(message.get("tool_calls") for message in second["messages"])
     assert any(message.get("role") == "tool" for message in second["messages"])
     schema_bytes = serialized_budget_bytes(
@@ -221,12 +220,119 @@ async def test_tool_result_growth_rebounds_every_iteration_without_overflow():
         for message in third["messages"]
         if message.get("role") == "tool"
     }
-    assert assistant_ids == tool_ids == {"c2"}
+    assert assistant_ids == tool_ids == {"c1", "c2"}
+    assert any(message.get("role") == "user" and message["content"] == "current" for message in third["messages"])
     assert (
         sum(message_budget_bytes(message) for message in third["messages"])
         + schema_bytes
         <= budget
     )
+
+
+async def test_multi_tool_results_stay_with_current_user_and_assistant_call():
+    async def handler(args, ctx):
+        return {"payload": "m" * 700}
+
+    definition = ToolDefinition(
+        spec=ToolSpec(name="multi_result", description="multi"),
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    registry, executor = build_tools([definition])
+    first = _assistant_tool_call("c1", "multi_result", "{}")
+    first["choices"][0]["message"]["tool_calls"].append(
+        {
+            "id": "c2",
+            "type": "function",
+            "function": {"name": "multi_result", "arguments": "{}"},
+        }
+    )
+    gateway = ScriptedGateway([first, _assistant_text("done")])
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old-u" * 300},
+        {"role": "assistant", "content": "old-a" * 300},
+        {"role": "user", "content": "current ask"},
+    ]
+    budget = 4_500
+
+    result = await run_agent_turn(
+        deployment="dep",
+        messages=messages,
+        tool_names=["multi_result"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+        prompt_budget_bytes=budget,
+    )
+
+    assert result.text == "done"
+    second = gateway.calls[1]["messages"]
+    assert any(
+        message.get("role") == "user" and message["content"] == "current ask"
+        for message in second
+    )
+    assert all("old-u" not in str(message.get("content")) for message in second)
+    assistant_ids = {
+        call["id"]
+        for message in second
+        for call in message.get("tool_calls") or []
+    }
+    tool_ids = {
+        message["tool_call_id"] for message in second if message.get("role") == "tool"
+    }
+    assert assistant_ids == tool_ids == {"c1", "c2"}
+
+
+async def test_accumulated_current_turn_overflow_fails_before_later_provider_call():
+    async def handler(args, ctx):
+        return {"payload": "r" * 7000}
+
+    definition = ToolDefinition(
+        spec=ToolSpec(name="large_result", description="large"),
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    registry, executor = build_tools([definition])
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "large_result", "{}"),
+            _assistant_tool_call("c2", "large_result", "{}"),
+            _assistant_text("must not be called"),
+        ]
+    )
+
+    with pytest.raises(AgentContextBudgetError, match="offered tool schemas"):
+        await run_agent_turn(
+            deployment="dep",
+            messages=[
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "current ask"},
+            ],
+            tool_names=["large_result"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+            prompt_budget_bytes=10_000,
+        )
+
+    assert len(gateway.calls) == 2
+    second = gateway.calls[1]["messages"]
+    assert any(
+        message.get("role") == "user" and message["content"] == "current ask"
+        for message in second
+    )
+    assistant_ids = {
+        call["id"]
+        for message in second
+        for call in message.get("tool_calls") or []
+    }
+    tool_ids = {
+        message["tool_call_id"] for message in second if message.get("role") == "tool"
+    }
+    assert assistant_ids == tool_ids == {"c1"}
 
 
 async def test_caller_tools_params_are_stripped():

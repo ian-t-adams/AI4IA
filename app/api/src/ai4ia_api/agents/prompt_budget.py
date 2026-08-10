@@ -114,24 +114,43 @@ def bound_payload_history(
 def bound_agent_context(
     messages: Sequence[dict[str, Any]],
     *,
+    current_user_index: int,
     prompt_budget_bytes: int,
     additional_fixed_bytes: int = 0,
 ) -> tuple[list[dict[str, Any]], int, int]:
-    """Bound history and tool exchanges while preserving current/system messages."""
+    """Evict old turns while keeping the entire in-progress agent turn atomic."""
     if not messages:
         return [], 0, 0
-    current_user = next(
-        (
-            index
-            for index in range(len(messages) - 1, -1, -1)
-            if messages[index].get("role") == "user"
-        ),
-        len(messages) - 1,
-    )
+    if not 0 <= current_user_index < len(messages):
+        raise ValueError("current user message is missing")
+    if messages[current_user_index].get("role") != "user":
+        raise ValueError("current user message is invalid")
+
+    pending_tool_results: dict[str | None, int] = {}
+    for message in messages[current_user_index + 1 :]:
+        role = message.get("role")
+        if role == "assistant" and message.get("tool_calls"):
+            if pending_tool_results:
+                raise ValueError("assistant tool call is missing results")
+            for call in message["tool_calls"]:
+                call_id = call.get("id")
+                pending_tool_results[call_id] = pending_tool_results.get(call_id, 0) + 1
+        elif role == "tool":
+            call_id = message.get("tool_call_id")
+            if pending_tool_results.get(call_id, 0) <= 0:
+                raise ValueError("tool result is missing its assistant call")
+            pending_tool_results[call_id] -= 1
+            if pending_tool_results[call_id] == 0:
+                pending_tool_results.pop(call_id)
+        else:
+            raise ValueError("current agent turn contains an invalid message")
+    if pending_tool_results:
+        raise ValueError("assistant tool call is missing results")
+
     fixed = {
         index
         for index, message in enumerate(messages)
-        if message.get("role") == "system" or index == current_user
+        if message.get("role") == "system" or index >= current_user_index
     }
     used = additional_fixed_bytes + sum(
         message_budget_bytes(messages[index]) for index in fixed
@@ -139,28 +158,9 @@ def bound_agent_context(
     if used > prompt_budget_bytes:
         raise ValueError("fixed prompt content exceeds the selected model budget")
 
-    dynamic_groups: list[list[int]] = []
-    for index in range(current_user + 1, len(messages)):
-        message = messages[index]
-        if message.get("role") == "assistant" and message.get("tool_calls"):
-            dynamic_groups.append([index])
-        elif dynamic_groups:
-            dynamic_groups[-1].append(index)
-        else:
-            raise ValueError("tool result is missing its assistant call")
-    kept_dynamic: set[int] = set()
-    for group in reversed(dynamic_groups):
-        size = sum(message_budget_bytes(messages[index]) for index in group)
-        if used + size > prompt_budget_bytes:
-            if not kept_dynamic:
-                raise ValueError("latest tool exchange exceeds the selected model budget")
-            break
-        kept_dynamic.update(group)
-        used += size
-
     history_indexes = [
         index
-        for index in range(current_user)
+        for index in range(current_user_index)
         if index not in fixed
     ]
     history_groups: list[list[int]] = []
@@ -177,11 +177,9 @@ def bound_agent_context(
         kept_history.update(group)
         used += size
 
-    selected = fixed | kept_dynamic | kept_history
+    selected = fixed | kept_history
     return (
         [dict(message) for index, message in enumerate(messages) if index in selected],
         len(history_indexes) - len(kept_history),
-        len(dynamic_groups) - len(
-            {group[0] for group in dynamic_groups if group[0] in kept_dynamic}
-        ),
+        0,
     )

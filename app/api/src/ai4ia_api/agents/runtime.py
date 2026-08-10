@@ -200,6 +200,16 @@ async def run_agent_turn(
     the same reassembled tool calls, and the same bounds apply.
     """
     convo: list[dict[str, Any]] = [dict(m) for m in messages]
+    current_user_index = next(
+        (
+            index
+            for index in range(len(convo) - 1, -1, -1)
+            if convo[index].get("role") == "user"
+        ),
+        -1,
+    )
+    if current_user_index < 0:
+        raise AgentContextBudgetError("Agent input has no current user message.")
     resolved_tool_names = [ctx.tool_aliases.get(name, name) for name in tool_names]
     real_schema = executor.schema_for(resolved_tool_names, registry=registry, ctx=ctx)
     # Runtime dispatch alias -> durable governance name, for the human-readable
@@ -283,7 +293,8 @@ async def run_agent_turn(
         deliberately reduced to the same pair here so everything downstream —
         governance, budget, trace, taint — has exactly one shape to reason about.
         """
-        nonlocal completed_model_calls, current_stream_usage, usage_agg, convo
+        nonlocal completed_model_calls, current_stream_usage, current_user_index
+        nonlocal usage_agg, convo
         current_stream_usage = None
         offered_schema = request_params.get("tools") or []
         schema_bytes = (
@@ -294,8 +305,14 @@ async def run_agent_turn(
         try:
             convo, dropped_messages, dropped_exchanges = bound_agent_context(
                 convo,
+                current_user_index=current_user_index,
                 prompt_budget_bytes=effective_prompt_budget,
                 additional_fixed_bytes=schema_bytes,
+            )
+            current_user_index = next(
+                index
+                for index in range(len(convo) - 1, -1, -1)
+                if convo[index].get("role") == "user"
             )
             if dropped_messages or dropped_exchanges:
                 emit_custom_event(
