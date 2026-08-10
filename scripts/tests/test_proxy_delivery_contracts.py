@@ -168,9 +168,9 @@ class ProxySupplyChainContracts(unittest.TestCase):
         )
         for path in vendored_paths:
             relative = path.removeprefix("proxy/")
-            self.assertIn(
+            self.assertEqual(
                 provenance["files"][relative]["disposition"],
-                {"upstream-identical", "line-ending-only"},
+                "upstream-equivalent",
             )
 
     def test_proxy_docker_restore_is_locked_and_publish_does_not_reresolve(self) -> None:

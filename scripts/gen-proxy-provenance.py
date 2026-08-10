@@ -53,8 +53,12 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _normalize(data: bytes) -> bytes:
+def _canonicalize(data: bytes) -> bytes:
     return data.replace(b"\r\n", b"\n")
+
+
+def _canonical_sha256(data: bytes) -> str:
+    return _sha256(_canonicalize(data))
 
 
 def _local_files() -> dict[str, bytes]:
@@ -128,18 +132,16 @@ def generate(upstream_ref: str) -> dict:
     patch_paths: set[str] = set()
     for path in sorted(local):
         local_bytes = local[path]
-        entry = {"localSha256": _sha256(local_bytes)}
+        entry = {"localCanonicalSha256": _canonical_sha256(local_bytes)}
         if path not in upstream:
             entry["disposition"] = "ai4ia-added"
             patch_paths.add(path)
         else:
             upstream_bytes = upstream[path]
-            entry["upstreamSha256"] = _sha256(upstream_bytes)
-            entry["upstreamNormalizedSha256"] = _sha256(_normalize(upstream_bytes))
-            if local_bytes == upstream_bytes:
-                entry["disposition"] = "upstream-identical"
-            elif _normalize(local_bytes) == _normalize(upstream_bytes):
-                entry["disposition"] = "line-ending-only"
+            entry["upstreamRawSha256"] = _sha256(upstream_bytes)
+            entry["upstreamCanonicalSha256"] = _canonical_sha256(upstream_bytes)
+            if _canonicalize(local_bytes) == _canonicalize(upstream_bytes):
+                entry["disposition"] = "upstream-equivalent"
             else:
                 entry["disposition"] = "ai4ia-patched"
                 patch_paths.add(path)
@@ -155,7 +157,7 @@ def generate(upstream_ref: str) -> dict:
 
     counts = Counter(entry["disposition"] for entry in files.values())
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "upstream": {
             "repository": UPSTREAM_REPOSITORY,
             "commit": UPSTREAM_COMMIT,
@@ -199,17 +201,16 @@ def check() -> list[str]:
     for path in sorted(set(local).intersection(recorded)):
         entry = recorded[path]
         local_bytes = local[path]
-        actual_hash = _sha256(local_bytes)
-        if entry.get("localSha256") != actual_hash:
-            errors.append(f"{path}: local SHA-256 drift")
+        actual_hash = _canonical_sha256(local_bytes)
+        if entry.get("localCanonicalSha256") != actual_hash:
+            errors.append(f"{path}: local canonical SHA-256 drift")
         disposition = entry.get("disposition")
         measured_counts[disposition] += 1
-        if disposition == "upstream-identical":
-            if entry.get("upstreamSha256") != actual_hash:
-                errors.append(f"{path}: identical file does not match upstream hash")
-        elif disposition == "line-ending-only":
-            if entry.get("upstreamNormalizedSha256") != _sha256(_normalize(local_bytes)):
-                errors.append(f"{path}: normalized content drift")
+        if disposition == "upstream-equivalent":
+            if entry.get("upstreamCanonicalSha256") != actual_hash:
+                errors.append(
+                    f"{path}: canonical content does not match upstream hash"
+                )
         elif disposition not in {"ai4ia-patched", "ai4ia-added"}:
             errors.append(f"{path}: unknown disposition {disposition!r}")
 

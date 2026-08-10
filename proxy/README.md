@@ -73,12 +73,13 @@ Re-evaluate and drop the `IncomingAuthValidator.cs` patch when refreshing to an
 upstream commit that fixes both behaviors it addresses.
 
 **Provenance validation (2026-08-09):** `upstream-provenance.json` records the
-SHA-256 of every upstream and local file plus the explicit AI4IA patch list.
-`scripts/tests/test_proxy_provenance.py` fails for an added, deleted, or changed
-file that is not represented exactly. The current measured breakdown is:
+canonical LF SHA-256 of every upstream and local file plus the explicit AI4IA
+patch list. Raw upstream hashes remain as evidence, but checkout-specific local
+bytes never gate CI. `scripts/tests/test_proxy_provenance.py` fails for an
+added, deleted, or semantically changed file that is not represented exactly.
+The current measured breakdown is:
 
-- **29 files** are byte-for-byte identical to upstream.
-- **138 files** differ only by CRLF/LF storage.
+- **167 files** are content-equivalent to upstream after CRLF/LF canonicalization.
 - **7 files** contain the documented AI4IA source patches.
 - **4 files** are AI4IA additions: `Config/SecretComparer.cs` plus three
   `packages.lock.json` files used by the runtime project graph.

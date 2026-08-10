@@ -29,8 +29,7 @@ class ProxyProvenanceTests(unittest.TestCase):
             {
                 "ai4ia-added": 4,
                 "ai4ia-patched": 7,
-                "line-ending-only": 138,
-                "upstream-identical": 29,
+                "upstream-equivalent": 167,
             },
         )
         self.assertEqual(len(document["files"]), 178)
@@ -70,6 +69,43 @@ class ProxyProvenanceTests(unittest.TestCase):
             )
         resolve.assert_called_once_with("FETCH_HEAD")
         read_files.assert_called_once_with("FETCH_HEAD")
+
+    def test_local_lf_and_crlf_have_the_same_canonical_hash(self) -> None:
+        lf = b"first line\nsecond line\n"
+        crlf = b"first line\r\nsecond line\r\n"
+        self.assertEqual(
+            proxy_provenance._canonical_sha256(lf),
+            proxy_provenance._canonical_sha256(crlf),
+        )
+
+    def test_check_accepts_the_same_tracked_text_with_other_line_endings(self) -> None:
+        local = proxy_provenance._local_files()
+        path = "SimpleL7Proxy/config.json"
+        alternate = dict(local)
+        canonical = proxy_provenance._canonicalize(local[path])
+        alternate[path] = canonical.replace(b"\n", b"\r\n")
+        with mock.patch.object(
+            proxy_provenance,
+            "_local_files",
+            return_value=alternate,
+        ):
+            self.assertEqual(proxy_provenance.check(), [])
+
+    def test_check_rejects_a_semantic_local_change(self) -> None:
+        local = proxy_provenance._local_files()
+        path = "SimpleL7Proxy/config.json"
+        changed = dict(local)
+        self.assertIn(b'"userId"', changed[path])
+        changed[path] = changed[path].replace(b'"userId"', b'"userID"', 1)
+        with mock.patch.object(
+            proxy_provenance,
+            "_local_files",
+            return_value=changed,
+        ):
+            self.assertIn(
+                f"{path}: local canonical SHA-256 drift",
+                proxy_provenance.check(),
+            )
 
 
 if __name__ == "__main__":
