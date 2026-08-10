@@ -29,6 +29,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from unittest.mock import patch
 
 import yaml
@@ -1228,6 +1229,9 @@ def healthy_http() -> FakeHttp:
             "GET /health/ready": [pdv.HttpOutcome(status=200)],
             "GET https://web.test/": [pdv.HttpOutcome(status=200)],
             "GET /startup": [pdv.HttpOutcome(status=200)],
+            "GET /health": [pdv.HttpOutcome(status=404)],
+            "GET /healthdetail": [pdv.HttpOutcome(status=404)],
+            "GET /forcegc": [pdv.HttpOutcome(status=404)],
         }
     )
 
@@ -1354,6 +1358,24 @@ class VerifyTests(unittest.TestCase):
         http.script["GET /startup"] = [pdv.HttpOutcome(status=401)]
         code, out = self.verify(az=world(), http=http)
         self.assertEqual(code, 0, out)
+
+    def test_a_healthy_deploy_checks_every_blocked_proxy_diagnostic(self) -> None:
+        http = healthy_http()
+        code, out = self.verify(az=world(), http=http)
+        self.assertEqual(code, 0, out)
+        requested_paths = {urlsplit(url).path for _, url in http.calls}
+        self.assertTrue(
+            set(pdv.BLOCKED_PROXY_DIAGNOSTIC_PATHS).issubset(requested_paths)
+        )
+
+    def test_an_exposed_legacy_proxy_diagnostic_fails(self) -> None:
+        for path in pdv.BLOCKED_PROXY_DIAGNOSTIC_PATHS:
+            with self.subTest(path=path):
+                http = healthy_http()
+                http.script[f"GET {path}"] = [pdv.HttpOutcome(status=200)]
+                code, out = self.verify(az=world(), http=http)
+                self.assertEqual(code, 3)
+                self.assertIn(f"public GET {path} must return 404", out)
 
     def test_a_crash_looping_api_fails(self) -> None:
         code, out = self.verify(

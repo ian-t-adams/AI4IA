@@ -67,6 +67,7 @@ SERVICES = ("api", "web", "proxy")
 APP_NAME_PREFIX = {"api": "ca-api-", "web": "ca-web-", "proxy": "ca-proxy-"}
 DEFAULT_WORKLOAD = "ai4ia"
 DEFAULT_TOKEN_ENV = "AI4IA_DEPLOY_CANARY_TOKEN"
+BLOCKED_PROXY_DIAGNOSTIC_PATHS = ("/health", "/healthdetail", "/forcegc")
 
 # Container Apps' own edge returns these when nothing behind the ingress is
 # serving yet -- which is precisely the scale-to-zero cold start we must retry
@@ -872,6 +873,10 @@ def ingress_responds(outcome: HttpOutcome) -> bool:
     return outcome.status is not None and outcome.status < 500
 
 
+def diagnostic_route_is_blocked(outcome: HttpOutcome) -> bool:
+    return outcome.status == 404
+
+
 def ingress_or_redirect(outcome: HttpOutcome) -> bool:
     """Web-root acceptance: 2xx or a redirect, but never a followed one.
 
@@ -1394,6 +1399,28 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 "the ingress has no serving replica"
             )
 
+        for path in BLOCKED_PROXY_DIAGNOSTIC_PATHS:
+            outcome, tries = probe(
+                f"{proxy_base}{path}",
+                accept=diagnostic_route_is_blocked,
+                attempts=args.proxy_attempts,
+                delay=args.delay,
+                timeout=args.http_timeout,
+                deadline=deadline,
+            )
+            emit(
+                "probe",
+                target=f"proxy{path}",
+                status=outcome.status,
+                attempts=tries,
+                error=outcome.error,
+            )
+            if not diagnostic_route_is_blocked(outcome):
+                failures.append(
+                    f"proxy: public GET {path} must return 404 "
+                    f"({outcome.status if outcome.status is not None else outcome.error})"
+                )
+
     failures.extend(_custom_domain_failures(live))
     failures.extend(_canary_failures(args, api_base, deadline))
 
@@ -1701,7 +1728,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument(
         "--proxy-path",
         default="/startup",
-        help="Proxy probe path (SimpleL7Proxy serves /startup, /readiness, /health).",
+        help="Proxy probe path (AI4IA exposes /startup, /liveness, and /readiness).",
     )
     verify.add_argument("--attempts", type=int, default=10, help="Attempts per HTTP probe.")
     verify.add_argument(

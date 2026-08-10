@@ -44,7 +44,8 @@ AI4IA_PATCH_REASONS = {
         "Derive Azure deployment names from request paths when model is absent."
     ),
     "SimpleL7Proxy/server.cs": (
-        "Compare opaque inbound authentication keys exactly and in constant time."
+        "Compare opaque inbound authentication keys exactly and in constant time; "
+        "return 404 for privileged legacy diagnostics before auth or worker dispatch."
     ),
 }
 
