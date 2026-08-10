@@ -121,6 +121,16 @@ class TokenUsage(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderCompletion:
+    """Provider work completed even if downstream validation/delivery failed."""
+
+    model_id: str
+    deployment: DeploymentOption
+    usage: TokenUsage
+    status: UsageStatus = "complete"
+
+
+@dataclass(frozen=True, slots=True)
 class UsageTarget:
     """Typed descriptor for a governed usage target."""
 

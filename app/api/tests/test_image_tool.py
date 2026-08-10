@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ai4ia_api.agents.tool_exec import ToolContext
+from ai4ia_api.gateway.client import ModelGatewayError
 from ai4ia_api.images.capability import (
     GENERATE_IMAGE_TOOL_NAME,
     MAX_IMAGES_PER_TURN,
@@ -162,6 +163,52 @@ def test_decode_failure_is_metered_once_as_error(client):
     meter.assert_awaited_once()
     assert meter.await_args.kwargs["status"] == "error"
     assert meter.await_args.kwargs["provider_completed"] is True
+
+
+def test_post_provider_service_failure_is_metered_once_as_error(client):
+    client.app.state.gateway.empty = True
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with patch.object(
+        client.app.state.usage,
+        "record_completion",
+        new_callable=AsyncMock,
+    ) as meter:
+        _, handlers = _build_capability(client, uid, sink)
+        out = asyncio.run(
+            handlers[GENERATE_IMAGE_TOOL_NAME](
+                {"prompt": "a red bird", "model": "gpt-image-2"},
+                ToolContext(),
+            )
+        )
+
+    assert out == {"error": "Image generation returned no image."}
+    assert sink == []
+    meter.assert_awaited_once()
+    assert meter.await_args.kwargs["status"] == "error"
+    assert meter.await_args.kwargs["provider_completed"] is True
+
+
+def test_pre_provider_service_failure_is_not_metered(client):
+    client.app.state.gateway.error = ModelGatewayError(400, "request rejected")
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    with patch.object(
+        client.app.state.usage,
+        "record_completion",
+        new_callable=AsyncMock,
+    ) as meter:
+        _, handlers = _build_capability(client, uid, sink)
+        out = asyncio.run(
+            handlers[GENERATE_IMAGE_TOOL_NAME](
+                {"prompt": "a red bird", "model": "gpt-image-2"},
+                ToolContext(),
+            )
+        )
+
+    assert "error" in out
+    assert sink == []
+    meter.assert_not_awaited()
 
 
 def test_blob_failure_is_metered_once_as_error(client):

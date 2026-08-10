@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 from ..catalog import DeploymentOption, ModelCatalog
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
-from ..usage.models import TokenUsage
+from ..usage.models import ProviderCompletion, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +50,27 @@ class VideoGenerationError(Exception):
     ``retry_after`` seconds is set for rate-limit (429) cases.
     """
 
-    def __init__(self, status_code: int, detail: str, *, retry_after: int | None = None) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        *,
+        retry_after: int | None = None,
+        provider_completion: ProviderCompletion | None = None,
+    ) -> None:
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
         self.retry_after = retry_after
+        self.provider_completion = provider_completion
+
+
+class VideoProviderCompletedCancellation(asyncio.CancelledError):
+    """Cancellation after the provider reached a successful terminal state."""
+
+    def __init__(self, provider_completion: ProviderCompletion) -> None:
+        super().__init__("video download cancelled after provider completion")
+        self.provider_completion = provider_completion
 
 
 @dataclass(frozen=True)
@@ -175,17 +191,49 @@ class VideoGenerationService:
                 raise VideoGenerationError(502, "Video provider did not return a job.")
 
             status = await self._poll(job_id, job, correlation_id)
+        except ModelGatewayError as exc:
+            raise self._sanitize(exc, model_id, correlation_id) from exc
+
+        completion = ProviderCompletion(
+            model_id=model_id,
+            deployment=deployment,
+            usage=TokenUsage(known=False, complete=False, calls=1),
+        )
+        try:
             generation_id = self._extract_generation_id(status)
             video_bytes = await self._gateway.get_video_content(
                 generation_id=generation_id, correlation_id=correlation_id
             )
+        except asyncio.CancelledError as exc:
+            raise VideoProviderCompletedCancellation(completion) from exc
         except ModelGatewayError as exc:
-            raise self._sanitize(exc, model_id, correlation_id) from exc
+            sanitized = self._sanitize(exc, model_id, correlation_id)
+            raise VideoGenerationError(
+                sanitized.status_code,
+                sanitized.detail,
+                retry_after=sanitized.retry_after,
+                provider_completion=completion,
+            ) from exc
+        except VideoGenerationError as exc:
+            raise VideoGenerationError(
+                exc.status_code,
+                exc.detail,
+                retry_after=exc.retry_after,
+                provider_completion=completion,
+            ) from exc
 
         if not video_bytes:
-            raise VideoGenerationError(502, "Video generation returned no content.")
+            raise VideoGenerationError(
+                502,
+                "Video generation returned no content.",
+                provider_completion=completion,
+            )
         if len(video_bytes) > MAX_VIDEO_BYTES:
-            raise VideoGenerationError(502, "Generated video was unexpectedly large.")
+            raise VideoGenerationError(
+                502,
+                "Generated video was unexpectedly large.",
+                provider_completion=completion,
+            )
 
         return VideoGenerationResult(
             model_id=model_id,
@@ -195,7 +243,7 @@ class VideoGenerationService:
             video_bytes=video_bytes,
             # Sora jobs do not report token usage; count one request so rolling
             # rate windows include the call without inventing token counts.
-            usage=TokenUsage(known=False, complete=False, calls=1),
+            usage=completion.usage,
         )
 
     async def _poll(

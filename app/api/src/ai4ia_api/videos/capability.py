@@ -36,7 +36,11 @@ from ..sessions.models import MessageAttachment
 from ..usage.models import UsageStatus
 from ..usage.service import UsageService
 from .artifacts import VideoArtifactStore
-from .service import VideoGenerationError, VideoGenerationService
+from .service import (
+    VideoGenerationError,
+    VideoGenerationService,
+    VideoProviderCompletedCancellation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +174,32 @@ def build_video_capability(
                 seconds=seconds,
                 correlation_id=ctx.correlation_id,
             )
+        except VideoProviderCompletedCancellation as exc:
+            completion = exc.provider_completion
+            await metering.record_completion(
+                user_id=user_id,
+                session_id=session_id,
+                model_id=completion.model_id,
+                deployment=completion.deployment,
+                usage=completion.usage,
+                status="cancelled",
+                provider_completed=True,
+                correlation_id=ctx.correlation_id,
+            )
+            raise
         except VideoGenerationError as exc:
+            if exc.provider_completion is not None:
+                completion = exc.provider_completion
+                await metering.record_completion(
+                    user_id=user_id,
+                    session_id=session_id,
+                    model_id=completion.model_id,
+                    deployment=completion.deployment,
+                    usage=completion.usage,
+                    status="error",
+                    provider_completed=True,
+                    correlation_id=ctx.correlation_id,
+                )
             return {"error": _one_line(exc.detail)}
         except Exception:  # noqa: BLE001 - a tool must never crash the turn
             logger.warning("generate_video unexpected error user=%s", user_id, exc_info=True)

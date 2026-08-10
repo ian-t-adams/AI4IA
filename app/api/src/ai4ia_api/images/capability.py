@@ -166,6 +166,18 @@ def build_image_capability(
                 correlation_id=ctx.correlation_id,
             )
         except ImageGenerationError as exc:
+            if exc.provider_completion is not None:
+                completion = exc.provider_completion
+                await metering.record_completion(
+                    user_id=user_id,
+                    session_id=session_id,
+                    model_id=completion.model_id,
+                    deployment=completion.deployment,
+                    usage=completion.usage,
+                    status="error",
+                    provider_completed=True,
+                    correlation_id=ctx.correlation_id,
+                )
             return {"error": _one_line(exc.detail)}
         except Exception:  # noqa: BLE001 - a tool must never crash the turn
             logger.warning("generate_image unexpected error user=%s", user_id, exc_info=True)
