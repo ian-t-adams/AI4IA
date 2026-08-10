@@ -126,7 +126,7 @@ valid.
 | `description` | Human-readable scope (helps agents and operators). |
 | `raiPolicyName` | Optional Responsible AI policy already on the project (`foundry.bicep` provisions `ai4ia-annotate-only`). |
 | `connections` | Project connections referenced by name (credentials live in the connection, never here). |
-| `tools` | Built-in and MCP tools (see per-tool table below). At most one unnamed tool per `type`. |
+| `tools` | Built-in and MCP tools (see per-tool table below). At most one tool may be unnamed across the entire toolbox, regardless of `type`. |
 | `skills` | Generic Foundry skill references. Keep empty in AI4IA manifests until the runtime supports MCP resources. |
 
 `camelCase` keys in the manifest (e.g. `serverLabel`, `projectConnectionId`) are translated to

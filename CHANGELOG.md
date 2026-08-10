@@ -24,12 +24,12 @@ will be cut only from reviewed tags or release notes until formal versioning exi
   rather than silently disabling an enabled feature whose model the policy excludes:
   memory and library RAG previously failed *open* when their embedding model would not
   resolve. The weakest true claim is surfaced in the model picker.
-- **Content-safety annotations are visible** (`safety.py`, `SafetyPanel`, #266). Foundry
-  returns a verdict for every category on every turn and the application discarded all
-  of it, so the safety system ran on every request and was invisible. Annotations are
-  now normalized, persisted on the message, and shown in a per-turn panel that states
-  plainly that nothing was blocked. `filtered: true` is always treated as notable, so
-  changing the policy to blocking would surface rather than change behaviour silently.
+- **Content-safety annotations are visible** (`safety.py`, `SafetyPanel`, #266). For
+  text chat completions, returned per-category verdicts are normalized, persisted on
+  the message, and shown in a per-turn panel that states plainly when nothing was
+  blocked. This evidence does not cover image, video, or Voice Live modalities.
+  `filtered: true` is always treated as notable, so changing the policy to blocking
+  would surface rather than change behaviour silently.
 - **`scripts/capture-data-recovery-state.ps1`** — records the Cosmos restore
   coordinates, blob manifest and Key Vault secret names that stop being knowable once
   the resource group is deleted. See Security below.

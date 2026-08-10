@@ -143,6 +143,16 @@ class DocumentationTruthTests(unittest.TestCase):
             r"provision-foundry-toolbox\.py\s+\\?\s*--manifest",
         )
 
+    def test_toolbox_unnamed_tool_rule_matches_validator(self) -> None:
+        docs = read("docs/foundry-toolbox.md")
+        tools_row = re.search(r"(?m)^\| `tools` \| (.+) \|$", docs)
+        self.assertIsNotNone(tools_row)
+        assert tools_row is not None
+        rule = tools_row.group(1)
+        self.assertIn("one tool may be unnamed across the entire toolbox", rule)
+        self.assertIn("regardless of `type`", rule)
+        self.assertNotIn("per `type`", rule)
+
     def test_design_artifacts_do_not_claim_served_governance(self) -> None:
         surfaces = "\n".join(
             read(path)
@@ -277,6 +287,22 @@ class DocumentationTruthTests(unittest.TestCase):
 
     def test_site_architecture_splits_canonical_and_best_effort_writes(self) -> None:
         self.assertNotIn("`n", read("site/README.md"))
+        home = read("site/index.html")
+        canonical = re.search(
+            r"<p><strong>Cosmos is canonical:</strong>(.*?)</p>",
+            home,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(canonical)
+        assert canonical is not None
+        canonical_claim = " ".join(canonical.group(1).split())
+        self.assertIn("memory text/vectors", canonical_claim)
+        self.assertIn(
+            "Search indexes, document chunks, and parsed artifacts are rebuildable",
+            canonical_claim,
+        )
+        self.assertNotRegex(canonical_claim, r"derived stores \([^)]*\bmemory\b")
+
         architecture = read("site/architecture.html")
         self.assertIn("Code Interpreter", architecture)
         self.assertIn("Canonical message/session writes surface failure", architecture)
@@ -305,6 +331,12 @@ class DocumentationTruthTests(unittest.TestCase):
         changelog = read("CHANGELOG.md")
         self.assertIn("a merge,", changelog)
         self.assertIn("workflow deployment, and GitHub release/tag are distinct events", changelog)
+        self.assertIn("For\n  text chat completions", changelog)
+        self.assertIn(
+            "This evidence does not cover image, video, or Voice Live modalities",
+            changelog,
+        )
+        self.assertNotRegex(changelog, r"(?i)every category on every turn")
 
     def test_code_interpreter_service_card_names_the_direct_exception(self) -> None:
         services = read("site/data/services.js")
