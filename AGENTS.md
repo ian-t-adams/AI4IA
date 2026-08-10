@@ -438,6 +438,20 @@ dotnet build proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Re
 dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-build --no-restore
 ```
 
+When a proxy project dependency changes, refresh from the top-level test project:
+
+```powershell
+dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --force-evaluate
+```
+
+NuGet does not recalculate `AI4IA.Proxy.Tests/packages.lock.json` when only a
+referenced project's graph changes, so Dependabot's direct-project lock updates
+are incomplete by themselves. Commit all changed proxy lockfiles. Any change
+inside the vendored `Shared`, `Shared-parser`, or `SimpleL7Proxy` scopes must also
+be declared in `scripts/gen-proxy-provenance.py`, regenerated against the exact
+pinned upstream commit, and checked with
+`python scripts/gen-proxy-provenance.py --check`.
+
 ### Branch protection on `main`
 
 `main` is protected by a repository ruleset: a pull request is required, force-pushes
