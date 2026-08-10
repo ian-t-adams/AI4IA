@@ -1,5 +1,8 @@
 """deploy.yml must build each image once and deploy that exact digest (P1-7).
 
+The module filename is retained for compatibility with the existing deploy
+workflow comment; this control is content-addressed deployment, not promotion.
+
 Before this, `azd deploy` rebuilt all three images from source at deploy time.
 The artifact that ran in production was therefore never the artifact CI tested
 -- a different build, at a different moment, and (until the base images were
@@ -9,6 +12,8 @@ bytes were live, so "which commit is production running?" had no answer beyond
 
 The replacement builds each service once, reads back the digest the *registry*
 assigned, and hands that reference to `azd deploy <service> --from-package`.
+This is content-addressed exact-digest deployment, not artifact promotion: the
+workflow still builds after merge and does not reuse a PR-built image.
 azd's own source is what makes that safe, and it is worth naming the exact
 mechanism because the whole change rests on it: with `--from-package` set, azd
 never calls its packager (`internal/cmd/service_graph.go`), and when the

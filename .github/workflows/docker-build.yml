@@ -1,6 +1,6 @@
 name: docker-build
 
-# Actually builds the AI4IA-owned container images (never pushes anywhere) so
+# Actually builds all deployable container images (never pushes anywhere) so
 # base-image resolution, OS/package availability, and the dependency-install
 # step are exercised on the PR that changes them. Before this workflow,
 # quality.yml's hadolint job only linted Dockerfile *syntax* - it never ran
@@ -10,10 +10,9 @@ name: docker-build
 # build-and-push path at deploy time (see azure.yaml, deploy.yml); this
 # workflow is build-and-load validation only - no registry, no credentials.
 #
-# proxy/Dockerfile (vendored SimpleL7Proxy) is intentionally out of scope
-# here to avoid touching the gateway build path; it is still linted by
-# quality.yml's hadolint job and its binary is compiled and tested by
-# quality.yml's proxy-dotnet job.
+# The proxy image is also scanned by its exact loaded image tag. That gate uses
+# a reviewed, CVE-specific exception file, emits an SPDX SBOM, and retains build
+# metadata so the result is about final runtime bytes rather than source files.
 #
 # The dockerignore-context job below builds separate, throwaway probe
 # images (not the real app images) to prove app/web/.dockerignore and
@@ -32,7 +31,9 @@ on:
     paths:
       - "app/web/**"
       - "app/api/**"
+      - "proxy/**"
       - "scripts/tests/test_dockerignore_context.py"
+      - "scripts/tests/test_base_image_pins.py"
       - ".github/workflows/docker-build.yml"
 
 # Least privilege: these jobs only read the checked-out tree and read/write
@@ -73,12 +74,39 @@ jobs:
   api:
     name: api image
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Verify proxy bases are multi-platform index digests
+        run: |
+          set -euo pipefail
+          mapfile -t refs < <(
+            sed -nE \
+              's/^FROM (mcr\.microsoft\.com\/dotnet\/[^ ]+@sha256:[0-9a-f]{64})( AS [^ ]+)?$/\1/p' \
+              proxy/Dockerfile
+          )
+          if [[ "${#refs[@]}" -ne 2 ]]; then
+            echo "::error::Expected exactly two pinned external proxy bases, found ${#refs[@]}."
+            exit 1
+          fi
+          for ref in "${refs[@]}"; do
+            media_type="$(
+              docker buildx imagetools inspect "${ref}" \
+                --format '{{.Manifest.MediaType}}'
+            )"
+            case "${media_type}" in
+              application/vnd.oci.image.index.v1+json|\
+              application/vnd.docker.distribution.manifest.list.v2+json)
+                ;;
+              *)
+                echo "::error::${ref} resolves to ${media_type}, not a multi-platform index."
+                exit 1
+                ;;
+            esac
+          done
       - name: Build api image (app/api/Dockerfile)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -91,6 +119,78 @@ jobs:
           cache-to: type=gha,mode=max,scope=docker-build-api
       - name: Smoke test - app package imports in the built image
         run: docker run --rm ai4ia-api:ci python -c "import ai4ia_api.main"
+
+      - name: Build proxy image (proxy/Dockerfile)
+        id: proxy-build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: proxy
+          file: proxy/Dockerfile
+          push: false
+          load: true
+          tags: ai4ia-proxy:ci
+          cache-from: type=gha,scope=docker-build-proxy
+          cache-to: type=gha,mode=max,scope=docker-build-proxy
+
+      - name: Capture final proxy image ID
+        id: proxy-image
+        run: |
+          set -euo pipefail
+          echo "image_id=$(docker image inspect ai4ia-proxy:ci --format '{{.Id}}')" \
+            >> "${GITHUB_OUTPUT}"
+
+      - name: Scan final proxy image for HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.proxy-image.outputs.image_id }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: "1"
+          trivyignores: proxy/.trivyignore
+          version: v0.71.2
+
+      - name: Generate proxy SPDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.proxy-image.outputs.image_id }}
+          scanners: vuln
+          format: spdx-json
+          output: proxy-sbom.spdx.json
+          exit-code: "0"
+          version: v0.71.2
+
+      - name: Record proxy build metadata
+        env:
+          IMAGE_ID: ${{ steps.proxy-image.outputs.image_id }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg source_repository "${GITHUB_REPOSITORY}" \
+            --arg source_revision "${GITHUB_SHA}" \
+            --arg image "ai4ia-proxy:ci" \
+            --arg image_id "${IMAGE_ID}" \
+            '{
+              schemaVersion: 1,
+              sourceRepository: $source_repository,
+              sourceRevision: $source_revision,
+              image: $image,
+              localImageId: $image_id,
+              signed: false,
+              note: "Local content-addressed image ID; no registry digest exists for this load-only PR build. Production signing is not configured."
+            }' > proxy-build-provenance.json
+
+      - name: Retain proxy SBOM and build metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: proxy-image-evidence-${{ github.sha }}
+          path: |
+            proxy-sbom.spdx.json
+            proxy-build-provenance.json
+          if-no-files-found: error
+          retention-days: 30
 
   dockerignore-context:
     name: dockerignore context boundary

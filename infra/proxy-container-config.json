@@ -1,0 +1,24 @@
+{
+  "logging": {
+    "logToConsole": [
+      "*",
+      "-custom",
+      "-probe"
+    ],
+    "logToAI": [
+      "*",
+      "-probe"
+    ],
+    "logToEvents": [
+      "async",
+      "backend",
+      "circuitbreaker",
+      "custom",
+      "exception",
+      "profile",
+      "proxy",
+      "enqueued",
+      "auth"
+    ]
+  }
+}

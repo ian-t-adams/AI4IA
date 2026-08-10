@@ -16,3 +16,28 @@ misconfigurations:
       to a non-root user (UID 1654:0), so the container does not run as root even
       though the Dockerfile has no explicit USER line. This Dockerfile is also a
       vendored-derived file that is out of scope for edits in this PR.
+  - id: AVD-DS-0002
+    paths:
+      - "proxy/SimpleL7Proxy/Dockerfile"
+    statement: >-
+      This is the untouched upstream Dockerfile, not the AI4IA image definition
+      and not a deployed artifact. AI4IA builds proxy/Dockerfile instead, whose
+      chiseled runtime defaults to non-root and is covered by the separate exact
+      path exception above. The provenance contract verifies this vendored blob
+      remains upstream-identical modulo line endings.
+  - id: AVD-KSV-0014
+    paths:
+      - "proxy/SimpleL7Proxy/sample-deployment.yaml"
+    statement: >-
+      This is an untouched upstream Kubernetes example and is not deployed by
+      AI4IA, which provisions Azure Container Apps from Bicep. The provenance
+      contract verifies this exact vendored blob remains upstream-identical
+      modulo line endings; no AI4IA-patched source is excluded.
+  - id: AVD-KSV-0118
+    paths:
+      - "proxy/SimpleL7Proxy/sample-deployment.yaml"
+    statement: >-
+      This is an untouched upstream Kubernetes example and is not deployed by
+      AI4IA, which provisions Azure Container Apps from Bicep. The provenance
+      contract verifies this exact vendored blob remains upstream-identical
+      modulo line endings; no AI4IA-patched source is excluded.

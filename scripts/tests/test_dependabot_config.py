@@ -33,6 +33,12 @@ ROOT = Path(__file__).resolve().parents[2]
 DEPENDABOT = ROOT / ".github/dependabot.yml"
 APP_CI = ROOT / ".github/workflows/app-ci.yml"
 API_DIR = "/app/api"
+PROXY_PROJECT_DIRS = {
+    "/proxy/AI4IA.Proxy.Tests",
+    "/proxy/Shared",
+    "/proxy/Shared-parser",
+    "/proxy/SimpleL7Proxy",
+}
 
 # Ecosystems that resolve through uv and therefore maintain uv.lock.
 UV_AWARE_ECOSYSTEMS = {"uv"}
@@ -102,6 +108,35 @@ class DependabotUvLockCoupling(unittest.TestCase):
             1,
             f"Expected exactly one Python Dependabot entry for {API_DIR}, found "
             f"{len(entries)}: {[e.get('package-ecosystem') for e in entries]}.",
+        )
+
+
+class DependabotNuGetLockCoupling(unittest.TestCase):
+    def test_all_proxy_projects_have_lock_files(self) -> None:
+        for directory in PROXY_PROJECT_DIRS:
+            self.assertTrue(
+                (ROOT / directory.lstrip("/") / "packages.lock.json").is_file(),
+                f"{directory} is missing packages.lock.json",
+            )
+
+    def test_one_nuget_entry_covers_every_proxy_project(self) -> None:
+        entries = [
+            entry
+            for entry in _updates()
+            if entry.get("package-ecosystem") == "nuget"
+            and PROXY_PROJECT_DIRS.intersection(
+                set(entry.get("directories") or [entry.get("directory")])
+            )
+        ]
+        self.assertEqual(len(entries), 1, entries)
+        self.assertEqual(set(entries[0]["directories"]), PROXY_PROJECT_DIRS)
+
+    def test_ci_restores_the_proxy_in_locked_mode(self) -> None:
+        quality = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj "
+            "--locked-mode",
+            quality,
         )
 
 
