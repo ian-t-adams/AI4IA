@@ -166,7 +166,11 @@ class AzureCliSafetyExecutionTests(unittest.TestCase):
                     active_subscription=OTHER_SUBSCRIPTION,
                 )
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("does not exactly match requested subscription", result.stderr)
+                clean_error = re.sub(r"\x1b\[[0-9;]*m", "", result.stderr)
+                self.assertIn(
+                    "does not exactly match requested subscription",
+                    " ".join(clean_error.split()),
+                )
                 self.assertEqual(
                     [call[:2] for call in calls],
                     [["account", "set"], ["account", "show"]],
