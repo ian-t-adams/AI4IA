@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import Any
 
@@ -842,13 +843,16 @@ class ModelGatewayClient:
         owned = False
         try:
             if api == "responses":
-                async for chunk in self._stream_responses(
-                    deployment=deployment,
-                    messages=messages,
-                    params=params,
-                    correlation_id=correlation_id,
-                ):
-                    yield chunk
+                async with aclosing(
+                    self._stream_responses(
+                        deployment=deployment,
+                        messages=messages,
+                        params=params,
+                        correlation_id=correlation_id,
+                    )
+                ) as response_stream:
+                    async for chunk in response_stream:
+                        yield chunk
                 return
             client, owned = self._client()
             # Request token usage in the stream when enabled, but never let an

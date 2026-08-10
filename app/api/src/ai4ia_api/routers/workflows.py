@@ -116,6 +116,112 @@ class WorkflowRunResponse(BaseModel):
     message: Message
 
 
+async def _claim_durable_run(
+    repo: SessionRepository,
+    *,
+    user_id: str,
+    user_message: Message,
+    pending_assistant: Message,
+) -> tuple[bool, Message]:
+    """Atomically claim scheduling ownership for one deterministic run id."""
+
+    def conflict() -> HTTPException:
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency key was already used for a different workflow run.",
+        )
+
+    def records(messages: list[Message]) -> tuple[Message | None, Message | None]:
+        return (
+            next((message for message in messages if message.id == user_message.id), None),
+            next(
+                (message for message in messages if message.id == pending_assistant.id),
+                None,
+            ),
+        )
+
+    def validate(
+        existing_user: Message | None, existing_assistant: Message | None
+    ) -> None:
+        if existing_user is not None and (
+            existing_user.role is not MessageRole.user
+            or existing_user.workflowRunId != user_message.workflowRunId
+            or existing_user.workflowRunFingerprint
+            != user_message.workflowRunFingerprint
+            or existing_user.content != user_message.content
+        ):
+            raise conflict()
+        if existing_assistant is not None and (
+            existing_assistant.role is not MessageRole.assistant
+            or existing_assistant.workflowRunId != pending_assistant.workflowRunId
+            or existing_assistant.workflowRunFingerprint
+            != pending_assistant.workflowRunFingerprint
+        ):
+            raise conflict()
+
+    async def ensure_user(existing_user: Message | None) -> None:
+        if existing_user is not None:
+            return
+        if await repo.add_message_if_absent(user_id, user_message):
+            return
+        latest_user, _ = records(
+            await repo.list_messages(user_id, pending_assistant.sessionId)
+        )
+        validate(latest_user, pending_assistant)
+        if latest_user is None:
+            raise conflict()
+
+    prior_user, prior_assistant = records(
+        await repo.list_messages(user_id, pending_assistant.sessionId)
+    )
+    validate(prior_user, prior_assistant)
+    if prior_assistant is not None:
+        await ensure_user(prior_user)
+        if prior_assistant.workflowRunStatus != "acceptance_unknown":
+            return False, prior_assistant
+        retry = prior_assistant.model_copy(
+            update={
+                "content": "",
+                "status": MessageStatus.streaming,
+                "workflowRunStatus": "pending",
+            }
+        )
+        if await repo.replace_message_if_workflow_status(
+            user_id,
+            retry,
+            expected_status="acceptance_unknown",
+        ):
+            return True, retry
+
+    elif await repo.add_message_if_absent(user_id, pending_assistant):
+        await ensure_user(prior_user)
+        return True, pending_assistant
+    else:
+        # Both concurrent first requests may have read absence. Only the create
+        # winner may schedule; this loser must reconcile but never turn a quickly
+        # published acceptance_unknown state into a second scheduler call.
+        for _attempt in range(3):
+            messages = await repo.list_messages(user_id, pending_assistant.sessionId)
+            existing_user, existing_assistant = records(messages)
+            validate(existing_user, existing_assistant)
+            if existing_assistant is None:
+                continue
+            return False, existing_assistant
+
+    for _attempt in range(3):
+        messages = await repo.list_messages(user_id, pending_assistant.sessionId)
+        existing_user, existing_assistant = records(messages)
+        validate(existing_user, existing_assistant)
+        if existing_assistant is None:
+            continue
+        return False, existing_assistant
+
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Durable workflow state is temporarily unavailable.",
+    )
+
+
 def _service(request: Request) -> WorkflowService:
     return request.app.state.workflow_service
 
@@ -330,44 +436,6 @@ async def run_workflow_endpoint(
         )
         run_fingerprint = durable_run_fingerprint(payload)
         payload["context"]["runFingerprint"] = run_fingerprint
-        prior = await repo.list_messages(uid, body.sessionId)
-        existing = [message for message in prior if message.workflowRunId == run_id]
-        existing_user = next(
-            (message for message in existing if message.role is MessageRole.user), None
-        )
-        existing_assistant = next(
-            (message for message in existing if message.role is MessageRole.assistant),
-            None,
-        )
-        if (
-            existing_user is not None
-            and existing_user.workflowRunFingerprint != run_fingerprint
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Idempotency key was already used for a different workflow run.",
-            )
-        if existing_assistant is not None:
-            if existing_assistant.workflowRunStatus == "schedule_failed":
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Durable workflow scheduling previously failed.",
-                )
-            if existing_assistant.workflowRunStatus in {
-                "accepted",
-                "completed",
-                "run_failed",
-            }:
-                return JSONResponse(
-                    status_code=status.HTTP_202_ACCEPTED,
-                    content=WorkflowRunAcceptedResponse(
-                        sessionId=body.sessionId,
-                        runId=run_id,
-                        idempotencyKey=idempotency_key,
-                        status="accepted",
-                    ).model_dump(),
-                )
-
         user_message = Message(
             id=user_message_id,
             sessionId=body.sessionId,
@@ -393,27 +461,66 @@ async def run_workflow_endpoint(
             workflowRunStatus="pending",
             workflowRunFingerprint=run_fingerprint,
         )
-        if existing_user is None:
-            await repo.upsert_message(uid, user_message)
-        if existing_assistant is None:
-            await repo.upsert_message(uid, pending_assistant)
+        owns_schedule, pending_assistant = await _claim_durable_run(
+            repo,
+            user_id=uid,
+            user_message=user_message,
+            pending_assistant=pending_assistant,
+        )
+        if not owns_schedule:
+            if pending_assistant.workflowRunStatus == "schedule_failed":
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Durable workflow scheduling previously failed.",
+                )
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=WorkflowRunAcceptedResponse(
+                    sessionId=body.sessionId,
+                    runId=run_id,
+                    idempotencyKey=idempotency_key,
+                    status=(
+                        "accepted"
+                        if pending_assistant.workflowRunStatus
+                        in {"accepted", "completed", "run_failed"}
+                        else (
+                            "acceptance_unknown"
+                            if pending_assistant.workflowRunStatus
+                            == "acceptance_unknown"
+                            else "pending"
+                        )
+                    ),
+                ).model_dump(),
+            )
 
         try:
             await durable_service.schedule(payload, user_id=uid, run_id=run_id)
         except (DurableScheduleRejectedError, DurableWorkflowsUnavailableError) as exc:
-            pending_assistant.status = MessageStatus.error
-            pending_assistant.content = (
-                "The durable workflow could not be scheduled. Retry with a new "
-                "idempotency key after the service recovers."
+            failed = pending_assistant.model_copy(
+                update={
+                    "status": MessageStatus.error,
+                    "content": (
+                        "The durable workflow could not be scheduled. Retry with a "
+                        "new idempotency key after the service recovers."
+                    ),
+                    "workflowRunStatus": "schedule_failed",
+                }
             )
-            pending_assistant.workflowRunStatus = "schedule_failed"
-            await repo.upsert_message(uid, pending_assistant)
+            await repo.replace_message_if_workflow_status(
+                uid, failed, expected_status="pending"
+            )
             await repo.touch_session(uid, session.id)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Durable workflow execution is temporarily unavailable.",
             ) from exc
         except DurableScheduleAcceptanceUnknownError:
+            unknown = pending_assistant.model_copy(
+                update={"workflowRunStatus": "acceptance_unknown"}
+            )
+            await repo.replace_message_if_workflow_status(
+                uid, unknown, expected_status="pending"
+            )
             await repo.touch_session(uid, session.id)
             return JSONResponse(
                 status_code=status.HTTP_202_ACCEPTED,
@@ -424,6 +531,12 @@ async def run_workflow_endpoint(
                     status="acceptance_unknown",
                 ).model_dump(),
             )
+        accepted = pending_assistant.model_copy(
+            update={"workflowRunStatus": "accepted"}
+        )
+        await repo.replace_message_if_workflow_status(
+            uid, accepted, expected_status="pending"
+        )
         await repo.touch_session(uid, session.id)
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,

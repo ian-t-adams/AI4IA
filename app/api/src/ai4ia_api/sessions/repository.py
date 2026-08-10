@@ -73,6 +73,24 @@ class SessionRepository(Protocol):
         self, user_id: str, message: Message, *, expected_version: int
     ) -> bool: ...
 
+    async def add_message_if_absent(self, user_id: str, message: Message) -> bool:
+        """Atomically create a message with its deterministic id.
+
+        Returns False when that id already exists. Implementations must not
+        replace or mutate the existing row on conflict.
+        """
+        ...
+
+    async def replace_message_if_workflow_status(
+        self,
+        user_id: str,
+        message: Message,
+        *,
+        expected_status: str,
+    ) -> bool:
+        """Replace a workflow message only while its status still matches."""
+        ...
+
     async def upsert_message(self, user_id: str, message: Message) -> Message: ...
 
     async def consume_tool_approval(

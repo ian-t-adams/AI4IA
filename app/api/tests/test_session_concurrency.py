@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from azure.cosmos.exceptions import (
     CosmosAccessConditionFailedError,
+    CosmosResourceExistsError,
     CosmosResourceNotFoundError,
 )
 
@@ -124,6 +125,55 @@ async def test_two_document_associations_and_removals_are_atomic():
     assert (await repo.get_session("u1", session.id)).libraryDocumentIds == []
 
 
+async def test_memory_message_create_if_absent_has_one_winner():
+    repo = InMemorySessionRepository()
+    session = await repo.create_session(Session(userId="u1"))
+    first = Message(
+        id="run-assistant",
+        sessionId=session.id,
+        userId="u1",
+        role=MessageRole.assistant,
+        workflowRunStatus="pending",
+        workflowRunFingerprint="a" * 64,
+    )
+    second = first.model_copy(
+        update={"workflowRunFingerprint": "b" * 64}
+    )
+    outcomes = await asyncio.gather(
+        repo.add_message_if_absent("u1", first),
+        repo.add_message_if_absent("u1", second),
+    )
+    assert sorted(outcomes) == [False, True]
+    messages = await repo.list_messages("u1", session.id)
+    assert len(messages) == 1
+    assert messages[0].workflowRunFingerprint in {"a" * 64, "b" * 64}
+
+
+async def test_memory_workflow_status_cas_cannot_replace_terminal():
+    repo = InMemorySessionRepository()
+    session = await repo.create_session(Session(userId="u1"))
+    pending = Message(
+        id="run-assistant",
+        sessionId=session.id,
+        userId="u1",
+        role=MessageRole.assistant,
+        workflowRunStatus="pending",
+        workflowRunFingerprint="a" * 64,
+    )
+    assert await repo.add_message_if_absent("u1", pending)
+    terminal = pending.model_copy(
+        update={"workflowRunStatus": "completed", "content": "finished"}
+    )
+    await repo.upsert_message("u1", terminal)
+    stale = pending.model_copy(update={"workflowRunStatus": "accepted"})
+    assert not await repo.replace_message_if_workflow_status(
+        "u1", stale, expected_status="pending"
+    )
+    saved = (await repo.list_messages("u1", session.id))[0]
+    assert saved.workflowRunStatus == "completed"
+    assert saved.content == "finished"
+
+
 class _FakeSessions:
     def __init__(self, session: Session) -> None:
         self.item = {**session.model_dump(mode="json"), "_etag": "e1"}
@@ -164,6 +214,85 @@ async def test_cosmos_document_list_cas_retries_and_merges():
     )
     assert fake.etags == ["e1", "e2"]
     assert saved.libraryDocumentIds == ["doc-a", "doc-b"]
+
+
+class _WorkflowMessages:
+    def __init__(self) -> None:
+        self.items: dict[str, dict] = {}
+        self.etag = 0
+        self.complete_before_replace = False
+
+    async def create_item(self, body):
+        if body["id"] in self.items:
+            raise CosmosResourceExistsError(message="exists")
+        self.etag += 1
+        self.items[body["id"]] = {**copy.deepcopy(body), "_etag": f"m{self.etag}"}
+
+    async def read_item(self, *, item, partition_key):
+        if item not in self.items:
+            raise CosmosResourceNotFoundError(message="missing")
+        return copy.deepcopy(self.items[item])
+
+    async def replace_item(
+        self,
+        *,
+        item,
+        body,
+        etag=None,
+        match_condition=None,
+    ):
+        current = self.items.get(item)
+        if current is None:
+            raise CosmosResourceNotFoundError(message="missing")
+        if self.complete_before_replace:
+            self.complete_before_replace = False
+            self.etag += 1
+            self.items[item] = {
+                **current,
+                "workflowRunStatus": "completed",
+                "content": "finished",
+                "_etag": f"m{self.etag}",
+            }
+            raise CosmosAccessConditionFailedError(message="etag")
+        if current["_etag"] != etag:
+            raise CosmosAccessConditionFailedError(message="etag")
+        self.etag += 1
+        self.items[item] = {**copy.deepcopy(body), "_etag": f"m{self.etag}"}
+
+
+async def test_cosmos_message_create_if_absent_and_status_cas():
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _FakeSessions(session)
+    repo._messages = _WorkflowMessages()
+    pending = Message(
+        id="run-assistant",
+        sessionId=session.id,
+        userId="u1",
+        role=MessageRole.assistant,
+        workflowRunStatus="pending",
+        workflowRunFingerprint="a" * 64,
+    )
+    assert await repo.add_message_if_absent("u1", pending)
+    assert not await repo.add_message_if_absent("u1", pending.model_copy())
+    accepted = pending.model_copy(update={"workflowRunStatus": "accepted"})
+    assert await repo.replace_message_if_workflow_status(
+        "u1", accepted, expected_status="pending"
+    )
+    saved = repo._messages.items[pending.id]
+    assert saved["workflowRunStatus"] == "accepted"
+
+    pending_again = {**saved, "workflowRunStatus": "pending"}
+    repo._messages.etag += 1
+    pending_again["_etag"] = f"m{repo._messages.etag}"
+    repo._messages.items[pending.id] = pending_again
+    repo._messages.complete_before_replace = True
+    stale = pending.model_copy(update={"workflowRunStatus": "accepted"})
+    assert not await repo.replace_message_if_workflow_status(
+        "u1", stale, expected_status="pending"
+    )
+    assert repo._messages.items[pending.id]["workflowRunStatus"] == "completed"
+    assert repo._messages.items[pending.id]["content"] == "finished"
 
 
 class _SummarySessions:

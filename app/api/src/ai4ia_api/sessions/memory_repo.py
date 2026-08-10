@@ -174,6 +174,40 @@ class InMemorySessionRepository:
             self._messages.setdefault(message.sessionId, []).append(message)
             return True
 
+    async def add_message_if_absent(self, user_id: str, message: Message) -> bool:
+        async with self._lock:
+            await self._owned_session(user_id, message.sessionId)
+            message.userId = user_id
+            bucket = self._messages.setdefault(message.sessionId, [])
+            if any(existing.id == message.id for existing in bucket):
+                return False
+            bucket.append(message.model_copy(deep=True))
+            return True
+
+    async def replace_message_if_workflow_status(
+        self,
+        user_id: str,
+        message: Message,
+        *,
+        expected_status: str,
+    ) -> bool:
+        async with self._lock:
+            await self._owned_session(user_id, message.sessionId)
+            bucket = self._messages.setdefault(message.sessionId, [])
+            for idx, existing in enumerate(bucket):
+                if existing.id != message.id:
+                    continue
+                if (
+                    existing.workflowRunStatus != expected_status
+                    or existing.workflowRunFingerprint
+                    != message.workflowRunFingerprint
+                ):
+                    return False
+                message.userId = user_id
+                bucket[idx] = message.model_copy(deep=True)
+                return True
+            return False
+
     async def upsert_message(self, user_id: str, message: Message) -> Message:
         async with self._lock:
             await self._owned_session(user_id, message.sessionId)

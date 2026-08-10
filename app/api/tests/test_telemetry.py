@@ -317,10 +317,14 @@ async def test_record_completion_adds_privacy_safe_lifecycle_timing(monkeypatch)
 class _StreamingResponse:
     status_code = 200
 
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, *_args):
+        self.events.append("gateway_closed")
         return None
 
     async def aiter_lines(self):
@@ -330,19 +334,29 @@ class _StreamingResponse:
 
 
 class _StreamingHttp:
+    def __init__(self, events: list[str]) -> None:
+        self.response = _StreamingResponse(events)
+
     def stream(self, *_args, **_kwargs):
-        return _StreamingResponse()
+        return self.response
 
 
 def test_successful_sse_closes_gateway_before_completion_event(client, monkeypatch):
     captured: list[tuple[str, dict]] = []
+    events: list[str] = []
+
+    def capture(name, attrs):
+        events.append(f"event:{name}")
+        captured.append((name, attrs))
+
     monkeypatch.setattr(
         "ai4ia_api.usage.service.emit_custom_event",
-        lambda name, attrs: captured.append((name, attrs)),
+        capture,
     )
+    http = _StreamingHttp(events)
     client.app.state.gateway = ModelGatewayClient(
         client.app.state.settings,
-        http_client=_StreamingHttp(),  # pyright: ignore[reportArgumentType]
+        http_client=http,  # pyright: ignore[reportArgumentType]
     )
     session_id = client.post(
         "/api/sessions", json={"title": "Timing", "model": "gpt-5.4"}
@@ -357,6 +371,7 @@ def test_successful_sse_closes_gateway_before_completion_event(client, monkeypat
     )
     assert response.status_code == 200
     assert "data: [DONE]" in response.text
+    assert events.index("gateway_closed") < events.index("event:chat_completion")
     event = next(attrs for name, attrs in captured if name == "chat_completion")
     assert event["gatewayCalls"] == 1
     assert event["gatewayTimingAvailable"] is True

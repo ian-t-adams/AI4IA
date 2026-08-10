@@ -451,6 +451,56 @@ class CosmosSessionRepository:
             pass
         return False
 
+    async def add_message_if_absent(self, user_id: str, message: Message) -> bool:
+        from azure.cosmos.exceptions import CosmosResourceExistsError
+
+        await self._owned_session(user_id, message.sessionId)
+        message.userId = user_id
+        try:
+            await self._messages.create_item(self._to_doc(message))
+        except CosmosResourceExistsError:
+            return False
+        return True
+
+    async def replace_message_if_workflow_status(
+        self,
+        user_id: str,
+        message: Message,
+        *,
+        expected_status: str,
+    ) -> bool:
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosResourceNotFoundError,
+        )
+
+        await self._owned_session(user_id, message.sessionId)
+        try:
+            current = await self._messages.read_item(
+                item=message.id, partition_key=message.sessionId
+            )
+        except CosmosResourceNotFoundError:
+            return False
+        if (
+            current.get("userId") != user_id
+            or current.get("workflowRunStatus") != expected_status
+            or current.get("workflowRunFingerprint")
+            != message.workflowRunFingerprint
+        ):
+            return False
+        message.userId = user_id
+        try:
+            await self._messages.replace_item(
+                item=message.id,
+                body=self._to_doc(message),
+                etag=current.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except (CosmosAccessConditionFailedError, CosmosResourceNotFoundError):
+            return False
+        return True
+
     async def upsert_message(self, user_id: str, message: Message) -> Message:
         await self._owned_session(user_id, message.sessionId)
         message.userId = user_id

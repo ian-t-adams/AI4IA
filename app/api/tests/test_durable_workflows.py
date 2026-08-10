@@ -17,10 +17,13 @@ import sys
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 
 from ai4ia_api.config import Settings
 from ai4ia_api.catalog import DeploymentOption
-from ai4ia_api.sessions.models import MessageStatus
+from ai4ia_api.routers.workflows import _claim_durable_run
+from ai4ia_api.sessions.memory_repo import InMemorySessionRepository
+from ai4ia_api.sessions.models import Message, MessageRole, MessageStatus, Session
 from ai4ia_api.usage.models import TokenUsage
 from ai4ia_api.workflows.models import MAX_STEPS
 from ai4ia_api.workflows.durable import (
@@ -37,6 +40,7 @@ from ai4ia_api.workflows.durable import (
     _truncate_for_payload,
     _usage_to_dict,
     build_orchestration_payload,
+    durable_message_ids,
     durable_run_fingerprint,
 )
 
@@ -243,7 +247,7 @@ def test_durable_run_returns_202_and_does_not_run_in_request(client):
     messages = client.get(f"/api/sessions/{sid}/messages").json()
     assert [m["role"] for m in messages] == ["user", "assistant"]
     assert messages[1]["status"] == "streaming"
-    assert messages[1]["workflowRunStatus"] == "pending"
+    assert messages[1]["workflowRunStatus"] == "accepted"
 
 
 def test_durable_run_requires_a_caller_key_before_any_persistence(client):
@@ -316,14 +320,14 @@ def test_ambiguous_schedule_retry_reuses_messages_and_run(client):
     assert second.json()["runId"] == first.json()["runId"]
     third = client.post("/api/workflows/summarize/run", json=body)
     assert third.status_code == 202
-    assert len(stub.scheduled) == 3
+    assert len(stub.scheduled) == 2
     assert len(
         {scheduled_payload["context"]["runId"] for scheduled_payload, _ in stub.scheduled}
     ) == 1
     messages = client.get(f"/api/sessions/{sid}/messages").json()
     assert len(messages) == 2
     assert len({message["id"] for message in messages}) == 2
-    assert messages[1]["workflowRunStatus"] == "pending"
+    assert messages[1]["workflowRunStatus"] == "accepted"
 
 
 def test_same_key_with_different_execution_input_is_rejected(client):
@@ -393,7 +397,8 @@ def test_retry_cannot_overwrite_a_terminal_result_that_lands_after_its_read(clie
                         message
                         for message in snapshot
                         if message.role.value == "assistant"
-                        and message.workflowRunStatus == "pending"
+                        and message.workflowRunStatus
+                        in {"pending", "acceptance_unknown"}
                     ),
                     None,
                 )
@@ -470,6 +475,153 @@ def test_run_failure_replay_is_accepted_not_reported_as_schedule_failure(client)
     assert replay.status_code == 202
     assert replay.json()["status"] == "accepted"
     assert len(stub.scheduled) == 1
+
+
+def _claim_messages(
+    session_id: str,
+    *,
+    fingerprint: str,
+    content: str = "otters",
+) -> tuple[Message, Message]:
+    run_id = "u1:stable"
+    user_id, assistant_id = durable_message_ids(run_id)
+    return (
+        Message(
+            id=user_id,
+            sessionId=session_id,
+            userId="u1",
+            role=MessageRole.user,
+            content=content,
+            workflowRunId=run_id,
+            workflowRunStatus="accepted",
+            workflowRunFingerprint=fingerprint,
+        ),
+        Message(
+            id=assistant_id,
+            sessionId=session_id,
+            userId="u1",
+            role=MessageRole.assistant,
+            status=MessageStatus.streaming,
+            workflowRunId=run_id,
+            workflowRunStatus="pending",
+            workflowRunFingerprint=fingerprint,
+        ),
+    )
+
+
+class _InitialReadBarrierRepository:
+    """Force two claims to read absence before either may create."""
+
+    def __init__(self, inner: InMemorySessionRepository) -> None:
+        self.inner = inner
+        self.initial_reads = 0
+        self.both_read = asyncio.Event()
+        self.winner_finished = asyncio.Event()
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    async def list_messages(self, user_id: str, session_id: str) -> list[Message]:
+        snapshot = await self.inner.list_messages(user_id, session_id)
+        if self.initial_reads < 2:
+            self.initial_reads += 1
+            if self.initial_reads == 2:
+                self.both_read.set()
+            await self.both_read.wait()
+        return snapshot
+
+    async def add_message_if_absent(
+        self, user_id: str, message: Message
+    ) -> bool:
+        created = await self.inner.add_message_if_absent(user_id, message)
+        if message.role is MessageRole.assistant and not created:
+            await self.winner_finished.wait()
+        return created
+
+
+@pytest.mark.anyio
+async def test_concurrent_identical_claim_schedules_once_and_preserves_terminal():
+    inner = InMemorySessionRepository()
+    session = await inner.create_session(Session(userId="u1"))
+    repo = _InitialReadBarrierRepository(inner)
+    schedules = 0
+
+    async def request():
+        nonlocal schedules
+        user_message, assistant = _claim_messages(
+            session.id, fingerprint="a" * 64
+        )
+        owns, current = await _claim_durable_run(
+            repo,
+            user_id="u1",
+            user_message=user_message,
+            pending_assistant=assistant,
+        )
+        if owns:
+            schedules += 1
+            terminal = current.model_copy(
+                update={
+                    "content": "finished",
+                    "status": MessageStatus.complete,
+                    "workflowRunStatus": "completed",
+                }
+            )
+            await repo.upsert_message("u1", terminal)
+            repo.winner_finished.set()
+        return owns
+
+    owners = await asyncio.gather(request(), request())
+    assert sorted(owners) == [False, True]
+    assert repo.initial_reads == 2
+    assert schedules == 1
+    messages = await repo.list_messages("u1", session.id)
+    assistant = next(m for m in messages if m.role is MessageRole.assistant)
+    assert assistant.content == "finished"
+    assert assistant.workflowRunStatus == "completed"
+
+
+@pytest.mark.anyio
+async def test_concurrent_different_fingerprint_has_one_owner_and_one_conflict():
+    inner = InMemorySessionRepository()
+    session = await inner.create_session(Session(userId="u1"))
+    repo = _InitialReadBarrierRepository(inner)
+    schedules = 0
+
+    async def request(fingerprint: str, content: str):
+        nonlocal schedules
+        user_message, assistant = _claim_messages(
+            session.id, fingerprint=fingerprint, content=content
+        )
+        owns, _current = await _claim_durable_run(
+            repo,
+            user_id="u1",
+            user_message=user_message,
+            pending_assistant=assistant,
+        )
+        if owns:
+            schedules += 1
+            repo.winner_finished.set()
+        return owns
+
+    outcomes = await asyncio.gather(
+        request("a" * 64, "otters"),
+        request("b" * 64, "badgers"),
+        return_exceptions=True,
+    )
+    assert sum(outcome is True for outcome in outcomes) == 1
+    conflicts = [outcome for outcome in outcomes if isinstance(outcome, HTTPException)]
+    assert len(conflicts) == 1
+    assert conflicts[0].status_code == 409
+    assert repo.initial_reads == 2
+    assert schedules == 1
+    user = next(
+        message
+        for message in await repo.list_messages("u1", session.id)
+        if message.role is MessageRole.user
+    )
+    winner_index = outcomes.index(True)
+    assert user.content == ("otters" if winner_index == 0 else "badgers")
+    assert user.workflowRunFingerprint == ("a" * 64 if winner_index == 0 else "b" * 64)
 
 
 def test_non_durable_run_still_executes_synchronously(client):

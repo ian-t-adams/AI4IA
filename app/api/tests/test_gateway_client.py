@@ -706,6 +706,54 @@ async def test_stream_responses_yields_deltas_then_terminal_usage():
     }
 
 
+async def test_closing_outer_responses_stream_closes_nested_http_response():
+    class TrackingResponse:
+        status_code = 200
+
+        def __init__(self) -> None:
+            self.exited = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            self.exited = True
+
+        async def aiter_lines(self):
+            yield 'data: {"type":"response.output_text.delta","delta":"hi"}'
+            yield ""
+            yield (
+                'data: {"type":"response.completed","response":{"usage":'
+                '{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}'
+            )
+            yield ""
+
+    class TrackingHttp:
+        def __init__(self) -> None:
+            self.response = TrackingResponse()
+
+        def stream(self, *_args, **_kwargs):
+            return self.response
+
+    http = TrackingHttp()
+    client = ModelGatewayClient(
+        make_settings(
+            model_gateway_url="http://gw.test/openai",
+            gateway_provider_style="azure_openai_native",
+        ),
+        http_client=http,  # type: ignore[arg-type]
+    )
+    stream = client.stream(deployment="d", messages=[], api="responses")
+
+    assert (await anext(stream)).delta == "hi"
+    assert (await anext(stream)).done is True
+    assert http.response.exited is False
+
+    await stream.aclose()
+
+    assert http.response.exited is True
+
+
 async def test_stream_responses_incomplete_terminates_cleanly():
     sse = (
         'data: {"type":"response.output_text.delta","delta":"part"}\n'
