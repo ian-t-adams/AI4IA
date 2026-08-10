@@ -7,7 +7,7 @@ so "CI is green" never proved anything about what production runs. This is not
 theoretical: when these pins were taken, `python:3.12-slim` had moved the
 previous day.
 
-Pinning `tag@sha256:<digest>` fixes that for the two images CI actually builds.
+Pinning `tag@sha256:<digest>` fixes that for every image CI actually builds.
 The digest is the enforcement; the tag is kept because Dependabot's docker
 ecosystem parses and rewrites the pair, and because a bare digest tells a human
 reader nothing about the major version.
@@ -57,19 +57,7 @@ APP_CI = ROOT / ".github/workflows/app-ci.yml"
 # `.yamllint` excludes the same path for the same reason.
 VENDORED_PREFIXES = ("proxy/SimpleL7Proxy/",)
 
-# Tracked Dockerfiles that deliberately carry no digest pin, with the reason.
-# Listing one here is a claim that CI cannot verify a pin for it; the test below
-# checks that claim against docker-build.yml rather than trusting it.
-UNPINNED_DOCKERFILES = {
-    "proxy/Dockerfile": (
-        "docker-build.yml deliberately keeps the vendored SimpleL7Proxy image out "
-        "of scope to avoid touching the gateway build path, so a digest here would "
-        "be unverified: a typo would first surface as a failed `azd deploy`. Its "
-        "bases are mcr.microsoft.com/dotnet/{sdk,aspnet} tags, which stay mutable. "
-        "Layer B still deploys the proxy by digest, so the RUNNING artifact is "
-        "identified even though its base is not."
-    ),
-}
+UNPINNED_DOCKERFILES: dict[str, str] = {}
 
 # `FROM [--flag=value ...] <ref> [AS <stage>]`
 FROM_LINE = re.compile(
@@ -186,10 +174,23 @@ class BaseImagePinTests(unittest.TestCase):
         for path in self.dockerfiles:
             self.assertFalse(path.startswith(VENDORED_PREFIXES), path)
 
-    def test_docker_build_workflow_builds_the_two_app_images(self) -> None:
+    def test_docker_build_workflow_builds_all_service_images(self) -> None:
         """The claim 'a wrong digest fails on the PR' depends on this."""
 
-        self.assertEqual(self.built, {"app/web/Dockerfile", "app/api/Dockerfile"})
+        self.assertEqual(
+            self.built,
+            {"app/web/Dockerfile", "app/api/Dockerfile", "proxy/Dockerfile"},
+        )
+
+    def test_proxy_pins_are_verified_as_multi_platform_indexes(self) -> None:
+        workflow = DOCKER_BUILD.read_text(encoding="utf-8")
+        self.assertIn("Verify proxy bases are multi-platform index digests", workflow)
+        self.assertIn("docker buildx imagetools inspect", workflow)
+        self.assertIn("application/vnd.oci.image.index.v1+json", workflow)
+        self.assertIn(
+            "application/vnd.docker.distribution.manifest.list.v2+json",
+            workflow,
+        )
 
     def test_every_tracked_dockerfile_is_classified(self) -> None:
         classified = self.built | set(UNPINNED_DOCKERFILES)

@@ -13,9 +13,8 @@
 # If those settings are turned off again, this file silently stops covering
 # security.
 #
-# Scope: the code we own (app/web npm, app/api uv), the GitHub Actions we run,
-# and our service container base images. The vendored proxy/SimpleL7Proxy NuGet
-# tree is intentionally pinned to an upstream commit and is left unmanaged here.
+# Scope: the code we own, the exact proxy dependency graph we build, the GitHub
+# Actions we run, and our service container base images.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -45,6 +44,23 @@ updates:
     open-pull-requests-limit: 5
     groups:
       api-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # These four projects restore as one locked graph. Dependabot must update the
+  # project declaration and packages.lock.json together; CI/Docker both use
+  # --locked-mode, so an incomplete update fails closed.
+  - package-ecosystem: nuget
+    directories:
+      - /proxy/AI4IA.Proxy.Tests
+      - /proxy/Shared
+      - /proxy/Shared-parser
+      - /proxy/SimpleL7Proxy
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      proxy-deps:
         patterns: ["*"]
         update-types: ["minor", "patch"]
 

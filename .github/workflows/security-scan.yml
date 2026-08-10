@@ -1,6 +1,6 @@
 name: security-scan
 
-# Additive, report-oriented security scanning. This workflow does not change any
+# Additive security scanning. This workflow does not change any
 # application, infrastructure, or deployment behavior — it only reports.
 #
 #   * Dependency vulnerabilities  -> Trivy filesystem scan (HIGH,CRITICAL),
@@ -67,8 +67,6 @@ jobs:
           output: trivy-deps.sarif
           # Report-only: never block on (often unfixable) upstream dependency CVEs.
           exit-code: "0"
-          # Vendored upstream source (microsoft/SimpleL7Proxy) is out of scope.
-          skip-dirs: proxy/SimpleL7Proxy
           version: ${{ env.TRIVY_VERSION }}
 
       - name: Upload dependency SARIF to code scanning
@@ -102,8 +100,6 @@ jobs:
           format: table
           # Blocking: misconfigurations are actionable and fixable in this repo.
           exit-code: "1"
-          # Vendored upstream source (microsoft/SimpleL7Proxy) is out of scope.
-          skip-dirs: proxy/SimpleL7Proxy
           version: ${{ env.TRIVY_VERSION }}
 
   secret-scan:

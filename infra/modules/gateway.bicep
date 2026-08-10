@@ -154,6 +154,7 @@ var primaryFoundryRealtimeWssUrl = '${replace(endsWith(primaryFoundryEndpoint, '
 var speechVoiceLiveAccountBase = endsWith(speechVoiceLiveAccountEndpoint, '/') ? substring(speechVoiceLiveAccountEndpoint, 0, max(length(speechVoiceLiveAccountEndpoint) - 1, 0)) : speechVoiceLiveAccountEndpoint
 var speechVoiceLiveWssBase = replace(speechVoiceLiveAccountBase, 'https://', 'wss://')
 var proxyAppName = 'ca-proxy-${environmentName}'
+var proxyContainerConfig = loadJsonContent('../proxy-container-config.json')
 
 // ---------------- APIM trust boundary ----------------
 // The shared Basic v2 APIM is created and owned by apimcore.bicep; this module
@@ -665,6 +666,19 @@ var staticEnv = [
   { name: 'LogAllRequestHeaders', value: 'false' }
   { name: 'LogAllResponseHeaders', value: 'false' }
   { name: 'LogHeaders', value: '[]' }
+  // ACA calls startup/readiness/liveness every 5/10/30 seconds. SimpleL7Proxy
+  // classifies every successful hit as EventType.Probe, so its defaults fan each
+  // healthy hit to console, App Insights, and the event logger. The event type
+  // does not distinguish success from failure, so suppress it at all three
+  // destinations rather than patching the vendored event path. ACA platform
+  // health/restart metrics remain enabled below; circuit-breaker, exception, and
+  // recovery warning logs remain routed.
+  { name: 'LogToConsole', value: string(proxyContainerConfig.logging.logToConsole) }
+  { name: 'LogToAI', value: string(proxyContainerConfig.logging.logToAI) }
+  {
+    name: 'LogToEvents'
+    value: string(proxyContainerConfig.logging.logToEvents)
+  }
   { name: 'AppInsightsConnectionString', value: appInsightsConnectionString }
   { name: 'AZURE_CLIENT_ID', value: proxyIdentityClientId }
   { name: 'CONTAINER_APP_NAME', value: proxyAppName }

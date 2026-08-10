@@ -1,19 +1,21 @@
-# Vendored from microsoft/SimpleL7Proxy (MIT) @ d9eb1d1fa42820792a9699bfc253562fba07d977
-# Build context is ./proxy (the azd "proxy" service project dir). This differs
-# from the upstream Dockerfile (whose context is the repo's src/ dir) only in
-# that it ALSO copies Shared-parser.csproj before `dotnet restore` — the proxy
-# project references it, so the upstream file fails restore without it. The
-# source tree also carries the documented AI4IA correctness/security patches.
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build-env
+# AI4IA-owned wrapper for microsoft/SimpleL7Proxy (MIT) at
+# d9eb1d1fa42820792a9699bfc253562fba07d977; the file-level provenance is in
+# proxy/upstream-provenance.json. Refresh these OCI manifest-list digests with:
+# docker buildx imagetools inspect <tag> --format '{{json .Manifest.Digest}}'
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:72dd743782f2ae7e5476fd64f6a460045e3998dc862218b80e6944cba79a01b0 AS build-env
 WORKDIR /app
 
-# Copy project files first so restore is cached independently of source changes.
+# Copy restore inputs first so the locked restore is cached independently of source changes.
+COPY Directory.Build.props ./
 COPY Shared/Shared.csproj ./Shared/
+COPY Shared/packages.lock.json ./Shared/
 COPY Shared-parser/Shared-parser.csproj ./Shared-parser/
+COPY Shared-parser/packages.lock.json ./Shared-parser/
 COPY SimpleL7Proxy/SimpleL7Proxy.csproj ./SimpleL7Proxy/
 COPY SimpleL7Proxy/global.json ./SimpleL7Proxy/
+COPY SimpleL7Proxy/packages.lock.json ./SimpleL7Proxy/
 WORKDIR /app/SimpleL7Proxy
-RUN dotnet restore
+RUN dotnet restore --locked-mode
 
 # Copy the rest of the source and publish.
 WORKDIR /app
@@ -21,9 +23,9 @@ COPY Shared/ ./Shared/
 COPY Shared-parser/ ./Shared-parser/
 COPY SimpleL7Proxy/ ./SimpleL7Proxy/
 WORKDIR /app/SimpleL7Proxy
-RUN dotnet publish -c Release -o /app/out
+RUN dotnet publish -c Release -o /app/out --no-restore
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:70d6f993bf715a031f027832a19cfb7f894df66c8b5eb40be0aaee820ad5d119
 WORKDIR /app
 COPY --from=build-env /app/out .
 # Default per-user policy + Entra App-ID allowlist (overridable via App Config).

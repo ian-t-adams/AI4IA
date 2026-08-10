@@ -1,0 +1,13 @@
+# Proxy image vulnerability exceptions.
+#
+# Keep this file empty unless a HIGH/CRITICAL finding has no available patched
+# package or base image. Each exception must be one exact CVE ID and include an
+# owner, rationale, upstream tracking URL, and expiry date in the immediately
+# preceding comments, using this exact shape:
+# owner: @github-handle
+# expires: YYYY-MM-DD
+# tracking: https://upstream.example/issue
+# rationale: No patched release exists; compensating control ...
+# CVE-YYYY-NNNN
+#
+# Wildcards, GHSA aliases, and severity-wide suppressions are prohibited.

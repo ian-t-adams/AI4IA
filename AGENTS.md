@@ -109,7 +109,7 @@ enough to mutation-test a pure TypeScript module before the junction exists.
 for humans and Dependabot, the digest for enforcement (audit finding P1-7). A
 tag is a mutable pointer, so without the digest `docker-build` on a PR and
 `azd deploy` later can resolve `22-alpine` to different images with no diff
-anywhere to show it. `docker-build` builds both app images on every PR, so a
+anywhere to show it. `docker-build` builds all three service images on every PR, so a
 wrong digest fails there rather than at deploy time.
 
 Refresh with
@@ -306,15 +306,16 @@ so a newly added one is covered the day it is written.
 
 ### Docker image builds
 
-`docker-build` actually builds (never pushes) the `app/web` and `app/api` container images on every PR (and on pushes to `main` touching `app/web/**` or `app/api/**`), so a broken/renamed base image tag, a bad digest pin, or an install failure specific to the pinned Node/Python version fails CI instead of only surfacing at `azd deploy`. It is separate from `quality`'s `hadolint` job, which only lints Dockerfile syntax and never resolves an image or installs anything:
+`docker-build` actually builds (never pushes) the `app/web`, `app/api`, and `proxy` container images on every PR (and on relevant pushes to `main`), so a broken base reference, bad digest pin, or install failure fails CI instead of only surfacing at `azd deploy`. It is separate from `quality`'s `hadolint` job, which only lints Dockerfile syntax and never resolves an image or installs anything:
 
 ```powershell
 docker buildx build --file app/web/Dockerfile --load app/web
 docker buildx build --file app/api/Dockerfile --load app/api
 docker run --rm <api-image> python -c "import ai4ia_api.main"
+docker buildx build --file proxy/Dockerfile --load proxy
 ```
 
-Because both app images are built here on every PR, this is also what makes their base-image digest pins trustworthy: a digest that does not resolve fails on the PR that introduces it. `proxy/Dockerfile` (vendored SimpleL7Proxy) is intentionally out of scope for `docker-build` to avoid touching the gateway build path; it is still linted by `quality`'s `hadolint` job and its binary is compiled/tested by `quality`'s `proxy-dotnet` job. Its `mcr.microsoft.com/dotnet/*` bases are therefore **not** digest-pinned — a pin CI cannot resolve would first fail at deploy time. That exemption is recorded in `scripts/tests/test_base_image_pins.py`, which fails if the proxy ever does get a build job without also getting a pin.
+Because every service image is built here on every PR, their base-image digest pins are trustworthy: a digest that does not resolve fails on the PR that introduces it. The proxy's .NET SDK and ASP.NET chiseled runtime both use manifest-list digests, its NuGet restore runs in locked mode, and the final loaded proxy image is blocked on HIGH/CRITICAL findings under the exact-CVE `proxy/.trivyignore` policy. The job retains an SPDX SBOM and unsigned build metadata; production signing/verification remains a roadmap gap until an approved identity/key design exists.
 
 `docker-build`'s `dockerignore-context` job builds separate, throwaway probe images from `app/web/.dockerignore` and `app/api/.dockerignore` plus synthetic root- and nested-depth dotenv files to prove secrets are excluded from the Docker build context recursively (Docker's `.dockerignore` matching is not recursive by default the way Git's `.gitignore` is — a pattern needs an explicit `**/` prefix to match at every depth) while committed `.env.example` files still survive:
 
@@ -395,7 +396,9 @@ python3 -m unittest scripts.tests.test_status_snapshot_labels   # live services 
 python3 -m unittest scripts.tests.test_portal_contrast          # WCAG gate for site/assets/styles.css (no build, no other runner)
 python3 -m unittest scripts.tests.test_brand_assets             # every committed logo: coverage, palette, size
 python3 -m unittest scripts.tests.test_dependabot_config        # keeps dependabot.yml and the uv.lock gate in step
-python3 -m unittest scripts.tests.test_lockfile_provenance     # uv.lock must resolve from public PyPI, not a corporate mirror
+python3 -m unittest scripts.tests.test_lockfile_provenance      # uv.lock must resolve from public PyPI, not a corporate mirror
+python3 -m unittest scripts.tests.test_proxy_provenance         # vendored hashes and explicit AI4IA patch list cannot drift
+python3 -m unittest scripts.tests.test_proxy_delivery_contracts # probe suppression and final-image evidence stay wired
 python3 -m unittest scripts.tests.test_status_consistency       # roadmap/audit current-state dispositions cannot conflict
 python3 -m unittest scripts.tests.test_post_deploy_verify       # executes capture/verify/rollback behavior with Azure stubbed
 python3 -m unittest scripts.tests.test_azure_cli_safety         # az exit/subscription assertions and typed purge approvals
@@ -406,23 +409,30 @@ python3 -m unittest scripts.tests.test_markdown_anchors         # Markdown #frag
 python3 -m unittest scripts.tests.test_gating_workflows         # required PR checks always report and match the ruleset inventory
 python3 -m unittest scripts.tests.test_markdown_tables          # Markdown tables cannot silently swallow rows/columns
 python3 -m unittest scripts.tests.test_base_image_pins          # base images CI builds must be digest-pinned
-python3 -m unittest scripts.tests.test_immutable_image_promotion # deploy.yml builds once and deploys that digest
+python3 -m unittest scripts.tests.test_immutable_image_promotion # legacy filename; content-addressed exact-digest deployment
 python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name azd vars a deploy can actually read
 ```
 
 `test_custom_domain_preflight`, `test_pages_status_refresh`,
 `test_dependabot_config`, `test_post_deploy_verify`,
-`test_gating_workflows`, `test_base_image_pins`, and
-`test_immutable_image_promotion` need `PyYAML` (pinned in the workflow);
-`test_immutable_image_promotion` additionally needs `bash` and skips without it.
+`test_gating_workflows`, `test_base_image_pins`,
+`test_proxy_delivery_contracts`, and
+`test_immutable_image_promotion` needs `PyYAML` (pinned in the workflow).
+`test_immutable_image_promotion` additionally needs `bash`
+and skips without it.
 The rest are stdlib-only. `security-scan` runs Trivy filesystem/config scans and
-gitleaks.
+gitleaks. It scans the full proxy tree: `.trivyignore.yaml` suppresses only the
+untouched upstream Dockerfile and Kubernetes sample by exact path, and
+`.gitleaksignore` suppresses one historical upstream `key1` placeholder by exact
+commit/path/rule/line fingerprint. `test_proxy_delivery_contracts` verifies
+those exceptions never expand onto an AI4IA-patched vendored file.
 
 The vendored proxy plus AI4IA auth guard tests use .NET 10:
 
 ```powershell
-dotnet build proxy/SimpleL7Proxy/SimpleL7Proxy.csproj --configuration Release
-dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release
+dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --locked-mode
+dotnet build proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-restore
+dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-build --no-restore
 ```
 
 ### Branch protection on `main`

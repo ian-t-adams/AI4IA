@@ -1,7 +1,8 @@
 name: codeql
 
-# Static analysis (SAST) for our first-party code. The vendored proxy/SimpleL7Proxy
-# (C#) is pinned to an upstream commit and is intentionally not scanned here.
+# Static analysis (SAST) for first-party code and the exact proxy source we build.
+# C# uses a locked manual build so AI4IA patches inside the vendored tree cannot
+# hide behind the upstream boundary.
 on:
   push:
     branches: [main]
@@ -36,6 +37,8 @@ jobs:
             build-mode: none
           - language: javascript-typescript
             build-mode: none
+          - language: csharp
+            build-mode: manual
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,6 +52,19 @@ jobs:
           # redaction) from analysis so they don't become taint sources for the
           # clear-text-logging query. See the config file for the full rationale.
           config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Install .NET 10
+        if: matrix.language == 'csharp'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build proxy for CodeQL
+        if: matrix.language == 'csharp'
+        run: |
+          dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --locked-mode --nologo
+          dotnet build proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj \
+            --configuration Release --no-restore --nologo
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@d1ba80a13dd99fba24a470575428917156a28b43 # v4.37.5

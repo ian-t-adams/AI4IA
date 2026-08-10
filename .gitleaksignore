@@ -1,0 +1,5 @@
+# Exact fingerprint for upstream's historical default proxy-key placeholder.
+# Commit f80974f vendored "key1" as ValidateAuthKey1's default; it was never a
+# credential and current source uses an empty string. The fingerprint binds the
+# exception to one commit, one patched file, one rule, and one line.
+f80974f2aaeab53a3b329a7b518aea43a5248cb6:proxy/SimpleL7Proxy/Config/ProxyConfig.cs:generic-api-key:80

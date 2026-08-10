@@ -89,10 +89,13 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.x
-      - name: Build proxy and test AI4IA auth guard
+      - name: Restore, build, and test proxy in locked mode
         run: |
-          dotnet build proxy/SimpleL7Proxy/SimpleL7Proxy.csproj --configuration Release --nologo
-          dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --nologo
+          dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --locked-mode --nologo
+          dotnet build proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj \
+            --configuration Release --no-restore --nologo
+          dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj \
+            --configuration Release --no-build --no-restore --nologo
 
   yamllint:
     name: yamllint
@@ -251,6 +254,22 @@ jobs:
           # when a Dependabot PR regenerated the file from PyPI. stdlib-only.
           python3 -m unittest scripts.tests.test_lockfile_provenance
 
+      - name: Run proxy upstream provenance tests
+        run: |
+          set -euo pipefail
+          # The manifest records every upstream/local SHA-256 and the explicit
+          # AI4IA patch set. Any new, deleted, or changed vendored file must be
+          # classified deliberately before this gate passes.
+          python3 -m unittest scripts.tests.test_proxy_provenance
+
+      - name: Run proxy delivery contract tests
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user --quiet "PyYAML==${PYYAML_VERSION}"
+          python3 -m unittest scripts.tests.test_proxy_delivery_contracts
+        env:
+          PYYAML_VERSION: 6.0.3
+
       - name: Run status consistency tests
         run: |
           set -euo pipefail
@@ -407,7 +426,7 @@ jobs:
         env:
           PYYAML_VERSION: 6.0.3
 
-      - name: Run immutable image promotion tests
+      - name: Run content-addressed deployment tests
         run: |
           set -euo pipefail
           # deploy.yml no longer lets `azd deploy` rebuild from source: it builds
