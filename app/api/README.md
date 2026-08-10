@@ -48,9 +48,10 @@ ruff check .
 pytest -q
 ```
 
-The container image runs as non-root UID `10001` and declares a Docker
-`HEALTHCHECK` against `/health/live`. Azure Container Apps probe wiring still
-lives in Bicep, but local Docker runs now have a basic liveness signal too.
+The container image runs as non-root UID `10001`. Azure Container Apps is the
+health authority: Bicep wires process-only `/health/live` liveness and cached
+session-store `/health/ready` readiness probes. The image does not declare a
+second Docker health policy that ACA ignores.
 
 ## Configuration posture
 

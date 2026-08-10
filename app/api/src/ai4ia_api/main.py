@@ -21,7 +21,7 @@ from .agents.service import AgentService
 from .agents.summarization import build_summarization_service
 from .agents.tool_exec import attachable_tool_names, build_tools
 from .catalog import load_catalog
-from .config import Settings, get_settings
+from .config import Environment, Settings, get_settings
 from .official_mcp_catalog import load_official_mcp_catalog
 from .errors import error_response, register_error_handlers
 from .entitlements.factory import build_default_entitlement, build_entitlement_store
@@ -89,6 +89,7 @@ from .websearch.health import WebSearchHealth
 from .workflows.factory import build_workflow_store
 from .workflows.service import WorkflowService
 from .routers import workflows as workflows_router
+from .routers.health import SessionStoreReadiness
 
 _CORRELATION_HEADER = "x-correlation-id"
 
@@ -116,6 +117,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = settings
         app.state.auth_provider = build_auth_provider(settings)
         app.state.session_repo = build_session_repository(settings)
+        app.state.session_readiness = SessionStoreReadiness(app.state.session_repo)
         # Per-user document library. Feature-flagged + default-OFF:
         # build_document_library returns None unless
         # settings.document_understanding_enabled, so the ``/api/library`` API
@@ -506,7 +508,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 except Exception:  # noqa: BLE001
                     logger.warning("web search service close failed", exc_info=True)
 
-    app = FastAPI(title="AI4IA API", version="0.1.0", lifespan=lifespan)
+    openapi_enabled = (
+        settings.openapi_enabled
+        if settings.openapi_enabled is not None
+        else settings.env is not Environment.prod
+    )
+    app = FastAPI(
+        title="AI4IA API",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url="/docs" if openapi_enabled else None,
+        redoc_url="/redoc" if openapi_enabled else None,
+        openapi_url="/openapi.json" if openapi_enabled else None,
+    )
     register_error_handlers(app)
 
     @app.middleware("http")

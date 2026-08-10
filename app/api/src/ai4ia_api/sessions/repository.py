@@ -21,6 +21,10 @@ class SessionConflictError(Exception):
 
 @runtime_checkable
 class SessionRepository(Protocol):
+    async def check_ready(self) -> None:
+        """Prove the backing store is reachable without reading user data."""
+        ...
+
     async def create_session(self, session: Session) -> Session: ...
 
     async def get_session(self, user_id: str, session_id: str) -> Session: ...
@@ -68,6 +72,30 @@ class SessionRepository(Protocol):
     async def add_message_if_summary_version(
         self, user_id: str, message: Message, *, expected_version: int
     ) -> bool: ...
+
+    async def claim_workflow_run_if_absent(
+        self,
+        user_id: str,
+        user_message: Message,
+        pending_assistant: Message,
+    ) -> bool:
+        """Atomically create both deterministic workflow claim messages.
+
+        Both rows share the session partition. Returns False when either id
+        exists; implementations must create both rows or neither row.
+        """
+        ...
+
+    async def replace_message_if_workflow_status(
+        self,
+        user_id: str,
+        message: Message,
+        *,
+        expected_status: str,
+        expected_lease_token: str | None,
+    ) -> bool:
+        """Replace a workflow message only while its status and lease match."""
+        ...
 
     async def upsert_message(self, user_id: str, message: Message) -> Message: ...
 

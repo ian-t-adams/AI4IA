@@ -24,9 +24,14 @@ The run path mirrors the chat endpoint's hard invariants, in order:
 """
 from __future__ import annotations
 
+import uuid
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
+from math import ceil
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
@@ -40,8 +45,13 @@ from ..sessions.models import Message, MessageRole, MessageStatus
 from ..sessions.repository import SessionNotFoundError, SessionRepository
 from ..usage.service import UsageService
 from ..workflows.durable import (
+    DurableScheduleAcceptanceUnknownError,
+    DurableScheduleRejectedError,
     DurableWorkflowsUnavailableError,
     build_orchestration_payload,
+    durable_message_ids,
+    durable_run_fingerprint,
+    durable_run_id,
 )
 from ..workflows.models import (
     MAX_RUN_INPUT_LEN,
@@ -56,6 +66,34 @@ from ..workflows.runner import run_workflow
 from ..workflows.service import WorkflowService
 
 router = APIRouter(prefix="/api", tags=["workflows"])
+_DURABLE_SCHEDULING_LEASE_SECONDS = 30
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _new_lease_token() -> str:
+    return uuid.uuid4().hex
+
+
+def _scheduling_retry(
+    assistant: Message,
+) -> tuple[int | None, datetime | None]:
+    if assistant.workflowRunStatus == "acceptance_unknown":
+        return 1, assistant.workflowScheduleLeaseExpiresAt
+    if assistant.workflowRunStatus != "pending":
+        return None, None
+    expires_at = assistant.workflowScheduleLeaseExpiresAt
+    if expires_at is None:
+        return 1, None
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    remaining = ceil((expires_at - _utc_now()).total_seconds())
+    return (
+        max(1, min(remaining, _DURABLE_SCHEDULING_LEASE_SECONDS + 1)),
+        expires_at,
+    )
 
 
 class WorkflowListResponse(BaseModel):
@@ -79,14 +117,24 @@ class WorkflowRunRequest(BaseModel):
     # silently downgraded when the feature is off, so a caller that needs
     # durability is never told "done" by a run that cannot survive a restart.
     durable: bool = False
+    idempotencyKey: str | None = Field(default=None, min_length=8, max_length=128)
+
+    @model_validator(mode="after")
+    def require_durable_idempotency_key(self) -> WorkflowRunRequest:
+        if self.durable and self.idempotencyKey is None:
+            raise ValueError("idempotencyKey is required when durable is true")
+        return self
 
 
 class WorkflowRunAcceptedResponse(BaseModel):
-    """202 body for a durable run. The assistant message does not exist yet."""
+    """202 body for accepted or recoverably pending durable scheduling."""
 
     sessionId: str
     runId: str
     status: str = "accepted"
+    idempotencyKey: str
+    retryAfterSeconds: int | None = None
+    leaseExpiresAt: datetime | None = None
 
 
 class WorkflowRunStatusResponse(BaseModel):
@@ -101,6 +149,132 @@ class WorkflowRunResponse(BaseModel):
     sessionId: str
     ok: bool
     message: Message
+
+
+async def _claim_durable_run(
+    repo: SessionRepository,
+    *,
+    user_id: str,
+    user_message: Message,
+    pending_assistant: Message,
+    now: Callable[[], datetime] | None = None,
+    lease_token_factory: Callable[[], str] = _new_lease_token,
+) -> tuple[bool, Message]:
+    """Atomically claim scheduling ownership for one deterministic run id."""
+
+    def conflict() -> HTTPException:
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency key was already used for a different workflow run.",
+        )
+
+    def records(messages: list[Message]) -> tuple[Message | None, Message | None]:
+        return (
+            next((message for message in messages if message.id == user_message.id), None),
+            next(
+                (message for message in messages if message.id == pending_assistant.id),
+                None,
+            ),
+        )
+
+    def validate(
+        existing_user: Message | None, existing_assistant: Message | None
+    ) -> None:
+        if (existing_user is None) != (existing_assistant is None):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Durable workflow claim is incomplete.",
+            )
+        if existing_user is not None and (
+            existing_user.role is not MessageRole.user
+            or existing_user.workflowRunId != user_message.workflowRunId
+            or existing_user.workflowRunFingerprint
+            != user_message.workflowRunFingerprint
+            or existing_user.content != user_message.content
+        ):
+            raise conflict()
+        if existing_assistant is not None and (
+            existing_assistant.role is not MessageRole.assistant
+            or existing_assistant.workflowRunId != pending_assistant.workflowRunId
+            or existing_assistant.workflowRunFingerprint
+            != pending_assistant.workflowRunFingerprint
+        ):
+            raise conflict()
+
+    claim_time = (now or _utc_now)()
+    if claim_time.tzinfo is None:
+        claim_time = claim_time.replace(tzinfo=timezone.utc)
+
+    def with_fresh_lease(message: Message) -> Message:
+        return message.model_copy(
+            update={
+                "workflowScheduleLeaseToken": lease_token_factory(),
+                "workflowScheduleLeaseExpiresAt": claim_time
+                + timedelta(seconds=_DURABLE_SCHEDULING_LEASE_SECONDS),
+            }
+        )
+
+    prior_user, prior_assistant = records(
+        await repo.list_messages(user_id, pending_assistant.sessionId)
+    )
+    validate(prior_user, prior_assistant)
+    if prior_assistant is not None:
+        expected_status = prior_assistant.workflowRunStatus
+        if expected_status == "pending":
+            lease_expires = prior_assistant.workflowScheduleLeaseExpiresAt
+            if lease_expires is not None:
+                if lease_expires.tzinfo is None:
+                    lease_expires = lease_expires.replace(tzinfo=timezone.utc)
+                if lease_expires > claim_time:
+                    return False, prior_assistant
+        elif expected_status != "acceptance_unknown":
+            return False, prior_assistant
+        retry = with_fresh_lease(
+            prior_assistant.model_copy(
+                update={
+                    "content": "",
+                    "status": MessageStatus.streaming,
+                    "workflowRunStatus": "pending",
+                }
+            )
+        )
+        if await repo.replace_message_if_workflow_status(
+            user_id,
+            retry,
+            expected_status=expected_status or "",
+            expected_lease_token=prior_assistant.workflowScheduleLeaseToken,
+        ):
+            return True, retry
+
+    else:
+        pending_assistant = with_fresh_lease(pending_assistant)
+        if await repo.claim_workflow_run_if_absent(
+            user_id, user_message, pending_assistant
+        ):
+            return True, pending_assistant
+        # Both concurrent first requests may have read absence. Only the create
+        # winner may schedule; this loser must reconcile but never turn a quickly
+        # published acceptance_unknown state into a second scheduler call.
+        for _attempt in range(3):
+            messages = await repo.list_messages(user_id, pending_assistant.sessionId)
+            existing_user, existing_assistant = records(messages)
+            validate(existing_user, existing_assistant)
+            if existing_assistant is None:
+                continue
+            return False, existing_assistant
+
+    for _attempt in range(3):
+        messages = await repo.list_messages(user_id, pending_assistant.sessionId)
+        existing_user, existing_assistant = records(messages)
+        validate(existing_user, existing_assistant)
+        if existing_assistant is None:
+            continue
+        return False, existing_assistant
+
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Durable workflow state is temporarily unavailable.",
+    )
 
 
 def _service(request: Request) -> WorkflowService:
@@ -282,22 +456,22 @@ async def run_workflow_endpoint(
                 ),
             )
 
-    await repo.add_message(
-        uid,
-        Message(
-            sessionId=body.sessionId,
-            userId=uid,
-            role=MessageRole.user,
-            content=run_input,
-            status=MessageStatus.complete,
-            agent=agent_attr,
-        ),
-    )
-
     if durable_service is not None:
-        # The user turn is already persisted above, so the caller sees their
-        # input immediately; the orchestration writes the assistant reply when
-        # it finishes, on whichever replica gets there.
+        # The model validator guarantees this before any persistence. A server-
+        # generated key cannot protect a request whose response was lost because
+        # the caller never learned it to reuse on retry.
+        idempotency_key = body.idempotencyKey
+        if idempotency_key is None:  # defensive; rejected by the model validator
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="idempotencyKey is required when durable is true",
+            )
+        run_id = durable_run_id(
+            uid,
+            idempotency_key,
+            scope=f"{body.sessionId}\0{workflow.name}",
+        )
+        user_message_id, assistant_message_id = durable_message_ids(run_id)
         payload = build_orchestration_payload(
             workflow,
             user_id=uid,
@@ -312,21 +486,159 @@ async def run_workflow_endpoint(
                 if session.libraryDocumentIds is not None
                 else None
             ),
+            run_id=run_id,
+            assistant_message_id=assistant_message_id,
         )
+        run_fingerprint = durable_run_fingerprint(payload)
+        payload["context"]["runFingerprint"] = run_fingerprint
+        user_message = Message(
+            id=user_message_id,
+            sessionId=body.sessionId,
+            userId=uid,
+            role=MessageRole.user,
+            content=run_input,
+            status=MessageStatus.complete,
+            agent=agent_attr,
+            workflowRunId=run_id,
+            workflowRunStatus="accepted",
+            workflowRunFingerprint=run_fingerprint,
+        )
+        pending_assistant = Message(
+            id=assistant_message_id,
+            sessionId=body.sessionId,
+            userId=uid,
+            role=MessageRole.assistant,
+            content="",
+            status=MessageStatus.streaming,
+            model=deployment.deploymentName,
+            agent=agent_attr,
+            workflowRunId=run_id,
+            workflowRunStatus="pending",
+            workflowRunFingerprint=run_fingerprint,
+        )
+        owns_schedule, pending_assistant = await _claim_durable_run(
+            repo,
+            user_id=uid,
+            user_message=user_message,
+            pending_assistant=pending_assistant,
+        )
+        if not owns_schedule:
+            if pending_assistant.workflowRunStatus == "schedule_failed":
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Durable workflow scheduling previously failed.",
+                )
+            replay_status = (
+                "accepted"
+                if pending_assistant.workflowRunStatus
+                in {"accepted", "completed", "run_failed"}
+                else (
+                    "acceptance_unknown"
+                    if pending_assistant.workflowRunStatus == "acceptance_unknown"
+                    else "pending"
+                )
+            )
+            retry_after, lease_expires_at = _scheduling_retry(pending_assistant)
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=WorkflowRunAcceptedResponse(
+                    sessionId=body.sessionId,
+                    runId=run_id,
+                    idempotencyKey=idempotency_key,
+                    status=replay_status,
+                    retryAfterSeconds=retry_after,
+                    leaseExpiresAt=lease_expires_at,
+                ).model_dump(mode="json"),
+                headers=(
+                    {"Retry-After": str(retry_after)}
+                    if retry_after is not None
+                    else None
+                ),
+            )
+
         try:
-            run_id = await durable_service.schedule(payload, user_id=uid)
-        except DurableWorkflowsUnavailableError as exc:
+            await durable_service.schedule(payload, user_id=uid, run_id=run_id)
+        except (DurableScheduleRejectedError, DurableWorkflowsUnavailableError) as exc:
+            failed = pending_assistant.model_copy(
+                update={
+                    "status": MessageStatus.error,
+                    "content": (
+                        "The durable workflow could not be scheduled. Retry with a "
+                        "new idempotency key after the service recovers."
+                    ),
+                    "workflowRunStatus": "schedule_failed",
+                    "workflowScheduleLeaseToken": None,
+                    "workflowScheduleLeaseExpiresAt": None,
+                }
+            )
+            await repo.replace_message_if_workflow_status(
+                uid,
+                failed,
+                expected_status="pending",
+                expected_lease_token=pending_assistant.workflowScheduleLeaseToken,
+            )
+            await repo.touch_session(uid, session.id)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Durable workflow execution is temporarily unavailable.",
             ) from exc
+        except DurableScheduleAcceptanceUnknownError:
+            unknown = pending_assistant.model_copy(
+                update={"workflowRunStatus": "acceptance_unknown"}
+            )
+            await repo.replace_message_if_workflow_status(
+                uid,
+                unknown,
+                expected_status="pending",
+                expected_lease_token=pending_assistant.workflowScheduleLeaseToken,
+            )
+            await repo.touch_session(uid, session.id)
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=WorkflowRunAcceptedResponse(
+                    sessionId=body.sessionId,
+                    runId=run_id,
+                    idempotencyKey=idempotency_key,
+                    status="acceptance_unknown",
+                    retryAfterSeconds=1,
+                    leaseExpiresAt=unknown.workflowScheduleLeaseExpiresAt,
+                ).model_dump(mode="json"),
+                headers={"Retry-After": "1"},
+            )
+        accepted = pending_assistant.model_copy(
+            update={
+                "workflowRunStatus": "accepted",
+                "workflowScheduleLeaseToken": None,
+                "workflowScheduleLeaseExpiresAt": None,
+            }
+        )
+        await repo.replace_message_if_workflow_status(
+            uid,
+            accepted,
+            expected_status="pending",
+            expected_lease_token=pending_assistant.workflowScheduleLeaseToken,
+        )
         await repo.touch_session(uid, session.id)
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
             content=WorkflowRunAcceptedResponse(
-                sessionId=body.sessionId, runId=run_id
+                sessionId=body.sessionId,
+                runId=run_id,
+                idempotencyKey=idempotency_key,
             ).model_dump(),
         )
+
+    await repo.add_message(
+        uid,
+        Message(
+            sessionId=body.sessionId,
+            userId=uid,
+            role=MessageRole.user,
+            content=run_input,
+            status=MessageStatus.complete,
+            agent=agent_attr,
+        ),
+    )
 
     # Compose the caller's user agents over the curated catalog so a step can
     # reference either. The runner is total: it never raises, returning ok=False

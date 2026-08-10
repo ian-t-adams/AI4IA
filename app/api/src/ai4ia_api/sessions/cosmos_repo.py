@@ -45,6 +45,12 @@ class CosmosSessionRepository:
         await self._client.close()
         await self._credential.close()
 
+    async def check_ready(self) -> None:
+        # Container metadata is the cheapest SDK operation that proves identity,
+        # account/database routing, and the canonical sessions container without
+        # reading or mutating any user's data.
+        await self._sessions.read()
+
     @staticmethod
     def _to_doc(model: Session | Message | Document) -> dict[str, Any]:
         return model.model_dump(mode="json")
@@ -444,6 +450,83 @@ class CosmosSessionRepository:
         except CosmosResourceNotFoundError:
             pass
         return False
+
+    async def claim_workflow_run_if_absent(
+        self,
+        user_id: str,
+        user_message: Message,
+        pending_assistant: Message,
+    ) -> bool:
+        from azure.cosmos.exceptions import CosmosBatchOperationError
+
+        if user_message.sessionId != pending_assistant.sessionId:
+            raise ValueError("workflow claim messages must share one session")
+        await self._owned_session(user_id, user_message.sessionId)
+        user_message.userId = user_id
+        pending_assistant.userId = user_id
+        operations = [
+            ("create", (self._to_doc(user_message),), {}),
+            ("create", (self._to_doc(pending_assistant),), {}),
+        ]
+        try:
+            await self._messages.execute_item_batch(
+                batch_operations=operations,
+                partition_key=user_message.sessionId,
+            )
+        except CosmosBatchOperationError as exc:
+            if getattr(exc, "status_code", None) == 409:
+                return False
+            operation_responses = getattr(exc, "operation_responses", None) or []
+            if any(
+                isinstance(response, dict)
+                and response.get("statusCode") == 409
+                for response in operation_responses
+            ):
+                return False
+            raise
+        return True
+
+    async def replace_message_if_workflow_status(
+        self,
+        user_id: str,
+        message: Message,
+        *,
+        expected_status: str,
+        expected_lease_token: str | None,
+    ) -> bool:
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosResourceNotFoundError,
+        )
+
+        await self._owned_session(user_id, message.sessionId)
+        try:
+            current = await self._messages.read_item(
+                item=message.id, partition_key=message.sessionId
+            )
+        except CosmosResourceNotFoundError:
+            return False
+        if (
+            current.get("userId") != user_id
+            or current.get("workflowRunStatus") != expected_status
+            or current.get("workflowRunFingerprint")
+            != message.workflowRunFingerprint
+            or current.get("workflowScheduleLeaseToken")
+            != expected_lease_token
+        ):
+            return False
+        message.userId = user_id
+        try:
+            await self._messages.replace_item(
+                item=message.id,
+                body=self._to_doc(message),
+                etag=current.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except (CosmosAccessConditionFailedError, CosmosResourceNotFoundError):
+            return False
+        return True
 
     async def upsert_message(self, user_id: str, message: Message) -> Message:
         await self._owned_session(user_id, message.sessionId)

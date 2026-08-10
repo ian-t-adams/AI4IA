@@ -629,6 +629,10 @@ class Settings(BaseSettings):
 
     # --- Observability ---
     log_level: str = "INFO"
+    # None means environment-aware: enabled in local/dev and disabled in prod.
+    # Operators may explicitly opt production back in with
+    # AI4IA_OPENAPI_ENABLED=true.
+    openapi_enabled: bool | None = None
     applicationinsights_connection_string: str | None = Field(
         default=None,
         validation_alias=AliasChoices(

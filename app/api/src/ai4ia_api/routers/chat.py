@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..catalog import ModelCatalog, ModelEntry
+from ..chat_timing import ChatTiming, bind_chat_timing
 from ..citations import RetrievedSource, attest_message
 from ..conversations.policy import resolve_conversation_policy
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
@@ -1068,6 +1069,8 @@ async def chat(
             status_code=decision.code, detail=decision.reason, headers=headers
         )
 
+    turn_timing = ChatTiming(stream=body.stream)
+    bind_chat_timing(turn_timing)
     prior = await repo.list_messages(user.internal_user_id, body.sessionId)
     # Redeem any per-invocation tool approvals the user granted for a prompt this
     # session raised earlier. Done here because it needs ``prior`` (the ownership-
@@ -1089,7 +1092,9 @@ async def chat(
         status=MessageStatus.complete,
         agent=agent_name,
     )
-    await repo.add_message(user.internal_user_id, user_msg)
+    await turn_timing.measure_persistence(
+        repo.add_message(user.internal_user_id, user_msg)
+    )
 
     payload_messages = _history(prior, system_prompt)
     correlation_id = get_correlation_id()
@@ -1343,6 +1348,7 @@ async def chat(
     # itself streamed and tool activity is interleaved between iterations, so the
     # answer appears as it is produced rather than in one delta at the end.
     if agent is not None and (agent.tools or agent.links):
+        turn_timing.mark_tool_loop()
         ctx = ToolContext(
             correlation_id=correlation_id,
             approval_policy=approval_policy,
@@ -1733,7 +1739,9 @@ async def chat(
         )
         approval_events = _mint_approval_events(assistant, approval_sink.drafts())
         attest_message(assistant)
-        await repo.add_message(user.internal_user_id, assistant)
+        await turn_timing.measure_persistence(
+            repo.add_message(user.internal_user_id, assistant)
+        )
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
         await metering.record_completion(
             user_id=user.internal_user_id,
@@ -1744,6 +1752,7 @@ async def chat(
             status="complete",
             agent=agent_name,
             correlation_id=correlation_id,
+            timing=turn_timing,
         )
         reply: dict[str, object] = {"sessionId": body.sessionId, "message": assistant}
         if approval_events:
@@ -1845,6 +1854,7 @@ async def chat(
                     f"plain-chat synthetic tool names collide: {collisions}"
                 )
             if plain_tools:
+                turn_timing.mark_tool_loop()
                 if body.stream:
                     # Live-stream the tool activity + answer. If the tool turn yields
                     # no answer (or fails), the generator finishes with a plain call
@@ -1955,7 +1965,9 @@ async def chat(
                     )
                     approval_events = _mint_approval_events(assistant, plain_drafts)
                     attest_message(assistant)
-                    await repo.add_message(user.internal_user_id, assistant)
+                    await turn_timing.measure_persistence(
+                        repo.add_message(user.internal_user_id, assistant)
+                    )
                     await memory.remember(
                         user.internal_user_id, body.sessionId, content_for_model
                     )
@@ -1968,6 +1980,7 @@ async def chat(
                         status="complete",
                         agent=agent_name,
                         correlation_id=correlation_id,
+                        timing=turn_timing,
                     )
                     plain_reply: dict[str, object] = {
                         "sessionId": body.sessionId,
@@ -2071,7 +2084,9 @@ async def chat(
             sources=library_sources,
         )
         attest_message(assistant)
-        await repo.add_message(user.internal_user_id, assistant)
+        await turn_timing.measure_persistence(
+            repo.add_message(user.internal_user_id, assistant)
+        )
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
         await metering.record_completion(
             user_id=user.internal_user_id,
@@ -2082,6 +2097,7 @@ async def chat(
             status="complete",
             agent=agent_name,
             correlation_id=correlation_id,
+            timing=turn_timing,
         )
         return {"sessionId": body.sessionId, "message": assistant}
 

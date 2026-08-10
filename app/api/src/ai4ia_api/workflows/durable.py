@@ -40,6 +40,8 @@ execution off the request path changes *where the loop runs*, not its egress.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
@@ -107,6 +109,94 @@ class DurableRunStatus:
 
 class DurableWorkflowsUnavailableError(RuntimeError):
     """Durable execution was requested but is not configured/running."""
+
+
+class DurableScheduleAcceptanceUnknownError(RuntimeError):
+    """The scheduler call failed after acceptance became unknowable."""
+
+
+class DurableScheduleRejectedError(RuntimeError):
+    """The scheduler definitively rejected the run before acceptance."""
+
+
+_DEFINITE_SCHEDULE_CODES = frozenset(
+    {
+        "FAILED_PRECONDITION",
+        "INVALID_ARGUMENT",
+        "NOT_FOUND",
+        "OUT_OF_RANGE",
+        "PERMISSION_DENIED",
+        "RESOURCE_EXHAUSTED",
+        "UNAUTHENTICATED",
+        "UNIMPLEMENTED",
+    }
+)
+_DEFINITE_AUTH_ERROR_NAMES = frozenset(
+    {"ClientAuthenticationError", "CredentialUnavailableError"}
+)
+
+
+def _schedule_error_code(exc: Exception) -> str | None:
+    code_method = getattr(exc, "code", None)
+    if not callable(code_method):
+        return None
+    try:
+        code = code_method()
+    except Exception:  # noqa: BLE001 - classification must preserve original error
+        return None
+    name = getattr(code, "name", None)
+    if isinstance(name, str):
+        return name.upper()
+    text = str(code).rsplit(".", 1)[-1].upper()
+    return text if text else None
+
+
+def _is_definite_schedule_rejection(exc: Exception) -> bool:
+    return (
+        isinstance(exc, (TypeError, ValueError))
+        or type(exc).__name__ in _DEFINITE_AUTH_ERROR_NAMES
+        or _schedule_error_code(exc) in _DEFINITE_SCHEDULE_CODES
+    )
+
+
+def durable_run_id(
+    user_id: str,
+    idempotency_key: str | None = None,
+    *,
+    scope: str = "",
+) -> str:
+    if idempotency_key is None:
+        suffix = uuid4().hex
+    else:
+        suffix = hashlib.sha256(
+            f"{user_id}\0{scope}\0{idempotency_key}".encode("utf-8")
+        ).hexdigest()
+    return f"{user_id}{_RUN_ID_SEPARATOR}{suffix}"
+
+
+def durable_message_ids(run_id: str) -> tuple[str, str]:
+    digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
+    return f"wf-{digest}-user", f"wf-{digest}-assistant"
+
+
+def durable_run_fingerprint(payload: dict[str, Any]) -> str:
+    """Hash only execution-defining orchestration input, never request metadata."""
+    context = dict(payload.get("context") or {})
+    for key in (
+        "assistantMessageId",
+        "correlationId",
+        "runFingerprint",
+        "runId",
+    ):
+        context.pop(key, None)
+    canonical = {"steps": payload.get("steps") or [], "context": context}
+    encoded = json.dumps(
+        canonical,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class DurableWorkflowService:
@@ -216,7 +306,13 @@ class DurableWorkflowService:
 
     # -- scheduling --------------------------------------------------------
 
-    async def schedule(self, payload: dict[str, Any], *, user_id: str) -> str:
+    async def schedule(
+        self,
+        payload: dict[str, Any],
+        *,
+        user_id: str,
+        run_id: str | None = None,
+    ) -> str:
         """Start a durable run and return its id. Raises if not running.
 
         The run id is ``<userId>:<random>``, generated here and never taken from
@@ -228,12 +324,37 @@ class DurableWorkflowService:
             raise DurableWorkflowsUnavailableError(
                 "Durable workflows are not running."
             )
-        instance_id = f"{user_id}{_RUN_ID_SEPARATOR}{uuid4().hex}"
-        return await self._client.schedule_new_orchestration(
-            ORCHESTRATOR_NAME,
-            input=payload,
-            instance_id=instance_id,
-        )
+        instance_id = run_id or durable_run_id(user_id)
+        owner, _, remainder = instance_id.partition(_RUN_ID_SEPARATOR)
+        if not remainder or owner != user_id:
+            raise ValueError("run_id must be owned by user_id")
+        try:
+            await self._client.schedule_new_orchestration(
+                ORCHESTRATOR_NAME,
+                input=payload,
+                instance_id=instance_id,
+            )
+        except Exception as exc:
+            code = _schedule_error_code(exc)
+            if code == "ALREADY_EXISTS":
+                return instance_id
+            if _is_definite_schedule_rejection(exc):
+                raise DurableScheduleRejectedError(
+                    "Durable workflow scheduling was rejected."
+                ) from exc
+            # A transport failure can happen after DTS accepted the instance. A
+            # point read converts that ambiguity to success when possible; if the
+            # read is also inconclusive, the caller must retain pending state and
+            # retry the SAME instance id rather than minting another run.
+            try:
+                state = await self._client.get_orchestration_state(instance_id)
+            except Exception:
+                state = None
+            if state is None:
+                raise DurableScheduleAcceptanceUnknownError(
+                    "Durable workflow acceptance is unknown."
+                ) from exc
+        return instance_id
 
     async def get_status(self, run_id: str, *, user_id: str) -> DurableRunStatus | None:
         """Read a run's current state, or None when the id is unknown.
@@ -536,15 +657,27 @@ class DurableWorkflowService:
         agent_attr = f"workflow:{context['workflowName']}"
 
         assistant = Message(
+            id=context.get("assistantMessageId") or uuid4().hex,
             sessionId=session_id,
             userId=uid,
             role=MessageRole.assistant,
             content=payload.get("text") or "",
-            status=MessageStatus.complete,
+            status=(
+                MessageStatus.complete
+                if payload.get("ok")
+                else MessageStatus.error
+            ),
             model=context["deployment"],
             agent=agent_attr,
+            workflowRunId=context.get("runId"),
+            workflowRunStatus=(
+                "completed" if payload.get("ok") else "run_failed"
+            )
+            if context.get("runId")
+            else None,
+            workflowRunFingerprint=context.get("runFingerprint"),
         )
-        await state.session_repo.add_message(uid, assistant)
+        await state.session_repo.upsert_message(uid, assistant)
 
         usage = _usage_from_dict(payload.get("usage") or {})
         # Same rule as the in-request path: meter only when a model call actually
@@ -579,6 +712,8 @@ def build_orchestration_payload(
     correlation_id: str | None,
     email: str | None = None,
     library_document_ids: list[str] | None = None,
+    run_id: str | None = None,
+    assistant_message_id: str | None = None,
 ) -> dict[str, Any]:
     """Freeze everything a run needs into its orchestration input.
 
@@ -625,6 +760,8 @@ def build_orchestration_payload(
             "correlationId": correlation_id,
             "email": email,
             "libraryDocumentIds": library_document_ids,
+            "runId": run_id,
+            "assistantMessageId": assistant_message_id,
         },
     }
 

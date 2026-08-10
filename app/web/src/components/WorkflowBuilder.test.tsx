@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   listWorkflows: vi.fn(),
   createSession: vi.fn(),
   runWorkflow: vi.fn(),
+  newWorkflowRunIdempotencyKey: vi.fn(),
   getWorkflowRun: vi.fn(),
   getToolCatalog: vi.fn(),
   listLibraryDocuments: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock("@/lib/api", () => ({
   listWorkflows: mocks.listWorkflows,
   createSession: mocks.createSession,
   runWorkflow: mocks.runWorkflow,
+  newWorkflowRunIdempotencyKey: mocks.newWorkflowRunIdempotencyKey,
   getWorkflowRun: mocks.getWorkflowRun,
   getToolCatalog: mocks.getToolCatalog,
   listLibraryDocuments: mocks.listLibraryDocuments,
@@ -86,6 +88,7 @@ beforeEach(() => {
     scheduled: false,
     result: { sessionId: "s1", ok: true, message: { id: "m1", content: "the summary" } },
   });
+  mocks.newWorkflowRunIdempotencyKey.mockReturnValue("durable-intent-key");
   // An agent with nothing attached: the default that produced the original bug
   // report, where a workflow was asked to remember something and silently could
   // not.
@@ -354,6 +357,7 @@ describe("WorkflowBuilder", () => {
     await user.click(screen.getByRole("button", { name: "Run" }));
     await waitFor(() => expect(mocks.runWorkflow).toHaveBeenCalled());
     expect(mocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty("durable");
+    expect(mocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty("idempotencyKey");
   });
 
   it("leaves the synchronous path untouched when durable is available but not chosen", async () => {
@@ -385,7 +389,12 @@ describe("WorkflowBuilder", () => {
     });
     mocks.runWorkflow.mockResolvedValue({
       scheduled: true,
-      run: { sessionId: "s1", runId: "u1:abc", status: "accepted" },
+      run: {
+        sessionId: "s1",
+        runId: "u1:abc",
+        status: "accepted",
+        idempotencyKey: "durable-intent-key",
+      },
     });
     mocks.getWorkflowRun
       .mockResolvedValueOnce({ runId: "u1:abc", status: "RUNNING" })
@@ -404,7 +413,10 @@ describe("WorkflowBuilder", () => {
     await user.click(screen.getByRole("button", { name: "Run" }));
 
     await waitFor(() => expect(mocks.runWorkflow).toHaveBeenCalled());
-    expect(mocks.runWorkflow.mock.calls[0][1]).toMatchObject({ durable: true });
+    expect(mocks.runWorkflow.mock.calls[0][1]).toMatchObject({
+      durable: true,
+      idempotencyKey: "durable-intent-key",
+    });
     expect(
       await screen.findByText("durable output", {}, { timeout: 10000 }),
     ).toBeInTheDocument();
@@ -418,7 +430,12 @@ describe("WorkflowBuilder", () => {
     });
     mocks.runWorkflow.mockResolvedValue({
       scheduled: true,
-      run: { sessionId: "s1", runId: "u1:abc", status: "accepted" },
+      run: {
+        sessionId: "s1",
+        runId: "u1:abc",
+        status: "accepted",
+        idempotencyKey: "durable-intent-key",
+      },
     });
     mocks.getWorkflowRun.mockResolvedValue({
       runId: "u1:abc",

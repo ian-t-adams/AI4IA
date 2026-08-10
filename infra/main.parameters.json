@@ -35,6 +35,9 @@
     "appEnvironment": {
       "value": "${AI4IA_APP_ENVIRONMENT=dev}"
     },
+    "apiOpenapiEnabled": {
+      "value": "${AI4IA_OPENAPI_ENABLED=false}"
+    },
     "apiAuthProvider": {
       "value": "${AI4IA_AUTH_PROVIDER=dev}"
     },

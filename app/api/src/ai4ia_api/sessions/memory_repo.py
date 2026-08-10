@@ -25,6 +25,9 @@ class InMemorySessionRepository:
         self._documents: dict[str, list[Document]] = {}
         self._lock = asyncio.Lock()
 
+    async def check_ready(self) -> None:
+        return None
+
     async def _owned_session(self, user_id: str, session_id: str) -> Session:
         session = self._sessions.get(session_id)
         if session is None or session.userId != user_id:
@@ -170,6 +173,57 @@ class InMemorySessionRepository:
             message.summaryVersion = expected_version
             self._messages.setdefault(message.sessionId, []).append(message)
             return True
+
+    async def claim_workflow_run_if_absent(
+        self,
+        user_id: str,
+        user_message: Message,
+        pending_assistant: Message,
+    ) -> bool:
+        if user_message.sessionId != pending_assistant.sessionId:
+            raise ValueError("workflow claim messages must share one session")
+        async with self._lock:
+            await self._owned_session(user_id, user_message.sessionId)
+            bucket = self._messages.setdefault(user_message.sessionId, [])
+            claimed_ids = {user_message.id, pending_assistant.id}
+            if any(existing.id in claimed_ids for existing in bucket):
+                return False
+            user_message.userId = user_id
+            pending_assistant.userId = user_id
+            bucket.extend(
+                [
+                    user_message.model_copy(deep=True),
+                    pending_assistant.model_copy(deep=True),
+                ]
+            )
+            return True
+
+    async def replace_message_if_workflow_status(
+        self,
+        user_id: str,
+        message: Message,
+        *,
+        expected_status: str,
+        expected_lease_token: str | None,
+    ) -> bool:
+        async with self._lock:
+            await self._owned_session(user_id, message.sessionId)
+            bucket = self._messages.setdefault(message.sessionId, [])
+            for idx, existing in enumerate(bucket):
+                if existing.id != message.id:
+                    continue
+                if (
+                    existing.workflowRunStatus != expected_status
+                    or existing.workflowRunFingerprint
+                    != message.workflowRunFingerprint
+                    or existing.workflowScheduleLeaseToken
+                    != expected_lease_token
+                ):
+                    return False
+                message.userId = user_id
+                bucket[idx] = message.model_copy(deep=True)
+                return True
+            return False
 
     async def upsert_message(self, user_id: str, message: Message) -> Message:
         async with self._lock:

@@ -348,12 +348,16 @@ export interface WorkflowListResult {
   durableAvailable: boolean;
 }
 
-// 202 body: the run was SCHEDULED, not completed. The assistant message does not
-// exist yet — poll getWorkflowRun(runId) until the status is terminal.
+// 202 body: `accepted` means the run was scheduled; `pending`/
+// `acceptance_unknown` carries authoritative retry timing and must be recovered
+// before polling DTS, where the deterministic instance may not exist yet.
 export interface WorkflowRunAccepted {
   sessionId: string;
   runId: string;
   status: string;
+  idempotencyKey: string;
+  retryAfterSeconds?: number | null;
+  leaseExpiresAt?: string | null;
 }
 
 export interface WorkflowRunStatus {

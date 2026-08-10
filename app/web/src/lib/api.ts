@@ -200,6 +200,10 @@ export async function deleteWorkflow(name: string): Promise<void> {
   }
 }
 
+export function newWorkflowRunIdempotencyKey(): string {
+  return crypto.randomUUID();
+}
+
 // Runs a saved workflow against a chat session. The backend persists the user
 // input + the pipeline's assistant result to the session like a normal turn.
 //
@@ -209,6 +213,48 @@ export async function deleteWorkflow(name: string): Promise<void> {
 // a durable run answers 202 with a run id and no message, because the assistant
 // turn genuinely does not exist yet. Asking for durability on a deployment that
 // cannot provide it is a 422, never a silent downgrade.
+const DURABLE_RECOVERY_MAX_RETRIES = 3;
+const DURABLE_RECOVERY_MIN_DELAY_MS = 100;
+const DURABLE_RECOVERY_MAX_DELAY_MS = 35_000;
+
+function durableRetryDelayMs(resp: Response, run: WorkflowRunAccepted): number {
+  const bodySeconds = Number(run.retryAfterSeconds);
+  const headerSeconds = Number(resp.headers.get("Retry-After"));
+  const leaseDelay =
+    typeof run.leaseExpiresAt === "string"
+      ? Date.parse(run.leaseExpiresAt) - Date.now()
+      : Number.NaN;
+  const requested = Number.isFinite(bodySeconds) && bodySeconds > 0
+    ? bodySeconds * 1000
+    : Number.isFinite(headerSeconds) && headerSeconds > 0
+      ? headerSeconds * 1000
+      : Number.isFinite(leaseDelay) && leaseDelay > 0
+        ? leaseDelay
+        : 1000;
+  return Math.max(
+    DURABLE_RECOVERY_MIN_DELAY_MS,
+    Math.min(Math.ceil(requested), DURABLE_RECOVERY_MAX_DELAY_MS),
+  );
+}
+
+function waitForDurableRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export async function runWorkflow(
   name: string,
   input: {
@@ -216,15 +262,39 @@ export async function runWorkflow(
     input: string;
     model?: string | null;
     durable?: boolean;
+    idempotencyKey?: string;
   },
+  signal?: AbortSignal,
 ): Promise<WorkflowRunOutcome> {
-  const resp = await apiFetch(`/api/workflows/${encodeURIComponent(name)}/run`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
-  if (resp.status === 202) {
-    return { scheduled: true, run: await jsonOrThrow<WorkflowRunAccepted>(resp) };
+  const body = JSON.stringify(input);
+  const request = () =>
+    apiFetch(`/api/workflows/${encodeURIComponent(name)}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      signal,
+    });
+  const requestWithTransportRecovery = async () => {
+    try {
+      return await request();
+    } catch (error) {
+      if (signal?.aborted || !input.durable || !input.idempotencyKey) throw error;
+      // Every durable transport failure is acceptance-ambiguous. Retrying once
+      // is safe because this closure reuses the byte-identical body and key.
+      return request();
+    }
+  };
+  let resp = await requestWithTransportRecovery();
+  for (let recovery = 0; resp.status === 202; recovery += 1) {
+    const run = await jsonOrThrow<WorkflowRunAccepted>(resp);
+    if (run.status !== "pending" && run.status !== "acceptance_unknown") {
+      return { scheduled: true, run };
+    }
+    if (recovery >= DURABLE_RECOVERY_MAX_RETRIES) {
+      throw new Error("Durable workflow scheduling recovery timed out.");
+    }
+    await waitForDurableRetry(durableRetryDelayMs(resp, run), signal);
+    resp = await requestWithTransportRecovery();
   }
   return { scheduled: false, result: await jsonOrThrow<WorkflowRunResult>(resp) };
 }

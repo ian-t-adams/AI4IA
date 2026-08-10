@@ -66,6 +66,9 @@ param alertEmail string = ''
 ])
 param appEnvironment string = 'dev'
 
+@description('Explicitly expose the API OpenAPI schema and interactive docs. Production defaults to hidden.')
+param apiOpenapiEnabled bool = false
+
 @description('Auth provider the api enforces (dev|entra).')
 @allowed([
   'dev'
@@ -882,6 +885,7 @@ module api 'modules/api.bicep' = {
     memoryStore: memoryStore
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     appEnvironment: appEnvironment
+    apiOpenapiEnabled: apiOpenapiEnabled
     authProvider: apiAuthProvider
     // Never allow dev auth in prod regardless of the supplied flag.
     allowDevAuth: appEnvironment == 'prod' ? false : apiAllowDevAuth

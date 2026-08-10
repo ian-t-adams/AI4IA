@@ -974,6 +974,30 @@ class CanaryTests(unittest.TestCase):
         self.run_canary(http, attempts=1)
         self.assertEqual(http.calls[-1], ("DELETE", "https://api.test/api/sessions/sess-1"))
 
+    def test_ambiguous_session_create_is_never_retried(self) -> None:
+        script = {
+            "GET /api/models": [ok({"models": [{"id": "tiny-fast"}]})],
+            "POST /api/sessions": [
+                pdv.HttpOutcome(status=None, error="TimeoutError"),
+                ok({"id": "orphan-2"}, status=201),
+            ],
+        }
+        http = FakeHttp(script)
+        result = self.run_canary(http, attempts=3)
+        self.assertFalse(result.ok)
+        creates = [call for call in http.calls if call[1].endswith("/api/sessions")]
+        self.assertEqual(len(creates), 1)
+        self.assertFalse(any(call[1].endswith("/api/chat") for call in http.calls))
+
+    def test_cleanup_failure_fails_the_canary(self) -> None:
+        script = canary_script(
+            ok({"message": {"content": "ready", "status": "complete"}})
+        )
+        script["DELETE /api/sessions/sess-1"] = [pdv.HttpOutcome(status=503)]
+        result = self.run_canary(FakeHttp(script), attempts=1)
+        self.assertFalse(result.ok)
+        self.assertIn("cleanup returned HTTP 503", result.detail)
+
     def test_neither_the_token_nor_the_model_reply_is_ever_printed(self) -> None:
         """The canary holds a bearer token and receives model output. CI logs are retained."""
         secret_reply = "ready; and here is a sentence the log must never keep"
@@ -1006,6 +1030,12 @@ class CanaryTests(unittest.TestCase):
         result = self.run_canary(http, attempts=1)
         self.assertNotIn("aaaaaaaaaaaaaaaaaa", result.detail)
         self.assertIn("[REDACTED]", result.detail)
+
+    def test_canary_only_command_is_available_without_deploy_state(self) -> None:
+        args = pdv.build_parser().parse_args(
+            ["canary", "--api-url", "https://api.test"]
+        )
+        self.assertIs(args.func, pdv.cmd_canary)
 
 
 class RedactionTests(unittest.TestCase):

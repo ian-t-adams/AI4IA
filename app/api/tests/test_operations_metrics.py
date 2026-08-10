@@ -7,6 +7,7 @@ import pytest
 
 from ai4ia_api.metrics.log_analytics import LogQueryData
 from ai4ia_api.metrics.operations import (
+    CHAT_LATENCY_KQL,
     DOCUMENTS_KQL,
     MEMORY_KQL,
     SECURITY_KQL,
@@ -111,6 +112,15 @@ def test_terminal_and_security_queries_match_real_custom_events():
     assert 'Name == "security_block"' in SECURITY_KQL
     assert "AppEvents" in SECURITY_KQL
     assert "AppTraces" not in SECURITY_KQL
+
+
+def test_chat_latency_query_reports_historical_gaps_as_unavailable_not_nan():
+    assert 'Name == "chat_completion"' in CHAT_LATENCY_KQL
+    assert "timingCovered == 0" in CHAT_LATENCY_KQL
+    assert '"unavailable"' in CHAT_LATENCY_KQL
+    assert "isnotnull(turnTotalMs)" in CHAT_LATENCY_KQL
+    assert "gatewayTimingAvailable == true" in CHAT_LATENCY_KQL
+    assert "NaN" not in CHAT_LATENCY_KQL
 
 
 @pytest.mark.asyncio

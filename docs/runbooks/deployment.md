@@ -350,7 +350,7 @@ after deploy so an expired token cannot roll back a healthy release.
 | Running image equals this run's `--expect-image` digest | A stale or unrelated revision is serving |
 | Revision is active, healthy, and running | ARM accepted a revision that never became ready |
 | Running replicas are positive where minimum replicas require them | Crash loop or failed replica startup |
-| API `/health/live` and `/health/ready` return 200 | Process, startup validation, or dependency failure |
+| API `/health/live` and `/health/ready` return 200 | Process failure or inability to reach the canonical session store (cached, bounded check) |
 | Web `/` returns 2xx/3xx without following redirects | Next.js failed to render |
 | Proxy ingress returns below 500 | No proxy replica is serving |
 | Configured domains remain bound and `SniEnabled` | Provision removed a binding or certificate failed |
@@ -360,6 +360,18 @@ The assertions share a 20-minute wall-clock budget inside a 30-minute step
 timeout. The canary intersects `infra/models.json` with the models the live API
 advertises, never hardcodes a deployment, never prints its bearer token or model
 reply, and logs successful replies only as a character count.
+
+The same proof can run independently of a deployment or rollback state file:
+
+```powershell
+$env:AI4IA_DEPLOY_VERIFY_TOKEN = '<short-lived Entra bearer token>'
+python scripts/post-deploy-verify.py canary --api-url https://<api-fqdn>
+```
+
+This canary-only mode authenticates, lists models, creates a Cosmos-backed
+session, completes one governed FastAPI -> proxy -> APIM -> Foundry turn, and
+deletes the session. It emits only model id, reply length, elapsed time, and
+bounded/redacted failure detail; cleanup failure fails the command.
 
 It does not assess response quality, streaming, tools, MCP, documents, memory,
 media, or realtime. It is one identity and cannot detect per-user entitlement or

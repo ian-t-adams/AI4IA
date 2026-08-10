@@ -37,6 +37,12 @@ _correlation_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "correlation_id", default="-"
 )
 
+_NOISY_SDK_LOGGERS = (
+    "azure.core.pipeline.policies.http_logging_policy",
+    "azure.monitor.opentelemetry.exporter",
+)
+_HEALTH_PATHS = frozenset({"/health/live", "/health/ready"})
+
 
 def new_correlation_id() -> str:
     return uuid.uuid4().hex
@@ -56,6 +62,24 @@ class _CorrelationFilter(logging.Filter):
         return True
 
 
+class SuccessfulHealthAccessFilter(logging.Filter):
+    """Drop only successful Uvicorn access rows for the two ACA probes."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 5:
+            return True
+        path = str(args[2]).partition("?")[0]
+        raw_status = args[4]
+        if not isinstance(raw_status, (int, str)):
+            return True
+        try:
+            status_code = int(raw_status)
+        except (TypeError, ValueError):
+            return True
+        return not (path in _HEALTH_PATHS and 200 <= status_code < 300)
+
+
 def configure_logging(level: str = "INFO") -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.addFilter(_CorrelationFilter())
@@ -68,6 +92,13 @@ def configure_logging(level: str = "INFO") -> None:
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(level.upper())
+    for logger_name in _NOISY_SDK_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+    access_logger = logging.getLogger("uvicorn.access")
+    for existing in list(access_logger.filters):
+        if isinstance(existing, SuccessfulHealthAccessFilter):
+            access_logger.removeFilter(existing)
+    access_logger.addFilter(SuccessfulHealthAccessFilter())
 
 
 def configure_telemetry(connection_string: str | None) -> bool:

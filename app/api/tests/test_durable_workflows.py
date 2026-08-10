@@ -11,14 +11,23 @@ invisible in our own code and would fail confusingly if they ever changed:
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 
 from ai4ia_api.config import Settings
 from ai4ia_api.catalog import DeploymentOption
+from ai4ia_api.routers.workflows import (
+    _DURABLE_SCHEDULING_LEASE_SECONDS,
+    _claim_durable_run,
+)
+from ai4ia_api.sessions.memory_repo import InMemorySessionRepository
+from ai4ia_api.sessions.models import Message, MessageRole, MessageStatus, Session
 from ai4ia_api.usage.models import TokenUsage
 from ai4ia_api.workflows.models import MAX_STEPS
 from ai4ia_api.workflows.durable import (
@@ -27,12 +36,16 @@ from ai4ia_api.workflows.durable import (
     _TRACE_BUDGET_BYTES,
     _TRUNCATION_MARKER,
     DurableRunStatus,
+    DurableScheduleAcceptanceUnknownError,
+    DurableScheduleRejectedError,
     DurableWorkflowService,
     _merge_usage,
     _step_from_dict,
     _truncate_for_payload,
     _usage_to_dict,
     build_orchestration_payload,
+    durable_message_ids,
+    durable_run_fingerprint,
 )
 
 
@@ -138,9 +151,9 @@ class _StubDurable:
     def __init__(self):
         self.scheduled: list[tuple[dict, str]] = []
 
-    async def schedule(self, payload, *, user_id):
+    async def schedule(self, payload, *, user_id, run_id=None):
         self.scheduled.append((payload, user_id))
-        return f"{user_id}{_RUN_ID_SEPARATOR}deadbeef"
+        return run_id or f"{user_id}{_RUN_ID_SEPARATOR}deadbeef"
 
     async def get_status(self, run_id, *, user_id):
         owner, _, remainder = run_id.partition(_RUN_ID_SEPARATOR)
@@ -187,7 +200,12 @@ def test_durable_run_is_refused_when_the_feature_is_off(client):
 
     resp = client.post(
         "/api/workflows/summarize/run",
-        json={"sessionId": sid, "input": "otters", "durable": True},
+        json={
+            "sessionId": sid,
+            "input": "otters",
+            "durable": True,
+            "idempotencyKey": "feature-off-key",
+        },
     )
     # 422, NOT a silent fall back to a synchronous run: the caller asked for a
     # guarantee we cannot give, so answering 200 would answer a different
@@ -207,7 +225,12 @@ def test_durable_run_returns_202_and_does_not_run_in_request(client):
 
     resp = client.post(
         "/api/workflows/summarize/run",
-        json={"sessionId": sid, "input": "otters", "durable": True},
+        json={
+            "sessionId": sid,
+            "input": "otters",
+            "durable": True,
+            "idempotencyKey": "accepted-run-key",
+        },
     )
     assert resp.status_code == 202, resp.text
     body = resp.json()
@@ -223,10 +246,619 @@ def test_durable_run_returns_202_and_does_not_run_in_request(client):
     # The run id is derived from the id the ROUTER resolved, never from input.
     assert body["runId"].startswith(f"{user_id}{_RUN_ID_SEPARATOR}")
 
-    # The user turn is persisted immediately so the caller sees their input;
-    # the assistant reply is the orchestration's job, not this request's.
+    # The user turn and deterministic pending assistant are persisted before the
+    # scheduler call, so a retry can reuse both without duplicating either.
     messages = client.get(f"/api/sessions/{sid}/messages").json()
-    assert [m["role"] for m in messages] == ["user"]
+    assert [m["role"] for m in messages] == ["user", "assistant"]
+    assert messages[1]["status"] == "streaming"
+    assert messages[1]["workflowRunStatus"] == "accepted"
+
+
+def test_durable_run_requires_a_caller_key_before_any_persistence(client):
+    sid = _seed(client)
+    stub = _StubDurable()
+    client.app.state.durable_workflows = stub
+    resp = client.post(
+        "/api/workflows/summarize/run",
+        json={"sessionId": sid, "input": "otters", "durable": True},
+    )
+    assert resp.status_code == 422
+    assert "idempotencyKey" in resp.text
+    assert stub.scheduled == []
+    assert client.get(f"/api/sessions/{sid}/messages").json() == []
+
+
+class _DefiniteFailureDurable(_StubDurable):
+    async def schedule(self, payload, *, user_id, run_id=None):
+        self.scheduled.append((payload, user_id))
+        raise DurableScheduleRejectedError("permission denied")
+
+
+class _AmbiguousThenAcceptedDurable(_StubDurable):
+    async def schedule(self, payload, *, user_id, run_id=None):
+        self.scheduled.append((payload, user_id))
+        if len(self.scheduled) == 1:
+            raise DurableScheduleAcceptanceUnknownError("transport unknown")
+        return run_id
+
+
+def test_definite_schedule_failure_persists_one_terminal_failed_run(client):
+    sid = _seed(client)
+    stub = _DefiniteFailureDurable()
+    client.app.state.durable_workflows = stub
+    body = {
+        "sessionId": sid,
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "definite-failure-1",
+    }
+
+    first = client.post("/api/workflows/summarize/run", json=body)
+    second = client.post("/api/workflows/summarize/run", json=body)
+    assert first.status_code == second.status_code == 503
+    assert len(stub.scheduled) == 1
+    messages = client.get(f"/api/sessions/{sid}/messages").json()
+    assert len(messages) == 2
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[1]["status"] == "error"
+    assert messages[1]["workflowRunStatus"] == "schedule_failed"
+
+
+def test_ambiguous_schedule_retry_reuses_messages_and_run(client):
+    sid = _seed(client)
+    stub = _AmbiguousThenAcceptedDurable()
+    client.app.state.durable_workflows = stub
+    body = {
+        "sessionId": sid,
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "ambiguous-retry-1",
+    }
+
+    first = client.post("/api/workflows/summarize/run", json=body)
+    assert first.status_code == 202
+    assert first.json()["status"] == "acceptance_unknown"
+    second = client.post("/api/workflows/summarize/run", json=body)
+    assert second.status_code == 202
+    assert second.json()["status"] == "accepted"
+    assert second.json()["runId"] == first.json()["runId"]
+    third = client.post("/api/workflows/summarize/run", json=body)
+    assert third.status_code == 202
+    assert len(stub.scheduled) == 2
+    assert len(
+        {scheduled_payload["context"]["runId"] for scheduled_payload, _ in stub.scheduled}
+    ) == 1
+    messages = client.get(f"/api/sessions/{sid}/messages").json()
+    assert len(messages) == 2
+    assert len({message["id"] for message in messages}) == 2
+    assert messages[1]["workflowRunStatus"] == "accepted"
+
+
+def test_same_key_with_different_execution_input_is_rejected(client):
+    sid = _seed(client)
+    stub = _AmbiguousThenAcceptedDurable()
+    client.app.state.durable_workflows = stub
+    body = {
+        "sessionId": sid,
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "fingerprint-key",
+    }
+    assert client.post("/api/workflows/summarize/run", json=body).status_code == 202
+    conflict = client.post(
+        "/api/workflows/summarize/run",
+        json={**body, "input": "badgers"},
+    )
+    assert conflict.status_code == 409
+    assert len(stub.scheduled) == 1
+    assert len(client.get(f"/api/sessions/{sid}/messages").json()) == 2
+
+
+def test_same_idempotency_key_is_scoped_to_one_session_and_workflow(client):
+    first_session = _seed(client)
+    second_session = client.post(
+        "/api/sessions", json={"title": "Other", "model": "gpt-5.4"}
+    ).json()["id"]
+    stub = _StubDurable()
+    client.app.state.durable_workflows = stub
+    base = {
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "session-scoped-key",
+    }
+
+    first = client.post(
+        "/api/workflows/summarize/run",
+        json={**base, "sessionId": first_session},
+    )
+    second = client.post(
+        "/api/workflows/summarize/run",
+        json={**base, "sessionId": second_session},
+    )
+    assert first.status_code == second.status_code == 202
+    assert first.json()["runId"] != second.json()["runId"]
+    assert len(stub.scheduled) == 2
+    assert len(client.get(f"/api/sessions/{first_session}/messages").json()) == 2
+    assert len(client.get(f"/api/sessions/{second_session}/messages").json()) == 2
+
+
+def test_retry_cannot_overwrite_a_terminal_result_that_lands_after_its_read(client):
+    sid = _seed(client)
+    inner = client.app.state.session_repo
+
+    class CompleteDuringRetry:
+        def __init__(self):
+            self.armed = False
+
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+        async def list_messages(self, user_id, session_id):
+            snapshot = await inner.list_messages(user_id, session_id)
+            if self.armed:
+                pending = next(
+                    (
+                        message
+                        for message in snapshot
+                        if message.role.value == "assistant"
+                        and message.workflowRunStatus
+                        in {"pending", "acceptance_unknown"}
+                    ),
+                    None,
+                )
+                if pending is not None:
+                    terminal = pending.model_copy(
+                        update={
+                            "content": "finished",
+                            "status": MessageStatus.complete,
+                            "workflowRunStatus": "completed",
+                        }
+                    )
+                    await inner.upsert_message(user_id, terminal)
+            return snapshot
+
+    repo = CompleteDuringRetry()
+    client.app.state.session_repo = repo
+    stub = _AmbiguousThenAcceptedDurable()
+    client.app.state.durable_workflows = stub
+    body = {
+        "sessionId": sid,
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "terminal-race-key",
+    }
+    assert (
+        client.post("/api/workflows/summarize/run", json=body).json()["status"]
+        == "acceptance_unknown"
+    )
+    repo.armed = True
+    assert client.post("/api/workflows/summarize/run", json=body).status_code == 202
+    assistant = client.get(f"/api/sessions/{sid}/messages").json()[1]
+    assert assistant["content"] == "finished"
+    assert assistant["status"] == "complete"
+    assert assistant["workflowRunStatus"] == "completed"
+
+
+def test_run_failure_replay_is_accepted_not_reported_as_schedule_failure(client):
+    sid = _seed(client)
+    inner = client.app.state.session_repo
+
+    class FailBeforeReplayRead:
+        def __init__(self):
+            self.armed = False
+
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+        async def list_messages(self, user_id, session_id):
+            messages = await inner.list_messages(user_id, session_id)
+            if self.armed:
+                assistant = next(
+                    message
+                    for message in messages
+                    if message.role.value == "assistant"
+                )
+                assistant.status = MessageStatus.error
+                assistant.workflowRunStatus = "run_failed"
+                assistant.content = "step failed"
+            return messages
+
+    repo = FailBeforeReplayRead()
+    client.app.state.session_repo = repo
+    stub = _AmbiguousThenAcceptedDurable()
+    client.app.state.durable_workflows = stub
+    body = {
+        "sessionId": sid,
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "run-failure-replay",
+    }
+    assert client.post("/api/workflows/summarize/run", json=body).status_code == 202
+    repo.armed = True
+    replay = client.post("/api/workflows/summarize/run", json=body)
+    assert replay.status_code == 202
+    assert replay.json()["status"] == "accepted"
+    assert len(stub.scheduled) == 1
+
+
+def _claim_messages(
+    session_id: str,
+    *,
+    fingerprint: str,
+    content: str = "otters",
+) -> tuple[Message, Message]:
+    run_id = "u1:stable"
+    user_id, assistant_id = durable_message_ids(run_id)
+    return (
+        Message(
+            id=user_id,
+            sessionId=session_id,
+            userId="u1",
+            role=MessageRole.user,
+            content=content,
+            workflowRunId=run_id,
+            workflowRunStatus="accepted",
+            workflowRunFingerprint=fingerprint,
+        ),
+        Message(
+            id=assistant_id,
+            sessionId=session_id,
+            userId="u1",
+            role=MessageRole.assistant,
+            status=MessageStatus.streaming,
+            workflowRunId=run_id,
+            workflowRunStatus="pending",
+            workflowRunFingerprint=fingerprint,
+        ),
+    )
+
+
+class _InitialReadBarrierRepository:
+    """Force two claims to read absence before either may create."""
+
+    def __init__(self, inner: InMemorySessionRepository) -> None:
+        self.inner = inner
+        self.initial_reads = 0
+        self.both_read = asyncio.Event()
+        self.winner_finished = asyncio.Event()
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    async def list_messages(self, user_id: str, session_id: str) -> list[Message]:
+        snapshot = await self.inner.list_messages(user_id, session_id)
+        if self.initial_reads < 2:
+            self.initial_reads += 1
+            if self.initial_reads == 2:
+                self.both_read.set()
+            await self.both_read.wait()
+        return snapshot
+
+    async def claim_workflow_run_if_absent(
+        self,
+        user_id: str,
+        user_message: Message,
+        pending_assistant: Message,
+    ) -> bool:
+        created = await self.inner.claim_workflow_run_if_absent(
+            user_id, user_message, pending_assistant
+        )
+        if not created:
+            await self.winner_finished.wait()
+        return created
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.current = datetime(2026, 8, 10, tzinfo=timezone.utc)
+
+    def __call__(self) -> datetime:
+        return self.current
+
+    def advance_past_lease(self) -> None:
+        self.current += timedelta(
+            seconds=_DURABLE_SCHEDULING_LEASE_SECONDS + 1
+        )
+
+
+@pytest.mark.anyio
+async def test_concurrent_identical_claim_schedules_once_and_preserves_terminal():
+    inner = InMemorySessionRepository()
+    session = await inner.create_session(Session(userId="u1"))
+    repo = _InitialReadBarrierRepository(inner)
+    schedules = 0
+
+    async def request():
+        nonlocal schedules
+        user_message, assistant = _claim_messages(
+            session.id, fingerprint="a" * 64
+        )
+        owns, current = await _claim_durable_run(
+            repo,
+            user_id="u1",
+            user_message=user_message,
+            pending_assistant=assistant,
+        )
+        if owns:
+            schedules += 1
+            terminal = current.model_copy(
+                update={
+                    "content": "finished",
+                    "status": MessageStatus.complete,
+                    "workflowRunStatus": "completed",
+                }
+            )
+            await repo.upsert_message("u1", terminal)
+            repo.winner_finished.set()
+        return owns
+
+    owners = await asyncio.gather(request(), request())
+    assert sorted(owners) == [False, True]
+    assert repo.initial_reads == 2
+    assert schedules == 1
+    messages = await repo.list_messages("u1", session.id)
+    assistant = next(m for m in messages if m.role is MessageRole.assistant)
+    assert assistant.content == "finished"
+    assert assistant.workflowRunStatus == "completed"
+
+
+@pytest.mark.anyio
+async def test_concurrent_different_fingerprint_has_one_owner_and_one_conflict():
+    inner = InMemorySessionRepository()
+    session = await inner.create_session(Session(userId="u1"))
+    repo = _InitialReadBarrierRepository(inner)
+    schedules = 0
+
+    async def request(fingerprint: str, content: str):
+        nonlocal schedules
+        user_message, assistant = _claim_messages(
+            session.id, fingerprint=fingerprint, content=content
+        )
+        owns, _current = await _claim_durable_run(
+            repo,
+            user_id="u1",
+            user_message=user_message,
+            pending_assistant=assistant,
+        )
+        if owns:
+            schedules += 1
+            repo.winner_finished.set()
+        return owns
+
+    outcomes = await asyncio.gather(
+        request("a" * 64, "otters"),
+        request("b" * 64, "badgers"),
+        return_exceptions=True,
+    )
+    assert sum(outcome is True for outcome in outcomes) == 1
+    conflicts = [outcome for outcome in outcomes if isinstance(outcome, HTTPException)]
+    assert len(conflicts) == 1
+    assert conflicts[0].status_code == 409
+    assert repo.initial_reads == 2
+    assert schedules == 1
+    user = next(
+        message
+        for message in await repo.list_messages("u1", session.id)
+        if message.role is MessageRole.user
+    )
+    winner_index = outcomes.index(True)
+    assert user.content == ("otters" if winner_index == 0 else "badgers")
+    assert user.workflowRunFingerprint == ("a" * 64 if winner_index == 0 else "b" * 64)
+
+
+@pytest.mark.anyio
+async def test_crashed_claim_is_pending_and_preexpiry_retry_does_not_reschedule():
+    repo = InMemorySessionRepository()
+    session = await repo.create_session(Session(userId="u1"))
+    clock = _FakeClock()
+    user_message, assistant = _claim_messages(
+        session.id, fingerprint="a" * 64
+    )
+
+    owns, claimed = await _claim_durable_run(
+        repo,
+        user_id="u1",
+        user_message=user_message,
+        pending_assistant=assistant,
+        now=clock,
+        lease_token_factory=lambda: "lease-first",
+    )
+    assert owns is True
+    assert claimed.workflowScheduleLeaseToken == "lease-first"
+    assert claimed.workflowScheduleLeaseExpiresAt == clock.current + timedelta(
+        seconds=_DURABLE_SCHEDULING_LEASE_SECONDS
+    )
+
+    # Simulate process death here: the owner never calls the scheduler.
+    replay_owns, replay = await _claim_durable_run(
+        repo,
+        user_id="u1",
+        user_message=user_message,
+        pending_assistant=assistant,
+        now=clock,
+        lease_token_factory=lambda: "must-not-be-used",
+    )
+    assert replay_owns is False
+    assert replay.workflowRunStatus == "pending"
+    assert replay.workflowScheduleLeaseToken == "lease-first"
+
+
+def test_crash_then_http_retry_gets_timing_and_recovers_after_lease(
+    client, monkeypatch
+):
+    sid = _seed(client)
+    clock = _FakeClock()
+    monkeypatch.setattr("ai4ia_api.routers.workflows._utc_now", clock)
+
+    class CrashBeforeDtsAcceptance(_StubDurable):
+        async def schedule(self, payload, *, user_id, run_id=None):
+            raise RuntimeError("process died before DTS accepted the run")
+
+    body = {
+        "sessionId": sid,
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "crash-recovery-key",
+    }
+    client.app.state.durable_workflows = CrashBeforeDtsAcceptance()
+    with pytest.raises(RuntimeError, match="process died"):
+        client.post("/api/workflows/summarize/run", json=body)
+
+    recovered = _StubDurable()
+    client.app.state.durable_workflows = recovered
+    pending = client.post("/api/workflows/summarize/run", json=body)
+    assert pending.status_code == 202
+    assert pending.json()["status"] == "pending"
+    assert pending.json()["retryAfterSeconds"] == _DURABLE_SCHEDULING_LEASE_SECONDS
+    assert pending.headers["Retry-After"] == str(
+        _DURABLE_SCHEDULING_LEASE_SECONDS
+    )
+    assert pending.json()["leaseExpiresAt"] is not None
+    assert recovered.scheduled == []
+
+    clock.advance_past_lease()
+    accepted = client.post("/api/workflows/summarize/run", json=body)
+    assert accepted.status_code == 202
+    assert accepted.json()["status"] == "accepted"
+    assert accepted.json()["runId"] == pending.json()["runId"]
+    assert len(recovered.scheduled) == 1
+    assert recovered.scheduled[0][0]["context"]["runId"] == pending.json()["runId"]
+
+
+@pytest.mark.anyio
+async def test_expired_crash_lease_has_one_cas_winner_and_makes_progress():
+    inner = InMemorySessionRepository()
+    session = await inner.create_session(Session(userId="u1"))
+    clock = _FakeClock()
+    user_message, assistant = _claim_messages(
+        session.id, fingerprint="a" * 64
+    )
+    owns, _ = await _claim_durable_run(
+        inner,
+        user_id="u1",
+        user_message=user_message,
+        pending_assistant=assistant,
+        now=clock,
+        lease_token_factory=lambda: "lease-crashed",
+    )
+    assert owns is True
+    clock.advance_past_lease()
+    repo = _InitialReadBarrierRepository(inner)
+    scheduled_run_ids: list[str] = []
+
+    async def retry(token: str) -> tuple[bool, Message]:
+        return await _claim_durable_run(
+            repo,
+            user_id="u1",
+            user_message=user_message,
+            pending_assistant=assistant,
+            now=clock,
+            lease_token_factory=lambda: token,
+        )
+
+    results = await asyncio.gather(retry("lease-a"), retry("lease-b"))
+    owners = [owns for owns, _current in results]
+    winner = next(current for owns, current in results if owns)
+    scheduled_run_ids.append(winner.workflowRunId or "")
+    accepted = winner.model_copy(
+        update={
+            "workflowRunStatus": "accepted",
+            "workflowScheduleLeaseToken": None,
+            "workflowScheduleLeaseExpiresAt": None,
+        }
+    )
+    assert await repo.replace_message_if_workflow_status(
+        "u1",
+        accepted,
+        expected_status="pending",
+        expected_lease_token=winner.workflowScheduleLeaseToken,
+    )
+
+    assert sorted(owners) == [False, True]
+    assert scheduled_run_ids == ["u1:stable"]
+    saved = next(
+        message
+        for message in await inner.list_messages("u1", session.id)
+        if message.role is MessageRole.assistant
+    )
+    assert saved.workflowRunStatus == "accepted"
+    assert saved.workflowScheduleLeaseToken is None
+
+
+@pytest.mark.anyio
+async def test_crashed_claim_still_rejects_different_fingerprint():
+    repo = InMemorySessionRepository()
+    session = await repo.create_session(Session(userId="u1"))
+    clock = _FakeClock()
+    user_message, assistant = _claim_messages(
+        session.id, fingerprint="a" * 64
+    )
+    assert (
+        await _claim_durable_run(
+            repo,
+            user_id="u1",
+            user_message=user_message,
+            pending_assistant=assistant,
+            now=clock,
+            lease_token_factory=lambda: "lease-first",
+        )
+    )[0]
+    other_user, other_assistant = _claim_messages(
+        session.id, fingerprint="b" * 64, content="badgers"
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await _claim_durable_run(
+            repo,
+            user_id="u1",
+            user_message=other_user,
+            pending_assistant=other_assistant,
+            now=clock,
+            lease_token_factory=lambda: "lease-other",
+        )
+
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_expired_lease_never_reclaims_terminal_assistant():
+    repo = InMemorySessionRepository()
+    session = await repo.create_session(Session(userId="u1"))
+    clock = _FakeClock()
+    user_message, assistant = _claim_messages(
+        session.id, fingerprint="a" * 64
+    )
+    _, claimed = await _claim_durable_run(
+        repo,
+        user_id="u1",
+        user_message=user_message,
+        pending_assistant=assistant,
+        now=clock,
+        lease_token_factory=lambda: "lease-first",
+    )
+    terminal = claimed.model_copy(
+        update={
+            "content": "finished",
+            "status": MessageStatus.complete,
+            "workflowRunStatus": "completed",
+        }
+    )
+    await repo.upsert_message("u1", terminal)
+    clock.advance_past_lease()
+
+    owns, current = await _claim_durable_run(
+        repo,
+        user_id="u1",
+        user_message=user_message,
+        pending_assistant=assistant,
+        now=clock,
+        lease_token_factory=lambda: "must-not-be-used",
+    )
+
+    assert owns is False
+    assert current.workflowRunStatus == "completed"
+    assert current.content == "finished"
+    assert current.workflowScheduleLeaseToken == "lease-first"
 
 
 def test_non_durable_run_still_executes_synchronously(client):
@@ -247,7 +879,12 @@ def test_status_of_another_users_run_is_404(client):
     client.app.state.durable_workflows = _StubDurable()
     mine = client.post(
         "/api/workflows/summarize/run",
-        json={"sessionId": sid, "input": "otters", "durable": True},
+        json={
+            "sessionId": sid,
+            "input": "otters",
+            "durable": True,
+            "idempotencyKey": "owned-run-key",
+        },
     ).json()["runId"]
 
     assert client.get(f"/api/workflows/runs/{mine}").status_code == 200
@@ -285,6 +922,44 @@ class _CapturingClient:
         return instance_id
 
 
+class _AmbiguousClient:
+    def __init__(self, state=None):
+        self.state = state
+
+    async def schedule_new_orchestration(self, _name, *, input=None, instance_id=None):
+        raise TimeoutError("response lost")
+
+    async def get_orchestration_state(self, _run_id):
+        return self.state
+
+
+class _Code:
+    def __init__(self, name: str):
+        self.name = name
+
+
+class _SchedulerError(RuntimeError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self._code = _Code(code)
+
+    def code(self):
+        return self._code
+
+
+class _RejectedClient:
+    def __init__(self, code: str):
+        self.code = code
+        self.reads = 0
+
+    async def schedule_new_orchestration(self, _name, *, input=None, instance_id=None):
+        raise _SchedulerError(self.code)
+
+    async def get_orchestration_state(self, _run_id):
+        self.reads += 1
+        raise AssertionError("definite rejections must not be point-read as ambiguous")
+
+
 @pytest.mark.anyio
 async def test_schedule_generates_the_run_id_from_the_caller_id():
     """The run id must be minted here, never accepted from the request.
@@ -306,6 +981,105 @@ async def test_schedule_generates_the_run_id_from_the_caller_id():
     # Two runs for the same user must not collide.
     second = await svc.schedule({"steps": []}, user_id="alice")
     assert second != run_id
+
+
+@pytest.mark.anyio
+async def test_schedule_recovers_when_point_read_proves_ambiguous_acceptance():
+    svc = DurableWorkflowService(endpoint="e", task_hub="h", app_state=object())
+    svc._client = _AmbiguousClient(state=object())
+    run_id = f"alice{_RUN_ID_SEPARATOR}stable"
+    assert (
+        await svc.schedule({"steps": []}, user_id="alice", run_id=run_id)
+        == run_id
+    )
+
+
+@pytest.mark.anyio
+async def test_schedule_preserves_unknown_acceptance_for_same_id_retry():
+    svc = DurableWorkflowService(endpoint="e", task_hub="h", app_state=object())
+    svc._client = _AmbiguousClient()
+    run_id = f"alice{_RUN_ID_SEPARATOR}stable"
+    with pytest.raises(DurableScheduleAcceptanceUnknownError):
+        await svc.schedule({"steps": []}, user_id="alice", run_id=run_id)
+
+
+@pytest.mark.anyio
+async def test_schedule_classifies_permission_rejection_as_definite():
+    svc = DurableWorkflowService(endpoint="e", task_hub="h", app_state=object())
+    client = _RejectedClient("PERMISSION_DENIED")
+    svc._client = client
+    run_id = f"alice{_RUN_ID_SEPARATOR}stable"
+    with pytest.raises(DurableScheduleRejectedError):
+        await svc.schedule({"steps": []}, user_id="alice", run_id=run_id)
+    assert client.reads == 0
+
+
+@pytest.mark.anyio
+async def test_schedule_treats_already_existing_instance_as_idempotent_success():
+    svc = DurableWorkflowService(endpoint="e", task_hub="h", app_state=object())
+    client = _RejectedClient("ALREADY_EXISTS")
+    svc._client = client
+    run_id = f"alice{_RUN_ID_SEPARATOR}stable"
+    assert (
+        await svc.schedule({"steps": []}, user_id="alice", run_id=run_id)
+        == run_id
+    )
+    assert client.reads == 0
+
+
+def test_run_fingerprint_covers_every_frozen_execution_field():
+    base = {
+        "steps": [{"agent": "writer", "instruction": "Write {input}", "extraTools": []}],
+        "context": {
+            "userId": "u1",
+            "sessionId": "s1",
+            "workflowName": "write",
+            "runInput": "otters",
+            "modelId": "gpt-x",
+            "deployment": "gpt-x-east",
+            "usageTarget": {
+                "provider": "azure_openai",
+                "deployment": "gpt-x-east",
+                "target": "gpt-x-east",
+                "region": "eastus2",
+                "dataZone": "US",
+            },
+            "email": "user@example.com",
+            "libraryDocumentIds": ["doc-1"],
+            "correlationId": "cid-1",
+            "runId": "u1:run",
+            "assistantMessageId": "a1",
+        },
+    }
+    original = durable_run_fingerprint(base)
+    mutations = (
+        ("steps", [{"agent": "writer", "instruction": "Edit {input}", "extraTools": []}]),
+        ("runInput", "badgers"),
+        ("modelId", "gpt-y"),
+        ("deployment", "gpt-x-west"),
+        ("email", "other@example.com"),
+        ("libraryDocumentIds", ["doc-2"]),
+        ("usageTarget", {**base["context"]["usageTarget"], "region": "westus"}),
+        ("usageTarget", {**base["context"]["usageTarget"], "dataZone": "EU"}),
+    )
+    for key, value in mutations:
+        changed = copy.deepcopy(base)
+        if key == "steps":
+            changed["steps"] = value
+        else:
+            changed["context"][key] = value
+        assert durable_run_fingerprint(changed) != original, key
+
+    metadata_only = copy.deepcopy(base)
+    metadata_only["context"].update(
+        {
+            "assistantMessageId": "a2",
+            "correlationId": "cid-2",
+            "runFingerprint": "ignored",
+            "runId": "u1:other",
+        }
+    )
+    assert durable_run_fingerprint(metadata_only) == original
 
 
 @pytest.mark.anyio
@@ -584,7 +1358,7 @@ class _RecordingRepo:
         self.messages: list[Any] = []
         self.touched: list[tuple[str, str]] = []
 
-    async def add_message(self, uid: str, message: Any) -> None:
+    async def upsert_message(self, uid: str, message: Any) -> None:
         self.messages.append(message)
 
     async def touch_session(self, uid: str, session_id: str) -> None:
@@ -625,6 +1399,27 @@ def _persist_payload(context: dict[str, Any]) -> dict[str, Any]:
             TokenUsage(prompt=10, completion=5, total=15, known=True, calls=1)
         ),
     }
+
+
+@pytest.mark.anyio
+async def test_accepted_execution_failure_is_persisted_as_run_failed() -> None:
+    state = _State(_CatalogThatWouldPickTheWrongOption(None))
+    context = _context_from_payload(_deployment("m-eastus", "eastus2", "US"))
+    context.update(
+        {
+            "runId": "u1:run",
+            "assistantMessageId": "assistant-1",
+            "runFingerprint": "f" * 64,
+        }
+    )
+    payload = _persist_payload(context)
+    payload["ok"] = False
+    payload["text"] = "step failed"
+    await _service_for(state)._persist(payload)
+    message = state.session_repo.messages[0]
+    assert message.status is MessageStatus.error
+    assert message.workflowRunStatus == "run_failed"
+    assert message.workflowRunFingerprint == "f" * 64
 
 
 def _context_from_payload(deployment: DeploymentOption) -> dict[str, Any]:
