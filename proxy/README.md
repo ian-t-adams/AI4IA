@@ -70,7 +70,10 @@ Seven source files carry AI4IA security/correctness patches over the audited pin
   `/health`, `/healthdetail`, and `/forcegc` diagnostics before authentication, queueing, or
   worker dispatch. AI4IA exposes only the side-effect-free `/startup`, `/liveness`, and
   `/readiness` routes required by Container Apps; this prevents unauthenticated internal-state
-  disclosure, counter resets, and forced blocking Gen-2 collections.
+  disclosure, counter resets, and forced blocking Gen-2 collections. The upstream request-null
+  branch is also removed: `HttpListener.GetContextAsync()` and `HttpListenerContext.Request`
+  are non-null contracts, while retaining that dead branch makes request data appear to control
+  whether the later authentication methods execute (CodeQL `cs/user-controlled-bypass`).
 
 All other source files are upstream-identical after line-ending normalization.
 Re-evaluate and drop the `IncomingAuthValidator.cs` patch when refreshing to an

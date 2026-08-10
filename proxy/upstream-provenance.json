@@ -58,7 +58,7 @@
     },
     {
       "path": "SimpleL7Proxy/server.cs",
-      "reason": "Compare opaque inbound authentication keys exactly and in constant time; return 404 for privileged legacy diagnostics before auth or worker dispatch."
+      "reason": "Compare opaque inbound authentication keys exactly and in constant time; remove redundant request-null control flow; return 404 for privileged legacy diagnostics before auth or worker dispatch."
     }
   ],
   "files": {
@@ -1093,7 +1093,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/server.cs": {
-      "localCanonicalSha256": "e2e00cbf37373a2efad43eeae5d98a84a57f1aac98e4ead805635400874514f4",
+      "localCanonicalSha256": "2c6c0f0d9a5bdc6b038600c45f4859192892de378beabc55cc22d8091fcee931",
       "upstreamRawSha256": "4487ecd7fd5777bed9cc7ce91c3b18596e306f5e6559aad4890df864fa6d64ce",
       "upstreamCanonicalSha256": "4487ecd7fd5777bed9cc7ce91c3b18596e306f5e6559aad4890df864fa6d64ce",
       "disposition": "ai4ia-patched"

@@ -369,10 +369,6 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                 if (completedTask == getContextTask)
                 {
                     var lc = await getContextTask.ConfigureAwait(false);
-                    if (lc == null || lc.Request == null)
-                    {
-                        continue;
-                    }
                     var preAuthRoute = await DispatchPreAuthRouteAsync(
                         lc.Request.Url?.AbsolutePath,
                         route => route switch
