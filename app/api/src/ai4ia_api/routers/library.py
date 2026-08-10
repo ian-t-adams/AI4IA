@@ -392,7 +392,16 @@ async def upload_document(
             content_type=content_type,
         )
         if scheduled is EnrichScheduleOutcome.saturated:
-            doc = await ingestor.settle_saturated(doc)
+            doc, settlement = await ingestor.settle_saturated(doc)
+            if settlement != "committed":
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=(
+                        "The file was stored, but analysis capacity could not be "
+                        "recorded. Retry the same upload shortly."
+                    ),
+                    headers={"Retry-After": "5"},
+                )
     logger.info(
         "library upload user=%s id=%s status=%s deduped=%s",
         uid, doc.id, doc.status, result.deduped,

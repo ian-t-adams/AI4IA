@@ -41,6 +41,13 @@ from ..agents.command_service import (
     execute_tool_command,
 )
 from ..agents.commands import CommandKind, parse_input
+from ..agents.prompt_budget import (
+    MESSAGE_ENVELOPE_RESERVE_BYTES,
+    TOOL_CONTEXT_RESERVE_TOKENS,
+    bound_payload_history,
+    message_budget_bytes,
+    prompt_byte_budget,
+)
 from ..agents.runtime import AgentRunFailed, AgentStep, run_agent_turn
 from ..agents.activity import persisted_trace
 from ..agents.approvals import (
@@ -208,35 +215,17 @@ def _history(messages: list[Message], system_prompt: str | None) -> list[dict]:
 # conservative for byte-based model tokenizers: it may trim early, but it cannot
 # let a non-ASCII payload evade the bound by packing multiple bytes into one
 # Python character.
-FALLBACK_CONTEXT_WINDOW_TOKENS = 192_000
-TOOL_CONTEXT_RESERVE_TOKENS = 4_096
-MESSAGE_ENVELOPE_RESERVE_BYTES = 32
-
-
 def _prompt_byte_budget(entry: ModelEntry | None, params: dict) -> int:
     """Prompt budget after reserving the requested output and tool-loop overhead."""
-    context = (
-        entry.contextWindow
-        if entry is not None and entry.contextWindow is not None
-        else FALLBACK_CONTEXT_WINDOW_TOKENS
+    return prompt_byte_budget(
+        entry.contextWindow if entry is not None else None,
+        params,
+        default_max_tokens=GLOBAL_DEFAULT_MAX_TOKENS,
     )
-    requested_output = params.get("max_tokens")
-    if isinstance(requested_output, (int, float, str)):
-        try:
-            output = max(1, int(requested_output))
-        except ValueError:
-            output = GLOBAL_DEFAULT_MAX_TOKENS
-    else:
-        output = GLOBAL_DEFAULT_MAX_TOKENS
-    reserved = min(max(0, context - 1), output + TOOL_CONTEXT_RESERVE_TOKENS)
-    return max(1, context - reserved)
 
 
 def _message_budget_bytes(message: dict) -> int:
-    return (
-        len(str(message.get("content") or "").encode("utf-8"))
-        + MESSAGE_ENVELOPE_RESERVE_BYTES
-    )
+    return message_budget_bytes(message)
 
 
 def _bound_payload_history(
@@ -248,35 +237,32 @@ def _bound_payload_history(
     conversational history is admitted newest-first as a contiguous suffix, so
     truncation never keeps an older turn while dropping a newer one.
     """
-    if not messages:
-        return [], 0, 0
-    current_index = len(messages) - 1
-    history_indexes = [
-        index
-        for index, message in enumerate(messages)
-        if index != current_index and message.get("role") != "system"
-    ]
-    fixed_indexes = set(range(len(messages))) - set(history_indexes)
-    used = sum(_message_budget_bytes(messages[index]) for index in fixed_indexes)
-    if used > prompt_budget_bytes:
-        raise ValueError("fixed prompt content exceeds the selected model budget")
-    history_groups: list[list[int]] = []
-    for index in history_indexes:
-        if messages[index].get("role") == "user" or not history_groups:
-            history_groups.append([index])
-        else:
-            history_groups[-1].append(index)
-    kept_history: set[int] = set()
-    for group in reversed(history_groups):
-        size = sum(_message_budget_bytes(messages[index]) for index in group)
-        if used + size > prompt_budget_bytes:
-            break
-        kept_history.update(group)
-        used += size
-    kept_indexes = fixed_indexes | kept_history
-    bounded = [message for index, message in enumerate(messages) if index in kept_indexes]
-    dropped = [messages[index] for index in history_indexes if index not in kept_history]
-    return bounded, len(dropped), sum(_message_budget_bytes(message) for message in dropped)
+    return bound_payload_history(messages, prompt_budget_bytes=prompt_budget_bytes)
+
+
+def _bound_history_with_optional_summary(
+    recent_messages: list[dict],
+    fallback_messages: list[dict],
+    summary_block: str,
+    *,
+    prompt_budget_bytes: int,
+) -> tuple[list[dict], int, int, bool]:
+    """Admit a summary only after the newest verbatim suffix has won its budget."""
+    bounded, dropped, dropped_bytes = _bound_payload_history(
+        recent_messages, prompt_budget_bytes=prompt_budget_bytes
+    )
+    if not summary_block:
+        return bounded, dropped, dropped_bytes, False
+    summary_message = {"role": "system", "content": summary_block}
+    used = sum(_message_budget_bytes(message) for message in bounded)
+    if used + _message_budget_bytes(summary_message) <= prompt_budget_bytes:
+        insert_at = 1 if bounded and bounded[0].get("role") == "system" else 0
+        bounded.insert(insert_at, summary_message)
+        return bounded, dropped, dropped_bytes, True
+    bounded, dropped, dropped_bytes = _bound_payload_history(
+        fallback_messages, prompt_budget_bytes=prompt_budget_bytes
+    )
+    return bounded, dropped, dropped_bytes, False
 
 
 # Total chars of uploaded-document text injected into a single turn. Kept below
@@ -1188,58 +1174,29 @@ async def chat(
             library_block = ""
             library_sources = None
 
-    # The rolling summary is paired with the recent suffix returned by the
-    # summarizer, so keep it with that history. Retrieved context is optional and
-    # admitted only after the newest conversational history has been bounded.
-    insert_at = 1 if (payload_messages and payload_messages[0]["role"] == "system") else 0
+    # Newest verbatim turns outrank every optional context block. Bound them first;
+    # the rolling summary is admitted only if it fits without displacing that suffix.
     dropped_context_blocks: list[str] = []
-    if summary_block:
-        summary_message = {"role": "system", "content": summary_block}
-        base_with_current = [
-            *payload_messages,
-            {"role": "user", "content": content_for_model},
-        ]
-        fixed_with_summary = sum(
-            _message_budget_bytes(message)
-            for message in base_with_current
-            if message.get("role") == "system"
-            or message is base_with_current[-1]
-        ) + _message_budget_bytes(summary_message)
-        if fixed_with_summary <= bounded_prompt_budget:
-            payload_messages.insert(insert_at, summary_message)
-            insert_at += 1
-        else:
-            # A summary that cannot fit must not cause its folded history to
-            # disappear. Fall back to the stored transcript and let the hard
-            # suffix bound below select the newest complete turns.
-            payload_messages = _history(prior, system_prompt)
-            insert_at = (
-                1
-                if payload_messages and payload_messages[0]["role"] == "system"
-                else 0
-            )
-            summary_block = ""
-            dropped_context_blocks.append("summary")
 
-    # Turn-level provenance taint. These four blocks are exactly the untrusted
-    # content this turn promoted into system messages: a rolling summary of prior
-    # turns, recalled per-user memory, session-uploaded documents, and library
-    # retrieval excerpts. Each is nonce-fenced, which stops delimiter forgery but
-    # is not an information-flow boundary — text inside a fence can still steer
-    # what the model decides to *do*. The runtime latches this ON further once any
-    # tool result comes back mid-turn.
-    #
-    # SEAM (stated plainly): this is a turn-level bit, not per-argument
-    # provenance. It answers "did untrusted content enter this turn", not "did
-    # THIS argument derive from it". Real dataflow tracking would tag each
-    # retrieved span and follow it into argument construction.
-    untrusted_context = bool(summary_block or memory_block or doc_block or library_block)
-
-    payload_messages.append({"role": "user", "content": content_for_model})
-    payload_messages, dropped_messages, dropped_bytes = _bound_payload_history(
-        payload_messages, prompt_budget_bytes=bounded_prompt_budget
+    current_message = {"role": "user", "content": content_for_model}
+    payload_messages.append(current_message)
+    fallback_messages = [*_history(prior, system_prompt), current_message]
+    payload_messages, dropped_messages, dropped_bytes, summary_retained = (
+        _bound_history_with_optional_summary(
+            payload_messages,
+            fallback_messages,
+            summary_block,
+            prompt_budget_bytes=bounded_prompt_budget,
+        )
     )
+    if summary_block and not summary_retained:
+        summary_block = ""
+        dropped_context_blocks.append("summary")
     used_prompt_bytes = sum(_message_budget_bytes(message) for message in payload_messages)
+    insert_at = 1 if (payload_messages and payload_messages[0]["role"] == "system") else 0
+    if summary_retained:
+        insert_at += 1
+
     kept_context_blocks: set[str] = set()
     for block_name, block in (
         ("memory", memory_block),
@@ -1262,6 +1219,8 @@ async def chat(
     memory_block = memory_block if "memory" in kept_context_blocks else ""
     doc_block = doc_block if "documents" in kept_context_blocks else ""
     library_block = library_block if "library" in kept_context_blocks else ""
+    # Turn-level provenance taint over only the blocks that actually survived
+    # admission. The runtime latches this on again after any tool result.
     untrusted_context = bool(summary_block or memory_block or doc_block or library_block)
     if dropped_messages:
         logger.info(
@@ -1665,6 +1624,7 @@ async def chat(
                     extra_handlers=extra_handlers or None,
                     on_step=on_step,
                     on_delta=on_delta,
+                    prompt_budget_bytes=prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS,
                 )
 
             return StreamingResponse(
@@ -1707,6 +1667,9 @@ async def chat(
                 params=effective_params,
                 extra_tools=extra_tools or None,
                 extra_handlers=extra_handlers or None,
+                prompt_budget_bytes=(
+                    prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS
+                ),
             )
         except AgentRunFailed as exc:
             partial = exc.partial
@@ -1915,6 +1878,7 @@ async def chat(
                             extra_handlers=plain_handlers or None,
                             on_step=on_step,
                             on_delta=on_delta,
+                            prompt_budget_bytes=prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS,
                         )
 
                     async def _rag_fallback() -> tuple[str, TokenUsage]:
@@ -1965,6 +1929,9 @@ async def chat(
                     params=effective_params,
                     extra_tools=plain_tools or None,
                     extra_handlers=plain_handlers or None,
+                    prompt_budget_bytes=(
+                        prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS
+                    ),
                 )
                 plain_drafts = approval_sink.drafts()
                 # Normally the model answers in prose after a held call (see

@@ -14,12 +14,15 @@ import pytest
 
 from ai4ia_api.catalog import DeploymentOption, ModelEntry, load_catalog
 from ai4ia_api.gateway.client import ModelGatewayClient
+from ai4ia_api.agents.prompt_budget import (
+    MESSAGE_ENVELOPE_RESERVE_BYTES,
+    TOOL_CONTEXT_RESERVE_TOKENS,
+)
 from ai4ia_api.routers.chat import (
     DOC_CONTEXT_BUDGET,
     DOC_CONTEXT_BUDGET_MAX,
     GLOBAL_DEFAULT_MAX_TOKENS,
-    MESSAGE_ENVELOPE_RESERVE_BYTES,
-    TOOL_CONTEXT_RESERVE_TOKENS,
+    _bound_history_with_optional_summary,
     _bound_payload_history,
     _doc_budget_for,
     _effective_params,
@@ -258,6 +261,59 @@ def test_history_refuses_fixed_system_and_current_content_over_budget():
     fixed = sum(_message_budget_bytes(message) for message in messages)
     with pytest.raises(ValueError, match="fixed prompt"):
         _bound_payload_history(messages, prompt_budget_bytes=fixed - 1)
+
+
+def test_summary_fits_without_displacing_newest_verbatim_history_at_boundary():
+    recent = [
+        {"role": "system", "content": "safety"},
+        {"role": "user", "content": "newest question"},
+        {"role": "assistant", "content": "newest answer"},
+        {"role": "user", "content": "current"},
+    ]
+    summary = "compact summary"
+    summary_message = {"role": "system", "content": summary}
+    budget = sum(_message_budget_bytes(message) for message in recent) + (
+        _message_budget_bytes(summary_message)
+    )
+    out, dropped, _, retained = _bound_history_with_optional_summary(
+        recent,
+        recent,
+        summary,
+        prompt_budget_bytes=budget,
+    )
+
+    assert dropped == 0
+    assert retained is True
+    assert out == [recent[0], summary_message, *recent[1:]]
+
+
+def test_summary_cannot_displace_newest_suffix_and_falls_back_to_transcript():
+    recent = [
+        {"role": "system", "content": "safety"},
+        {"role": "user", "content": "newest question"},
+        {"role": "assistant", "content": "newest answer"},
+        {"role": "user", "content": "current"},
+    ]
+    fallback = [
+        recent[0],
+        {"role": "user", "content": "folded older question"},
+        {"role": "assistant", "content": "folded older answer"},
+        *recent[1:],
+    ]
+    summary = "compact summary"
+    exact = sum(_message_budget_bytes(message) for message in recent) + (
+        _message_budget_bytes({"role": "system", "content": summary})
+    )
+    out, dropped, _, retained = _bound_history_with_optional_summary(
+        recent,
+        fallback,
+        summary,
+        prompt_budget_bytes=exact - 1,
+    )
+
+    assert retained is False
+    assert out == recent
+    assert dropped == 2
 
 
 # --- reasoning_effort is validated server-side ------------------------------

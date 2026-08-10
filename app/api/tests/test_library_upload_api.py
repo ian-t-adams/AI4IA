@@ -77,6 +77,54 @@ def test_upload_saturation_settles_failed_instead_of_stored_orphan(
     assert "Re-upload to retry" in body["error"]
 
 
+def test_failed_saturation_patch_returns_retryable_and_identical_upload_reschedules(
+    client, monkeypatch
+):
+    ingestor = client.app.state.document_ingestor
+    ingestor._cu = object()
+    outcomes = iter(
+        [EnrichScheduleOutcome.saturated, EnrichScheduleOutcome.scheduled]
+    )
+    schedule_calls: list[str] = []
+
+    def schedule(**kwargs):
+        schedule_calls.append(kwargs["document_id"])
+        return next(outcomes)
+
+    async def failed_patch(doc, changes, *, require_status=None):
+        return "error", None
+
+    monkeypatch.setattr(ingestor, "schedule_enrich", schedule)
+    monkeypatch.setattr(ingestor, "_safe_update", failed_patch)
+
+    first = _upload(client, "busy.txt", b"stored for retry")
+    second = _upload(client, "busy.txt", b"stored for retry")
+
+    assert first.status_code == 503
+    assert first.headers["retry-after"] == "5"
+    assert second.status_code == 201
+    assert second.json()["status"] == "stored"
+    assert len(schedule_calls) == 2
+    assert schedule_calls[0] == schedule_calls[1]
+
+
+def test_identical_stored_upload_with_already_running_task_is_noop(client, monkeypatch):
+    ingestor = client.app.state.document_ingestor
+    ingestor._cu = object()
+    monkeypatch.setattr(
+        ingestor,
+        "schedule_enrich",
+        lambda **_kwargs: EnrichScheduleOutcome.already_running,
+    )
+
+    first = _upload(client, "running.txt", b"same in-flight bytes")
+    second = _upload(client, "running.txt", b"same in-flight bytes")
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json()["id"] == second.json()["id"]
+
+
 def test_upload_dedupe_returns_same_document(client):
     first = _upload(client, "a.txt", b"identical bytes")
     second = _upload(client, "a.txt", b"identical bytes")

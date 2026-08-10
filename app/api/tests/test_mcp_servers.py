@@ -22,6 +22,7 @@ from ai4ia_api.agents.mcp_servers import (
     UserMcpServer,
     UserMcpServerCreate,
     UserMcpServerUpdate,
+    health_config_revision,
     discovered_tool_to_spec,
     is_valid_remote_tool_name,
     namespaced_tool_name,
@@ -490,9 +491,15 @@ class _CountingStore(InMemoryUserMcpServerStore):
         self.put_count += 1
         await super().put(server)
 
-    async def update_health(self, user_id, name, *, ok, error):
+    async def update_health(
+        self, user_id, name, *, expected_revision, ok, error
+    ):
         updated, changed, became_quarantined = await super().update_health(
-            user_id, name, ok=ok, error=error
+            user_id,
+            name,
+            expected_revision=expected_revision,
+            ok=ok,
+            error=error,
         )
         if changed:
             self.health_write_count += 1
@@ -591,32 +598,46 @@ async def test_record_health_recovery_clears_quarantine_and_persists():
     assert is_quarantined(stored) is False
 
 
-async def test_record_health_preserves_concurrent_endpoint_and_auth_edit():
+async def test_record_health_discards_old_failure_after_config_edit():
     store = _CountingStore()
     svc = _service_with_store(store)
     execution_snapshot = (
         await svc.create("u1", _create())
     ).model_copy(deep=True)
-    edited = await svc.get("u1", "weather")
-    edited.endpoint = "https://new.example.com/rpc"
-    edited.host = "new.example.com"
-    edited.authMode = McpAuthMode.bearer
-    edited.secretRef = "mcp/new-secret"
-    await store.put(edited)
+    await svc.update(
+        "u1",
+        "weather",
+        UserMcpServerUpdate(endpoint="https://new.example.com/rpc"),
+    )
 
     await svc.record_health(execution_snapshot, ok=False, error="connection refused")
 
     stored = await svc.get("u1", "weather")
     assert stored.endpoint == "https://new.example.com/rpc"
     assert stored.host == "new.example.com"
-    assert stored.authMode is McpAuthMode.bearer
-    assert stored.secretRef == "mcp/new-secret"
-    assert stored.consecutiveFailures == 1
+    assert stored.consecutiveFailures == 0
+
+
+async def test_record_health_discards_old_snapshot_after_recreate():
+    store = _CountingStore()
+    svc = _service_with_store(store)
+    execution_snapshot = (
+        await svc.create("u1", _create())
+    ).model_copy(deep=True)
+    await svc.delete("u1", "weather")
+    replacement = await svc.create("u1", _create())
+    assert replacement.configurationRevision != execution_snapshot.configurationRevision
+
+    await svc.record_health(execution_snapshot, ok=False, error="old failure")
+
+    assert (await svc.get("u1", "weather")).consecutiveFailures == 0
 
 
 async def test_record_health_store_failure_does_not_break_tool_result():
     class FailingHealthStore(_CountingStore):
-        async def update_health(self, user_id, name, *, ok, error):
+        async def update_health(
+            self, user_id, name, *, expected_revision, ok, error
+        ):
             raise RuntimeError("cosmos unavailable")
 
     store = FailingHealthStore()
@@ -661,8 +682,6 @@ async def test_cosmos_health_patch_retries_etag_and_never_writes_config_fields()
             self.patch_calls.append(patch_operations)
             self.etags.append(etag)
             if len(self.patch_calls) == 1:
-                self.item["endpoint"] = "https://new.example.com/rpc"
-                self.item["host"] = "new.example.com"
                 self.item["_etag"] = "e2"
                 raise CosmosAccessConditionFailedError(message="etag")
             for operation in patch_operations:
@@ -673,13 +692,17 @@ async def test_cosmos_health_patch_retries_etag_and_never_writes_config_fields()
     store._container = container
 
     updated, changed, _ = await store.update_health(
-        "u1", "weather", ok=False, error="connection refused"
+        "u1",
+        "weather",
+        expected_revision=health_config_revision(server),
+        ok=False,
+        error="connection refused",
     )
 
     assert changed is True
     assert updated is not None and updated.consecutiveFailures == 1
-    assert container.item["endpoint"] == "https://new.example.com/rpc"
-    assert container.item["host"] == "new.example.com"
+    assert container.item["endpoint"] == "https://old.example.com/rpc"
+    assert container.item["host"] == "old.example.com"
     assert len(container.patch_calls) == 2
     assert container.etags == ["e1", "e2"]
     assert {

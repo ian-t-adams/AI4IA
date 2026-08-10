@@ -158,7 +158,7 @@ def test_forget_session_clears_recall(mem_client):
 
 
 def test_optional_memory_context_is_dropped_before_it_can_overflow_model_budget(
-    mem_client,
+    mem_client, monkeypatch
 ):
     class OversizedMemory:
         async def recall(self, *_args):
@@ -175,8 +175,8 @@ def test_optional_memory_context_is_dropped_before_it_can_overflow_model_budget(
 
     entry = mem_client.app.state.catalog.get("gpt-5.2")
     assert entry is not None
-    entry.contextWindow = 7000
-    entry.maxOutputTokens = 256
+    monkeypatch.setattr(entry, "contextWindow", 7000)
+    monkeypatch.setattr(entry, "maxOutputTokens", 256)
     mem_client.app.state.memory = OversizedMemory()
     gateway = mem_client.app.state.gateway
     sid = _new_session(mem_client)
@@ -195,11 +195,13 @@ def test_optional_memory_context_is_dropped_before_it_can_overflow_model_budget(
     )
 
 
-def test_combined_fixed_prompt_overflow_fails_before_gateway_call(mem_client):
+def test_combined_fixed_prompt_overflow_fails_before_gateway_call(
+    mem_client, monkeypatch
+):
     entry = mem_client.app.state.catalog.get("gpt-5.2")
     assert entry is not None
-    entry.contextWindow = 7000
-    entry.maxOutputTokens = 256
+    monkeypatch.setattr(entry, "contextWindow", 7000)
+    monkeypatch.setattr(entry, "maxOutputTokens", 256)
     gateway = mem_client.app.state.gateway
     created = mem_client.post(
         "/api/sessions",

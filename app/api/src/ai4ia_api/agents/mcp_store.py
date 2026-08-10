@@ -23,7 +23,7 @@ from typing import Protocol, runtime_checkable
 
 from ..config import Environment, Settings, SessionStoreKind
 from . import mcp_health
-from .mcp_servers import UserMcpServer
+from .mcp_servers import UserMcpServer, health_config_revision
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,13 @@ class UserMcpServerStore(Protocol):
     async def put(self, server: UserMcpServer) -> None: ...
 
     async def update_health(
-        self, user_id: str, name: str, *, ok: bool, error: object | None
+        self,
+        user_id: str,
+        name: str,
+        *,
+        expected_revision: str,
+        ok: bool,
+        error: object | None,
     ) -> tuple[UserMcpServer | None, bool, bool]: ...
 
     async def delete(self, user_id: str, name: str) -> None: ...
@@ -63,11 +69,19 @@ class InMemoryUserMcpServerStore:
         self._by_user.setdefault(server.userId, {})[server.name] = server
 
     async def update_health(
-        self, user_id: str, name: str, *, ok: bool, error: object | None
+        self,
+        user_id: str,
+        name: str,
+        *,
+        expected_revision: str,
+        ok: bool,
+        error: object | None,
     ) -> tuple[UserMcpServer | None, bool, bool]:
         current = self._by_user.get(user_id, {}).get(name)
         if current is None:
             return None, False, False
+        if health_config_revision(current) != expected_revision:
+            return current, False, False
         updated = current.model_copy(deep=True)
         was_quarantined = mcp_health.is_quarantined(updated)
         changed = (
@@ -142,7 +156,13 @@ class CosmosUserMcpServerStore:
         await self._container.upsert_item(server.model_dump(mode="json"))
 
     async def update_health(
-        self, user_id: str, name: str, *, ok: bool, error: object | None
+        self,
+        user_id: str,
+        name: str,
+        *,
+        expected_revision: str,
+        ok: bool,
+        error: object | None,
     ) -> tuple[UserMcpServer | None, bool, bool]:
         from azure.core import MatchConditions
         from azure.cosmos.exceptions import (
@@ -158,6 +178,8 @@ class CosmosUserMcpServerStore:
             current = UserMcpServer.model_validate(raw)
             if current.userId != user_id:
                 return None, False, False
+            if health_config_revision(current) != expected_revision:
+                return current, False, False
             updated = current.model_copy(deep=True)
             was_quarantined = mcp_health.is_quarantined(updated)
             changed = (

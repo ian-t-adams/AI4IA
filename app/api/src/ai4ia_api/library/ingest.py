@@ -299,7 +299,7 @@ class DocumentIngestor:
                 content_type=content_type,
             )
 
-    async def settle_saturated(self, doc: UserDocument) -> UserDocument:
+    async def settle_saturated(self, doc: UserDocument) -> tuple[UserDocument, str]:
         """Make an admission-rejected upload terminal and retryable."""
         outcome, updated = await self._safe_update(
             doc,
@@ -312,8 +312,8 @@ class DocumentIngestor:
             require_status=DocumentStatus.stored,
         )
         if outcome == "committed" and updated is not None:
-            return updated
-        return doc
+            return updated, outcome
+        return doc, outcome
 
     async def cancel_enrich(self, user_id: str, document_id: str) -> None:
         """Cancel and drain the in-flight enrich for a document, if any."""
@@ -339,6 +339,11 @@ class DocumentIngestor:
         digest = content_hash(data)
         existing = await self._library.find_by_dedupe_key(user_id, digest, analyzer_id)
         if existing is not None:
+            if self._cu is not None and existing.status == DocumentStatus.stored:
+                # A prior admission failure may have persisted the raw upload but
+                # failed to mark it terminal. Re-drive scheduling on identical
+                # upload; schedule_enrich deduplicates an already-running task.
+                return IngestResult(document=existing, deduped=False)
             if existing.status == DocumentStatus.failed:
                 # A failed row is not a successful dedupe hit. The old behavior
                 # returned it forever, so the UI's own "Re-upload to retry"

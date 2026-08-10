@@ -6,8 +6,10 @@ response decoding, auth-header shaping, the tool cap, and error mapping.
 """
 from __future__ import annotations
 
+import gzip
 import ipaddress
 import json
+import zlib
 from collections.abc import AsyncIterator
 
 import httpcore
@@ -450,11 +452,51 @@ async def test_call_tool_rejects_declared_oversize_without_reading_body():
     assert stream.closed is True
 
 
+@pytest.mark.parametrize(
+    ("encoding", "compress"),
+    [("gzip", gzip.compress), ("deflate", zlib.compress)],
+)
+async def test_call_tool_rejects_compressed_expansion_before_body_read(
+    encoding, compress
+):
+    expanded = json.dumps(
+        _call_result([{"type": "text", "text": "x" * 4000}])
+    ).encode()
+    compressed = compress(expanded)
+    assert len(compressed) < 512 < len(expanded)
+    stream = _TrackingStream([compressed])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["accept-encoding"] == "identity"
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return httpx.Response(
+            200,
+            headers={
+                "content-encoding": encoding,
+                "content-length": str(len(compressed)),
+            },
+            stream=stream,
+        )
+
+    with pytest.raises(McpConnectionError, match="compressed responses"):
+        await _connector_maxbytes(handler, 512).call_tool(
+            endpoint=_ENDPOINT, auth=McpAuth(), tool="t", arguments={}
+        )
+
+    assert stream.reads == 0
+    assert stream.closed is True
+
+
 async def test_call_tool_accepts_response_at_exact_streaming_boundary():
     raw = json.dumps(_call_result([{"type": "text", "text": "boundary"}])).encode()
     stream = _TrackingStream([raw[:10], raw[10:]])
 
     def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["accept-encoding"] == "identity"
         method = json.loads(request.content).get("method")
         if method == "initialize":
             return _json(_init_result())

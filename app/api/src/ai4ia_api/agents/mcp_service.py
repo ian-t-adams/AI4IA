@@ -37,6 +37,8 @@ from .mcp_servers import (
     UserMcpServerCreate,
     UserMcpServerUpdate,
     _now,
+    health_config_revision,
+    new_configuration_revision,
 )
 from .mcp_store import UserMcpServerStore
 from .ssrf import (
@@ -159,6 +161,7 @@ class McpServerService:
             enabled=bool(req.enabled),
             secretRef=secret_ref,
             discoveredTools=tools,
+            configurationRevision=new_configuration_revision(),
             createdAt=now,
             updatedAt=now,
             lastConnectedAt=now,
@@ -243,6 +246,7 @@ class McpServerService:
             secretRef=secret_ref,
             discoveredTools=tools,
             toolApprovals=tool_approvals,
+            configurationRevision=new_configuration_revision(),
             createdAt=current.createdAt,
             updatedAt=now,
             lastConnectedAt=now,
@@ -290,6 +294,7 @@ class McpServerService:
             await self._store.put(current)
             raise
         current.discoveredTools = tools
+        current.configurationRevision = new_configuration_revision()
         current.lastConnectedAt = _now()
         current.updatedAt = current.lastConnectedAt
         current.lastError = None
@@ -317,6 +322,7 @@ class McpServerService:
             updated, changed, became_quarantined = await self._store.update_health(
                 server.userId,
                 server.name,
+                expected_revision=health_config_revision(server),
                 ok=ok,
                 error=error,
             )

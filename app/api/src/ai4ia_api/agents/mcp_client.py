@@ -43,6 +43,12 @@ _CLIENT_INFO = {"name": "ai4ia", "version": "1.0"}
 _DEFAULT_TIMEOUT_S = 15.0
 _DEFAULT_MAX_BYTES = 2_000_000
 
+
+async def _single_chunk(content: bytes):
+    if content:
+        yield content
+
+
 @dataclass(frozen=True)
 class McpAuth:
     """A transient credential for one discovery call (never persisted)."""
@@ -213,6 +219,7 @@ class HttpxMcpConnector:
         base_headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
+            "Accept-Encoding": "identity",
             **auth.headers(),
         }
 
@@ -289,6 +296,11 @@ class HttpxMcpConnector:
                     raise McpConnectionError(
                         f"{method}: server returned HTTP {resp.status_code}."
                     )
+                encoding = (resp.headers.get("content-encoding") or "").strip().lower()
+                if encoding not in ("", "identity"):
+                    raise McpConnectionError(
+                        f"{method}: compressed responses are not accepted."
+                    )
                 declared = resp.headers.get("content-length")
                 if declared is not None:
                     try:
@@ -298,7 +310,12 @@ class HttpxMcpConnector:
                         pass
                 parts: list[bytes] = []
                 total = 0
-                async for chunk in resp.aiter_bytes():
+                chunks = (
+                    _single_chunk(resp.content)
+                    if resp.is_stream_consumed
+                    else resp.aiter_raw()
+                )
+                async for chunk in chunks:
                     total += len(chunk)
                     if total > self._max_bytes:
                         raise McpConnectionError(f"{method}: response too large.")

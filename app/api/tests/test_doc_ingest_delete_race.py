@@ -419,7 +419,8 @@ async def test_enrichment_admission_cap_is_explicit_and_releases_on_failure(
         for name, attrs in events
     )
 
-    failed = await ingestor.settle_saturated(second.document)
+    failed, settlement = await ingestor.settle_saturated(second.document)
+    assert settlement == "committed"
     assert failed.status is DocumentStatus.failed
     assert failed.error is not None and "Re-upload to retry" in failed.error
 
