@@ -39,7 +39,12 @@ from .mcp_servers import (
     _now,
 )
 from .mcp_store import UserMcpServerStore
-from .ssrf import Resolver, SsrfError, async_validate_public_https_url
+from .ssrf import (
+    DnsCapacityError,
+    Resolver,
+    SsrfError,
+    async_validate_public_https_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -406,6 +411,10 @@ class McpServerService:
             return await async_validate_public_https_url(
                 endpoint, resolver=self._resolver
             )
+        except DnsCapacityError as exc:
+            raise McpConnectionError(
+                "MCP DNS capacity is temporarily unavailable; retry shortly."
+            ) from exc
         except SsrfError as exc:
             raise McpValidationError(str(exc)) from exc
 

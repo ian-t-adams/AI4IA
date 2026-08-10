@@ -16,6 +16,7 @@ import pytest
 from ai4ia_api.agents.ssrf import (
     MAX_URL_LEN,
     MAX_CONCURRENT_DNS_RESOLUTIONS,
+    DnsCapacityError,
     SsrfError,
     async_resolve_pinned_ip,
     async_validate_public_https_url,
@@ -288,7 +289,7 @@ async def test_dns_worker_admission_stays_bounded_after_caller_timeouts():
         extra_started = True
         return list(_PUBLIC)
 
-    with pytest.raises(SsrfError, match="capacity is exhausted"):
+    with pytest.raises(DnsCapacityError, match="capacity is exhausted"):
         await async_validate_public_https_url(
             "https://overflow.example/rpc", resolver=extra, timeout_s=0.1
         )
@@ -301,7 +302,7 @@ async def test_dns_worker_admission_stays_bounded_after_caller_timeouts():
                 "https://recovered.example/rpc", resolver=_only(_PUBLIC), timeout_s=1
             )
             break
-        except SsrfError as exc:
+        except DnsCapacityError as exc:
             if "capacity is exhausted" not in str(exc):
                 raise
             await asyncio.sleep(0.01)

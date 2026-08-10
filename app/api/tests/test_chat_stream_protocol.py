@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import pytest
 from fastapi.testclient import TestClient
@@ -694,8 +695,11 @@ async def test_agentic_stream_close_persists_cancelled_state():
 
 
 @pytest.mark.asyncio
-async def test_agentic_stream_backpressures_fast_producer_and_disconnect_unblocks_it():
+async def test_agentic_stream_backpressures_fast_producer_and_disconnect_unblocks_it(
+    caplog,
+):
     assert AGENT_EVENT_QUEUE_MAXSIZE == 32
+    caplog.set_level(logging.INFO, logger="ai4ia_api.routers._chat_streaming")
     class Repo:
         def __init__(self) -> None:
             self.persisted: list[Message] = []
@@ -764,6 +768,16 @@ async def test_agentic_stream_backpressures_fast_producer_and_disconnect_unblock
     assert "metadata" in await anext(stream)
     await asyncio.sleep(0)
     assert produced == 32
+    for _ in range(3):
+        assert "choices" in await anext(stream)
+        await asyncio.sleep(0)
+    assert produced == 35
+    backpressure_logs = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "chat.agent_stream_backpressure"
+    ]
+    assert len(backpressure_logs) == 1
     await asyncio.wait_for(stream.aclose(), timeout=1)
     await asyncio.wait_for(cancelled.wait(), timeout=1)
     assert repo.persisted[-1].status is MessageStatus.cancelled

@@ -51,6 +51,10 @@ class SsrfError(ValueError):
     """A URL was rejected because it is not a safe public HTTPS endpoint."""
 
 
+class DnsCapacityError(RuntimeError):
+    """Local DNS workers are saturated; this says nothing about the target host."""
+
+
 def _default_resolver(host: str) -> list[str]:
     # getaddrinfo returns 5-tuples; the address is the first element of sockaddr.
     # AF_UNSPEC yields both A (IPv4) and AAAA (IPv6) records.
@@ -219,7 +223,7 @@ async def _run_bounded_dns(
     exits, preventing timed-out lookups from filling an unbounded executor queue.
     """
     if not _DNS_SLOTS.acquire(blocking=False):
-        raise SsrfError("Endpoint DNS resolution capacity is exhausted.")
+        raise DnsCapacityError("Endpoint DNS resolution capacity is exhausted.")
     try:
         future = _DNS_EXECUTOR.submit(operation, value, resolver=resolver)
     except Exception:

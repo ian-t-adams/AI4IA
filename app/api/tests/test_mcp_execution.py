@@ -46,6 +46,7 @@ from ai4ia_api.agents.mcp_servers import (
     UserMcpServerCreate,
     tool_alias,
 )
+from ai4ia_api.agents.ssrf import DnsCapacityError
 from ai4ia_api.agents.mcp_service import McpServerService
 from ai4ia_api.agents.mcp_store import InMemoryUserMcpServerStore
 from ai4ia_api.agents.runtime import run_agent_turn
@@ -1222,6 +1223,29 @@ async def test_handler_reports_unhealthy_on_dns_rebind():
         await _run_handler(defs[0], {})
     assert connector.tool_calls == []
     assert len(health.calls) == 1 and health.calls[0][1] is False
+
+
+async def test_handler_does_not_charge_local_dns_saturation_to_server_health():
+    health = _HealthSpy()
+    connector = FakeMcpConnector()
+
+    def saturated(_host):
+        raise DnsCapacityError("local DNS workers full")
+
+    defs = build_mcp_tool_definitions(
+        [_server("weather", tools=[_tool("forecast")])],
+        attached_tool_names=["mcp:weather/forecast"],
+        secrets=_Secrets(),
+        connector=connector,
+        resolver=saturated,
+        budget={"used": 0},
+        health=health,
+    )
+
+    with pytest.raises(ToolExecutionError, match="temporarily unavailable"):
+        await _run_handler(defs[0], {})
+    assert connector.tool_calls == []
+    assert health.calls == []
 
 
 async def test_health_report_failure_never_breaks_a_successful_call():

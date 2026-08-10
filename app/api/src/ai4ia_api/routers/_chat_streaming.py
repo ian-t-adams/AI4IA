@@ -238,9 +238,12 @@ async def _agentic_stream(
     """Stream an agent run and own its terminal persistence lifecycle."""
     queue: asyncio.Queue[object] = asyncio.Queue(maxsize=AGENT_EVENT_QUEUE_MAXSIZE)
     sentinel = object()
+    backpressure_logged = False
 
     async def enqueue(item: object) -> None:
-        if queue.full():
+        nonlocal backpressure_logged
+        if queue.full() and not backpressure_logged:
+            backpressure_logged = True
             logger.info(
                 "chat.agent_stream_backpressure",
                 extra={
