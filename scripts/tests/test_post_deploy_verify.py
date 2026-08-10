@@ -1229,9 +1229,8 @@ def healthy_http() -> FakeHttp:
             "GET /health/ready": [pdv.HttpOutcome(status=200)],
             "GET https://web.test/": [pdv.HttpOutcome(status=200)],
             "GET /startup": [pdv.HttpOutcome(status=200)],
-            "GET /health": [pdv.HttpOutcome(status=404)],
-            "GET /healthdetail": [pdv.HttpOutcome(status=404)],
-            "GET /forcegc": [pdv.HttpOutcome(status=404)],
+            "GET /liveness": [pdv.HttpOutcome(status=200)],
+            "GET /readiness": [pdv.HttpOutcome(status=200)],
         }
     )
 
@@ -1346,12 +1345,14 @@ class VerifyTests(unittest.TestCase):
         code, out = self.verify(az=world(), http=http)
         self.assertEqual(code, 0, out)
 
-    def test_an_unreachable_proxy_ingress_fails(self) -> None:
-        http = healthy_http()
-        http.script["GET /startup"] = [pdv.HttpOutcome(status=503)]
-        code, out = self.verify(az=world(), http=http)
-        self.assertEqual(code, 3)
-        self.assertIn("no serving replica", out)
+    def test_an_unreachable_supported_proxy_probe_fails(self) -> None:
+        for path in pdv.PROXY_PROBE_PATHS:
+            with self.subTest(path=path):
+                http = healthy_http()
+                http.script[f"GET {path}"] = [pdv.HttpOutcome(status=503)]
+                code, out = self.verify(az=world(), http=http)
+                self.assertEqual(code, 3)
+                self.assertIn(f"proxy: {path} never answered", out)
 
     def test_an_authenticating_proxy_that_rejects_the_probe_still_passes(self) -> None:
         http = healthy_http()
@@ -1359,23 +1360,16 @@ class VerifyTests(unittest.TestCase):
         code, out = self.verify(az=world(), http=http)
         self.assertEqual(code, 0, out)
 
-    def test_a_healthy_deploy_checks_every_blocked_proxy_diagnostic(self) -> None:
+    def test_live_verification_only_calls_side_effect_free_proxy_probes(self) -> None:
         http = healthy_http()
         code, out = self.verify(az=world(), http=http)
         self.assertEqual(code, 0, out)
-        requested_paths = {urlsplit(url).path for _, url in http.calls}
-        self.assertTrue(
-            set(pdv.BLOCKED_PROXY_DIAGNOSTIC_PATHS).issubset(requested_paths)
-        )
-
-    def test_an_exposed_legacy_proxy_diagnostic_fails(self) -> None:
-        for path in pdv.BLOCKED_PROXY_DIAGNOSTIC_PATHS:
-            with self.subTest(path=path):
-                http = healthy_http()
-                http.script[f"GET {path}"] = [pdv.HttpOutcome(status=200)]
-                code, out = self.verify(az=world(), http=http)
-                self.assertEqual(code, 3)
-                self.assertIn(f"public GET {path} must return 404", out)
+        proxy_paths = {
+            urlsplit(url).path
+            for _, url in http.calls
+            if urlsplit(url).hostname == "proxy.test"
+        }
+        self.assertEqual(set(pdv.PROXY_PROBE_PATHS), proxy_paths)
 
     def test_a_crash_looping_api_fails(self) -> None:
         code, out = self.verify(
