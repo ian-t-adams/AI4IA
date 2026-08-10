@@ -9,11 +9,9 @@ import { useMsal } from "@azure/msal-react";
 import { isEntraEnabled } from "@/lib/auth";
 
 function EntraUserMenu({
-  disabled,
-  disabledReasonId,
+  onBeforeSignOut,
 }: {
-  disabled: boolean;
-  disabledReasonId?: string;
+  onBeforeSignOut?: () => boolean | void;
 }) {
   const { instance, accounts } = useMsal();
   const account = instance.getActiveAccount() ?? accounts[0] ?? null;
@@ -21,7 +19,7 @@ function EntraUserMenu({
 
   const label = account.name || account.username || "Account";
   const signOut = () => {
-    if (disabled) return;
+    if (onBeforeSignOut?.() === false) return;
     void instance.logoutRedirect().catch(() => {
       /* transient; user can retry */
     });
@@ -39,8 +37,6 @@ function EntraUserMenu({
         type="button"
         className="sidebar-utility-action"
         onClick={signOut}
-        aria-disabled={disabled || undefined}
-        aria-describedby={disabled && disabledReasonId ? disabledReasonId : undefined}
       >
         <span aria-hidden="true">↪</span>
         <span>Sign out</span>
@@ -50,12 +46,10 @@ function EntraUserMenu({
 }
 
 export function UserMenu({
-  disabled = false,
-  disabledReasonId,
+  onBeforeSignOut,
 }: {
-  disabled?: boolean;
-  disabledReasonId?: string;
+  onBeforeSignOut?: () => boolean | void;
 }) {
   if (!isEntraEnabled()) return null;
-  return <EntraUserMenu disabled={disabled} disabledReasonId={disabledReasonId} />;
+  return <EntraUserMenu onBeforeSignOut={onBeforeSignOut} />;
 }

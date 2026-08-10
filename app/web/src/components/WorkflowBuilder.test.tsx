@@ -108,6 +108,32 @@ async function openRunTab(
 }
 
 describe("WorkflowBuilder", () => {
+  it("requires irreversible confirmation before deleting a workflow", async () => {
+    const confirmSpy = vi
+      .spyOn(window, "confirm")
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    mocks.deleteWorkflow.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    const remove = await screen.findByRole("button", { name: "Delete summarize" });
+
+    await user.click(remove);
+    expect(mocks.deleteWorkflow).not.toHaveBeenCalled();
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/permanently delete workflow "Summarize".*can't be undone/i),
+    );
+
+    mocks.listWorkflows.mockResolvedValueOnce({
+      workflows: WORKFLOWS.filter((workflow) => workflow.name !== "summarize"),
+      durableAvailable: false,
+    });
+    await user.click(remove);
+    await waitFor(() =>
+      expect(mocks.deleteWorkflow).toHaveBeenCalledWith("summarize"),
+    );
+  });
+
   it("shows the selected step agent's description and explains step chaining on demand", async () => {
     const user = userEvent.setup();
     render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
@@ -116,6 +142,11 @@ describe("WorkflowBuilder", () => {
     // visible immediately (not hidden behind hover) so users can tell what
     // they're delegating to.
     expect(await screen.findByText("Helps with quick tasks.")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Use \{input\} for the run input and \{previous\} for the prior step's output\./,
+      ),
+    ).toBeInTheDocument();
 
     const select = screen.getByLabelText("Step 1 agent");
     await user.selectOptions(select, "research");

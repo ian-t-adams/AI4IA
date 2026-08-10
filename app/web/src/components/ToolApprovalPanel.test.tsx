@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ToolApprovalPanel } from "./ToolApprovalPanel";
 import type { PendingToolApprovalPrompt } from "../lib/types";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 function prompt(
   overrides: Partial<PendingToolApprovalPrompt> = {},
@@ -124,6 +127,46 @@ describe("ToolApprovalPanel", () => {
     expect(screen.getByRole("button", { name: /Approve and retry/ })).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent(/expired/i);
     expect(screen.getByRole("button", { name: /^Deny/ })).toBeEnabled();
+  });
+
+  it("expires a displayed approval at its deadline", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-05T13:00:00Z"));
+    render(
+      <ToolApprovalPanel
+        prompts={[prompt({ expiresAt: "2026-08-05T13:00:01Z" })]}
+        onApprove={vi.fn()}
+        onDeny={vi.fn()}
+      />,
+    );
+    const approve = screen.getByRole("button", { name: /Approve and retry/ });
+    expect(approve).toBeEnabled();
+
+    act(() => vi.advanceTimersByTime(1_000));
+
+    expect(approve).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/expired/i);
+  });
+
+  it("rechecks the deadline in the click handler before dispatching", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-05T13:00:00Z"));
+    const onApprove = vi.fn();
+    render(
+      <ToolApprovalPanel
+        prompts={[prompt({ expiresAt: "2026-08-05T13:00:01Z" })]}
+        onApprove={onApprove}
+        onDeny={vi.fn()}
+      />,
+    );
+    const approve = screen.getByRole("button", { name: /Approve and retry/ });
+    expect(approve).toBeEnabled();
+
+    vi.setSystemTime(new Date("2026-08-05T13:00:02Z"));
+    fireEvent.click(approve);
+
+    expect(onApprove).not.toHaveBeenCalled();
+    expect(approve).toBeDisabled();
   });
 
   it("warns loudly when the card is not the whole call", () => {

@@ -32,6 +32,17 @@ afterEach(() => {
 });
 
 describe("SharePanel", () => {
+  it("labels the grantee input as an email field with autocomplete", async () => {
+    mocks.getDocumentShares.mockResolvedValue(SHARED_STATE);
+    render(<SharePanel documentId="doc1" filename="notes.pdf" onClose={vi.fn()} />);
+
+    const input = await screen.findByRole("textbox", {
+      name: "Grantee email address",
+    });
+    expect(input).toHaveAttribute("type", "email");
+    expect(input).toHaveAttribute("autocomplete", "email");
+  });
+
   it("warns that switching to private and saving will remove current grantees' access", async () => {
     mocks.getDocumentShares.mockResolvedValue(SHARED_STATE);
     const user = userEvent.setup();

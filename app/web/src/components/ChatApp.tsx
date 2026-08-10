@@ -30,7 +30,10 @@ import type {
   ToolApprovalDecision,
   VoiceTurnInput,
 } from "@/lib/types";
-import type { LibraryDocument } from "@/lib/library";
+import {
+  keepMonotonicLibraryDocument,
+  type LibraryDocument,
+} from "@/lib/library";
 import { Sidebar } from "./Sidebar";
 import { ConversationInspector } from "./ConversationInspector";
 import { SettingsPanel } from "./SettingsPanel";
@@ -81,7 +84,6 @@ import {
   type MobileDrawer,
 } from "@/lib/workspaceLayout";
 import {
-  commitLatestSessionMutation,
   isCurrentSessionGeneration,
 } from "@/lib/sessionMutation";
 import { performBoundUpload } from "@/lib/uploadSession";
@@ -612,11 +614,15 @@ export function ChatApp() {
   const turnGenerationRef = useRef(0);
   const reconciliationTimersRef = useRef(new Set<number>());
   const pendingAssistantIdsRef = useRef(new Map<string, Set<string>>());
-  const modelMutationGenerationRef = useRef(0);
+  const modelMutationGenerationsRef = useRef(new Map<string, number>());
+  const modelMutationChainsRef = useRef(new Map<string, Promise<void>>());
+  const signOutGenerationRef = useRef(0);
+  const persistedModelsRef = useRef(new Map<string, string | null>());
   const systemPromptMutationGenerationRef = useRef(0);
   // Full-list fetches and local list mutations share this generation so an
   // older response can never roll the sidebar back.
   const sessionListGenerationRef = useRef(0);
+  const libraryPollGenerationRef = useRef(0);
   const capabilityGenerationRef = useRef(0);
   const voiceNavigationLockedRef = useRef(false);
   const voiceActiveRef = useRef(false);
@@ -768,6 +774,9 @@ export function ChatApp() {
         api.listSessions().then(
           (sess) => {
             if (sessionListGenerationRef.current !== initialSessionListGeneration) return;
+            persistedModelsRef.current = new Map(
+              sess.map((session) => [session.id, session.model]),
+            );
             setSessions(sess);
           },
           (e) =>
@@ -838,6 +847,8 @@ export function ChatApp() {
       }
       clearReconciliationTimers();
       const generation = ++selectionGenerationRef.current;
+      const modelHydrationGeneration =
+        modelMutationGenerationsRef.current.get(id) ?? 0;
       sessionIdRef.current = id;
       // A brand-new selection generation can never legitimately be compared
       // against an intentKey computed under the previous one (its captured
@@ -906,7 +917,13 @@ export function ChatApp() {
         consumedSessionIdRef.current = id;
         const s = all.find((x) => x.id === id);
         if (s) {
-          if (s.model) setSelectedModel(s.model);
+          if (
+            (modelMutationGenerationsRef.current.get(id) ?? 0) ===
+            modelHydrationGeneration
+          ) {
+            persistedModelsRef.current.set(id, s.model);
+            if (s.model) setSelectedModel(s.model);
+          }
           setSystemPrompt(s.systemPrompt ?? "");
           if (libraryEnabled) {
            const [owned, shared] = await Promise.all([
@@ -1006,7 +1023,10 @@ export function ChatApp() {
 
   const deleteSession = useCallback(
     async (id: string) => {
-      if (streamingRef.current) return;
+      if (streamingRef.current) {
+        setError("Wait for the current response to finish before deleting a conversation.");
+        return;
+      }
       if (voiceNavigationLockedRef.current) {
         setError(
           "Finish saving the voice transcript before deleting this conversation. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar to continue.",
@@ -1019,17 +1039,36 @@ export function ChatApp() {
         );
         return;
       }
+      const title = sessions.find((session) => session.id === id)?.title || "this conversation";
+      if (
+        !window.confirm(
+          `Permanently delete "${title}"? This can't be undone.`,
+        )
+      ) {
+        return;
+      }
       if (id === activeId && voiceActiveRef.current) voiceStopRef.current();
       try {
         await api.deleteSession(id);
         pendingAssistantIdsRef.current.delete(id);
+        const refreshGeneration = ++sessionListGenerationRef.current;
+        setSessions((current) => current.filter((session) => session.id !== id));
         if (id === activeId) newChat();
-        await refreshSessions();
+        try {
+          const all = await api.listSessions();
+          if (sessionListGenerationRef.current === refreshGeneration) {
+            setSessions(all.filter((session) => session.id !== id));
+          }
+        } catch (refreshError) {
+          setError(
+            `Conversation deleted, but the conversation list couldn't refresh: ${(refreshError as Error).message}`,
+          );
+        }
       } catch (e) {
         setError((e as Error).message);
       }
     },
-    [activeId, newChat, refreshSessions],
+    [activeId, newChat, sessions],
   );
 
   const renameSession = useCallback(async (id: string, title: string) => {
@@ -1043,33 +1082,84 @@ export function ChatApp() {
   const changeModel = useCallback(
     async (modelId: string) => {
       const capturedSession = sessionIdRef.current;
-      const generation = ++modelMutationGenerationRef.current;
+      const previousModel = selectedModel;
+      const generation = capturedSession
+        ? (modelMutationGenerationsRef.current.get(capturedSession) ?? 0) + 1
+        : 0;
+      if (capturedSession) {
+        modelMutationGenerationsRef.current.set(capturedSession, generation);
+      }
       sessionListGenerationRef.current += 1;
       setSelectedModel(modelId);
       if (capturedSession) {
-        try {
-          await commitLatestSessionMutation({
+        if (!persistedModelsRef.current.has(capturedSession)) {
+          persistedModelsRef.current.set(
             capturedSession,
-            capturedGeneration: generation,
-            currentSession: () => sessionIdRef.current,
-            currentGeneration: () => modelMutationGenerationRef.current,
-            operation: () => api.updateSession(capturedSession, { model: modelId }),
-            commit: (updated) => {
-              sessionListGenerationRef.current += 1;
-              setSessions((current) =>
-                current.map((session) =>
-                  session.id === updated.id ? updated : session,
-                ),
-              );
-              setInspectorVersion((value) => value + 1);
-            },
-          });
-        } catch {
-          /* non-fatal */
+            sessions.find((session) => session.id === capturedSession)?.model ??
+              previousModel,
+          );
+        }
+        const previousOperation =
+          modelMutationChainsRef.current.get(capturedSession) ??
+          Promise.resolve();
+        const operation = previousOperation.then(() =>
+          api.updateSession(capturedSession, { model: modelId }),
+        );
+        const settled = operation.then(
+          () => undefined,
+          () => undefined,
+        );
+        modelMutationChainsRef.current.set(capturedSession, settled);
+        void settled.then(() => {
+          if (modelMutationChainsRef.current.get(capturedSession) === settled) {
+            modelMutationChainsRef.current.delete(capturedSession);
+          }
+        });
+        try {
+          const updated = await operation;
+          persistedModelsRef.current.set(
+            capturedSession,
+            updated.model ?? modelId,
+          );
+          if (
+            sessionIdRef.current === capturedSession &&
+            (modelMutationGenerationsRef.current.get(capturedSession) ?? 0) ===
+              generation
+          ) {
+            modelMutationGenerationsRef.current.set(
+              capturedSession,
+              generation + 1,
+            );
+            sessionListGenerationRef.current += 1;
+            setSessions((current) =>
+              current.map((session) =>
+                session.id === updated.id ? updated : session,
+              ),
+            );
+            setSelectedModel(updated.model ?? modelId);
+            setInspectorVersion((value) => value + 1);
+          }
+        } catch (reason) {
+          if (
+            sessionIdRef.current === capturedSession &&
+            (modelMutationGenerationsRef.current.get(capturedSession) ?? 0) ===
+              generation
+          ) {
+            modelMutationGenerationsRef.current.set(
+              capturedSession,
+              generation + 1,
+            );
+            setSelectedModel(
+              persistedModelsRef.current.has(capturedSession)
+                ? persistedModelsRef.current.get(capturedSession) ?? null
+                : previousModel,
+            );
+            setError(`Couldn't save the model change: ${(reason as Error).message}`);
+          }
         }
       }
     },
-    [],
+    [selectedModel, sessions],
   );
 
   // Shared by ensureSession and abandonPendingSessionCreation so both always
@@ -1175,7 +1265,10 @@ export function ChatApp() {
   // caller gets a genuinely fresh attempt instead of racing the same doomed
   // promise again.
   const ensureSession = useCallback(
-    async (isStillWanted?: () => boolean): Promise<string> => {
+    async (
+      isStillWanted?: () => boolean,
+      isConsumer = !isStillWanted,
+    ): Promise<string> => {
       // ANY session id this call hands back to a caller that never supplies
       // isStillWanted (send()/runUpload(), the only two direct callers) is,
       // by construction, about to be immediately consumed for real content
@@ -1199,7 +1292,7 @@ export function ChatApp() {
       // deliberately excluded everywhere here, for the same reason
       // documented at the activation branch below.
       const markConsumedIfOwning = (resolvedId: string): string => {
-        if (!isStillWanted) {
+        if (isConsumer) {
           consumedSessionIdRef.current = resolvedId;
         }
         return resolvedId;
@@ -1222,6 +1315,7 @@ export function ChatApp() {
         // registered here, not invoked synchronously, so it can safely
         // close over `creation` once assigned.
         const controller = new AbortController();
+        const creationSignOutGeneration = signOutGenerationRef.current;
         const creation: Promise<string> = (async () => {
           const created = await api.createSession(
             {
@@ -1233,8 +1327,11 @@ export function ChatApp() {
             },
             controller.signal,
           );
-          sessionListGenerationRef.current += 1;
-          setSessions((prev) => [created, ...prev]);
+          if (signOutGenerationRef.current === creationSignOutGeneration) {
+            persistedModelsRef.current.set(created.id, created.model);
+            sessionListGenerationRef.current += 1;
+            setSessions((prev) => [created, ...prev]);
+          }
           return created.id;
         })().finally(() => {
           // Identity-safe: only clear the slot if it still points at THIS
@@ -1260,7 +1357,7 @@ export function ChatApp() {
       // promise can settle. Whichever same-key waiter activates the entry can
       // therefore protect the resulting session even if a voice waiter resumes
       // first and a different entry resumes before this consumer's continuation.
-      if (!isStillWanted) {
+      if (isConsumer) {
         entry.consumerClaimed = true;
       }
       // Mints a fresh identity for this call among the entry's current
@@ -1272,7 +1369,7 @@ export function ChatApp() {
       // precisely this waiter by identity rather than by re-derived key.
       const waiterToken = Symbol("ensureSessionWaiter");
       entry.waiters.add(waiterToken);
-      if (isStillWanted) {
+      if (isStillWanted && !isConsumer) {
         voiceWaiterRef.current = { entry, token: waiterToken };
       }
       let id: string;
@@ -1922,6 +2019,41 @@ export function ChatApp() {
     window.addEventListener("beforeunload", warnBeforeUnload);
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
   }, [voiceExitLocked]);
+  const discardVoicePersistence = inlineVoice.discardPersistence;
+  const prepareSignOut = useCallback((): boolean => {
+    const consequences: string[] = [];
+    if (streamingRef.current) consequences.push("stop the current response");
+    if (voiceNavigationLockedRef.current) {
+      consequences.push("discard the unsaved voice transcript");
+    }
+    if (
+      consequences.length > 0 &&
+      !window.confirm(
+        `Sign out now? This will ${consequences.join(" and ")}.`,
+      )
+    ) {
+      return false;
+    }
+    signOutGenerationRef.current += 1;
+    const pendingCreation = creatingRef.current;
+    creatingRef.current = null;
+    pendingCreation?.controller.abort();
+    abortRef.current?.();
+    abortRef.current = null;
+    streamingRef.current = false;
+    streamingSessionIdRef.current = null;
+    setStreaming(false);
+    setSessionLoading(false);
+    clearReconciliationTimers();
+    abandonPendingSessionCreation();
+    if (voiceActiveRef.current) voiceStopRef.current();
+    if (voiceNavigationLockedRef.current) discardVoicePersistence();
+    return true;
+  }, [
+    abandonPendingSessionCreation,
+    clearReconciliationTimers,
+    discardVoicePersistence,
+  ]);
 
   // Props for the compact inline Voice settings disclosure (agent, realtime
   // model, voice, governed tools, advanced session settings). Built once here
@@ -2143,23 +2275,43 @@ export function ChatApp() {
     );
     if (!inFlight) return;
     const tracked = new Set(libraryDocs.map((d) => d.id));
+    let polling = false;
+    let cancelled = false;
     const t = setInterval(async () => {
+      if (polling) return;
+      polling = true;
+      const generation = ++libraryPollGenerationRef.current;
       try {
         const all = await api.listLibraryDocuments();
+        if (cancelled || generation !== libraryPollGenerationRef.current) return;
         const byId = new Map(all.map((d) => [d.id, d]));
         const changed = libraryDocs.some((document) => {
           const next = byId.get(document.id);
-          return next && next.status !== document.status;
+          return (
+            next &&
+            keepMonotonicLibraryDocument(document, next).status !== document.status
+          );
         });
         setLibraryDocs((prev) =>
-          prev.map((d) => (tracked.has(d.id) ? byId.get(d.id) ?? d : d)),
+          prev.map((document) => {
+            const incoming = byId.get(document.id);
+            return tracked.has(document.id) && incoming
+              ? keepMonotonicLibraryDocument(document, incoming)
+              : document;
+          }),
         );
         if (changed) setInspectorVersion((value) => value + 1);
       } catch {
         /* best effort: keep the last-known status */
+      } finally {
+        polling = false;
       }
     }, 3000);
-    return () => clearInterval(t);
+    return () => {
+      cancelled = true;
+      libraryPollGenerationRef.current += 1;
+      clearInterval(t);
+    };
   }, [libraryEnabled, libraryDocs]);
 
   const send = useCallback(
@@ -2190,6 +2342,7 @@ export function ChatApp() {
       // are needed.
       const mySendGeneration = ++sendGenerationRef.current;
       const mySelectionGeneration = selectionGenerationRef.current;
+      const mySignOutGeneration = signOutGenerationRef.current;
       setStreaming(true);
       setStreamingText("");
       setStreamMaterialized(false);
@@ -2203,13 +2356,26 @@ export function ChatApp() {
       // Lazily create a session on the first message (shared with uploads).
       if (!sessionId) {
         try {
-          sessionId = await ensureSession();
+          sessionId = await ensureSession(
+            () => signOutGenerationRef.current === mySignOutGeneration,
+            true,
+          );
         } catch (e) {
+          if (signOutGenerationRef.current !== mySignOutGeneration) {
+            streamingRef.current = false;
+            setStreaming(false);
+            return;
+          }
           setError((e as Error).message);
           streamingRef.current = false;
           setStreaming(false);
           return;
         }
+      }
+      if (signOutGenerationRef.current !== mySignOutGeneration) {
+        streamingRef.current = false;
+        setStreaming(false);
+        return;
       }
 
       // sessionId is now a real, resolved id this call is about to actively
@@ -2409,7 +2575,8 @@ export function ChatApp() {
           // over this command's now-stale server value for that field
           // specifically, without discarding the other field's legitimate
           // reconciliation just because one of the two was touched.
-          const myModelGeneration = modelMutationGenerationRef.current;
+          const myModelGeneration =
+            modelMutationGenerationsRef.current.get(sessionId) ?? 0;
           const mySystemPromptGeneration = systemPromptMutationGenerationRef.current;
           const mySessionListGeneration = ++sessionListGenerationRef.current;
           try {
@@ -2429,7 +2596,16 @@ export function ChatApp() {
             }
             const s = all.find((x) => x.id === sessionId);
             if (s && ownsTurn()) {
-              if (s.model && modelMutationGenerationRef.current === myModelGeneration) {
+              if (
+                s.model &&
+                (modelMutationGenerationsRef.current.get(sessionId) ?? 0) ===
+                  myModelGeneration
+              ) {
+                modelMutationGenerationsRef.current.set(
+                  sessionId,
+                  myModelGeneration + 1,
+                );
+                persistedModelsRef.current.set(sessionId, s.model);
                 setSelectedModel(s.model);
               }
               if (systemPromptMutationGenerationRef.current === mySystemPromptGeneration) {
@@ -2720,6 +2896,7 @@ export function ChatApp() {
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenStudio={() => setStudioOpen(true)}
           onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
+          onBeforeSignOut={prepareSignOut}
           onCollapse={toggleLeftPanel}
           openerRef={sidebarReturnFocusRef}
           disabled={streaming || voiceExitLocked}
@@ -2905,8 +3082,12 @@ export function ChatApp() {
               current.map((session) => (session.id === updated.id ? updated : session)),
             );
             if (updated.model && updated.model !== selectedModel) {
-              modelMutationGenerationRef.current += 1;
+              modelMutationGenerationsRef.current.set(
+                updated.id,
+                (modelMutationGenerationsRef.current.get(updated.id) ?? 0) + 1,
+              );
             }
+            persistedModelsRef.current.set(updated.id, updated.model);
             if ((updated.systemPrompt ?? "") !== systemPrompt) {
               systemPromptMutationGenerationRef.current += 1;
             }

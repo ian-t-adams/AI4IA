@@ -266,6 +266,7 @@ describe("Composer", () => {
       const first = new Promise<void>((resolve) => {
         releaseFirst = resolve;
       });
+
       const onUpload = vi
         .fn<(file: File) => Promise<void>>()
         .mockImplementationOnce(() => first)
@@ -285,6 +286,43 @@ describe("Composer", () => {
         "one.pdf",
         "two.mp3",
       ]);
+  });
+
+  it("continues the selected-file batch after an upload rejects", async () => {
+    const onUpload = vi
+      .fn<(file: File) => Promise<void>>()
+      .mockRejectedValueOnce(new Error("bad file"))
+      .mockResolvedValueOnce(undefined);
+    const onError = vi.fn();
+    const { user } = setup({ onUpload, onError });
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+
+    await user.upload(input, [
+      new File(["bad"], "bad.pdf", { type: "application/pdf" }),
+      new File(["good"], "good.pdf", { type: "application/pdf" }),
+    ]);
+
+    expect(onUpload.mock.calls.map(([file]) => file.name)).toEqual([
+      "bad.pdf",
+      "good.pdf",
+    ]);
+    expect(onError).toHaveBeenCalledWith(
+      "bad.pdf could not be uploaded: bad file",
+    );
+  });
+
+  it("resets the active autocomplete ordinal with the query before accepting", async () => {
+    const { user, textarea } = setup();
+    await user.type(textarea, "/");
+    await user.keyboard("{ArrowDown}{ArrowDown}");
+    expect(textarea).toHaveAttribute(
+      "aria-activedescendant",
+      expect.stringMatching(/^command-option-/),
+    );
+
+    await user.type(textarea, "res{Enter}");
+
+    expect(textarea).toHaveValue("/research ");
   });
 
   it("uses server capabilities for client feedback without replacing API authority", async () => {

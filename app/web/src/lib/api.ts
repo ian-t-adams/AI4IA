@@ -847,16 +847,28 @@ export function streamChat(
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      const nextEvent = (): string | null => {
+        const boundary = buffer.match(/(?:(?:\r\n)|\r(?!\n)|(?<!\r)\n){2}/);
+        if (!boundary || boundary.index === undefined) return null;
+        const event = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary[0].length);
+        return event;
+      };
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split("\n\n");
-        buffer = events.pop() ?? "";
-        for (const evt of events) {
-          const line = evt.trim();
-          if (!line.startsWith("data:")) continue;
-          const payload = line.slice("data:".length).trim();
+        buffer += done
+          ? decoder.decode()
+          : decoder.decode(value, { stream: true });
+        let event: string | null;
+        while ((event = nextEvent()) !== null) {
+          const dataLines = event
+            .split(/\r\n|\r|\n/)
+            .filter((line) => line === "data" || line.startsWith("data:"))
+            .map((line) =>
+              line === "data" ? "" : line.slice("data:".length).replace(/^ /, ""),
+            );
+          if (dataLines.length === 0) continue;
+          const payload = dataLines.join("\n").trim();
           if (payload === "[DONE]") {
             if (!sawMetadata) {
               handlers.onError("Stream completed without message metadata.", {
@@ -936,6 +948,7 @@ export function streamChat(
             /* skip non-JSON keepalive lines */
           }
         }
+        if (done) break;
       }
       // Reached EOF without a terminating [DONE]: treat as a truncated stream
       // rather than a clean completion so the UI can surface/reconcile it.

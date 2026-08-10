@@ -138,11 +138,50 @@ describe("streamChat", () => {
         },
       );
     });
+
     expect(error).toBeNull();
     expect(done).toBe(true);
     expect(assistantMessageId).toBe("a1");
     expect(steps).toEqual(["Searching the web", "Searched the web"]);
     expect(text).toBe("Here is the answer.");
+  });
+
+  it("parses fragmented CRLF frames with legal multi-line data fields", async () => {
+    mockApiFetch.mockResolvedValue(
+      sseResponse([
+        'data: {"metadata":{"userMessageId":"u1",\r\n',
+        'data: "assistantMessageId":"a1"}}\r',
+        "\n\r",
+        "\ndata: {\"choices\":[{\"delta\":\r\n",
+        'data: {"content":"CRLF works"}}]}\r\n\r',
+        "\ndata: [DONE]\r\n\r\n",
+      ]),
+    );
+    let text = "";
+    let done = false;
+    let error: string | null = null;
+    await new Promise<void>((resolve) => {
+      streamChat(
+        { sessionId: "s1", content: "hi" },
+        {
+          onMetadata: () => {},
+          onDelta: (delta) => {
+            text += delta;
+          },
+          onDone: () => {
+            done = true;
+            resolve();
+          },
+          onError: (message) => {
+            error = message;
+            resolve();
+          },
+        },
+      );
+    });
+    expect(error).toBeNull();
+    expect(done).toBe(true);
+    expect(text).toBe("CRLF works");
   });
 
   it("ignores step events for callers that don't handle them", async () => {

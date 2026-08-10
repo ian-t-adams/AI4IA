@@ -20,6 +20,7 @@ export function Sidebar({
   onOpenSettings,
   onOpenStudio,
   onOpenLibrary,
+  onBeforeSignOut,
   onCollapse,
   openerRef,
   disabled = false,
@@ -34,6 +35,7 @@ export function Sidebar({
   onOpenSettings: () => void;
   onOpenStudio: () => void;
   onOpenLibrary?: () => void;
+  onBeforeSignOut?: () => boolean | void;
   onCollapse?: () => void;
   openerRef?: RefObject<HTMLElement | null>;
   disabled?: boolean;
@@ -339,7 +341,7 @@ export function Sidebar({
           }}
         >
           <AdminLink disabled={disabled} disabledReasonId={lockHintId} />
-          <UserMenu disabled={disabled} disabledReasonId={lockHintId} />
+          <UserMenu onBeforeSignOut={onBeforeSignOut} />
         </div>
       </div>
       </div>
