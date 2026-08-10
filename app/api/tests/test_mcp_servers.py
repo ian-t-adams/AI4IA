@@ -618,6 +618,34 @@ async def test_record_health_discards_old_failure_after_config_edit():
     assert stored.consecutiveFailures == 0
 
 
+async def test_record_health_discards_old_failure_after_same_ref_secret_rotation():
+    store = _CountingStore()
+    svc = _service_with_store(store)
+    execution_snapshot = (
+        await svc.create(
+            "u1",
+            _create(authMode=McpAuthMode.bearer, secret="old-secret"),
+        )
+    ).model_copy(deep=True)
+    rotated = await svc.update(
+        "u1",
+        "weather",
+        UserMcpServerUpdate(
+            endpoint="https://mcp.example.com/rpc",
+            authMode=McpAuthMode.bearer,
+            secret="new-secret",
+        ),
+    )
+
+    assert rotated.secretRef == execution_snapshot.secretRef
+    assert rotated.configurationRevision != execution_snapshot.configurationRevision
+    assert await svc.secret_for(rotated) == "new-secret"
+
+    await svc.record_health(execution_snapshot, ok=False, error="old-secret failure")
+
+    assert (await svc.get("u1", "weather")).consecutiveFailures == 0
+
+
 async def test_record_health_discards_old_snapshot_after_recreate():
     store = _CountingStore()
     svc = _service_with_store(store)
