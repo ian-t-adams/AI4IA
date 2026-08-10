@@ -172,6 +172,9 @@ jobs:
       AI4IA_PROXY_MAX_REPLICAS: ${{ vars.AI4IA_PROXY_MAX_REPLICAS }}
       AI4IA_PROXY_APPCONFIG_LABEL: ${{ vars.AI4IA_PROXY_APPCONFIG_LABEL }}
       AI4IA_APP_ENVIRONMENT: ${{ vars.AI4IA_APP_ENVIRONMENT }}
+      # Production defaults OpenAPI/schema/docs off; this explicit override is
+      # server-enforced and reaches Bicep through main.parameters.json.
+      AI4IA_OPENAPI_ENABLED: ${{ vars.AI4IA_OPENAPI_ENABLED }}
       AI4IA_AUTH_PROVIDER: ${{ vars.AI4IA_AUTH_PROVIDER }}
       # Default false. Setting it true makes a deployed environment derive
       # identity from the client-supplied X-Dev-User header, so it is only
