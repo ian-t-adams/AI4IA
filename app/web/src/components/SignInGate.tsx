@@ -5,45 +5,71 @@
 // a minimal sign-in screen; `loginRedirect` requests the API scope so the very
 // first silent token acquisition for /api/* calls succeeds.
 import { InteractionStatus } from "@azure/msal-browser";
+import { useState, useSyncExternalStore } from "react";
 import { useIsAuthenticated, useMsal } from "@azure/msal-react";
 
-import { getWebAuthConfig } from "@/lib/auth";
+import {
+  getAuthRecoveryState,
+  getWebAuthConfig,
+  retryInteractiveTokenRecovery,
+  subscribeToAuthRecovery,
+} from "@/lib/auth";
 import { DOCS_PORTAL_URL } from "@/lib/docs";
 
 export function SignInGate({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useIsAuthenticated();
   const { instance, inProgress } = useMsal();
-
-  if (isAuthenticated) return <>{children}</>;
+  const recovery = useSyncExternalStore(
+    subscribeToAuthRecovery,
+    getAuthRecoveryState,
+    getAuthRecoveryState,
+  );
+  const [signInFailed, setSignInFailed] = useState(false);
 
   const config = getWebAuthConfig();
   const busy = inProgress !== InteractionStatus.None;
 
   const signIn = () => {
+    setSignInFailed(false);
     void instance
-      .loginRedirect({ scopes: config ? [config.apiScope] : [] })
+      .loginRedirect({
+        scopes: config?.provider === "entra" ? [config.apiScope] : [],
+      })
       .catch(() => {
-        /* user closed the flow or a transient error; they can retry */
+        setSignInFailed(true);
       });
   };
 
+  if (recovery.status === "redirecting") {
+    return <SignInShell message="Your session needs attention. Redirecting you to sign in…" />;
+  }
+
+  if (recovery.status === "error") {
+    return (
+      <SignInShell>
+        <div role="alert">
+          <p style={{ margin: "0 0 0.75rem", color: "var(--danger)" }}>
+            We couldn&apos;t redirect you to renew your Microsoft Entra ID session.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              void retryInteractiveTokenRecovery().catch(() => {
+                // The shared recovery state keeps this alert visible on failure.
+              });
+            }}
+          >
+            Try signing in again
+          </button>
+        </div>
+      </SignInShell>
+    );
+  }
+
+  if (isAuthenticated) return <>{children}</>;
+
   return (
-    // <main id="main"> so the layout's "Skip to main content" link has a target
-    // on the signed-out screen too; this subtree replaces the whole app, so
-    // without it the page exposed no main landmark at all.
-    <main
-      id="main"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 20,
-        height: "100vh",
-        padding: 24,
-        textAlign: "center",
-      }}
-    >
+    <SignInShell>
       <div
         style={{
           display: "flex",
@@ -62,8 +88,9 @@ export function SignInGate({ children }: { children: React.ReactNode }) {
         />
         <div>
           <h1 style={{ margin: "0 0 8px", fontSize: "1.5em" }}>AI4IA</h1>
-          <p style={{ margin: 0, color: "var(--fg-muted)" }}>
-            Sign in with your Microsoft account to continue.
+          <p style={{ margin: 0, color: "var(--fg-muted)", maxWidth: 520 }}>
+            Sign in with Microsoft Entra ID. Your account must be authorized for this
+            organization&apos;s tenant, including invited B2B guest accounts.
           </p>
         </div>
       </div>
@@ -84,22 +111,56 @@ export function SignInGate({ children }: { children: React.ReactNode }) {
       >
         {busy ? "Signing in…" : "Sign in"}
       </button>
-      {/* Reachable before sign-in: the self-documenting portal (docs + status). */}
-      <a
-        href={DOCS_PORTAL_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          fontSize: "0.85em",
-          color: "var(--fg-muted)",
-          textDecoration: "underline",
-        }}
-      >
-        {/* The new-tab behaviour is announced rather than left to sighted
-            inference from the icon-free link text. */}
-        Docs &amp; status
-        <span className="visually-hidden"> (opens in a new tab)</span>
-      </a>
+      {signInFailed ? (
+        <p role="alert" style={{ margin: 0, color: "var(--danger)" }}>
+          We couldn&apos;t redirect you to Microsoft Entra ID. Try signing in again.
+        </p>
+      ) : null}
+      <DocsLink />
+    </SignInShell>
+  );
+}
+
+function SignInShell({
+  children,
+  message,
+}: {
+  children?: React.ReactNode;
+  message?: string;
+}) {
+  return (
+    <main
+      id="main"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 20,
+        height: "100vh",
+        padding: 24,
+        textAlign: "center",
+      }}
+    >
+      {message ? <p aria-live="polite">{message}</p> : children}
     </main>
+  );
+}
+
+function DocsLink() {
+  return (
+    <a
+      href={DOCS_PORTAL_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        fontSize: "0.85em",
+        color: "var(--fg-muted)",
+        textDecoration: "underline",
+      }}
+    >
+      Docs &amp; status
+      <span className="visually-hidden"> (opens in a new tab)</span>
+    </a>
   );
 }

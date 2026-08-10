@@ -5,10 +5,8 @@
 // vars are. This mirrors how API_BASE_URL is handled (server-side env only).
 //
 // Defaults to the `dev` provider (no MSAL), so existing dev/demo deployments are
-// unaffected unless WEB_AUTH_PROVIDER=entra and the three ENTRA_* values are set.
-// If Entra is requested but a value is missing it fails open to `dev`: the API is
-// the real auth boundary, so the web simply can't mint tokens (calls 401) rather
-// than rendering a blank, un-recoverable screen.
+// unaffected unless WEB_AUTH_PROVIDER=entra. An explicitly requested but
+// incomplete Entra configuration fails closed into a configuration-error screen.
 import type { WebAuthConfig } from "./auth";
 
 const DEV_CONFIG: WebAuthConfig = {
@@ -25,7 +23,14 @@ export function getAuthConfig(): WebAuthConfig {
   const clientId = process.env.ENTRA_CLIENT_ID || "";
   const tenantId = process.env.ENTRA_TENANT_ID || "";
   const apiScope = process.env.ENTRA_API_SCOPE || "";
-  if (!clientId || !tenantId || !apiScope) return DEV_CONFIG;
+  const missingValues = [
+    !clientId ? "ENTRA_CLIENT_ID" : null,
+    !tenantId ? "ENTRA_TENANT_ID" : null,
+    !apiScope ? "ENTRA_API_SCOPE" : null,
+  ].filter((value): value is string => value !== null);
+  if (missingValues.length > 0) {
+    return { provider: "configuration-error", missingValues };
+  }
 
   return {
     provider: "entra",

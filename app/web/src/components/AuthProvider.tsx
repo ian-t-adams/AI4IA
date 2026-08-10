@@ -174,9 +174,26 @@ export function AuthProvider({
   config: WebAuthConfig;
   children: React.ReactNode;
 }) {
+  if (config.provider === "configuration-error") {
+    return (
+      <FullScreenNote>
+        <div role="alert">
+          <h1 style={{ margin: "0 0 0.75rem", color: "var(--fg)", fontSize: "1.25rem" }}>
+            Authentication is not configured
+          </h1>
+          <p style={{ margin: 0 }}>
+            Microsoft Entra ID sign-in is enabled, but required server configuration is
+            missing ({config.missingValues.join(", ")}). Contact the application
+            administrator.
+          </p>
+        </div>
+      </FullScreenNote>
+    );
+  }
+
   // Dev mode: record the config (so apiFetch knows Entra is off) and render the
   // app directly — no MSAL, no sign-in gate. This is the unchanged default path.
-  if (config.provider !== "entra") {
+  if (config.provider === "dev") {
     initAuth(config);
     return <>{children}</>;
   }

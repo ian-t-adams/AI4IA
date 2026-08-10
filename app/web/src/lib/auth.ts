@@ -13,18 +13,58 @@ import {
   type Configuration,
 } from "@azure/msal-browser";
 
-export type WebAuthProviderKind = "dev" | "entra";
+export type WebAuthProviderKind = "dev" | "entra" | "configuration-error";
 
-export interface WebAuthConfig {
-  provider: WebAuthProviderKind;
-  clientId: string;
-  tenantId: string;
-  apiScope: string;
-  redirectUri?: string;
-}
+export type WebAuthConfig =
+  | {
+      provider: "dev";
+      clientId: "";
+      tenantId: "";
+      apiScope: "";
+    }
+  | {
+      provider: "entra";
+      clientId: string;
+      tenantId: string;
+      apiScope: string;
+      redirectUri?: string;
+    }
+  | {
+      provider: "configuration-error";
+      missingValues: string[];
+    };
+
+export type AuthRecoveryState =
+  | { status: "idle" }
+  | { status: "redirecting" }
+  | { status: "error" };
 
 let _config: WebAuthConfig | null = null;
 let _msal: PublicClientApplication | null = null;
+let _recoveryState: AuthRecoveryState = { status: "idle" };
+let _recoveryFlight: Promise<never> | null = null;
+const _recoveryListeners = new Set<() => void>();
+
+export class AuthenticationRecoveryError extends Error {
+  constructor() {
+    super("Interactive authentication is required");
+    this.name = "AuthenticationRecoveryError";
+  }
+}
+
+function setRecoveryState(state: AuthRecoveryState) {
+  _recoveryState = state;
+  for (const listener of _recoveryListeners) listener();
+}
+
+export function getAuthRecoveryState(): AuthRecoveryState {
+  return _recoveryState;
+}
+
+export function subscribeToAuthRecovery(listener: () => void): () => void {
+  _recoveryListeners.add(listener);
+  return () => _recoveryListeners.delete(listener);
+}
 
 export function isEntraEnabled(): boolean {
   return _config?.provider === "entra";
@@ -65,23 +105,72 @@ function activeAccount(): AccountInfo | null {
   return _msal.getActiveAccount() ?? _msal.getAllAccounts()[0] ?? null;
 }
 
+function startInteractiveTokenRecovery(): Promise<never> {
+  if (_recoveryFlight) return _recoveryFlight;
+  const client = _msal;
+  const config = _config;
+  if (
+    _recoveryState.status === "error" ||
+    !client ||
+    config?.provider !== "entra"
+  ) {
+    return Promise.reject(new AuthenticationRecoveryError());
+  }
+
+  const account = activeAccount();
+  if (!account) {
+    setRecoveryState({ status: "error" });
+    return Promise.reject(new AuthenticationRecoveryError());
+  }
+
+  setRecoveryState({ status: "redirecting" });
+  _recoveryFlight = (async () => {
+    try {
+      await client.acquireTokenRedirect({
+        account,
+        scopes: [config.apiScope],
+      });
+    } catch {
+      setRecoveryState({ status: "error" });
+      throw new AuthenticationRecoveryError();
+    } finally {
+      _recoveryFlight = null;
+    }
+
+    // A successful redirect unloads the page before this is reached. If a
+    // browser or host suppresses navigation, fail visibly rather than leaving
+    // an authenticated-looking shell that can only issue unauthenticated calls.
+    setRecoveryState({ status: "error" });
+    throw new AuthenticationRecoveryError();
+  })();
+  return _recoveryFlight;
+}
+
+export function retryInteractiveTokenRecovery(): Promise<never> {
+  setRecoveryState({ status: "idle" });
+  return startInteractiveTokenRecovery();
+}
+
 // Returns an API access token for the active account, or null when Entra is
-// disabled, no account is present, or a silent refresh needs interaction. On the
-// interaction-required edge the caller proceeds without a token (the request may
-// 401); the SignInGate owns the interactive sign-in flow.
+// disabled or no account is present. Interaction-required sessions enter a
+// single-flight redirect and never fall through to an unauthenticated request.
 export async function getApiAccessToken(): Promise<string | null> {
-  if (!isEntraEnabled() || !_msal || !_config) return null;
+  const client = _msal;
+  const config = _config;
+  if (!client || config?.provider !== "entra") return null;
   const account = activeAccount();
   if (!account) return null;
   try {
-    const result = await _msal.acquireTokenSilent({
+    const result = await client.acquireTokenSilent({
       account,
-      scopes: [_config.apiScope],
+      scopes: [config.apiScope],
     });
     return result.accessToken;
   } catch (err) {
-    if (err instanceof InteractionRequiredAuthError) return null;
-    return null;
+    if (err instanceof InteractionRequiredAuthError) {
+      return startInteractiveTokenRecovery();
+    }
+    throw err;
   }
 }
 

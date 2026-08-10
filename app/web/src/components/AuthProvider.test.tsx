@@ -43,6 +43,44 @@ beforeEach(() => mocks.initAuth.mockReset());
 afterEach(cleanup);
 
 describe("AuthProvider Entra initialization", () => {
+  it("fails closed before initialization when Entra configuration is incomplete", () => {
+    render(
+      <AuthProvider
+        config={{
+          provider: "configuration-error",
+          missingValues: ["ENTRA_TENANT_ID"],
+        }}
+      >
+        <div>Protected application</div>
+      </AuthProvider>,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Authentication is not configured",
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("ENTRA_TENANT_ID");
+    expect(screen.queryByText("Protected application")).toBeNull();
+    expect(mocks.initAuth).not.toHaveBeenCalled();
+  });
+
+  it("preserves the development passthrough without constructing MSAL", () => {
+    const devConfig: WebAuthConfig = {
+      provider: "dev",
+      clientId: "",
+      tenantId: "",
+      apiScope: "",
+    };
+
+    render(
+      <AuthProvider config={devConfig}>
+        <div>Local application</div>
+      </AuthProvider>,
+    );
+
+    expect(screen.getByText("Local application")).toBeInTheDocument();
+    expect(mocks.initAuth).toHaveBeenCalledWith(devConfig);
+  });
+
   it("catches synchronous client construction failures and retries", async () => {
     const user = userEvent.setup();
     const msal = authClient();
