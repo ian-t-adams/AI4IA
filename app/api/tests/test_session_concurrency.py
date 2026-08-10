@@ -181,7 +181,10 @@ async def test_memory_workflow_status_cas_cannot_replace_terminal():
     await repo.upsert_message("u1", terminal)
     stale = pending.model_copy(update={"workflowRunStatus": "accepted"})
     assert not await repo.replace_message_if_workflow_status(
-        "u1", stale, expected_status="pending"
+        "u1",
+        stale,
+        expected_status="pending",
+        expected_lease_token=None,
     )
     saved = next(
         message
@@ -326,7 +329,10 @@ async def test_cosmos_workflow_pair_claim_and_status_cas():
     assert set(repo._messages.items) == {"run-user", "run-assistant"}
     accepted = pending.model_copy(update={"workflowRunStatus": "accepted"})
     assert await repo.replace_message_if_workflow_status(
-        "u1", accepted, expected_status="pending"
+        "u1",
+        accepted,
+        expected_status="pending",
+        expected_lease_token=None,
     )
     saved = repo._messages.items[pending.id]
     assert saved["workflowRunStatus"] == "accepted"
@@ -338,7 +344,10 @@ async def test_cosmos_workflow_pair_claim_and_status_cas():
     repo._messages.complete_before_replace = True
     stale = pending.model_copy(update={"workflowRunStatus": "accepted"})
     assert not await repo.replace_message_if_workflow_status(
-        "u1", stale, expected_status="pending"
+        "u1",
+        stale,
+        expected_status="pending",
+        expected_lease_token=None,
     )
     assert repo._messages.items[pending.id]["workflowRunStatus"] == "completed"
     assert repo._messages.items[pending.id]["content"] == "finished"

@@ -92,8 +92,9 @@ class SessionRepository(Protocol):
         message: Message,
         *,
         expected_status: str,
+        expected_lease_token: str | None,
     ) -> bool:
-        """Replace a workflow message only while its status still matches."""
+        """Replace a workflow message only while its status and lease match."""
         ...
 
     async def upsert_message(self, user_id: str, message: Message) -> Message: ...

@@ -204,6 +204,7 @@ class InMemorySessionRepository:
         message: Message,
         *,
         expected_status: str,
+        expected_lease_token: str | None,
     ) -> bool:
         async with self._lock:
             await self._owned_session(user_id, message.sessionId)
@@ -215,6 +216,8 @@ class InMemorySessionRepository:
                     existing.workflowRunStatus != expected_status
                     or existing.workflowRunFingerprint
                     != message.workflowRunFingerprint
+                    or existing.workflowScheduleLeaseToken
+                    != expected_lease_token
                 ):
                     return False
                 message.userId = user_id

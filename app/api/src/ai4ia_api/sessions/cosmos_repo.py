@@ -492,6 +492,7 @@ class CosmosSessionRepository:
         message: Message,
         *,
         expected_status: str,
+        expected_lease_token: str | None,
     ) -> bool:
         from azure.core import MatchConditions
         from azure.cosmos.exceptions import (
@@ -511,6 +512,8 @@ class CosmosSessionRepository:
             or current.get("workflowRunStatus") != expected_status
             or current.get("workflowRunFingerprint")
             != message.workflowRunFingerprint
+            or current.get("workflowScheduleLeaseToken")
+            != expected_lease_token
         ):
             return False
         message.userId = user_id

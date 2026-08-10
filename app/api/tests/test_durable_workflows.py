@@ -14,6 +14,7 @@ import asyncio
 import copy
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -21,7 +22,10 @@ from fastapi import HTTPException
 
 from ai4ia_api.config import Settings
 from ai4ia_api.catalog import DeploymentOption
-from ai4ia_api.routers.workflows import _claim_durable_run
+from ai4ia_api.routers.workflows import (
+    _DURABLE_SCHEDULING_LEASE_SECONDS,
+    _claim_durable_run,
+)
 from ai4ia_api.sessions.memory_repo import InMemorySessionRepository
 from ai4ia_api.sessions.models import Message, MessageRole, MessageStatus, Session
 from ai4ia_api.usage.models import TokenUsage
@@ -544,6 +548,19 @@ class _InitialReadBarrierRepository:
         return created
 
 
+class _FakeClock:
+    def __init__(self) -> None:
+        self.current = datetime(2026, 8, 10, tzinfo=timezone.utc)
+
+    def __call__(self) -> datetime:
+        return self.current
+
+    def advance_past_lease(self) -> None:
+        self.current += timedelta(
+            seconds=_DURABLE_SCHEDULING_LEASE_SECONDS + 1
+        )
+
+
 @pytest.mark.anyio
 async def test_concurrent_identical_claim_schedules_once_and_preserves_terminal():
     inner = InMemorySessionRepository()
@@ -627,6 +644,179 @@ async def test_concurrent_different_fingerprint_has_one_owner_and_one_conflict()
     winner_index = outcomes.index(True)
     assert user.content == ("otters" if winner_index == 0 else "badgers")
     assert user.workflowRunFingerprint == ("a" * 64 if winner_index == 0 else "b" * 64)
+
+
+@pytest.mark.anyio
+async def test_crashed_claim_is_pending_and_preexpiry_retry_does_not_reschedule():
+    repo = InMemorySessionRepository()
+    session = await repo.create_session(Session(userId="u1"))
+    clock = _FakeClock()
+    user_message, assistant = _claim_messages(
+        session.id, fingerprint="a" * 64
+    )
+
+    owns, claimed = await _claim_durable_run(
+        repo,
+        user_id="u1",
+        user_message=user_message,
+        pending_assistant=assistant,
+        now=clock,
+        lease_token_factory=lambda: "lease-first",
+    )
+    assert owns is True
+    assert claimed.workflowScheduleLeaseToken == "lease-first"
+    assert claimed.workflowScheduleLeaseExpiresAt == clock.current + timedelta(
+        seconds=_DURABLE_SCHEDULING_LEASE_SECONDS
+    )
+
+    # Simulate process death here: the owner never calls the scheduler.
+    replay_owns, replay = await _claim_durable_run(
+        repo,
+        user_id="u1",
+        user_message=user_message,
+        pending_assistant=assistant,
+        now=clock,
+        lease_token_factory=lambda: "must-not-be-used",
+    )
+    assert replay_owns is False
+    assert replay.workflowRunStatus == "pending"
+    assert replay.workflowScheduleLeaseToken == "lease-first"
+
+
+@pytest.mark.anyio
+async def test_expired_crash_lease_has_one_cas_winner_and_makes_progress():
+    inner = InMemorySessionRepository()
+    session = await inner.create_session(Session(userId="u1"))
+    clock = _FakeClock()
+    user_message, assistant = _claim_messages(
+        session.id, fingerprint="a" * 64
+    )
+    owns, _ = await _claim_durable_run(
+        inner,
+        user_id="u1",
+        user_message=user_message,
+        pending_assistant=assistant,
+        now=clock,
+        lease_token_factory=lambda: "lease-crashed",
+    )
+    assert owns is True
+    clock.advance_past_lease()
+    repo = _InitialReadBarrierRepository(inner)
+    scheduled_run_ids: list[str] = []
+
+    async def retry(token: str) -> tuple[bool, Message]:
+        return await _claim_durable_run(
+            repo,
+            user_id="u1",
+            user_message=user_message,
+            pending_assistant=assistant,
+            now=clock,
+            lease_token_factory=lambda: token,
+        )
+
+    results = await asyncio.gather(retry("lease-a"), retry("lease-b"))
+    owners = [owns for owns, _current in results]
+    winner = next(current for owns, current in results if owns)
+    scheduled_run_ids.append(winner.workflowRunId or "")
+    accepted = winner.model_copy(
+        update={
+            "workflowRunStatus": "accepted",
+            "workflowScheduleLeaseToken": None,
+            "workflowScheduleLeaseExpiresAt": None,
+        }
+    )
+    assert await repo.replace_message_if_workflow_status(
+        "u1",
+        accepted,
+        expected_status="pending",
+        expected_lease_token=winner.workflowScheduleLeaseToken,
+    )
+
+    assert sorted(owners) == [False, True]
+    assert scheduled_run_ids == ["u1:stable"]
+    saved = next(
+        message
+        for message in await inner.list_messages("u1", session.id)
+        if message.role is MessageRole.assistant
+    )
+    assert saved.workflowRunStatus == "accepted"
+    assert saved.workflowScheduleLeaseToken is None
+
+
+@pytest.mark.anyio
+async def test_crashed_claim_still_rejects_different_fingerprint():
+    repo = InMemorySessionRepository()
+    session = await repo.create_session(Session(userId="u1"))
+    clock = _FakeClock()
+    user_message, assistant = _claim_messages(
+        session.id, fingerprint="a" * 64
+    )
+    assert (
+        await _claim_durable_run(
+            repo,
+            user_id="u1",
+            user_message=user_message,
+            pending_assistant=assistant,
+            now=clock,
+            lease_token_factory=lambda: "lease-first",
+        )
+    )[0]
+    other_user, other_assistant = _claim_messages(
+        session.id, fingerprint="b" * 64, content="badgers"
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await _claim_durable_run(
+            repo,
+            user_id="u1",
+            user_message=other_user,
+            pending_assistant=other_assistant,
+            now=clock,
+            lease_token_factory=lambda: "lease-other",
+        )
+
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_expired_lease_never_reclaims_terminal_assistant():
+    repo = InMemorySessionRepository()
+    session = await repo.create_session(Session(userId="u1"))
+    clock = _FakeClock()
+    user_message, assistant = _claim_messages(
+        session.id, fingerprint="a" * 64
+    )
+    _, claimed = await _claim_durable_run(
+        repo,
+        user_id="u1",
+        user_message=user_message,
+        pending_assistant=assistant,
+        now=clock,
+        lease_token_factory=lambda: "lease-first",
+    )
+    terminal = claimed.model_copy(
+        update={
+            "content": "finished",
+            "status": MessageStatus.complete,
+            "workflowRunStatus": "completed",
+        }
+    )
+    await repo.upsert_message("u1", terminal)
+    clock.advance_past_lease()
+
+    owns, current = await _claim_durable_run(
+        repo,
+        user_id="u1",
+        user_message=user_message,
+        pending_assistant=assistant,
+        now=clock,
+        lease_token_factory=lambda: "must-not-be-used",
+    )
+
+    assert owns is False
+    assert current.workflowRunStatus == "completed"
+    assert current.content == "finished"
+    assert current.workflowScheduleLeaseToken == "lease-first"
 
 
 def test_non_durable_run_still_executes_synchronously(client):

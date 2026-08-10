@@ -24,6 +24,10 @@ The run path mirrors the chat endpoint's hard invariants, in order:
 """
 from __future__ import annotations
 
+import uuid
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
@@ -61,6 +65,15 @@ from ..workflows.runner import run_workflow
 from ..workflows.service import WorkflowService
 
 router = APIRouter(prefix="/api", tags=["workflows"])
+_DURABLE_SCHEDULING_LEASE_SECONDS = 30
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _new_lease_token() -> str:
+    return uuid.uuid4().hex
 
 
 class WorkflowListResponse(BaseModel):
@@ -122,6 +135,8 @@ async def _claim_durable_run(
     user_id: str,
     user_message: Message,
     pending_assistant: Message,
+    now: Callable[[], datetime] = _utc_now,
+    lease_token_factory: Callable[[], str] = _new_lease_token,
 ) -> tuple[bool, Message]:
     """Atomically claim scheduling ownership for one deterministic run id."""
 
@@ -164,32 +179,57 @@ async def _claim_durable_run(
         ):
             raise conflict()
 
+    claim_time = now()
+    if claim_time.tzinfo is None:
+        claim_time = claim_time.replace(tzinfo=timezone.utc)
+
+    def with_fresh_lease(message: Message) -> Message:
+        return message.model_copy(
+            update={
+                "workflowScheduleLeaseToken": lease_token_factory(),
+                "workflowScheduleLeaseExpiresAt": claim_time
+                + timedelta(seconds=_DURABLE_SCHEDULING_LEASE_SECONDS),
+            }
+        )
+
     prior_user, prior_assistant = records(
         await repo.list_messages(user_id, pending_assistant.sessionId)
     )
     validate(prior_user, prior_assistant)
     if prior_assistant is not None:
-        if prior_assistant.workflowRunStatus != "acceptance_unknown":
+        expected_status = prior_assistant.workflowRunStatus
+        if expected_status == "pending":
+            lease_expires = prior_assistant.workflowScheduleLeaseExpiresAt
+            if lease_expires is not None:
+                if lease_expires.tzinfo is None:
+                    lease_expires = lease_expires.replace(tzinfo=timezone.utc)
+                if lease_expires > claim_time:
+                    return False, prior_assistant
+        elif expected_status != "acceptance_unknown":
             return False, prior_assistant
-        retry = prior_assistant.model_copy(
-            update={
-                "content": "",
-                "status": MessageStatus.streaming,
-                "workflowRunStatus": "pending",
-            }
+        retry = with_fresh_lease(
+            prior_assistant.model_copy(
+                update={
+                    "content": "",
+                    "status": MessageStatus.streaming,
+                    "workflowRunStatus": "pending",
+                }
+            )
         )
         if await repo.replace_message_if_workflow_status(
             user_id,
             retry,
-            expected_status="acceptance_unknown",
+            expected_status=expected_status or "",
+            expected_lease_token=prior_assistant.workflowScheduleLeaseToken,
         ):
             return True, retry
 
-    elif await repo.claim_workflow_run_if_absent(
-        user_id, user_message, pending_assistant
-    ):
-        return True, pending_assistant
     else:
+        pending_assistant = with_fresh_lease(pending_assistant)
+        if await repo.claim_workflow_run_if_absent(
+            user_id, user_message, pending_assistant
+        ):
+            return True, pending_assistant
         # Both concurrent first requests may have read absence. Only the create
         # winner may schedule; this loser must reconcile but never turn a quickly
         # published acceptance_unknown state into a second scheduler call.
@@ -497,10 +537,15 @@ async def run_workflow_endpoint(
                         "new idempotency key after the service recovers."
                     ),
                     "workflowRunStatus": "schedule_failed",
+                    "workflowScheduleLeaseToken": None,
+                    "workflowScheduleLeaseExpiresAt": None,
                 }
             )
             await repo.replace_message_if_workflow_status(
-                uid, failed, expected_status="pending"
+                uid,
+                failed,
+                expected_status="pending",
+                expected_lease_token=pending_assistant.workflowScheduleLeaseToken,
             )
             await repo.touch_session(uid, session.id)
             raise HTTPException(
@@ -512,7 +557,10 @@ async def run_workflow_endpoint(
                 update={"workflowRunStatus": "acceptance_unknown"}
             )
             await repo.replace_message_if_workflow_status(
-                uid, unknown, expected_status="pending"
+                uid,
+                unknown,
+                expected_status="pending",
+                expected_lease_token=pending_assistant.workflowScheduleLeaseToken,
             )
             await repo.touch_session(uid, session.id)
             return JSONResponse(
@@ -525,10 +573,17 @@ async def run_workflow_endpoint(
                 ).model_dump(),
             )
         accepted = pending_assistant.model_copy(
-            update={"workflowRunStatus": "accepted"}
+            update={
+                "workflowRunStatus": "accepted",
+                "workflowScheduleLeaseToken": None,
+                "workflowScheduleLeaseExpiresAt": None,
+            }
         )
         await repo.replace_message_if_workflow_status(
-            uid, accepted, expected_status="pending"
+            uid,
+            accepted,
+            expected_status="pending",
+            expected_lease_token=pending_assistant.workflowScheduleLeaseToken,
         )
         await repo.touch_session(uid, session.id)
         return JSONResponse(
