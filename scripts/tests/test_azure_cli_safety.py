@@ -15,6 +15,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
 SUBSCRIPTION = "11111111-1111-1111-1111-111111111111"
 OTHER_SUBSCRIPTION = "22222222-2222-2222-2222-222222222222"
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+WRONG_SUBSCRIPTION_RE = re.compile(
+    r"does\W+not\W+exactly\W+match\W+requested\W+subscription"
+)
 
 CASES = {
     "teardown.ps1": {
@@ -166,11 +170,8 @@ class AzureCliSafetyExecutionTests(unittest.TestCase):
                     active_subscription=OTHER_SUBSCRIPTION,
                 )
                 self.assertNotEqual(result.returncode, 0)
-                clean_error = re.sub(r"\x1b\[[0-9;]*m", "", result.stderr)
-                self.assertIn(
-                    "does not exactly match requested subscription",
-                    " ".join(clean_error.split()),
-                )
+                clean_error = ANSI_RE.sub("", result.stderr)
+                self.assertRegex(clean_error, WRONG_SUBSCRIPTION_RE)
                 self.assertEqual(
                     [call[:2] for call in calls],
                     [["account", "set"], ["account", "show"]],
@@ -278,6 +279,13 @@ class AzureCliSafetyExecutionTests(unittest.TestCase):
 
 
 class AzureCliSafetySourceTests(unittest.TestCase):
+    def test_wrong_subscription_error_match_survives_linux_powershell_wrapping(self) -> None:
+        rendered = (
+            "\x1b[31;1mActive subscription does\x1b[0m\n"
+            "\x1b[31;1m| not exactly match requested subscription\x1b[0m"
+        )
+        self.assertRegex(ANSI_RE.sub("", rendered), WRONG_SUBSCRIPTION_RE)
+
     def test_scripts_share_the_checked_azure_cli_helper(self) -> None:
         for script_name in CASES:
             with self.subTest(script=script_name):
