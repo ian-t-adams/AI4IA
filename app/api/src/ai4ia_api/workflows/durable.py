@@ -114,12 +114,17 @@ class DurableScheduleAcceptanceUnknownError(RuntimeError):
     """The scheduler call failed after acceptance became unknowable."""
 
 
-def durable_run_id(user_id: str, idempotency_key: str | None = None) -> str:
+def durable_run_id(
+    user_id: str,
+    idempotency_key: str | None = None,
+    *,
+    scope: str = "",
+) -> str:
     if idempotency_key is None:
         suffix = uuid4().hex
     else:
         suffix = hashlib.sha256(
-            f"{user_id}\0{idempotency_key}".encode("utf-8")
+            f"{user_id}\0{scope}\0{idempotency_key}".encode("utf-8")
         ).hexdigest()
     return f"{user_id}{_RUN_ID_SEPARATOR}{suffix}"
 

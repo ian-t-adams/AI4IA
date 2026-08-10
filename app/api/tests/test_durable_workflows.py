@@ -19,6 +19,7 @@ import pytest
 
 from ai4ia_api.config import Settings
 from ai4ia_api.catalog import DeploymentOption
+from ai4ia_api.sessions.models import MessageStatus
 from ai4ia_api.usage.models import TokenUsage
 from ai4ia_api.workflows.models import MAX_STEPS
 from ai4ia_api.workflows.durable import (
@@ -297,6 +298,90 @@ def test_ambiguous_schedule_retry_reuses_messages_and_run(client):
     assert len(messages) == 2
     assert len({message["id"] for message in messages}) == 2
     assert messages[1]["workflowRunStatus"] == "pending"
+
+
+def test_same_idempotency_key_is_scoped_to_one_session_and_workflow(client):
+    first_session = _seed(client)
+    second_session = client.post(
+        "/api/sessions", json={"title": "Other", "model": "gpt-5.4"}
+    ).json()["id"]
+    stub = _StubDurable()
+    client.app.state.durable_workflows = stub
+    base = {
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "session-scoped-key",
+    }
+
+    first = client.post(
+        "/api/workflows/summarize/run",
+        json={**base, "sessionId": first_session},
+    )
+    second = client.post(
+        "/api/workflows/summarize/run",
+        json={**base, "sessionId": second_session},
+    )
+    assert first.status_code == second.status_code == 202
+    assert first.json()["runId"] != second.json()["runId"]
+    assert len(stub.scheduled) == 2
+    assert len(client.get(f"/api/sessions/{first_session}/messages").json()) == 2
+    assert len(client.get(f"/api/sessions/{second_session}/messages").json()) == 2
+
+
+def test_retry_cannot_overwrite_a_terminal_result_that_lands_after_its_read(client):
+    sid = _seed(client)
+    inner = client.app.state.session_repo
+
+    class CompleteDuringRetry:
+        def __init__(self):
+            self.armed = False
+
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+        async def list_messages(self, user_id, session_id):
+            snapshot = await inner.list_messages(user_id, session_id)
+            if self.armed:
+                pending = next(
+                    (
+                        message
+                        for message in snapshot
+                        if message.role.value == "assistant"
+                        and message.workflowRunStatus == "pending"
+                    ),
+                    None,
+                )
+                if pending is not None:
+                    terminal = pending.model_copy(
+                        update={
+                            "content": "finished",
+                            "status": MessageStatus.complete,
+                            "workflowRunStatus": "completed",
+                        }
+                    )
+                    await inner.upsert_message(user_id, terminal)
+            return snapshot
+
+    repo = CompleteDuringRetry()
+    client.app.state.session_repo = repo
+    stub = _AmbiguousThenAcceptedDurable()
+    client.app.state.durable_workflows = stub
+    body = {
+        "sessionId": sid,
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "terminal-race-key",
+    }
+    assert (
+        client.post("/api/workflows/summarize/run", json=body).json()["status"]
+        == "acceptance_unknown"
+    )
+    repo.armed = True
+    assert client.post("/api/workflows/summarize/run", json=body).status_code == 202
+    assistant = client.get(f"/api/sessions/{sid}/messages").json()[1]
+    assert assistant["content"] == "finished"
+    assert assistant["status"] == "complete"
+    assert assistant["workflowRunStatus"] == "completed"
 
 
 def test_non_durable_run_still_executes_synchronously(client):

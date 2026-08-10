@@ -291,7 +291,11 @@ async def run_workflow_endpoint(
 
     if durable_service is not None:
         idempotency_key = body.idempotencyKey or uuid4().hex
-        run_id = durable_run_id(uid, idempotency_key)
+        run_id = durable_run_id(
+            uid,
+            idempotency_key,
+            scope=f"{body.sessionId}\0{workflow.name}",
+        )
         user_message_id, assistant_message_id = durable_message_ids(run_id)
         prior = await repo.list_messages(uid, body.sessionId)
         existing = [message for message in prior if message.workflowRunId == run_id]
@@ -349,8 +353,10 @@ async def run_workflow_endpoint(
             workflowRunId=run_id,
             workflowRunStatus="pending",
         )
-        await repo.upsert_message(uid, user_message)
-        await repo.upsert_message(uid, pending_assistant)
+        if existing_user is None:
+            await repo.upsert_message(uid, user_message)
+        if existing_assistant is None:
+            await repo.upsert_message(uid, pending_assistant)
 
         payload = build_orchestration_payload(
             workflow,
