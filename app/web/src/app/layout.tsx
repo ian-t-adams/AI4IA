@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ClientTelemetryBoot } from "@/components/ClientTelemetryBoot";
+import { SkipLink } from "@/components/SkipLink";
 
 export const metadata: Metadata = {
   title: "AI4IA — Agentic Chat",
@@ -17,9 +18,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
-        <a href="#main" className="skip-link">
-          Skip to main content
-        </a>
+        <SkipLink />
         <ClientTelemetryBoot />
         <ThemeProvider>{children}</ThemeProvider>
       </body>
