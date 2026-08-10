@@ -84,11 +84,11 @@ param documentLibraryEnabled bool = false
 @description('Enable the custom-tools / BYO remote-MCP browser UI. Default OFF (no custom-tools control is surfaced).')
 param customToolsEnabled bool = false
 
-// Entra sign-in is only wired when the provider is entra AND all three values are
-// present; otherwise the web stays in dev mode (matching the frontend's fail-open
-// default), so a partial config can never half-enable the sign-in gate.
-var entraReady = authProvider == 'entra' && !empty(entraClientId) && !empty(entraTenantId) && !empty(entraApiScope)
-var entraEnv = entraReady ? [
+// Always tell the web runtime when Entra was requested. It validates the three
+// values and renders an explicit configuration error when any are missing;
+// silently omitting the provider here would incorrectly fall back to dev auth.
+var entraRequested = authProvider == 'entra'
+var entraEnv = entraRequested ? [
   {
     name: 'WEB_AUTH_PROVIDER'
     value: 'entra'
@@ -108,8 +108,9 @@ var entraEnv = entraReady ? [
 ] : []
 
 // In dev/demo (no Entra) the web proxy stamps a fixed user so the dev-auth api
-// has a stable identity. Never inject a dev user in prod or once Entra is on.
-var injectDevUser = appEnvironment != 'prod' && !empty(devUser) && !entraReady
+// has a stable identity. Never inject a dev user in prod or when Entra was
+// requested, even if that Entra configuration is incomplete.
+var injectDevUser = appEnvironment != 'prod' && !empty(devUser) && !entraRequested
 var devUserEnv = injectDevUser ? [
   {
     name: 'DEV_USER'
