@@ -95,8 +95,11 @@ def test_openapi_is_environment_aware_and_explicitly_overridable():
         allow_dev_auth=False,
         entra_tenant_id="tenant",
         entra_audience="audience",
+        model_gateway_url="https://proxy.example.com/openai",
+        model_gateway_allowed_hosts="proxy.example.com",
         model_gateway_auth_mode="api_key",
         model_gateway_api_key="key",
+        model_gateway_api_key_header="S7P-KEY",
     )
     hidden = create_app(production)
     assert hidden.openapi_url is None
