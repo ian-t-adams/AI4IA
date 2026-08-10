@@ -417,6 +417,14 @@ label those gaps rather than infer precision.
 
 ## Tradeoffs and residual gaps
 
+- **No served private/regulated network mode.** `vnetIsolationEnabled` and
+  `dataTierPrivate` exist as direct Bicep parameters, but they are absent from
+  `infra/main.parameters.json` and normal azd/CI variable mapping. The partial
+  private-endpoint graph covers selected data-tier resources but omits ACR, App
+  Configuration, Azure AI Search, Foundry, APIM, and monitoring. Treat it as
+  design scaffolding only until an end-to-end endpoint/private-DNS matrix,
+  off-VNet deployment path, and deploy test prove every required control/data
+  plane. Do not use these flags as evidence of a private or regulated deployment.
 - SimpleL7Proxy queue/fairness state is in-memory and per replica; it is neither
   durable nor globally ordered.
 - Basic v2 APIM capacity is a single-region cost/reliability decision, and it is now

@@ -215,6 +215,30 @@ class DocumentationTruthTests(unittest.TestCase):
             read("site/data/requirements.js"),
         )
 
+    def test_network_isolation_is_design_only_until_end_to_end(self) -> None:
+        parameters = read("infra/main.parameters.json")
+        deploy = read(".github/workflows/deploy.yml")
+        for unreachable in ("vnetIsolationEnabled", "dataTierPrivate"):
+            self.assertNotIn(f'"{unreachable}"', parameters)
+            self.assertNotIn(unreachable, deploy)
+
+        required_gaps = (
+            "ACR",
+            "App Configuration",
+            "Search",
+            "Foundry",
+            "APIM",
+            "monitoring",
+        )
+        for path in ("README.md", "docs/architecture.md", "docs/roadmap.md"):
+            text = " ".join(read(path).split())
+            for gap in required_gaps:
+                self.assertIn(gap, text)
+        architecture = read("docs/architecture.md")
+        self.assertIn("No served private/regulated network mode", architecture)
+        self.assertIn("design scaffolding only", architecture)
+        self.assertIn("endpoint/private-DNS matrix", architecture)
+
 
 if __name__ == "__main__":
     unittest.main()

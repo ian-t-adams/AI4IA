@@ -27,8 +27,8 @@ window.AI4IA_REQUIREMENTS = {
       { name: "monitoring-reader-sub.bicep", purpose: "Grants a managed identity Monitoring Reader at subscription scope (batch metrics API)." },
       { name: "cost.bicep", purpose: "Cost guardrail: a resource-group-scoped consumption budget with optional alerts." },
       { name: "alerts.bicep", purpose: "Opt-in Azure Monitor alerting baseline (action group + metric alerts). Off by default." },
-      { name: "network.bicep", purpose: "Opt-in VNet + private DNS for the network-isolation hardening pass. Off by default." },
-      { name: "privateendpoints.bicep", purpose: "Opt-in data-tier private endpoints + DNS zone groups. Off by default." },
+      { name: "network.bicep", purpose: "Partial VNet/private-DNS design scaffolding; not mapped through normal azd/CI and not a served isolation mode." },
+      { name: "privateendpoints.bicep", purpose: "Partial data-tier endpoint graph; omits ACR, App Configuration, Search, Foundry, APIM, and monitoring." },
     ],
   },
   // Azure service data planes use managed identity + RBAC. Gateway hop keys are

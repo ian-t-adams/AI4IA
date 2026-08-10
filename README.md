@@ -61,6 +61,10 @@ Known gaps to keep visible:
 - Multi-application profiles remain blocked until the public proxy edge validates
   a workload identity; shared-key ingress is not sufficient for trusted app
   identity or per-app policy.
+- Network isolation is design-only and incomplete. Bicep contains partial
+  `vnetIsolationEnabled` / `dataTierPrivate` wiring, but normal azd/CI cannot set
+  those parameters and private endpoints do not yet cover ACR, App Configuration,
+  Search, Foundry, APIM, or monitoring.
 
 ## Repository layout
 

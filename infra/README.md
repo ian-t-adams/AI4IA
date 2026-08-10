@@ -23,7 +23,7 @@ feature resources.
 |---|---|
 | `identity.bicep` | User-assigned managed identities |
 | `monitoring.bicep` | Log Analytics and workspace-based Application Insights |
-| `network.bicep` / `privateendpoints.bicep` | Optional VNet/private-endpoint isolation |
+| `network.bicep` / `privateendpoints.bicep` | Partial VNet/private-endpoint design scaffolding; not a served end-to-end isolation mode |
 | `keyvault.bicep` | Key Vault and App Configuration RBAC; postprovision reconciles the label-aware warm sentinel with the deployment identity |
 | `foundry.bicep` / `models.bicep` | Foundry accounts/projects and catalog-driven deployments |
 | `data.bicep` | Cosmos (canonical state) plus document/media/blob containers; PostgreSQL was retired and deleted |
@@ -68,9 +68,12 @@ python scripts/gen-gateway-policy.py --check
 python -m unittest scripts.tests.test_gateway_policy
 ```
 
-When `dataTierPrivate=true`, the optional async Blob and Service Bus resources
-also disable public access and receive private endpoints/DNS. Both send platform
-diagnostics to the shared Log Analytics workspace.
+The direct Bicep `vnetIsolationEnabled` / `dataTierPrivate` parameters are not
+present in `main.parameters.json` or normal azd/CI mapping. Their current endpoint
+graph is partial: ACR, App Configuration, Search, Foundry, APIM, and monitoring
+are not privately covered. Do not treat direct parameter invocation as a supported
+private/regulated deployment. The underlying modules remain design scaffolding
+until a complete endpoint/DNS matrix and isolated cold-deploy test exist.
 
 ## Usage
 

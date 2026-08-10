@@ -732,6 +732,12 @@ limit]` marker rather than a silent drop.
 
 ## Operational reminders
 
+- Network isolation is not an enableable feature posture today. The direct Bicep
+  `vnetIsolationEnabled` / `dataTierPrivate` parameters are partial design
+  scaffolding, absent from normal azd/CI mapping, and do not cover every required
+  Azure service. See the [architecture residual gap](../architecture.md#tradeoffs-and-residual-gaps);
+  do not add them to a deployment profile until the endpoint/DNS matrix and cold
+  deploy test exist.
 - Enabling a feature is a deploy and cost action; validate in an isolated
   environment before changing a live one. A full model catalog may require a
   separate subscription; a reduced same-subscription profile proves only the
