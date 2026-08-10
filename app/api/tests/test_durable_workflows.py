@@ -683,6 +683,48 @@ async def test_crashed_claim_is_pending_and_preexpiry_retry_does_not_reschedule(
     assert replay.workflowScheduleLeaseToken == "lease-first"
 
 
+def test_crash_then_http_retry_gets_timing_and_recovers_after_lease(
+    client, monkeypatch
+):
+    sid = _seed(client)
+    clock = _FakeClock()
+    monkeypatch.setattr("ai4ia_api.routers.workflows._utc_now", clock)
+
+    class CrashBeforeDtsAcceptance(_StubDurable):
+        async def schedule(self, payload, *, user_id, run_id=None):
+            raise RuntimeError("process died before DTS accepted the run")
+
+    body = {
+        "sessionId": sid,
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "crash-recovery-key",
+    }
+    client.app.state.durable_workflows = CrashBeforeDtsAcceptance()
+    with pytest.raises(RuntimeError, match="process died"):
+        client.post("/api/workflows/summarize/run", json=body)
+
+    recovered = _StubDurable()
+    client.app.state.durable_workflows = recovered
+    pending = client.post("/api/workflows/summarize/run", json=body)
+    assert pending.status_code == 202
+    assert pending.json()["status"] == "pending"
+    assert pending.json()["retryAfterSeconds"] == _DURABLE_SCHEDULING_LEASE_SECONDS
+    assert pending.headers["Retry-After"] == str(
+        _DURABLE_SCHEDULING_LEASE_SECONDS
+    )
+    assert pending.json()["leaseExpiresAt"] is not None
+    assert recovered.scheduled == []
+
+    clock.advance_past_lease()
+    accepted = client.post("/api/workflows/summarize/run", json=body)
+    assert accepted.status_code == 202
+    assert accepted.json()["status"] == "accepted"
+    assert accepted.json()["runId"] == pending.json()["runId"]
+    assert len(recovered.scheduled) == 1
+    assert recovered.scheduled[0][0]["context"]["runId"] == pending.json()["runId"]
+
+
 @pytest.mark.anyio
 async def test_expired_crash_lease_has_one_cas_winner_and_makes_progress():
     inner = InMemorySessionRepository()

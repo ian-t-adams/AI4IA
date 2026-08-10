@@ -183,10 +183,13 @@ export function WorkflowBuilder({
   // on unmount only; the ref is never reset to true, so a poll started by a
   // previous mount can never resume against a new one.
   const mountedRef = useRef(true);
+  const runAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      runAbortRef.current?.abort();
+      runAbortRef.current = null;
     };
   }, []);
 
@@ -443,16 +446,22 @@ export function WorkflowBuilder({
       const idempotencyKey = durableRequested
         ? api.newWorkflowRunIdempotencyKey()
         : undefined;
+      const runController = new AbortController();
+      runAbortRef.current?.abort();
+      runAbortRef.current = runController;
       try {
-        const session = await api.createSession({
-          title: `Run: ${target.displayName || target.name} · ${new Date().toLocaleTimeString()}`,
-          model: runModel,
-          // Send the key ONLY when non-empty. `[]` is not "no preference" — the
-          // API reads `allowed_document_ids is None or bool(...)`, so an empty
-          // array switches document reading OFF for the whole run. Omitting it
-          // leaves the scope unset, which means every ready document.
-          ...(selectedDocIds.length ? { libraryDocumentIds: selectedDocIds } : {}),
-        });
+        const session = await api.createSession(
+          {
+            title: `Run: ${target.displayName || target.name} · ${new Date().toLocaleTimeString()}`,
+            model: runModel,
+            // Send the key ONLY when non-empty. `[]` is not "no preference" — the
+            // API reads `allowed_document_ids is None or bool(...)`, so an empty
+            // array switches document reading OFF for the whole run. Omitting it
+            // leaves the scope unset, which means every ready document.
+            ...(selectedDocIds.length ? { libraryDocumentIds: selectedDocIds } : {}),
+          },
+          runController.signal,
+        );
         const outcome = await api.runWorkflow(target.name, {
           sessionId: session.id,
           input: runInput,
@@ -462,7 +471,7 @@ export function WorkflowBuilder({
           ...(durableRequested
             ? { durable: true, idempotencyKey }
             : {}),
-        });
+        }, runController.signal);
 
         if (outcome.scheduled) {
           // A durable run answers before the assistant turn exists, so poll here
@@ -516,11 +525,13 @@ export function WorkflowBuilder({
               },
         );
       } catch (e) {
+        if (runController.signal.aborted) return;
         // A pre-flight or transport failure is not a run. Keep it in the alert
         // rather than rendering a result card implying steps executed.
         setError((e as Error).message);
         setRunState({ phase: "idle" });
       } finally {
+        if (runAbortRef.current === runController) runAbortRef.current = null;
         setRunning(false);
         setRunStatus(null);
       }

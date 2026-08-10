@@ -27,6 +27,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from math import ceil
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -76,6 +77,25 @@ def _new_lease_token() -> str:
     return uuid.uuid4().hex
 
 
+def _scheduling_retry(
+    assistant: Message,
+) -> tuple[int | None, datetime | None]:
+    if assistant.workflowRunStatus == "acceptance_unknown":
+        return 1, assistant.workflowScheduleLeaseExpiresAt
+    if assistant.workflowRunStatus != "pending":
+        return None, None
+    expires_at = assistant.workflowScheduleLeaseExpiresAt
+    if expires_at is None:
+        return 1, None
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    remaining = ceil((expires_at - _utc_now()).total_seconds())
+    return (
+        max(1, min(remaining, _DURABLE_SCHEDULING_LEASE_SECONDS + 1)),
+        expires_at,
+    )
+
+
 class WorkflowListResponse(BaseModel):
     workflows: list[Workflow]
     # Whether THIS deployment can honour `durable: true` on a run. Derived from the
@@ -107,12 +127,14 @@ class WorkflowRunRequest(BaseModel):
 
 
 class WorkflowRunAcceptedResponse(BaseModel):
-    """202 body for a durable run. The assistant message does not exist yet."""
+    """202 body for accepted or recoverably pending durable scheduling."""
 
     sessionId: str
     runId: str
     status: str = "accepted"
     idempotencyKey: str
+    retryAfterSeconds: int | None = None
+    leaseExpiresAt: datetime | None = None
 
 
 class WorkflowRunStatusResponse(BaseModel):
@@ -135,7 +157,7 @@ async def _claim_durable_run(
     user_id: str,
     user_message: Message,
     pending_assistant: Message,
-    now: Callable[[], datetime] = _utc_now,
+    now: Callable[[], datetime] | None = None,
     lease_token_factory: Callable[[], str] = _new_lease_token,
 ) -> tuple[bool, Message]:
     """Atomically claim scheduling ownership for one deterministic run id."""
@@ -179,7 +201,7 @@ async def _claim_durable_run(
         ):
             raise conflict()
 
-    claim_time = now()
+    claim_time = (now or _utc_now)()
     if claim_time.tzinfo is None:
         claim_time = claim_time.replace(tzinfo=timezone.utc)
 
@@ -506,24 +528,32 @@ async def run_workflow_endpoint(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Durable workflow scheduling previously failed.",
                 )
+            replay_status = (
+                "accepted"
+                if pending_assistant.workflowRunStatus
+                in {"accepted", "completed", "run_failed"}
+                else (
+                    "acceptance_unknown"
+                    if pending_assistant.workflowRunStatus == "acceptance_unknown"
+                    else "pending"
+                )
+            )
+            retry_after, lease_expires_at = _scheduling_retry(pending_assistant)
             return JSONResponse(
                 status_code=status.HTTP_202_ACCEPTED,
                 content=WorkflowRunAcceptedResponse(
                     sessionId=body.sessionId,
                     runId=run_id,
                     idempotencyKey=idempotency_key,
-                    status=(
-                        "accepted"
-                        if pending_assistant.workflowRunStatus
-                        in {"accepted", "completed", "run_failed"}
-                        else (
-                            "acceptance_unknown"
-                            if pending_assistant.workflowRunStatus
-                            == "acceptance_unknown"
-                            else "pending"
-                        )
-                    ),
-                ).model_dump(),
+                    status=replay_status,
+                    retryAfterSeconds=retry_after,
+                    leaseExpiresAt=lease_expires_at,
+                ).model_dump(mode="json"),
+                headers=(
+                    {"Retry-After": str(retry_after)}
+                    if retry_after is not None
+                    else None
+                ),
             )
 
         try:
@@ -570,7 +600,10 @@ async def run_workflow_endpoint(
                     runId=run_id,
                     idempotencyKey=idempotency_key,
                     status="acceptance_unknown",
-                ).model_dump(),
+                    retryAfterSeconds=1,
+                    leaseExpiresAt=unknown.workflowScheduleLeaseExpiresAt,
+                ).model_dump(mode="json"),
+                headers={"Retry-After": "1"},
             )
         accepted = pending_assistant.model_copy(
             update={
