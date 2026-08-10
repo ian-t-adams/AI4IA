@@ -18,9 +18,12 @@ modules) and no test in this file touches the network.
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import unittest
 from pathlib import Path
 from types import ModuleType
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -95,6 +98,11 @@ class ProviderStateLookupTests(unittest.TestCase):
 
 class CatalogRequirementTests(unittest.TestCase):
     CATALOG = {
+        "naming": {
+            "subscriptionToken": "slurmfactory",
+            "pattern": "{model}-{subscriptionToken}-{region}-{skuShort}",
+            "skuShort": {"GlobalStandard": "glbl", "Standard": "std"},
+        },
         "catalog": [
             {
                 "name": "gpt-4.1-mini",
@@ -117,6 +125,10 @@ class CatalogRequirementTests(unittest.TestCase):
         self.assertEqual(sorted(by_region), ["eastus2", "westus"])
         self.assertEqual(len(by_region["eastus2"]), 2)
         self.assertEqual(by_region["westus"][0]["sku"], "Standard")
+        self.assertEqual(
+            by_region["eastus2"][0]["deploymentName"],
+            "gpt-4.1-mini-slurmfactory-eastus2-glbl",
+        )
 
     def test_real_catalog_covers_every_declared_region(self) -> None:
         import json
@@ -309,6 +321,161 @@ class LifecycleTests(unittest.TestCase):
         names = {m["name"] for m in models["catalog"]}
         self.assertNotIn("gpt-4.1-mini", names)
         self.assertNotIn("o4-mini", names)
+
+
+class ExistingStateAwareLifecycleTests(unittest.TestCase):
+    """The same deprecating desired record must fail greenfield and pass exact reconcile."""
+
+    DESIRED = {
+        "deploymentName": "gpt-4.1-mini-slurmfactory-eastus2-glbl",
+        "name": "gpt-4.1-mini",
+        "format": "OpenAI",
+        "sku": "GlobalStandard",
+        "version": "2025-04-14",
+        "capacity": 50,
+        "versionUpgradeOption": "NoAutoUpgrade",
+        "region": "eastus2",
+    }
+    OFFERED = {"gpt-4.1-mini": {"GlobalStandard": {"2025-04-14"}}}
+
+    @classmethod
+    def exact_existing(cls) -> dict[tuple[str, str], dict[str, object]]:
+        return {
+            ("eastus2", cls.DESIRED["deploymentName"].casefold()): {
+                "accountName": "mf-aiforia-prod-eastus2-suffix",
+                "deploymentName": cls.DESIRED["deploymentName"],
+                "region": "eastus2",
+                "modelName": cls.DESIRED["name"],
+                "format": cls.DESIRED["format"],
+                "version": cls.DESIRED["version"],
+                "sku": cls.DESIRED["sku"],
+                "capacity": cls.DESIRED["capacity"],
+                "versionUpgradeOption": "NoAutoUpgrade",
+                "provisioningState": "Succeeded",
+            }
+        }
+
+    def test_greenfield_absent_deprecating_deployment_is_blocking(self) -> None:
+        errors, warnings = AVAILABILITY.evaluate(
+            [self.DESIRED],
+            self.OFFERED,
+            {"gpt-4.1-mini": {"2025-04-14": "Deprecating"}},
+            {},
+        )
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("deployment is absent", errors[0])
+        self.assertIn("would be created or changed", errors[0])
+
+    def test_exact_existing_deprecating_routine_reconcile_passes_with_warning(self) -> None:
+        errors, warnings = AVAILABILITY.evaluate(
+            [self.DESIRED],
+            self.OFFERED,
+            {"gpt-4.1-mini": {"2025-04-14": "Deprecating"}},
+            self.exact_existing(),
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("exact existing deployment", warnings[0])
+        self.assertIn("Routine reconcile is allowed", warnings[0])
+        self.assertIn("migrate before retirement", warnings[0])
+
+    def test_exact_existing_deprecated_record_uses_same_routine_exception(self) -> None:
+        errors, warnings = AVAILABILITY.evaluate(
+            [self.DESIRED],
+            self.OFFERED,
+            {"gpt-4.1-mini": {"2025-04-14": "Deprecated"}},
+            self.exact_existing(),
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+
+    def test_same_name_with_version_drift_remains_blocking(self) -> None:
+        existing = self.exact_existing()
+        existing[("eastus2", self.DESIRED["deploymentName"].casefold())][
+            "version"
+        ] = "2024-01-01"
+        errors, _ = AVAILABILITY.evaluate(
+            [self.DESIRED],
+            self.OFFERED,
+            {"gpt-4.1-mini": {"2025-04-14": "Deprecating"}},
+            existing,
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("version is 2024-01-01, wants 2025-04-14", errors[0])
+
+
+class ExistingDeploymentInventoryTests(unittest.TestCase):
+    MODELS = {
+        "naming": {
+            "foundryToken": "aiforia",
+            "subscriptionToken": "slurmfactory",
+            "pattern": "{model}-{subscriptionToken}-{region}-{skuShort}",
+            "skuShort": {"GlobalStandard": "glbl"},
+        },
+        "regions": {"eastus2": {"primary": True}},
+        "catalog": [],
+    }
+
+    def test_no_target_context_is_explicit_greenfield_addition_mode(self) -> None:
+        inventory, warnings = AVAILABILITY.existing_deployment_inventory(
+            self.MODELS,
+            resource_group=None,
+            environment_name=None,
+        )
+        self.assertEqual(inventory, {})
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("greenfield/addition mode", warnings[0])
+
+    def test_inventory_reads_only_the_exact_target_account(self) -> None:
+        deployment_name = "gpt-4.1-mini-slurmfactory-eastus2-glbl"
+
+        def fake_az(*args: str) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ("group", "exists"):
+                payload = "true"
+            elif args[:3] == ("cognitiveservices", "account", "list"):
+                payload = (
+                    '[{"name":"mf-aiforia-prod-eastus2-suffix",'
+                    '"kind":"AIServices","location":"eastus2"},'
+                    '{"name":"unrelated","kind":"AIServices","location":"eastus2"}]'
+                )
+            elif args[:4] == (
+                "cognitiveservices",
+                "account",
+                "deployment",
+                "list",
+            ):
+                self.assertIn("mf-aiforia-prod-eastus2-suffix", args)
+                payload = json.dumps(
+                    [
+                        {
+                            "name": deployment_name,
+                            "sku": {"name": "GlobalStandard", "capacity": 50},
+                            "properties": {
+                                "model": {
+                                    "name": "gpt-4.1-mini",
+                                    "format": "OpenAI",
+                                    "version": "2025-04-14",
+                                },
+                                "versionUpgradeOption": "NoAutoUpgrade",
+                                "provisioningState": "Succeeded",
+                            },
+                        }
+                    ]
+                )
+            else:
+                self.fail(f"unexpected Azure CLI call: {args}")
+            return subprocess.CompletedProcess(["az", *args], 0, payload, "")
+
+        with patch.object(AVAILABILITY, "_az", side_effect=fake_az):
+            inventory, warnings = AVAILABILITY.existing_deployment_inventory(
+                self.MODELS,
+                resource_group="rg-ai4ia-prod",
+                environment_name="prod",
+            )
+        self.assertEqual(warnings, [])
+        self.assertIn(("eastus2", deployment_name.casefold()), inventory)
+        self.assertEqual(len(inventory), 1)
 
 
 class IndexOfferedTests(unittest.TestCase):
@@ -578,6 +745,79 @@ class SharedQuotaTests(unittest.TestCase):
                 "subscription-wide 2, so a second region deterministically fails "
                 "with InsufficientQuota. Request a quota increase first.",
             )
+
+
+class ModelPreflightCredentialTests(unittest.TestCase):
+    def test_missing_azure_cli_credentials_fail_with_a_precise_remedy(self) -> None:
+        result = subprocess.CompletedProcess(
+            ["az", "account", "show"],
+            1,
+            stdout="",
+            stderr="Please run az login to setup account.",
+        )
+        with patch.object(AVAILABILITY, "_az", return_value=result):
+            with self.assertRaises(SystemExit) as raised:
+                AVAILABILITY.active_subscription("target-subscription")
+        message = str(raised.exception)
+        self.assertIn("requires Azure CLI credentials", message)
+        self.assertIn("az login", message)
+        self.assertIn("az account set", message)
+
+    def test_wrong_subscription_fails_before_model_queries(self) -> None:
+        result = subprocess.CompletedProcess(
+            ["az", "account", "show"],
+            0,
+            stdout='{"id":"wrong-subscription","name":"Wrong","tenantId":"tenant"}',
+            stderr="",
+        )
+        with patch.object(AVAILABILITY, "_az", return_value=result):
+            with self.assertRaises(SystemExit) as raised:
+                AVAILABILITY.active_subscription("target-subscription")
+        self.assertIn("but azd will provision target-subscription", str(raised.exception))
+
+    def test_matching_subscription_is_accepted(self) -> None:
+        result = subprocess.CompletedProcess(
+            ["az", "account", "show"],
+            0,
+            stdout='{"id":"TARGET-SUBSCRIPTION","name":"Target","tenantId":"tenant"}',
+            stderr="",
+        )
+        with patch.object(AVAILABILITY, "_az", return_value=result):
+            account = AVAILABILITY.active_subscription("target-subscription")
+        self.assertEqual(account["id"], "TARGET-SUBSCRIPTION")
+
+
+class ModelPreflightLifecycleWiringTests(unittest.TestCase):
+    def test_azd_runs_full_model_preflight_in_both_preprovision_hooks(self) -> None:
+        azure_yaml = (ROOT / "azure.yaml").read_text(encoding="utf-8")
+        preprovision = azure_yaml.split("  preprovision:", 1)[1].split(
+            "  postprovision:", 1
+        )[0]
+        self.assertEqual(
+            preprovision.count("scripts/check-model-availability.py"),
+            2,
+            "Windows and POSIX azd provisions must both check model availability/quota",
+        )
+        self.assertIn("    windows:", preprovision)
+        self.assertIn("    posix:", preprovision)
+        self.assertNotIn("--skip-quota", preprovision)
+        self.assertIn("continueOnError: false", preprovision)
+
+    def test_preflight_script_changes_trigger_the_provisioning_workflow(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('- "scripts/check-model-availability.py"', workflow)
+
+    def test_main_passes_existing_inventory_into_lifecycle_evaluation(self) -> None:
+        source = (ROOT / "scripts" / "check-model-availability.py").read_text(
+            encoding="utf-8"
+        )
+        compact = " ".join(source.split())
+        self.assertIn(
+            "required, index, index_lifecycle(offered), existing_deployments",
+            compact,
+        )
 
 
 class ProviderPreflightRunsBeforeProvisionTests(unittest.TestCase):

@@ -15,8 +15,9 @@ name: deploy
 # (Settings -> Secrets and variables -> Actions -> Variables):
 #   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
 #   AZURE_ENV_NAME, AZURE_LOCATION
-# The job is a clean no-op until AZURE_CLIENT_ID is set, so this is safe to
-# merge before the identity exists.
+# Set AI4IA_DEPLOYMENT_ENABLED=false to disable deployment explicitly. Otherwise
+# the validation job below fails closed when any required identity/environment
+# variable is absent; a missing credential must not look like a successful skip.
 #
 # Custom domains: the bicep binds the web/proxy custom domains + their
 # Azure-managed certs only when these repo variables are set. They MUST be
@@ -43,8 +44,13 @@ on:
       - "scripts/postprovision.ps1"
       - "scripts/post-deploy-verify.py"
       - "scripts/check-resource-providers.py"
+      - "scripts/check-model-availability.py"
       - "scripts/validate-feature-prereqs.py"
       - "scripts/provision-foundry-toolbox.py"
+      - "scripts/gen-model-catalog.py"
+      - "scripts/gen-mcp-catalog.py"
+      - "scripts/gen-voice-provider-catalog.py"
+      - "scripts/gen-gateway-policy.py"
   workflow_dispatch:
     inputs:
       provision:
@@ -64,10 +70,63 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate-deployment-configuration:
+    name: validate deployment configuration
+    runs-on: ubuntu-latest
+    outputs:
+      deployment_enabled: ${{ steps.validate.outputs.deployment_enabled }}
+    env:
+      AI4IA_DEPLOYMENT_ENABLED: ${{ vars.AI4IA_DEPLOYMENT_ENABLED }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+    steps:
+      - name: Validate required deployment variables
+        id: validate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${AI4IA_DEPLOYMENT_ENABLED,,}" in
+            false)
+              echo "deployment_enabled=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::Deployment is explicitly disabled by AI4IA_DEPLOYMENT_ENABLED=false."
+              exit 0
+              ;;
+            ""|true)
+              ;;
+            *)
+              echo "::error::AI4IA_DEPLOYMENT_ENABLED must be true, false, or unset; got '${AI4IA_DEPLOYMENT_ENABLED}'."
+              exit 1
+              ;;
+          esac
+
+          missing=()
+          for name in \
+            AZURE_CLIENT_ID \
+            AZURE_TENANT_ID \
+            AZURE_SUBSCRIPTION_ID \
+            AZURE_ENV_NAME \
+            AZURE_LOCATION
+          do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf -v missing_names '%s, ' "${missing[@]}"
+            echo "::error::Deployment is enabled but required repository variables are missing: ${missing_names%, }. Configure them under Settings > Secrets and variables > Actions > Variables, or set AI4IA_DEPLOYMENT_ENABLED=false to declare an intentional disabled posture."
+            exit 1
+          fi
+
+          echo "deployment_enabled=true" >> "$GITHUB_OUTPUT"
+
   deploy:
-    # Clean no-op until the federated identity variables are configured, so this
-    # workflow can be merged before the one-time Azure setup is complete.
-    if: ${{ vars.AZURE_CLIENT_ID != '' }}
+    needs: validate-deployment-configuration
+    if: ${{ needs.validate-deployment-configuration.outputs.deployment_enabled == 'true' }}
     runs-on: ubuntu-latest
     # 180, not the usual 60: a cancelled `azd provision` does not fail cleanly. GitHub marks a
     # timed-out job "cancelled" and kills azd mid-flight, but ARM keeps the in-flight deployment
@@ -250,6 +309,18 @@ jobs:
 
       - name: Install azd
         uses: Azure/setup-azd@634ad924cf8baef2257898ba5663be8d19f15aca # v2.3.0
+        with:
+          version: 1.29.0
+
+      - name: Verify azd version
+        shell: bash
+        run: |
+          set -euo pipefail
+          installed="$(azd version)"
+          if ! grep -Eq '^azd version 1\.29\.0($|[ (])' <<< "$installed"; then
+            echo "::error::Expected azd 1.29.0 because digest deployment behavior is verified against that release; found: $installed"
+            exit 1
+          fi
 
       - name: Log in to Azure (OIDC federated credentials)
         run: |

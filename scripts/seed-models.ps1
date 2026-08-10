@@ -18,13 +18,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-az account set --subscription $Subscription | Out-Null
+. (Join-Path $PSScriptRoot 'azure-cli.ps1')
+Assert-AzureSubscription -Subscription $Subscription
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 foreach ($r in $Regions) {
     Write-Host "Fetching deployable models in $r ..." -ForegroundColor Cyan
     $path = Join-Path $OutDir "models-$r.json"
-    az cognitiveservices model list -l $r -o json | Out-File -Encoding utf8 $path
+    Invoke-AzureCli -Arguments @(
+        'cognitiveservices', 'model', 'list', '--location', $r, '--output', 'json'
+    ) | Out-File -Encoding utf8 $path
     $count = (Get-Content $path -Raw | ConvertFrom-Json).Count
     Write-Host "  $r -> $count entries ($path)"
 }

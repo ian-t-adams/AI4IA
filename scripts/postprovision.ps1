@@ -8,7 +8,7 @@
 .DESCRIPTION
   Runs in the azd `postprovision` hook (see azure.yaml). azd injects every infra
   output into this process's environment (AZURE_API_URL, AZURE_RESOURCE_GROUP,
-  AZURE_SUBSCRIPTION_ID, AZURE_FOUNDRY_ENDPOINTS, ...). Values are read from the
+  AZURE_SUBSCRIPTION_ID, AZURE_EXPECTED_MODEL_DEPLOYMENTS, ...). Values are read from the
   environment first and fall back to `azd env get-values`.
 
   Checks (each conditional on the relevant resource/var actually existing -
@@ -18,8 +18,8 @@
        deployments are created by `azd provision` itself, so immediately after
        provision they MUST exist and report provisioningState == 'Succeeded'.
        Queried via the ARM REST API with a token from `azd auth token` (falls back
-       to `az account get-access-token`). If no token can be obtained the check is
-       a loud WARN ("cannot evaluate" != broken), never a silent pass.
+       to `az account get-access-token`). Missing outputs or credentials are FAIL:
+       an unevaluated provision prerequisite is not a successful provision.
 
     2. API health (BEST-EFFORT by default). GET {AZURE_API_URL}/health/live and
        /health/ready. NOTE: postprovision runs BEFORE `azd deploy`, so on a
@@ -37,9 +37,14 @@
        proxy /openai URL, while realtime must be the APIM /openai URL. This catches
        reversed or looped module wiring before an application image is deployed.
 
-    5. App Configuration sentinel (ADDITIVE). Reconciles Warm:Sentinel through the
-       signed-in deployment identity after ARM role creation, with bounded retries
-       for data-plane RBAC propagation. A final failure is a visible WARN.
+    5. App Configuration sentinel (HARD GATE). Reconciles Warm:Sentinel through
+       the signed-in deployment identity after ARM role creation, with bounded
+       retries for data-plane RBAC propagation.
+
+    6. Content Understanding defaults (HARD GATE WHEN ENABLED). Consumes explicit
+       primary account/region/endpoint/deployment outputs from Bicep and PATCHes
+       the documented resource defaults. Missing outputs/token or exhausted RBAC
+       retries fail the provision. Disabled CU remains an explicit SKIP.
 
   Cross-platform: uses .NET (HttpClient, System.Net.Dns) instead of Windows-only
   cmdlets so the same script runs under Windows PowerShell 5.1 and pwsh 7 on the
@@ -105,17 +110,122 @@ function Get-EnvValue {
 }
 
 function Get-MgmtToken {
+  param([ValidateRange(1, 300)][int]$TimeoutSec = 60)
+
   # azd is the credential postprovision always has (the deploy workflow runs only
-  # `azd auth login`). Prefer it; fall back to az for local/dev convenience.
-  try {
-    $t = & azd auth token --scope 'https://management.azure.com/.default' --output json 2>$null | ConvertFrom-Json
-    if ($t -and $t.token) { return $t.token }
-  } catch { Write-Verbose "azd auth token unavailable; falling back to az: $($_.Exception.Message)" }
-  try {
-    $t = & az account get-access-token --resource 'https://management.azure.com' --output json 2>$null | ConvertFrom-Json
-    if ($t -and $t.accessToken) { return $t.accessToken }
-  } catch { Write-Verbose "az access-token unavailable: $($_.Exception.Message)" }
+  # `azd auth login`). Prefer it; fall back to az for local/dev convenience. Both
+  # commands share one timeout budget so a credential process cannot hang the gate.
+  $startedAt = Get-MonotonicTime
+  $result = Invoke-NativeWithTimeout -Command 'azd' -Arguments @(
+    'auth', 'token', '--scope', 'https://management.azure.com/.default'
+  ) -TimeoutSec $TimeoutSec
+  if ($result.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($result.Output)) {
+    return $result.Output.Trim()
+  }
+  $remaining = $TimeoutSec - ((Get-MonotonicTime) - $startedAt)
+  if ($remaining -lt 1) { return $null }
+  $fallbackTimeout = [Math]::Max(1, [Math]::Floor($remaining))
+  $result = Invoke-NativeWithTimeout -Command 'az' -Arguments @(
+    'account', 'get-access-token',
+    '--resource', 'https://management.azure.com',
+    '--query', 'accessToken',
+    '--output', 'tsv'
+  ) -TimeoutSec $fallbackTimeout
+  if ($result.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($result.Output)) {
+    return $result.Output.Trim()
+  }
   return $null
+}
+
+function Get-MonotonicTime {
+  return [System.Diagnostics.Stopwatch]::GetTimestamp() / [double][System.Diagnostics.Stopwatch]::Frequency
+}
+
+function Invoke-NativeWithTimeout {
+  param(
+    [Parameter(Mandatory)][string]$Command,
+    [Parameter(Mandatory)][string[]]$Arguments,
+    [Parameter(Mandatory)][ValidateRange(1, 300)][int]$TimeoutSec
+  )
+
+  # PowerShell's native invocation has no timeout. Run Azure CLIs in a child job
+  # so a stalled auth/data-plane command cannot escape a provisioning deadline.
+  $jobArguments = @($Command) + @($Arguments)
+  $job = Start-Job -ScriptBlock {
+    $nativeCommand = [string]$args[0]
+    $nativeArguments = @($args | Select-Object -Skip 1)
+    $exitCode = 1
+    $output = @()
+    try {
+      $output = @(& $nativeCommand @nativeArguments 2>$null)
+      if ($LASTEXITCODE -is [int]) { $exitCode = $LASTEXITCODE }
+    } catch {
+      # The caller treats every nonzero result identically and retries without
+      # emitting CLI diagnostics or arguments.
+      Write-Verbose 'Bounded native Azure command failed.'
+    }
+    return [pscustomobject]@{
+      ExitCode = [int]$exitCode
+      Output = ($output -join "`n")
+    }
+  } -ArgumentList $jobArguments
+  try {
+    $completed = Wait-Job -Job $job -Timeout $TimeoutSec
+    if (-not $completed) {
+      Stop-Job -Job $job
+      return [pscustomobject]@{ ExitCode = 124; Output = ''; TimedOut = $true }
+    }
+    $result = @(Receive-Job -Job $job)
+    if ($result.Count -ne 1) {
+      return [pscustomobject]@{ ExitCode = 1; Output = ''; TimedOut = $false }
+    }
+    return [pscustomobject]@{
+      ExitCode = [int]$result[0].ExitCode
+      Output = [string]$result[0].Output
+      TimedOut = $false
+    }
+  } finally {
+    Remove-Job -Job $job -Force
+  }
+}
+
+function Get-CognitiveServicesToken {
+  param([Parameter(Mandatory)][ValidateRange(1, 300)][int]$TimeoutSec)
+
+  # Content Understanding accepts Microsoft Entra tokens for this documented
+  # scope. Prefer azd because every lifecycle hook has that credential; Azure CLI
+  # remains the local/CI fallback and is never asked for an account key. Both
+  # commands share one timeout budget.
+  $startedAt = Get-MonotonicTime
+  $result = Invoke-NativeWithTimeout -Command 'azd' -Arguments @(
+    'auth', 'token', '--scope', 'https://cognitiveservices.azure.com/.default'
+  ) -TimeoutSec $TimeoutSec
+  if ($result.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($result.Output)) {
+    return $result.Output.Trim()
+  }
+
+  $remaining = $TimeoutSec - ((Get-MonotonicTime) - $startedAt)
+  if ($remaining -lt 1) { return $null }
+  $fallbackTimeout = [Math]::Max(1, [Math]::Floor($remaining))
+  $result = Invoke-NativeWithTimeout -Command 'az' -Arguments @(
+    'account', 'get-access-token',
+    '--resource', 'https://cognitiveservices.azure.com',
+    '--query', 'accessToken',
+    '--output', 'tsv'
+  ) -TimeoutSec $fallbackTimeout
+  if ($result.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($result.Output)) {
+    return $result.Output.Trim()
+  }
+  return $null
+}
+
+function Invoke-AppConfigSet {
+  param(
+    [Parameter(Mandatory)][string[]]$Arguments,
+    [Parameter(Mandatory)][ValidateRange(1, 300)][int]$TimeoutSec
+  )
+  $result = Invoke-NativeWithTimeout -Command 'az' -Arguments $Arguments -TimeoutSec $TimeoutSec
+  return [int]$result.ExitCode
 }
 
 function Invoke-HttpProbe {
@@ -140,37 +250,43 @@ function Invoke-HttpProbe {
 # --- checks ----------------------------------------------------------------
 function Test-ModelDeployment {
   # HARD GATE. Foundry accounts + their model deployments are created by provision,
-  # so they MUST exist and be Succeeded right now. Read account names straight from
-  # the AZURE_FOUNDRY_ENDPOINTS output (never hard-code resource names).
-  $foundryRaw = Get-EnvValue 'AZURE_FOUNDRY_ENDPOINTS'
+  # so every exact catalog-driven deployment MUST exist and be Succeeded right now.
+  # Consume the Bicep output verbatim; never reconstruct account/deployment names.
+  $expectedRaw = Get-EnvValue 'AZURE_EXPECTED_MODEL_DEPLOYMENTS'
   $subId = Get-EnvValue 'AZURE_SUBSCRIPTION_ID'
   $rg = Get-EnvValue 'AZURE_RESOURCE_GROUP'
-  if ([string]::IsNullOrWhiteSpace($foundryRaw)) {
-    Add-Result -Name 'model-deployments' -Status 'SKIP' -Detail 'AZURE_FOUNDRY_ENDPOINTS not set'
+  if ([string]::IsNullOrWhiteSpace($expectedRaw)) {
+    Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'required output AZURE_EXPECTED_MODEL_DEPLOYMENTS not set'
     return
   }
-  $accounts = @()
+  $targets = @()
   try {
-    $accounts = @(($foundryRaw | ConvertFrom-Json) | ForEach-Object { $_.accountName } | Where-Object { $_ })
+    $targets = @(($expectedRaw | ConvertFrom-Json))
   } catch {
-    Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail "could not parse AZURE_FOUNDRY_ENDPOINTS: $($_.Exception.Message)"
+    Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail "could not parse AZURE_EXPECTED_MODEL_DEPLOYMENTS: $($_.Exception.Message)"
     return
   }
-  if ($accounts.Count -eq 0) {
-    Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'no Foundry accounts in AZURE_FOUNDRY_ENDPOINTS'
+  if ($targets.Count -eq 0) {
+    Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'AZURE_EXPECTED_MODEL_DEPLOYMENTS contains no account records'
     return
   }
   if ([string]::IsNullOrWhiteSpace($subId) -or [string]::IsNullOrWhiteSpace($rg)) {
-    Add-Result -Name 'model-deployments' -Status 'SKIP' -Detail 'AZURE_SUBSCRIPTION_ID / AZURE_RESOURCE_GROUP not set'
+    Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'required output(s) AZURE_SUBSCRIPTION_ID / AZURE_RESOURCE_GROUP not set'
     return
   }
   $token = Get-MgmtToken
   if (-not $token) {
-    Add-Result -Name 'model-deployments' -Status 'WARN' -Detail 'no ARM token (azd/az auth) - cannot verify deployments'
+    Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'no ARM token from azd or Azure CLI; cannot verify required deployments'
     return
   }
   $headers = @{ Authorization = "Bearer $token" }
-  foreach ($account in $accounts) {
+  foreach ($target in $targets) {
+    $account = "$($target.accountName)".Trim()
+    $expectedNames = @($target.deploymentNames | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+    if ([string]::IsNullOrWhiteSpace($account) -or $expectedNames.Count -eq 0) {
+      Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'expected deployment record is missing accountName or deploymentNames'
+      continue
+    }
     $uri = "https://management.azure.com/subscriptions/$subId/resourceGroups/$rg/providers/Microsoft.CognitiveServices/accounts/$account/deployments?api-version=2023-05-01"
     try {
       $resp = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers -TimeoutSec 30
@@ -179,17 +295,43 @@ function Test-ModelDeployment {
       continue
     }
     $deployments = @($resp.value)
-    if ($deployments.Count -eq 0) {
-      Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'account has zero model deployments'
+    $byName = @{}
+    foreach ($deployment in $deployments) {
+      $name = "$($deployment.name)".Trim()
+      if (-not [string]::IsNullOrWhiteSpace($name)) {
+        $byName[$name.ToLowerInvariant()] = $deployment
+      }
+    }
+    $missing = @($expectedNames | Where-Object { -not $byName.ContainsKey($_.ToLowerInvariant()) })
+    $expectedKeys = @($expectedNames | ForEach-Object { $_.ToLowerInvariant() })
+    $unexpected = @(
+      $deployments |
+        Where-Object {
+          $name = "$($_.name)".Trim()
+          -not [string]::IsNullOrWhiteSpace($name) -and $expectedKeys -notcontains $name.ToLowerInvariant()
+        } |
+        ForEach-Object { "$($_.name)" }
+    )
+    $bad = @(
+      $expectedNames |
+        Where-Object { $byName.ContainsKey($_.ToLowerInvariant()) } |
+        ForEach-Object { $byName[$_.ToLowerInvariant()] } |
+        Where-Object { "$($_.properties.provisioningState)" -ne 'Succeeded' }
+    )
+    if ($missing.Count -gt 0) {
+      Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail "missing expected deployment(s): $($missing -join ', ')"
       continue
     }
-    $bad = @($deployments | Where-Object { "$($_.properties.provisioningState)" -ne 'Succeeded' })
+    if ($unexpected.Count -gt 0) {
+      Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail "unexpected stale deployment(s): $($unexpected -join ', ')"
+      continue
+    }
     if ($bad.Count -gt 0) {
       $names = ($bad | ForEach-Object { "$($_.name)=$($_.properties.provisioningState)" }) -join ', '
       Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail "not Succeeded: $names"
       continue
     }
-    Add-Result -Name "model-deployments/$account" -Status 'PASS' -Detail "$($deployments.Count) deployment(s) Succeeded"
+    Add-Result -Name "model-deployments/$account" -Status 'PASS' -Detail "$($expectedNames.Count) expected deployment(s) Succeeded"
   }
 }
 
@@ -299,7 +441,7 @@ function Register-AppConfigurationSentinel {
   # provision through the already signed-in deployment identity instead.
   $endpoint = Get-EnvValue 'AZURE_APP_CONFIG_ENDPOINT'
   if ([string]::IsNullOrWhiteSpace($endpoint)) {
-    Add-Result -Name 'App Configuration sentinel' -Status 'SKIP' -Detail 'AZURE_APP_CONFIG_ENDPOINT not set'
+    Add-Result -Name 'App Configuration sentinel' -Status 'FAIL' -Detail 'required output AZURE_APP_CONFIG_ENDPOINT not set'
     return
   }
 
@@ -337,13 +479,18 @@ function Register-AppConfigurationSentinel {
   # 15 minutes to propagate. Ordinary deploys complete on the first attempt;
   # greenfield and role-repair deploys must wait out the documented window
   # rather than publishing an empty store as a healthy warm-refresh plane.
-  $maxAttempts = 31
+  $budgetSeconds = 900
+  $startedAt = Get-MonotonicTime
+  $attempt = 0
   $retrySeconds = 30
-  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+  while ($true) {
+    $remaining = $budgetSeconds - ((Get-MonotonicTime) - $startedAt)
+    if ($remaining -lt 1) { break }
+    $attempt++
+    $commandTimeout = [Math]::Max(1, [Math]::Min(60, [Math]::Floor($remaining)))
     try {
-      # Suppress CLI output so credentials or service diagnostics cannot leak.
-      & az @arguments 2>$null | Out-Null
-      if ($LASTEXITCODE -eq 0) {
+      $exitCode = Invoke-AppConfigSet -Arguments $arguments -TimeoutSec $commandTimeout
+      if ($exitCode -eq 0) {
         $scope = if ([string]::IsNullOrWhiteSpace($label)) { 'unlabeled' } else { 'configured label' }
         Add-Result -Name 'App Configuration sentinel' -Status 'PASS' -Detail "Warm:Sentinel=ready ($scope)"
         return
@@ -352,106 +499,119 @@ function Register-AppConfigurationSentinel {
       # Retry below. Deliberately do not echo the exception or command arguments.
       Write-Verbose 'App Configuration data-plane set attempt failed; retrying without emitting CLI details.'
     }
-    if ($attempt -lt $maxAttempts) {
-      Start-Sleep -Seconds $retrySeconds
-    }
+    $remaining = $budgetSeconds - ((Get-MonotonicTime) - $startedAt)
+    if ($remaining -lt 1) { break }
+    $sleepSeconds = [Math]::Min($retrySeconds, [Math]::Floor($remaining))
+    if ($sleepSeconds -gt 0) { Start-Sleep -Seconds $sleepSeconds }
   }
 
   # Unlike optional context, this store is always wired into the proxy. Failing
   # after the full RBAC window means the deployed configuration plane is not the
   # one the template claims, so fail the provision instead of shipping a false
   # healthy state.
-  Add-Result -Name 'App Configuration sentinel' -Status 'FAIL' -Detail "Entra-authenticated set failed after $maxAttempts attempts"
+  Add-Result -Name 'App Configuration sentinel' -Status 'FAIL' -Detail "Entra-authenticated set failed within the ${budgetSeconds}-second budget after $attempt attempt(s)"
 }
 
 function Register-ContentUnderstandingDefault {
-  param(
-    [string]$CatalogPath = (Join-Path $PSScriptRoot '..\app\api\src\ai4ia_api\data\model_catalog.json')
-  )
   # Content Understanding will not run an analyzer until the resource has a
   # `modelDeployments` default mapping. Without it every analyze job returns
   # `status=Failed` with innererror `ResourceError`, and nothing in Bicep can
   # set it: it is a data-plane PATCH on the account, not an ARM property.
   #
-  # This is not a hypothetical gap. Document understanding shipped enabled and
-  # had NEVER successfully enriched a document -- discovered 2026-08-07 by
-  # uploading a file, which is something no prior review had done.
-  #
-  # The map keys are the analyzer's own LOGICAL model names, not model ids and
-  # not the literal word "completion". Read them from the analyzer:
-  #   GET /contentunderstanding/analyzers/prebuilt-documentSearch
-  #     -> models: { completion: prebuilt-analyzer-completion-mini,
-  #                  embedding:  prebuilt-analyzer-embedding }
-  # and the deployment must be one the analyzer supports -- `supportedModels`
-  # on the same response is authoritative. As of api-version 2025-11-01 the only
-  # completion model in this catalog it accepts is gpt-5.2.
+  # Bicep emits the selected primary account, region, endpoint, and exact model
+  # deployment names. Never choose a region here and never rebuild names from a
+  # convention: both drift silently when AZURE_LOCATION or catalog naming changes.
   try {
-    # Reuse the output Test-ModelDeployment already proves and parses. The first
-    # version of this hook invented `AZURE_FOUNDRY_ACCOUNT_NAME` and
-    # `AZURE_MODEL_DEPLOYMENT_SUFFIX`, then called Get-EnvValue with two
-    # positional arguments even though it accepts one. That threw before this
-    # try block and failed the whole deploy before any image was built.
-    $foundryRaw = Get-EnvValue 'AZURE_FOUNDRY_ENDPOINTS'
-    if ([string]::IsNullOrWhiteSpace($foundryRaw)) {
-      Add-Result -Name 'Content Understanding defaults' -Status 'SKIP' -Detail 'AZURE_FOUNDRY_ENDPOINTS not set'
+    $enabledRaw = Get-EnvValue 'AZURE_CONTENT_UNDERSTANDING_ENABLED'
+    if ([string]::IsNullOrWhiteSpace($enabledRaw)) {
+      Add-Result -Name 'Content Understanding defaults' -Status 'FAIL' -Detail 'required output AZURE_CONTENT_UNDERSTANDING_ENABLED not set'
       return
     }
-    $endpoints = @(($foundryRaw | ConvertFrom-Json) | Where-Object { $_.accountName -and $_.region })
-    $primary = @($endpoints | Where-Object { "$($_.region)" -eq 'eastus2' }) | Select-Object -First 1
-    if (-not $primary) {
-      Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail 'no eastus2 account in AZURE_FOUNDRY_ENDPOINTS'
+    if ([string]::Equals($enabledRaw, 'false', [System.StringComparison]::OrdinalIgnoreCase)) {
+      Add-Result -Name 'Content Understanding defaults' -Status 'SKIP' -Detail 'disabled by AZURE_CONTENT_UNDERSTANDING_ENABLED=false'
+      return
+    }
+    if (-not [string]::Equals($enabledRaw, 'true', [System.StringComparison]::OrdinalIgnoreCase)) {
+      Add-Result -Name 'Content Understanding defaults' -Status 'FAIL' -Detail "AZURE_CONTENT_UNDERSTANDING_ENABLED must be true or false, got '$enabledRaw'"
       return
     }
 
-    # Read the generated catalog rather than reconstructing a deployment name.
-    # This is the same artifact the API routes from, so a naming-token, model, or
-    # SKU change cannot silently desynchronise the hook.
-    $catalog = Get-Content -LiteralPath $CatalogPath -Raw | ConvertFrom-Json
-    $completionModel = @($catalog.models | Where-Object { $_.id -eq 'gpt-5.2' }) | Select-Object -First 1
-    $embeddingModel = @($catalog.models | Where-Object { $_.id -eq 'text-embedding-3-large' }) | Select-Object -First 1
-    $completion = @($completionModel.options | Where-Object {
-        $_.region -eq 'eastus2' -and $_.sku -eq 'GlobalStandard'
-      }) | Select-Object -ExpandProperty deploymentName -First 1
-    $embedding = @($embeddingModel.options | Where-Object {
-        $_.region -eq 'eastus2' -and $_.sku -eq 'GlobalStandard'
-      }) | Select-Object -ExpandProperty deploymentName -First 1
-    if (-not $completion -or -not $embedding) {
-      Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail 'required eastus2 GlobalStandard deployments missing from model_catalog.json'
+    $required = @(
+      @{ Name = 'AZURE_PRIMARY_FOUNDRY_ACCOUNT_NAME'; Value = (Get-EnvValue 'AZURE_PRIMARY_FOUNDRY_ACCOUNT_NAME') }
+      @{ Name = 'AZURE_PRIMARY_FOUNDRY_REGION'; Value = (Get-EnvValue 'AZURE_PRIMARY_FOUNDRY_REGION') }
+      @{ Name = 'AZURE_PRIMARY_FOUNDRY_ENDPOINT'; Value = (Get-EnvValue 'AZURE_PRIMARY_FOUNDRY_ENDPOINT') }
+      @{ Name = 'AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT'; Value = (Get-EnvValue 'AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT') }
+      @{ Name = 'AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT'; Value = (Get-EnvValue 'AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT') }
+    )
+    $missing = @($required | Where-Object { [string]::IsNullOrWhiteSpace($_.Value) })
+    if ($missing.Count -gt 0) {
+      Add-Result -Name 'Content Understanding defaults' -Status 'FAIL' -Detail "missing required output(s): $((@($missing.Name) -join ', '))"
       return
     }
 
-    $token = (az account get-access-token --resource 'https://cognitiveservices.azure.com' --query accessToken -o tsv 2>$null)
-    if (-not $token) {
-      Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail 'could not acquire a Cognitive Services token'
+    $account = ($required | Where-Object Name -eq 'AZURE_PRIMARY_FOUNDRY_ACCOUNT_NAME').Value
+    $region = ($required | Where-Object Name -eq 'AZURE_PRIMARY_FOUNDRY_REGION').Value
+    $endpoint = ($required | Where-Object Name -eq 'AZURE_PRIMARY_FOUNDRY_ENDPOINT').Value
+    $completion = ($required | Where-Object Name -eq 'AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT').Value
+    $embedding = ($required | Where-Object Name -eq 'AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT').Value
+
+    $parsedEndpoint = [uri]$endpoint
+    if (-not $parsedEndpoint.IsAbsoluteUri -or $parsedEndpoint.Scheme -ne 'https') {
+      Add-Result -Name 'Content Understanding defaults' -Status 'FAIL' -Detail 'AZURE_PRIMARY_FOUNDRY_ENDPOINT must be an absolute https URL'
       return
     }
+
+    $budgetSeconds = 900
+    $startedAt = Get-MonotonicTime
+    $remaining = $budgetSeconds - ((Get-MonotonicTime) - $startedAt)
+    $tokenTimeout = [Math]::Max(1, [Math]::Min(60, [Math]::Floor($remaining)))
+    $token = Get-CognitiveServicesToken -TimeoutSec $tokenTimeout
+    if ([string]::IsNullOrWhiteSpace($token)) {
+      Add-Result -Name 'Content Understanding defaults' -Status 'FAIL' -Detail 'no Cognitive Services token from azd or Azure CLI'
+      return
+    }
+
     $body = @{ modelDeployments = @{
         'prebuilt-analyzer-completion-mini' = $completion
         'prebuilt-analyzer-completion'      = $completion
         'prebuilt-analyzer-embedding'       = $embedding
       } } | ConvertTo-Json -Depth 5
-    $base = "https://$($primary.accountName).cognitiveservices.azure.com"
-    $lastError = $null
-    foreach ($attempt in 1..6) {
+      $base = $endpoint.TrimEnd('/')
+      $lastError = $null
+      $attempt = 0
+    $retrySeconds = 30
+    while ($true) {
+      $remaining = $budgetSeconds - ((Get-MonotonicTime) - $startedAt)
+      if ($remaining -lt 1) { break }
+      $attempt++
+      if ($attempt -gt 1) {
+        $tokenTimeout = [Math]::Max(1, [Math]::Min(60, [Math]::Floor($remaining)))
+        $refreshedToken = Get-CognitiveServicesToken -TimeoutSec $tokenTimeout
+        if (-not [string]::IsNullOrWhiteSpace($refreshedToken)) {
+          $token = $refreshedToken
+        }
+      }
+      $remaining = $budgetSeconds - ((Get-MonotonicTime) - $startedAt)
+      if ($remaining -lt 1) { break }
+      $requestTimeout = [Math]::Max(1, [Math]::Min(60, [Math]::Floor($remaining)))
       try {
         Invoke-RestMethod -Method Patch -Uri "$base/contentunderstanding/defaults?api-version=2025-11-01" `
-          -Headers @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' } -Body $body -TimeoutSec 60 | Out-Null
-        Add-Result -Name 'Content Understanding defaults' -Status 'PASS' -Detail "completion=$completion"
+          -Headers @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/merge-patch+json' } -Body $body -TimeoutSec $requestTimeout | Out-Null
+        Add-Result -Name 'Content Understanding defaults' -Status 'PASS' -Detail "account=$account region=$region completion=$completion"
         return
       } catch {
         $lastError = $_.Exception.Message
-        if ($attempt -lt 6) {
-          # A role assignment created by the immediately preceding ARM
-          # deployment can take tens of seconds to reach the data plane.
-          Start-Sleep -Seconds 10
-        }
+        # Azure RBAC documents up to 10 minutes for role changes; keep a
+        # 15-minute budget for the data-plane check and refresh the token above.
+        $remaining = $budgetSeconds - ((Get-MonotonicTime) - $startedAt)
+        if ($remaining -lt 1) { break }
+        $sleepSeconds = [Math]::Min($retrySeconds, [Math]::Floor($remaining))
+        if ($sleepSeconds -gt 0) { Start-Sleep -Seconds $sleepSeconds }
       }
     }
-    Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail "PATCH failed after 6 attempts: $lastError"
+    Add-Result -Name 'Content Understanding defaults' -Status 'FAIL' -Detail "PATCH failed within the ${budgetSeconds}-second budget after $attempt attempt(s): $lastError"
   } catch {
-    # CU is additive. A bug or an upstream outage here must be visible but must
-    # not turn an otherwise healthy provision into a failed release.
-    Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail "PATCH failed: $($_.Exception.Message)"
+    Add-Result -Name 'Content Understanding defaults' -Status 'FAIL' -Detail "PATCH prerequisite/setup failed: $($_.Exception.Message)"
   }
 }
 

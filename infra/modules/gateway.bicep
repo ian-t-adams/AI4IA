@@ -47,6 +47,7 @@ param proxyImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 @description('Catalog-driven Foundry backends: region, endpoint, and accountName.')
 param foundryBackends array
 
+@minLength(1)
 @description('Foundry endpoint in the deployment primary region, used only as the non-looping APIM service URL fallback.')
 param primaryFoundryEndpoint string
 
@@ -124,6 +125,7 @@ param speechVoiceLiveEnabled bool = false
 @description('Name of the existing AIServices account Speech Voice Live routes to. This is the SAME account already used as a Foundry model backend (see foundryBackends); no new AIServices account is created for this capability.')
 param speechVoiceLiveAccountName string
 
+@minLength(1)
 @description('Endpoint of the existing AIServices account Speech Voice Live routes to (https://<account>.cognitiveservices.azure.com/ or the .services.ai.azure.com equivalent). Converted to WSS and combined with the fixed /voice-live/realtime path; never a user-suppliable value.')
 param speechVoiceLiveAccountEndpoint string
 
@@ -143,13 +145,13 @@ var speechVoiceLiveSubscriptionName = '${workload}-api-speech-voice-live'
 
 var foundryBase = endsWith(primaryFoundryEndpoint, '/') ? primaryFoundryEndpoint : '${primaryFoundryEndpoint}/'
 var foundryOpenAiUrl = '${foundryBase}openai'
-var primaryFoundryRealtimeWssUrl = '${replace(endsWith(primaryFoundryEndpoint, '/') ? substring(primaryFoundryEndpoint, 0, length(primaryFoundryEndpoint) - 1) : primaryFoundryEndpoint, 'https://', 'wss://')}/openai/realtime'
+var primaryFoundryRealtimeWssUrl = '${replace(endsWith(primaryFoundryEndpoint, '/') ? substring(primaryFoundryEndpoint, 0, max(length(primaryFoundryEndpoint) - 1, 0)) : primaryFoundryEndpoint, 'https://', 'wss://')}/openai/realtime'
 // Speech Voice Live's backend host, independent of the foundryBackends loop
 // above (that loop drives Azure OpenAI realtime routing across every region).
 // The same underlying AIServices account may coincide with one of those
 // backends, but this module never assumes that -- it only ever talks to the
 // account named by speechVoiceLiveAccountName/-Endpoint.
-var speechVoiceLiveAccountBase = endsWith(speechVoiceLiveAccountEndpoint, '/') ? substring(speechVoiceLiveAccountEndpoint, 0, length(speechVoiceLiveAccountEndpoint) - 1) : speechVoiceLiveAccountEndpoint
+var speechVoiceLiveAccountBase = endsWith(speechVoiceLiveAccountEndpoint, '/') ? substring(speechVoiceLiveAccountEndpoint, 0, max(length(speechVoiceLiveAccountEndpoint) - 1, 0)) : speechVoiceLiveAccountEndpoint
 var speechVoiceLiveWssBase = replace(speechVoiceLiveAccountBase, 'https://', 'wss://')
 var proxyAppName = 'ca-proxy-${environmentName}'
 

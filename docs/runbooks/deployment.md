@@ -13,14 +13,17 @@
 
 ## TL;DR - does merging to `main` redeploy?
 
-Yes, when the deployment identity and required repository variables are
-configured. A push to `main` that touches `app/**`, `infra/**`, `proxy/**`, or
-`azure.yaml` runs `.github/workflows/deploy.yml`. Documentation-only changes do
-not deploy; use **Actions → deploy → Run workflow** when an explicit redeploy is
-needed.
+Yes, when deployment is not explicitly disabled. A push to `main` that touches
+application, infrastructure, proxy, Foundry, deployment workflow, or directly
+executed release-script paths runs `.github/workflows/deploy.yml`.
+Documentation-only changes do not deploy; use **Actions → deploy → Run
+workflow** when an explicit redeploy is needed.
 
-The job deliberately becomes a no-op when `AZURE_CLIENT_ID` is empty. If a merge
-does not deploy, first confirm the workflow ran and that this variable exists.
+The workflow validates `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID`, `AZURE_ENV_NAME`, and `AZURE_LOCATION` before the
+deployment job can start. Missing values fail the workflow with their names;
+they never produce a successful skipped job. A repository with no deployment
+target must declare that posture with `AI4IA_DEPLOYMENT_ENABLED=false`.
 
 ## Moved setup sections
 
@@ -590,11 +593,16 @@ Note the blast radius: ARM aborts the whole `models-<region>` nested deployment 
 first such model, so the error names one model even when several are affected. Check them
 all in one pass rather than fixing one at a time.
 
-Prevention — `scripts/check-model-availability.py` now checks lifecycle as a third axis
-alongside availability and quota, and blocks on `Deprecating`/`Deprecated`. Run it before
-any cold provision ([greenfield preflight](./greenfield-standup.md#1-preflight-the-target)).
-It reports whether a deployable version exists to repin to,
-or that the model must be removed.
+Prevention — `scripts/check-model-availability.py` checks lifecycle as a third axis
+alongside availability and quota. `azure.yaml` runs it automatically in `preprovision`,
+before ARM creates shared or paid resources. The check is existing-state-aware: it
+lists only the target environment's Foundry accounts/deployments and permits an exact
+`Succeeded` deployment (same name, model, version, SKU, capacity, and version-upgrade
+posture) with a loud migration warning. A greenfield/addition, missing deployment, or
+any drift still blocks because provision would create or change the deprecated model.
+If target identity is ambiguous or inventory fails, the check fails rather than guessing.
+Run it directly for diagnosis ([greenfield preflight](./greenfield-standup.md#1-preflight-the-target)).
+It reports whether a deployable version exists to repin to, or that the model must be removed.
 
 Fix — if another version of the same model is `GenerallyAvailable`/`Preview`, repin
 `version` in `infra/models.json`. If not (the whole family may go at once, as GPT-4.1 did),
@@ -651,7 +659,9 @@ Enforcement is not uniform, and the difference matters:
 | `OpenAI.*` | per region | `gpt-image-1.5` holds a full 9-capacity deployment in eastus2 **and** swedencentral — 18 against a limit of 9, both succeeded |
 
 `check-model-availability.py` encodes exactly that: a multi-region overcommit is an **error**
-for non-OpenAI models and a **warning** for OpenAI ones.
+for non-OpenAI models and a **warning** for OpenAI ones. The azd `preprovision` hook runs
+the full check without `--skip-quota`; missing Azure CLI credentials or a CLI subscription
+that differs from `AZURE_SUBSCRIPTION_ID` fails before resource creation.
 
 **Triage.** Work out which of three cases you are in before changing anything:
 

@@ -99,8 +99,10 @@ class ActiveConfigurationTests(unittest.TestCase):
         assert "Get-EnvValue 'AZURE_PRINCIPAL_ID'" in postprovision
         assert "workflow-owned sentinel left unchanged" in postprovision
         assert "'--auth-mode', 'login'" in postprovision
-        assert "$maxAttempts = 31" in postprovision
+        assert "$budgetSeconds = 900" in postprovision
         assert "$retrySeconds = 30" in postprovision
+        assert "Get-MonotonicTime" in postprovision
+        assert "Invoke-AppConfigSet -Arguments $arguments -TimeoutSec $commandTimeout" in postprovision
         assert (
             "Add-Result -Name 'App Configuration sentinel' -Status 'FAIL'"
             in postprovision
@@ -130,7 +132,7 @@ class ActiveConfigurationTests(unittest.TestCase):
                 "appConfigDataOwnerPrincipalIds: [deploymentPrincipalId]",
             ), KEYVAULT, POSTPROVISION),
             (MAIN, KEYVAULT, POSTPROVISION.replace("'--auth-mode', 'login'", "'--auth-mode', 'key'")),
-            (MAIN, KEYVAULT, POSTPROVISION.replace("$maxAttempts = 31", "$maxAttempts = 1")),
+            (MAIN, KEYVAULT, POSTPROVISION.replace("$budgetSeconds = 900", "$budgetSeconds = 90")),
             (
                 MAIN,
                 KEYVAULT,

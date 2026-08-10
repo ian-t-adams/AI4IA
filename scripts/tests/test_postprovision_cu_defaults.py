@@ -1,27 +1,19 @@
-"""Execute the postprovision Content Understanding setup with every edge stubbed.
+"""Execute Content Understanding postprovision reconciliation with every edge stubbed.
 
-The first implementation was lint-clean and reviewable, but called
-``Get-EnvValue`` with two positional arguments even though the helper accepts
-one. It also invented two azd variables that no Bicep output creates. The real
-deploy failed in the postprovision hook *before any image was built*:
-
-    A positional parameter cannot be found that accepts argument
-    'AZURE_FOUNDRY_ACCOUNT_NAME'.
-
-Static checks did not catch it. These tests use PowerShell's own parser to load
-only the function under test, replace Azure/HTTP with process-local functions,
-and execute the same parameter binding and catalog lookup CI executes.
+These tests use PowerShell's parser to load the real function, replace Azure and
+HTTP with process-local functions, and prove the azd output contract without
+network access or Azure mutation.
 """
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "postprovision.ps1"
-CATALOG = REPO / "app" / "api" / "src" / "ai4ia_api" / "data" / "model_catalog.json"
 GREENFIELD = REPO / "docs" / "runbooks" / "greenfield-standup.md"
 
 
@@ -29,8 +21,32 @@ def _ps_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _run(endpoints_json: str | None, *, patch_failures: int = 0) -> dict[str, object]:
-    endpoints = "$null" if endpoints_json is None else _ps_literal(endpoints_json)
+def _run(
+    *,
+    overrides: dict[str, str | None] | None = None,
+    patch_failures: int = 0,
+    token: str | None = "fake-cognitive-token",
+    request_seconds: int = 0,
+    token_seconds: int = 0,
+) -> dict[str, object]:
+    if shutil.which("pwsh") is None:
+        raise unittest.SkipTest("pwsh is required for executable postprovision tests")
+    values: dict[str, str | None] = {
+        "AZURE_CONTENT_UNDERSTANDING_ENABLED": "true",
+        "AZURE_PRIMARY_FOUNDRY_ACCOUNT_NAME": "mf-example-sweden",
+        "AZURE_PRIMARY_FOUNDRY_REGION": "swedencentral",
+        "AZURE_PRIMARY_FOUNDRY_ENDPOINT": "https://mf-example-sweden.cognitiveservices.azure.com/",
+        # Deliberately do not resemble the naming convention. If the script ever
+        # reconstructs names instead of consuming outputs, the assertion catches it.
+        "AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT": "completion-from-bicep-output",
+        "AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT": "embedding-from-bicep-output",
+    }
+    values.update(overrides or {})
+    env_cases = "\n".join(
+        f"    {_ps_literal(name)} {{ return {('$null' if value is None else _ps_literal(value))} }}"
+        for name, value in values.items()
+    )
+    token_literal = "$null" if token is None else _ps_literal(token)
     command = rf"""
 $tokens = $null
 $errors = $null
@@ -49,6 +65,11 @@ Invoke-Expression $fn.Extent.Text
 $script:Results = @()
 $script:Captured = $null
 $script:PatchCalls = 0
+$script:TokenCalls = 0
+$script:SleepSeconds = [System.Collections.Generic.List[int]]::new()
+$script:NowSeconds = 0
+$script:RequestSeconds = {request_seconds}
+$script:TokenSeconds = {token_seconds}
 $script:FailuresRemaining = {patch_failures}
 function Add-Result {{
   param([string]$Name, [string]$Status, [string]$Detail)
@@ -56,16 +77,28 @@ function Add-Result {{
 }}
 function Get-EnvValue {{
   param([Parameter(Mandatory)][string]$Name)
-  if ($Name -eq 'AZURE_FOUNDRY_ENDPOINTS') {{ return {endpoints} }}
-  return $null
+  switch ($Name) {{
+{env_cases}
+    default {{ return $null }}
+  }}
 }}
-function az {{
-  return 'fake-token'
+$tokenValue = {token_literal}
+function Get-CognitiveServicesToken {{
+  param($TimeoutSec)
+  $script:TokenCalls++
+  $script:NowSeconds += [Math]::Min($script:TokenSeconds, $TimeoutSec)
+  return $tokenValue
 }}
-function Start-Sleep {{ param($Seconds) }}
+function Start-Sleep {{
+  param($Seconds)
+  $script:SleepSeconds.Add([int]$Seconds)
+  $script:NowSeconds += [int]$Seconds
+}}
+function Get-MonotonicTime {{ return [double]$script:NowSeconds }}
 function Invoke-RestMethod {{
   param($Method, $Uri, $Headers, $Body, $TimeoutSec)
   $script:PatchCalls++
+  $script:NowSeconds += [Math]::Min($script:RequestSeconds, $TimeoutSec)
   if ($script:FailuresRemaining -gt 0) {{
     $script:FailuresRemaining--
     throw 'RBAC has not propagated'
@@ -73,16 +106,20 @@ function Invoke-RestMethod {{
   $script:Captured = [pscustomobject]@{{
     method = "$Method"
     uri = "$Uri"
+    headers = $Headers
     body = ($Body | ConvertFrom-Json)
   }}
   return @{{}}
 }}
 
-Register-ContentUnderstandingDefault -CatalogPath {_ps_literal(str(CATALOG))}
+Register-ContentUnderstandingDefault
 [pscustomobject]@{{
   results = $script:Results
   captured = $script:Captured
   patchCalls = $script:PatchCalls
+  tokenCalls = $script:TokenCalls
+  sleepSeconds = $script:SleepSeconds
+  elapsedSeconds = $script:NowSeconds
 }} | ConvertTo-Json -Depth 8 -Compress
 """
     proc = subprocess.run(
@@ -99,71 +136,109 @@ Register-ContentUnderstandingDefault -CatalogPath {_ps_literal(str(CATALOG))}
 
 
 class ContentUnderstandingPostprovisionTests(unittest.TestCase):
-    def test_uses_real_foundry_output_and_catalog_deployments(self) -> None:
-        payload = _run(
-            json.dumps(
-                [
-                    {
-                        "region": "swedencentral",
-                        "accountName": "mf-example-sweden",
-                        "endpoint": "https://mf-example-sweden.cognitiveservices.azure.com/",
-                    },
-                    {
-                        "region": "eastus2",
-                        "accountName": "mf-example-eastus2",
-                        "endpoint": "https://mf-example-eastus2.cognitiveservices.azure.com/",
-                    },
-                ]
-            )
-        )
+    def test_non_eastus2_primary_uses_exact_bicep_outputs(self) -> None:
+        payload = _run()
         result = payload["results"][0]
         captured = payload["captured"]
         self.assertEqual(result["status"], "PASS")
+        self.assertIn("account=mf-example-sweden", result["detail"])
+        self.assertIn("region=swedencentral", result["detail"])
         self.assertEqual(captured["method"], "Patch")
         self.assertEqual(
             captured["uri"],
-            "https://mf-example-eastus2.cognitiveservices.azure.com/"
+            "https://mf-example-sweden.cognitiveservices.azure.com/"
             "contentunderstanding/defaults?api-version=2025-11-01",
+        )
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer fake-cognitive-token")
+        self.assertEqual(
+            captured["headers"]["Content-Type"], "application/merge-patch+json"
         )
         self.assertEqual(
             captured["body"]["modelDeployments"],
             {
-                "prebuilt-analyzer-completion-mini": "gpt-5.2-slurmfactory-eastus2-glbl",
-                "prebuilt-analyzer-completion": "gpt-5.2-slurmfactory-eastus2-glbl",
-                "prebuilt-analyzer-embedding": "text-embedding-3-large-slurmfactory-eastus2-glbl",
+                "prebuilt-analyzer-completion-mini": "completion-from-bicep-output",
+                "prebuilt-analyzer-completion": "completion-from-bicep-output",
+                "prebuilt-analyzer-embedding": "embedding-from-bicep-output",
             },
         )
 
-    def test_missing_output_skips_without_throwing(self) -> None:
-        payload = _run(None)
-        self.assertIsNone(payload["captured"])
-        self.assertEqual(payload["results"], [
-            {
-                "name": "Content Understanding defaults",
-                "status": "SKIP",
-                "detail": "AZURE_FOUNDRY_ENDPOINTS not set",
-            }
-        ])
-
-    def test_missing_eastus2_account_warns_without_throwing(self) -> None:
+    def test_disabled_content_understanding_is_the_only_skip_path(self) -> None:
         payload = _run(
-            json.dumps(
-                [{"region": "westus", "accountName": "mf-example-westus", "endpoint": "https://x"}]
-            )
+            overrides={
+                "AZURE_CONTENT_UNDERSTANDING_ENABLED": "false",
+                "AZURE_PRIMARY_FOUNDRY_ACCOUNT_NAME": None,
+                "AZURE_PRIMARY_FOUNDRY_REGION": None,
+                "AZURE_PRIMARY_FOUNDRY_ENDPOINT": None,
+            }
         )
-        self.assertIsNone(payload["captured"])
-        self.assertEqual(payload["results"][0]["status"], "WARN")
-        self.assertIn("no eastus2 account", payload["results"][0]["detail"])
+        self.assertEqual(payload["results"][0]["status"], "SKIP")
+        self.assertEqual(payload["patchCalls"], 0)
+
+    def test_missing_enabled_output_fails_closed(self) -> None:
+        payload = _run(overrides={"AZURE_CONTENT_UNDERSTANDING_ENABLED": None})
+        self.assertEqual(payload["results"][0]["status"], "FAIL")
+        self.assertIn("AZURE_CONTENT_UNDERSTANDING_ENABLED", payload["results"][0]["detail"])
+
+    def test_enabled_content_understanding_requires_every_primary_output(self) -> None:
+        names = (
+            "AZURE_PRIMARY_FOUNDRY_ACCOUNT_NAME",
+            "AZURE_PRIMARY_FOUNDRY_REGION",
+            "AZURE_PRIMARY_FOUNDRY_ENDPOINT",
+            "AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT",
+            "AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT",
+        )
+        for name in names:
+            with self.subTest(name=name):
+                payload = _run(overrides={name: None})
+                self.assertEqual(payload["results"][0]["status"], "FAIL")
+                self.assertIn(name, payload["results"][0]["detail"])
+                self.assertEqual(payload["patchCalls"], 0)
+
+    def test_missing_cognitive_services_token_fails_closed(self) -> None:
+        payload = _run(token=None)
+        self.assertEqual(payload["results"][0]["status"], "FAIL")
+        self.assertIn("token", payload["results"][0]["detail"])
+        self.assertEqual(payload["patchCalls"], 0)
 
     def test_retries_through_role_assignment_propagation(self) -> None:
-        payload = _run(
-            json.dumps(
-                [{"region": "eastus2", "accountName": "mf-example-eastus2", "endpoint": "https://e"}]
-            ),
-            patch_failures=2,
-        )
+        payload = _run(patch_failures=2)
         self.assertEqual(payload["results"][0]["status"], "PASS")
         self.assertEqual(payload["patchCalls"], 3)
+        self.assertEqual(payload["tokenCalls"], 3)
+        self.assertEqual(payload["sleepSeconds"], [30, 30])
+
+    def test_patch_exhaustion_is_a_hard_failure(self) -> None:
+        payload = _run(patch_failures=99)
+        self.assertEqual(payload["results"][0]["status"], "FAIL")
+        self.assertIn("900-second budget", payload["results"][0]["detail"])
+        self.assertEqual(payload["patchCalls"], 30)
+        self.assertEqual(payload["tokenCalls"], 30)
+        self.assertEqual(payload["sleepSeconds"], [30] * 30)
+        self.assertEqual(payload["elapsedSeconds"], 900)
+
+    def test_full_timeout_requests_never_exceed_wall_clock_budget(self) -> None:
+        payload = _run(patch_failures=99, request_seconds=60)
+        self.assertEqual(payload["results"][0]["status"], "FAIL")
+        self.assertLessEqual(payload["elapsedSeconds"], 900)
+        self.assertEqual(payload["elapsedSeconds"], 900)
+        self.assertEqual(payload["patchCalls"], 10)
+        self.assertEqual(payload["tokenCalls"], 10)
+
+    def test_full_timeout_token_refreshes_never_exceed_wall_clock_budget(self) -> None:
+        payload = _run(patch_failures=99, token_seconds=60)
+        self.assertEqual(payload["results"][0]["status"], "FAIL")
+        self.assertLessEqual(payload["elapsedSeconds"], 900)
+        self.assertEqual(payload["elapsedSeconds"], 900)
+        self.assertEqual(payload["tokenCalls"], 10)
+
+    def test_function_does_not_read_endpoint_array_or_runtime_catalog(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        function = source.split("function Register-ContentUnderstandingDefault {", 1)[1].split(
+            "$checks = @(", 1
+        )[0]
+        self.assertNotIn("AZURE_FOUNDRY_ENDPOINTS", function)
+        self.assertNotIn("model_catalog.json", function)
+        self.assertNotIn("eastus2", function)
 
 
 class ContentUnderstandingProvisioningWiringTests(unittest.TestCase):
@@ -185,47 +260,40 @@ class ContentUnderstandingProvisioningWiringTests(unittest.TestCase):
             "? contentUnderstandingPrincipalIds : []",
             main,
         )
-        self.assertIn(
-            "for pid in contentUnderstandingPrincipalIds",
-            foundry,
-        )
+        self.assertIn("for pid in contentUnderstandingPrincipalIds", foundry)
         self.assertNotIn(
             "for pid in dataPlanePrincipalIds: {\n"
             "  name: guid(account.id, pid, contentUnderstandingRoleId)",
             foundry,
         )
 
-    def test_greenfield_requires_oidc_principal_wiring_and_cu_success(self) -> None:
+    def test_bicep_emits_explicit_primary_cu_outputs(self) -> None:
+        main = (REPO / "infra" / "main.bicep").read_text(encoding="utf-8")
+        for name in (
+            "AZURE_CONTENT_UNDERSTANDING_ENABLED",
+            "AZURE_PRIMARY_FOUNDRY_ACCOUNT_NAME",
+            "AZURE_PRIMARY_FOUNDRY_REGION",
+            "AZURE_PRIMARY_FOUNDRY_ENDPOINT",
+            "AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT",
+            "AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT",
+        ):
+            self.assertIn(f"output {name} ", main)
+        self.assertIn("deployments: modelDeploymentsByRegion[i]", main)
+
+    def test_greenfield_documents_cu_as_a_hard_provision_gate(self) -> None:
         runbook = GREENFIELD.read_text(encoding="utf-8")
         first_provision = runbook.split(
             "### 6.1 First provision without custom domains", 1
         )[1].split("### 6.2 Bind custom domains", 1)[0]
-
-        self.assertIn(
-            "The first standup must use the GitHub deployment workflow",
-            first_provision,
-        )
+        self.assertIn("The first standup must use the GitHub deployment workflow", first_provision)
         self.assertIn("principal/object id", first_provision)
         self.assertIn("`AZURE_PRINCIPAL_ID`", first_provision)
         self.assertIn("never treating the\nclient id as an object id", first_provision)
-        self.assertIn(
-            "Cognitive Services Content Understanding Contributor",
-            first_provision,
-        )
-        self.assertNotIn(
-            "\nazd up\n",
-            first_provision,
-            "The current Bicep CU assignment declares ServicePrincipal, so a local "
-            "human's object id cannot safely use that path.",
-        )
+        self.assertIn("Cognitive Services Content Understanding Contributor", first_provision)
+        self.assertNotIn("\nazd up\n", first_provision)
         self.assertIn("Content Understanding defaults | PASS", runbook)
-        self.assertIn("A `WARN` or `SKIP` is not success", runbook)
-        self.assertGreaterEqual(
-            runbook.count("gh workflow run deploy.yml -f provision=true --ref main"),
-            2,
-            "The guide must show both the first workflow provision and the explicit "
-            "rerun used when CU defaults are not PASS.",
-        )
+        self.assertIn("fails the provision", runbook)
+        self.assertNotIn("postprovision reports a Content Understanding defaults `WARN`", runbook)
 
 
 if __name__ == "__main__":

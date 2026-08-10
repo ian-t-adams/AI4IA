@@ -47,6 +47,18 @@ python scripts/check-resource-providers.py --register
 Registration is asynchronous and can take several minutes. Wait for every
 required namespace to report `Registered` before provisioning.
 
+`azure.yaml` also runs the full model check (including quota) as a non-optional
+`preprovision` hook on Windows and POSIX. The deploy workflow has already logged
+Azure CLI into `AZURE_SUBSCRIPTION_ID`; a local `azd provision` must have a matching
+`az login` / `az account set` context or it fails before ARM receives the template.
+The commands above remain the fastest way to diagnose or remediate findings early.
+When no target resource group/environment exists, the script says it is in
+**greenfield/addition mode** and treats every desired deployment as new. On a
+routine reconcile it inventories only this environment's Foundry accounts. A
+`Deprecating`/`Deprecated` record is allowed only when the exact named deployment
+is already `Succeeded` with the desired model, version, SKU, capacity, and version
+upgrade posture; that path emits a migration warning. Any absence or drift blocks.
+
 The model preflight compares `infra/models.json` with the subscription on three
 independent axes:
 
@@ -180,6 +192,7 @@ Set repository variables under **Settings → Secrets and variables → Actions*
 
 | Variable | Required value |
 |---|---|
+| `AI4IA_DEPLOYMENT_ENABLED` | `true`; use `false` only when the repository intentionally has no Azure deployment target |
 | `AZURE_CLIENT_ID` | Deployment identity client id |
 | `AZURE_TENANT_ID` | Target Entra tenant GUID |
 | `AZURE_SUBSCRIPTION_ID` | Target subscription GUID |
@@ -191,6 +204,10 @@ Set repository variables under **Settings → Secrets and variables → Actions*
 | `AI4IA_COST_CENTER` | Chargeback/cost-center tag |
 | `AI4IA_APIM_PUBLISHER_EMAIL` | Operator-owned service mailbox |
 | `AI4IA_BUDGET_START_DATE` | Fixed `yyyy-MM-01` month to keep budget deployment idempotent |
+
+Unset `AI4IA_DEPLOYMENT_ENABLED` is treated as enabled for compatibility, but
+the five `AZURE_*` identity/environment variables above are still required.
+Only the explicit value `false` allows the deploy job to skip successfully.
 
 `AI4IA_ALLOW_DEV_AUTH` must remain false. A production posture ignores it, but
 keeping the value false also prevents a non-production deployment from trusting
@@ -395,10 +412,12 @@ receive no App Configuration data role.
 A local human operator is neither the API managed identity nor that service
 principal. The current role-assignment template declares
 `principalType: 'ServicePrincipal'`, so putting a signed-in user's object id into
-`AZURE_PRINCIPAL_ID` is not a supported workaround. A local `azd up` can otherwise
-finish while postprovision reports a Content Understanding defaults `WARN`; do
-not treat that as a completed greenfield standup. The workflow also captures
-rollback state, promotes images by digest, and verifies the resulting release.
+`AZURE_PRINCIPAL_ID` is not a supported workaround. Enabled Content Understanding
+now fails the provision when any explicit primary output is absent, no Cognitive
+Services token can be acquired, or the defaults PATCH exhausts its retries. A local
+`azd up` therefore cannot downgrade an incomplete CU setup to `WARN`, but it remains
+unsupported for this greenfield identity path. The workflow also captures rollback
+state, promotes images by digest, and verifies the resulting release.
 On the first standup there are no prior revisions to restore, so a failed first
 release must be corrected and rerun.
 
@@ -513,16 +532,19 @@ results:
 - `App Configuration sentinel | PASS`
 - `Content Understanding defaults | PASS`
 
-A `WARN` or `SKIP` is not success; it remains visible because the deployment
-identity may still be waiting for a data-plane role to propagate, or a required output may be absent.
-After correcting the reported cause or allowing RBAC propagation, rerun:
+When Content Understanding is enabled, a missing primary output or token and a
+PATCH that still fails after the bounded RBAC-propagation retries is recorded as
+`FAIL` and fails the provision (`continueOnError: false`). `SKIP` is valid only when
+the Bicep output explicitly says Content Understanding is disabled. After correcting
+the reported cause or allowing RBAC propagation, rerun:
 
 ```powershell
 gh workflow run deploy.yml -f provision=true --ref main
 ```
 
-Do not continue until the rerun reports `PASS`; document upload can otherwise
-reach the live Content Understanding account without model defaults.
+Do not continue until the rerun reports `PASS`; the workflow cannot proceed past
+an enabled Content Understanding defaults failure because document upload would
+otherwise reach the live account without model defaults.
 
 Run the first-release checks:
 

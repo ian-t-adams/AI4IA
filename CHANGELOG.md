@@ -289,6 +289,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Azure-facing PowerShell operator scripts now check native `az` exit codes,
+  verify the exact active subscription, and bind every later read/write to that
+  subscription so another process cannot redirect the CLI context. Inventory
+  preserves successful artifacts but exits as incomplete when any section fails,
+  and soft-delete purge approvals are exact and resource-type-specific.
+- The deploy workflow now fails with actionable names when required Azure identity
+  variables are missing; only `AI4IA_DEPLOYMENT_ENABLED=false` permits a clean
+  disabled posture. It pins and verifies azd 1.29.0 and watches every generator
+  and preflight script it executes.
+- Azure provisioning now fails before shared/paid resources when model availability,
+  lifecycle, or quota cannot be verified for the target subscription. Lifecycle checks
+  are existing-state-aware: exact `Succeeded` deployments reconcile with a migration
+  warning, while greenfield additions or any model/version/SKU/capacity drift block.
+  Postprovision compares the exact expected model deployment set and fails closed
+  on missing model/topology/Content Understanding outputs or credentials.
+  Primary Content Understanding setup follows `AZURE_LOCATION` through explicit Bicep
+  outputs instead of hard-coding `eastus2` or reconstructing deployment names. Bicep CI
+  also rejects diagnostics and pins the generated ARM behavior for conditional Durable
+  Task outputs and endpoint normalization.
 - **Status and accent foregrounds are theme-aware** (#271). Every inline foreground
   colour was a literal hex chosen against the light theme and applied to all three, so
   it failed silently elsewhere. `color: "#fff"` on a `var(--accent)` fill measures
