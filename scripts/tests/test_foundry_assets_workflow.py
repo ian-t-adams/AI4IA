@@ -83,7 +83,7 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
             probe["if"],
         )
         self.assertEqual(
-            "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
             probe["uses"],
         )
         self.assertEqual(
@@ -159,7 +159,7 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         self.assertIn("invalid Foundry project endpoint", prepare["run"])
         upload = steps[upload_index]
         self.assertEqual(
-            "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
             upload["uses"],
         )
         self.assertEqual("foundry-assets-context", upload["with"]["name"])
@@ -207,7 +207,7 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(
             login["uses"],
-            "azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43",
+            "azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca",
         )
         self.assertEqual(login["with"]["client-id"], "${{ vars.AZURE_CLIENT_ID }}")
         self.assertEqual(login["with"]["tenant-id"], "${{ vars.AZURE_TENANT_ID }}")

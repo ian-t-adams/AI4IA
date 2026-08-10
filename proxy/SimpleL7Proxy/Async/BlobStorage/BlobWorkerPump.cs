@@ -854,7 +854,7 @@ namespace SimpleL7Proxy.Async.BlobStorage
                     qSize, inFlight, failed, dedup);
 
                 // Every minute (6 ticks @ 10s), emit a reusable metric event to App Insights / event client.
-                // Numeric values land in EventTelemetry.Metrics so they are queryable & aggregatable.
+                // Numeric values are emitted as separate metric telemetry for aggregation.
                 if (tickCount % 6 == 0)
                 {
                     SendMetricEvent(qSize, inFlight, failed, dedup);
@@ -866,7 +866,7 @@ namespace SimpleL7Proxy.Async.BlobStorage
         /// Populates the reusable per-minute metric event and dispatches it. Tracks deltas for
         /// counter-like fields so dashboards can sum or rate them. Values are written as both
         /// string properties (for the event-client/JSON path) and as numeric MetricValues
-        /// (for App Insights EventTelemetry.Metrics).
+        /// (for separate App Insights metric telemetry).
         /// </summary>
         private long _lastMetricCompleted;
         private long _lastMetricBatches;

@@ -47,9 +47,11 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
 
-  # These four projects restore as one locked graph. Dependabot must update the
-  # project declaration and packages.lock.json together; CI/Docker both use
-  # --locked-mode, so an incomplete update fails closed.
+  # These four projects restore as one locked graph. Dependabot refreshes locks
+  # for projects whose direct dependencies move, but NuGet does not recalculate
+  # AI4IA.Proxy.Tests/packages.lock.json when only a referenced project's graph
+  # changes. CI fails closed; refresh the full graph with:
+  # dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --force-evaluate
   - package-ecosystem: nuget
     directories:
       - /proxy/AI4IA.Proxy.Tests

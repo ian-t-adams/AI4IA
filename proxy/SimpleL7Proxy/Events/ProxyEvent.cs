@@ -82,7 +82,7 @@ namespace SimpleL7Proxy.Events
     public TimeSpan Duration { get; set; } = TimeSpan.Zero;
     public Exception? Exception { get; set; } = null;
     /// <summary>
-    /// Optional numeric values emitted as App Insights metrics on the EventTelemetry.
+    /// Optional numeric values emitted as separate App Insights metrics.
     /// Use for metric-style events (e.g. <see cref="EventType.Metric"/>) so values are
     /// queryable/aggregatable in App Insights rather than parsed from string properties.
     /// </summary>
@@ -272,42 +272,40 @@ namespace SimpleL7Proxy.Events
       string eventName = "S7P-" + Type.ToString();
 
       var eventTelemetry = new EventTelemetry(eventName);
-      eventTelemetry.Metrics["Duration"] = Duration.TotalMilliseconds;
-      // eventTelemetry.Name = eventName;
 
-      // Merge any caller-supplied numeric metrics so they are queryable in App Insights.
+      // Add all caller properties, then stamp the authoritative correlation values.
+      foreach (var kvp in this)
+      {
+        eventTelemetry.Properties[kvp.Key] = kvp.Value;
+      }
+      eventTelemetry.Properties["EventName"] = eventName;
+      AddDefaultProperties(eventTelemetry.Properties);
+      AddLegacyCorrelationProperties(eventTelemetry.Properties);
+
+      var telemetryClient = _telemetryClient;
+      if (telemetryClient is null)
+      {
+        return;
+      }
+
+      telemetryClient.TrackEvent(eventTelemetry);
+
+      var metrics = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+      {
+        ["Duration"] = Duration.TotalMilliseconds
+      };
       if (MetricValues is not null)
       {
         foreach (var kvp in MetricValues)
         {
-          eventTelemetry.Metrics[kvp.Key] = kvp.Value;
+          metrics[kvp.Key] = kvp.Value;
         }
       }
 
-      // Set operation context if available
-      if (!string.IsNullOrEmpty(MID))
+      foreach (var kvp in metrics)
       {
-        eventTelemetry.Context.Operation.Id = MID;
-        if (!string.IsNullOrEmpty(ParentId))
-        {
-          eventTelemetry.Context.Operation.ParentId = ParentId;
-        }
+        telemetryClient.TrackMetric(kvp.Key, kvp.Value, eventTelemetry.Properties);
       }
-
-      // Add all properties except MID and ParentId (which go in the operation context)
-      foreach (var kvp in this)
-      {
-        // Skip MID and ParentId as they belong in the operation context
-        if (kvp.Key != "MID" && kvp.Key != "ParentId" && kvp.Key != "OperationId")
-        {
-          eventTelemetry.Properties[kvp.Key] = kvp.Value;
-        }
-      }
-
-      // Stamp defaults directly into telemetry (not into this ProxyEvent)
-      AddDefaultProperties(eventTelemetry.Properties);
-
-      _telemetryClient?.TrackEvent(eventTelemetry);
     }
 
     private void TrackDependancy()
@@ -326,7 +324,6 @@ namespace SimpleL7Proxy.Events
 
       // Set the timestamp
       dependencyTelemetry.Timestamp = DateTimeOffset.UtcNow.Subtract(Duration);
-      dependencyTelemetry.Id = MID;
       AddDefaultProperties(dependencyTelemetry.Properties);
 
       // Add custom properties
@@ -334,22 +331,13 @@ namespace SimpleL7Proxy.Events
       {
         dependencyTelemetry.Properties[kvp.Key] = kvp.Value;
       }
-
-      // Add context if available
-      if (!string.IsNullOrEmpty(MID))
-      {
-        dependencyTelemetry.Context.Operation.Id = MID;
-        dependencyTelemetry.Context.Operation.ParentId = ParentId;
-      }
+      AddLegacyCorrelationProperties(dependencyTelemetry.Properties);
 
       _telemetryClient?.TrackDependency(dependencyTelemetry);
     }
 
     private void TrackRequest()
     {
-      // Check if we've already tracked this request using the MID as a key
-      var requestId = MID ?? Guid.NewGuid().ToString();
-
       var success = (int)Status >= 200 && (int)Status < 400;
       var requestTelemetry = new RequestTelemetry
       {
@@ -357,15 +345,11 @@ namespace SimpleL7Proxy.Events
         Url = Uri,
         ResponseCode = Status.ToString(),
         Success = success,
-        Id = requestId, // Set a consistent ID to help identify duplicates
         Timestamp = DateTimeOffset.UtcNow.Subtract(Duration)
       };
       requestTelemetry.Properties["HttpMethod"] = Method ?? "GET";
       requestTelemetry.Source = "S7P"; // Custom source identifier
       requestTelemetry.Duration = Duration;
-      requestTelemetry.Context.Operation.Id = requestId;
-      requestTelemetry.Context.Operation.ParentId = ParentId;
-
       // Add a special flag to mark this as our custom telemetry
       requestTelemetry.Properties["CustomTracked"] = "true";
       AddDefaultProperties(requestTelemetry.Properties);
@@ -374,8 +358,21 @@ namespace SimpleL7Proxy.Events
       {
         requestTelemetry.Properties[kvp.Key] = kvp.Value;
       }
+      AddLegacyCorrelationProperties(requestTelemetry.Properties);
 
       _telemetryClient?.TrackRequest(requestTelemetry);
+    }
+
+    private void AddLegacyCorrelationProperties(IDictionary<string, string> properties)
+    {
+      if (!string.IsNullOrEmpty(MID))
+      {
+        properties["MID"] = MID;
+      }
+      if (!string.IsNullOrEmpty(ParentId))
+      {
+        properties["ParentId"] = ParentId;
+      }
     }
 
     private void TrackException()
@@ -383,6 +380,7 @@ namespace SimpleL7Proxy.Events
       this["ExceptionType"] = Exception?.GetType().ToString() ?? "Unknown";
       this["Message"] = Exception?.Message ?? "No exception message";
       AddDefaultProperties(this);
+      AddLegacyCorrelationProperties(this);
 
       _telemetryClient?.TrackException(Exception, this.ToDictionary());
     }

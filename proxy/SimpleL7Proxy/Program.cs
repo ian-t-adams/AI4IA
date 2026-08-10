@@ -1,12 +1,11 @@
 ﻿using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.Extensibility;
-using Microsoft.ApplicationInsights.WorkerService;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Console;
 using Microsoft.Extensions.Options;
+using OpenTelemetry.Trace;
 
 using SimpleL7Proxy.Backend;
 using SimpleL7Proxy.Backend.Iterators;
@@ -210,19 +209,17 @@ public class Program
         var aiConnectionString = options.AppInsightsConnectionString;
         if (!string.IsNullOrEmpty(aiConnectionString))
         {
+            // OpenTelemetry processors run in registration order. The filter must be
+            // registered before Application Insights adds the Azure Monitor exporter.
+            services.ConfigureOpenTelemetryTracerProvider(tracing =>
+                tracing.AddProcessor<RequestFilterTelemetryProcessor>());
+
             // Register Application Insights — also adds the ILogger → App Insights provider,
             // so all ILogger output flows to both console and App Insights once the host starts.
             services.AddApplicationInsightsTelemetryWorkerService(options =>
             {
                 options.ConnectionString = aiConnectionString;
-                options.EnableAdaptiveSampling = false; // Disable sampling to ensure all your custom telemetry is sent
-            });
-
-            // Filter out duplicate request telemetry
-            services.Configure<TelemetryConfiguration>(config =>
-            {
-                config.TelemetryProcessorChainBuilder.Use(next => new RequestFilterTelemetryProcessor(next));
-                config.TelemetryProcessorChainBuilder.Build();
+                options.SamplingRatio = 1.0f;
             });
 
             startupLogger.LogInformation("[STARTUP] ✓ AppInsights initialized with custom request tracking");

@@ -19,6 +19,10 @@ UPSTREAM_COMMIT = "d9eb1d1fa42820792a9699bfc253562fba07d977"
 SOURCE_SCOPES = ("Shared", "Shared-parser", "SimpleL7Proxy")
 
 AI4IA_PATCH_REASONS = {
+    "Shared-parser/Shared-parser.csproj": (
+        "Remove unused runtime packages and retain the logging abstraction used by "
+        "the parser."
+    ),
     "Shared/packages.lock.json": "AI4IA-generated NuGet lock for deterministic restore.",
     "Shared-parser/packages.lock.json": "AI4IA-generated NuGet lock for deterministic restore.",
     "Shared-parser/StreamProcessor/JsonStreamProcessor.cs": (
@@ -40,6 +44,21 @@ AI4IA_PATCH_REASONS = {
     "SimpleL7Proxy/Config/SecretComparer.cs": (
         "AI4IA constant-time comparison helper for opaque authentication keys."
     ),
+    "SimpleL7Proxy/Async/BlobStorage/BlobWorkerPump.cs": (
+        "Document Application Insights 3.x metric emission accurately."
+    ),
+    "SimpleL7Proxy/Events/RequestFilterTelemetryProcessor.cs": (
+        "Migrate duplicate request and HTTP dependency filtering to Application "
+        "Insights 3.x OpenTelemetry processor APIs."
+    ),
+    "SimpleL7Proxy/Events/ProxyEvent.cs": (
+        "Migrate event metrics and legacy correlation dimensions to supported "
+        "Application Insights 3.x APIs."
+    ),
+    "SimpleL7Proxy/Program.cs": (
+        "Configure Application Insights 3.x sampling and register AI4IA's "
+        "OpenTelemetry duplicate-telemetry filter."
+    ),
     "SimpleL7Proxy/RequestData.cs": (
         "Derive Azure deployment names from request paths when model is absent."
     ),
@@ -47,6 +66,10 @@ AI4IA_PATCH_REASONS = {
         "Compare opaque inbound authentication keys exactly and in constant time; remove "
         "redundant request-null control flow; return 404 for privileged legacy diagnostics "
         "before auth or worker dispatch."
+    ),
+    "SimpleL7Proxy/SimpleL7Proxy.csproj": (
+        "Keep runtime dependencies current, remove unsupported Application Insights "
+        "2.x packages, and declare the OpenTelemetry processor API."
     ),
 }
 

@@ -12,10 +12,14 @@
   ],
   "counts": {
     "ai4ia-added": 4,
-    "ai4ia-patched": 7,
-    "upstream-equivalent": 167
+    "ai4ia-patched": 13,
+    "upstream-equivalent": 161
   },
   "patches": [
+    {
+      "path": "Shared-parser/Shared-parser.csproj",
+      "reason": "Remove unused runtime packages and retain the logging abstraction used by the parser."
+    },
     {
       "path": "Shared-parser/StreamProcessor/JsonStreamProcessor.cs",
       "reason": "Flush streamed response lines immediately instead of buffering tokens."
@@ -27,6 +31,10 @@
     {
       "path": "Shared/packages.lock.json",
       "reason": "AI4IA-generated NuGet lock for deterministic restore."
+    },
+    {
+      "path": "SimpleL7Proxy/Async/BlobStorage/BlobWorkerPump.cs",
+      "reason": "Document Application Insights 3.x metric emission accurately."
     },
     {
       "path": "SimpleL7Proxy/Config/ConfigFactory.cs",
@@ -49,8 +57,24 @@
       "reason": "AI4IA constant-time comparison helper for opaque authentication keys."
     },
     {
+      "path": "SimpleL7Proxy/Events/ProxyEvent.cs",
+      "reason": "Migrate event metrics and legacy correlation dimensions to supported Application Insights 3.x APIs."
+    },
+    {
+      "path": "SimpleL7Proxy/Events/RequestFilterTelemetryProcessor.cs",
+      "reason": "Migrate duplicate request and HTTP dependency filtering to Application Insights 3.x OpenTelemetry processor APIs."
+    },
+    {
+      "path": "SimpleL7Proxy/Program.cs",
+      "reason": "Configure Application Insights 3.x sampling and register AI4IA's OpenTelemetry duplicate-telemetry filter."
+    },
+    {
       "path": "SimpleL7Proxy/RequestData.cs",
       "reason": "Derive Azure deployment names from request paths when model is absent."
+    },
+    {
+      "path": "SimpleL7Proxy/SimpleL7Proxy.csproj",
+      "reason": "Keep runtime dependencies current, remove unsupported Application Insights 2.x packages, and declare the OpenTelemetry processor API."
     },
     {
       "path": "SimpleL7Proxy/packages.lock.json",
@@ -63,10 +87,10 @@
   ],
   "files": {
     "Shared-parser/Shared-parser.csproj": {
-      "localCanonicalSha256": "8d81dc6920f493e0d5a425b7f73b5808d7c24f4103cd5b443832d710d88b6591",
+      "localCanonicalSha256": "6b2d9a834ab37c068f40b3e43e0b073c5fd18195dc0d25625f33bd0208d52673",
       "upstreamRawSha256": "8d81dc6920f493e0d5a425b7f73b5808d7c24f4103cd5b443832d710d88b6591",
       "upstreamCanonicalSha256": "8d81dc6920f493e0d5a425b7f73b5808d7c24f4103cd5b443832d710d88b6591",
-      "disposition": "upstream-equivalent"
+      "disposition": "ai4ia-patched"
     },
     "Shared-parser/StreamProcessor/AllUsageProcessor.cs": {
       "localCanonicalSha256": "33bcdb488e9238f6a44b5320aefbe0cf72abb077cfd25a7f3dfb2a4998f9ff97",
@@ -129,7 +153,7 @@
       "disposition": "upstream-equivalent"
     },
     "Shared-parser/packages.lock.json": {
-      "localCanonicalSha256": "5781b811a2ca88d756eed27b5db38f8a374a6fda88e1dc660378515c1222fe44",
+      "localCanonicalSha256": "5e7c4f83e51e663786d32713cfc14fe448e092c5bd74b922f63a75e9c6417f7b",
       "disposition": "ai4ia-added"
     },
     "Shared/HealthProbe/HealthStatusEnum.cs": {
@@ -233,10 +257,10 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Async/BlobStorage/BlobWorkerPump.cs": {
-      "localCanonicalSha256": "f42b2fc4915bade4a72220770274d2f5835b162c1f35ad27affa56310d293248",
+      "localCanonicalSha256": "48fd73a0b3ec42a9ea3c1a708ccbec12660684c65402b88c24ca9c604012cd26",
       "upstreamRawSha256": "f42b2fc4915bade4a72220770274d2f5835b162c1f35ad27affa56310d293248",
       "upstreamCanonicalSha256": "f42b2fc4915bade4a72220770274d2f5835b162c1f35ad27affa56310d293248",
-      "disposition": "upstream-equivalent"
+      "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Async/BlobStorage/BlobWriterException.cs": {
       "localCanonicalSha256": "29113fa4a91aa2e79618bf33f3ef7a82d147815fb11ab7075a4b039a1170f95d",
@@ -759,16 +783,16 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Events/ProxyEvent.cs": {
-      "localCanonicalSha256": "e928c0d3e541fab43820def1aead18d5fd19367cb525743e3c17ffc54694fe08",
+      "localCanonicalSha256": "cb8dda218eb7ead7a9ee335eebd60bb3d9c89d9ca1991087337749da2b8b5be0",
       "upstreamRawSha256": "e928c0d3e541fab43820def1aead18d5fd19367cb525743e3c17ffc54694fe08",
       "upstreamCanonicalSha256": "e928c0d3e541fab43820def1aead18d5fd19367cb525743e3c17ffc54694fe08",
-      "disposition": "upstream-equivalent"
+      "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Events/RequestFilterTelemetryProcessor.cs": {
-      "localCanonicalSha256": "8cc75c22b92b1eedf2296a7b628edc7ceb8ad17e0e9df8689cf61c77b220cd30",
+      "localCanonicalSha256": "a72ea6c622edb1c928984b9d65f73800972ef64ff7b0b125dd4d210943e713f5",
       "upstreamRawSha256": "8cc75c22b92b1eedf2296a7b628edc7ceb8ad17e0e9df8689cf61c77b220cd30",
       "upstreamCanonicalSha256": "8cc75c22b92b1eedf2296a7b628edc7ceb8ad17e0e9df8689cf61c77b220cd30",
-      "disposition": "upstream-equivalent"
+      "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/HealthCheckService.cs": {
       "localCanonicalSha256": "da7ff23e9ff71a27db354fb1d9a5d9652e9ee4c6a840052f59f448b120a12452",
@@ -831,10 +855,10 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Program.cs": {
-      "localCanonicalSha256": "a2e76d37da9a7d1b88a4d4b893b27d9edf1f6dfbd1c78b7a7aa9e5b2a4d0505e",
+      "localCanonicalSha256": "0f84d443914282e401717411cfe8e640eb0ebb99e02d64e5a568e2a11d357cc2",
       "upstreamRawSha256": "a2e76d37da9a7d1b88a4d4b893b27d9edf1f6dfbd1c78b7a7aa9e5b2a4d0505e",
       "upstreamCanonicalSha256": "a2e76d37da9a7d1b88a4d4b893b27d9edf1f6dfbd1c78b7a7aa9e5b2a4d0505e",
-      "disposition": "upstream-equivalent"
+      "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Proxy/AsyncWorker.cs": {
       "localCanonicalSha256": "a33135b566febbade1c189de9d9f045623bd15e61f541527ac505dd83b5f19cf",
@@ -1011,10 +1035,10 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/SimpleL7Proxy.csproj": {
-      "localCanonicalSha256": "1c488f90e1c719e91427e54aabfae0be42f990ec12d3067ad28c3c37d06de571",
+      "localCanonicalSha256": "7e6895fcc075f6479204e4a74a9c217fccbf349a3dbb1030d139075d481bb03f",
       "upstreamRawSha256": "1c488f90e1c719e91427e54aabfae0be42f990ec12d3067ad28c3c37d06de571",
       "upstreamCanonicalSha256": "1c488f90e1c719e91427e54aabfae0be42f990ec12d3067ad28c3c37d06de571",
-      "disposition": "upstream-equivalent"
+      "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/User/AsyncClientInfo.cs": {
       "localCanonicalSha256": "bc60a488ee37a1ecc14e5dd5b6928f34d5582ab3fe0ff7db20affc1ca07f6bd7",
@@ -1077,7 +1101,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/packages.lock.json": {
-      "localCanonicalSha256": "88527442ae93295e4cde9df729ef0536b9687dc365fc47b5043125918ad044a8",
+      "localCanonicalSha256": "da437f59713dd7a658d1dc5b87d997a77056daad5947b91dae5b71a502958152",
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/sample-deployment.yaml": {
