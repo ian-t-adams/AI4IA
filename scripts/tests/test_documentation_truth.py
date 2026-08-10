@@ -194,6 +194,7 @@ class DocumentationTruthTests(unittest.TestCase):
 
     def test_foundry_endpoint_comes_from_exact_deploy_or_manual_input(self) -> None:
         standup = read("docs/runbooks/greenfield-standup.md")
+        toolbox_docs = read("docs/foundry-toolbox.md")
         workflow = read(".github/workflows/foundry-assets.yml")
         deploy = read(".github/workflows/deploy.yml")
         self.assertIn(
@@ -202,6 +203,18 @@ class DocumentationTruthTests(unittest.TestCase):
         )
         self.assertIn("exact triggering run", standup)
         self.assertIn("foundry-assets-context", standup)
+        normalized_toolbox = " ".join(
+            re.sub(r"(?m)^>\s?", "", toolbox_docs).split()
+        )
+        self.assertIn(
+            "Automatic reconciliation consumes the exact deploy artifact",
+            normalized_toolbox,
+        )
+        self.assertIn("explicit `project_endpoint` input", normalized_toolbox)
+        self.assertNotRegex(
+            toolbox_docs,
+            r"configure\s+`AZURE_FOUNDRY_PROJECT_ENDPOINT`\s+and manually dispatch",
+        )
         self.assertIn("deliberately skipped", standup)
         self.assertIn("job output", standup)
         self.assertIn("azd env get-value AZURE_FOUNDRY_PROJECT_ENDPOINT", deploy)

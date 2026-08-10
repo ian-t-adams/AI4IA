@@ -9,8 +9,9 @@
 > in production without your own validation.
 >
 > **Portability (1:1 standup):** the toolbox is a data-plane resource, so `azd up`
-> alone cannot create it. Run the access check and ensure commands below, or configure
-> `AZURE_FOUNDRY_PROJECT_ENDPOINT` and manually dispatch `foundry-assets.yml`. The
+> alone cannot create it. Run the access check and ensure commands below. Automatic
+> reconciliation consumes the exact deploy artifact; manual dispatch supplies the
+> explicit `project_endpoint` input shown below. The
 > `mcp-servers.json` entry stays portable — it omits `upstreamUrl`, which `main.bicep` computes
 > per environment. `foundry/toolbox.manifest.json` is the canonical toolbox definition.
 
