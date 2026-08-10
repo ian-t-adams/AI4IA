@@ -48,9 +48,22 @@ def test_configure_telemetry_noop_without_connection_string(monkeypatch):
 
 
 def test_logging_keeps_application_info_and_warnings_but_drops_sdk_success_chatter():
+    expected_noisy_loggers = (
+        "azure.core.pipeline.policies.http_logging_policy",
+        "azure.cosmos._cosmos_http_logging_policy",
+        "azure.monitor.opentelemetry.exporter",
+    )
+    assert logging_setup._NOISY_SDK_LOGGERS == expected_noisy_loggers
+
     root = logging.getLogger()
     original_level = root.level
     original_handlers = list(root.handlers)
+    sdk_loggers = {
+        name: logging.getLogger(name) for name in expected_noisy_loggers
+    }
+    original_sdk_levels = {
+        name: logger.level for name, logger in sdk_loggers.items()
+    }
     records: list[logging.LogRecord] = []
 
     class Capture(logging.Handler):
@@ -58,21 +71,25 @@ def test_logging_keeps_application_info_and_warnings_but_drops_sdk_success_chatt
             records.append(record)
 
     try:
+        for logger in sdk_loggers.values():
+            logger.setLevel(logging.NOTSET)
         logging_setup.configure_logging("INFO")
         root.handlers.clear()
         root.addHandler(Capture())
         logging.getLogger("ai4ia_api.test").info("application info")
-        sdk = logging.getLogger("azure.core.pipeline.policies.http_logging_policy")
-        sdk.info("wire success")
-        sdk.warning("sdk warning")
+        for name, logger in sdk_loggers.items():
+            logger.info(f"{name} wire success")
+            logger.warning(f"{name} warning")
     finally:
         root.setLevel(original_level)
         root.handlers.clear()
         root.handlers.extend(original_handlers)
+        for name, logger in sdk_loggers.items():
+            logger.setLevel(original_sdk_levels[name])
 
     assert [record.getMessage() for record in records] == [
         "application info",
-        "sdk warning",
+        *(f"{name} warning" for name in expected_noisy_loggers),
     ]
 
 

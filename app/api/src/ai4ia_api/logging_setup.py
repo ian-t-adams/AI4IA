@@ -39,6 +39,7 @@ _correlation_id: contextvars.ContextVar[str] = contextvars.ContextVar(
 
 _NOISY_SDK_LOGGERS = (
     "azure.core.pipeline.policies.http_logging_policy",
+    "azure.cosmos._cosmos_http_logging_policy",
     "azure.monitor.opentelemetry.exporter",
 )
 _HEALTH_PATHS = frozenset({"/health/live", "/health/ready"})
