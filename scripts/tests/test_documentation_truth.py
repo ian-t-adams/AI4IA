@@ -192,6 +192,18 @@ class DocumentationTruthTests(unittest.TestCase):
         self.assertIn("environment: production", workflow)
         self.assertIn("production environment variables", workflow)
         self.assertNotIn("repository or production-environment variable", workflow)
+        self.assertIn(
+            "gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT --env production",
+            workflow,
+        )
+        self.assertIn(
+            'echo "AZURE_FOUNDRY_PROJECT_ENDPOINT=$endpoint" >> "$GITHUB_ENV"',
+            workflow,
+        )
+        self.assertNotRegex(
+            workflow,
+            r"(?m)^\s{4}env:\s*\n\s+AZURE_FOUNDRY_PROJECT_ENDPOINT:",
+        )
 
     def test_teardown_and_rotation_targets_are_truthful(self) -> None:
         teardown = read("docs/runbooks/teardown.md")

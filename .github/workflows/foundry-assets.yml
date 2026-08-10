@@ -9,6 +9,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  actions: read
 
 concurrency:
   group: foundry-assets-production
@@ -28,11 +29,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
-    env:
-      # This resolves from the production environment. Operators must keep the
-      # same-named repository variable absent so a stale lower-precedence value
-      # cannot be mistaken for the workflow's effective configuration.
-      AZURE_FOUNDRY_PROJECT_ENDPOINT: ${{ vars.AZURE_FOUNDRY_PROJECT_ENDPOINT }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,13 +55,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e "app/api[foundry]"
 
-      - name: Validate project endpoint
+      - name: Resolve production project endpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test -n "$AZURE_FOUNDRY_PROJECT_ENDPOINT" || {
+          repo_endpoint="$(gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT 2>/dev/null || true)"
+          test -z "$repo_endpoint" || {
+            echo "::error::Delete the repository-scoped AZURE_FOUNDRY_PROJECT_ENDPOINT; production environment scope is authoritative."
+            exit 1
+          }
+          endpoint="$(gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT --env production 2>/dev/null || true)"
+          test -n "$endpoint" || {
             echo "::error::Set AZURE_FOUNDRY_PROJECT_ENDPOINT in the production environment variables."
             exit 1
           }
+          echo "AZURE_FOUNDRY_PROJECT_ENDPOINT=$endpoint" >> "$GITHUB_ENV"
 
       - name: Verify Foundry toolbox data-plane access
         run: |

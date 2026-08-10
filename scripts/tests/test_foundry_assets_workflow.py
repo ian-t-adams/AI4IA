@@ -58,18 +58,31 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
 
     def test_uses_oidc_and_the_production_environment_project_endpoint(self) -> None:
         self.assertEqual(
-            self.document["permissions"], {"id-token": "write", "contents": "read"}
+            self.document["permissions"],
+            {"id-token": "write", "contents": "read", "actions": "read"},
         )
-        self.assertEqual(
-            self.job["env"]["AZURE_FOUNDRY_PROJECT_ENDPOINT"],
-            "${{ vars.AZURE_FOUNDRY_PROJECT_ENDPOINT }}",
-        )
+        self.assertNotIn("env", self.job)
         self.assertEqual(self.job["environment"], "production")
         self.assertIn(
             "Set AZURE_FOUNDRY_PROJECT_ENDPOINT in the production environment variables",
             self.raw,
         )
         self.assertNotIn("repository or production-environment variable", self.raw)
+        resolve = next(
+            step
+            for step in self.job["steps"]
+            if step.get("name") == "Resolve production project endpoint"
+        )
+        self.assertIn(
+            "gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT --env production",
+            resolve["run"],
+        )
+        self.assertIn(
+            "gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT 2>/dev/null",
+            resolve["run"],
+        )
+        self.assertIn("$GITHUB_ENV", resolve["run"])
+        self.assertEqual(resolve["env"]["GH_TOKEN"], "${{ github.token }}")
         self.assertNotIn(".services.ai.azure.com/api/projects/", self.raw)
         login = next(
             step for step in self.job["steps"] if step.get("name") == "Log in to Azure (OIDC)"
@@ -94,6 +107,12 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         toolbox_index = next(
             index for index, step in enumerate(steps) if step.get("name") == "Ensure Foundry toolbox"
         )
+        resolve_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == "Resolve production project endpoint"
+        )
+        self.assertLess(resolve_index, access_index)
         self.assertLess(access_index, toolbox_index)
         for index in (access_index, toolbox_index):
             step = steps[index]
