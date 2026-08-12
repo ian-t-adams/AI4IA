@@ -11,6 +11,15 @@
     "location": {
       "value": "${AZURE_LOCATION=eastus2}"
     },
+    "claudeOrganizationName": {
+      "value": "${AI4IA_CLAUDE_ORGANIZATION_NAME}"
+    },
+    "claudeCountryCode": {
+      "value": "${AI4IA_CLAUDE_COUNTRY_CODE}"
+    },
+    "claudeIndustry": {
+      "value": "${AI4IA_CLAUDE_INDUSTRY}"
+    },
     "owner": {
       "value": "${AI4IA_OWNER=ai4ia-operator}"
     },

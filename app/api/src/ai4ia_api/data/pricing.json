@@ -1,8 +1,8 @@
 {
   "_comment": "Best-effort per-1M-token USD price estimates for cost tracking ONLY. NOT authoritative billing. Models absent here (image/audio/realtime/tts/video/rerank/transcription) record cost as unknown rather than zero. inputPer1M/outputPer1M are USD per 1,000,000 tokens.",
-  "_source": "Azure Retail Prices API (https://prices.azure.com/api/retail/prices), serviceName eq 'Foundry Models'. Rates are undiscounted PAYG list price for the GlobalStandard SKU the catalog actually deploys ('... Gl'/'... glbl' meters), excluding Batch, Priority Processing, cached-input, and Provisioned meters. Refresh by re-querying that API rather than by reading the marketing pricing page, whose figures render client-side.",
-  "_caveats": "Flat per-model rates cannot express every Azure meter dimension. (1) Long-context: gpt-5.4/5.4-pro bill a higher tier above 272k tokens and the gpt-5.6 family above its short-context tier - roughly 2x these rates. (2) Cached input bills ~10% of input and is not modeled, so estimates are conservative (over-report) on cache-heavy traffic. (3) Priority Processing bills ~2x standard; the app's own P0/P1 fairness queue is a proxy-side concept and does NOT put traffic on those meters. (4) model-router has no meter of its own - it bills as whichever model it routes to, so its entry is a mid-range stand-in. (5) DeepSeek-V3.2 publishes only DataZone meters.",
-  "version": "2026-07-31",
+  "_source": "Azure Retail Prices API (https://prices.azure.com/api/retail/prices), serviceName eq 'Foundry Models', for Azure retail meters. Claude in Microsoft Foundry is billed through Azure Marketplace Claude Consumption Units and has no matching Retail Prices row; its rate comes from Anthropic's official Microsoft Foundry pricing documentation (https://platform.claude.com/docs/en/about-claude/pricing). Rates are undiscounted GlobalStandard/PAYG list prices, excluding Batch, Priority/Fast, cached-input, and Provisioned meters.",
+  "_caveats": "Flat per-model rates cannot express every Azure meter dimension. (1) Long-context: gpt-5.4/5.4-pro bill a higher tier above 272k tokens and the gpt-5.6 family above its short-context tier - roughly 2x these rates. (2) Cached input bills ~10% of input and is not modeled, so estimates are conservative (over-report) on cache-heavy traffic. (3) Priority Processing bills ~2x standard; the app's own P0/P1 fairness queue is a proxy-side concept and does NOT put traffic on those meters. (4) model-router has no meter of its own - it bills as whichever model it routes to, so its entry is a mid-range stand-in. (5) DeepSeek-V3.2 publishes only DataZone meters. (6) Claude US Data Zone applies a 1.1x multiplier; this flat entry records the GlobalStandard base rate, so Data Zone calls are underestimated by 10%.",
+  "version": "2026-08-11",
   "currency": "USD",
   "models": {
     "gpt-5.6-sol": { "inputPer1M": 5.0, "outputPer1M": 30.0 },
@@ -23,6 +23,7 @@
     "o3": { "inputPer1M": 2.0, "outputPer1M": 8.0 },
     "o3-pro": { "inputPer1M": 20.0, "outputPer1M": 80.0 },
     "grok-4-1-fast-reasoning": { "inputPer1M": 0.2, "outputPer1M": 0.5 },
+    "claude-opus-4-8": { "inputPer1M": 5.0, "outputPer1M": 25.0 },
     "Mistral-Large-3": { "inputPer1M": 0.5, "outputPer1M": 1.5 },
     "gpt-4.1-mini": { "inputPer1M": 0.4, "outputPer1M": 1.6 },
     "gpt-4.1-nano": { "inputPer1M": 0.1, "outputPer1M": 0.4 },

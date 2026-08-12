@@ -54,6 +54,7 @@ REFACTOR:
 		</set-header>
 		<set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
 		<set-header name="Authorization" exists-action="delete" />
+		<set-header name="anthropic-version" exists-action="delete" />
 		<!-- set the request ID in case we need to debug -->
 		<set-header name="x-ms-client-request-id" exists-action="override">
 			<value>@(context.Request.Headers.GetValueOrDefault("x-S7P-id", Guid.NewGuid().ToString()))</value>
@@ -468,8 +469,11 @@ REFACTOR:
 					<set-variable name="backendUrl" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;url&quot;))" />
 					<set-variable name="auth" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;auth&quot;))" />
 					<set-variable name="selectedDeployment" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;deployment&quot;))" />
+					<set-variable name="backendProtocolPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;path&quot;))" />
 					<set-variable name="backendCallCounter" value="@(context.Variables.GetValueOrDefault&lt;int>(&quot;backendCallCounter&quot;) + 1)" />
-					<!-- Set the backend service URL -->
+					<!-- Set the backend service URL. backendUrl already includes the
+					     generated provider base path (`/openai` or `/anthropic`);
+					     rewrite-uri below supplies the relative operation path. -->
 					<set-backend-service base-url="@((string)context.Variables[&quot;backendUrl&quot;])" />
 					<!-- Deployment names are region-specific in infra/models.json.
 					     Rewrite path-based Azure OpenAI calls and model-body calls
@@ -478,22 +482,44 @@ REFACTOR:
 						string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);
 						string requested = context.Variables.GetValueOrDefault&lt;string>(&quot;model&quot;, &quot;&quot;);
 						string selected = context.Variables.GetValueOrDefault&lt;string>(&quot;selectedDeployment&quot;, &quot;&quot;);
+						string protocol = context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;openai&quot;);
+						if (string.Equals(protocol, &quot;anthropic&quot;, StringComparison.OrdinalIgnoreCase)) {
+							return &quot;/v1/messages&quot;;
+						}
 						if (!string.IsNullOrEmpty(requested) &amp;&amp; !string.IsNullOrEmpty(selected)) {
 							path = path.Replace(&quot;deployments/&quot; + requested + &quot;/&quot;, &quot;deployments/&quot; + selected + &quot;/&quot;);
 						}
 						return &quot;/&quot; + path.TrimStart('/');
 					}" />
-					<rewrite-uri template="@((string)context.Variables[&quot;backendRelativePath&quot;])" copy-unmatched-params="true" />
 					<choose>
-						<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;backendRelativePath&quot;, &quot;&quot;).IndexOf(&quot;/deployments/&quot;, StringComparison.OrdinalIgnoreCase) &lt; 0 &amp;&amp; context.Request.HasBody)">
+						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;), &quot;anthropic&quot;, StringComparison.OrdinalIgnoreCase))">
+							<!-- Claude's endpoint is fixed and rejects the Azure OpenAI
+							     api-version query. APIM owns both the path and protocol
+							     header; the caller can select neither. -->
+							<rewrite-uri template="/v1/messages" copy-unmatched-params="false" />
+							<set-header name="anthropic-version" exists-action="override">
+								<value>2023-06-01</value>
+							</set-header>
 							<set-body>@{
 								JObject body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
-								if (body["model"] != null) {
-									body["model"] = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", body["model"].ToString());
-								}
+								body["model"] = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", body["model"]?.ToString() ?? "");
 								return body.ToString(Newtonsoft.Json.Formatting.None);
 							}</set-body>
 						</when>
+						<otherwise>
+							<rewrite-uri template="@((string)context.Variables[&quot;backendRelativePath&quot;])" copy-unmatched-params="true" />
+							<choose>
+								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;backendRelativePath&quot;, &quot;&quot;).IndexOf(&quot;/deployments/&quot;, StringComparison.OrdinalIgnoreCase) &lt; 0 &amp;&amp; context.Request.HasBody)">
+									<set-body>@{
+										JObject body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+										if (body["model"] != null) {
+											body["model"] = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", body["model"].ToString());
+										}
+										return body.ToString(Newtonsoft.Json.Formatting.None);
+									}</set-body>
+								</when>
+							</choose>
+						</otherwise>
 					</choose>
 					<!-- use Managed Identity, API-Key, or no auth header based on auth value -->
 					<choose>

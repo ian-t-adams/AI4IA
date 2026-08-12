@@ -2,7 +2,7 @@
 # d9eb1d1fa42820792a9699bfc253562fba07d977; the file-level provenance is in
 # proxy/upstream-provenance.json. Refresh these OCI manifest-list digests with:
 # docker buildx imagetools inspect <tag> --format '{{json .Manifest.Digest}}'
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:72dd743782f2ae7e5476fd64f6a460045e3998dc862218b80e6944cba79a01b0 AS build-env
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:e1fc6e423f543119c406d24e2e687d67c569f18f04a37a8b0005d80ad0dcee80 AS build-env
 WORKDIR /app
 
 # Copy restore inputs first so the locked restore is cached independently of source changes.
@@ -25,7 +25,7 @@ COPY SimpleL7Proxy/ ./SimpleL7Proxy/
 WORKDIR /app/SimpleL7Proxy
 RUN dotnet publish -c Release -o /app/out --no-restore
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:70d6f993bf715a031f027832a19cfb7f894df66c8b5eb40be0aaee820ad5d119
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:0839314d08bb65da369135389a5d8291f75ace587fbb0488f469eb92c62eef68
 WORKDIR /app
 COPY --from=build-env /app/out .
 # Default per-user policy + Entra App-ID allowlist (overridable via App Config).

@@ -17,6 +17,19 @@ param environmentName string
 ])
 param location string = 'eastus2'
 
+@minLength(1)
+@description('Legal entity name sent to Anthropic in modelProviderData. Required whenever infra/models.json contains an Anthropic deployment; supplying it accepts the applicable Marketplace terms. Never use an inferred owner tag or placeholder.')
+param claudeOrganizationName string
+
+@minLength(2)
+@maxLength(2)
+@description('ISO 3166-1 alpha-2 country code sent to Anthropic in modelProviderData (for example US). Must describe the organization using Claude.')
+param claudeCountryCode string
+
+@minLength(1)
+@description('Lowercase Anthropic Marketplace industry value sent in modelProviderData (for example technology). Must describe the organization using Claude.')
+param claudeIndustry string
+
 @description('Object/principal id of the OIDC deployment identity. When set, it receives provisioning-only App Configuration Data Owner, Content Understanding Contributor on the primary account, Foundry User on the enabled primary toolbox project, and API Center Data Reader on the enabled private catalog. This is a principalId, never the managed identity clientId.')
 param deploymentPrincipalId string = ''
 
@@ -1077,6 +1090,9 @@ module modelDeployments 'modules/models.bicep' = [for (r, i) in regionList: {
   params: {
     accountName: foundry[i].outputs.accountName
     raiPolicyName: foundry[i].outputs.raiPolicyName
+    claudeOrganizationName: claudeOrganizationName
+    claudeCountryCode: claudeCountryCode
+    claudeIndustry: claudeIndustry
     deployments: modelDeploymentsByRegion[i]
   }
 }]

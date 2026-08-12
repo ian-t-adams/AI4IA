@@ -131,6 +131,29 @@ reach Bicep when `.github/workflows/deploy.yml` exports them and
 `infra/main.parameters.json` consumes the matching token; the configuration
 reachability test guards that contract.
 
+#### Claude Marketplace attestation
+
+Any catalog entry with `format: "Anthropic"` makes all three repository
+variables mandatory:
+
+| Variable | Meaning |
+|---|---|
+| `AI4IA_CLAUDE_ORGANIZATION_NAME` | Legal entity accepting Anthropic's Marketplace terms |
+| `AI4IA_CLAUDE_COUNTRY_CODE` | Uppercase ISO-2 country code |
+| `AI4IA_CLAUDE_INDUSTRY` | Lowercase Foundry Marketplace industry value |
+
+`modelProviderData` sends those values with each Claude deployment and
+auto-accepts the offer. Do not merge an Anthropic catalog addition until the
+accountable owner has reviewed the terms and set accurate values. The workflow
+and `validate-feature-prereqs.py` fail before `azd provision` when a value is
+missing, malformed, or placeholder-shaped.
+
+Claude Opus 4.8 is pinned to Azure-hosted version 2 in East US 2. The catalog
+allocates the production subscription's measured quota: Global Standard 40K TPM
+and US Data Zone Standard 13K TPM. Re-run
+`python scripts/check-model-availability.py --region eastus2` immediately before
+provision because the counters are subscription/data-zone shared and can change.
+
 ### 2.2 Protect existing custom domains
 
 For an environment with vanity hostnames, every provision must receive all four

@@ -8,6 +8,7 @@ main.bicep derives from provisioned resources.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -53,12 +54,46 @@ def text(value: Any) -> str:
     return str(value).strip()
 
 
-def main() -> int:
+def main(*, require_deployment_attestation: bool = False) -> int:
     raw = json.loads(PARAMETERS_FILE.read_text(encoding="utf-8"))
     parameters = raw.get("parameters", {})
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
     errors: list[str] = []
     warnings: list[str] = []
+
+    # Claude deployments auto-accept Anthropic Marketplace terms through the
+    # modelProviderData block in modules/models.bicep. These are legal
+    # attestations, not harmless deployment labels, so never infer them from
+    # owner/cost tags or ship plausible-looking defaults.
+    has_anthropic = any(
+        model.get("format") == "Anthropic" and model.get("deployments")
+        for model in models.get("catalog", [])
+    )
+    organization = text(parameter_value(parameters, "claudeOrganizationName"))
+    country = text(parameter_value(parameters, "claudeCountryCode"))
+    industry = text(parameter_value(parameters, "claudeIndustry"))
+    if has_anthropic and (
+        require_deployment_attestation or any((organization, country, industry))
+    ):
+        if not organization or organization.casefold() in {
+            "your organization",
+            "example",
+            "contoso",
+        }:
+            errors.append(
+                "Anthropic deployments require claudeOrganizationName to be the real "
+                "legal entity accepting the Marketplace terms."
+            )
+        if not re.fullmatch(r"[A-Z]{2}", country):
+            errors.append(
+                "Anthropic deployments require claudeCountryCode as an uppercase "
+                "ISO-2 country code (for example US)."
+            )
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", industry):
+            errors.append(
+                "Anthropic deployments require a non-empty lowercase claudeIndustry "
+                "value matching the Foundry Marketplace selection."
+            )
 
     # The primary Foundry account and all CU postprovision outputs are selected by
     # this value. Validate it against the same catalog Bicep loads before ARM can
@@ -321,4 +356,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--require-deployment-attestation",
+        action="store_true",
+        help="Require complete Anthropic Marketplace attestation for a real provision.",
+    )
+    args = parser.parse_args()
+    raise SystemExit(
+        main(require_deployment_attestation=args.require_deployment_attestation)
+    )

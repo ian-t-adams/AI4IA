@@ -23,12 +23,13 @@ class DocumentationTruthTests(unittest.TestCase):
         )
         self.assertNotIn("**STATUS: complete.**", record)
         for modality in (
-            "Image",
+            "Claude",
+            "image",
             "video",
             "Azure OpenAI Voice Live",
             "Speech Voice Live",
         ):
-            self.assertIn(modality, record)
+            self.assertIn(modality.casefold(), record.casefold())
         self.assertIn("Evidence required to close the control", record)
         self.assertIn("No modality-scope approval artifact is present", record)
 
@@ -372,9 +373,10 @@ class DocumentationTruthTests(unittest.TestCase):
 
     def test_rai_evidence_is_scoped_to_text_chat(self) -> None:
         record = read("docs/rai-decision-record.md")
-        self.assertIn("Implemented for text chat completions", record)
+        self.assertIn("Implemented for Azure OpenAI text chat completions", record)
+        self.assertIn("Claude is also outside that evidence", record)
         self.assertIn("does not evidence equivalent", record)
-        self.assertIn("No modality evidence", record)
+        self.assertIn("No modality/provider evidence", record)
         self.assertNotRegex(record, r"every category on every turn")
 
     def test_api_identity_bypass_is_recorded_as_a_pending_decision(self) -> None:

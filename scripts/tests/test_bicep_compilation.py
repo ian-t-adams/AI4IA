@@ -109,12 +109,25 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertIn("'https://', 'wss://'", realtime)
 
     def test_primary_cu_outputs_use_the_same_records_sent_to_model_modules(self) -> None:
-        module_value = self.template["resources"]["modelDeployments"]["properties"][
+        module_parameters = self.template["resources"]["modelDeployments"]["properties"][
             "parameters"
-        ]["deployments"]["value"]
+        ]
+        module_value = module_parameters["deployments"]["value"]
         self.assertEqual(
             module_value,
             "[variables('modelDeploymentsByRegion')[copyIndex()]]",
+        )
+        self.assertEqual(
+            module_parameters["claudeOrganizationName"]["value"],
+            "[parameters('claudeOrganizationName')]",
+        )
+        self.assertEqual(
+            module_parameters["claudeCountryCode"]["value"],
+            "[parameters('claudeCountryCode')]",
+        )
+        self.assertEqual(
+            module_parameters["claudeIndustry"]["value"],
+            "[parameters('claudeIndustry')]",
         )
         variables = self.template["variables"]
         self.assertEqual(

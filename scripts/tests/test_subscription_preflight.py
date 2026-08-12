@@ -543,6 +543,13 @@ class QuotaIndexTests(unittest.TestCase):
         # Partner counters drop a ".0" version suffix.
         ("Cohere-rerank-v4.0-pro", "GlobalStandard", "AIServices.GlobalStandard.Cohere-Rerank-V4-Pro"),
         ("embed-v-4-0", "GlobalStandard", "AIServices.GlobalStandard.Embed-V-4-0"),
+        # Hosted-on-Azure partner counters add a suffix that is not part of the
+        # deployment model id.
+        (
+            "claude-opus-4-8",
+            "DataZoneStandard",
+            "AIServices.DataZoneStandard.claude-opus-4-8.Azure",
+        ),
     ]
 
     def test_real_counter_names_are_reconciled(self) -> None:
