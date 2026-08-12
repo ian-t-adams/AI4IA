@@ -229,7 +229,9 @@ def _responses_json_to_chat(obj: dict[str, Any]) -> dict[str, Any]:
 
 _REQUEST_FAILED = "Model gateway request failed."
 _STREAM_FAILED = "Model stream failed."
-_KNOWN_APIS = frozenset({"chat", "responses", ANTHROPIC_API})
+MAI_API = "mai"
+CHAT_COMPLETIONS_APIS = frozenset({"chat", MAI_API})
+_KNOWN_APIS = CHAT_COMPLETIONS_APIS | frozenset({"responses", ANTHROPIC_API})
 
 
 def _resolved_api(api: str, deployment: str) -> str:

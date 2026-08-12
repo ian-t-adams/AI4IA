@@ -135,7 +135,10 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
     for model in models["catalog"]:
         deployments = model["deployments"]
         timeout = timeout_seconds(model["category"])
-        provider_path = "anthropic" if model.get("api") == "anthropic" else "openai"
+        provider_path = {
+            "anthropic": "anthropic",
+            "mai": "mai",
+        }.get(model.get("api", "chat"), "openai")
         resolved = [
             {
                 "region": deployment["region"],
@@ -209,7 +212,11 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                 for candidate in ordered
             ]
             block = (
-                f'            new JProperty("{requested["name"]}", new JObject(\n'
+                # APIM normalizes the proxy-owned x-LLMModel header with
+                # ToLowerInvariant before exact JObject lookup. Preserve the
+                # deployment's Azure casing in backend rows, but normalize only
+                # this lookup key so mixed-case models remain routable.
+                f'            new JProperty("{requested["name"].lower()}", new JObject(\n'
                 + ",\n".join(rows)
                 + "\n            ))"
             )

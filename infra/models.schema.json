@@ -42,7 +42,7 @@
           "category": { "type": "string" },
           "api": {
             "type": "string",
-            "enum": ["chat", "responses", "anthropic"],
+            "enum": ["chat", "responses", "anthropic", "mai"],
             "description": "Provider protocol used by the runtime and gateway. Defaults to chat when omitted."
           },
           "contextWindow": { "type": "integer", "minimum": 1 },

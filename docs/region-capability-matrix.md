@@ -20,13 +20,16 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
 - **Primary US — East US 2:** richest region. Only home of `gpt-4o-mini-tts`; hosts the
   realtime/audio models (`gpt-realtime`, `gpt-realtime-2` (eastus2-only, 10 RPM quota),
   `gpt-audio`), images (`gpt-image-1-mini/1.5/2`), `sora-2`, `model-router`, and
-  evaluations. US data zone. Also the region for the `speech_voice_live` voice provider.
+  evaluations. The catalog targets `MAI-Thinking-1` here at 50K TPM under
+  `GlobalStandard`; that SKU is globally routed and does **not** provide a US data
+  boundary. Also the region for the `speech_voice_live` voice provider.
 - **Primary EU — Sweden Central:** mirrors East US 2 for realtime/audio/`sora-2`/
-  `model-router`/image and **adds `tts-hd`**, and gives EU data residency. It *offers* the
-  `MAI-Image-2.5` family but does not deploy it — see West US below.
+  `model-router`/image and **adds `tts-hd`**. The catalog targets
+  `MAI-Thinking-1` here at 50K TPM under `GlobalStandard`, so that model is not
+  EU-resident despite the region. It *offers* the `MAI-Image-2.5` family but does
+  not deploy it — see West US below.
 - **Targeted — West US:** sole home of `o3-deep-research` and of the `MAI-Image-2.5` /
-  `-Pro` / `-Flash` family. The MAI models are **not** offered in East US 2, so West US and
-  Sweden Central are their only options — but they are pinned to West US **alone**, which is
+  `-Pro` / `-Flash` family. That **image family** is pinned to West US alone, which is
   a quota constraint rather than a design preference:
 
   > MAI-Image quota is **subscription-wide**, not per-region, and the default limit is 2
@@ -44,6 +47,17 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
 
   Note this leaves image generation without regional redundancy, unlike the OpenAI image
   models (`gpt-image-*`), which are enforced per region and so do carry two regions each.
+
+### MAI capacity and version review (2026-08-12)
+
+| Model | Catalog state | Subscription/platform capacity | Decision |
+|---|---|---|---|
+| `MAI-Thinking-1` `2026-06-01` | Public Preview, current/default | 500K quota unused; 500K platform capacity in both primary regions | Catalog target: 50K in East US 2 + 50K in Sweden Central (100K total), preserving 400K headroom and regional failover. Both use globally routed `GlobalStandard`; verify live rollout separately. |
+| `MAI-Image-2.5` `2026-06-02` | Current Preview | 2/2 subscription quota consumed; platform reports 0 additional capacity | No upgrade or scale change. |
+| `MAI-Image-2.5-Flash` `2026-06-02` | Current Preview | 2/2 consumed; platform reports 0 additional capacity | No upgrade or scale change. |
+| `MAI-Image-2.5-Pro` `2026-06-19` | Current Preview | 2/2 consumed; platform reports 0 additional capacity | No upgrade or scale change. |
+| `MAI-Image-2` / `MAI-Image-2e` | Older and deprecating; not deployed | Unused legacy counters | Do not add; 2.5 family is the successor already deployed. |
+| `MAI-DS-R1` | Quota counter exists, but no deployable offer in the checked regions | 1000K unused quota is not entitlement | Do not add unless the live model catalog offers it again. |
 
 > Voice Live is broadly available as an API, but it consumes realtime/audio models that
 > only deploy in East US 2 + Sweden Central — so those are the practical Voice Live regions.
@@ -79,6 +93,7 @@ the Azure AI Foundry portal before acting.
 | `gpt-5.2` | chat | retires 2026-12-12 | Default chat model across app + tests; bump the default before retirement in a dedicated change. |
 | `gpt-image-1.5` | image | retires 2026-12-16 | Keep for compatibility; prefer `gpt-image-2`. |
 | `gpt-realtime-mini` | realtime | retires 2026-12-15 | Validate `gpt-realtime-2` before changing Voice Live defaults. |
+| `MAI-Thinking-1` | reasoning | Preview version retires 2026-11-04 | Evaluate now; watch for a replacement/default version before November and re-probe request parameters on upgrade. |
 
 Every deployment still requires Azure quota/capacity confirmation in the target
 subscription before `azd up`. Verify with `python scripts/check-model-availability.py`

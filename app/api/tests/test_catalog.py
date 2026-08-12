@@ -96,6 +96,7 @@ def test_conversational_categories_are_chat_targets():
         "gpt-5.4",          # chat
         "gpt-5-nano",       # chat-fast
         "o3",               # reasoning
+        "MAI-Thinking-1",   # Microsoft adaptive reasoning
         "claude-opus-4-8",  # Anthropic Messages reasoning
         "DeepSeek-V3.2",    # reasoning-oss
         "model-router",     # router
@@ -155,6 +156,7 @@ def test_reasoning_models_do_not_advertise_sampling():
         "gpt-5",
         "o3",
         "gpt-5-codex",
+        "MAI-Thinking-1",
         "claude-opus-4-8",
     ):
         entry = catalog.get(model_id)
@@ -264,6 +266,23 @@ def test_non_reasoning_models_offer_no_reasoning_effort():
         entry = catalog.get(model_id)
         assert entry is not None, model_id
         assert entry.reasoningEffortOptions == [], model_id
+
+
+def test_mai_thinking_metadata_and_adaptive_reasoning_contract():
+    entry = load_catalog().get("MAI-Thinking-1")
+    assert entry is not None
+    assert entry.displayName == "MAI Thinking 1"
+    assert entry.format == "Microsoft"
+    assert entry.category == "reasoning"
+    assert entry.api == "mai"
+    assert entry.contextWindow == 256_000
+    assert entry.maxOutputTokens == 64_000
+    assert entry.reasoningEffortOptions == []
+    assert entry.supportsSampling is False
+    assert {(option.region, option.sku) for option in entry.options} == {
+        ("eastus2", "GlobalStandard"),
+        ("swedencentral", "GlobalStandard"),
+    }
 
 
 def test_catalog_values_win_over_the_heuristic():

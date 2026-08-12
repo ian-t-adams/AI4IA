@@ -26,7 +26,7 @@ from ..catalog import ModelCatalog, ModelEntry
 from ..chat_timing import ChatTiming, bind_chat_timing
 from ..citations import RetrievedSource, attest_message
 from ..conversations.policy import resolve_conversation_policy
-from ..gateway.client import ModelGatewayClient, ModelGatewayError
+from ..gateway.client import CHAT_COMPLETIONS_APIS, ModelGatewayClient, ModelGatewayError
 from ..logging_setup import emit_custom_event, emit_security_block, get_correlation_id
 from ..sessions.models import Message, MessageAttachment, MessageRole, MessageStatus, Session
 from ..sessions.repository import (
@@ -1777,8 +1777,8 @@ async def chat(
     # path already makes. Since P1-16 that loop token-streams and interleaves tool
     # activity, so the cost is the extra round trips a tool call needs, not a
     # blank bubble for the whole turn. This loop is built against the
-    # chat-completions wire format, so Responses-API models
-    # (api != "chat") cannot use it and take the ``elif`` below, which tells the
+    # chat-completions wire format, so Responses-API models cannot use it and
+    # take the ``elif`` below, which tells the
     # model its grounding tools are missing instead of dropping them in silence.
     # ANY failure — or an empty answer — falls through to the normal RAG path
     # below: the tool loop never breaks a turn and is never the forced front door.
@@ -1796,7 +1796,7 @@ async def chat(
         and library_tools_enabled
     )
     plain_capabilities_possible = plain_compute_active or web_search is not None
-    if plain_capabilities_possible and api == "chat":
+    if plain_capabilities_possible and api in CHAT_COMPLETIONS_APIS:
         try:
             ctx = ToolContext(
                 correlation_id=correlation_id,

@@ -93,7 +93,7 @@
                 ))
             )),
 
-            new JProperty(&quot;MAI-Image-2.5-slurmfactory-westus-glbl&quot;, new JObject(
+            new JProperty(&quot;mai-image-2.5-slurmfactory-westus-glbl&quot;, new JObject(
                 new JProperty(&quot;WESTUS&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-westus-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
@@ -106,7 +106,7 @@
                 ))
             )),
 
-            new JProperty(&quot;MAI-Image-2.5-Pro-slurmfactory-westus-glbl&quot;, new JObject(
+            new JProperty(&quot;mai-image-2.5-pro-slurmfactory-westus-glbl&quot;, new JObject(
                 new JProperty(&quot;WESTUS&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-westus-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
@@ -119,7 +119,7 @@
                 ))
             )),
 
-            new JProperty(&quot;MAI-Image-2.5-Flash-slurmfactory-westus-glbl&quot;, new JObject(
+            new JProperty(&quot;mai-image-2.5-flash-slurmfactory-westus-glbl&quot;, new JObject(
                 new JProperty(&quot;WESTUS&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-westus-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
@@ -250,7 +250,7 @@
                 ))
             )),
 
-            new JProperty(&quot;Cohere-rerank-v4.0-pro-slurmfactory-eastus2-glbl&quot;, new JObject(
+            new JProperty(&quot;cohere-rerank-v4.0-pro-slurmfactory-eastus2-glbl&quot;, new JObject(
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
@@ -273,7 +273,7 @@
                 ))
             )),
 
-            new JProperty(&quot;Cohere-rerank-v4.0-pro-slurmfactory-swedencentral-glbl&quot;, new JObject(
+            new JProperty(&quot;cohere-rerank-v4.0-pro-slurmfactory-swedencentral-glbl&quot;, new JObject(
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),

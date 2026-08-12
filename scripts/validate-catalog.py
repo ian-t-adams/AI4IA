@@ -37,9 +37,9 @@ def main() -> int:
     for model in data["catalog"]:
         name = model["name"]
         api = model.get("api", "chat")
-        if api not in {"chat", "responses", "anthropic"}:
+        if api not in {"chat", "responses", "anthropic", "mai"}:
             errors.append(
-                f"{name}: api '{api}' must be 'chat', 'responses', or 'anthropic'"
+                f"{name}: api '{api}' must be 'chat', 'responses', 'anthropic', or 'mai'"
             )
         for dep in model["deployments"]:
             region = dep["region"]
