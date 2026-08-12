@@ -20,12 +20,12 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
 - **Primary US — East US 2:** richest region. Only home of `gpt-4o-mini-tts`; hosts the
   realtime/audio models (`gpt-realtime`, `gpt-realtime-2` (eastus2-only, 10 RPM quota),
   `gpt-audio`), images (`gpt-image-1-mini/1.5/2`), `sora-2`, `model-router`, and
-  evaluations. The catalog targets `MAI-Thinking-1` here at 50K TPM under
+  evaluations. It hosts `MAI-Thinking-1` here at 50K TPM under
   `GlobalStandard`; that SKU is globally routed and does **not** provide a US data
-  boundary. It also targets the four Black Forest Labs FLUX image models at one
+  boundary. It also hosts the four Black Forest Labs FLUX image models at one
   Global Standard unit each. Also the region for the `speech_voice_live` voice provider.
 - **Primary EU — Sweden Central:** mirrors East US 2 for realtime/audio/`sora-2`/
-  `model-router`/image and **adds `tts-hd`**. The catalog targets
+  `model-router`/image and **adds `tts-hd`**. It hosts
   `MAI-Thinking-1` here at 50K TPM under `GlobalStandard`, so that model is not
   EU-resident despite the region. It mirrors the four FLUX image deployments at
   one Global Standard unit each. It *offers* the `MAI-Image-2.5` family but does
@@ -54,7 +54,7 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
 
 | Model | Catalog state | Subscription/platform capacity | Decision |
 |---|---|---|---|
-| `MAI-Thinking-1` `2026-06-01` | Public Preview, current/default | 500K quota unused; 500K platform capacity in both primary regions | Catalog target: 50K in East US 2 + 50K in Sweden Central (100K total), preserving 400K headroom and regional failover. Both use globally routed `GlobalStandard`; verify live rollout separately. |
+| `MAI-Thinking-1` `2026-06-01` | Public Preview, current/default; both deployments `Succeeded` | 100K of 500K quota used | Live at 50K in East US 2 + 50K in Sweden Central, preserving 400K headroom and regional failover. Both use globally routed `GlobalStandard`. |
 | `MAI-Image-2.5` `2026-06-02` | Current Preview | 2/2 subscription quota consumed; platform reports 0 additional capacity | No upgrade or scale change. |
 | `MAI-Image-2.5-Flash` `2026-06-02` | Current Preview | 2/2 consumed; platform reports 0 additional capacity | No upgrade or scale change. |
 | `MAI-Image-2.5-Pro` `2026-06-19` | Current Preview | 2/2 consumed; platform reports 0 additional capacity | No upgrade or scale change. |
@@ -65,8 +65,8 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
 
 | Model/family | Live subscription state | Decision |
 |---|---|---|
-| `FLUX.2-pro`, `FLUX.2-flex` | GA; 4-unit quota and platform capacity; none deployed before this change | Catalog target: capacity 1 in each primary region, using 2/4 units per model. Route the BFL-native API through SimpleL7Proxy -> APIM -> Foundry; keep deployment selection and `safety_tolerance=2` server-owned. |
-| `FLUX.1-Kontext-pro`, `FLUX-1.1-pro` | GA; 30-unit quota and platform capacity | Catalog target: capacity 1 in each primary region. Kontext is constrained to square 1024 output; all FLUX models accept only `auto` in the app's generic quality control. |
+| `FLUX.2-pro`, `FLUX.2-flex` | GA; both regional deployments `Succeeded`; each region reports 1/4 Global Standard units used | Live at capacity 1 in each primary region. Route the BFL-native API through SimpleL7Proxy -> APIM -> Foundry; keep deployment selection and `safety_tolerance=2` server-owned. |
+| `FLUX.1-Kontext-pro`, `FLUX-1.1-pro` | GA; both regional deployments `Succeeded`; each region reports 1/30 Global Standard units used | Live at capacity 1 in each primary region. Kontext is constrained to square 1024 output; all FLUX models accept only `auto` in the app's generic quality control. |
 | `DeepSeek-V4-Pro` / `DeepSeek-V4-Flash` `2026-04-23` | **Not deployed.** Both are offered; live quota/platform capacity is 1000/1000 for Pro and 250/250 for Flash. | Do not silently add to agents: Microsoft documents 1M input, 384K output, and **no tool calling**. They are viable future chat-only models after the app gains a server-authoritative tool-capability gate. |
 | `qwen3-32b` v1 | **Not deployed.** The offer is visible, but platform inference capacity is 0 in all three checked regions; the 1000-unit counter is named `Qwen3-32B-finetune`. | No deploy: a fine-tuning counter is not inference entitlement. |
 | `Kimi-K2.6` `2026-04-20` | **Not deployed.** Preview; 100 units of live quota/platform capacity. | Viable future chat/agent model (262K text+image input/output, tool calling), but outside this FLUX deployment change. |
