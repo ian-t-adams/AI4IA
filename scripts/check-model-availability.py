@@ -418,9 +418,15 @@ def _quota_keys(sku: str, model: str) -> list[str]:
     `o3-DeepResearch`. Stripping the prefix and every non-alphanumeric
     character reconciles all of those.
 
-    One convention survives that: partner counters drop a ``.0`` version
-    suffix, so `Cohere-rerank-v4.0-pro` counts against `Cohere-Rerank-V4-Pro`.
-    That gets a second candidate rather than a name-specific special case.
+    Two conventions survive that:
+
+    * partner counters drop a ``.0`` version suffix, so
+      `Cohere-rerank-v4.0-pro` counts against `Cohere-Rerank-V4-Pro`; and
+    * Azure-hosted partner variants append ``.Azure`` to the counter model
+      (`claude-opus-4-8.Azure`) while the deployment model remains
+      `claude-opus-4-8`.
+
+    Both get normalized candidates rather than model-specific special cases.
     """
 
     def norm(value: str) -> str:
@@ -431,6 +437,9 @@ def _quota_keys(sku: str, model: str) -> list[str]:
     without_dot_zero = model.replace(".0", "")
     if without_dot_zero != model:
         keys.append(f"{sku_key}|{norm(without_dot_zero)}")
+    without_azure_host = re.sub(r"\.azure$", "", model, flags=re.IGNORECASE)
+    if without_azure_host != model:
+        keys.append(f"{sku_key}|{norm(without_azure_host)}")
     return keys
 
 

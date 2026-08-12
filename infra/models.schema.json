@@ -37,8 +37,14 @@
         "required": ["name", "format", "category", "deployments"],
         "properties": {
           "name": { "type": "string" },
+          "displayName": { "type": "string" },
           "format": { "type": "string" },
           "category": { "type": "string" },
+          "api": {
+            "type": "string",
+            "enum": ["chat", "responses", "anthropic"],
+            "description": "Provider protocol used by the runtime and gateway. Defaults to chat when omitted."
+          },
           "contextWindow": { "type": "integer", "minimum": 1 },
           "maxOutputTokens": { "type": "integer", "minimum": 1 },
           "reasoningEffort": {

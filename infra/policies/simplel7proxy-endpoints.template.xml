@@ -56,15 +56,6 @@ __AI4IA_BACKEND_CATALOG_MERGE__
         );
     }" />
 
-    <!-- ================= AUTH RESOURCE (edit me) =================
-        Managed Identity token audience (resource) for each model. All backends
-        for a model share one token, so this is set per model, not per backend.
-        "DEFAULT" is used when the model is not listed. -->
-    <set-variable name="authResourceByModel" value="@{
-        string resource = &quot;https:&quot; + &quot;/&quot; + &quot;/cognitiveservices.azure.com&quot;;
-        return new JObject(new JProperty(&quot;DEFAULT&quot;, resource));
-    }" />
-
     <!-- Which model does this request want?
         Callers pass the model header (modelHeaderName). If it is missing we use
         DefaultModel (set in the main policy). No need to edit this. -->
@@ -88,11 +79,16 @@ __AI4IA_BACKEND_CATALOG_MERGE__
         return backends;
     }" />
 
-    <!-- Picks the token audience for this request's model. No need to edit. -->
+    <!-- Picks the token audience from the selected provider path. All failover
+        backends for one model use the same protocol (enforced by generation). -->
     <set-variable name="authResource" value="@{
-        JObject map = (JObject)context.Variables[&quot;authResourceByModel&quot;];
-        string model = (string)context.Variables[&quot;model&quot;];
-        return map[&quot;DEFAULT&quot;].ToString();
+        JObject selected = (JObject)context.Variables[&quot;selectedBackends&quot;];
+        JProperty firstProperty = selected.Properties().FirstOrDefault();
+        JObject first = firstProperty?.Value as JObject;
+        string providerPath = first?.Value&lt;string&gt;(&quot;path&quot;) ?? &quot;openai&quot;;
+        return string.Equals(providerPath, &quot;anthropic&quot;, StringComparison.OrdinalIgnoreCase)
+            ? &quot;https:&quot; + &quot;/&quot; + &quot;/ai.azure.com&quot;
+            : &quot;https:&quot; + &quot;/&quot; + &quot;/cognitiveservices.azure.com&quot;;
     }" />
 
     <!-- Convert the editable catalog rows into the runtime backend list:

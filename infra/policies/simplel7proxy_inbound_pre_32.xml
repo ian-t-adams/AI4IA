@@ -17,6 +17,7 @@
 		</set-header>
 <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
 <set-header name="Authorization" exists-action="delete" />
+<set-header name="anthropic-version" exists-action="delete" />
 <!-- set the request ID in case we need to debug -->
 <set-header name="x-ms-client-request-id" exists-action="override">
 			<value>@(context.Request.Headers.GetValueOrDefault("x-S7P-id", Guid.NewGuid().ToString()))</value>

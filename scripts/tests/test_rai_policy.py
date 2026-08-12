@@ -138,5 +138,29 @@ class RaiPolicyIsAppliedToEveryDeploymentTests(unittest.TestCase):
         )
 
 
+class AnthropicMarketplaceAttestationTests(unittest.TestCase):
+    def test_claude_deployments_use_the_required_preview_api(self):
+        self.assertIn(
+            "accounts/deployments@2025-10-01-preview",
+            MODELS.read_text(encoding="utf-8"),
+        )
+
+    def test_provider_data_is_scoped_only_to_anthropic(self):
+        text = MODELS.read_text(encoding="utf-8")
+        self.assertIn("d.format == 'Anthropic' ? {", text)
+        for field in ("organizationName", "countryCode", "industry"):
+            self.assertIn(f"{field}:", text)
+        self.assertIn("} : {})", text)
+
+    def test_main_wires_explicit_attestation_parameters(self):
+        text = MAIN.read_text(encoding="utf-8")
+        for name in (
+            "claudeOrganizationName",
+            "claudeCountryCode",
+            "claudeIndustry",
+        ):
+            self.assertIn(f"{name}: {name}", text)
+
+
 if __name__ == "__main__":
     unittest.main()

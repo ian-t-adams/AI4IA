@@ -14,8 +14,8 @@ it is generated locally and never through excalidraw.com.
 
 ## Architectural invariants
 
-1. **Gateway-first compatible model traffic.** HTTP/SSE chat, agents,
-   embeddings, image/video, and REST speech calls flow
+1. **Gateway-first model traffic.** HTTP/SSE chat, agents, embeddings,
+   image/video, REST speech, and Anthropic Messages calls flow
    `FastAPI -> SimpleL7Proxy -> model APIM -> Foundry`.
 2. **WebSockets bypass only the HTTP proxy.** Realtime and Voice Live flow
    `Browser -> FastAPI relay -> realtime APIM -> Foundry` because
@@ -148,17 +148,28 @@ No RBAC is changed by documenting the decision.
 2. FastAPI normalizes the internal user id, loads the owned session, checks feature
    and entitlement posture, composes memory/document context, and authorizes tools.
 3. FastAPI sends the catalog-shaped request to SimpleL7Proxy with the
-   proxy-ingress key.
+   proxy-ingress key. OpenAI-compatible models retain the internal chat shape;
+   Claude is translated to Anthropic Messages, including tool-use and SSE events.
 4. SimpleL7Proxy strips caller auth/internal headers, injects its own model-APIM
-   key, and forwards the original compatible path.
+   key, derives `x-LLMModel` from the deployment path, and forwards the request.
 5. APIM validates the model catalog, performs bounded immediate attempts across
-   eligible regions, and calls Foundry with managed identity.
+   eligible regions, and calls Foundry with managed identity. For Claude it
+   switches the audience to `https://ai.azure.com`, rewrites the upstream path to
+   `/anthropic/v1/messages`, fixes `anthropic-version`, and drops OpenAI query
+   parameters; callers cannot select those values.
    Responses-API requests explicitly set `store=false`; AI4IA resends Cosmos
    history instead of chaining provider-stored turns with `previous_response_id`.
 6. If every eligible backend is throttled, APIM returns the
    `429` + `S7PREQUEUE` + `retry-after-ms` contract; SimpleL7Proxy owns delayed
    requeue. `MaxAttempts=1` prevents retry multiplication.
 7. FastAPI streams the answer and persists messages and usage.
+
+Claude's Azure-hosted v2 response does not carry Azure
+`content_filter_results`. Foundry documents that Claude has no built-in Azure
+content filtering at deployment time, so those turns remain safety-unattested in
+AI4IA rather than receiving a fabricated "safe" verdict. Anthropic's own safety
+systems still apply; this is not equivalent to the annotate-only Azure signal
+captured for Azure OpenAI chat models.
 
 ### Realtime and voice lifecycle
 

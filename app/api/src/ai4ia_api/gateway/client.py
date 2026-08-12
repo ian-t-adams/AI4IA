@@ -19,8 +19,19 @@ import httpx
 from ..config import GatewayAuthMode, GatewayProviderStyle, Settings
 from ..chat_timing import current_chat_timing
 from ..http_retry import request_with_retry
-from ..model_traits import is_reasoning_deployment
+from ..model_traits import (
+    is_anthropic_messages_deployment,
+    is_reasoning_deployment,
+    supports_sampling,
+)
 from ..safety import MessageSafety, parse_safety
+from .anthropic import (
+    ANTHROPIC_API,
+    AnthropicStreamState,
+    anthropic_json_to_chat,
+    build_anthropic_payload,
+    parse_anthropic_event,
+)
 from .priority import PRIORITY_HEADER, get_request_priority
 
 # Azure OpenAI reasoning models (the GPT-5 family and the o-series) reject the
@@ -81,14 +92,14 @@ def _normalize_params_for_deployment(body: dict[str, Any], deployment: str) -> N
     parameters that reasoning models reject. No-op for non-reasoning models, so
     gpt-4.1/4o and non-OpenAI deployments (e.g. DeepSeek) keep ``max_tokens``.
     """
-    if not _is_reasoning_deployment(deployment):
-        return
-    if "max_tokens" in body:
-        value = body.pop("max_tokens")
-        if value is not None:
-            body.setdefault("max_completion_tokens", value)
-    for key in _REASONING_UNSUPPORTED_PARAMS:
-        body.pop(key, None)
+    if not supports_sampling(deployment):
+        for key in _REASONING_UNSUPPORTED_PARAMS:
+            body.pop(key, None)
+    if _is_reasoning_deployment(deployment):
+        if "max_tokens" in body:
+            value = body.pop("max_tokens")
+            if value is not None:
+                body.setdefault("max_completion_tokens", value)
 
 
 # --- Responses API (gpt-5-pro / gpt-5-codex / o3-pro) -----------------------
@@ -218,6 +229,25 @@ def _responses_json_to_chat(obj: dict[str, Any]) -> dict[str, Any]:
 
 _REQUEST_FAILED = "Model gateway request failed."
 _STREAM_FAILED = "Model stream failed."
+_KNOWN_APIS = frozenset({"chat", "responses", ANTHROPIC_API})
+
+
+def _resolved_api(api: str, deployment: str) -> str:
+    """Resolve the provider protocol, retaining a safe agent-runtime fallback.
+
+    Chat routers pass ``ModelEntry.api`` explicitly. Agent/workflow internals
+    historically carry only the resolved deployment name, so Claude names are
+    also recognized here; without this fallback an agent could select Claude in
+    the UI and then send its turn to the wrong provider surface.
+    """
+    resolved = (
+        ANTHROPIC_API
+        if api == "chat" and is_anthropic_messages_deployment(deployment)
+        else api
+    )
+    if resolved not in _KNOWN_APIS:
+        raise ValueError(f"unsupported model API: {resolved}")
+    return resolved
 
 
 class ModelGatewayError(Exception):
@@ -383,6 +413,35 @@ class ModelGatewayClient:
         headers = self._auth_headers(correlation_id)
 
         return GatewayRequest(url=url, headers=headers, json=body)
+
+    def build_anthropic_request(
+        self,
+        *,
+        deployment: str,
+        messages: Sequence[dict[str, Any]],
+        params: dict[str, Any] | None = None,
+        stream: bool = False,
+        correlation_id: str | None = None,
+    ) -> GatewayRequest:
+        """Build the internal gateway request for a Claude Messages turn.
+
+        The proxy-facing path deliberately retains ``/deployments/{name}`` so
+        SimpleL7Proxy can derive and stamp the server-owned model header. APIM
+        then rewrites it to the provider's fixed ``/anthropic/v1/messages`` path,
+        changes the Entra audience, and overrides ``anthropic-version``.
+        """
+        path = self._chat_path.format(deployment=deployment)
+        url = f"{self._base}{path if path.startswith('/') else '/' + path}"
+        return GatewayRequest(
+            url=url,
+            headers=self._auth_headers(correlation_id),
+            json=build_anthropic_payload(
+                deployment=deployment,
+                messages=messages,
+                params=params,
+                stream=stream,
+            ),
+        )
 
     def build_responses_request(
         self,
@@ -758,8 +817,17 @@ class ModelGatewayClient:
         correlation_id: str | None = None,
         api: str = "chat",
     ) -> dict[str, Any]:
-        if api == "responses":
+        resolved_api = _resolved_api(api, deployment)
+        if resolved_api == "responses":
             req = self.build_responses_request(
+                deployment=deployment,
+                messages=messages,
+                params=params,
+                stream=False,
+                correlation_id=correlation_id,
+            )
+        elif resolved_api == ANTHROPIC_API:
+            req = self.build_anthropic_request(
                 deployment=deployment,
                 messages=messages,
                 params=params,
@@ -790,11 +858,16 @@ class ModelGatewayClient:
                 raise ModelGatewayError(502, _REQUEST_FAILED) from exc
             if not isinstance(data, dict):
                 raise ModelGatewayError(502, _REQUEST_FAILED)
-            if api == "responses":
+            if resolved_api == "responses":
                 if data.get("status") == "failed":
                     err = (data.get("error") or {}).get("message") or "responses failed"
                     raise ModelGatewayError(502, err)
                 return _responses_json_to_chat(data)
+            if resolved_api == ANTHROPIC_API:
+                if data.get("type") == "error":
+                    err = (data.get("error") or {}).get("message")
+                    raise ModelGatewayError(502, err or _REQUEST_FAILED)
+                return anthropic_json_to_chat(data)
             return data
         finally:
             if timing is not None and timing_started is not None:
@@ -842,7 +915,8 @@ class ModelGatewayClient:
         client: httpx.AsyncClient | None = None
         owned = False
         try:
-            if api == "responses":
+            resolved_api = _resolved_api(api, deployment)
+            if resolved_api == "responses":
                 async with aclosing(
                     self._stream_responses(
                         deployment=deployment,
@@ -852,6 +926,18 @@ class ModelGatewayClient:
                     )
                 ) as response_stream:
                     async for chunk in response_stream:
+                        yield chunk
+                return
+            if resolved_api == ANTHROPIC_API:
+                async with aclosing(
+                    self._stream_anthropic(
+                        deployment=deployment,
+                        messages=messages,
+                        params=params,
+                        correlation_id=correlation_id,
+                    )
+                ) as anthropic_stream:
+                    async for chunk in anthropic_stream:
                         yield chunk
                 return
             client, owned = self._client()
@@ -894,6 +980,71 @@ class ModelGatewayClient:
             if timing is not None and timing_started is not None:
                 timing.gateway_finished(timing_started)
             if owned and client is not None:
+                await client.aclose()
+
+    async def _stream_anthropic(
+        self,
+        *,
+        deployment: str,
+        messages: Sequence[dict[str, Any]],
+        params: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
+    ) -> AsyncGenerator[ChatChunk, None]:
+        """Translate Claude Messages SSE frames into chat-shaped chunks."""
+        client, owned = self._client()
+        state = AnthropicStreamState()
+        try:
+            req = self.build_anthropic_request(
+                deployment=deployment,
+                messages=messages,
+                params=params,
+                stream=True,
+                correlation_id=correlation_id,
+            )
+            async with client.stream(
+                "POST", req.url, headers=req.headers, json=req.json
+            ) as resp:
+                if resp.status_code >= 400:
+                    body = await resp.aread()
+                    raise ModelGatewayError(
+                        resp.status_code, body.decode("utf-8", "replace")
+                    )
+                data_buf: list[str] = []
+                async for line in resp.aiter_lines():
+                    if line.startswith("data:"):
+                        data_buf.append(line[len("data:") :].lstrip())
+                        continue
+                    if line == "" and data_buf:
+                        event = parse_anthropic_event("\n".join(data_buf), state)
+                        data_buf = []
+                        if event is None:
+                            continue
+                        if event.error:
+                            raise ModelGatewayError(502, _STREAM_FAILED)
+                        chunk = ChatChunk(
+                            delta=event.delta,
+                            raw=event.raw,
+                            usage=event.usage,
+                            done=event.done,
+                        )
+                        yield chunk
+                        if chunk.done:
+                            return
+                if data_buf:
+                    event = parse_anthropic_event("\n".join(data_buf), state)
+                    if event is not None:
+                        if event.error:
+                            raise ModelGatewayError(502, _STREAM_FAILED)
+                        yield ChatChunk(
+                            delta=event.delta,
+                            raw=event.raw,
+                            usage=event.usage,
+                            done=event.done,
+                        )
+        except httpx.HTTPError as exc:
+            raise ModelGatewayError(502, _STREAM_FAILED) from exc
+        finally:
+            if owned:
                 await client.aclose()
 
     async def _stream_responses(

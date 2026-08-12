@@ -160,6 +160,7 @@ def test_us_and_eu_are_deliberately_unequal_and_that_is_visible():
 
     assert eu_chat < us_chat, "expected EU to be a strict subset of US today"
     assert us_chat - eu_chat == {
+        "claude-opus-4-8",
         "gpt-5.2",
         "gpt-5.3-codex",
         "gpt-5.4-nano",

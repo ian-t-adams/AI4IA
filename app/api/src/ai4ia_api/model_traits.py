@@ -21,6 +21,16 @@ import re
 # parameter set and drops the unsupported ones itself when it routes to an
 # o-series model (per Microsoft Learn), so we must not pre-transform it.
 REASONING_DEPLOYMENT = re.compile(r"^(gpt-5|o1|o3|o4)\b", re.IGNORECASE)
+# Claude in Foundry uses the Anthropic Messages API rather than Azure OpenAI
+# Chat Completions. The deployment name begins with the catalog model id, so
+# this remains valid after the region/SKU suffix is appended.
+ANTHROPIC_MESSAGES_DEPLOYMENT = re.compile(r"^claude-", re.IGNORECASE)
+# Claude Opus 4.8 v2 rejects ``temperature`` and requires ``top_p=0.99``.
+# Omitting both selects that default, so the generic sampling sliders must stay
+# hidden and the transport must strip stale values carried from another model.
+NO_SAMPLING_DEPLOYMENT = re.compile(
+    r"^(gpt-5|o1|o3|o4|claude-opus-4-8)\b", re.IGNORECASE
+)
 
 # The reasoning_effort values EVERY reasoning model accepts. This is a floor, not
 # a description of any particular model: the real per-model set is recorded in
@@ -42,13 +52,18 @@ def is_reasoning_deployment(name: str) -> bool:
     return bool(REASONING_DEPLOYMENT.match(name))
 
 
+def is_anthropic_messages_deployment(name: str) -> bool:
+    """True for a Claude model id or deployment routed to Messages."""
+    return bool(ANTHROPIC_MESSAGES_DEPLOYMENT.match(name))
+
+
 def supports_sampling(name: str) -> bool:
     """True when the model honours ``temperature``/``top_p``.
 
     Reasoning models 400 on non-default values, so the gateway strips them; the
     UI must not present them as if they did something.
     """
-    return not is_reasoning_deployment(name)
+    return not NO_SAMPLING_DEPLOYMENT.match(name)
 
 
 def reasoning_effort_options(name: str) -> list[str]:

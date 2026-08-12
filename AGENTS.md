@@ -4,7 +4,7 @@ Canonical machine-facing contributor guide for AI4IA. Keep this file accurate wh
 
 ## What this repo is
 
-AI4IA is a governed, multi-model, multi-region agentic chat app on Azure Container Apps. The browser uses the Next.js web app; FastAPI owns auth, sessions, tools, memory, document/library access, usage, and model routing. Compatible HTTP/SSE model traffic flows SimpleL7Proxy -> APIM -> Foundry; realtime/Voice Live WebSockets stay on the FastAPI relay -> APIM path because SimpleL7Proxy does not support WebSockets.
+AI4IA is a governed, multi-model, multi-region agentic chat app on Azure Container Apps. The browser uses the Next.js web app; FastAPI owns auth, sessions, tools, memory, document/library access, usage, and model routing. HTTP/SSE model traffic — including the Anthropic Messages adapter — flows SimpleL7Proxy -> APIM -> Foundry; realtime/Voice Live WebSockets stay on the FastAPI relay -> APIM path because SimpleL7Proxy does not support WebSockets.
 
 ## Monorepo map
 
@@ -18,7 +18,7 @@ AI4IA is a governed, multi-model, multi-region agentic chat app on Azure Contain
 
 ## Non-negotiable rules
 
-1. **Gateway-first model traffic.** Compatible HTTP/SSE calls (chat, agents, embeddings, images, videos, and REST speech) go SimpleL7Proxy -> APIM -> Foundry. Two explicit exceptions, both documented in `docs/architecture.md`: realtime/Voice Live **WebSockets** take FastAPI relay -> APIM -> Foundry (SimpleL7Proxy has no WebSocket support), and the **Responses-API Code Interpreter** goes direct to Foundry because a stateful Azure-managed sandbox container is not a routable chat-completions deployment. Do not call Foundry model deployments directly from app code outside those two. Direct calls are otherwise reserved for non-OpenAI/native control or data planes such as Content Understanding, Azure Monitor, Key Vault, Blob, Cosmos, and Azure AI Search.
+1. **Gateway-first model traffic.** HTTP/SSE calls (chat, agents, embeddings, images, videos, REST speech, and Claude Messages) go SimpleL7Proxy -> APIM -> Foundry. FastAPI translates provider schemas, but never turns that into direct provider egress. Two explicit exceptions, both documented in `docs/architecture.md`: realtime/Voice Live **WebSockets** take FastAPI relay -> APIM -> Foundry (SimpleL7Proxy has no WebSocket support), and the **Responses-API Code Interpreter** goes direct to Foundry because a stateful Azure-managed sandbox container is not a routable catalog deployment. Do not call Foundry model deployments directly from app code outside those two. Direct calls are otherwise reserved for non-model/native control or data planes such as Content Understanding, Azure Monitor, Key Vault, Blob, Cosmos, and Azure AI Search.
 2. **Catalog-driven models.** Do not hardcode deployment names or model lists. `infra/models.json` is the source of truth; generated runtime catalog data must match it.
 3. **Server-authoritative feature gates.** The web app may hide UI, but the API and startup validation must enforce feature posture. Never gate only in React/Next.js.
 4. **Cosmos is canonical.** Sessions, messages, usage, user agents/workflows, MCP server records, document manifests, and memory text/vectors are canonical and scoped per user. Document chunks, search indexes, and parsed artifacts must be rebuildable.
@@ -578,7 +578,7 @@ re-testing the old one.
 
 ### Add a model
 
-1. Edit `infra/models.json` only; include category, format, version, regions/SKUs/capacity, and metadata such as context/output limits.
+1. Edit `infra/models.json` first; include category, format, provider `api`, version, regions/SKUs/capacity, and metadata such as context/output limits.
 2. Run:
 
    ```powershell
@@ -589,7 +589,9 @@ re-testing the old one.
    python scripts/validate-catalog.py
    ```
 
-3. Update docs if the model changes a user-visible capability or region posture. Never type deployment names directly into app code.
+3. Update docs if the model changes a user-visible capability, provider protocol, legal prerequisite, safety posture, or region posture. Never type deployment names directly into app code.
+4. A new provider protocol needs a tested adapter in `app/api/src/ai4ia_api/gateway`, generated APIM routing/auth changes, non-streaming plus SSE tool-call controls, and an end-to-end agent-loop test. A catalog row alone is not a working integration.
+5. Anthropic deployments additionally require explicit `modelProviderData`. Never infer the legal entity, country, or industry from tags; `validate-feature-prereqs.py` must fail before provision when the attestation is missing or placeholder-shaped.
 
 ### Add a feature flag
 

@@ -109,10 +109,10 @@ class ModelEntry(BaseModel):
     displayName: str
     category: str
     format: str
-    # Which Azure surface serves this model: "chat" (Chat Completions, the
-    # default) or "responses" (the Responses API — required by gpt-5-pro,
-    # gpt-5-codex, o3-pro, which 400 on chat/completions). The gateway routes by
-    # this flag; the field is informational to the UI.
+    # Which provider surface serves this model: "chat" (Chat Completions, the
+    # default), "responses" (required by gpt-5-pro/gpt-5-codex/o3-pro), or
+    # "anthropic" (Claude Messages). The gateway routes by this flag; the field
+    # is informational to the UI.
     api: str = "chat"
     # Per-model context window (total prompt+completion tokens the deployment
     # accepts) and the maximum tokens it will emit in one completion. Both are

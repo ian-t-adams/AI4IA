@@ -970,6 +970,30 @@
           "version": "2025-06-26"
         }
       ]
+    },
+    {
+      "name": "claude-opus-4-8",
+      "displayName": "Claude Opus 4.8",
+      "format": "Anthropic",
+      "category": "reasoning",
+      "api": "anthropic",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "reasoningEffort": [],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 40,
+          "version": "2"
+        },
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 13,
+          "version": "2"
+        }
+      ]
     }
   ]
 }

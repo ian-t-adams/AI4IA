@@ -36,6 +36,34 @@ docs_generator = load_script("gen_docs_catalog", "scripts/gen-docs-catalog.py")
 
 
 class GatewayPolicyTests(unittest.TestCase):
+    def test_anthropic_models_use_the_messages_backend_only(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        blocks, _ = gateway_generator.render_catalog(models)
+        claude = [
+            block
+            for block in blocks
+            if 'new JProperty("claude-opus-4-8-' in block
+        ]
+        self.assertEqual(len(claude), 2)
+        for block in claude:
+            self.assertIn('new JProperty("path", "anthropic")', block)
+            self.assertNotIn('new JProperty("path", "openai")', block)
+
+        non_claude = next(
+            block for block in blocks if 'new JProperty("gpt-5.4-' in block
+        )
+        self.assertIn('new JProperty("path", "openai")', non_claude)
+
+    def test_anthropic_auth_and_path_are_server_owned(self) -> None:
+        setup = gateway_generator.TEMPLATE_PATH.read_text(encoding="utf-8")
+        priority = gateway_generator.PRIORITY_POLICY_PATH.read_text(encoding="utf-8")
+        self.assertIn("/ai.azure.com", setup)
+        self.assertIn('providerPath, &quot;anthropic&quot;', setup)
+        self.assertIn("<rewrite-uri template=\"/v1/messages\"", priority)
+        self.assertIn('name="anthropic-version" exists-action="override"', priority)
+        self.assertIn("<value>2023-06-01</value>", priority)
+        self.assertIn('copy-unmatched-params="false"', priority)
+
     def test_backend_labels_are_unique_within_every_deployment_block(self) -> None:
         """A duplicate backend label is a production outage, not a cosmetic clash.
 
@@ -1774,6 +1802,12 @@ class GatewayPolicyTests(unittest.TestCase):
 
 class FeaturePrerequisiteTests(unittest.TestCase):
     def run_validator(self, parameters: dict[str, object]) -> tuple[int, str]:
+        parameters = {
+            "claudeOrganizationName": "Example Legal Entity",
+            "claudeCountryCode": "US",
+            "claudeIndustry": "technology",
+            **parameters,
+        }
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "parameters.json"
             path.write_text(

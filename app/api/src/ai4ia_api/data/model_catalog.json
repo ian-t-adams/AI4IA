@@ -1193,6 +1193,30 @@
           "deploymentName": "o3-deep-research-slurmfactory-westus-glbl"
         }
       ]
+    },
+    {
+      "id": "claude-opus-4-8",
+      "displayName": "Claude Opus 4.8",
+      "category": "reasoning",
+      "format": "Anthropic",
+      "api": "anthropic",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "reasoningEffort": [],
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "claude-opus-4-8-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "claude-opus-4-8-slurmfactory-eastus2-dz"
+        }
+      ]
     }
   ]
 }

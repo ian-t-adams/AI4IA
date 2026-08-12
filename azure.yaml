@@ -51,7 +51,7 @@ hooks:
         python scripts/gen-mcp-catalog.py --check
         python scripts/gen-voice-provider-catalog.py --check
         python scripts/gen-gateway-policy.py --check
-        python scripts/validate-feature-prereqs.py
+        python scripts/validate-feature-prereqs.py --require-deployment-attestation
         # Requires Azure CLI credentials and verifies availability, lifecycle, and
         # quota before azd submits ARM resources. Failure is intentionally fatal.
         python scripts/check-model-availability.py
@@ -64,7 +64,7 @@ hooks:
         python3 scripts/gen-mcp-catalog.py --check
         python3 scripts/gen-voice-provider-catalog.py --check
         python3 scripts/gen-gateway-policy.py --check
-        python3 scripts/validate-feature-prereqs.py
+        python3 scripts/validate-feature-prereqs.py --require-deployment-attestation
         # Same pre-resource hard gate as Windows; quota cannot be bypassed.
         python3 scripts/check-model-availability.py
       continueOnError: false

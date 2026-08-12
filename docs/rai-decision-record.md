@@ -16,11 +16,21 @@
 ## Decision
 
 The `ai4ia-annotate-only` policy configured on the catalog model deployments is
-**enabled but non-blocking**. For text chat completions, Foundry returns safety
+**enabled but non-blocking**. For Azure OpenAI text chat completions, Foundry returns safety
 annotations and AI4IA normalizes, persists, and displays them without refusing,
 rewriting, or withholding the text. This repository does not evidence equivalent
 annotation capture/persistence/display for image, video, Azure OpenAI Voice Live,
 or Speech Voice Live.
+
+Claude is also outside that evidence. Although the deployment retains the common
+`raiPolicyName` property, Microsoft documents that Foundry does not provide
+built-in content filtering for Claude at deployment time, and the Anthropic
+Messages response does not carry Azure `content_filter_results`. AI4IA therefore
+persists Claude turns with `safety: null` and shows no safety panel; it does not
+convert "no Azure verdict" into "nothing flagged." Anthropic's provider safety
+systems still apply, but they are not the per-turn Azure annotation contract this
+record describes. Adding Claude is another trigger-3 scope expansion, so the
+control remains incomplete pending an explicit compensating-control decision.
 
 ## Approval
 
@@ -30,7 +40,7 @@ or Speech Voice Live.
 | Azure exception evidence | The deployed text-policy configuration itself — see below |
 | Azure approval reference | Reported as held by the owner (guardrails-modification approval email); not stored in the repo |
 | Decision scope actually reasoned about | Text completions for named, authenticated internal users |
-| Enabled but not re-approved in this record | Image, video, Azure OpenAI Voice Live, Speech Voice Live |
+| Enabled but not re-approved in this record | Claude, image, video, Azure OpenAI Voice Live, Speech Voice Live |
 | Control status | **Incomplete pending modality-scope re-approval and compensating-control evidence** |
 | Next scheduled review | Annual review was proposed for **2027-08-06**, but trigger 3 requires review now rather than waiting |
 | Invalidated immediately by | Any trigger in "Review triggers" below — these do not wait for the annual date |
@@ -60,15 +70,15 @@ facts.
 The document is structurally complete; the control is not. Closing it requires
 all of the following without inventing or backdating approval:
 
-1. A dated accountable-owner decision that explicitly names text, image, video,
-   Azure OpenAI Voice Live, and Speech Voice Live.
+1. A dated accountable-owner decision that explicitly names Azure OpenAI text,
+   Claude text, image, video, Azure OpenAI Voice Live, and Speech Voice Live.
 2. The Azure guardrails-modification approval reference and its applicable
    resource/modality scope, retained in the approved evidence system.
 3. Modality-specific abuse cases, user disclosure, monitoring, escalation owner,
    and response procedure.
 4. Evidence that annotations or equivalent safety signals are collected for each
-   enabled modality, plus a tested alert/escalation path for actionable events.
-5. A recorded accept/mitigate/disable decision for each modality and a new review
+   enabled provider/modality, plus a tested alert/escalation path for actionable events.
+5. A recorded accept/mitigate/disable decision for each provider/modality and a new review
    date after the trigger-driven review completes.
 
 ## What is actually configured
@@ -98,7 +108,7 @@ Two details worth stating plainly, because both are easy to misread:
 
 ## Compensating controls
 
-**Implemented for text chat completions.** Those annotations are no longer
+**Implemented for Azure OpenAI text chat completions.** Those annotations are no longer
 discarded: verdicts returned on the text-completion path are normalized
 (`app/api/src/ai4ia_api/safety.py`), persisted on the message, and shown in a
 per-turn panel that states plainly that the displayed text was not blocked or
@@ -117,7 +127,7 @@ surface rather than change behaviour silently.
 4. **No tested moderation boundary.** The audit's premise for accepting an
    annotate-only posture was "a documented and validated replacement boundary". The
    replacement is currently visibility only.
-5. **No modality evidence.** Image, video, and both Voice Live providers are
+5. **No modality/provider evidence.** Claude, image, video, and both Voice Live providers are
    enabled, but this record has no evidence that their safety outputs are
    normalized, persisted, displayed, aggregated, or escalated.
 
@@ -148,7 +158,7 @@ annotate-only posture continues:
 | --- | --- | --- | --- |
 | 1 | A second Entra tenant is allowed, or any unauthenticated access is enabled | The whole justification is "small, known, internal, authenticated". This is also the moment P1-10 (tenant-public means application-public) stops being latent. | Startup already **refuses** when more than one tenant is allowed, so this cannot happen silently — the refusal is the notification. |
 | 2 | A high-severity annotation is observed on a production completion | The premise is that filters would fire on legitimate technical work, not on genuinely harmful content. One high-severity hit is evidence the premise is wrong. | `AppEvents` in the Log Analytics workspace. **Nothing alerts on this today** — see the gap below. |
-| 3 | A new output modality is enabled that this record did not reason about | The decision was made about text completions. Image, video, and realtime voice have different failure modes and blast radii. **Fired:** image, video, Azure OpenAI Voice Live, and Speech Voice Live are enabled; modality re-approval is not evidenced here. | Repository/deployment feature posture plus the evidence list above. |
+| 3 | A new output modality or model provider is enabled that this record did not reason about | The decision was made about Azure OpenAI text completions. Claude, image, video, and realtime voice have different safety evidence and failure modes. **Fired:** Claude, image, video, Azure OpenAI Voice Live, and Speech Voice Live are enabled; provider/modality re-approval is not evidenced here. | Repository/deployment feature posture plus the evidence list above. |
 | 4 | The Azure guardrails-modification approval lapses, or a deployment is recreated on a stock policy | The approval *is* the deployed policy. If the policy reverts, the exception has already ended in fact. | `scripts/tests/test_rai_policy.py` pins the posture in IaC; a live drift would need a control-plane read. |
 | 5 | A regulatory or customer commitment requires enforced filtering | External obligation overrides the internal tradeoff. | Owner judgement. |
 

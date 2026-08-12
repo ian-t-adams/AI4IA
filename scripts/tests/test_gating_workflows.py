@@ -180,6 +180,9 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         "AZURE_SUBSCRIPTION_ID": "subscription-id",
         "AZURE_ENV_NAME": "prod",
         "AZURE_LOCATION": "westus3",
+        "AI4IA_CLAUDE_ORGANIZATION_NAME": "Example Legal Entity",
+        "AI4IA_CLAUDE_COUNTRY_CODE": "US",
+        "AI4IA_CLAUDE_INDUSTRY": "technology",
     }
 
     @classmethod
@@ -229,7 +232,12 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         self.assertEqual(output.strip(), "deployment_enabled=true")
 
     def test_missing_variables_fail_with_each_actionable_name(self) -> None:
-        missing = ("AZURE_CLIENT_ID", "AZURE_SUBSCRIPTION_ID", "AZURE_LOCATION")
+        missing = (
+            "AZURE_CLIENT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+            "AZURE_LOCATION",
+            "AI4IA_CLAUDE_ORGANIZATION_NAME",
+        )
         result, output = self.run_validation(missing=missing)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(output, "")

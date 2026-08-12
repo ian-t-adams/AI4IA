@@ -50,6 +50,11 @@ PROD_ENV = {
     "AI4IA_OWNER": "ai4ia-operations",
     "AI4IA_APIM_PUBLISHER_EMAIL": "ai4ia-ops@contoso.com",
 }
+CLAUDE_ENV = {
+    "AI4IA_CLAUDE_ORGANIZATION_NAME": "Nomad Analytics",
+    "AI4IA_CLAUDE_COUNTRY_CODE": "US",
+    "AI4IA_CLAUDE_INDUSTRY": "technology",
+}
 
 
 def _load_validator() -> ModuleType:
@@ -72,19 +77,24 @@ def _environment(**values: str):
     change what these tests actually assert.
     """
     removed = {k: v for k, v in os.environ.items() if k.startswith(("AI4IA_", "AZURE_"))}
-    with patch.dict(os.environ, values, clear=False):
+    effective = {**CLAUDE_ENV, **values}
+    with patch.dict(os.environ, effective, clear=False):
         for key in removed:
-            if key not in values:
+            if key not in effective:
                 del os.environ[key]
         yield
 
 
-def _run(parameters_file: Path) -> tuple[int, str, str]:
+def _run(
+    parameters_file: Path, *, require_deployment_attestation: bool = False
+) -> tuple[int, str, str]:
     """Run the validator against *parameters_file*; return (exit code, stdout, stderr)."""
     out, err = StringIO(), StringIO()
     with patch.object(VALIDATOR, "PARAMETERS_FILE", parameters_file):
         with patch.object(sys, "stdout", out), patch.object(sys, "stderr", err):
-            code = VALIDATOR.main()
+            code = VALIDATOR.main(
+                require_deployment_attestation=require_deployment_attestation
+            )
     return code, out.getvalue(), err.getvalue()
 
 
@@ -113,6 +123,62 @@ class CommittedParametersTests(unittest.TestCase):
         with _environment(**PROD_ENV):
             code, _, err = _run(REAL_PARAMETERS)
         self.assertEqual(code, 0, f"production configuration failed validation:\n{err}")
+
+
+class ClaudeMarketplaceAttestationTests(unittest.TestCase):
+    def test_real_provision_requires_attestation_even_when_all_values_are_absent(
+        self,
+    ) -> None:
+        with _environment(
+            AI4IA_CLAUDE_ORGANIZATION_NAME="",
+            AI4IA_CLAUDE_COUNTRY_CODE="",
+            AI4IA_CLAUDE_INDUSTRY="",
+        ):
+            code, _, err = _run(
+                REAL_PARAMETERS, require_deployment_attestation=True
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("real legal entity", err)
+        self.assertIn("uppercase ISO-2", err)
+        self.assertIn("lowercase claudeIndustry", err)
+
+    def test_azd_preprovision_always_enables_the_hard_gate(self) -> None:
+        azure_yaml = (ROOT / "azure.yaml").read_text(encoding="utf-8")
+        self.assertEqual(
+            azure_yaml.count(
+                "validate-feature-prereqs.py --require-deployment-attestation"
+            ),
+            2,
+        )
+
+    def test_missing_legal_entity_blocks_before_provision(self) -> None:
+        with _environment(AI4IA_CLAUDE_ORGANIZATION_NAME=""):
+            code, _, err = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 1)
+        self.assertIn("real legal entity", err)
+
+    def test_placeholder_legal_entity_is_rejected(self) -> None:
+        with _environment(AI4IA_CLAUDE_ORGANIZATION_NAME="Your Organization"):
+            code, _, err = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 1)
+        self.assertIn("real legal entity", err)
+
+    def test_country_must_be_uppercase_iso2(self) -> None:
+        with _environment(AI4IA_CLAUDE_COUNTRY_CODE="us"):
+            code, _, err = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 1)
+        self.assertIn("uppercase ISO-2", err)
+
+    def test_industry_must_be_lowercase(self) -> None:
+        with _environment(AI4IA_CLAUDE_INDUSTRY="Technology"):
+            code, _, err = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 1)
+        self.assertIn("lowercase claudeIndustry", err)
+
+    def test_explicit_attestation_values_pass(self) -> None:
+        with _environment(**CLAUDE_ENV):
+            code, _, err = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 0, err)
 
 
 class PrimaryLocationCatalogTests(unittest.TestCase):

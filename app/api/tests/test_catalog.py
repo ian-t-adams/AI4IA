@@ -96,6 +96,7 @@ def test_conversational_categories_are_chat_targets():
         "gpt-5.4",          # chat
         "gpt-5-nano",       # chat-fast
         "o3",               # reasoning
+        "claude-opus-4-8",  # Anthropic Messages reasoning
         "DeepSeek-V3.2",    # reasoning-oss
         "model-router",     # router
         "o3-deep-research", # research
@@ -148,7 +149,14 @@ def test_conversational_is_serialized():
 
 def test_reasoning_models_do_not_advertise_sampling():
     catalog = load_catalog()
-    for model_id in ("gpt-5.6-sol", "gpt-5.4", "gpt-5", "o3", "gpt-5-codex"):
+    for model_id in (
+        "gpt-5.6-sol",
+        "gpt-5.4",
+        "gpt-5",
+        "o3",
+        "gpt-5-codex",
+        "claude-opus-4-8",
+    ):
         entry = catalog.get(model_id)
         assert entry is not None, model_id
         assert entry.supportsSampling is False, model_id
@@ -247,7 +255,12 @@ def test_catalog_effort_values_are_known_tokens():
 
 def test_non_reasoning_models_offer_no_reasoning_effort():
     catalog = load_catalog()
-    for model_id in ("Mistral-Large-3", "model-router", "DeepSeek-V3.2"):
+    for model_id in (
+        "Mistral-Large-3",
+        "model-router",
+        "DeepSeek-V3.2",
+        "claude-opus-4-8",
+    ):
         entry = catalog.get(model_id)
         assert entry is not None, model_id
         assert entry.reasoningEffortOptions == [], model_id
@@ -289,6 +302,23 @@ def test_catalog_values_win_over_the_heuristic():
         options=[],
     )
     assert none_taken.reasoningEffortOptions == []
+
+
+def test_claude_is_wired_for_chat_and_agents_through_messages():
+    catalog = load_catalog()
+    entry = catalog.get("claude-opus-4-8")
+    assert entry is not None
+    assert entry.displayName == "Claude Opus 4.8"
+    assert entry.api == "anthropic"
+    assert entry.conversational is True
+    assert entry.contextWindow == 1_000_000
+    assert entry.maxOutputTokens == 128_000
+    assert entry.reasoningEffortOptions == []
+    assert entry.supportsSampling is False
+    assert {(option.region, option.sku) for option in entry.options} == {
+        ("eastus2", "GlobalStandard"),
+        ("eastus2", "DataZoneStandard"),
+    }
 
 
 def test_request_shape_traits_are_serialized():

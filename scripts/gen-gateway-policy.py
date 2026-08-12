@@ -105,6 +105,7 @@ def backend_row(
     label: str,
     region: str,
     deployment: str,
+    provider_path: str,
     priority: int,
     timeout: int,
 ) -> str:
@@ -112,7 +113,7 @@ def backend_row(
     return (
         f'                new JProperty("{label}", new JObject(\n'
         f'                    new JProperty("url", "{named_value}"),\n'
-        '                    new JProperty("path", "openai"),\n'
+        f'                    new JProperty("path", "{provider_path}"),\n'
         f'                    new JProperty("deployment", "{deployment}"),\n'
         f'                    new JProperty("priority", {priority}),\n'
         '                    new JProperty("acceptablePriorities", "1, 2, 3"),\n'
@@ -134,6 +135,7 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
     for model in models["catalog"]:
         deployments = model["deployments"]
         timeout = timeout_seconds(model["category"])
+        provider_path = "anthropic" if model.get("api") == "anthropic" else "openai"
         resolved = [
             {
                 "region": deployment["region"],
@@ -200,6 +202,7 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                     label=candidate["region"].upper(),
                     region=candidate["region"],
                     deployment=candidate["name"],
+                    provider_path=provider_path,
                     priority=1 if candidate["region"] == requested["region"] else 2,
                     timeout=timeout,
                 )
