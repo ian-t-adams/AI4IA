@@ -72,8 +72,13 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     organization = text(parameter_value(parameters, "claudeOrganizationName"))
     country = text(parameter_value(parameters, "claudeCountryCode"))
     industry = text(parameter_value(parameters, "claudeIndustry"))
+    claude_enabled = truthy(parameter_value(parameters, "claudeEnabled", False))
+    if claude_enabled and not has_anthropic:
+        errors.append(
+            "claudeEnabled=true but infra/models.json contains no Anthropic deployment."
+        )
     if has_anthropic and (
-        require_deployment_attestation or any((organization, country, industry))
+        claude_enabled or any((organization, country, industry))
     ):
         if not organization or organization.casefold() in {
             "your organization",

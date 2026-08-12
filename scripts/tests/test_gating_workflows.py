@@ -180,6 +180,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         "AZURE_SUBSCRIPTION_ID": "subscription-id",
         "AZURE_ENV_NAME": "prod",
         "AZURE_LOCATION": "westus3",
+        "AI4IA_CLAUDE_ENABLED": "true",
         "AI4IA_CLAUDE_ORGANIZATION_NAME": "Example Legal Entity",
         "AI4IA_CLAUDE_COUNTRY_CODE": "US",
         "AI4IA_CLAUDE_INDUSTRY": "technology",
@@ -202,7 +203,11 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         cls.validation_script = matches[0]["run"]
 
     def run_validation(
-        self, *, posture: str = "", missing: tuple[str, ...] = ()
+        self,
+        *,
+        posture: str = "",
+        claude_enabled: str = "true",
+        missing: tuple[str, ...] = (),
     ) -> tuple[subprocess.CompletedProcess[str], str]:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -213,6 +218,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
             env = dict(os.environ)
             env.update(self.REQUIRED)
             env["AI4IA_DEPLOYMENT_ENABLED"] = posture
+            env["AI4IA_CLAUDE_ENABLED"] = claude_enabled
             env["GITHUB_OUTPUT"] = str(output)
             for name in missing:
                 env.pop(name, None)
@@ -243,6 +249,24 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         self.assertEqual(output, "")
         for name in missing:
             self.assertIn(name, result.stdout + result.stderr)
+
+    def test_claude_disabled_does_not_require_attestation(self) -> None:
+        attestation = (
+            "AI4IA_CLAUDE_ORGANIZATION_NAME",
+            "AI4IA_CLAUDE_COUNTRY_CODE",
+            "AI4IA_CLAUDE_INDUSTRY",
+        )
+        result, output = self.run_validation(
+            claude_enabled="false", missing=attestation
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(output.strip(), "deployment_enabled=true")
+
+    def test_invalid_claude_posture_fails(self) -> None:
+        result, output = self.run_validation(claude_enabled="enabled")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
+        self.assertIn("AI4IA_CLAUDE_ENABLED must be true, false, or unset", result.stdout)
 
     def test_explicit_disabled_posture_is_the_only_clean_skip(self) -> None:
         result, output = self.run_validation(

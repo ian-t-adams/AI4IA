@@ -130,6 +130,36 @@ class CatalogRequirementTests(unittest.TestCase):
             "gpt-4.1-mini-slurmfactory-eastus2-glbl",
         )
 
+    def test_disabled_anthropic_models_are_not_preflighted(self) -> None:
+        models = {
+            **self.CATALOG,
+            "catalog": [
+                *self.CATALOG["catalog"],
+                {
+                    "name": "claude-opus-4-8",
+                    "format": "Anthropic",
+                    "deployments": [
+                        {
+                            "region": "eastus2",
+                            "sku": "GlobalStandard",
+                            "capacity": 20,
+                            "version": "2",
+                        }
+                    ],
+                },
+            ],
+        }
+        enabled = AVAILABILITY.catalog_requirements(
+            models, include_anthropic=True
+        )
+        disabled = AVAILABILITY.catalog_requirements(
+            models, include_anthropic=False
+        )
+        assert any(item["name"] == "claude-opus-4-8" for item in enabled["eastus2"])
+        assert all(
+            item["name"] != "claude-opus-4-8" for item in disabled["eastus2"]
+        )
+
     def test_real_catalog_covers_every_declared_region(self) -> None:
         import json
 

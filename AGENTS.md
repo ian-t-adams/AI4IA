@@ -591,7 +591,7 @@ re-testing the old one.
 
 3. Update docs if the model changes a user-visible capability, provider protocol, legal prerequisite, safety posture, or region posture. Never type deployment names directly into app code.
 4. A new provider protocol needs a tested adapter in `app/api/src/ai4ia_api/gateway`, generated APIM routing/auth changes, non-streaming plus SSE tool-call controls, and an end-to-end agent-loop test. A catalog row alone is not a working integration.
-5. Anthropic deployments additionally require explicit `modelProviderData`. Never infer the legal entity, country, or industry from tags; `validate-feature-prereqs.py` must fail before provision when the attestation is missing or placeholder-shaped.
+5. Anthropic deployments additionally require explicit `modelProviderData` and the default-off `AI4IA_CLAUDE_ENABLED` gate. Never infer the legal entity, country, or industry from tags; `validate-feature-prereqs.py` must fail before provision when Claude is enabled and the attestation is missing or placeholder-shaped. With the gate off, Bicep and the API catalog must both omit Claude.
 
 ### Add a feature flag
 

@@ -99,6 +99,9 @@ param adminSubjects string = ''
 @secure()
 param adminApiSecret string = ''
 
+@description('Enable Anthropic Claude in the server-authoritative model catalog (AI4IA_CLAUDE_ENABLED).')
+param claudeEnabled bool = false
+
 @description('Emit the server-derived SimpleL7Proxy priority band header on outbound gateway calls (AI4IA_PROXY_PRIORITIES_ENABLED). Must match the proxy-side switch.')
 param proxyPrioritiesEnabled bool = false
 
@@ -693,6 +696,13 @@ var openapiEnv = apiOpenapiEnabled ? [
   }
 ] : []
 
+var claudeEnv = claudeEnabled ? [
+  {
+    name: 'AI4IA_CLAUDE_ENABLED'
+    value: 'true'
+  }
+] : []
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -742,7 +752,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], openapiEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], openapiEnv, claudeEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

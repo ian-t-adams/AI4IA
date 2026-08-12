@@ -41,7 +41,9 @@ it is generated locally and never through excalidraw.com.
    independently scoped APIM key.
 5. **Models are catalog-driven.** `infra/models.json` is authoritative for
    deployments, regions, categories, per-model reasoning effort, capabilities, and
-   generated runtime data.
+   generated runtime data. Entitlement-gated providers may remain in that complete
+   source while Bicep and the runtime omit them together; Claude is default-off
+   under `AI4IA_CLAUDE_ENABLED`.
 6. **Cosmos is canonical.** User sessions, messages, usage, agents, workflows,
    MCP records, document manifests, and memory text/vectors are durable and
    user-scoped in Cosmos. Document chunks, search indexes, and parsed artifacts

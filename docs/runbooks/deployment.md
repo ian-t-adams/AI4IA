@@ -133,26 +133,36 @@ reachability test guards that contract.
 
 #### Claude Marketplace attestation
 
-Any catalog entry with `format: "Anthropic"` makes all three repository
-variables mandatory:
+Claude is a default-off entitlement. Set `AI4IA_CLAUDE_ENABLED=true` only after
+the subscription can complete Anthropic Marketplace fulfillment. Enabling it
+makes all three attestation variables mandatory:
 
 | Variable | Meaning |
 |---|---|
+| `AI4IA_CLAUDE_ENABLED` | Deploy and advertise Claude (`false` or unset omits it) |
 | `AI4IA_CLAUDE_ORGANIZATION_NAME` | Legal entity accepting Anthropic's Marketplace terms |
 | `AI4IA_CLAUDE_COUNTRY_CODE` | Uppercase ISO-2 country code |
 | `AI4IA_CLAUDE_INDUSTRY` | Lowercase Foundry Marketplace industry value |
 
 `modelProviderData` sends those values with each Claude deployment and
-auto-accepts the offer. Do not merge an Anthropic catalog addition until the
-accountable owner has reviewed the terms and set accurate values. The workflow
-and `validate-feature-prereqs.py` fail before `azd provision` when a value is
-missing, malformed, or placeholder-shaped.
+auto-accepts the offer. The workflow and `validate-feature-prereqs.py` fail
+before `azd provision` when Claude is enabled and a value is missing, malformed,
+or placeholder-shaped. With the gate off, the preflight, Bicep deployment list,
+postprovision expected-deployment list, and runtime model catalog all omit
+Anthropic entries.
 
 Claude Opus 4.8 is pinned to Azure-hosted version 2 in East US 2. The catalog
 allocates the production subscription's measured quota: Global Standard 40K TPM
 and US Data Zone Standard 13K TPM. Re-run
 `python scripts/check-model-availability.py --region eastus2` immediately before
 provision because the counters are subscription/data-zone shared and can change.
+
+Microsoft internal/sandbox subscriptions can still reject the paid Marketplace
+fulfillment after model access/quota approval. Treat
+`This subscription is internal or sandbox` / `Marketplace purchases are
+disabled` as a Marketplace-fulfillment issue, not a quota increase. Keep
+`AI4IA_CLAUDE_ENABLED=false`, reopen the approved Anthropic Model Access case,
+and enable only after a direct deployment attempt succeeds.
 
 ### 2.2 Protect existing custom domains
 

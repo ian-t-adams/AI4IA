@@ -15,6 +15,7 @@ name: deploy
 # (Settings -> Secrets and variables -> Actions -> Variables):
 #   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
 #   AZURE_ENV_NAME, AZURE_LOCATION,
+#   AI4IA_CLAUDE_ENABLED, and (only when true)
 #   AI4IA_CLAUDE_ORGANIZATION_NAME, AI4IA_CLAUDE_COUNTRY_CODE,
 #   AI4IA_CLAUDE_INDUSTRY
 # Set AI4IA_DEPLOYMENT_ENABLED=false to disable deployment explicitly. Otherwise
@@ -84,6 +85,7 @@ jobs:
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AI4IA_CLAUDE_ENABLED: ${{ vars.AI4IA_CLAUDE_ENABLED }}
       AI4IA_CLAUDE_ORGANIZATION_NAME: ${{ vars.AI4IA_CLAUDE_ORGANIZATION_NAME }}
       AI4IA_CLAUDE_COUNTRY_CODE: ${{ vars.AI4IA_CLAUDE_COUNTRY_CODE }}
       AI4IA_CLAUDE_INDUSTRY: ${{ vars.AI4IA_CLAUDE_INDUSTRY }}
@@ -114,15 +116,32 @@ jobs:
             AZURE_TENANT_ID \
             AZURE_SUBSCRIPTION_ID \
             AZURE_ENV_NAME \
-            AZURE_LOCATION \
-            AI4IA_CLAUDE_ORGANIZATION_NAME \
-            AI4IA_CLAUDE_COUNTRY_CODE \
-            AI4IA_CLAUDE_INDUSTRY
+            AZURE_LOCATION
           do
             if [ -z "${!name:-}" ]; then
               missing+=("$name")
             fi
           done
+
+          case "${AI4IA_CLAUDE_ENABLED,,}" in
+            true)
+              for name in \
+                AI4IA_CLAUDE_ORGANIZATION_NAME \
+                AI4IA_CLAUDE_COUNTRY_CODE \
+                AI4IA_CLAUDE_INDUSTRY
+              do
+                if [ -z "${!name:-}" ]; then
+                  missing+=("$name")
+                fi
+              done
+              ;;
+            ""|false)
+              ;;
+            *)
+              echo "::error::AI4IA_CLAUDE_ENABLED must be true, false, or unset; got '${AI4IA_CLAUDE_ENABLED}'."
+              exit 1
+              ;;
+          esac
 
           if [ "${#missing[@]}" -ne 0 ]; then
             printf -v missing_names '%s, ' "${missing[@]}"
@@ -159,6 +178,7 @@ jobs:
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AI4IA_CLAUDE_ENABLED: ${{ vars.AI4IA_CLAUDE_ENABLED }}
       # Anthropic Marketplace attestation. These values auto-accept the offer
       # through modelProviderData and must describe the real legal entity.
       AI4IA_CLAUDE_ORGANIZATION_NAME: ${{ vars.AI4IA_CLAUDE_ORGANIZATION_NAME }}

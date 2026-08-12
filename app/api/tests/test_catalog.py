@@ -321,6 +321,17 @@ def test_claude_is_wired_for_chat_and_agents_through_messages():
     }
 
 
+def test_claude_entitlement_gate_removes_model_from_runtime_catalog():
+    disabled = load_catalog(None, "global", False)
+    enabled = load_catalog(None, "global", True)
+
+    assert disabled.get("claude-opus-4-8") is None
+    assert "claude-opus-4-8" not in {
+        model.id for model in disabled.conversational_models()
+    }
+    assert enabled.get("claude-opus-4-8") is not None
+
+
 def test_request_shape_traits_are_serialized():
     catalog = load_catalog()
     dumped = catalog.get("gpt-5.6-sol").model_dump()
