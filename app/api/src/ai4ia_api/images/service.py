@@ -141,20 +141,6 @@ class ImageGenerationService:
                 422, f"Prompt must be at most {MAX_PROMPT_CHARS} characters."
             )
 
-        resolved_size = size or DEFAULT_SIZE
-        if resolved_size not in ALLOWED_SIZES:
-            raise ImageGenerationError(
-                422,
-                f"Unsupported size. Allowed: {', '.join(sorted(ALLOWED_SIZES))}.",
-            )
-
-        resolved_quality = quality or DEFAULT_QUALITY
-        if resolved_quality not in ALLOWED_QUALITIES:
-            raise ImageGenerationError(
-                422,
-                f"Unsupported quality. Allowed: {', '.join(sorted(ALLOWED_QUALITIES))}.",
-            )
-
         count = 1 if n is None else int(n)
         if count < 1 or count > MAX_IMAGES:
             raise ImageGenerationError(422, f"n must be between 1 and {MAX_IMAGES}.")
@@ -172,6 +158,24 @@ class ImageGenerationService:
         if entry.category != "image":
             raise ImageGenerationError(400, f"Model '{model_id}' is not an image model.")
 
+        allowed_sizes = set(entry.imageSizes or ALLOWED_SIZES)
+        resolved_size = size or DEFAULT_SIZE
+        if resolved_size not in allowed_sizes:
+            raise ImageGenerationError(
+                422,
+                f"Unsupported size for {model_id}. Allowed: "
+                f"{', '.join(sorted(allowed_sizes))}.",
+            )
+
+        allowed_qualities = set(entry.imageQualities or ALLOWED_QUALITIES)
+        resolved_quality = quality or DEFAULT_QUALITY
+        if resolved_quality not in allowed_qualities:
+            raise ImageGenerationError(
+                422,
+                f"Unsupported quality for {model_id}. Allowed: "
+                f"{', '.join(sorted(allowed_qualities))}.",
+            )
+
         deployment = self._catalog.resolve_deployment(
             model_id, region=region, data_zone=data_zone
         )
@@ -187,6 +191,7 @@ class ImageGenerationService:
                 size=None if resolved_size == "auto" else resolved_size,
                 n=count,
                 extra=None if resolved_quality == "auto" else {"quality": resolved_quality},
+                api=entry.api,
                 correlation_id=correlation_id,
             )
         except ModelGatewayError as exc:

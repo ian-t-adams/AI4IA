@@ -69,12 +69,43 @@ class GatewayPolicyTests(unittest.TestCase):
 
         priority = gateway_generator.PRIORITY_POLICY_PATH.read_text(encoding="utf-8")
         self.assertIn('<rewrite-uri template="/v1/chat/completions"', priority)
-        self.assertIn('provider base path (`/openai`, `/anthropic`, or `/mai`)', priority)
+        self.assertIn(
+            'provider base path (`/openai`, `/anthropic`, `/mai`,',
+            priority,
+        )
         self.assertIn(
             'body["model"] = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", "")',
             priority,
         )
         self.assertIn('copy-unmatched-params="false"', priority)
+
+    def test_flux_uses_governed_bfl_provider_routes(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        blocks, _ = gateway_generator.render_catalog(models)
+        flux = [
+            block
+            for block in blocks
+            if re.search(r'new JProperty\("flux[.-]', block, re.IGNORECASE)
+        ]
+        self.assertEqual(len(flux), 8)
+        rendered = "\n".join(flux)
+        for model, operation in gateway_generator.BFL_MODEL_PATHS.items():
+            with self.subTest(model=model):
+                self.assertIn(model.lower(), rendered)
+                self.assertIn(
+                    'new JProperty("path", "providers/blackforestlabs/v1")',
+                    rendered,
+                )
+                self.assertIn(f'new JProperty("operation", "/{operation}")', rendered)
+
+        priority = gateway_generator.PRIORITY_POLICY_PATH.read_text(encoding="utf-8")
+        self.assertIn('name="backendOperationPath"', priority)
+        self.assertIn(
+            'name="api-version" exists-action="override"',
+            priority,
+        )
+        self.assertIn("<value>preview</value>", priority)
+        self.assertIn("selected.ToLowerInvariant()", priority)
 
     def test_anthropic_models_use_the_messages_backend_only(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))

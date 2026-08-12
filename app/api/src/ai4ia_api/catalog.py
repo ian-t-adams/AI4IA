@@ -111,9 +111,9 @@ class ModelEntry(BaseModel):
     format: str
     # Which provider surface serves this model: "chat" (Chat Completions, the
     # default), "responses" (required by gpt-5-pro/gpt-5-codex/o3-pro),
-    # "anthropic" (Claude Messages), or "mai" (MAI's OpenAI-compatible chat
-    # surface on /mai/v1). The gateway routes by this flag; the field is
-    # informational to the UI.
+    # "anthropic" (Claude Messages), "mai" (MAI's OpenAI-compatible chat
+    # surface on /mai/v1), or "bfl" (Black Forest Labs image generation).
+    # The gateway routes by this flag; the field is informational to the UI.
     api: str = "chat"
     # Per-model context window (total prompt+completion tokens the deployment
     # accepts) and the maximum tokens it will emit in one completion. Both are
@@ -123,6 +123,10 @@ class ModelEntry(BaseModel):
     # app can show the cap and clamp the max-tokens input from one source of truth.
     contextWindow: int | None = None
     maxOutputTokens: int | None = None
+    # Optional provider-specific image controls. Absent means the shared image
+    # defaults; a recorded list is authoritative for validation and tooling.
+    imageSizes: list[str] | None = None
+    imageQualities: list[str] | None = None
     # ``reasoning_effort`` values this model accepts, from ``infra/models.json``.
     # ``None`` means "not recorded" and falls back to the family heuristic;
     # an empty list means "recorded, and this model takes no effort value".

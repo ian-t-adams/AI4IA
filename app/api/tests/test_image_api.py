@@ -27,8 +27,27 @@ class FakeImageGateway:
         self.empty = False
         self.calls: list[dict] = []
 
-    async def generate_image(self, *, deployment, prompt, size=None, n=1, extra=None, correlation_id=None):
-        self.calls.append({"deployment": deployment, "prompt": prompt, "size": size, "n": n})
+    async def generate_image(
+        self,
+        *,
+        deployment,
+        prompt,
+        size=None,
+        n=1,
+        extra=None,
+        api="chat",
+        correlation_id=None,
+    ):
+        self.calls.append(
+            {
+                "deployment": deployment,
+                "prompt": prompt,
+                "size": size,
+                "n": n,
+                "extra": extra,
+                "api": api,
+            }
+        )
         if self.error is not None:
             raise self.error
         data = [] if self.empty else [{"b64_json": TINY_PNG_B64} for _ in range(n)]
@@ -104,6 +123,73 @@ def test_auto_size_sends_none_to_gateway(client):
     )
     assert r.status_code == 200, r.text
     assert client.app.state.gateway.calls[-1]["size"] is None
+
+
+def test_flux_uses_bfl_protocol_and_server_owned_controls(client):
+    r = client.post(
+        "/api/images/generations",
+        json={
+            "prompt": "a red fox",
+            "model": "FLUX.2-pro",
+            "size": "1536x1024",
+            "quality": "auto",
+        },
+        headers={"X-Dev-User": "ian"},
+    )
+    assert r.status_code == 200, r.text
+    call = client.app.state.gateway.calls[-1]
+    assert call["api"] == "bfl"
+    assert call["size"] == "1536x1024"
+    assert call["extra"] is None
+
+
+def test_flux_kontext_rejects_over_one_megapixel_size(client):
+    r = client.post(
+        "/api/images/generations",
+        json={
+            "prompt": "a red fox",
+            "model": "FLUX.1-Kontext-pro",
+            "size": "1536x1024",
+        },
+        headers={"X-Dev-User": "ian"},
+    )
+    assert r.status_code == 422
+    assert "1024x1024" in r.json()["detail"]
+
+
+def test_flux_1_1_enforces_1440_dimension_cap_with_valid_control(client):
+    rejected = client.post(
+        "/api/images/generations",
+        json={
+            "prompt": "a red fox",
+            "model": "FLUX-1.1-pro",
+            "size": "1024x1536",
+        },
+        headers={"X-Dev-User": "ian"},
+    )
+    allowed = client.post(
+        "/api/images/generations",
+        json={
+            "prompt": "a red fox",
+            "model": "FLUX-1.1-pro",
+            "size": "1024x1440",
+        },
+        headers={"X-Dev-User": "ian"},
+    )
+
+    assert rejected.status_code == 422
+    assert allowed.status_code == 200, allowed.text
+    assert client.app.state.gateway.calls[-1]["size"] == "1024x1440"
+
+
+def test_flux_rejects_unsupported_quality_instead_of_ignoring_it(client):
+    r = client.post(
+        "/api/images/generations",
+        json={"prompt": "a red fox", "model": "FLUX.2-flex", "quality": "high"},
+        headers={"X-Dev-User": "ian"},
+    )
+    assert r.status_code == 422
+    assert "Allowed: auto" in r.json()["detail"]
 
 
 # ---- validation ----

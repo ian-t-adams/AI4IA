@@ -1611,7 +1611,7 @@ async def _deny(
         emit_security_block("realtime_auth", security_reason, "voice_live")
     try:
         await client_ws.close(code=code)
-    except RuntimeError:
+    except (RuntimeError, WebSocketDisconnect):
         # Already closed/disconnected; nothing to do.
         pass
 

@@ -22,11 +22,13 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
   `gpt-audio`), images (`gpt-image-1-mini/1.5/2`), `sora-2`, `model-router`, and
   evaluations. The catalog targets `MAI-Thinking-1` here at 50K TPM under
   `GlobalStandard`; that SKU is globally routed and does **not** provide a US data
-  boundary. Also the region for the `speech_voice_live` voice provider.
+  boundary. It also targets the four Black Forest Labs FLUX image models at one
+  Global Standard unit each. Also the region for the `speech_voice_live` voice provider.
 - **Primary EU — Sweden Central:** mirrors East US 2 for realtime/audio/`sora-2`/
   `model-router`/image and **adds `tts-hd`**. The catalog targets
   `MAI-Thinking-1` here at 50K TPM under `GlobalStandard`, so that model is not
-  EU-resident despite the region. It *offers* the `MAI-Image-2.5` family but does
+  EU-resident despite the region. It mirrors the four FLUX image deployments at
+  one Global Standard unit each. It *offers* the `MAI-Image-2.5` family but does
   not deploy it — see West US below.
 - **Targeted — West US:** sole home of `o3-deep-research` and of the `MAI-Image-2.5` /
   `-Pro` / `-Flash` family. That **image family** is pinned to West US alone, which is
@@ -58,6 +60,18 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
 | `MAI-Image-2.5-Pro` `2026-06-19` | Current Preview | 2/2 consumed; platform reports 0 additional capacity | No upgrade or scale change. |
 | `MAI-Image-2` / `MAI-Image-2e` | Older and deprecating; not deployed | Unused legacy counters | Do not add; 2.5 family is the successor already deployed. |
 | `MAI-DS-R1` | Quota counter exists, but no deployable offer in the checked regions | 1000K unused quota is not entitlement | Do not add unless the live model catalog offers it again. |
+
+### FLUX and requested-model review (2026-08-12)
+
+| Model/family | Live subscription state | Decision |
+|---|---|---|
+| `FLUX.2-pro`, `FLUX.2-flex` | GA; 4-unit quota and platform capacity; none deployed before this change | Catalog target: capacity 1 in each primary region, using 2/4 units per model. Route the BFL-native API through SimpleL7Proxy -> APIM -> Foundry; keep deployment selection and `safety_tolerance=2` server-owned. |
+| `FLUX.1-Kontext-pro`, `FLUX-1.1-pro` | GA; 30-unit quota and platform capacity | Catalog target: capacity 1 in each primary region. Kontext is constrained to square 1024 output; all FLUX models accept only `auto` in the app's generic quality control. |
+| `DeepSeek-V4-Pro` / `DeepSeek-V4-Flash` `2026-04-23` | **Not deployed.** Both are offered; live quota/platform capacity is 1000/1000 for Pro and 250/250 for Flash. | Do not silently add to agents: Microsoft documents 1M input, 384K output, and **no tool calling**. They are viable future chat-only models after the app gains a server-authoritative tool-capability gate. |
+| `qwen3-32b` v1 | **Not deployed.** The offer is visible, but platform inference capacity is 0 in all three checked regions; the 1000-unit counter is named `Qwen3-32B-finetune`. | No deploy: a fine-tuning counter is not inference entitlement. |
+| `Kimi-K2.6` `2026-04-20` | **Not deployed.** Preview; 100 units of live quota/platform capacity. | Viable future chat/agent model (262K text+image input/output, tool calling), but outside this FLUX deployment change. |
+| `Mistral-Large-3` v1 | **Already deployed:** Global + Data Zone capacity 50 in both primary regions. Live control plane reports GA. | Keep; it is already available for chat and agents. |
+| `mistral-document-ai-2512` / `mistral-ocr-4-0` | **Not deployed.** GA/Preview respectively; 60 Global and 40 Data Zone units available. | Treat as a dedicated document-parser feature, not a chat-model catalog row. See `document-multimodal-understanding.md`; Content Understanding remains canonical until parser selection, normalization, provenance, and page-based metering exist. |
 
 > Voice Live is broadly available as an API, but it consumes realtime/audio models that
 > only deploy in East US 2 + Sweden Central — so those are the practical Voice Live regions.

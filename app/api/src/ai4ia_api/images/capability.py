@@ -88,6 +88,15 @@ def build_image_capability(
     models_hint = (
         f" Available image models: {', '.join(image_ids)}." if image_ids else ""
     )
+    constrained = [
+        f"{model.id} supports sizes {', '.join(model.imageSizes or [])} and "
+        f"qualities {', '.join(model.imageQualities or [])}"
+        for model in catalog.models
+        if model.category == "image" and (model.imageSizes or model.imageQualities)
+    ]
+    constraints_hint = (
+        f" Provider-specific constraints: {'; '.join(constrained)}." if constrained else ""
+    )
 
     schema: dict[str, Any] = {
         "type": "function",
@@ -98,7 +107,9 @@ def build_image_capability(
                 "this whenever the user asks to create, draw, render, or illustrate a "
                 "picture. The image is displayed to the user automatically — you do "
                 "NOT receive the pixels, only a confirmation, so never try to "
-                "describe or transcribe the generated image bytes." + models_hint
+                "describe or transcribe the generated image bytes."
+                + models_hint
+                + constraints_hint
             ),
             "parameters": {
                 "type": "object",
@@ -118,10 +129,17 @@ def build_image_capability(
                     },
                     "size": {
                         "type": "string",
-                        "enum": ["1024x1024", "1024x1536", "1536x1024", "auto"],
+                        "enum": [
+                            "1024x1024",
+                            "1024x1440",
+                            "1440x1024",
+                            "1024x1536",
+                            "1536x1024",
+                            "auto",
+                        ],
                         "description": (
                             "Optional output size. Square (1024x1024) by default; use "
-                            "1024x1536 for portrait or 1536x1024 for landscape."
+                            "a portrait/landscape size supported by the selected model."
                         ),
                     },
                     "quality": {

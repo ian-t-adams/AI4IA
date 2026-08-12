@@ -131,6 +131,7 @@
 
             // Optional fields with defaults.
             backend[&quot;path&quot;] = (src[&quot;path&quot;] != null &amp;&amp; src[&quot;path&quot;].Type != JTokenType.Null) ? src.Value&lt;string>(&quot;path&quot;) : &quot;openai&quot;;
+            backend[&quot;operation&quot;] = (src[&quot;operation&quot;] != null &amp;&amp; src[&quot;operation&quot;].Type != JTokenType.Null) ? src.Value&lt;string>(&quot;operation&quot;) : &quot;&quot;;
             backend[&quot;auth&quot;] = (src[&quot;auth&quot;] != null &amp;&amp; src[&quot;auth&quot;].Type != JTokenType.Null) ? src.Value&lt;string>(&quot;auth&quot;) : &quot;MI&quot;;
             backend[&quot;deployment&quot;] = src.Value&lt;string>(&quot;deployment&quot;) ?? &quot;&quot;;
             // acceptablePriorities may be a JArray ([1,2,3]) or a comma-separated string (&quot;1,2,3&quot;).

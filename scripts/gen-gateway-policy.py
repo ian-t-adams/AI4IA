@@ -81,6 +81,12 @@ JOBJECT_INDEX_INITIALIZER_PATTERN = re.compile(
     r"new\s+JObject\s*\{\s*\[",
     re.DOTALL,
 )
+BFL_MODEL_PATHS = {
+    "FLUX.2-pro": "flux-2-pro",
+    "FLUX.2-flex": "flux-2-flex",
+    "FLUX.1-Kontext-pro": "flux-kontext-pro",
+    "FLUX-1.1-pro": "flux-pro-1.1",
+}
 
 
 def deployment_name(
@@ -106,14 +112,21 @@ def backend_row(
     region: str,
     deployment: str,
     provider_path: str,
+    operation_path: str | None,
     priority: int,
     timeout: int,
 ) -> str:
     named_value = f"{{{{foundry-{region}-endpoint}}}}"
+    operation_row = (
+        f'                    new JProperty("operation", "/{operation_path}"),\n'
+        if operation_path
+        else ""
+    )
     return (
         f'                new JProperty("{label}", new JObject(\n'
         f'                    new JProperty("url", "{named_value}"),\n'
         f'                    new JProperty("path", "{provider_path}"),\n'
+        f"{operation_row}"
         f'                    new JProperty("deployment", "{deployment}"),\n'
         f'                    new JProperty("priority", {priority}),\n'
         '                    new JProperty("acceptablePriorities", "1, 2, 3"),\n'
@@ -135,10 +148,19 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
     for model in models["catalog"]:
         deployments = model["deployments"]
         timeout = timeout_seconds(model["category"])
+        api = model.get("api", "chat")
         provider_path = {
             "anthropic": "anthropic",
             "mai": "mai",
-        }.get(model.get("api", "chat"), "openai")
+            "bfl": "providers/blackforestlabs/v1",
+        }.get(api, "openai")
+        operation_path = None
+        if api == "bfl":
+            operation_path = BFL_MODEL_PATHS.get(model["name"])
+            if operation_path is None:
+                raise ValueError(
+                    f"{model['name']}: api 'bfl' has no governed provider path"
+                )
         resolved = [
             {
                 "region": deployment["region"],
@@ -206,6 +228,7 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                     region=candidate["region"],
                     deployment=candidate["name"],
                     provider_path=provider_path,
+                    operation_path=operation_path,
                     priority=1 if candidate["region"] == requested["region"] else 2,
                     timeout=timeout,
                 )

@@ -93,6 +93,32 @@ playback, memory save, or sharing.
 All tool paths re-check ownership/access, require `ready` status, apply caps, and
 sanitize untrusted strings before returning them to the model.
 
+## Evaluated alternate parser: Mistral Document AI / OCR
+
+The live subscription offers `mistral-document-ai-2512` (GA) and
+`mistral-ocr-4-0` (Preview), but neither is deployed or wired into ingestion.
+They are image-to-text models, not conversational models: Microsoft documents
+image/PDF input, at most 30 pages / 30 MB, and text/JSON/Markdown output.
+Microsoft Learn's Foundry capability table currently lists `en`, while Mistral's
+provider material claims broader multilingual coverage (including 170 languages
+for OCR 4). Treat the deployed language contract as unverified until a live
+fixture proves it; do not advertise either limit from provider marketing alone.
+
+They can become a useful **explicit parser choice** for PDFs and images,
+but must not become a second implicit canonical parser. Before enablement:
+
+1. normalize their output into the existing `parsed.md` / manifest / chunk contract;
+2. persist parser provider, model/version, region/SKU, and source-page provenance;
+3. make analyzer selection explicit and immutable for one ingest attempt;
+4. preserve the same ownership, dedupe, retry, deletion, and rebuild semantics;
+5. meter by pages/requests rather than pretending OCR is token-priced; and
+6. state the narrower format, language, and page limits in the UI.
+
+Content Understanding remains the default because it already handles documents,
+images, audio, and video through one durable pipeline. Mistral OCR is a future
+specialized path, not a drop-in replacement and not a fallback that silently
+changes parsing semantics.
+
 ## Sharing and privacy
 
 Documents default to `private`. Owners can set:

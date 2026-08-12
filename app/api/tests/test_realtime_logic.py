@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import anyio
 import pytest
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ai4ia_api.agents.agent_catalog import AgentCatalog, AgentSpec
 from ai4ia_api.agents.tool_exec import build_tools
@@ -52,6 +53,7 @@ from ai4ia_api.routers.realtime import (
     resolve_realtime_deployment,
     relay,
     sanitize_realtime_metadata,
+    _deny,
     _run_relay_with_finalization,
     _resolve_live_voice_provider,
 )
@@ -91,6 +93,17 @@ def _catalog() -> ModelCatalog:
             ),
         ]
     )
+
+
+async def test_deny_ignores_a_socket_the_client_already_disconnected() -> None:
+    class DisconnectedSocket(WebSocket):
+        def __init__(self) -> None:
+            pass
+
+        async def close(self, code: int = 1000, reason: str | None = None) -> None:
+            raise WebSocketDisconnect(code=1000, reason="client closed")
+
+    await _deny(DisconnectedSocket(), 1011)
 
 
 # --------------------------------------------------------------------------- #

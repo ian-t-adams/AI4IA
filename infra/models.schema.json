@@ -42,11 +42,29 @@
           "category": { "type": "string" },
           "api": {
             "type": "string",
-            "enum": ["chat", "responses", "anthropic", "mai"],
+            "enum": ["chat", "responses", "anthropic", "mai", "bfl"],
             "description": "Provider protocol used by the runtime and gateway. Defaults to chat when omitted."
           },
           "contextWindow": { "type": "integer", "minimum": 1 },
           "maxOutputTokens": { "type": "integer", "minimum": 1 },
+          "imageSizes": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": ["1024x1024", "1024x1440", "1440x1024", "1024x1536", "1536x1024", "auto"]
+            }
+          },
+          "imageQualities": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": ["auto", "low", "medium", "high"]
+            }
+          },
           "reasoningEffort": {
             "description": "reasoning_effort values this model accepts, established by probing the live deployment rather than from documentation. Omit for non-reasoning models. An empty array means the model is a reasoning model that takes no reasoning_effort at all.",
             "type": "array",

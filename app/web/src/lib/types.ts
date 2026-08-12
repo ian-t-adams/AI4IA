@@ -25,6 +25,7 @@ export interface ModelEntry {
   displayName: string;
   category: string;
   format: string;
+  api?: string;
   // True for text-chat models offered in the chat/agent pickers; false for
   // capability models (image, video, tts, transcription, embedding, rerank) and
   // voice models (realtime, audio), reached through their own surfaces/tools.
@@ -34,6 +35,8 @@ export interface ModelEntry {
   // it for a model (e.g. model-router); callers fall back to fixed defaults.
   contextWindow: number | null;
   maxOutputTokens: number | null;
+  imageSizes?: string[] | null;
+  imageQualities?: string[] | null;
   // Whether temperature/top_p actually reach the provider. False for reasoning
   // models, whose sampling params the gateway strips because they 400 on
   // non-default values. Server-computed so the UI never presents a control that
