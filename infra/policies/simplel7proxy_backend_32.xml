@@ -237,7 +237,9 @@
 					<set-variable name="selectedDeployment" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;deployment&quot;))" />
 					<set-variable name="backendProtocolPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;path&quot;))" />
 					<set-variable name="backendCallCounter" value="@(context.Variables.GetValueOrDefault&lt;int>(&quot;backendCallCounter&quot;) + 1)" />
-					<!-- Set the backend service URL -->
+					<!-- Set the backend service URL. backendUrl already includes the
+					     generated provider base path (`/openai` or `/anthropic`);
+					     rewrite-uri below supplies the relative operation path. -->
 					<set-backend-service base-url="@((string)context.Variables[&quot;backendUrl&quot;])" />
 					<!-- Deployment names are region-specific in infra/models.json.
 					     Rewrite path-based Azure OpenAI calls and model-body calls

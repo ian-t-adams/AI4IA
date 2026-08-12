@@ -59,6 +59,11 @@ class GatewayPolicyTests(unittest.TestCase):
         priority = gateway_generator.PRIORITY_POLICY_PATH.read_text(encoding="utf-8")
         self.assertIn("/ai.azure.com", setup)
         self.assertIn('providerPath, &quot;anthropic&quot;', setup)
+        self.assertIn(
+            'rawUrl + &quot;/&quot; + rawPath',
+            setup,
+            "provider path must be part of the set-backend-service base URL",
+        )
         self.assertIn("<rewrite-uri template=\"/v1/messages\"", priority)
         self.assertIn('name="anthropic-version" exists-action="override"', priority)
         self.assertIn("<value>2023-06-01</value>", priority)

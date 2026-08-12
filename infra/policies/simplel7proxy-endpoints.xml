@@ -95,7 +95,9 @@
     }" />
 
     <!-- Picks the token audience from the selected provider path. All failover
-        backends for one model use the same protocol (enforced by generation). -->
+        backends for one model use the same protocol (enforced by generation).
+        Microsoft documents https://ai.azure.com/.default for Claude Messages;
+        APIM authentication-managed-identity takes the resource without /.default. -->
     <set-variable name="authResource" value="@{
         JObject selected = (JObject)context.Variables[&quot;selectedBackends&quot;];
         JProperty firstProperty = selected.Properties().FirstOrDefault();
@@ -149,6 +151,8 @@
             backend[&quot;bufferResponse&quot;] = (src[&quot;bufferResponse&quot;] != null &amp;&amp; src[&quot;bufferResponse&quot;].Type != JTokenType.Null) ? src[&quot;bufferResponse&quot;].DeepClone() : true;
 
             // Join url + path.
+            // set-backend-service preserves this base path when rewrite-uri changes
+            // the relative operation path: endpoint/anthropic + /v1/messages.
             string rawUrl = (backend.Value&lt;string>(&quot;url&quot;) ?? &quot;&quot;).TrimEnd('/');
             string rawPath = (backend.Value&lt;string>(&quot;path&quot;) ?? &quot;&quot;).TrimStart('/');
             string joinedUrl = string.IsNullOrEmpty(rawPath) ? rawUrl : (rawUrl + &quot;/&quot; + rawPath);
