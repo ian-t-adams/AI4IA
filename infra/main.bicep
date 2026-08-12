@@ -17,18 +17,18 @@ param environmentName string
 ])
 param location string = 'eastus2'
 
-@minLength(1)
-@description('Legal entity name sent to Anthropic in modelProviderData. Required whenever infra/models.json contains an Anthropic deployment; supplying it accepts the applicable Marketplace terms. Never use an inferred owner tag or placeholder.')
-param claudeOrganizationName string
+@description('Enable Anthropic model deployment and API advertisement. Default OFF until Marketplace fulfillment is approved and working for the subscription.')
+param claudeEnabled bool = false
 
-@minLength(2)
+@description('Legal entity name sent to Anthropic in modelProviderData. Required when claudeEnabled; supplying it accepts the applicable Marketplace terms. Never use an inferred owner tag or placeholder.')
+param claudeOrganizationName string = ''
+
 @maxLength(2)
 @description('ISO 3166-1 alpha-2 country code sent to Anthropic in modelProviderData (for example US). Must describe the organization using Claude.')
-param claudeCountryCode string
+param claudeCountryCode string = ''
 
-@minLength(1)
 @description('Lowercase Anthropic Marketplace industry value sent in modelProviderData (for example technology). Must describe the organization using Claude.')
-param claudeIndustry string
+param claudeIndustry string = ''
 
 @description('Object/principal id of the OIDC deployment identity. When set, it receives provisioning-only App Configuration Data Owner, Content Understanding Contributor on the primary account, Foundry User on the enabled primary toolbox project, and API Center Data Reader on the enabled private catalog. This is a principalId, never the managed identity clientId.')
 param deploymentPrincipalId string = ''
@@ -313,6 +313,7 @@ var resourceGroupName = 'rg-${workload}-${environmentName}'
 var models = loadJsonContent('models.json')
 var skuShort = models.naming.skuShort
 var catalog = models.catalog
+var deployableCatalog = filter(catalog, model => claudeEnabled || model.format != 'Anthropic')
 
 // Naming tokens come from models.json `naming` (the single source of truth also read by
 // scripts/gen-model-catalog.py, scripts/validate-catalog.py, and the app runtime). Changing
@@ -330,7 +331,7 @@ var regionList = map(items(models.regions), r => {
 // Build deployment records once, then use the exact same objects for the model
 // modules and for postprovision outputs. This prevents Content Understanding from
 // reconstructing deployment names independently of the resources ARM creates.
-var modelDeploymentsByRegion = [for r in regionList: flatten(map(catalog, m => map(filter(m.deployments, d => d.region == r.name), d => {
+var modelDeploymentsByRegion = [for r in regionList: flatten(map(deployableCatalog, m => map(filter(m.deployments, d => d.region == r.name), d => {
   deploymentName: '${m.name}-${subscriptionToken}-${r.name}-${skuShort[d.sku]}'
   modelName: m.name
   format: m.format
@@ -906,6 +907,7 @@ module api 'modules/api.bicep' = {
     entraAudience: entraAudience
     adminSubjects: adminSubjects
     adminApiSecret: adminApiSecret
+    claudeEnabled: claudeEnabled
     // The API stamps the priority band; the proxy reserves workers for it. Both
     // sides read the same switch so they can never be half-enabled: a band with
     // no reservation is inert, and a reservation with no band starves.

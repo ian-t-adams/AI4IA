@@ -299,14 +299,26 @@ def _load_raw(explicit_path: str | None) -> dict[str, Any]:
 
 @lru_cache
 def load_catalog(
-    explicit_path: str | None = None, residency: str = GLOBAL_RESIDENCY
+    explicit_path: str | None = None,
+    residency: str = GLOBAL_RESIDENCY,
+    claude_enabled: bool = True,
 ) -> ModelCatalog:
-    """Load the catalog under a data-residency ``policy``.
+    """Load the catalog under a data-residency and provider entitlement policy.
 
     An unrecognised policy fails closed to the most permissive value rather than
     silently filtering everything out; ``Settings`` validates the value first, so
     reaching that branch means a caller bypassed configuration.
+
+    ``claude_enabled`` defaults true for catalog tooling/tests that inspect the
+    complete source of truth. The running API always passes its default-off
+    setting explicitly, so an Anthropic model cannot appear in chat or agent
+    pickers before its Marketplace fulfillment is ready.
     """
     raw = _load_raw(explicit_path)
     policy = residency if residency in RESIDENCY_POLICIES else GLOBAL_RESIDENCY
-    return ModelCatalog(models=raw["models"], residencyPolicy=policy)
+    models = [
+        model
+        for model in raw["models"]
+        if claude_enabled or model.get("api") != "anthropic"
+    ]
+    return ModelCatalog(models=models, residencyPolicy=policy)

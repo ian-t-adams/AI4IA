@@ -116,7 +116,9 @@ def active_subscription(expected_subscription_id: str | None = None) -> dict[str
     }
 
 
-def catalog_requirements(models: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+def catalog_requirements(
+    models: dict[str, Any], *, include_anthropic: bool = True
+) -> dict[str, list[dict[str, Any]]]:
     """Group desired deployment records by region, including their exact ARM names."""
     naming = models.get("naming") or {}
     pattern = str(
@@ -127,6 +129,8 @@ def catalog_requirements(models: dict[str, Any]) -> dict[str, list[dict[str, Any
     sku_short = naming.get("skuShort") or {}
     by_region: dict[str, list[dict[str, Any]]] = {}
     for entry in models.get("catalog", []):
+        if not include_anthropic and entry.get("format") == "Anthropic":
+            continue
         for deployment in entry.get("deployments", []):
             region = deployment.get("region")
             sku = deployment.get("sku", "")
@@ -843,7 +847,12 @@ def main() -> int:
     print(f"Checking Azure subscription {account_label}.", flush=True)
 
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
-    by_region = catalog_requirements(models)
+    claude_enabled = (
+        os.environ.get("AI4IA_CLAUDE_ENABLED") or ""
+    ).strip().casefold() in {"1", "true", "yes", "on"}
+    by_region = catalog_requirements(
+        models, include_anthropic=claude_enabled
+    )
     regions = args.region or sorted(by_region)
     environment_name = args.environment_name or os.environ.get("AZURE_ENV_NAME")
     resource_group = args.resource_group or os.environ.get("AZURE_RESOURCE_GROUP")

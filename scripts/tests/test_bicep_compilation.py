@@ -75,6 +75,14 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertEqual(actual, expected)
         self.assertIn("swedencentral", actual)
 
+    def test_claude_entitlement_defaults_off(self) -> None:
+        self.assertFalse(self.template["parameters"]["claudeEnabled"]["defaultValue"])
+        self.assertIn("deployableCatalog", self.template["variables"])
+        self.assertIn(
+            "claudeEnabled",
+            json.dumps(self.template["variables"]["deployableCatalog"]),
+        )
+
     def test_null_forgiving_access_preserves_conditional_durable_outputs(self) -> None:
         parameters = self.template["resources"]["api"]["properties"]["parameters"]
         self.assertEqual(
@@ -128,6 +136,11 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertEqual(
             module_parameters["claudeIndustry"]["value"],
             "[parameters('claudeIndustry')]",
+        )
+        api_parameters = self.template["resources"]["api"]["properties"]["parameters"]
+        self.assertEqual(
+            api_parameters["claudeEnabled"]["value"],
+            "[parameters('claudeEnabled')]",
         )
         variables = self.template["variables"]
         self.assertEqual(

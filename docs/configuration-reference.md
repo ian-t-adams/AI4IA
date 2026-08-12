@@ -35,9 +35,10 @@ watch the Bicep parameter, and know which runtime setting appears in the app.
 | Permit dev auth outside local | `AI4IA_ALLOW_DEV_AUTH` | `apiAllowDevAuth` | **Defaults to `false`, and leave it there.** Setting it `true` lets a *deployed* environment accept `X-Dev-User` client-asserted identity — any caller can name itself, so admin checks and per-user isolation stop meaning anything. It exists only for a throwaway demo with no Entra tenant. `AI4IA_APP_ENVIRONMENT=prod` ignores it outright. With both this and `AI4IA_AUTH_PROVIDER` left at their defaults, a fresh deploy **fails at startup** rather than serving insecurely; that is deliberate. |
 | Cost center tag | `AI4IA_COST_CENTER` | `costCenter` | Defaults to `genai-demo`; override for real chargeback. |
 | Identity-only auth on Foundry | `AI4IA_FOUNDRY_DISABLE_LOCAL_AUTH` | `foundryDisableLocalAuth` | **Defaults to `true`, and leave it there.** It is what makes gateway-only model routing an IAM boundary instead of a convention: with account keys live, anything holding one can call a Foundry deployment directly and skip APIM's rate limiting, residency policy, usage metering and priority routing. Nothing in this repo needs a Foundry account key — APIM authenticates with its managed identity, Content Understanding and Code Interpreter default to `bearer`, and Voice Live reaches APIM rather than Foundry. Set `false` only to recover from a proven key dependency a live deploy uncovered, and record why. |
-| Claude legal entity | `AI4IA_CLAUDE_ORGANIZATION_NAME` | `claudeOrganizationName` | **Required, no default.** Legal entity sent in Anthropic `modelProviderData`; provisioning accepts the Marketplace terms on that entity's behalf. Never derive it from `AI4IA_OWNER` or use a placeholder. |
-| Claude country | `AI4IA_CLAUDE_COUNTRY_CODE` | `claudeCountryCode` | **Required.** Uppercase ISO-2 country code that accurately describes the organization accepting the Anthropic terms. |
-| Claude industry | `AI4IA_CLAUDE_INDUSTRY` | `claudeIndustry` | **Required.** Lowercase Foundry Marketplace industry value that accurately describes the organization. |
+| Claude entitlement | `AI4IA_CLAUDE_ENABLED` | `claudeEnabled` | **Defaults to `false`.** When false, Bicep omits every Anthropic deployment and FastAPI removes Claude from `/api/models`, chat, and agent pickers. Set true only after Marketplace fulfillment is confirmed for the subscription. |
+| Claude legal entity | `AI4IA_CLAUDE_ORGANIZATION_NAME` | `claudeOrganizationName` | Required when `AI4IA_CLAUDE_ENABLED=true`. Legal entity sent in Anthropic `modelProviderData`; provisioning accepts the Marketplace terms on that entity's behalf. Never derive it from `AI4IA_OWNER` or use a placeholder. |
+| Claude country | `AI4IA_CLAUDE_COUNTRY_CODE` | `claudeCountryCode` | Required when Claude is enabled. Uppercase ISO-2 country code that accurately describes the organization accepting the Anthropic terms. |
+| Claude industry | `AI4IA_CLAUDE_INDUSTRY` | `claudeIndustry` | Required when Claude is enabled. Lowercase Foundry Marketplace industry value that accurately describes the organization. |
 | APIM publisher email | `AI4IA_APIM_PUBLISHER_EMAIL` | `apimPublisherEmail` | Required by API Management. Use an operator-owned mailbox, not a person. |
 | Budget alert recipients | Bicep override only today | `budgetAlertEmails` | Empty means budget tracking without email notifications. |
 | Entitlement admin shared secret | `AI4IA_ADMIN_API_SECRET` | `adminApiSecret` (`@secure()`) | Optional; empty by default. Only meaningful under spoofable dev auth — empty means identity-only admin, which is the fail-closed posture under Entra. When set it flows to the api as the `admin-api-secret` Container App secret. Leave unset in a production tenant. |
@@ -145,7 +146,9 @@ direct provider call. The API translates the internal chat/tool contract to
 Anthropic Messages. APIM selects the `anthropic` backend path, requests the
 `https://ai.azure.com` managed-identity audience, rewrites to `/v1/messages`,
 and owns the `anthropic-version: 2023-06-01` header. The catalog's `api` field is
-therefore a routing contract, not UI metadata.
+therefore a routing contract, not UI metadata. The generated route may exist
+while `AI4IA_CLAUDE_ENABLED=false`, but no Claude deployment exists and FastAPI
+does not advertise or resolve it; callers cannot widen that server-side gate.
 
 In production, `AI4IA_MODEL_GATEWAY_ALLOWED_HOSTS` is the server-owned,
 comma-separated allowlist of exact SimpleL7Proxy ingress hostnames. IaC derives

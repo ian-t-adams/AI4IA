@@ -666,6 +666,10 @@ class Settings(BaseSettings):
 
     # Optional path override for the bundled model catalog (tests/dev).
     model_catalog_path: str | None = None
+    # Anthropic Marketplace entitlement gate. Default OFF: the packaged catalog
+    # may contain Claude, but the server removes it before any route, agent, or UI
+    # can select it. IaC uses the same switch to omit the paid deployment.
+    claude_enabled: bool = False
 
     # Data-residency policy for model routing: "global" | "zonal" | "us" | "eu".
     #
@@ -803,7 +807,7 @@ class Settings(BaseSettings):
         if policy == "global":
             return
 
-        catalog = load_catalog(self.model_catalog_path, policy)
+        catalog = load_catalog(self.model_catalog_path, policy, self.claude_enabled)
         if not catalog.conversational_models():
             offered = sorted(
                 {

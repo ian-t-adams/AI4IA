@@ -126,10 +126,23 @@ class CommittedParametersTests(unittest.TestCase):
 
 
 class ClaudeMarketplaceAttestationTests(unittest.TestCase):
+    def test_disabled_claude_does_not_require_attestation(self) -> None:
+        with _environment(
+            AI4IA_CLAUDE_ENABLED="false",
+            AI4IA_CLAUDE_ORGANIZATION_NAME="",
+            AI4IA_CLAUDE_COUNTRY_CODE="",
+            AI4IA_CLAUDE_INDUSTRY="",
+        ):
+            code, _, err = _run(
+                REAL_PARAMETERS, require_deployment_attestation=True
+            )
+        self.assertEqual(code, 0, err)
+
     def test_real_provision_requires_attestation_even_when_all_values_are_absent(
         self,
     ) -> None:
         with _environment(
+            AI4IA_CLAUDE_ENABLED="true",
             AI4IA_CLAUDE_ORGANIZATION_NAME="",
             AI4IA_CLAUDE_COUNTRY_CODE="",
             AI4IA_CLAUDE_INDUSTRY="",
@@ -176,7 +189,7 @@ class ClaudeMarketplaceAttestationTests(unittest.TestCase):
         self.assertIn("lowercase claudeIndustry", err)
 
     def test_explicit_attestation_values_pass(self) -> None:
-        with _environment(**CLAUDE_ENV):
+        with _environment(AI4IA_CLAUDE_ENABLED="true", **CLAUDE_ENV):
             code, _, err = _run(REAL_PARAMETERS)
         self.assertEqual(code, 0, err)
 
