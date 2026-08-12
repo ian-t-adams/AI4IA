@@ -401,7 +401,7 @@
                 ))
             )),
 
-            new JProperty(&quot;Mistral-Large-3-slurmfactory-eastus2-glbl&quot;, new JObject(
+            new JProperty(&quot;mistral-large-3-slurmfactory-eastus2-glbl&quot;, new JObject(
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
@@ -424,7 +424,7 @@
                 ))
             )),
 
-            new JProperty(&quot;Mistral-Large-3-slurmfactory-eastus2-dz&quot;, new JObject(
+            new JProperty(&quot;mistral-large-3-slurmfactory-eastus2-dz&quot;, new JObject(
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),

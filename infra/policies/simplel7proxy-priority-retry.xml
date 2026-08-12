@@ -472,7 +472,7 @@ REFACTOR:
 					<set-variable name="backendProtocolPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;path&quot;))" />
 					<set-variable name="backendCallCounter" value="@(context.Variables.GetValueOrDefault&lt;int>(&quot;backendCallCounter&quot;) + 1)" />
 					<!-- Set the backend service URL. backendUrl already includes the
-					     generated provider base path (`/openai` or `/anthropic`);
+					     generated provider base path (`/openai`, `/anthropic`, or `/mai`);
 					     rewrite-uri below supplies the relative operation path. -->
 					<set-backend-service base-url="@((string)context.Variables[&quot;backendUrl&quot;])" />
 					<!-- Deployment names are region-specific in infra/models.json.
@@ -486,8 +486,18 @@ REFACTOR:
 						if (string.Equals(protocol, &quot;anthropic&quot;, StringComparison.OrdinalIgnoreCase)) {
 							return &quot;/v1/messages&quot;;
 						}
+						if (string.Equals(protocol, &quot;mai&quot;, StringComparison.OrdinalIgnoreCase)) {
+							return &quot;/v1/chat/completions&quot;;
+						}
 						if (!string.IsNullOrEmpty(requested) &amp;&amp; !string.IsNullOrEmpty(selected)) {
-							path = path.Replace(&quot;deployments/&quot; + requested + &quot;/&quot;, &quot;deployments/&quot; + selected + &quot;/&quot;);
+							string marker = &quot;deployments/&quot;;
+							int markerIndex = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+							if (markerIndex &gt;= 0) {
+								int start = markerIndex + marker.Length;
+								int end = path.IndexOf('/', start);
+								if (end &lt; 0) { end = path.Length; }
+								path = path.Substring(0, start) + selected + path.Substring(end);
+							}
 						}
 						return &quot;/&quot; + path.TrimStart('/');
 					}" />
@@ -503,6 +513,17 @@ REFACTOR:
 							<set-body>@{
 								JObject body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
 								body["model"] = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", body["model"]?.ToString() ?? "");
+								return body.ToString(Newtonsoft.Json.Formatting.None);
+							}</set-body>
+						</when>
+						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;), &quot;mai&quot;, StringComparison.OrdinalIgnoreCase))">
+							<!-- MAI uses an OpenAI-compatible body on its own fixed
+							     endpoint. Remove the Azure OpenAI api-version query
+							     and bind model to the backend selected for this try. -->
+							<rewrite-uri template="/v1/chat/completions" copy-unmatched-params="false" />
+							<set-body>@{
+								JObject body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+								body["model"] = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", "");
 								return body.ToString(Newtonsoft.Json.Formatting.None);
 							}</set-body>
 						</when>

@@ -36,6 +36,46 @@ docs_generator = load_script("gen_docs_catalog", "scripts/gen-docs-catalog.py")
 
 
 class GatewayPolicyTests(unittest.TestCase):
+    def test_mixed_case_catalog_keys_match_normalized_model_headers(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        blocks, _ = gateway_generator.render_catalog(models)
+        mai = next(
+            block
+            for block in blocks
+            if 'new JProperty("mai-thinking-1-slurmfactory-eastus2-glbl"' in block
+        )
+        self.assertIn(
+            'new JProperty("deployment", "MAI-Thinking-1-slurmfactory-eastus2-glbl")',
+            mai,
+        )
+        for block in blocks:
+            lookup = re.search(r'new JProperty\("([^"]+)", new JObject', block)
+            self.assertIsNotNone(lookup)
+            assert lookup is not None
+            self.assertEqual(lookup.group(1), lookup.group(1).lower())
+
+    def test_mai_uses_its_fixed_chat_completions_backend(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        blocks, _ = gateway_generator.render_catalog(models)
+        mai = [
+            block
+            for block in blocks
+            if 'new JProperty("mai-thinking-1-' in block
+        ]
+        self.assertEqual(len(mai), 2)
+        for block in mai:
+            self.assertIn('new JProperty("path", "mai")', block)
+            self.assertNotIn('new JProperty("path", "openai")', block)
+
+        priority = gateway_generator.PRIORITY_POLICY_PATH.read_text(encoding="utf-8")
+        self.assertIn('<rewrite-uri template="/v1/chat/completions"', priority)
+        self.assertIn('provider base path (`/openai`, `/anthropic`, or `/mai`)', priority)
+        self.assertIn(
+            'body["model"] = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", "")',
+            priority,
+        )
+        self.assertIn('copy-unmatched-params="false"', priority)
+
     def test_anthropic_models_use_the_messages_backend_only(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
         blocks, _ = gateway_generator.render_catalog(models)

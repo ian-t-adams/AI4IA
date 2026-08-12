@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import re
 
-# Azure OpenAI reasoning models (the GPT-5 family and the o-series) reject the
-# classic Chat Completions sampling/limit parameters: they require
+# Azure/OpenAI-compatible reasoning models (the GPT-5 family, o-series, and
+# MAI-Thinking-1) reject the classic Chat Completions sampling/limit parameters:
+# they require
 # ``max_completion_tokens`` instead of ``max_tokens`` and 400 on non-default
 # ``temperature``/``top_p``/penalties/logprobs. A deployment name always begins
 # with the catalog model id (e.g. ``gpt-5.2-slurmfactory-eastus2-glbl``), so a
@@ -20,7 +21,9 @@ import re
 # name. ``model-router`` is deliberately EXCLUDED: it accepts the standard
 # parameter set and drops the unsupported ones itself when it routes to an
 # o-series model (per Microsoft Learn), so we must not pre-transform it.
-REASONING_DEPLOYMENT = re.compile(r"^(gpt-5|o1|o3|o4)\b", re.IGNORECASE)
+REASONING_DEPLOYMENT = re.compile(
+    r"^(gpt-5|o1|o3|o4|mai-thinking-1)\b", re.IGNORECASE
+)
 # Claude in Foundry uses the Anthropic Messages API rather than Azure OpenAI
 # Chat Completions. The deployment name begins with the catalog model id, so
 # this remains valid after the region/SKU suffix is appended.
@@ -29,7 +32,8 @@ ANTHROPIC_MESSAGES_DEPLOYMENT = re.compile(r"^claude-", re.IGNORECASE)
 # Omitting both selects that default, so the generic sampling sliders must stay
 # hidden and the transport must strip stale values carried from another model.
 NO_SAMPLING_DEPLOYMENT = re.compile(
-    r"^(gpt-5|o1|o3|o4|claude-opus-4-8)\b", re.IGNORECASE
+    r"^(gpt-5|o1|o3|o4|mai-thinking-1|claude-opus-4-8)\b",
+    re.IGNORECASE,
 )
 
 # The reasoning_effort values EVERY reasoning model accepts. This is a floor, not

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
@@ -350,7 +351,8 @@ def test_responses_model_gets_no_notice_when_no_capabilities_were_possible():
         client.__exit__(None, None, None)
 
 
-def test_chat_completions_model_still_gets_tools_not_a_notice():
+@pytest.mark.parametrize("model", ["gpt-5.2", "MAI-Thinking-1"])
+def test_chat_completions_model_still_gets_tools_not_a_notice(model):
     # The chat-completions path must be untouched: real tools, and never the
     # "you have no tools" notice (which would be an outright lie there).
     client = _make_client()
@@ -360,7 +362,7 @@ def test_chat_completions_model_still_gets_tools_not_a_notice():
         gw = ScriptedWebGateway(call_tool=True)
         client.app.state.gateway = gw
 
-        sid = _new_session(client)  # gpt-5.2 -> chat completions
+        sid = _session_with_model(client, model)
         resp = client.post(
             "/api/chat",
             json={"sessionId": sid, "content": "What is happening today?", "stream": False},

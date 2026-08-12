@@ -13,7 +13,7 @@
     Each model maps to a set of named backends. The name (e.g. "PAYGO") is the
     label shown in the logs. Each backend has these fields:
         url                   the base address of the backend service
-        path                  appended to the url (usually "openai")
+        path                  appended to the url ("openai", "anthropic", or "mai")
         priority              lower number is tried first (1 before 2)
         acceptablePriorities  which request priorities it serves (1, 2, 3)
         timeout               seconds to wait before giving up
@@ -83,7 +83,8 @@
     }" />
 
     <!-- Picks the backend list for this request's model from the catalog above.
-        Falls back to "DEFAULT" if the model is unknown. No need to edit this. -->
+    Generated lookup keys are lowercase to match the normalized model header.
+    Falls back to "DEFAULT" if the model is unknown. No need to edit this. -->
     <set-variable name="selectedBackends" value="@{
         JObject catalog = (JObject)context.Variables[&quot;backendCatalog&quot;];
         string model = (string)context.Variables[&quot;model&quot;];

@@ -162,6 +162,28 @@ async def test_complete_posts_and_parses_json():
     assert "deployments/dep-1/chat/completions" in captured["url"]
 
 
+async def test_mai_api_keeps_proxy_routing_shape_and_chat_response_contract():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    client = _client(transport=httpx.MockTransport(handler))
+    result = await client.complete(
+        deployment=_MAI,
+        messages=[{"role": "user", "content": "reason"}],
+        params={"max_tokens": 4096, "tools": [{"type": "function", "function": {"name": "f"}}]},
+        api="mai",
+    )
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert f"deployments/{_MAI}/chat/completions" in captured["url"]
+    assert captured["body"]["max_completion_tokens"] == 4096
+    assert captured["body"]["tools"][0]["function"]["name"] == "f"
+
+
 async def test_complete_raises_on_error_status():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, text="rate limited")
@@ -229,11 +251,12 @@ async def test_embed_empty_inputs_short_circuits():
 _GPT5 = "gpt-5.2-slurmfactory-eastus2-glbl"
 _O4 = "o4-mini-slurmfactory-eastus2-glbl"
 _GPT41 = "gpt-4.1-mini-slurmfactory-eastus2-glbl"
+_MAI = "MAI-Thinking-1-slurmfactory-eastus2-glbl"
 _ROUTER = "model-router-slurmfactory-eastus2-glbl"
 _DEEPSEEK = "DeepSeek-V3.2-slurmfactory-eastus2-glbl"
 
 
-@pytest.mark.parametrize("deployment", [_GPT5, _O4])
+@pytest.mark.parametrize("deployment", [_GPT5, _O4, _MAI])
 def test_reasoning_maps_max_tokens_and_strips_sampling(deployment):
     client = _client()
     params = {
