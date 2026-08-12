@@ -230,6 +230,7 @@ def _responses_json_to_chat(obj: dict[str, Any]) -> dict[str, Any]:
 _REQUEST_FAILED = "Model gateway request failed."
 _STREAM_FAILED = "Model stream failed."
 MAI_API = "mai"
+BFL_API = "bfl"
 CHAT_COMPLETIONS_APIS = frozenset({"chat", MAI_API})
 _KNOWN_APIS = CHAT_COMPLETIONS_APIS | frozenset({"responses", ANTHROPIC_API})
 
@@ -521,6 +522,7 @@ class ModelGatewayClient:
         size: str | None = None,
         n: int = 1,
         extra: dict[str, Any] | None = None,
+        api: str = "chat",
         correlation_id: str | None = None,
     ) -> GatewayRequest:
         """Build an image-generation request. Uses the image-specific api-version
@@ -533,12 +535,26 @@ class ModelGatewayClient:
         """
         path = self._images_path.format(deployment=deployment)
         url = f"{self._base}{path if path.startswith('/') else '/' + path}"
-        body: dict[str, Any] = {"prompt": prompt, "n": n, **(extra or {})}
-        if size:
-            body["size"] = size
+        if api == BFL_API:
+            body = {
+                "model": deployment.lower(),
+                "prompt": prompt,
+                "num_images": n,
+                "output_format": "png",
+                # Server-owned: callers cannot relax the provider safety posture.
+                "safety_tolerance": 2,
+            }
+            if size:
+                width, height = size.split("x", maxsplit=1)
+                body["width"] = int(width)
+                body["height"] = int(height)
+        else:
+            body = {"prompt": prompt, "n": n, **(extra or {})}
+            if size:
+                body["size"] = size
         if self._style == GatewayProviderStyle.azure_openai_native:
             url = f"{url}?api-version={self._image_api_version}"
-        else:
+        elif api != BFL_API:
             body["model"] = deployment
         return GatewayRequest(url=url, headers=self._auth_headers(correlation_id), json=body)
 
@@ -550,6 +566,7 @@ class ModelGatewayClient:
         size: str | None = None,
         n: int = 1,
         extra: dict[str, Any] | None = None,
+        api: str = "chat",
         correlation_id: str | None = None,
     ) -> dict[str, Any]:
         """Generate one or more images; returns the parsed provider JSON
@@ -560,6 +577,7 @@ class ModelGatewayClient:
             size=size,
             n=n,
             extra=extra,
+            api=api,
             correlation_id=correlation_id,
         )
         if self._http is not None:

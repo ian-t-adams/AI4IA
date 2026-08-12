@@ -573,7 +573,7 @@ describe("useVoiceLive lifecycle", () => {
     expect(sentTypes).not.toContain("conversation.item.truncate");
   });
 
-  it("cancels and truncates Speech playback on interruption and suppresses late deltas", async () => {
+  it("relies on Speech auto-interrupt, truncates playback, and suppresses late deltas", async () => {
     auth.getToken.mockResolvedValue("token");
     Object.defineProperty(navigator, "mediaDevices", {
       configurable: true,
@@ -646,7 +646,7 @@ describe("useVoiceLive lifecycle", () => {
     expect(context.createBuffer).toHaveBeenCalledTimes(1);
     expect(result.current.assistantTranscript).toBe("");
     const sent = socket.send.mock.calls.map(([frame]) => JSON.parse(frame));
-    expect(sent).toContainEqual({ type: "response.cancel" });
+    expect(sent).not.toContainEqual({ type: "response.cancel" });
     expect(sent).toContainEqual({
       type: "conversation.item.truncate",
       item_id: "a1",
@@ -711,7 +711,7 @@ describe("useVoiceLive lifecycle", () => {
     });
 
     const sentTypes = socket.send.mock.calls.map(([frame]) => JSON.parse(frame).type);
-    expect(sentTypes).toContain("response.cancel");
+    expect(sentTypes).not.toContain("response.cancel");
     expect(sentTypes).not.toContain("conversation.item.truncate");
   });
 

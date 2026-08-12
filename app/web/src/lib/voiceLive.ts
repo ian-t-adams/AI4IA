@@ -1154,7 +1154,10 @@ export function useVoiceLive(
         session.scheduled.clear();
         session.nextPlayTime = 0;
         if (activeResponseId && !cancellationRequested) {
-          ws.send(JSON.stringify({ type: "response.cancel" }));
+          // Both Realtime server VAD and Speech Voice Live interrupt the active
+          // response before emitting speech_started. Sending response.cancel
+          // here races that server-owned cancellation and produces the fatal
+          // response_cancel_not_active error observed in production.
           cancellationRequested = true;
           if (
             activeAssistantItemId &&

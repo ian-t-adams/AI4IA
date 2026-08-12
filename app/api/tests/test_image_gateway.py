@@ -62,6 +62,31 @@ def test_extra_params_are_merged():
     assert req.json["output_format"] == "png"
 
 
+def test_bfl_image_request_uses_server_owned_native_shape():
+    c = _client(gateway_image_api_version="2026-image")
+    req = c.build_image_request(
+        deployment="FLUX.2-pro-slurmfactory-eastus2-glbl",
+        prompt="a red fox",
+        size="1536x1024",
+        n=1,
+        extra={"quality": "high", "model": "attacker"},
+        api="bfl",
+    )
+    assert req.url.endswith(
+        "/deployments/FLUX.2-pro-slurmfactory-eastus2-glbl/images/generations"
+        "?api-version=2026-image"
+    )
+    assert req.json == {
+        "model": "flux.2-pro-slurmfactory-eastus2-glbl",
+        "prompt": "a red fox",
+        "num_images": 1,
+        "output_format": "png",
+        "safety_tolerance": 2,
+        "width": 1536,
+        "height": 1024,
+    }
+
+
 def test_api_key_auth_header_present():
     c = _client(
         model_gateway_auth_mode=GatewayAuthMode.api_key,

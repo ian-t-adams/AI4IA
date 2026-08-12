@@ -40,6 +40,8 @@
       "api": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "none",
         "low",
@@ -82,6 +84,8 @@
       "api": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "none",
         "low",
@@ -124,6 +128,8 @@
       "api": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "none",
         "low",
@@ -166,6 +172,8 @@
       "api": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "none",
         "minimal",
@@ -209,6 +217,8 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "none",
         "minimal",
@@ -246,6 +256,8 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "none",
         "minimal",
@@ -277,6 +289,8 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "none",
         "minimal",
@@ -308,6 +322,8 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "none",
         "minimal",
@@ -351,6 +367,8 @@
       "api": "chat",
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "low",
         "medium",
@@ -392,6 +410,8 @@
       "api": "chat",
       "contextWindow": 256000,
       "maxOutputTokens": 32000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -422,6 +442,8 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "high"
       ],
@@ -448,6 +470,8 @@
       "api": "responses",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "medium",
         "high",
@@ -476,6 +500,8 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "low",
         "medium",
@@ -504,6 +530,8 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "none",
         "low",
@@ -540,6 +568,8 @@
       "api": "chat",
       "contextWindow": 128000,
       "maxOutputTokens": 32768,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -576,6 +606,8 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "none",
         "minimal",
@@ -619,6 +651,8 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "none",
         "minimal",
@@ -656,6 +690,8 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "none",
         "minimal",
@@ -699,6 +735,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -735,6 +773,8 @@
       "api": "chat",
       "contextWindow": 163840,
       "maxOutputTokens": 32768,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -759,6 +799,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -795,6 +837,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -819,6 +863,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -843,6 +889,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -861,6 +909,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -879,6 +929,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -890,6 +942,136 @@
       ]
     },
     {
+      "id": "FLUX.2-pro",
+      "displayName": "FLUX.2-pro",
+      "category": "image",
+      "format": "Black Forest Labs",
+      "api": "bfl",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "imageSizes": [
+        "1024x1024",
+        "1024x1536",
+        "1536x1024",
+        "auto"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "FLUX.2-pro-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "FLUX.2-pro-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "FLUX.2-flex",
+      "displayName": "FLUX.2-flex",
+      "category": "image",
+      "format": "Black Forest Labs",
+      "api": "bfl",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "imageSizes": [
+        "1024x1024",
+        "1024x1536",
+        "1536x1024",
+        "auto"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "FLUX.2-flex-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "FLUX.2-flex-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "FLUX.1-Kontext-pro",
+      "displayName": "FLUX.1-Kontext-pro",
+      "category": "image",
+      "format": "Black Forest Labs",
+      "api": "bfl",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "imageSizes": [
+        "1024x1024",
+        "auto"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "FLUX.1-Kontext-pro-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "FLUX.1-Kontext-pro-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "FLUX-1.1-pro",
+      "displayName": "FLUX-1.1-pro",
+      "category": "image",
+      "format": "Black Forest Labs",
+      "api": "bfl",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "imageSizes": [
+        "1024x1024",
+        "1024x1440",
+        "1440x1024",
+        "auto"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "FLUX-1.1-pro-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "FLUX-1.1-pro-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
       "id": "text-embedding-3-large",
       "displayName": "text-embedding-3-large",
       "category": "embedding",
@@ -897,6 +1079,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -933,6 +1117,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -957,6 +1143,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -981,6 +1169,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -1005,6 +1195,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -1023,6 +1215,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -1047,6 +1241,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -1071,6 +1267,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -1095,6 +1293,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -1119,6 +1319,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -1137,6 +1339,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -1155,6 +1359,8 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": null,
       "options": [
         {
@@ -1179,6 +1385,8 @@
       "api": "chat",
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [
         "low",
         "medium",
@@ -1202,6 +1410,8 @@
       "api": "mai",
       "contextWindow": 256000,
       "maxOutputTokens": 64000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [],
       "options": [
         {
@@ -1226,6 +1436,8 @@
       "api": "anthropic",
       "contextWindow": 1000000,
       "maxOutputTokens": 128000,
+      "imageSizes": null,
+      "imageQualities": null,
       "reasoningEffort": [],
       "options": [
         {

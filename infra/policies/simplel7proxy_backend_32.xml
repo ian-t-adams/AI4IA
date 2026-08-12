@@ -236,9 +236,11 @@
 					<set-variable name="auth" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;auth&quot;))" />
 					<set-variable name="selectedDeployment" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;deployment&quot;))" />
 					<set-variable name="backendProtocolPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;path&quot;))" />
+					<set-variable name="backendOperationPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;operation&quot;))" />
 					<set-variable name="backendCallCounter" value="@(context.Variables.GetValueOrDefault&lt;int>(&quot;backendCallCounter&quot;) + 1)" />
 					<!-- Set the backend service URL. backendUrl already includes the
-					     generated provider base path (`/openai`, `/anthropic`, or `/mai`);
+					     generated provider base path (`/openai`, `/anthropic`, `/mai`,
+					     or `/providers/blackforestlabs/v1`);
 					     rewrite-uri below supplies the relative operation path. -->
 					<set-backend-service base-url="@((string)context.Variables[&quot;backendUrl&quot;])" />
 					<!-- Deployment names are region-specific in infra/models.json.
@@ -254,6 +256,10 @@
 						}
 						if (string.Equals(protocol, &quot;mai&quot;, StringComparison.OrdinalIgnoreCase)) {
 							return &quot;/v1/chat/completions&quot;;
+						}
+						if (string.Equals(protocol, &quot;providers/blackforestlabs/v1&quot;, StringComparison.OrdinalIgnoreCase)) {
+							string operation = context.Variables.GetValueOrDefault&lt;string>(&quot;backendOperationPath&quot;, &quot;&quot;);
+							return string.IsNullOrWhiteSpace(operation) ? &quot;/&quot; : operation;
 						}
 						if (!string.IsNullOrEmpty(requested) &amp;&amp; !string.IsNullOrEmpty(selected)) {
 							string marker = &quot;deployments/&quot;;
@@ -290,6 +296,21 @@
 							<set-body>@{
 								JObject body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
 								body["model"] = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", "");
+								return body.ToString(Newtonsoft.Json.Formatting.None);
+							}</set-body>
+						</when>
+						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;), &quot;providers/blackforestlabs/v1&quot;, StringComparison.OrdinalIgnoreCase))">
+							<!-- BFL models use a provider-specific operation path and
+							     require the selected deployment name in lowercase.
+							     APIM owns both, including the preview query version. -->
+							<rewrite-uri template="@((string)context.Variables[&quot;backendRelativePath&quot;])" copy-unmatched-params="false" />
+							<set-query-parameter name="api-version" exists-action="override">
+								<value>preview</value>
+							</set-query-parameter>
+							<set-body>@{
+								JObject body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+								string selected = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", "");
+								body["model"] = selected.ToLowerInvariant();
 								return body.ToString(Newtonsoft.Json.Formatting.None);
 							}</set-body>
 						</when>

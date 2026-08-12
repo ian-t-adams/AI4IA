@@ -22,7 +22,8 @@ rewriting, or withholding the text. This repository does not evidence equivalent
 annotation capture/persistence/display for image, video, Azure OpenAI Voice Live,
 or Speech Voice Live.
 
-Claude is also outside that evidence. Although the deployment retains the common
+Claude is also outside that evidence. Black Forest Labs FLUX is too. Although
+the Claude deployment retains the common
 `raiPolicyName` property, Microsoft documents that Foundry does not provide
 built-in content filtering for Claude at deployment time, and the Anthropic
 Messages response does not carry Azure `content_filter_results`. AI4IA therefore
@@ -32,6 +33,15 @@ systems still apply, but they are not the per-turn Azure annotation contract thi
 record describes. Adding Claude is another trigger-3 scope expansion, so the
 control remains incomplete pending an explicit compensating-control decision.
 
+FLUX likewise has no Foundry deployment-time content filter. The application
+therefore owns a fixed BFL `safety_tolerance=2`, permits one generated image per
+call, restricts model/size/quality through the server catalog, applies entitlement
+and per-turn spend bounds, and rejects oversized output. These are real
+compensating controls, but FLUX responses carry no Azure annotation verdict for
+AI4IA to persist or display. The owner's 2026-08-12 direction to deploy FLUX is
+recorded as enablement direction, not as the still-missing modality-wide approval
+needed to close this control.
+
 ## Approval
 
 | Field | Value |
@@ -40,7 +50,7 @@ control remains incomplete pending an explicit compensating-control decision.
 | Azure exception evidence | The deployed text-policy configuration itself — see below |
 | Azure approval reference | Reported as held by the owner (guardrails-modification approval email); not stored in the repo |
 | Decision scope actually reasoned about | Text completions for named, authenticated internal users |
-| Enabled but not re-approved in this record | Claude, image, video, Azure OpenAI Voice Live, Speech Voice Live |
+| Enabled but not re-approved in this record | Claude, image (including Black Forest Labs FLUX), video, Azure OpenAI Voice Live, Speech Voice Live |
 | Control status | **Incomplete pending modality-scope re-approval and compensating-control evidence** |
 | Next scheduled review | Annual review was proposed for **2027-08-06**, but trigger 3 requires review now rather than waiting |
 | Invalidated immediately by | Any trigger in "Review triggers" below — these do not wait for the annual date |
@@ -71,7 +81,7 @@ The document is structurally complete; the control is not. Closing it requires
 all of the following without inventing or backdating approval:
 
 1. A dated accountable-owner decision that explicitly names Azure OpenAI text,
-   Claude text, image, video, Azure OpenAI Voice Live, and Speech Voice Live.
+   Claude text, Azure/OpenAI and BFL image, video, Azure OpenAI Voice Live, and Speech Voice Live.
 2. The Azure guardrails-modification approval reference and its applicable
    resource/modality scope, retained in the approved evidence system.
 3. Modality-specific abuse cases, user disclosure, monitoring, escalation owner,
@@ -127,7 +137,7 @@ surface rather than change behaviour silently.
 4. **No tested moderation boundary.** The audit's premise for accepting an
    annotate-only posture was "a documented and validated replacement boundary". The
    replacement is currently visibility only.
-5. **No modality/provider evidence.** Claude, image, video, and both Voice Live providers are
+5. **No modality/provider evidence.** Claude, Azure/OpenAI and BFL image, video, and both Voice Live providers are
    enabled, but this record has no evidence that their safety outputs are
    normalized, persisted, displayed, aggregated, or escalated.
 

@@ -285,6 +285,29 @@ def test_mai_thinking_metadata_and_adaptive_reasoning_contract():
     }
 
 
+def test_flux_models_are_image_only_and_provider_constrained():
+    catalog = load_catalog()
+    expected = {
+        "FLUX.2-pro": {"1024x1024", "1024x1536", "1536x1024", "auto"},
+        "FLUX.2-flex": {"1024x1024", "1024x1536", "1536x1024", "auto"},
+        "FLUX.1-Kontext-pro": {"1024x1024", "auto"},
+        "FLUX-1.1-pro": {"1024x1024", "1024x1440", "1440x1024", "auto"},
+    }
+    for model_id, sizes in expected.items():
+        entry = catalog.get(model_id)
+        assert entry is not None, model_id
+        assert entry.format == "Black Forest Labs"
+        assert entry.category == "image"
+        assert entry.api == "bfl"
+        assert entry.conversational is False
+        assert set(entry.imageSizes or []) == sizes
+        assert entry.imageQualities == ["auto"]
+        assert {(option.region, option.sku) for option in entry.options} == {
+            ("eastus2", "GlobalStandard"),
+            ("swedencentral", "GlobalStandard"),
+        }
+
+
 def test_catalog_values_win_over_the_heuristic():
     """The heuristic is a floor for unprobed models, never an override."""
     from ai4ia_api.catalog import ModelEntry

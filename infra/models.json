@@ -734,6 +734,94 @@
       ]
     },
     {
+      "name": "FLUX.2-pro",
+      "format": "Black Forest Labs",
+      "category": "image",
+      "api": "bfl",
+      "imageSizes": ["1024x1024", "1024x1536", "1536x1024", "auto"],
+      "imageQualities": ["auto"],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 1,
+          "version": "1"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 1,
+          "version": "1"
+        }
+      ]
+    },
+    {
+      "name": "FLUX.2-flex",
+      "format": "Black Forest Labs",
+      "category": "image",
+      "api": "bfl",
+      "imageSizes": ["1024x1024", "1024x1536", "1536x1024", "auto"],
+      "imageQualities": ["auto"],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 1,
+          "version": "1"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 1,
+          "version": "1"
+        }
+      ]
+    },
+    {
+      "name": "FLUX.1-Kontext-pro",
+      "format": "Black Forest Labs",
+      "category": "image",
+      "api": "bfl",
+      "imageSizes": ["1024x1024", "auto"],
+      "imageQualities": ["auto"],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 1,
+          "version": "1"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 1,
+          "version": "1"
+        }
+      ]
+    },
+    {
+      "name": "FLUX-1.1-pro",
+      "format": "Black Forest Labs",
+      "category": "image",
+      "api": "bfl",
+      "imageSizes": ["1024x1024", "1024x1440", "1440x1024", "auto"],
+      "imageQualities": ["auto"],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 1,
+          "version": "1"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 1,
+          "version": "1"
+        }
+      ]
+    },
+    {
       "name": "text-embedding-3-large",
       "format": "OpenAI",
       "category": "embedding",
