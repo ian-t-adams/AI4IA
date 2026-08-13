@@ -228,6 +228,20 @@ class DocumentVersion(BaseModel):
     createdAt: datetime = Field(default_factory=_now)
 
 
+class DocumentAnalysis(BaseModel):
+    """One analyzer invocation's compact, provider-neutral provenance."""
+
+    provider: str
+    model: str
+    version: str | None = None
+    pages: int | None = None
+    deployment: str | None = None
+    region: str | None = None
+    sku: str | None = None
+    dataZone: str | None = None
+    residency: str | None = None
+
+
 class UserDocument(BaseModel):
     """A document in a user's cross-session library (manifest; PK ``/userId``).
 
@@ -251,6 +265,9 @@ class UserDocument(BaseModel):
     status: DocumentStatus = DocumentStatus.pending
     # Analyzer selected/used to crack this document (a builtin or custom id).
     analyzerId: str | None = None
+    analysis: DocumentAnalysis | None = None
+    # Legacy flat fields remain readable for manifests written before analysis
+    # provenance was compacted into one Cosmos patch operation.
     analysisProvider: str | None = None
     analysisModel: str | None = None
     analysisVersion: str | None = None

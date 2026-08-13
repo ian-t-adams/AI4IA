@@ -13,7 +13,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ai4ia_api.auth.base import AuthCredentials
-from ai4ia_api.library.models import BUILTIN_ANALYZER_IDS, UserDocument
+from ai4ia_api.library.models import (
+    BUILTIN_ANALYZER_IDS,
+    DocumentAnalysis,
+    UserDocument,
+)
 from ai4ia_api.main import create_app
 from tests.conftest import make_settings
 
@@ -72,6 +76,35 @@ def test_documents_list_empty_then_seeded(client):
 
 def test_get_unknown_document_404(client):
     assert client.get("/api/library/documents/missing").status_code == 404
+
+
+def test_document_summary_flattens_nested_analysis_provenance(client):
+    uid = _uid(client)
+    seeded = UserDocument(
+        userId=uid,
+        filename="scan.png",
+        analysis=DocumentAnalysis(
+            provider="mistral",
+            model="mistral-ocr-4-0",
+            version="1",
+            pages=1,
+            deployment="mistral-deployment",
+            region="eastus2",
+            sku="GlobalStandard",
+            dataZone="us",
+            residency="global",
+        ),
+    )
+    asyncio.run(client.app.state.document_library.create_document(seeded))
+
+    body = client.get(f"/api/library/documents/{seeded.id}").json()
+
+    assert body["analysisProvider"] == "mistral"
+    assert body["analysisModel"] == "mistral-ocr-4-0"
+    assert body["analysisPages"] == 1
+    assert body["analysisRegion"] == "eastus2"
+    assert body["analysisResidency"] == "global"
+    assert "analysis" not in body
 
 
 def test_document_ownership_isolation_over_http(client):
