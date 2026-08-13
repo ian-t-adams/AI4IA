@@ -205,7 +205,7 @@ installs:
 
 ```powershell
 python -m pip install --upgrade pip
-pip install -e ".[dev]"
+pip install -e ".[dev,foundry]"
 ```
 
 Then it runs catalog drift checks from the repo root:
@@ -375,6 +375,7 @@ python scripts/provision-foundry-a2a.py --check
 python scripts/validate-catalog.py
 python scripts/gen-gateway-policy.py --check
 python -m unittest scripts.tests.test_gateway_policy
+python -m unittest scripts.tests.test_policy_json_shape
 python scripts/gen-voice-provider-catalog.py --check
 python -m unittest scripts.tests.test_voice_provider_catalog
 python scripts/validate-feature-prereqs.py
@@ -427,6 +428,7 @@ python3 -m unittest scripts.tests.test_documentation_truth      # governance/Fou
 python3 -m unittest scripts.tests.test_base_image_pins          # base images CI builds must be digest-pinned
 python3 -m unittest scripts.tests.test_immutable_image_promotion # legacy filename; content-addressed exact-digest deployment
 python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name azd vars a deploy can actually read
+python3 -m unittest scripts.tests.test_foundry_assets_workflow # Foundry handoff remains artifact-scoped and commit-bound
 ```
 
 `test_custom_domain_preflight`, `test_pages_status_refresh`,

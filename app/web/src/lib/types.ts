@@ -437,36 +437,6 @@ export interface AttachmentCapabilities {
 
 // --- Image generation ---
 
-export interface ImageRequest {
-  prompt: string;
-  model?: string | null;
-  size?: string | null;
-  quality?: string | null;
-  n?: number;
-  region?: string | null;
-  dataZone?: string | null;
-}
-
-export interface GeneratedImageData {
-  b64: string;
-}
-
-export interface ImageResponse {
-  model: string;
-  provider: string;
-  deployment: string;
-  region: string;
-  dataZone: string | null;
-  residency: string;
-  size: string;
-  quality: string;
-  costKnown: boolean;
-  estimatedCostUsd: number | null;
-  pricingBasis: string | null;
-  priceVersion: string | null;
-  images: GeneratedImageData[];
-}
-
 export interface ImagePriceOption {
   size: string;
   quality: string;

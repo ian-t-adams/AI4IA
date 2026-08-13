@@ -137,7 +137,8 @@ for the rules those gates encode.
 - Keep PRs focused and document user-visible behavior, config changes, and rollout risk.
 - Include tests or a clear validation note for every behavior change.
 - Update docs/runbooks when changing setup, flags, architecture, model catalog behavior, or operational posture.
-- Use `.github/PULL_REQUEST_TEMPLATE.md` and wait for CODEOWNERS review where applicable.
+- Use `.github/PULL_REQUEST_TEMPLATE.md`. CODEOWNERS routes matching changes;
+  the ruleset requires a pull request and resolved review threads, not an approval.
 
 ## Reporting security issues
 

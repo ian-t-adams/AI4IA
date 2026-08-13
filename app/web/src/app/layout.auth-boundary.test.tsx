@@ -27,7 +27,9 @@ vi.mock("@/components/CustomToolsProvider", () => ({
   CustomToolsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock("@/lib/authConfig", () => ({ getAuthConfig: () => ({ provider: "dev" }) }));
-vi.mock("@/lib/voiceLiveConfig", () => ({ getVoiceLiveConfig: () => ({}) }));
+vi.mock("@/lib/voiceLiveConfig", () => ({
+  getVoiceLiveServerConfig: () => ({}),
+}));
 vi.mock("@/lib/libraryConfig", () => ({ getLibraryConfig: () => ({}) }));
 vi.mock("@/lib/customToolsConfig", () => ({ getCustomToolsConfig: () => ({}) }));
 

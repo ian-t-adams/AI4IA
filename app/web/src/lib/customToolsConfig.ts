@@ -11,7 +11,7 @@
 // HTTP proxy (no public URL needed). Drive this from the same infra flag as the
 // API's AI4IA_CUSTOM_TOOLS_ENABLED.
 import type { CustomToolsConfig } from "./customTools";
-import { parseEnabledFlag } from "./customTools";
+import { parseEnabledFlag } from "./envFlags";
 
 const DISABLED: CustomToolsConfig = { enabled: false };
 

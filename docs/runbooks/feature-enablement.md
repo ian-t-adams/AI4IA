@@ -313,8 +313,8 @@ configured interval; cold settings need a revision/restart.
     first and therefore already favours band 1.
   - Unrelated to Azure's paid **Priority Processing** meters, which bill at 2x
     standard. This is queue fairness inside our own proxy and costs nothing.
-- `proxyEventHubTelemetryEnabled=true` sends routing/status/latency metadata to
-  a telemetry namespace and sends routing/status/latency metadata to its hub. Request and response header logging remain false;
+- `proxyEventHubTelemetryEnabled=true` creates a telemetry namespace and hub and
+  sends routing/status/latency metadata to it. Request and response header logging remain false;
   prompts, responses, and profile PII are not emitted. Event Hub is not a queue.
 - `proxyAsyncEnabled=true` provisions dedicated Blob + Service Bus resources,
   disables local auth, and grants `id-proxy` only the data-plane roles needed to
@@ -351,7 +351,6 @@ Set:
 
 ```text
 documentUnderstandingEnabled=true
-cuBaseUrl=https://<content-understanding-resource>.cognitiveservices.azure.com
 ```
 
 Outside local, this also requires `AI4IA_SESSION_STORE=cosmos` and
@@ -359,6 +358,8 @@ Outside local, this also requires `AI4IA_SESSION_STORE=cosmos` and
 Markdown, grounded fields, and media timelines; ready documents feed summary
 cards, RAG chunks, `fetch_document`, annotations, save/forget memory, sharing,
 and the media player.
+The normal azd path derives the Content Understanding endpoint from the primary
+Foundry account; `cuBaseUrl` is a direct-Bicep override, not a repository variable.
 
 Gaps: the web upload UI is document-centric, custom analyzer authoring is not
 surfaced, folder-level sharing is not implemented, and `public` documents remain
@@ -371,8 +372,6 @@ library documents:
 
 ```text
 documentComputeEnabled=true
-codeInterpreterBaseUrl=https://<resource>.openai.azure.com
-codeInterpreterModel=<deployment>
 ```
 
 Inline attachment compute reuses the same endpoint/model but is independent of
@@ -383,6 +382,9 @@ inlineDocumentComputeEnabled=true
 ```
 
 Outside local, both fail closed without the Responses API base URL and model.
+The normal azd path derives both from the primary Foundry account and its
+catalogued GPT-5.4 Mini deployment; the corresponding Bicep parameters are
+direct-template overrides.
 
 **Both spend an Azure-managed sandbox container per execution, billed per
 session rather than per token.** Neither is routed through APIM (architecture

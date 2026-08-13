@@ -12,17 +12,17 @@
 // backend validators to drive soft, pre-submit validation only — the backend is the
 // source of truth and returns 422 with a `detail` message the UI surfaces verbatim.
 
+import {
+  MAX_DESCRIPTION_LEN,
+  MAX_DISPLAY_NAME_LEN,
+  MAX_NAME_LEN,
+  STUDIO_NAME_RE,
+  nameError,
+} from "./studio";
+
 export interface CustomToolsConfig {
   // When false (default) no custom-tools UI is rendered and nothing changes.
   enabled: boolean;
-}
-
-// Truthy spellings accepted for the env flag (shared by customToolsConfig).
-const TRUTHY = new Set(["1", "true", "yes", "on"]);
-
-// Parses the raw env value for the custom-tools feature flag. Default OFF.
-export function parseEnabledFlag(raw: string | undefined | null): boolean {
-  return TRUTHY.has((raw || "").trim().toLowerCase());
 }
 
 // --- Backend contract mirrors ----------------------------------------------
@@ -113,15 +113,15 @@ export interface UserMcpServerTest {
 
 // --- Client-side caps + grammar (mirror app/api .../agents/mcp_servers.py) ---
 
-export const MCP_MAX_NAME_LEN = 32;
-export const MCP_MAX_DISPLAY_NAME_LEN = 80;
-export const MCP_MAX_DESCRIPTION_LEN = 280;
+export const MCP_MAX_NAME_LEN = MAX_NAME_LEN;
+export const MCP_MAX_DISPLAY_NAME_LEN = MAX_DISPLAY_NAME_LEN;
+export const MCP_MAX_DESCRIPTION_LEN = MAX_DESCRIPTION_LEN;
 export const MCP_MAX_ENDPOINT_LEN = 2048;
 export const MCP_MAX_SECRET_LEN = 8192;
 
 // Name grammar: start lowercase, end alphanumeric/underscore; interior . _ -
 // allowed. Mirrors the backend NAME_RE exactly.
-export const MCP_NAME_RE = /^[a-z](?:[a-z0-9_.-]{0,30}[a-z0-9_])?$/;
+export const MCP_NAME_RE = STUDIO_NAME_RE;
 
 // The namespaced-tool-name prefix, mirroring the backend TOOL_NAME_PREFIX.
 export const MCP_TOOL_NAME_PREFIX = "mcp";
@@ -171,13 +171,7 @@ export const MCP_TOOL_APPROVALS: { value: McpToolApproval; label: string; hint: 
 
 // Returns a human-readable reason the server name is invalid, or null if valid.
 export function mcpServerNameError(name: string): string | null {
-  if (!name) return "Name is required.";
-  if (name.length > MCP_MAX_NAME_LEN)
-    return `Name must be ≤ ${MCP_MAX_NAME_LEN} characters.`;
-  if (!MCP_NAME_RE.test(name)) {
-    return "Use lowercase letters, digits, . _ - ; start with a letter and end with a letter, digit, or underscore.";
-  }
-  return null;
+  return nameError(name);
 }
 
 // Light pre-submit endpoint check. The backend's SSRF guard is the real authority

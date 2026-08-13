@@ -10,14 +10,11 @@
 // behavior is unchanged. The library API itself goes through the existing Next
 // HTTP proxy (no public URL needed, unlike the live-voice WebSocket).
 import type { LibraryConfig } from "./library";
+import { parseEnabledFlag } from "./envFlags";
 
 const DISABLED: LibraryConfig = { enabled: false };
 
-const TRUTHY = new Set(["1", "true", "yes", "on"]);
-
 export function getLibraryConfig(): LibraryConfig {
-  const enabled = TRUTHY.has(
-    (process.env.DOCUMENT_LIBRARY_ENABLED || "").toLowerCase(),
-  );
+  const enabled = parseEnabledFlag(process.env.DOCUMENT_LIBRARY_ENABLED);
   return enabled ? { enabled: true } : DISABLED;
 }

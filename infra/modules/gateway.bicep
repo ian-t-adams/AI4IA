@@ -914,9 +914,6 @@ var effectiveProxyIngressHosts = union(
 output proxyAppName string = proxyApp.name
 output proxyUrl string = proxyUrl
 output apimGatewayUrl string = sharedApimGatewayUrl
-output modelGatewayUrl string = '${sharedApimGatewayUrl}/openai'
-@secure()
-output modelGatewayKey string = sharedProxyModelSubscription.listSecrets().primaryKey
 output proxyIngressUrl string = '${proxyUrl}/openai'
 output proxyIngressHosts string = join(effectiveProxyIngressHosts, ',')
 @secure()

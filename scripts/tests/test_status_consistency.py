@@ -1,12 +1,10 @@
 """Keeps the audit's disposition table and the roadmap telling the same story.
 
-Two documents carry live status for the same findings, for different audiences:
+Two documents carry status for the same findings, for different purposes:
 
-* `docs/repository-audit-2026-08-03.md` -- the disposition table. Findings
-  themselves are never edited when fixed (that would rewrite history); status
-  lives only in that table.
-* `docs/roadmap.md` -- the owner-decision table, which says what is left and what
-  it would cost.
+* `docs/repository-audit-2026-08-03.md` -- the dated disposition table. Findings
+  themselves are never edited when fixed (that would rewrite history).
+* `docs/roadmap.md` -- the current owner-decision table.
 
 Nothing coupled them, and they drifted the day it mattered. PR #294 set
 `disableLocalAuth` to `true` and updated the roadmap's P1-4 row, but left the

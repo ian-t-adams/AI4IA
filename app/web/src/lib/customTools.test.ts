@@ -13,7 +13,6 @@ import {
   mcpSecretError,
   mcpServerNameError,
   namespacedToolName,
-  parseEnabledFlag,
   parseMcpToolName,
   quarantineReason,
   toolApprovalPosture,
@@ -21,26 +20,7 @@ import {
   type UserMcpServer,
 } from "./customTools";
 
-describe("parseEnabledFlag", () => {
-  it("defaults OFF for undefined / null / empty", () => {
-    expect(parseEnabledFlag(undefined)).toBe(false);
-    expect(parseEnabledFlag(null)).toBe(false);
-    expect(parseEnabledFlag("")).toBe(false);
-    expect(parseEnabledFlag("   ")).toBe(false);
-  });
 
-  it("accepts the documented truthy spellings, case/space-insensitively", () => {
-    for (const v of ["1", "true", "yes", "on", "TRUE", " On ", "YeS"]) {
-      expect(parseEnabledFlag(v)).toBe(true);
-    }
-  });
-
-  it("treats anything else as OFF", () => {
-    for (const v of ["0", "false", "no", "off", "enabled", "2"]) {
-      expect(parseEnabledFlag(v)).toBe(false);
-    }
-  });
-});
 
 describe("mcpServerNameError", () => {
   it("requires a name", () => {

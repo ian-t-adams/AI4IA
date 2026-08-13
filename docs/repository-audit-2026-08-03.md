@@ -14,13 +14,10 @@ defect requires immediate incident response. Several other boundaries rely on
 cooperative clients, manual deployment work, mutable builds, or documentation that
 has drifted from the implementation and live environment.
 
-> **Written 2026-08-03. See [the disposition](#immediate-action--status-as-of-2026-08-08)
-> for what has since been fixed** — the credential defect is fixed and the key is
-> rotated, but the production-completeness verdict above still stands. P1-3 and
-> P1-4 both remain open (P1-4's first half landed in #294; see the
-> [roadmap](./roadmap.md)), and P1-7 is only partly closed: the deployed artifact
-> is now immutable and identifiable, but it is still not the artifact the PR
-> tested, and there is no SBOM, signature, provenance, or blocking image scan.
+> **Written 2026-08-03.** See the
+> [dated disposition snapshot](#disposition-snapshot-as-of-2026-08-08) and the
+> current [roadmap](./roadmap.md). The credential defect is fixed and its key was
+> rotated, but the production-completeness verdict above still stands.
 
 A second phase exercised the public deployment in a real browser, ran a controlled
 HTTP/SSE chat round trip through the actual FastAPI application, audited performance
@@ -41,12 +38,11 @@ model, search, document, tool, workflow, media, and voice data planes end to end
 | Performance/scalability | **Bounded and suitable for low-volume demos; no scale proof and several confirmed memory/latency multipliers** |
 | Agent/human comprehensibility | **Good maps and invariants; oversized modules and incident-heavy docs impose high cognitive load** |
 
-### Immediate action — status as of 2026-08-08
+### Disposition snapshot as of 2026-08-08
 
-> **This section is the audit's living disposition. The findings below it are
-> preserved as originally written (2026-08-03/04) and are NOT edited when they
-> are fixed — an audit that quietly rewrites itself cannot be audited. Check
-> here for current status.**
+> **This dated table records how the original findings were disposed. The
+> findings below are preserved as written on 2026-08-03/04. For current status,
+> use [roadmap.md](./roadmap.md) and the operational runbooks.**
 
 **1. Proxy-ingress credential disclosure (P0-1) — FIXED and the key is ROTATED.**
 
@@ -152,7 +148,7 @@ Verified against the tree and live environment through 2026-08-08, not from memo
 | P1-4 gateway-only routing is convention, not IAM | **Key and wildcard bypasses fixed; one explicit exception remains.** Local/key auth is disabled; `id-api` has narrow CU access and only the documented direct OpenAI role required by Responses-API Code Interpreter. APIM retains a broad Cognitive Services role as the gateway for OpenAI + Speech Voice Live. | #294, #317, #321 |
 | P1-5 APIM key is a non-secure output | **Fixed** — compiled ARM emits `securestring` | #266 |
 | P1-6 no post-deploy proof or rollback | **Fixed**, and proven in anger on its first day — it caught a real production outage seven times running and its rollback kept the app serving (see below). Pre-deploy revision capture, hard rollout/health/web/proxy/domain assertions, an authenticated gateway canary, and automatic rollback. Does not cover a cancelled run or job timeout, and does not roll back infrastructure | #274 |
-| P1-7 tested artifact is not the deployed artifact | **Partly fixed** — both app base images are pinned by digest (verified by `docker-build` building them on every PR), and `deploy.yml` now builds each service once and deploys `--from-package <ref>@sha256:<digest>` instead of letting azd rebuild, so the deployed artifact is identifiable and traceable to a commit. **Still open**: the image is built by the deploy workflow rather than promoted from the PR that tested it (promoting the literal PR image means PR code pushing to the production registry — a posture decision); `proxy/Dockerfile`'s MCR bases stay on moving tags because CI does not build that image; and there is still no SBOM, signature, provenance, blocking image scan, or lock-derived Python install | #296 |
+| P1-7 tested artifact is not the deployed artifact | **Partly fixed** — every service base is digest-pinned, PR CI builds all three images, deploy promotes exact ACR digests, and the proxy image has a blocking HIGH/CRITICAL scan, SPDX SBOM, and retained build metadata. **Still open:** deploy rebuilds after merge instead of promoting PR-tested bytes; images are unsigned and lack attested provenance; API/web do not yet match the proxy's SBOM and blocking-scan evidence. | #296, #380 |
 | P1-8 teardown destroys data it cannot restore | **Fixed** — `-Force` now requires `-AcknowledgeDataLoss` and refuses before any `az` call; `capture-data-recovery-state.ps1` records the Cosmos restorable-instance id, a blob manifest, and secret names. Blob still has no restore path — the capture makes that a decision rather than a discovery | #266, #273 |
 | P1-9 sharing read failure can revoke an ACL | **Fixed** | #266 |
 | P1-10 "tenant-public" is application-public | **Contained, not fixed** — sharing is still not tenant-aware, but startup now refuses when more than one Entra tenant is allowed, so the latent bug cannot be activated by a one-variable change | #283 |
@@ -161,7 +157,7 @@ Verified against the tree and live environment through 2026-08-08, not from memo
 | P1-13 indirect prompt injection drives preapproved MCP | **Fixed for interactive chat** — exact-argument, single-use approvals cover registry and synthetic capabilities; ambiguous preview keys cannot hide the dispatched value; both direct Code Interpreter tools are always gated. **Unattended workflow runs remain an explicit, tested exception** because there is no human to ask. | #272, #301, #323 |
 | P1-14 citations are presentation, not provenance | **Span-level half fixed** — every injected excerpt is minted a server-owned span id with a SHA-256 of the exact injected text, the registry is persisted on the answer, and a cited id that was never retrieved is caught with certainty and rendered distinctly. Citing by span id also removes the filename-collision media resolution. **Deliberately not claimed**: that a cited span *supports* the sentence. That is entailment; the excerpt is persisted verbatim so the reader can judge it instead. Web-search, memory, and session-document context are still cited as prose and remain unattested | #309 |
 | P1-15 admin refresh can exhaust a 1 GiB replica | **Fixed** — the dashboard is served from one projected ledger scan instead of seven | #270 |
-| P1-16 live-default chat is not token-streaming | **Fixed** — the proxy flushes per SSE event, and the tool loop now streams each model iteration and interleaves tool results instead of running each round trip to completion. Measured against a real uvicorn server with a paced model: time-to-first-token on a tool-using turn falls from 1244.7 ms to 33.7 ms (36.9x), with total turn time unchanged | #266, #307 |
+| P1-16 live-default chat is not token-streaming | **Fixed** — the proxy flushes per SSE event, and the tool loop now streams each model iteration and interleaves tool results instead of running each round trip to completion. Measured against a real uvicorn server with a paced model: median time-to-first-token fell from 1247.9 ms to 31.7 ms (39.3x), with total turn time unchanged. | #266, #307 |
 | P1-17 region/data-zone constraints silently relax | **Fixed**, and the residency model was corrected: `residency` now derives from the deployment SKU, not endpoint geography | #266, #267, #268 |
 
 Selected P2 items also closed: CGNAT SSRF gap, portal service counts, portal

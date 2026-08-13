@@ -1098,53 +1098,28 @@ and handle it through a separate explicitly approved cleanup.
 <a id="speech-voice-live-posture-off"></a>
 <a id="speech-voice-live-posture"></a>
 
-### Speech Voice Live posture (enabled in the current environment)
+### Speech Voice Live posture
 
-The template remains default-off:
-`speechVoiceLiveEnabled=false` and
-`AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai` are what a standup gets without
-azd/repository overrides. The current environment deliberately overrides that
-posture with:
-
-```text
-AI4IA_SPEECH_VOICE_LIVE_ENABLED=true
-AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live
-AI4IA_VOICE_DEFAULT_PROVIDER=azure_openai
-```
-
-Repository variables and the running API environment match those values, the
-Speech WebSocket API exists on the shared APIM plane, and authenticated canaries
-against the direct FastAPI Container App host returned `outcome=success` on
-2026-08-08 for both `speech_voice_live/gpt-realtime` and
-`azure_openai/gpt-realtime`. Azure OpenAI remains the server-authoritative
-default; Speech Voice Live is an additional selectable provider.
+The template remains default-off (`speechVoiceLiveEnabled=false`). The observed
+environment sets `AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` and
+`AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live`; authenticated
+`speech_voice_live/gpt-realtime` and `azure_openai/gpt-realtime` canaries returned
+`outcome=success` on 2026-08-08. Current enablement details live in
+[`feature-enablement.md`](./feature-enablement.md#speech-voice-live-second-voice-provider);
+do not infer them from retained APIM objects.
 
 The canary target must be the `wss://` form of `AZURE_API_URL` with
 `/api/voice/live`, never the web/Next.js hostname. Follow
 [`feature-enablement.md`](./feature-enablement.md#speech-voice-live-second-voice-provider)
 for the standing APIM review rules and the signed-in microphone regression check.
-If the provider is disabled later, ARM incremental mode can retain its Speech API,
-policy, subscription, named values, and role assignment; retained objects alone
-would then be inventory, not evidence of enablement.
+If the provider is disabled later, ARM incremental mode can retain its Speech
+objects; inventory alone is not evidence of enablement.
 
-### Consumption APIM removal (done)
+### Deleted APIM name reuse
 
-The Basic v2 migration briefly ran two APIM services so HTTP/SSE could be rolled back
-to the original Consumption service. That overlap is over: the Consumption service and
-all its children were deleted from Azure and from the IaC, and `gateway.bicep` no longer
-declares an APIM service of its own.
-
-Removal was gated on evidence, not elapsed time:
-
-1. no live resource referenced the Consumption gateway — the proxy's `Host1` and the
-   API's `AI4IA_REALTIME_BASE_URL` / `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` /
-   `AI4IA_OFFICIAL_MCP_GATEWAY_URL` all resolve to `apim-mcp-*`;
-2. the module's `legacyConsumptionApimGatewayUrl` output was consumed by nothing;
-3. an end-to-end chat through SimpleL7Proxy -> Basic v2 APIM -> Foundry returned `200`
-   with annotate-only RAI intact, both before and after the deletion.
-
-Realtime never had a Consumption rollback path (Consumption does not support
-WebSockets), so no rollback capability was lost for either voice provider.
+The retired Consumption APIM is gone from Azure and IaC; the shared Basic v2
+`apim-mcp-*` service is the only APIM plane. Migration history is in
+[`CHANGELOG.md`](../../CHANGELOG.md).
 
 **If the name must be reused,** an APIM delete leaves the service soft-deleted and
 holding its globally-unique name for 48 hours. Purge it first:
@@ -1154,5 +1129,4 @@ az apim deletedservice list -o table
 az apim deletedservice purge --location <region> --service-name <name>
 ```
 
-This does not apply to a normal redeploy — the surviving service is `apim-mcp-*`, a
-different name.
+This does not apply to a normal redeploy of the surviving `apim-mcp-*` service.

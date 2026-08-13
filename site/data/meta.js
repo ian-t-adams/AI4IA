@@ -92,7 +92,7 @@ window.AI4IA_META = {
   ],
   stack: [
     { layer: "Web", tech: "Next.js 16 · React 19 · TypeScript 6", host: "Azure Container Apps" },
-    { layer: "API", tech: "FastAPI · Python 3.11+ · Pydantic", host: "Azure Container Apps" },
+    { layer: "API", tech: "FastAPI · Python 3.12 · Pydantic", host: "Azure Container Apps" },
     { layer: "Model gateway", tech: ".NET SimpleL7Proxy -> APIM", host: "Azure Container Apps + API Management" },
     { layer: "App data", tech: "Cosmos DB (NoSQL, canonical state)", host: "Azure Cosmos DB" },
     { layer: "Memory / chunks", tech: "Cosmos DB vectors (canonical memory); Azure AI Search (document chunks)", host: "Azure Cosmos DB · Azure AI Search" },

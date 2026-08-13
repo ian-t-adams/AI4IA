@@ -268,7 +268,9 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
     } catch {
       /* non-JSON error body */
     }
-    const err = new Error(`${resp.status}: ${detail}`) as Error & { status?: number };
+    const err = new Error(`${resp.status}: ${detail}`) as Error & {
+      status?: number;
+    };
     err.status = resp.status;
     throw err;
   }
@@ -346,8 +348,6 @@ export function formatCompact(n: number | null | undefined): string {
   }
   return String(Math.round(n));
 }
-
-export const formatTokens = formatCompact;
 
 export function microUsdToUsd(micro: number | null | undefined): number {
   if (micro == null || !Number.isFinite(micro)) return 0;

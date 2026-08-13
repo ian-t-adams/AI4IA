@@ -1502,7 +1502,5 @@ export function useVoiceLive(
     start,
     toggle,
     stop,
-    // Back-compat with the inline controller: provider-aware start remains off
-    // when the selected provider/model combination is not usable yet.
   };
 }

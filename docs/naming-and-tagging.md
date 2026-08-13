@@ -76,13 +76,13 @@ Every resource group and resource carries these tags (applied via Bicep):
 | Tag | Purpose | Example |
 |---|---|---|
 | `workload` | App identifier | `ai4ia` |
-| `env` | Environment | `dev` / `demo` / `prod` |
-| `azd-env-name` | azd environment binding | `ai4ia-dev` |
+| `env` | azd environment name | `slurmfactory` |
+| `azd-env-name` | azd environment binding | `slurmfactory` |
 | `costCenter` | Chargeback | `genai-demo` |
 | `owner` | Accountable owner | `ai4ia-operator` or the owning team/person |
-| `dataZone` | Data residency of the resource | `US` / `EU` |
 | `managedBy` | Provisioning system | `azd-bicep` |
+| `SecurityControl` | Accepted Defender network-exposure posture for identity-gated public endpoints | `Ignore` |
 
 ## Environments
-`dev` (default working env), `demo` (customer-facing showcase), `prod` (hardened). Each maps to
-its own `azd` environment + resource group; `infra/main.parameters.json` reads `AZURE_ENV_NAME`.
+`AZURE_ENV_NAME` is the deployment token used in names and tags. Application
+posture is independent: `AI4IA_APP_ENVIRONMENT` accepts only `dev` or `prod`.

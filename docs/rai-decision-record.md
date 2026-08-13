@@ -50,7 +50,8 @@ needed to close this control.
 | Azure exception evidence | The deployed text-policy configuration itself — see below |
 | Azure approval reference | Reported as held by the owner (guardrails-modification approval email); not stored in the repo |
 | Decision scope actually reasoned about | Text completions for named, authenticated internal users |
-| Enabled but not re-approved in this record | Claude, image (including Black Forest Labs FLUX), video, Azure OpenAI Voice Live, Speech Voice Live |
+| Enabled but not re-approved in this record | Image (including Black Forest Labs FLUX), video, Azure OpenAI Voice Live, Speech Voice Live |
+| Catalogued but gated off; enabling expands scope | Claude |
 | Control status | **Incomplete pending modality-scope re-approval and compensating-control evidence** |
 | Next scheduled review | Annual review was proposed for **2027-08-06**, but trigger 3 requires review now rather than waiting |
 | Invalidated immediately by | Any trigger in "Review triggers" below — these do not wait for the annual date |

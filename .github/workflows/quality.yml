@@ -176,10 +176,10 @@ jobs:
           # are the operator preflights for standing this stack up in a new
           # subscription/tenant. Both call Azure, so CI cannot run them end to
           # end -- but their decision logic is pure and is what actually
-          # prevents a partial deploy, so it is pinned here. The suite is
-          # makes no network calls. PyYAML parses deploy.yml for the ordering
-          # contract, so install the same pinned version used by the other
-          # workflow-wiring tests in this job.
+          # prevents a partial deploy, so it is pinned here. The suite makes no
+          # network calls. PyYAML parses deploy.yml for the ordering contract, so
+          # install the same pinned version used by the other workflow-wiring
+          # tests in this job.
           python3 -m pip install --user --quiet "PyYAML==${PYYAML_VERSION}"
           python3 -m unittest scripts.tests.test_subscription_preflight
         env:
