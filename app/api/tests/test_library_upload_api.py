@@ -207,7 +207,7 @@ def test_sync_cu_upload_returns_terminal_result_in_same_request():
                 analyzer_id="prebuilt-read",
                 markdown="# Read",
                 contents=[{"markdown": "# Read"}],
-                usage={"documentPagesMinimal": 1},
+                usage={"documentPagesBasicInline": 1},
             )
 
         client.app.state.document_ingestor._cu = type(

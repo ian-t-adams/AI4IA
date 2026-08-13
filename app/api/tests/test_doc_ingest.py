@@ -321,7 +321,7 @@ async def test_synchronous_cu_analyzer_uses_inline_preview_and_persists_evidence
             }
         ],
         usage={
-            "documentPagesBasic": 1,
+            "documentPagesStandardInline": 1,
             "contextualizationTokens": 12,
             "tokens": {
                 "gpt-5.2-input": 10,
@@ -384,7 +384,7 @@ async def test_synchronous_cu_analyzer_uses_inline_preview_and_persists_evidence
     assert metered["usage"].known is False
     assert metered["billable_units"] == 1
     assert metered["billing_unit"] == "page"
-    assert metered["model_id"] == "content-understanding-document-basic"
+    assert metered["model_id"] == "content-understanding-document-standard"
     assert len(usage.calls) == 4
     contextualization_meter = usage.calls[1]
     assert contextualization_meter["model_id"] == (

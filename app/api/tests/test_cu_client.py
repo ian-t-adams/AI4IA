@@ -180,7 +180,7 @@ async def test_analyze_inline_returns_direct_preview_response_without_polling():
             }
         ],
         "usage": {
-            "documentPagesBasic": 1,
+            "documentPagesStandardInline": 1,
             "contextualizationTokens": 12,
             "tokens": {"gpt-5.2-input": 10, "gpt-5.2-output": 2},
         },
@@ -209,6 +209,9 @@ async def test_analyze_inline_returns_direct_preview_response_without_polling():
     assert result.succeeded
     assert result.markdown == "# Layout"
     assert result.page_count == 1
+    assert result.page_usage_by_meter() == {
+        "content-understanding-document-standard": 1
+    }
     assert result.model_token_counts() == (10, 2, 12, True)
     assert result.content_filters == [{"blocked": False}]
     assert result.field_evidence_summary() == {
@@ -344,6 +347,38 @@ def test_parse_result_collects_usage_and_evidence_from_async_envelope():
         "averageConfidence": 0.625,
         "minimumConfidence": 0.5,
     }
+
+
+@pytest.mark.parametrize(
+    ("usage_key", "model_id"),
+    [
+        (
+            "documentPagesMinimalInline",
+            "content-understanding-document-minimal",
+        ),
+        (
+            "documentPagesBasicInline",
+            "content-understanding-document-basic",
+        ),
+        (
+            "documentPagesStandardInline",
+            "content-understanding-document-standard",
+        ),
+    ],
+)
+def test_parse_result_maps_live_inline_page_meter_names(
+    usage_key: str, model_id: str
+):
+    result = parse_result(
+        {
+            "analyzerId": "a",
+            "contents": [{"markdown": "text"}],
+            "usage": {usage_key: 1},
+        }
+    )
+
+    assert result.page_count == 1
+    assert result.page_usage_by_meter() == {model_id: 1}
 
 
 def test_parse_result_handles_missing_result():
