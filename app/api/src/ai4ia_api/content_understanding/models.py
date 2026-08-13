@@ -19,6 +19,14 @@ CU_GA_API_VERSION = "2025-11-01"
 CU_PREVIEW_API_VERSION = "2026-06-01-preview"
 CU_SYNC_MAX_BYTES = 10 * 1024 * 1024
 CU_SYNC_MAX_PDF_PAGES = 5
+_PAGE_USAGE_METERS = {
+    "documentPagesMinimal": "content-understanding-document-minimal",
+    "documentPagesMinimalInline": "content-understanding-document-minimal",
+    "documentPagesBasic": "content-understanding-document-basic",
+    "documentPagesBasicInline": "content-understanding-document-basic",
+    "documentPagesStandard": "content-understanding-document-standard",
+    "documentPagesStandardInline": "content-understanding-document-standard",
+}
 
 # Content Understanding analyzer-id contract: 1-64 characters of letters, digits,
 # '.', '_' and '-' (matches the service's own resource-id rules). ``fullmatch`` (not
@@ -62,11 +70,7 @@ class CUResult:
     def page_count(self) -> int | None:
         page_total = 0.0
         saw_page_meter = False
-        for key in (
-            "documentPagesMinimal",
-            "documentPagesBasic",
-            "documentPagesStandard",
-        ):
+        for key in _PAGE_USAGE_METERS:
             value = self.usage.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 page_total += max(0.0, float(value))
@@ -76,24 +80,17 @@ class CUResult:
         return len(self.contents) or None
 
     def page_usage_by_meter(self) -> dict[str, int]:
-        mapping = {
-            "documentPagesMinimal": (
-                "content-understanding-document-minimal"
-            ),
-            "documentPagesBasic": "content-understanding-document-basic",
-            "documentPagesStandard": (
-                "content-understanding-document-standard"
-            ),
-        }
         meters: dict[str, int] = {}
-        for key, model_id in mapping.items():
+        for key, model_id in _PAGE_USAGE_METERS.items():
             value = self.usage.get(key)
             if (
                 isinstance(value, (int, float))
                 and not isinstance(value, bool)
                 and value > 0
             ):
-                meters[model_id] = int(ceil(float(value)))
+                meters[model_id] = meters.get(model_id, 0) + int(
+                    ceil(float(value))
+                )
         return meters
 
     def model_token_counts(self) -> tuple[int, int, int, bool]:
