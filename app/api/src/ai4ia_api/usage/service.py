@@ -282,8 +282,6 @@ class UsageService:
         signal without adding an App Insights SDK dependency."""
         payload = {
             "event": "model_usage",
-            "userHash": _telemetry_identifier("user", rec.userId),
-            "sessionHash": _telemetry_identifier("session", rec.sessionId),
             "provider": rec.provider,
             "model": rec.model,
             "deployment": rec.deployment,

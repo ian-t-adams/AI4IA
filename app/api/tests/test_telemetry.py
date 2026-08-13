@@ -296,8 +296,7 @@ async def test_record_completion_emits_chat_completion_event(monkeypatch, caplog
         if record.getMessage().startswith('{"event":"model_usage"')
     )
     assert "userId" not in payload and "sessionId" not in payload
-    assert payload["userHash"] == attrs["userHash"]
-    assert payload["sessionHash"] == attrs["sessionHash"]
+    assert "userHash" not in payload and "sessionHash" not in payload
 
 
 async def test_record_completion_adds_privacy_safe_lifecycle_timing(monkeypatch):
