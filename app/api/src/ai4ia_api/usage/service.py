@@ -15,6 +15,7 @@ Cost honesty rules (see ``usage`` package docstring):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -40,6 +41,12 @@ logger = logging.getLogger(__name__)
 # Bound the summary window so a query can never scan an unbounded history.
 DEFAULT_SUMMARY_DAYS = 30
 MAX_SUMMARY_DAYS = 90
+
+
+def _telemetry_identifier(kind: str, value: str) -> str:
+    """Stable one-way identifier for logs/events; never emit ledger keys raw."""
+    material = f"ai4ia:{kind}:{value}".encode("utf-8")
+    return hashlib.sha256(material).hexdigest()[:24]
 
 
 class UsageService:
@@ -232,12 +239,13 @@ class UsageService:
         self, rec: UsageRecord, timing_attributes: dict[str, object] | None = None
     ) -> None:
         """Emit a ``chat_completion`` Application Insights customEvent so per-model
-        / per-user token + cost analytics are queryable in App Insights/KQL
+        / per-user token + cost analytics are queryable by stable pseudonymous hash
+        in App Insights/KQL
         alongside the stdout signal. No-op unless telemetry is configured (i.e.
         an Application Insights connection string is set); best-effort."""
         attributes: dict[str, object] = {
-            "userId": rec.userId,
-            "sessionId": rec.sessionId,
+            "userHash": _telemetry_identifier("user", rec.userId),
+            "sessionHash": _telemetry_identifier("session", rec.sessionId),
             "provider": rec.provider,
             "model": rec.model,
             "deployment": rec.deployment,
@@ -274,8 +282,8 @@ class UsageService:
         signal without adding an App Insights SDK dependency."""
         payload = {
             "event": "model_usage",
-            "userId": rec.userId,
-            "sessionId": rec.sessionId,
+            "userHash": _telemetry_identifier("user", rec.userId),
+            "sessionHash": _telemetry_identifier("session", rec.sessionId),
             "provider": rec.provider,
             "model": rec.model,
             "deployment": rec.deployment,

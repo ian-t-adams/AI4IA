@@ -82,8 +82,11 @@ is preserved rather than overwritten by the recovery snapshot.
 - Do not add user message, prompt, transcript, document text, tool payload, URL
   or host, memory text/id, document filename/id, user identity, secrets, credentials,
   or raw exception bodies.
-- User identifiers remain internal ids and are shown as hashes unless an admin
-  explicitly enables directory enrichment.
+- Usage ledger keys never enter logs or custom events. Model-usage telemetry uses
+  stable, domain-separated SHA-256 prefixes (`userHash` / `sessionHash`) for
+  correlation; raw internal user and session ids remain in the owner-scoped
+  Cosmos ledger only. Admin directory enrichment is a separate, explicitly
+  enabled admin-plane lookup.
 - Correlation ids may cross API, SimpleL7Proxy, APIM, and Foundry; they are not
   credentials.
 

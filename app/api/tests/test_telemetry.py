@@ -7,6 +7,7 @@ path emits a ``chat_completion`` customEvent best-effort (never raising).
 from __future__ import annotations
 
 import logging
+import json
 
 import pytest
 
@@ -252,22 +253,23 @@ def test_configure_telemetry_swallows_init_failure(monkeypatch):
     assert logging_setup._telemetry_configured is False
 
 
-async def test_record_completion_emits_chat_completion_event(monkeypatch):
+async def test_record_completion_emits_chat_completion_event(monkeypatch, caplog):
     captured: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "ai4ia_api.usage.service.emit_custom_event",
         lambda name, attrs: captured.append((name, attrs)),
     )
     svc = _service()
-    await svc.record_completion(
-        user_id="u1",
-        session_id="s1",
-        model_id="gpt-x",
-        deployment=_deployment(),
-        usage=_known_usage(),
-        agent="research",
-        correlation_id="cid-9",
-    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.usage.service"):
+        await svc.record_completion(
+            user_id="u1",
+            session_id="s1",
+            model_id="gpt-x",
+            deployment=_deployment(),
+            usage=_known_usage(),
+            agent="research",
+            correlation_id="cid-9",
+        )
     assert len(captured) == 1
     name, attrs = captured[0]
     assert name == "chat_completion"
@@ -283,7 +285,19 @@ async def test_record_completion_emits_chat_completion_event(monkeypatch):
     assert attrs["billable"] is True
     assert attrs["estCostUsd"] == pytest.approx(0.006)
     assert attrs["correlationId"] == "cid-9"
+    assert "userId" not in attrs and "sessionId" not in attrs
+    assert len(attrs["userHash"]) == 24
+    assert len(attrs["sessionHash"]) == 24
+    assert attrs["userHash"] not in {"u1", "s1"}
     assert "turnTotalMs" not in attrs
+    payload = next(
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.getMessage().startswith('{"event":"model_usage"')
+    )
+    assert "userId" not in payload and "sessionId" not in payload
+    assert payload["userHash"] == attrs["userHash"]
+    assert payload["sessionHash"] == attrs["sessionHash"]
 
 
 async def test_record_completion_adds_privacy_safe_lifecycle_timing(monkeypatch):
