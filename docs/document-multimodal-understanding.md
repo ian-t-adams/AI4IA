@@ -124,6 +124,57 @@ Content Understanding remains the automatic default because it handles documents
 images, audio, and video through one durable pathway. Mistral is never a silent
 fallback, so a provider outage cannot change a document's parsing semantics.
 
+## August 2026 Content Understanding update
+
+The production default remains the refreshed **CU 1.0 GA** API
+(`2025-11-01`). Existing `prebuilt-*Search` ingestion automatically receives the
+new grounding efficiency and confidence model, and the resource defaults now map
+both the prebuilt aliases and the direct `gpt-5.2` /
+`text-embedding-3-large` model names to the exact primary deployments.
+Postprovision reads `supportedModels` from `prebuilt-documentSearch` and fails
+unless those two models are advertised.
+
+Although CU now supports a broader GPT-5 family, AI4IA deliberately selects
+GPT-5.2 `2025-12-11`: it is the only current AI4IA catalog deployment whose
+model/version exactly matches the CU supported-model contract. GPT-5.1,
+GPT-5.4, mini, nano, and future GPT-5.5 choices are not inferred from similar
+names; add them only after the exact CU-supported version is deployed and the
+same postprovision contract verifies it.
+
+When `cuPreviewEnabled` is explicitly on, the Library adds:
+
+- **Read (synchronous preview)** — immediate in-memory OCR with no polling.
+- **Layout (synchronous preview)** — immediate document structure, tables,
+  figures, signatures, and embedded metadata.
+- Five preview tax analyzers for 1041, 1120-S, 1065, and 8865 Schedule K-1
+  forms plus Minnesota M1.
+
+Both use `2026-06-01-preview`, carry no SLA, accept at most 10 MB, and process at
+most five PDF pages. Unlike normal enrichment, the upload request waits for their
+terminal result. The automatic analyzer never silently switches to preview.
+
+Every CU result now persists a bounded owner-scoped `analysis.json` sidecar with
+structured fields, source/confidence evidence, signatures/metadata, warnings,
+usage, and content-filter records. The library card surfaces evidence counts and
+average confidence; **Evidence** opens the detailed response through an
+authenticated ownership/share gate. Model tokens and page meters are recorded in
+the usage ledger instead of treating CU as an unpriced unknown call: the CU page
+meter remains explicitly cost-unknown until an Azure CU rate is mapped, while
+GPT-5.2 and embedding token rows use their existing model prices and exact
+deployment names.
+
+**Agentic mode remains operator-gated.** It appears only when an existing remote
+analyzer id is supplied and the analyzer resolves to an `agentic.*` workflow.
+Provisioning also requires at least 400K TPM on the primary GPT-5.2 deployment,
+matching Microsoft guidance. The live deployment is currently 50K TPM, so
+AI4IA does not advertise Agentic mode yet.
+
+The announcement's semantic chunking feature belongs to the Azure AI Search
+Content Understanding **skill** (`2026-05-01-preview`). AI4IA does not use that
+indexer skill: it owns canonical Markdown, deterministic chunks, embeddings, and
+rebuild semantics in the API. This release therefore does not silently replace
+existing chunks or mix a second indexer into the canonical pipeline.
+
 ## Sharing and privacy
 
 Documents default to `private`. Owners can set:
@@ -144,6 +195,8 @@ for which of them a repo variable can actually change):
 
 - `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`
 - `AI4IA_CU_BASE_URL`, `AI4IA_CU_API_VERSION`, `AI4IA_CU_AUTH_MODE`
+- `AI4IA_CU_PREVIEW_ENABLED`, `AI4IA_CU_AGENTIC_ANALYZER_ID`,
+  `AI4IA_CU_COMPLETION_MODEL`
 - `AI4IA_DOCUMENT_BLOB_ACCOUNT_URL`, `AI4IA_DOCUMENT_BLOB_CONTAINER`
 - `AI4IA_SEARCH_ENDPOINT`, `AI4IA_SEARCH_INDEX_NAME`
 - `AI4IA_DOCUMENT_COMPUTE_ENABLED`

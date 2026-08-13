@@ -25,6 +25,17 @@ export interface LibraryDocument {
   analysisSku?: string | null;
   analysisDataZone?: string | null;
   analysisResidency?: string | null;
+  analysisApiVersion?: string | null;
+  analysisOperation?: string | null;
+  analysisWorkflow?: string | null;
+  analysisCompletionModel?: string | null;
+  analysisUsage?: Record<string, unknown>;
+  confidenceCount?: number;
+  groundedFieldCount?: number;
+  averageConfidence?: number | null;
+  minimumConfidence?: number | null;
+  contentFilterCount?: number;
+  analysisDetailsAvailable?: boolean;
   summary: string;
   chunkCount: number;
   error?: string | null;
@@ -65,8 +76,22 @@ export interface LibraryAnalyzer {
   provider?: "content_understanding" | "mistral";
   modelId?: string | null;
   modelVersion?: string | null;
+  serviceAnalyzerId?: string | null;
+  apiVersion?: string | null;
+  operation?: "asynchronous" | "synchronous";
+  preview?: boolean;
   modalities: string[];
   baseAnalyzerId: string | null;
+}
+
+export interface LibraryAnalysisDetails {
+  analyzerId: string;
+  fields: Record<string, unknown>;
+  contents: Array<Record<string, unknown>>;
+  warnings: unknown[];
+  usage: Record<string, unknown>;
+  contentFilters: unknown[];
+  detailsTruncated?: boolean;
 }
 
 // Mirrors the API's SaveToMemoryResult: how many memory items

@@ -78,6 +78,11 @@ class AnalyzerProvider(str, Enum):
     mistral = "mistral"
 
 
+class AnalyzerOperation(str, Enum):
+    asynchronous = "asynchronous"
+    synchronous = "synchronous"
+
+
 class Analyzer(BaseModel):
     """A selectable Content Understanding analyzer.
 
@@ -95,6 +100,10 @@ class Analyzer(BaseModel):
     provider: AnalyzerProvider = AnalyzerProvider.content_understanding
     modelId: str | None = None
     modelVersion: str | None = None
+    serviceAnalyzerId: str | None = None
+    apiVersion: str | None = None
+    operation: AnalyzerOperation = AnalyzerOperation.asynchronous
+    preview: bool = False
     # Modalities this analyzer is appropriate for (UI filtering + validation).
     modalities: list[Modality] = Field(default_factory=lambda: [Modality.document])
     # CU base analyzer id this one derives from (e.g. a prebuilt). Used by the
@@ -148,6 +157,112 @@ BUILTIN_ANALYZERS: tuple[Analyzer, ...] = (
         description="Video understanding: transcript, key frames, and segments.",
         kind=AnalyzerKind.builtin,
         modalities=[Modality.video],
+    ),
+    Analyzer(
+        id="cu-read-sync",
+        userId=SYSTEM_OWNER,
+        name="Content Understanding Read (synchronous preview)",
+        description=(
+            "Low-latency in-memory OCR for small documents and images "
+            "(preview; 10 MB, first 5 PDF pages)."
+        ),
+        kind=AnalyzerKind.builtin,
+        serviceAnalyzerId="prebuilt-read",
+        apiVersion="2026-06-01-preview",
+        operation=AnalyzerOperation.synchronous,
+        preview=True,
+        modalities=[Modality.document, Modality.text, Modality.image],
+    ),
+    Analyzer(
+        id="cu-layout-sync",
+        userId=SYSTEM_OWNER,
+        name="Content Understanding Layout (synchronous preview)",
+        description=(
+            "Low-latency in-memory layout, tables, figures, signatures, and "
+            "document metadata (preview; 10 MB, first 5 PDF pages)."
+        ),
+        kind=AnalyzerKind.builtin,
+        serviceAnalyzerId="prebuilt-layout",
+        apiVersion="2026-06-01-preview",
+        operation=AnalyzerOperation.synchronous,
+        preview=True,
+        modalities=[Modality.document, Modality.text, Modality.image],
+    ),
+    Analyzer(
+        id="cu-agentic-document",
+        userId=SYSTEM_OWNER,
+        name="Content Understanding Agentic document (preview)",
+        description=(
+            "Operator-configured multistep document reasoning for calculations, "
+            "validation, and evidence spread across a document (preview; higher "
+            "latency/cost and approximately 400K TPM per job)."
+        ),
+        kind=AnalyzerKind.builtin,
+        modelId="gpt-5.2",
+        apiVersion="2026-06-01-preview",
+        preview=True,
+        modalities=[Modality.document],
+        config={"workflow": "agentic"},
+    ),
+    Analyzer(
+        id="cu-tax-1041-k1",
+        userId=SYSTEM_OWNER,
+        name="CU Tax: 1041 Schedule K-1 (preview)",
+        description="Estate and trust Schedule K-1 structured extraction.",
+        kind=AnalyzerKind.builtin,
+        serviceAnalyzerId="prebuilt-tax.us.1041ScheduleK1",
+        apiVersion="2026-06-01-preview",
+        preview=True,
+        modalities=[Modality.document, Modality.image],
+        config={"workflow": "advanced"},
+    ),
+    Analyzer(
+        id="cu-tax-1120s-k1",
+        userId=SYSTEM_OWNER,
+        name="CU Tax: 1120-S Schedule K-1 (preview)",
+        description="S-corporation Schedule K-1 structured extraction.",
+        kind=AnalyzerKind.builtin,
+        serviceAnalyzerId="prebuilt-tax.us.1120SScheduleK1",
+        apiVersion="2026-06-01-preview",
+        preview=True,
+        modalities=[Modality.document, Modality.image],
+        config={"workflow": "advanced"},
+    ),
+    Analyzer(
+        id="cu-tax-1065-k1",
+        userId=SYSTEM_OWNER,
+        name="CU Tax: 1065 Schedule K-1 (preview)",
+        description="Partnership Schedule K-1 structured extraction.",
+        kind=AnalyzerKind.builtin,
+        serviceAnalyzerId="prebuilt-tax.us.1065ScheduleK1",
+        apiVersion="2026-06-01-preview",
+        preview=True,
+        modalities=[Modality.document, Modality.image],
+        config={"workflow": "advanced"},
+    ),
+    Analyzer(
+        id="cu-tax-8865-k1",
+        userId=SYSTEM_OWNER,
+        name="CU Tax: 8865 Schedule K-1 (preview)",
+        description="Foreign partnership Schedule K-1 structured extraction.",
+        kind=AnalyzerKind.builtin,
+        serviceAnalyzerId="prebuilt-tax.us.8865ScheduleK1",
+        apiVersion="2026-06-01-preview",
+        preview=True,
+        modalities=[Modality.document, Modality.image],
+        config={"workflow": "advanced"},
+    ),
+    Analyzer(
+        id="cu-tax-mn-m1",
+        userId=SYSTEM_OWNER,
+        name="CU Tax: Minnesota M1 (preview)",
+        description="Minnesota individual income tax return structured extraction.",
+        kind=AnalyzerKind.builtin,
+        serviceAnalyzerId="prebuilt-tax.us.mn.m1",
+        apiVersion="2026-06-01-preview",
+        preview=True,
+        modalities=[Modality.document, Modality.image],
+        config={"workflow": "advanced"},
     ),
     Analyzer(
         id="mistral-document-ai",
@@ -240,6 +355,16 @@ class DocumentAnalysis(BaseModel):
     sku: str | None = None
     dataZone: str | None = None
     residency: str | None = None
+    apiVersion: str | None = None
+    operation: str | None = None
+    workflow: str | None = None
+    completionModel: str | None = None
+    usage: dict = Field(default_factory=dict)
+    confidenceCount: int = 0
+    groundedFieldCount: int = 0
+    averageConfidence: float | None = None
+    minimumConfidence: float | None = None
+    contentFilterCount: int = 0
 
 
 class UserDocument(BaseModel):
@@ -285,6 +410,7 @@ class UserDocument(BaseModel):
     rawPath: str | None = None
     parsedPath: str | None = None
     chunksPath: str | None = None
+    analysisPath: str | None = None
     # Number of embedded chunks indexed for retrieval (filled in 11B).
     chunkCount: int = 0
     # Failure reason when ``status == failed``.

@@ -3,6 +3,8 @@ CU-success enrichment (parsed.md + chunks + metering), CU-failure degrade, and
 the CU-disabled no-op. All IO is injected (in-memory stores + fakes)."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from ai4ia_api.content_understanding.models import CUResult
@@ -50,8 +52,18 @@ class FakeCU:
         self._error = error
         self.calls: list[tuple] = []
 
-    async def analyze(self, analyzer_id, data, content_type):
-        self.calls.append((analyzer_id, data, content_type))
+    async def analyze(self, analyzer_id, data, content_type, *, api_version=None):
+        self.calls.append((analyzer_id, data, content_type, api_version))
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+    async def analyze_inline(
+        self, analyzer_id, data, content_type, *, api_version=None
+    ):
+        self.calls.append(
+            ("inline", analyzer_id, data, content_type, api_version)
+        )
         if self._error is not None:
             raise self._error
         return self._result
@@ -274,8 +286,146 @@ async def test_mistral_analyzer_normalizes_into_canonical_artifacts():
         "chunksPath",
         "chunkCount",
         "analysis",
+        "analysisPath",
     }
     assert len(library.terminal_changes) + 1 <= 10
+
+
+async def test_synchronous_cu_analyzer_uses_inline_preview_and_persists_evidence():
+    library = InMemoryDocumentLibraryRepository()
+    usage = FakeUsage()
+    result = CUResult(
+        status="Succeeded",
+        analyzer_id="prebuilt-layout",
+        markdown="# Contract",
+        fields={
+            "signed": {
+                "valueBoolean": True,
+                "confidence": 0.92,
+                "source": "D(1,0,0,1,1)",
+            }
+        },
+        contents=[
+            {
+                "markdown": "# Contract",
+                "signatures": [{"span": {"offset": 1, "length": 4}}],
+                "metadata": {"title": "Agreement"},
+            }
+        ],
+        usage={
+            "documentPagesBasic": 1,
+            "contextualizationTokens": 12,
+            "tokens": {
+                "gpt-5.2-input": 10,
+                "gpt-5.2-output": 2,
+                "text-embedding-3-large": 3,
+            },
+        },
+        content_filters=[{"blocked": False}],
+    )
+    cu = FakeCU(result=result)
+    ingestor = _make(
+        cu=cu,
+        usage=usage,
+        library=library,
+        cu_preview_enabled=True,
+        cu_completion_deployment="gpt-5.2-cu-deployment",
+        cu_embedding_deployment="embedding-cu-deployment",
+    )
+    stored = await ingestor.ingest(
+        user_id="u1",
+        filename="contract.pdf",
+        content_type="application/pdf",
+        data=b"PDF",
+        analyzer_id="cu-layout-sync",
+    )
+
+    await ingestor.enrich(
+        user_id="u1",
+        document_id=stored.document.id,
+        data=b"PDF",
+        content_type="application/pdf",
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert cu.calls == [
+        (
+            "inline",
+            "prebuilt-layout",
+            b"PDF",
+            "application/pdf",
+            "2026-06-01-preview",
+        )
+    ]
+    assert doc.status == DocumentStatus.ready
+    assert doc.analysis is not None
+    assert doc.analysis.operation == "synchronous"
+    assert doc.analysis.workflow == "default"
+    assert doc.analysis.apiVersion == "2026-06-01-preview"
+    assert doc.analysis.completionModel == "gpt-5.2"
+    assert doc.analysis.pages == 1
+    assert doc.analysis.confidenceCount == 1
+    assert doc.analysis.groundedFieldCount == 1
+    assert doc.analysis.averageConfidence == 0.92
+    assert doc.analysis.contentFilterCount == 1
+    assert doc.analysisPath is not None
+    details = json.loads(await ingestor.blob.get(doc.analysisPath))
+    assert details["contents"][0]["signatures"]
+    assert details["contents"][0]["metadata"]["title"] == "Agreement"
+    metered = usage.calls[0]
+    assert metered["usage"].known is False
+    assert metered["billable_units"] == 1
+    assert metered["billing_unit"] == "page"
+    assert metered["model_id"] == "content-understanding-document-basic"
+    assert len(usage.calls) == 4
+    contextualization_meter = usage.calls[1]
+    assert contextualization_meter["model_id"] == (
+        "content-understanding-contextualization-standard"
+    )
+    assert contextualization_meter["usage"].prompt == 12
+    model_meter = usage.calls[2]
+    assert model_meter["model_id"] == "gpt-5.2"
+    assert model_meter["target"].provider == "content_understanding_model"
+    assert model_meter["target"].deployment == "gpt-5.2-cu-deployment"
+    assert model_meter["usage"].prompt == 10
+    assert model_meter["usage"].completion == 2
+    embedding_meter = usage.calls[3]
+    assert embedding_meter["model_id"] == "text-embedding-3-large"
+    assert embedding_meter["target"].deployment == "embedding-cu-deployment"
+    assert embedding_meter["usage"].prompt == 3
+
+
+async def test_analysis_details_are_bounded_without_losing_usage():
+    library = InMemoryDocumentLibraryRepository()
+    result = CUResult(
+        status="Succeeded",
+        analyzer_id="prebuilt-documentSearch",
+        markdown="# Bounded",
+        fields={"oversized": {"valueString": "x" * 2_100_000}},
+        contents=[{"markdown": "# Bounded"}],
+        usage={"documentPagesStandard": 1},
+    )
+    ingestor = _make(cu=FakeCU(result=result), library=library)
+    stored = await ingestor.ingest(
+        user_id="u1",
+        filename="large.pdf",
+        content_type="application/pdf",
+        data=b"PDF",
+    )
+
+    await ingestor.enrich(
+        user_id="u1",
+        document_id=stored.document.id,
+        data=b"PDF",
+        content_type="application/pdf",
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc.status == DocumentStatus.ready
+    details = json.loads(await ingestor.blob.get(doc.analysisPath or ""))
+    assert details["detailsTruncated"] is True
+    assert details["fields"] == {}
+    assert details["usage"] == {"documentPagesStandard": 1}
 
 
 async def test_mistral_pages_remain_billable_when_local_persistence_fails(
@@ -573,7 +723,9 @@ async def test_enrich_deleted_during_cu_poll_does_not_resurrect():
         def __init__(self) -> None:
             self.calls: list[tuple] = []
 
-        async def analyze(self, analyzer_id, data, content_type):
+        async def analyze(
+            self, analyzer_id, data, content_type, *, api_version=None
+        ):
             self.calls.append((analyzer_id, data, content_type))
             # User deletes mid-poll — mirror the router: manifest delete + purge.
             await library.delete_document("u1", doc_id)
@@ -800,7 +952,8 @@ async def test_cu_failure_records_the_reason_not_just_the_status():
     assert doc.status is DocumentStatus.failed
     # The bare status is what shipped before, and it proved nothing.
     assert "InvalidArgument" in (doc.error or ""), doc.error
-    assert "Analyzer not found." in (doc.error or ""), doc.error
+    # Provider messages can echo document content; persist the diagnostic code only.
+    assert "Analyzer not found." not in (doc.error or ""), doc.error
 
 
 @pytest.mark.asyncio
@@ -841,14 +994,13 @@ async def test_cu_failure_without_an_error_object_still_reports_the_status():
 
 
 @pytest.mark.asyncio
-async def test_cu_failure_reason_is_redacted_before_it_is_persisted():
-    """The CU error body is REMOTE content and lands in a persisted field.
+async def test_cu_failure_message_is_omitted_before_it_is_persisted():
+    """The CU error body is REMOTE content and must not land in a persisted field.
 
     It can echo file names, analyzer field values, or an upstream URL carrying a
     token back at us, and this string is written to the document row and to
-    logs. Added because mutation testing showed the two tests above passed
-    unchanged with `redact()` removed -- their fixtures contained nothing
-    secret-shaped, so they could not tell redaction from no redaction.
+    logs.     Retaining the bounded provider code keeps the operation diagnosable without
+    retaining a message that can echo the user's document.
     """
     library = InMemoryDocumentLibraryRepository()
     failed = CUResult(
@@ -880,7 +1032,7 @@ async def test_cu_failure_reason_is_redacted_before_it_is_persisted():
     doc = await library.get_document("u1", stored.document.id)
     assert doc is not None
     error = doc.error or ""
-    # Non-vacuity: the reason really did make it through...
+    # Non-vacuity: the diagnostic code really did make it through...
     assert "InvalidArgument" in error, error
     # ...and the credential-shaped value in it did not.
     assert ("Z" * 24) not in error, error

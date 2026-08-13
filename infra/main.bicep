@@ -134,6 +134,12 @@ param documentUnderstandingEnabled bool = false
 @description('Content Understanding endpoint base URL. Required when enabling document understanding in a deployed env; the api fails closed at startup otherwise. Empty by default (feature off).')
 param cuBaseUrl string = ''
 
+@description('Enable Content Understanding 2026-06-01-preview capabilities such as synchronous Read/Layout. Default OFF; production opts in explicitly in main.parameters.json.')
+param cuPreviewEnabled bool = false
+
+@description('Existing remote Content Understanding analyzer whose workflow resolves to agentic.2026-06-01-preview. Empty keeps Agentic absent. Enabling requires preview plus at least 400K TPM on the CU completion deployment.')
+param cuAgenticAnalyzerId string = ''
+
 @description('Enable compute over the library: intent router + code_interpreter + "adjust & return" export. Layered ON TOP of documentUnderstandingEnabled. Default OFF (the chat hot path is byte-for-byte unchanged).')
 param documentComputeEnabled bool = false
 
@@ -938,6 +944,12 @@ module api 'modules/api.bicep' = {
     documentBlobAccountUrl: data.outputs.documentBlobAccountUrl
     documentBlobContainer: data.outputs.documentBlobContainerName
     cuBaseUrl: effectiveCuBaseUrl
+    cuPreviewEnabled: cuPreviewEnabled
+    cuAgenticAnalyzerId: cuAgenticAnalyzerId
+    cuCompletionModel: 'gpt-5.2'
+    cuCompletionDeployment: primaryCuCompletionDeployment.deploymentName
+    cuEmbeddingModel: 'text-embedding-3-large'
+    cuEmbeddingDeployment: primaryCuEmbeddingDeployment.deploymentName
     // Compute over the library. Default OFF; layered on top of
     // documentUnderstandingEnabled. Base url + model emitted only when non-empty.
     documentComputeEnabled: documentComputeEnabled
@@ -1158,10 +1170,13 @@ output AZURE_EXPECTED_MODEL_DEPLOYMENTS array = [for (r, i) in regionList: {
 // script consumes these outputs verbatim; it never chooses a region or rebuilds a
 // deployment name from a naming convention.
 output AZURE_CONTENT_UNDERSTANDING_ENABLED bool = documentUnderstandingEnabled
+output AZURE_CONTENT_UNDERSTANDING_PREVIEW_ENABLED bool = cuPreviewEnabled
+output AZURE_CONTENT_UNDERSTANDING_AGENTIC_ANALYZER_ID string = cuAgenticAnalyzerId
 output AZURE_PRIMARY_FOUNDRY_REGION string = location
 output AZURE_PRIMARY_FOUNDRY_ACCOUNT_NAME string = foundry[primaryFoundryIndex].outputs.accountName
 output AZURE_PRIMARY_FOUNDRY_ENDPOINT string = primaryFoundryEndpoint
 output AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT string = primaryCuCompletionDeployment.deploymentName
+output AZURE_CONTENT_UNDERSTANDING_COMPLETION_CAPACITY int = primaryCuCompletionDeployment.capacity
 output AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT string = primaryCuEmbeddingDeployment.deploymentName
 output AZURE_APP_IDENTITIES array = identity.outputs.identities
 output AZURE_SEARCH_ENDPOINT string = search.outputs.searchEndpoint

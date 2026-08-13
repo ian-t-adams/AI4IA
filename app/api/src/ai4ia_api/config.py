@@ -375,9 +375,18 @@ class Settings(BaseSettings):
     # ``{cu_base_url}/contentunderstanding/...``. Default empty/OFF; only used when
     # document_understanding_enabled AND a base url is configured (enforced by
     # validate_runtime outside local). api-version is verified GA on Microsoft
-    # Learn (supported: 2024-12-01-preview, 2025-05-01-preview, 2025-11-01).
+    # Learn. The production default remains GA; selected analyzer descriptors may
+    # opt into the separately gated 2026-06-01-preview API.
     cu_base_url: str | None = None
     cu_api_version: str = "2025-11-01"
+    cu_preview_enabled: bool = False
+    # Existing, operator-provisioned remote analyzer whose config.workflow
+    # resolves to agentic.2026-06-01-preview. Empty keeps agentic absent.
+    cu_agentic_analyzer_id: str = ""
+    cu_completion_model: str = "gpt-5.2"
+    cu_completion_deployment: str = ""
+    cu_embedding_model: str = "text-embedding-3-large"
+    cu_embedding_deployment: str = ""
     # bearer == AAD managed identity token (Cognitive Services scope) when no
     # static key is set, mirroring the gateway's bearer mode; api_key sends the
     # CU resource key in the ``Ocp-Apim-Subscription-Key`` header.
@@ -842,6 +851,20 @@ class Settings(BaseSettings):
                 )
             )
         if self.document_understanding_enabled:
+            required.append(
+                (
+                    self.cu_completion_model,
+                    "AI4IA_CU_COMPLETION_MODEL",
+                    "Content Understanding completion",
+                )
+            )
+            required.append(
+                (
+                    self.cu_embedding_model,
+                    "AI4IA_CU_EMBEDDING_MODEL",
+                    "Content Understanding embeddings",
+                )
+            )
             # The library reuses the memory embedding model for its chunk index.
             required.append(
                 (
@@ -1137,6 +1160,27 @@ class Settings(BaseSettings):
                 "AI4IA_CU_API_KEY is required when AI4IA_CU_AUTH_MODE=api_key. "
                 "Set the key, switch to bearer (managed identity), or disable the "
                 "feature with AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false."
+            )
+        if self.cu_preview_enabled and not self.document_understanding_enabled:
+            raise RuntimeError(
+                "AI4IA_CU_PREVIEW_ENABLED=true requires "
+                "AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=true."
+            )
+        if self.cu_agentic_analyzer_id and not self.cu_preview_enabled:
+            raise RuntimeError(
+                "AI4IA_CU_AGENTIC_ANALYZER_ID requires "
+                "AI4IA_CU_PREVIEW_ENABLED=true."
+            )
+        if self.cu_agentic_analyzer_id and (
+            len(self.cu_agentic_analyzer_id) > 64
+            or any(
+                not (character.isalnum() or character in "._-")
+                for character in self.cu_agentic_analyzer_id
+            )
+        ):
+            raise RuntimeError(
+                "AI4IA_CU_AGENTIC_ANALYZER_ID must be a valid Content "
+                "Understanding analyzer id."
             )
         if self.document_compute_enabled and not self.document_understanding_enabled:
             # Compute reads the same per-user *ready* library (CI input, export

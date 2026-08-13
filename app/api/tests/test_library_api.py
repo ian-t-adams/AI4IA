@@ -13,8 +13,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ai4ia_api.auth.base import AuthCredentials
+from ai4ia_api.library.blob_store import ANALYSIS_NAME, blob_path
 from ai4ia_api.library.models import (
-    BUILTIN_ANALYZER_IDS,
+    BUILTIN_ANALYZERS,
     DocumentAnalysis,
     UserDocument,
 )
@@ -93,6 +94,16 @@ def test_document_summary_flattens_nested_analysis_provenance(client):
             sku="GlobalStandard",
             dataZone="us",
             residency="global",
+            apiVersion="2026-06-01-preview",
+            operation="synchronous",
+            workflow="default",
+            completionModel="gpt-5.2",
+            usage={"documentPagesBasic": 1},
+            confidenceCount=2,
+            groundedFieldCount=1,
+            averageConfidence=0.8,
+            minimumConfidence=0.7,
+            contentFilterCount=1,
         ),
     )
     asyncio.run(client.app.state.document_library.create_document(seeded))
@@ -104,7 +115,52 @@ def test_document_summary_flattens_nested_analysis_provenance(client):
     assert body["analysisPages"] == 1
     assert body["analysisRegion"] == "eastus2"
     assert body["analysisResidency"] == "global"
+    assert body["analysisApiVersion"] == "2026-06-01-preview"
+    assert body["analysisOperation"] == "synchronous"
+    assert body["analysisWorkflow"] == "default"
+    assert body["analysisCompletionModel"] == "gpt-5.2"
+    assert body["analysisUsage"] == {"documentPagesBasic": 1}
+    assert body["confidenceCount"] == 2
+    assert body["groundedFieldCount"] == 1
+    assert body["averageConfidence"] == 0.8
+    assert body["minimumConfidence"] == 0.7
+    assert body["contentFilterCount"] == 1
     assert "analysis" not in body
+
+
+def test_analysis_details_are_owner_scoped_even_when_document_is_shared(client):
+    uid = _uid(client)
+    seeded = UserDocument(
+        userId=uid,
+        filename="contract.pdf",
+        status="ready",
+        analysisPath=blob_path(uid, "doc-analysis", ANALYSIS_NAME),
+        visibility="shared",
+        acl=["reader@example.com"],
+    )
+    seeded.id = "doc-analysis"
+    asyncio.run(client.app.state.document_library.create_document(seeded))
+    asyncio.run(
+        client.app.state.document_ingestor.blob.put(
+            seeded.analysisPath,
+            b'{"analyzerId":"a","fields":{"amount":{"confidence":0.9}}}',
+            "application/json",
+        )
+    )
+
+    owner = client.get(f"/api/library/documents/{seeded.id}/analysis")
+    reader = client.get(
+        f"/api/library/documents/{seeded.id}/analysis",
+        headers={"X-Dev-User": "reader"},
+    )
+    stranger = client.get(
+        f"/api/library/documents/{seeded.id}/analysis",
+        headers={"X-Dev-User": "stranger"},
+    )
+
+    assert owner.status_code == 200
+    assert reader.status_code == 404
+    assert stranger.status_code == 404
 
 
 def test_document_ownership_isolation_over_http(client):
@@ -136,7 +192,10 @@ def test_analyzers_list_returns_builtins(client):
     resp = client.get("/api/library/analyzers")
     assert resp.status_code == 200
     ids = {a["id"] for a in resp.json()}
-    assert BUILTIN_ANALYZER_IDS <= ids
+    expected = {
+        analyzer.id for analyzer in BUILTIN_ANALYZERS if not analyzer.preview
+    }
+    assert expected <= ids
 
 
 def test_mistral_analyzers_are_hidden_when_residency_policy_excludes_them():
@@ -183,11 +242,16 @@ def test_custom_analyzer_isolated_by_user(client):
     assert client.get(f"/api/library/analyzers/{aid}", headers=other).status_code == 404
     other_ids = {a["id"] for a in client.get("/api/library/analyzers", headers=other).json()}
     assert aid not in other_ids
-    assert BUILTIN_ANALYZER_IDS <= other_ids
+    expected = {
+        analyzer.id for analyzer in BUILTIN_ANALYZERS if not analyzer.preview
+    }
+    assert expected <= other_ids
 
 
 def test_builtin_analyzer_not_deletable_over_http(client):
-    builtin_id = next(iter(BUILTIN_ANALYZER_IDS))
+    builtin_id = next(
+        analyzer.id for analyzer in BUILTIN_ANALYZERS if not analyzer.preview
+    )
     assert client.delete(f"/api/library/analyzers/{builtin_id}").status_code == 404
     assert client.get(f"/api/library/analyzers/{builtin_id}").status_code == 200
 

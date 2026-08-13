@@ -120,3 +120,30 @@ def test_cu_bearer_mode_without_key_is_allowed():
         cu_auth_mode="bearer",
         cu_api_key=None,
     ).validate_runtime()  # no raise
+
+
+def test_cu_preview_requires_document_understanding():
+    with pytest.raises(RuntimeError, match="CU_PREVIEW_ENABLED"):
+        _settings(cu_preview_enabled=True).validate_runtime()
+
+
+def test_cu_agentic_analyzer_requires_preview_and_valid_id():
+    with pytest.raises(RuntimeError, match="CU_PREVIEW_ENABLED"):
+        _settings(
+            document_understanding_enabled=True,
+            cu_agentic_analyzer_id="agentic.contract",
+        ).validate_runtime()
+    with pytest.raises(RuntimeError, match="valid Content Understanding"):
+        _settings(
+            document_understanding_enabled=True,
+            cu_preview_enabled=True,
+            cu_agentic_analyzer_id="../bad",
+        ).validate_runtime()
+
+
+def test_cu_agentic_analyzer_is_allowed_when_preview_is_enabled():
+    _settings(
+        document_understanding_enabled=True,
+        cu_preview_enabled=True,
+        cu_agentic_analyzer_id="agentic.contract",
+    ).validate_runtime()

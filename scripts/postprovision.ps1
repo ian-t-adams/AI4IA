@@ -542,6 +542,8 @@ function Register-ContentUnderstandingDefault {
       @{ Name = 'AZURE_PRIMARY_FOUNDRY_ENDPOINT'; Value = (Get-EnvValue 'AZURE_PRIMARY_FOUNDRY_ENDPOINT') }
       @{ Name = 'AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT'; Value = (Get-EnvValue 'AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT') }
       @{ Name = 'AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT'; Value = (Get-EnvValue 'AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT') }
+      @{ Name = 'AZURE_CONTENT_UNDERSTANDING_PREVIEW_ENABLED'; Value = (Get-EnvValue 'AZURE_CONTENT_UNDERSTANDING_PREVIEW_ENABLED') }
+      @{ Name = 'AZURE_CONTENT_UNDERSTANDING_COMPLETION_CAPACITY'; Value = (Get-EnvValue 'AZURE_CONTENT_UNDERSTANDING_COMPLETION_CAPACITY') }
     )
     $missing = @($required | Where-Object { [string]::IsNullOrWhiteSpace($_.Value) })
     if ($missing.Count -gt 0) {
@@ -554,6 +556,23 @@ function Register-ContentUnderstandingDefault {
     $endpoint = ($required | Where-Object Name -eq 'AZURE_PRIMARY_FOUNDRY_ENDPOINT').Value
     $completion = ($required | Where-Object Name -eq 'AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT').Value
     $embedding = ($required | Where-Object Name -eq 'AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT').Value
+    $previewRaw = ($required | Where-Object Name -eq 'AZURE_CONTENT_UNDERSTANDING_PREVIEW_ENABLED').Value
+    $capacityRaw = ($required | Where-Object Name -eq 'AZURE_CONTENT_UNDERSTANDING_COMPLETION_CAPACITY').Value
+    $agenticAnalyzerId = Get-EnvValue 'AZURE_CONTENT_UNDERSTANDING_AGENTIC_ANALYZER_ID'
+    if ($previewRaw -notin @('true', 'false')) {
+      Add-Result -Name 'Content Understanding defaults' -Status 'FAIL' -Detail "AZURE_CONTENT_UNDERSTANDING_PREVIEW_ENABLED must be true or false, got '$previewRaw'"
+      return
+    }
+    $previewEnabled = $previewRaw -eq 'true'
+    $capacity = 0
+    if (-not [int]::TryParse($capacityRaw, [ref]$capacity) -or $capacity -lt 1) {
+      Add-Result -Name 'Content Understanding defaults' -Status 'FAIL' -Detail "AZURE_CONTENT_UNDERSTANDING_COMPLETION_CAPACITY must be a positive integer, got '$capacityRaw'"
+      return
+    }
+    if (-not [string]::IsNullOrWhiteSpace($agenticAnalyzerId) -and (-not $previewEnabled -or $capacity -lt 400)) {
+      Add-Result -Name 'Content Understanding defaults' -Status 'FAIL' -Detail 'Agentic Content Understanding requires preview enabled and at least 400K TPM completion capacity'
+      return
+    }
 
     $parsedEndpoint = [uri]$endpoint
     if (-not $parsedEndpoint.IsAbsoluteUri -or $parsedEndpoint.Scheme -ne 'https') {
@@ -572,6 +591,8 @@ function Register-ContentUnderstandingDefault {
     }
 
     $body = @{ modelDeployments = @{
+        'gpt-5.2'                         = $completion
+        'text-embedding-3-large'          = $embedding
         'prebuilt-analyzer-completion-mini' = $completion
         'prebuilt-analyzer-completion'      = $completion
         'prebuilt-analyzer-embedding'       = $embedding
@@ -597,7 +618,33 @@ function Register-ContentUnderstandingDefault {
       try {
         Invoke-RestMethod -Method Patch -Uri "$base/contentunderstanding/defaults?api-version=2025-11-01" `
           -Headers @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/merge-patch+json' } -Body $body -TimeoutSec $requestTimeout | Out-Null
-        Add-Result -Name 'Content Understanding defaults' -Status 'PASS' -Detail "account=$account region=$region completion=$completion"
+        $gaAnalyzer = Invoke-RestMethod -Method Get -Uri "$base/contentunderstanding/analyzers/prebuilt-documentSearch?api-version=2025-11-01" `
+          -Headers @{ Authorization = "Bearer $token" } -TimeoutSec $requestTimeout
+        if (@($gaAnalyzer.supportedModels.completion) -notcontains 'gpt-5.2' -or @($gaAnalyzer.supportedModels.embedding) -notcontains 'text-embedding-3-large') {
+          throw 'prebuilt-documentSearch does not advertise the configured GPT-5.2 and embedding models'
+        }
+        if ($previewEnabled) {
+          foreach ($analyzerId in @(
+            'prebuilt-read',
+            'prebuilt-layout',
+            'prebuilt-tax.us.1041ScheduleK1',
+            'prebuilt-tax.us.1120SScheduleK1',
+            'prebuilt-tax.us.1065ScheduleK1',
+            'prebuilt-tax.us.8865ScheduleK1',
+            'prebuilt-tax.us.mn.m1'
+          )) {
+            Invoke-RestMethod -Method Get -Uri "$base/contentunderstanding/analyzers/$analyzerId`?api-version=2026-06-01-preview" `
+              -Headers @{ Authorization = "Bearer $token" } -TimeoutSec $requestTimeout | Out-Null
+          }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($agenticAnalyzerId)) {
+          $agentic = Invoke-RestMethod -Method Get -Uri "$base/contentunderstanding/analyzers/$agenticAnalyzerId`?api-version=2026-06-01-preview" `
+            -Headers @{ Authorization = "Bearer $token" } -TimeoutSec $requestTimeout
+          if (-not ([string]$agentic.config.workflow).StartsWith('agentic.')) {
+            throw "Configured analyzer '$agenticAnalyzerId' is not an agentic workflow"
+          }
+        }
+        Add-Result -Name 'Content Understanding defaults' -Status 'PASS' -Detail "account=$account region=$region completion=$completion preview=$previewEnabled"
         return
       } catch {
         $lastError = $_.Exception.Message

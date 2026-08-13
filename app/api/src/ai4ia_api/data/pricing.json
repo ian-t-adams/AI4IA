@@ -1,8 +1,8 @@
 {
   "_comment": "Best-effort USD estimates for cost tracking ONLY, never authoritative billing. Token models use inputPer1M/outputPer1M. imageModels and documentModels use the explicit billing basis shown. Any absent model or unsupported option records cost as unknown rather than zero.",
-  "_source": "Azure Retail Prices API (https://prices.azure.com/api/retail/prices, 2023-01-01-preview) for Azure BFL Flux Models and Azure Mistral Models Global Standard meters. MAI-Thinking-1 comes from the official Azure MAI registry asset. Claude comes from Anthropic's official Microsoft Foundry pricing documentation.",
-  "_caveats": "Flat rates cannot express every meter dimension. Long-context, cache, priority, Data Zone, regional, batch, reference-image, annotation, and provisioned variants may differ. FLUX.2 estimates use output megapixels; FLUX.1 uses one image. MAI-Image-2.5/Pro/Flash, gpt-image-2, and gpt-image-1-mini remain cost-unknown because no unambiguous Azure retail meter is published. Mistral OCR 4 annotation pricing is excluded because this app requests OCR only.",
-  "version": "2026-08-12-image-doc",
+  "_source": "Azure Retail Prices API (https://prices.azure.com/api/retail/prices, 2023-01-01-preview) for Azure BFL Flux Models, Azure Mistral Models Global Standard meters, and Azure Content Understanding document/contextualization meters. MAI-Thinking-1 comes from the official Azure MAI registry asset. Claude comes from Anthropic's official Microsoft Foundry pricing documentation.",
+  "_caveats": "Flat rates cannot express every meter dimension. Long-context, cache, priority, Data Zone, regional, batch, reference-image, annotation, and provisioned variants may differ. FLUX.2 estimates use output megapixels; FLUX.1 uses one image. MAI-Image-2.5/Pro/Flash, gpt-image-2, and gpt-image-1-mini remain cost-unknown because no unambiguous Azure retail meter is published. Mistral OCR 4 annotation pricing is excluded because this app requests OCR only. Content Understanding page meters are recorded separately by minimal/basic/standard usage; standard versus advanced contextualization follows the selected workflow family.",
+  "version": "2026-08-13-cu-update",
   "currency": "USD",
   "models": {
     "gpt-5.6-sol": { "inputPer1M": 5.0, "outputPer1M": 30.0 },
@@ -33,7 +33,9 @@
     "DeepSeek-V3.2": { "inputPer1M": 0.62, "outputPer1M": 1.85 },
     "text-embedding-3-large": { "inputPer1M": 0.13, "outputPer1M": 0.0 },
     "embed-v-4-0": { "inputPer1M": 0.12, "outputPer1M": 0.0 },
-    "o3-deep-research": { "inputPer1M": 10.0, "outputPer1M": 40.0 }
+    "o3-deep-research": { "inputPer1M": 10.0, "outputPer1M": 40.0 },
+    "content-understanding-contextualization-standard": { "inputPer1M": 1.0, "outputPer1M": 0.0 },
+    "content-understanding-contextualization-advanced": { "inputPer1M": 1.5, "outputPer1M": 0.0 }
   },
   "imageModels": {
     "FLUX.2-pro": {
@@ -55,6 +57,18 @@
     }
   },
   "documentModels": {
+    "content-understanding-document-minimal": {
+      "basis": "page",
+      "perPageUsd": 0.00001
+    },
+    "content-understanding-document-basic": {
+      "basis": "page",
+      "perPageUsd": 0.001
+    },
+    "content-understanding-document-standard": {
+      "basis": "page",
+      "perPageUsd": 0.005
+    },
     "mistral-document-ai-2512": {
       "basis": "page",
       "perPageUsd": 0.003
