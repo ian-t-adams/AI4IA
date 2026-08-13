@@ -432,6 +432,7 @@ python3 -m unittest scripts.tests.test_configuration_reference_reachability  # d
 `test_custom_domain_preflight`, `test_pages_status_refresh`,
 `test_dependabot_config`, `test_post_deploy_verify`,
 `test_gating_workflows`, `test_base_image_pins`,
+`test_subscription_preflight`,
 `test_proxy_delivery_contracts`, and
 `test_immutable_image_promotion` needs `PyYAML` (pinned in the workflow).
 `test_immutable_image_promotion` additionally needs `bash`
