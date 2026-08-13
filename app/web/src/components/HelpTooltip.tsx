@@ -155,6 +155,7 @@ export function HelpTooltip({
               ref={contentRef}
               id={id}
               role="tooltip"
+              tabIndex={0}
               className="help-content"
               style={{
                 top: position.top,

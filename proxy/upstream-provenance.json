@@ -12,8 +12,8 @@
   ],
   "counts": {
     "ai4ia-added": 4,
-    "ai4ia-patched": 13,
-    "upstream-equivalent": 161
+    "ai4ia-patched": 14,
+    "upstream-equivalent": 160
   },
   "patches": [
     {
@@ -35,6 +35,10 @@
     {
       "path": "SimpleL7Proxy/Async/BlobStorage/BlobWorkerPump.cs",
       "reason": "Document Application Insights 3.x metric emission accurately."
+    },
+    {
+      "path": "SimpleL7Proxy/Config/AppConfigService.cs",
+      "reason": "Keep a failed App Configuration download from dereferencing a null result and spinning the refresh loop without its normal interval."
     },
     {
       "path": "SimpleL7Proxy/Config/ConfigFactory.cs",
@@ -581,10 +585,10 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Config/AppConfigService.cs": {
-      "localCanonicalSha256": "826647bdcb1ff48b4ca5d1ae26b76764d6c01dc6caa45595c336cf786fc2f803",
+      "localCanonicalSha256": "4fa50467a11fb304f0fb173cf02d1cef708782f9fa8523279c2c9b957ef3825b",
       "upstreamRawSha256": "826647bdcb1ff48b4ca5d1ae26b76764d6c01dc6caa45595c336cf786fc2f803",
       "upstreamCanonicalSha256": "826647bdcb1ff48b4ca5d1ae26b76764d6c01dc6caa45595c336cf786fc2f803",
-      "disposition": "upstream-equivalent"
+      "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Config/ConfigChange.cs": {
       "localCanonicalSha256": "f02abf2b05882fea6149f241e2b44e4229c892419ab5de703bb60b22d29ab7b4",

@@ -18,7 +18,12 @@ import type {
   AttachmentCapabilities,
   DocumentSummary,
 } from "@/lib/types";
-import type { LibraryDocument } from "@/lib/library";
+import {
+  formatBytes,
+  LIBRARY_STATUS_COLORS,
+  LIBRARY_STATUS_LABELS,
+  type LibraryDocument,
+} from "@/lib/library";
 import { SLASH_COMMANDS, type SlashCommand } from "@/lib/commands";
 
 export interface UploadItem {
@@ -28,29 +33,6 @@ export interface UploadItem {
   status: "queued" | "uploading" | "associating" | "failed";
   error?: string;
 }
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-// Ingest-status pill labels/colours for library doc chips (mirrors LibraryPanel).
-const LIB_STATUS_LABEL: Record<LibraryDocument["status"], string> = {
-  pending: "Queued",
-  stored: "Analyzing…",
-  analyzing: "Analyzing…",
-  ready: "Ready",
-  failed: "Failed",
-};
-
-const LIB_STATUS_COLOR: Record<LibraryDocument["status"], string> = {
-  pending: "var(--fg-muted)",
-  stored: "var(--info)",
-  analyzing: "var(--info)",
-  ready: "var(--success)",
-  failed: "var(--danger)",
-};
 
 // An active mention/command being typed at the START of the message (ignoring
 // leading whitespace), since the backend only routes a mention or command at the
@@ -491,8 +473,8 @@ export function Composer({
             </li>
           ))}
           {libraryDocuments.map((d) => {
-            const label = LIB_STATUS_LABEL[d.status];
-            const color = LIB_STATUS_COLOR[d.status];
+            const label = LIBRARY_STATUS_LABELS[d.status];
+            const color = LIBRARY_STATUS_COLORS[d.status];
             return (
               <li
                 key={d.id}

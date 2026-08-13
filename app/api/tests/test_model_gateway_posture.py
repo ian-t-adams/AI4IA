@@ -116,6 +116,30 @@ def test_non_prod_preserves_local_test_gateway_flexibility():
     settings.validate_runtime()
 
 
+def test_deployed_dev_allows_only_the_server_owned_proxy():
+    settings = _production_settings(
+        gateway_url="https://proxy.internal.example/openai",
+        env="dev",
+        auth_provider="dev",
+        allow_dev_auth=True,
+    )
+
+    settings.validate_runtime()
+
+
+def test_deployed_dev_rejects_direct_foundry_even_with_dev_auth_enabled():
+    settings = _production_settings(
+        gateway_url="https://project.services.ai.azure.com/openai",
+        model_gateway_allowed_hosts="project.services.ai.azure.com",
+        env="dev",
+        auth_provider="dev",
+        allow_dev_auth=True,
+    )
+
+    with pytest.raises(RuntimeError, match="SimpleL7Proxy"):
+        settings.validate_runtime()
+
+
 def test_iac_derives_and_injects_default_and_custom_proxy_hosts():
     repo = Path(__file__).resolve().parents[3]
     gateway = (repo / "infra" / "modules" / "gateway.bicep").read_text(

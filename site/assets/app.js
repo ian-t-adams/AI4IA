@@ -136,6 +136,8 @@
   function renderStatus() {
     var s = window.AI4IA_STATUS;
     var host = el("status-stats");
+    var resourceGroup = el("status-resource-group");
+    if (resourceGroup && s) resourceGroup.textContent = s.resourceGroup || "unknown";
     if (!s || !host) return;
     renderSnapshotFreshness(el("updated"), s.generatedAt);
 

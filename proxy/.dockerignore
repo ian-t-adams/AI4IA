@@ -4,5 +4,8 @@
 **/.vs
 **/TestResults
 **/*.user
+**/.env*
+!**/.env.example
+SimpleL7Proxy/untracked/
 .git
 README.md

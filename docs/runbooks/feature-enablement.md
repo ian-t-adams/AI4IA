@@ -1,8 +1,9 @@
 # Runbook: Feature Enablement
 
-Most advanced AI4IA surfaces are implemented but gated. Defaults in code/Bicep are
-safe; the live posture is controlled by `infra/main.parameters.json`, azd env
-values, and Container App env. Startup validation in
+Most advanced AI4IA surfaces are implemented but gated. Defaults in code/Bicep
+are safe; the checked-in showcase profile in `infra/main.parameters.json`
+enables many of them through overridable `${AI4IA_*=true}` bindings. The live
+posture is controlled by azd/repository values and Container App env. Startup validation in
 `app/api/src/ai4ia_api/config.py` fails closed for half-wired deployed features.
 Use the consolidated parameter/env map in
 [`../configuration-reference.md`](../configuration-reference.md) before changing
@@ -106,27 +107,22 @@ surfaced as a warning on the card. Otherwise a model-chosen argument set could
 push the destination of an exfiltration out of view while it still went on the
 wire.
 
-The checked-in live parameters currently turn on image/video generation,
-document understanding, document compute, inline-attachment code interpreter, raw-file
-compute, AI
-Search, Voice Live + tools, custom tools, Web IQ search, Cosmos-backed memory,
-rolling conversation summarization, and — as of the Foundry activation — the **official MCP plane, the Foundry toolbox
-bridge, and the private tool catalog** (`enableOfficialMcp` / `enableFoundryToolbox`
-/ `enablePrivateToolCatalog` are all `true`). **Proxy priority reservations and the
-alerting baseline are now on too** (`AI4IA_PROXY_PRIORITIES_ENABLED=true` with
-`AI4IA_PROXY_PRIORITY_WORKERS=1:2`; `AI4IA_ENABLE_ALERTS=true`), so their
-checked-in `false` is a default rather than the live posture. The proxy profile,
-Event Hub, and durable-async controls remain `false`; their Bicep defaults are
-also off. `speechVoiceLiveEnabled` is the one flag whose checked-in value is a
-*default*, not the live posture: `main.parameters.json` carries
-`${AI4IA_SPEECH_VOICE_LIVE_ENABLED=false}`, but that repository variable is set to
-`true`, so the second provider **is** enabled in the live environment and
-`AI4IA_VOICE_PROVIDER_ALLOWLIST` is `azure_openai,speech_voice_live`. Azure OpenAI
-Realtime remains the *default* provider (`AI4IA_VOICE_DEFAULT_PROVIDER`); Speech
-Voice Live is selectable. Authenticated direct-FastAPI protocol canaries succeeded
-for both providers on 2026-08-08; the manual microphone retest remains tracked in
+The template and last observed live posture are deliberately separate:
+
+| Control group | Checked-in profile default | Last observed live posture |
+| --- | --- | --- |
+| Image/video, document understanding/compute, raw/inline compute, Search, Voice Live + tools, custom tools, Web IQ, summarization, official MCP, Foundry toolbox, private tool catalog | `true`, each through its own `AI4IA_*` binding | Enabled |
+| Durable workflows | `${AI4IA_ENABLE_DURABLE_WORKFLOWS=true}` | Enabled |
+| Proxy priority reservations | `${AI4IA_PROXY_PRIORITIES_ENABLED=false}` | Enabled with `1:2` workers |
+| Azure Monitor alerts | `${AI4IA_ENABLE_ALERTS=false}` | Enabled with a recipient |
+| Speech Voice Live | `${AI4IA_SPEECH_VOICE_LIVE_ENABLED=false}` | Enabled; allowlist includes `speech_voice_live`, while Azure OpenAI remains the default |
+| Proxy profiles, Event Hub telemetry, proxy durable async | `false` | Disabled |
+
+Authenticated direct-FastAPI protocol canaries succeeded for both voice providers
+on 2026-08-08; the manual microphone retest remains tracked in
 [Speech Voice Live](#speech-voice-live-second-voice-provider) below. Read the
-deployed container's env, not this file, when you need the current answer.
+deployed Container App env when you need the current answer; do not infer it from
+the profile default.
 
 ## Enablement notes
 

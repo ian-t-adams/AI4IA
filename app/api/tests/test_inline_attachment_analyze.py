@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ai4ia_api.code_interpreter.client import CodeInterpreterError
@@ -31,6 +32,7 @@ from ai4ia_api.documents.ephemeral_store import (
     BlobNotFoundError,
     EphemeralAttachmentStore,
     attachment_path,
+    build_inline_attachment_blob_store,
     ci_supports_file,
 )
 from ai4ia_api.library.blob_store import InMemoryBlobStore
@@ -111,6 +113,17 @@ def _settings(**overrides):
 
 def _store(blob=None):
     return EphemeralAttachmentStore(blob or InMemoryBlobStore())
+
+
+def test_inline_blob_store_fallback_is_local_only():
+    assert isinstance(
+        build_inline_attachment_blob_store(make_settings(env="local")),
+        InMemoryBlobStore,
+    )
+    with pytest.raises(RuntimeError, match="DOCUMENT_BLOB_ACCOUNT_URL"):
+        build_inline_attachment_blob_store(
+            make_settings(env="dev", inline_document_compute_enabled=True)
+        )
 
 
 async def _seed_bytes(store, *, user="u1", session="s1", doc_id="d1", data=b"col,val\nA,1\n", ctype="text/csv"):

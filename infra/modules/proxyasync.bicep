@@ -35,8 +35,10 @@ param publicNetworkAccess string = 'Enabled'
 @description('Service Bus queue used by SimpleL7Proxy async processing.')
 param queueName string = 'requeststatus'
 
-var storageName = take(toLower('st${replace(workload, '-', '')}async${uniqueSuffix}'), 24)
-var serviceBusName = take('sb-${workload}-${environmentName}-proxy-async', 50)
+var storagePrefix = toLower('st${replace(workload, '-', '')}async')
+var storageName = '${take(storagePrefix, 11)}${uniqueSuffix}'
+var serviceBusPrefix = toLower('sb-${workload}-${environmentName}-proxy-async-')
+var serviceBusName = '${take(serviceBusPrefix, 37)}${uniqueSuffix}'
 var storageBlobContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var serviceBusSenderRoleId = '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39'
 var serviceBusReceiverRoleId = '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0'

@@ -22,9 +22,30 @@ const HOP_BY_HOP = new Set([
   "content-length",
 ]);
 
+function encodeApiPath(path: string[]): string | null {
+  if (path.length === 0) return null;
+  const encoded: string[] = [];
+  for (const segment of path) {
+    if (
+      !segment ||
+      segment === "." ||
+      segment === ".." ||
+      /[/\\?#\u0000-\u001f\u007f]/.test(segment)
+    ) {
+      return null;
+    }
+    encoded.push(encodeURIComponent(segment));
+  }
+  return encoded.join("/");
+}
+
 async function forward(req: NextRequest, path: string[]): Promise<Response> {
+  const encodedPath = encodeApiPath(path);
+  if (!encodedPath) {
+    return Response.json({ detail: "Invalid API path" }, { status: 400 });
+  }
   const search = req.nextUrl.search;
-  const target = `${API_BASE_URL.replace(/\/$/, "")}/api/${path.join("/")}${search}`;
+  const target = `${API_BASE_URL.replace(/\/$/, "")}/api/${encodedPath}${search}`;
 
   // Headers named by an inbound `Connection` header are also hop-by-hop.
   const reqDynamicHop = (req.headers.get("connection") ?? "")

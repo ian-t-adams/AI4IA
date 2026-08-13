@@ -154,7 +154,7 @@ export function ImageGenerationControls({
         You can change this selection at any point in the conversation.
       </p>
       <fieldset className="image-model-options" disabled={disabled}>
-        <legend className="sr-only">Image models</legend>
+        <legend className="visually-hidden">Image models</legend>
         {options.models.map((model) => {
           const checked = selected.includes(model.id);
           const atLimit =

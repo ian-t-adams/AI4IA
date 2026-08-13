@@ -15,13 +15,16 @@ import {
   saveLibraryDocumentToMemory,
   uploadLibraryDocument,
 } from "@/lib/api";
-import type {
-  LibraryAnalyzer,
-  LibraryAnalysisDetails,
-  LibraryDocument,
-  ShareVisibility,
+import {
+  formatBytes,
+  keepMonotonicLibraryDocument,
+  LIBRARY_STATUS_COLORS,
+  LIBRARY_STATUS_LABELS,
+  type LibraryAnalyzer,
+  type LibraryAnalysisDetails,
+  type LibraryDocument,
+  type ShareVisibility,
 } from "@/lib/library";
-import { keepMonotonicLibraryDocument } from "@/lib/library";
 import { MediaPlayer } from "./MediaPlayer";
 import AnnotationsPanel from "./AnnotationsPanel";
 import SharePanel from "./SharePanel";
@@ -36,34 +39,12 @@ type MemorySave =
   | { status: "forgotten"; forgotten: number }
   | { status: "error"; error: string };
 
-const STATUS_LABEL: Record<LibraryDocument["status"], string> = {
-  pending: "Pending",
-  stored: "Stored",
-  analyzing: "Analyzing…",
-  ready: "Ready",
-  failed: "Failed",
-};
-
-const STATUS_COLOR: Record<LibraryDocument["status"], string> = {
-  pending: "var(--fg-muted)",
-  stored: "var(--fg-muted)",
-  analyzing: "var(--info)",
-  ready: "var(--success)",
-  failed: "var(--danger)",
-};
-
 // Documents in these states are still being ingested, so we poll for changes.
 const IN_FLIGHT = new Set<LibraryDocument["status"]>([
   "pending",
   "stored",
   "analyzing",
 ]);
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function analysisLabel(document: LibraryDocument): string | null {
   if (!document.analysisProvider) return null;
@@ -522,7 +503,7 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                     {doc.filename}
                   </div>
                   <div style={{ fontSize: "0.75em", color: "var(--fg-muted)" }}>
-                    {formatSize(doc.size)}
+                    {formatBytes(doc.size)}
                     {doc.status === "ready" && doc.chunkCount > 0
                       ? ` · ${doc.chunkCount} chunks`
                       : ""}
@@ -568,11 +549,11 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                   style={{
                     fontSize: "0.75em",
                     fontWeight: 600,
-                    color: STATUS_COLOR[doc.status],
+                    color: LIBRARY_STATUS_COLORS[doc.status],
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {STATUS_LABEL[doc.status]}
+                  {LIBRARY_STATUS_LABELS[doc.status]}
                 </span>
                 {doc.visibility && doc.visibility !== "private" && (
                   <span
@@ -775,7 +756,7 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                     {doc.filename}
                   </div>
                   <div style={{ fontSize: "0.75em", color: "var(--fg-muted)" }}>
-                    {formatSize(doc.size)}
+                    {formatBytes(doc.size)}
                     {doc.status === "ready" && doc.chunkCount > 0
                       ? ` · ${doc.chunkCount} chunks`
                       : ""}
@@ -787,11 +768,11 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                   style={{
                     fontSize: "0.75em",
                     fontWeight: 600,
-                    color: STATUS_COLOR[doc.status],
+                    color: LIBRARY_STATUS_COLORS[doc.status],
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {STATUS_LABEL[doc.status]}
+                  {LIBRARY_STATUS_LABELS[doc.status]}
                 </span>
                 {doc.status === "ready" &&
                   (doc.modality === "audio" || doc.modality === "video") && (

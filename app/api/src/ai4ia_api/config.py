@@ -932,7 +932,7 @@ class Settings(BaseSettings):
 
     def _validate_model_gateway_posture(self) -> None:
         """Require the deployed HTTP/SSE path to terminate at SimpleL7Proxy."""
-        if self.env != Environment.prod:
+        if self.env == Environment.local:
             return
 
         parsed = urlparse(self.model_gateway_url)
@@ -958,8 +958,8 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "AI4IA_MODEL_GATEWAY_URL must be the server-owned SimpleL7Proxy "
                 "HTTPS /openai ingress named by AI4IA_MODEL_GATEWAY_ALLOWED_HOSTS "
-                "in prod; unowned, direct Foundry, Azure OpenAI, and APIM model "
-                "endpoints are not permitted."
+                "outside local; unowned, direct Foundry, Azure OpenAI, and APIM "
+                "model endpoints are not permitted."
             )
         if (
             self.model_gateway_auth_mode != GatewayAuthMode.api_key
@@ -967,7 +967,7 @@ class Settings(BaseSettings):
             or self.model_gateway_api_key_header.strip().lower() != "s7p-key"
         ):
             raise RuntimeError(
-                "The production model gateway must use the server-owned "
+                "A deployed model gateway must use the server-owned "
                 "SimpleL7Proxy ingress credential "
                 "(AI4IA_MODEL_GATEWAY_AUTH_MODE=api_key and "
                 "AI4IA_MODEL_GATEWAY_API_KEY_HEADER=S7P-KEY)."
@@ -988,11 +988,11 @@ class Settings(BaseSettings):
                 )
         self._validate_library_sharing_is_tenant_walled()
         if (
-            self.env == Environment.prod
+            self.env != Environment.local
             and self.model_gateway_auth_mode == GatewayAuthMode.none
         ):
             raise RuntimeError(
-                "Model gateway auth must not be 'none' in prod. Configure "
+                "Model gateway auth must not be 'none' outside local. Configure "
                 "AI4IA_MODEL_GATEWAY_AUTH_MODE=api_key|bearer."
             )
         self._validate_model_gateway_posture()
@@ -1216,7 +1216,10 @@ class Settings(BaseSettings):
                 "AI4IA_DOCUMENT_COMPUTE_ENABLED=false."
             )
         if (
-            self.document_compute_enabled
+            (
+                self.document_compute_enabled
+                or self.inline_document_compute_enabled
+            )
             and self.code_interpreter_base_url
             and self.code_interpreter_auth_mode == GatewayAuthMode.api_key
             and not self.code_interpreter_api_key
@@ -1227,8 +1230,8 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "AI4IA_CODE_INTERPRETER_API_KEY is required when "
                 "AI4IA_CODE_INTERPRETER_AUTH_MODE=api_key. Set the key, switch to "
-                "bearer (managed identity), or disable compute with "
-                "AI4IA_DOCUMENT_COMPUTE_ENABLED=false."
+                "bearer (managed identity), or disable both document compute "
+                "features."
             )
         if (
             self.inline_document_compute_enabled
@@ -1245,6 +1248,19 @@ class Settings(BaseSettings):
                 "Inline document compute requires AI4IA_CODE_INTERPRETER_BASE_URL "
                 "and AI4IA_CODE_INTERPRETER_MODEL outside local, or disable it with "
                 "AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED=false."
+            )
+        if (
+            self.inline_document_compute_enabled
+            and self.env != Environment.local
+            and (
+                self.session_store != SessionStoreKind.cosmos
+                or not self.document_blob_account_url
+            )
+        ):
+            raise RuntimeError(
+                "Inline document compute requires AI4IA_SESSION_STORE=cosmos and "
+                "AI4IA_DOCUMENT_BLOB_ACCOUNT_URL outside local so retained originals "
+                "and their references survive replica changes."
             )
         if (
             self.web_search_enabled

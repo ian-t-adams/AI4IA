@@ -28,8 +28,8 @@ class ProxyProvenanceTests(unittest.TestCase):
             document["counts"],
             {
                 "ai4ia-added": 4,
-                "ai4ia-patched": 13,
-                "upstream-equivalent": 161,
+                "ai4ia-patched": 14,
+                "upstream-equivalent": 160,
             },
         )
         self.assertEqual(len(document["files"]), 178)

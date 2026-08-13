@@ -54,7 +54,7 @@ window.AI4IA_REQUIREMENTS = {
   ],
   packages: {
     api: {
-      runtime: "Python 3.11+ (container image pinned to python:3.12-slim by digest)",
+      runtime: "Python 3.12 (container image pinned to python:3.12-slim by digest)",
       manager: "uv (uv.lock is the lockfile)",
       items: [
         ["fastapi / starlette / uvicorn", "ASGI web framework + server (upper-bounded to keep the type gate stable)"],
@@ -71,7 +71,7 @@ window.AI4IA_REQUIREMENTS = {
         ["azure-monitor-opentelemetry + opentelemetry-instrumentation-httpx", "App Insights traces/metrics/events"],
         ["durabletask + durabletask-azuremanaged", "Opt-in durable workflow orchestration and Azure-managed scheduler transport"],
         ["pypdf / python-multipart", "PDF extraction + multipart uploads"],
-        ["webiq", "Web IQ search SDK (default-OFF capability)"],
+        ["webiq", "Web IQ search SDK (Bicep default off; checked-in showcase profile default on)"],
       ],
       dev: ["pytest / pytest-asyncio / anyio", "ruff (lint)", "pyright (type gate, basic mode)"],
       extra: "foundry extra (azure-ai-projects==2.4.0, azure-identity, jsonschema) — provisioning-only; installed by app-ci and foundry-assets, never by the runtime image",
@@ -94,9 +94,12 @@ window.AI4IA_REQUIREMENTS = {
     },
   },
   prerequisites: [
-    "Azure subscription + an az login with rights to create the resources above",
-    "Azure Developer CLI (azd) and Bicep",
+    "Azure subscription + Azure CLI login with subscription Contributor and Role Based Access Control Administrator (or Owner)",
+    "Azure Developer CLI 1.29.0, Python 3.12, PowerShell 7 on every OS, GitHub CLI, Docker, and Bicep/Azure CLI",
+    "Required resource providers registered, plus model/Marketplace access and quota in every catalog region",
     "For Entra auth: web SPA + API app registrations (client id, tenant id, audience/scope)",
-    "For CI deploy: a federated (OIDC) identity with the subscription roles azd needs — configured as GitHub repo variables (AZURE_CLIENT_ID/TENANT_ID/SUBSCRIPTION_ID/ENV_NAME/LOCATION)",
+    "For CI deploy: one federated identity with both production-environment and main-branch OIDC subjects",
+    "Deployment-owned owner, cost center, APIM publisher, fixed budget start date, amount, and alert recipient",
+    "Review the paid showcase feature profile and disable unneeded capabilities before first provision",
   ],
 };

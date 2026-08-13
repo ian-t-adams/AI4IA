@@ -912,7 +912,13 @@ class GatewayPolicyTests(unittest.TestCase):
             "AZURE_SUBSCRIPTION_ID",
             "AZURE_PRINCIPAL_ID",
         }
-        exported = set(re.findall(r"^\s{6}([A-Z][A-Z0-9_]*):", workflow, re.M))
+        deploy_start = workflow.index("\n  deploy:\n")
+        env_start = workflow.index("\n    env:\n", deploy_start)
+        steps_start = workflow.index("\n    steps:\n", env_start)
+        deploy_env = workflow[env_start:steps_start]
+        exported = set(
+            re.findall(r"^\s{6}([A-Z][A-Z0-9_]*):", deploy_env, re.M)
+        )
         self.assertGreater(
             len(tokens - azd_native), 25, "parameter token scan looks vacuous"
         )

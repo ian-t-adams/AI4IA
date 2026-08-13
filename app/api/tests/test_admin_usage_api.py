@@ -50,7 +50,15 @@ def test_operations_window_is_bounded(client):
 
 
 def _client(**settings_overrides) -> TestClient:
-    app = create_app(make_settings(admin_subjects="alice", **settings_overrides))
+    settings = {
+        "model_gateway_url": "https://proxy.test/openai",
+        "model_gateway_auth_mode": "api_key",
+        "model_gateway_api_key": "proxy-secret",
+        "model_gateway_api_key_header": "S7P-KEY",
+        "model_gateway_allowed_hosts": "proxy.test",
+    }
+    settings.update(settings_overrides)
+    app = create_app(make_settings(admin_subjects="alice", **settings))
     c = TestClient(app)
     c.__enter__()
     c.app.state.gateway = FakeGateway()

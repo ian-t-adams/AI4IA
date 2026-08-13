@@ -35,6 +35,10 @@ AI4IA_PATCH_REASONS = {
     "SimpleL7Proxy/Config/ConfigMetadata.cs": (
         "Declare explicit secret metadata for configuration options."
     ),
+    "SimpleL7Proxy/Config/AppConfigService.cs": (
+        "Keep a failed App Configuration download from dereferencing a null result "
+        "and spinning the refresh loop without its normal interval."
+    ),
     "SimpleL7Proxy/Config/IncomingAuthValidator.cs": (
         "Honor the configured key header and fail closed for unsigned OAuth modes."
     ),

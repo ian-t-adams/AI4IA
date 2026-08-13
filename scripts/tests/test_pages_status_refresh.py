@@ -21,6 +21,7 @@ APP_JS = REPO / "site" / "assets" / "app.js"
 STATUS_HTML = REPO / "site" / "status.html"
 INDEX_HTML = REPO / "site" / "index.html"
 GREENFIELD_DOC = REPO / "docs" / "runbooks" / "greenfield-standup.md"
+STATUS_SCRIPT = REPO / "scripts" / "status-snapshot.ps1"
 META_JS = REPO / "site" / "data" / "meta.js"
 SERVICES_HTML = REPO / "site" / "services.html"
 
@@ -80,7 +81,15 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertIn("-ResourceGroup $resourceGroup", run)
         self.assertIn("-WebUrl $webUrl", run)
         self.assertIn("-ProxyUrl $proxyUrl", run)
+        self.assertIn("-OutDir $outDir", run)
+        self.assertIn("LastWriteTimeUtc", run)
+        self.assertNotIn("${{ vars.", run)
         self.assertNotIn("continue-on-error", refresh)
+
+    def test_status_script_default_output_path_is_cross_platform(self) -> None:
+        script = STATUS_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("[System.IO.Path]::Combine(", script)
+        self.assertNotIn("'..\\site\\data'", script)
 
     def test_azure_login_and_refresh_are_mandatory(self) -> None:
         login = next(
@@ -129,9 +138,12 @@ class PagesStatusRefreshTests(unittest.TestCase):
     def test_main_branch_federation_is_required_on_the_deploy_identity(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         greenfield = GREENFIELD_DOC.read_text(encoding="utf-8")
-        subject = "repo:ian-t-adams/AI4IA:ref:refs/heads/main"
+        subject = "repo:<owner>/<repo>:ref:refs/heads/main"
         self.assertIn(subject, workflow)
         self.assertIn(subject, greenfield)
+        concrete_subject = r"repo:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:ref:refs/heads/main"
+        self.assertNotRegex(workflow, concrete_subject)
+        self.assertNotRegex(greenfield, concrete_subject)
         self.assertIn(
             "Both subjects are required on the same deployment identity", greenfield
         )
@@ -149,6 +161,13 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertIn("not a live poll", public_copy)
         self.assertNotIn("live health", public_copy)
         self.assertNotIn("live status", public_copy)
+
+    def test_status_page_renders_the_snapshot_resource_group(self) -> None:
+        status = STATUS_HTML.read_text(encoding="utf-8")
+        app = APP_JS.read_text(encoding="utf-8")
+        self.assertIn('id="status-resource-group"', status)
+        self.assertNotIn("rg-ai4ia-slurmfactory", status)
+        self.assertIn("resourceGroup.textContent = s.resourceGroup", app)
 
     def test_portal_audience_matches_the_enterprise_product_positioning(self) -> None:
         audience_copy = "\n".join(

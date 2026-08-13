@@ -7,7 +7,9 @@ targetScope = 'subscription'
 @description('Workload token used in resource names.')
 param workload string = 'ai4ia'
 
-@description('azd environment name (e.g. ai4ia-dev). Drives RG + tags.')
+@minLength(3)
+@maxLength(20)
+@description('Lowercase azd environment name (for example ai4ia-dev). Use only letters, digits, and internal hyphens; the preprovision validator enforces this before Azure receives resource names.')
 param environmentName string
 
 @description('Primary location for the resource group and shared resources. Must be a catalog region marked primary; scripts/tests/test_bicep_compilation.py keeps this list synchronized with models.json.')
@@ -146,7 +148,7 @@ param documentComputeEnabled bool = false
 @description('Azure OpenAI resource endpoint (e.g. https://<resource>.openai.azure.com) that serves the Responses API code_interpreter tool. Required when enabling document compute in a deployed env; the api fails closed at startup otherwise. Empty by default (feature off).')
 param codeInterpreterBaseUrl string = ''
 
-@description('Deployment/model name that serves the Responses API code_interpreter tool (e.g. gpt-4.1). Required when enabling document compute in a deployed env.')
+@description('Deployment/model name that serves the Responses API code_interpreter tool (for example gpt-5.4-mini). Required when enabling document compute in a deployed env.')
 param codeInterpreterModel string = ''
 
 @description('Enable the inline-attachment code interpreter (analyze_attachment): the chat agent can crack/analyze an INLINE composer attachment (PDF layout / xlsx cells / image) in the Responses API code_interpreter sandbox. Reuses the same code_interpreter endpoint/model as document compute. Default OFF: no original bytes are retained, the tool is never advertised, and no ephemeral container is provisioned, so the chat hot path is byte-for-byte unchanged.')
@@ -648,7 +650,7 @@ var primaryFoundryIndex = filter(range(0, length(regionList)), i => regionNames[
 // account (see foundry.bicep). When an explicit endpoint isn't supplied, default
 // both to the primary Foundry account so enabling the document flags "just works"
 // without hand-wiring a URL. The CI model defaults to the primary-region
-// gpt-4.1-mini deployment (naming: {model}-slurmfactory-{region}-glbl).
+// gpt-5.4-mini deployment (naming: {model}-slurmfactory-{region}-glbl).
 var primaryFoundryEndpoint = foundry[primaryFoundryIndex].outputs.endpoint
 // Content Understanding consumes these exact deployment records. The plan-time
 // validator proves both records exist in every catalog region allowed as primary.

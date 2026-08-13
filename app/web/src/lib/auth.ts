@@ -13,8 +13,6 @@ import {
   type Configuration,
 } from "@azure/msal-browser";
 
-export type WebAuthProviderKind = "dev" | "entra" | "configuration-error";
-
 export type WebAuthConfig =
   | {
       provider: "dev";

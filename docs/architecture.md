@@ -356,10 +356,13 @@ Three properties are load-bearing:
   server-side; `GET /workflows/runs/{run_id}` parses the owner and rejects a
   mismatch **before** fetching anything, so a guessed id cannot confirm existence.
 
-The scheduler is a **paid resource**, so the flag ships off and no scheduler is
-provisioned. Data-plane RBAC is granted at **task-hub** scope, not scheduler
-scope, so a second application sharing a scheduler cannot read this app's
-orchestration payloads.
+The scheduler is a **paid resource**. Its Bicep parameter defaults off, while the
+checked-in showcase profile resolves
+`${AI4IA_ENABLE_DURABLE_WORKFLOWS=true}`. Set that azd/repository variable to
+`false` before provisioning an environment that does not need durable runs.
+Data-plane RBAC is granted at **task-hub** scope, not scheduler scope, so a
+second application sharing a scheduler cannot read this app's orchestration
+payloads.
 
 ### Activity visibility
 

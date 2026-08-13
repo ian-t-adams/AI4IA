@@ -139,6 +139,11 @@ def _settings_from_stock_deploy(
         env=Environment(app_environment),
         auth_provider=AuthProviderKind(_parameter_default("apiAuthProvider")),
         allow_dev_auth=allow_dev_auth,
+        model_gateway_url="https://proxy.example.test/openai",
+        model_gateway_auth_mode="api_key",
+        model_gateway_api_key="proxy-secret",
+        model_gateway_api_key_header="S7P-KEY",
+        model_gateway_allowed_hosts="proxy.example.test",
     )
 
 

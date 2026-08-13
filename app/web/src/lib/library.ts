@@ -45,6 +45,28 @@ export interface LibraryDocument {
   updatedAt: string;
 }
 
+export const LIBRARY_STATUS_LABELS: Record<LibraryDocument["status"], string> = {
+  pending: "Pending",
+  stored: "Stored",
+  analyzing: "Analyzing…",
+  ready: "Ready",
+  failed: "Failed",
+};
+
+export const LIBRARY_STATUS_COLORS: Record<LibraryDocument["status"], string> = {
+  pending: "var(--fg-muted)",
+  stored: "var(--fg-muted)",
+  analyzing: "var(--info)",
+  ready: "var(--success)",
+  failed: "var(--danger)",
+};
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 const LIBRARY_STATUS_RANK: Record<LibraryDocument["status"], number> = {
   pending: 0,
   stored: 1,

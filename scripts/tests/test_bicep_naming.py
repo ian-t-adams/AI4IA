@@ -46,6 +46,7 @@ GLOBALLY_UNIQUE = (
     "Microsoft.DocumentDB/databaseAccounts",
     "Microsoft.Search/searchServices",
     "Microsoft.EventHub/namespaces",
+    "Microsoft.ServiceBus/namespaces",
     "Microsoft.AppConfiguration/configurationStores",
     "Microsoft.DBforPostgreSQL/flexibleServers",
     # The Durable Task Scheduler's data plane is public DNS
@@ -219,6 +220,28 @@ class GloballyUniqueNamingTests(unittest.TestCase):
         )
         self.assertIn("foundryAccountNames[primaryFoundryIndex]", text)
         self.assertIn("accountName: foundryAccountNames[i]", text)
+
+    def test_length_capped_names_preserve_the_complete_suffix(self) -> None:
+        targets = (
+            (INFRA / "modules" / "keyvault.bicep", "keyVaultName"),
+            (INFRA / "modules" / "proxyasync.bicep", "storageName"),
+            (INFRA / "modules" / "proxyasync.bicep", "serviceBusName"),
+        )
+        for path, variable in targets:
+            text = path.read_text(encoding="utf-8")
+            match = re.search(rf"^var {variable} = (.+)$", text, re.MULTILINE)
+            self.assertIsNotNone(match, f"{path.name}: missing {variable}")
+            expression = match.group(1)
+            self.assertRegex(
+                expression,
+                r"^'\$\{take\(\w+,\s*\d+\)\}\$\{uniqueSuffix\}'$",
+                f"{path.name}: truncate the prefix before appending uniqueSuffix",
+            )
+            self.assertNotRegex(
+                expression,
+                r"take\([^)]*uniqueSuffix",
+                f"{path.name}: take() would truncate the uniqueness suffix",
+            )
 
 
 # APIM child entities (products, subscriptions) are NOT globally unique -- they only

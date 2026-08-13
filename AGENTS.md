@@ -317,13 +317,13 @@ docker buildx build --file proxy/Dockerfile --load proxy
 
 Because every service image is built here on every PR, their base-image digest pins are trustworthy: a digest that does not resolve fails on the PR that introduces it. The proxy's .NET SDK and ASP.NET chiseled runtime both use manifest-list digests, its NuGet restore runs in locked mode, and the final loaded proxy image is blocked on HIGH/CRITICAL findings under the exact-CVE `proxy/.trivyignore` policy. The job retains an SPDX SBOM and unsigned build metadata; production signing/verification remains a roadmap gap until an approved identity/key design exists.
 
-`docker-build`'s `dockerignore-context` job builds separate, throwaway probe images from `app/web/.dockerignore` and `app/api/.dockerignore` plus synthetic root- and nested-depth dotenv files to prove secrets are excluded from the Docker build context recursively (Docker's `.dockerignore` matching is not recursive by default the way Git's `.gitignore` is — a pattern needs an explicit `**/` prefix to match at every depth) while committed `.env.example` files still survive:
+`docker-build`'s `dockerignore-context` job builds separate, throwaway probe images from `app/web/.dockerignore`, `app/api/.dockerignore`, and `proxy/.dockerignore` plus synthetic root- and nested-depth dotenv files to prove secrets are excluded from every Docker build context recursively (Docker's `.dockerignore` matching is not recursive by default the way Git's `.gitignore` is — a pattern needs an explicit `**/` prefix to match at every depth) while committed `.env.example` files still survive:
 
 ```powershell
 python -m unittest scripts.tests.test_dockerignore_context
 ```
 
-Both `.dockerignore` files use `**/.env*` / `!**/.env.example` for exactly this reason; do not narrow either back to an unanchored `.env*` without re-running this test.
+All three `.dockerignore` files use `**/.env*` / `!**/.env.example` for exactly this reason; do not narrow one back to an unanchored `.env*` without re-running this test.
 
 ### Deploying by digest, not by rebuild
 
@@ -378,12 +378,24 @@ python -m unittest scripts.tests.test_gateway_policy
 python scripts/gen-voice-provider-catalog.py --check
 python -m unittest scripts.tests.test_voice_provider_catalog
 python scripts/validate-feature-prereqs.py
+python -m unittest scripts.tests.test_feature_prereqs
+python -m unittest scripts.tests.test_foundry_local_auth scripts.tests.test_foundry_role_scope scripts.tests.test_web_auth_config scripts.tests.test_postgres_retired scripts.tests.test_runtime_rbac_and_model_pins
+python -m unittest scripts.tests.test_rai_policy
+python -m unittest scripts.tests.test_bicep_naming
+python -m unittest scripts.tests.test_cosmos_backup_policy
 python -m unittest scripts.tests.test_lean_azure_iac
 python -m unittest scripts.tests.test_bicep_compilation  # fails on diagnostics; inspects compiled ARM behavior
 bicep build infra/main.bicep --stdout > /dev/null
 ```
 
 `infra-validate` installs a pinned standalone Bicep CLI release (`BICEP_VERSION` env var in the workflow, matching the `ACTIONLINT_VERSION`/`HADOLINT_VERSION` pattern used elsewhere — never `releases/latest`, for reproducibility). Locally, if you don't have the standalone `bicep` CLI but already have Azure CLI, `az bicep build --file infra/main.bicep --stdout` produces equivalent output.
+
+The Foundry toolbox schema and provisioner both require an inline A2A
+`baseUrl` to be a public HTTPS endpoint without credentials, query, fragment,
+loopback, private, link-local, or reserved IP space. Microsoft documents the
+same public-reachability and valid-TLS requirement. Prefer a
+`projectConnectionId`, which keeps endpoint and authentication configuration in
+the Foundry project connection.
 
 `quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, the proxy .NET build/auth tests, `python3 -m yamllint -c .yamllint .`, a docs-catalog drift gate (`python scripts/gen-docs-catalog.py --check`) that keeps `site/data/docs.js` in sync with `site/data/docs.manifest.json`, and operator/CI contract tests not already covered by `app-ci`/`infra-validate`:
 

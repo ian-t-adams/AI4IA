@@ -17,7 +17,13 @@
 // that failed, so panels still degrade independently rather than all-or-nothing.
 // All display logic lives in pure helpers in lib/admin.ts (unit-tested); this file
 // is presentation only. Charts are inline SVG (no charting dependency).
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import Link from "next/link";
 
 import { HelpTooltip } from "./HelpTooltip";
@@ -61,6 +67,7 @@ import {
 
 const WINDOWS = [7, 30, 90];
 const IDENTITY_STORAGE_KEY = "ai4ia.admin.showRealIdentities";
+const IDENTITY_CHANGE_EVENT = "ai4ia-admin-identity-preference";
 const USER_PAGE_SIZE = 20;
 // Panels served by the one usage request. Named individually so a failure of that
 // request still reports which panels are affected, exactly as the seven separate
@@ -74,6 +81,31 @@ const USAGE_PANELS = [
   "user agents",
   "distributions",
 ] as const;
+
+function readIdentityPreference(): boolean {
+  try {
+    return window.localStorage.getItem(IDENTITY_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function subscribeIdentityPreference(onChange: () => void): () => void {
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key === null || event.key === IDENTITY_STORAGE_KEY) onChange();
+  };
+  const handleLocalChange = () => onChange();
+  window.addEventListener("storage", handleStorage);
+  window.addEventListener(IDENTITY_CHANGE_EVENT, handleLocalChange);
+  return () => {
+    window.removeEventListener("storage", handleStorage);
+    window.removeEventListener(IDENTITY_CHANGE_EVENT, handleLocalChange);
+  };
+}
+
+function readServerIdentityPreference(): boolean {
+  return false;
+}
 
 const card: React.CSSProperties = {
   background: "var(--bg-elevated)",
@@ -667,13 +699,11 @@ export function AdminDashboard() {
   const [data, setData] = useState<DashboardData>(EMPTY);
   const loadGenerationRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
-  const [identifyUsers, setIdentifyUsers] = useState(() => {
-    try {
-      return window.localStorage.getItem(IDENTITY_STORAGE_KEY) === "true";
-    } catch {
-      return false;
-    }
-  });
+  const identifyUsers = useSyncExternalStore(
+    subscribeIdentityPreference,
+    readIdentityPreference,
+    readServerIdentityPreference,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -690,15 +720,19 @@ export function AdminDashboard() {
     };
   }, [accessAttempt]);
 
-  useEffect(() => {
+  const setIdentifyPreference = useCallback((identify: boolean) => {
     try {
-      window.localStorage.setItem(IDENTITY_STORAGE_KEY, identifyUsers ? "true" : "false");
+      window.localStorage.setItem(
+        IDENTITY_STORAGE_KEY,
+        identify ? "true" : "false",
+      );
+      window.dispatchEvent(new Event(IDENTITY_CHANGE_EVENT));
     } catch {
       /* localStorage can be unavailable in private browsing or tests */
     }
-  }, [identifyUsers]);
+  }, []);
 
-  const load = useCallback(async (window: number, identify: boolean) => {
+  const load = useCallback(async (windowDays: number, identify: boolean) => {
     const generation = ++loadGenerationRef.current;
     loadAbortRef.current?.abort();
     const controller = new AbortController();
@@ -707,7 +741,7 @@ export function AdminDashboard() {
     setData(EMPTY);
     setError(null);
     const [overview, resources, webSearch, operations, security] = await Promise.allSettled([
-      fetchOverview(window, USER_PAGE_SIZE, 0, identify, controller.signal),
+      fetchOverview(windowDays, USER_PAGE_SIZE, 0, identify, controller.signal),
       fetchResources(controller.signal),
       fetchWebSearchHealth(controller.signal),
       fetchOperations(60, controller.signal),
@@ -834,7 +868,7 @@ export function AdminDashboard() {
             type="checkbox"
             id="admin-identify-users"
             checked={identifyUsers}
-            onChange={(e) => setIdentifyUsers(e.target.checked)}
+            onChange={(e) => setIdentifyPreference(e.target.checked)}
           />
           <label htmlFor="admin-identify-users">Show real identities</label>
           <HelpTooltip label="Show real identities" size="sm">

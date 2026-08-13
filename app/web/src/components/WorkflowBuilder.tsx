@@ -3,7 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import type { AgentSummary, ToolCatalogItem, Workflow, WorkflowRunStatus } from "@/lib/types";
-import type { LibraryDocument } from "@/lib/library";
+import {
+  formatBytes,
+  LIBRARY_STATUS_LABELS,
+  type LibraryDocument,
+} from "@/lib/library";
 import {
   INPUT_TOKEN,
   MAX_DESCRIPTION_LEN,
@@ -113,20 +117,6 @@ async function pollRun(
     if (api.isTerminalRunStatus(status.status)) return status;
   }
   return null;
-}
-
-const DOC_STATUS_LABEL: Record<LibraryDocument["status"], string> = {
-  pending: "Pending",
-  stored: "Pending",
-  analyzing: "Analyzing…",
-  ready: "Ready",
-  failed: "Failed",
-};
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function WorkflowBuilder({
@@ -987,7 +977,9 @@ export function WorkflowBuilder({
                                 {formatBytes(d.size)} · {d.modality}
                               </small>
                             </label>
-                            <span className="workflow-doc-state">{DOC_STATUS_LABEL[d.status]}</span>
+                            <span className="workflow-doc-state">
+                              {LIBRARY_STATUS_LABELS[d.status]}
+                            </span>
                             {!ready && (
                               <span id={`workflow-doc-note-${index}`} hidden>
                                 Only documents that finished processing can be read by a run.

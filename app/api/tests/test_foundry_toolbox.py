@@ -1650,6 +1650,33 @@ def test_schema_and_sdk_accept_a2a_preview_via_project_connection_id_or_base_url
     assert built.base_url == "https://agent.example.com"
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://agent.example.com",
+        "https://localhost:8080",
+        "https://127.0.0.1",
+        "https://10.0.0.8",
+        "https://agent.internal",
+        "https://user:password@agent.example.com",
+        "https://agent.example.com?target=other",
+    ],
+)
+def test_a2a_base_url_must_be_public_https(base_url: str):
+    manifest = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "a2a_preview",
+                "name": "a2a",
+                "baseUrl": base_url,
+            }
+        ],
+    }
+    errors = _tb.validate_manifest(manifest)
+    assert any("baseUrl" in error for error in errors)
+
+
 def test_schema_and_sdk_reject_a2a_preview_missing_connection_and_foreign_fields():
     jsonschema = pytest.importorskip("jsonschema")
     m = pytest.importorskip("azure.ai.projects.models")
