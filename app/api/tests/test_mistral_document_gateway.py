@@ -4,8 +4,15 @@ import base64
 import json
 
 import httpx
+import pytest
 
+from ai4ia_api.catalog import DeploymentOption
 from ai4ia_api.gateway.client import ModelGatewayClient
+from ai4ia_api.gateway.client import ModelGatewayError
+from ai4ia_api.library.mistral_document import (
+    MistralDocumentClient,
+    MistralDocumentError,
+)
 from tests.conftest import make_settings
 
 
@@ -56,3 +63,37 @@ async def test_mistral_document_response_is_returned():
         await http.aclose()
 
     assert result["pages"][0]["markdown"] == "# Parsed"
+
+
+class _Catalog:
+    def resolve_deployment(self, _model_id: str):
+        return DeploymentOption(
+            region="eastus2",
+            dataZone="us",
+            sku="GlobalStandard",
+            deploymentName="mistral-deployment",
+        )
+
+
+class _RejectingGateway:
+    async def analyze_document(self, **_kwargs):
+        raise ModelGatewayError(
+            400,
+            '{"message":"Received data:image/png;base64,PRIVATE_DOCUMENT_BYTES"}',
+        )
+
+
+async def test_provider_error_cannot_persist_or_log_echoed_document_bytes():
+    client = MistralDocumentClient(_RejectingGateway(), _Catalog())
+
+    with pytest.raises(MistralDocumentError) as captured:
+        await client.analyze(
+            "mistral-document-ai-2512",
+            b"PRIVATE_DOCUMENT_BYTES",
+            "image/png",
+        )
+
+    assert str(captured.value) == "Mistral document request failed (status=400)."
+    assert "PRIVATE_DOCUMENT_BYTES" not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.provider_completed is True

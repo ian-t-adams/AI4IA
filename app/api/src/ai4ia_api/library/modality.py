@@ -6,6 +6,8 @@ is a fallback for the many uploads that arrive as ``application/octet-stream``.
 """
 from __future__ import annotations
 
+import mimetypes
+
 from .models import Modality
 
 # Extension -> modality fallback (used when the MIME type is missing/generic).
@@ -71,11 +73,23 @@ _DOCUMENT_MIMES: frozenset[str] = frozenset(
 _TEXT_MIMES: frozenset[str] = frozenset(
     {"application/json", "application/xml", "application/csv"}
 )
+_GENERIC_MIMES = {"", "application/octet-stream", "binary/octet-stream"}
 
 
 def _extension(filename: str) -> str:
     name = (filename or "").rsplit(".", 1)
     return name[1].lower() if len(name) == 2 else ""
+
+
+def normalize_content_type(
+    content_type: str | None, filename: str | None
+) -> str:
+    """Resolve a concrete MIME type for generic multipart uploads."""
+    mime = (content_type or "").split(";", 1)[0].strip().lower()
+    if mime not in _GENERIC_MIMES:
+        return mime
+    guessed, _encoding = mimetypes.guess_type(filename or "")
+    return (guessed or mime).lower()
 
 
 def classify_modality(content_type: str | None, filename: str | None) -> Modality:

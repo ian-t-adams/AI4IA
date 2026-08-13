@@ -5,7 +5,7 @@ import io
 
 from ..catalog import DeploymentOption, ModelCatalog
 from ..content_understanding.models import CUResult
-from ..gateway.client import ModelGatewayClient
+from ..gateway.client import ModelGatewayClient, ModelGatewayError
 
 MAX_MISTRAL_DOCUMENT_BYTES = 30 * 1024 * 1024
 MAX_MISTRAL_DOCUMENT_PAGES = 30
@@ -56,12 +56,19 @@ class MistralDocumentClient:
         deployment = self._catalog.resolve_deployment(model_id)
         if deployment is None:
             raise RuntimeError(f"Mistral document model is unavailable: {model_id}")
-        raw = await self._gateway.analyze_document(
-            deployment=deployment.deploymentName,
-            data=data,
-            content_type=content_type,
-            correlation_id=correlation_id,
-        )
+        try:
+            raw = await self._gateway.analyze_document(
+                deployment=deployment.deploymentName,
+                data=data,
+                content_type=content_type,
+                correlation_id=correlation_id,
+            )
+        except ModelGatewayError as exc:
+            raise MistralDocumentError(
+                f"Mistral document request failed (status={exc.status_code}).",
+                deployment=deployment,
+                pages=None,
+            ) from None
         pages = raw.get("pages")
         if not isinstance(pages, list):
             raise MistralDocumentError(

@@ -574,7 +574,10 @@ class DocumentIngestor:
             # raw upload + quick-text summary for the user to see and re-run.
             await self._purge_chunks(user_id, document_id)
             logger.warning(
-                "enrich failed user=%s id=%s: %s", user_id, document_id, exc, exc_info=True
+                "document enrichment failed (provider=%s): %s",
+                provider.value,
+                exc,
+                exc_info=True,
             )
         finally:
             # Always meter the selected analysis attempt.
