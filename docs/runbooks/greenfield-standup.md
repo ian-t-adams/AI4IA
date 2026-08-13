@@ -40,6 +40,11 @@ requires `AI4IA_BUDGET_START_DATE=yyyy-MM-01` and a deliverable
 resources. Use the Azure pricing calculator for the selected regions/SKUs and
 obtain the required cost approval before continuing.
 
+Keep `AI4IA_MODEL_CAPACITY_PROFILE=baseline` for the first standup. After the
+environment exists, the
+[Deploy to Azure guide](./deploy-to-azure.md#use-all-available-model-capacity)
+shows how to generate and review a subscription-specific maximum profile.
+
 ## 1. Preflight the target
 
 Install and verify the local tools before authenticating:

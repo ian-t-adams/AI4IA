@@ -14,6 +14,7 @@
       "group": "Start here",
       "docs": [
         { "path": "README.md", "title": "Repository overview", "desc": "What AI4IA is, current state, layout, key decisions and how to deploy." },
+        { "path": "docs/runbooks/deploy-to-azure.md", "title": "Deploy to Azure", "desc": "Guided Azure deployment from fork and prerequisites through verified release, plus optional maximum model capacity." },
         { "path": "docs/runbooks/greenfield-standup.md", "title": "Start here: greenfield Azure standup", "desc": "New subscription or tenant setup: preflight, both GitHub OIDC subjects, RBAC, repo configuration, Entra apps, first provision, domains and validation." },
         { "path": "docs/user-guide.md", "title": "User guide", "desc": "How to use the app: chat, agents, voice, library, media, memory and admin views." },
         { "path": "docs/architecture.md", "title": "Architecture", "desc": "Governed multi-model design, request lifecycle, components and MCP planes." },

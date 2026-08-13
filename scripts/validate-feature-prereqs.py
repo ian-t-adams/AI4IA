@@ -61,6 +61,11 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
     errors: list[str] = []
     warnings: list[str] = []
+    model_capacity_profile = text(
+        parameter_value(parameters, "modelCapacityProfile", "baseline")
+    ).lower()
+    if model_capacity_profile not in {"baseline", "maximum"}:
+        errors.append("modelCapacityProfile must be baseline or maximum.")
 
     workload = text(parameter_value(parameters, "workload", "ai4ia"))
     environment_name = text(parameter_value(parameters, "environmentName"))
@@ -284,7 +289,14 @@ def main(*, require_deployment_attestation: bool = False) -> int:
                 "cuAgenticAnalyzerId must be a valid Content Understanding analyzer id."
             )
         capacities = [
-            int(deployment.get("capacity") or 0)
+            int(
+                (
+                    deployment.get("maxCapacity", deployment.get("capacity"))
+                    if model_capacity_profile == "maximum"
+                    else deployment.get("capacity")
+                )
+                or 0
+            )
             for model in models.get("catalog", [])
             if model.get("name") == "gpt-5.2"
             for deployment in model.get("deployments", [])

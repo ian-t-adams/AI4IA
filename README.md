@@ -85,8 +85,11 @@ azure.yaml  Azure Developer CLI service map
 
 ## Deploy
 
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](docs/runbooks/deploy-to-azure.md)
+
 Start with the
-[greenfield Azure standup guide](docs/runbooks/greenfield-standup.md). It covers
+[guided Azure deployment](docs/runbooks/deploy-to-azure.md), which routes into
+the greenfield standup guide. It covers
 cost/quota review, tools, deployment identity/RBAC, both GitHub OIDC subjects,
 Entra apps, required variables, provider/model preflight, the first workflow
 provision, data-plane assets, and custom-domain sequencing. Use the

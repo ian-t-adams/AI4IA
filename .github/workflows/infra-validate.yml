@@ -17,7 +17,9 @@ on:
       - "foundry/**"
       - "scripts/validate-catalog.py"
       - "scripts/validate-feature-prereqs.py"
+      - "scripts/sync-model-capacity.py"
       - "scripts/tests/test_feature_prereqs.py"
+      - "scripts/tests/test_model_capacity_profile.py"
       - "scripts/gen-gateway-policy.py"
       - "scripts/tests/test_gateway_policy.py"
       - "scripts/tests/test_policy_json_shape.py"
@@ -123,6 +125,9 @@ jobs:
       # invariant that main.bicep now depends on.
       - name: Deployment parameter validator tests
         run: python -m unittest scripts.tests.test_feature_prereqs
+
+      - name: Model capacity profile tests
+        run: python -m unittest scripts.tests.test_model_capacity_profile
 
       - name: Runtime and IaC posture contract tests
         run: |

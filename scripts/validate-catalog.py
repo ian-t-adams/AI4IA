@@ -77,6 +77,19 @@ def main() -> int:
                     f"({seen_names[dep_name]} and {name})"
                 )
             seen_names[dep_name] = name
+            capacity = int(dep["capacity"])
+            max_capacity = int(dep.get("maxCapacity", capacity))
+            max_capacity_pool = dep.get("maxCapacityPool")
+            if max_capacity < capacity:
+                errors.append(
+                    f"{name}: maxCapacity {max_capacity} is below baseline capacity "
+                    f"{capacity} in {region}/{sku}"
+                )
+            if ("maxCapacity" in dep) != bool(max_capacity_pool):
+                errors.append(
+                    f"{name}: maxCapacity and maxCapacityPool must be supplied "
+                    f"together in {region}/{sku}"
+                )
 
     deployments = sum(len(m["deployments"]) for m in data["catalog"])
     if errors:

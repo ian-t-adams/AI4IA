@@ -11,6 +11,9 @@
     "location": {
       "value": "${AZURE_LOCATION=eastus2}"
     },
+    "modelCapacityProfile": {
+      "value": "${AI4IA_MODEL_CAPACITY_PROFILE=baseline}"
+    },
     "claudeEnabled": {
       "value": "${AI4IA_CLAUDE_ENABLED=false}"
     },

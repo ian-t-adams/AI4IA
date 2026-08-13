@@ -217,6 +217,7 @@ jobs:
       AI4IA_CLAUDE_ORGANIZATION_NAME: ${{ vars.AI4IA_CLAUDE_ORGANIZATION_NAME }}
       AI4IA_CLAUDE_COUNTRY_CODE: ${{ vars.AI4IA_CLAUDE_COUNTRY_CODE }}
       AI4IA_CLAUDE_INDUSTRY: ${{ vars.AI4IA_CLAUDE_INDUSTRY }}
+      AI4IA_MODEL_CAPACITY_PROFILE: ${{ vars.AI4IA_MODEL_CAPACITY_PROFILE }}
       # The checked-in profile keeps the current feature posture as its default,
       # while each binding lets a fork or lower-cost environment opt out without
       # editing tracked deployment parameters.

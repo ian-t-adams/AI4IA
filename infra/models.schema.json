@@ -97,6 +97,16 @@
                   "enum": ["GlobalStandard", "DataZoneStandard", "Standard", "GlobalBatch", "DataZoneBatch"]
                 },
                 "capacity": { "type": "integer", "minimum": 1 },
+                "maxCapacity": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Optional subscription-specific maximum profile generated from live quota and modelCapacities. Must be >= capacity."
+                },
+                "maxCapacityPool": {
+                  "type": "string",
+                  "pattern": "^(global|data-zone:(US|EU)|region:[a-z0-9-]+)$",
+                  "description": "Quota pool used to generate maxCapacity. Required with maxCapacity so preflight validates the same global, data-zone, or regional boundary."
+                },
                 "version": { "type": "string" }
               }
             }
