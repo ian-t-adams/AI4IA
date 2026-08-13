@@ -45,7 +45,7 @@ from ..library.access import (
 from ..library.chunking import chunk_markdown
 from ..library.compute_factory import DocumentComputeService
 from ..library.ingest import DocumentIngestor, EnrichScheduleOutcome
-from ..library.modality import classify_modality
+from ..library.modality import classify_modality, normalize_content_type
 from ..library.mistral_document import (
     MAX_MISTRAL_DOCUMENT_BYTES,
     MAX_MISTRAL_DOCUMENT_PAGES,
@@ -417,7 +417,7 @@ async def upload_document(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="File is empty."
         )
 
-    content_type = file.content_type or ""
+    content_type = normalize_content_type(file.content_type, file.filename)
     modality = classify_modality(content_type, file.filename or "document")
     if analyzer is not None and modality not in analyzer.modalities:
         raise HTTPException(

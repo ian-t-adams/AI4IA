@@ -169,6 +169,24 @@ def test_upload_builtin_analyzer_accepted(client):
     assert resp.json()["analyzerId"] == "builtin-document"
 
 
+def test_generic_image_upload_persists_filename_derived_mime_for_mistral(
+    client,
+):
+    client.app.state.document_ingestor._mistral = None
+
+    response = _upload(
+        client,
+        "scan.png",
+        b"\x89PNG\r\n\x1a\n",
+        ctype="application/octet-stream",
+        analyzerId="mistral-document-ai",
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["contentType"] == "image/png"
+    assert response.json()["modality"] == "image"
+
+
 def test_upload_rejects_mistral_when_residency_policy_excludes_deployment():
     client = _client(data_residency="us")
     try:

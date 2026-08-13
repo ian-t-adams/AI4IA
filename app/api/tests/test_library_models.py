@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from ai4ia_api.library.access import can_access, require_owner
 from ai4ia_api.library.hashing import content_hash, dedupe_key
-from ai4ia_api.library.modality import classify_modality
+from ai4ia_api.library.modality import (
+    classify_modality,
+    normalize_content_type,
+)
 from ai4ia_api.library.models import (
     BUILTIN_ANALYZER_IDS,
     BUILTIN_ANALYZERS,
@@ -104,6 +107,15 @@ def test_classify_modality_falls_back_to_extension():
     assert classify_modality("", "photo.JPG") == Modality.image
     assert classify_modality(None, "clip.mov") == Modality.video
     assert classify_modality("", "notes.md") == Modality.text
+
+
+def test_normalize_content_type_replaces_generic_mime_from_filename():
+    assert (
+        normalize_content_type("application/octet-stream", "scan.PNG")
+        == "image/png"
+    )
+    assert normalize_content_type("", "report.pdf") == "application/pdf"
+    assert normalize_content_type("image/webp", "wrong.png") == "image/webp"
 
 
 def test_classify_modality_unknown_is_other():
