@@ -199,6 +199,14 @@ async def test_enrich_success_indexes_chunks_and_meters(monkeypatch):
     hits = await chunks.search("u1", [1.0, 1.0, 0.0], top_k=50)
     assert len(hits) == doc.chunkCount
     assert embedder.embedded
+    assert cu.calls == [
+        (
+            "prebuilt-documentSearch",
+            b"BYTES",
+            "application/pdf",
+            "2025-11-01",
+        )
+    ]
     # exactly one metered CU op, status complete, unknown usage
     assert len(usage.calls) == 1
     call = usage.calls[0]

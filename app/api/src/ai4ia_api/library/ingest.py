@@ -12,10 +12,10 @@ Turns an upload into a manifest + retrievable chunks, governed and fail-soft:
    ``doc_chunks`` vector store, write a ``chunks.jsonl`` sidecar, then flip the
    manifest to ``ready`` (or ``failed`` with the quick-text fallback retained).
 
-Governance: one analyzer operation is metered per enrich attempt. Content
-Understanding remains cost-unknown because its billing dimensions are not exposed
-here; Mistral records returned page count against its catalog deployment. Embeddings
-are not separately metered (consistent with memory). ``enrich`` never raises.
+Governance: every analyzer attempt is metered. Content Understanding records its
+reported page, contextualization, completion-model, and embedding-model dimensions;
+Mistral records returned page count against its catalog deployment. ``enrich`` never
+raises.
 
 All IO is injected (blob store, CU client, embedder, chunk store), so the
 orchestrator is unit-tested end to end without network or Azure SDKs.
@@ -33,7 +33,7 @@ from enum import Enum
 
 from ..catalog import DeploymentOption
 from ..config import Settings
-from ..content_understanding.models import CUResult
+from ..content_understanding.models import CU_GA_API_VERSION, CUResult
 from ..agents.tools import redact
 from ..documents.extract import DocumentError, extract_text
 from ..memory.embedder import GatewayEmbedder
@@ -542,19 +542,16 @@ class DocumentIngestor:
                             or "2026-06-01-preview",
                         )
                     else:
-                        if analyzer is not None and analyzer.apiVersion:
-                            result = await cu_client.analyze(
-                                analysis_model,
-                                payload,
-                                content_type or "application/octet-stream",
-                                api_version=analyzer.apiVersion,
-                            )
-                        else:
-                            result = await cu_client.analyze(
-                                analysis_model,
-                                payload,
-                                content_type or "application/octet-stream",
-                            )
+                        result = await cu_client.analyze(
+                            analysis_model,
+                            payload,
+                            content_type or "application/octet-stream",
+                            api_version=(
+                                analyzer.apiVersion
+                                if analyzer is not None and analyzer.apiVersion
+                                else CU_GA_API_VERSION
+                            ),
+                        )
                 provider_completed = True
             finally:
                 payload = None
@@ -628,7 +625,7 @@ class DocumentIngestor:
                     apiVersion=(
                         analyzer.apiVersion
                         if analyzer is not None and analyzer.apiVersion
-                        else self._settings.cu_api_version
+                        else CU_GA_API_VERSION
                         if provider is AnalyzerProvider.content_understanding
                         else None
                     ),

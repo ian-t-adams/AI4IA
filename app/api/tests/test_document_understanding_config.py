@@ -122,6 +122,14 @@ def test_cu_bearer_mode_without_key_is_allowed():
     ).validate_runtime()  # no raise
 
 
+def test_automatic_cu_api_version_cannot_be_changed_to_preview():
+    with pytest.raises(RuntimeError, match="must remain 2025-11-01"):
+        _settings(
+            document_understanding_enabled=True,
+            cu_api_version="2026-06-01-preview",
+        ).validate_runtime()
+
+
 def test_cu_preview_requires_document_understanding():
     with pytest.raises(RuntimeError, match="CU_PREVIEW_ENABLED"):
         _settings(cu_preview_enabled=True).validate_runtime()

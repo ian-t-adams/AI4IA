@@ -1161,6 +1161,14 @@ class Settings(BaseSettings):
                 "Set the key, switch to bearer (managed identity), or disable the "
                 "feature with AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false."
             )
+        if self.document_understanding_enabled:
+            from .content_understanding.models import CU_GA_API_VERSION
+
+            if self.cu_api_version != CU_GA_API_VERSION:
+                raise RuntimeError(
+                    "AI4IA_CU_API_VERSION must remain 2025-11-01. Preview "
+                    "analyzers select their API version explicitly."
+                )
         if self.cu_preview_enabled and not self.document_understanding_enabled:
             raise RuntimeError(
                 "AI4IA_CU_PREVIEW_ENABLED=true requires "
