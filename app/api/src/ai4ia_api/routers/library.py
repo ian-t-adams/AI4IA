@@ -129,6 +129,7 @@ class UserDocumentSummary(BaseModel):
 
     @classmethod
     def of(cls, doc: UserDocument) -> "UserDocumentSummary":
+        analysis = doc.analysis
         return cls(
             id=doc.id,
             filename=doc.filename,
@@ -137,15 +138,37 @@ class UserDocumentSummary(BaseModel):
             modality=doc.modality,
             status=doc.status,
             analyzerId=doc.analyzerId,
-            analysisProvider=doc.analysisProvider,
-            analysisModel=doc.analysisModel,
-            analysisVersion=doc.analysisVersion,
-            analysisPages=doc.analysisPages,
-            analysisDeployment=doc.analysisDeployment,
-            analysisRegion=doc.analysisRegion,
-            analysisSku=doc.analysisSku,
-            analysisDataZone=doc.analysisDataZone,
-            analysisResidency=doc.analysisResidency,
+            analysisProvider=(
+                analysis.provider if analysis is not None else doc.analysisProvider
+            ),
+            analysisModel=(
+                analysis.model if analysis is not None else doc.analysisModel
+            ),
+            analysisVersion=(
+                analysis.version if analysis is not None else doc.analysisVersion
+            ),
+            analysisPages=(
+                analysis.pages if analysis is not None else doc.analysisPages
+            ),
+            analysisDeployment=(
+                analysis.deployment
+                if analysis is not None
+                else doc.analysisDeployment
+            ),
+            analysisRegion=(
+                analysis.region if analysis is not None else doc.analysisRegion
+            ),
+            analysisSku=(
+                analysis.sku if analysis is not None else doc.analysisSku
+            ),
+            analysisDataZone=(
+                analysis.dataZone if analysis is not None else doc.analysisDataZone
+            ),
+            analysisResidency=(
+                analysis.residency
+                if analysis is not None
+                else doc.analysisResidency
+            ),
             summary=doc.summary,
             chunkCount=doc.chunkCount,
             error=doc.error,

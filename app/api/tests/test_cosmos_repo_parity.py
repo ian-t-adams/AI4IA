@@ -21,7 +21,11 @@ from azure.cosmos.exceptions import (
 
 from ai4ia_api.library.cosmos_repo import CosmosDocumentLibraryRepository
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
-from ai4ia_api.library.models import DocumentStatus, UserDocument
+from ai4ia_api.library.models import (
+    DocumentAnalysis,
+    DocumentStatus,
+    UserDocument,
+)
 from ai4ia_api.library.repository import DocumentConflictError, DocumentNotFoundError
 
 
@@ -67,6 +71,7 @@ class _FakeDocs:
         etag=None,
         match_condition=None,
     ):
+        assert len(patch_operations) <= 10
         self.patch_etags.append(etag)
         if self.patch_conflicts:
             self.patch_conflicts -= 1
@@ -288,13 +293,35 @@ async def test_ingest_patch_retries_cas_without_restoring_revoked_acl():
     fake.patch_conflicts = 1
     saved = await repo.patch_ingest_fields(
         doc,
-        {"status": DocumentStatus.ready, "chunkCount": 2},
+        {
+            "status": DocumentStatus.ready,
+            "chunkCount": 2,
+            "analysis": DocumentAnalysis(
+                provider="mistral",
+                model="mistral-document-ai-2512",
+                pages=1,
+            ),
+        },
     )
     assert fake.patch_etags == ["e1", "e2"]
     assert saved.status == DocumentStatus.ready
     assert saved.visibility.value == "private"
     assert saved.acl == []
+    assert saved.analysis is not None
+    assert saved.analysis.provider == "mistral"
+    assert isinstance(fake._existing["analysis"], dict)
     assert saved.updatedAt > old
+
+
+async def test_ingest_patch_rejects_more_than_cosmos_ten_operation_limit():
+    doc = _doc(user="alice")
+    repo, _fake = _repo(existing={**doc.model_dump(mode="json"), "_etag": "e1"})
+    doc._etag = "e1"
+
+    with pytest.raises(ValueError, match="10-operation limit"):
+        await repo.patch_ingest_fields(
+            doc, {f"field{index}": index for index in range(10)}
+        )
 
 
 # --- sharing-lookup parity: the Cosmos repo issues the right
@@ -351,4 +378,3 @@ async def test_cosmos_get_by_id_returns_first_or_none():
     blank, blank_fake = _query_repo([doc.model_dump(mode="json")])
     assert await blank.get_by_id("") is None
     assert blank_fake.last_query is None
-

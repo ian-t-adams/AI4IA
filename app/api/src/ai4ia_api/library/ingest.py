@@ -50,6 +50,7 @@ from .models import (
     BUILTIN_ANALYZER_IDS,
     Analyzer,
     AnalyzerProvider,
+    DocumentAnalysis,
     DocumentStatus,
     Modality,
     UserDocument,
@@ -547,16 +548,37 @@ class DocumentIngestor:
                 deleted_mid_flight = True
             else:
                 await self._persist_enrichment(user_id, doc, result)
-                doc.analysisProvider = provider.value
-                doc.analysisModel = analysis_model
-                doc.analysisVersion = analysis_version
-                doc.analysisPages = analysis_pages
-                if analysis_deployment is not None:
-                    doc.analysisDeployment = analysis_deployment.deploymentName
-                    doc.analysisRegion = analysis_deployment.region
-                    doc.analysisSku = analysis_deployment.sku
-                    doc.analysisDataZone = analysis_deployment.dataZone
-                    doc.analysisResidency = analysis_deployment.residency
+                doc.analysis = DocumentAnalysis(
+                    provider=provider.value,
+                    model=analysis_model,
+                    version=analysis_version,
+                    pages=analysis_pages,
+                    deployment=(
+                        analysis_deployment.deploymentName
+                        if analysis_deployment is not None
+                        else None
+                    ),
+                    region=(
+                        analysis_deployment.region
+                        if analysis_deployment is not None
+                        else None
+                    ),
+                    sku=(
+                        analysis_deployment.sku
+                        if analysis_deployment is not None
+                        else None
+                    ),
+                    dataZone=(
+                        analysis_deployment.dataZone
+                        if analysis_deployment is not None
+                        else None
+                    ),
+                    residency=(
+                        analysis_deployment.residency
+                        if analysis_deployment is not None
+                        else None
+                    ),
+                )
                 doc.status = DocumentStatus.ready
                 doc.error = None
         except asyncio.CancelledError:
@@ -611,15 +633,7 @@ class DocumentIngestor:
                         "parsedPath": doc.parsedPath,
                         "chunksPath": doc.chunksPath,
                         "chunkCount": doc.chunkCount,
-                        "analysisProvider": doc.analysisProvider,
-                        "analysisModel": doc.analysisModel,
-                        "analysisVersion": doc.analysisVersion,
-                        "analysisPages": doc.analysisPages,
-                        "analysisDeployment": doc.analysisDeployment,
-                        "analysisRegion": doc.analysisRegion,
-                        "analysisSku": doc.analysisSku,
-                        "analysisDataZone": doc.analysisDataZone,
-                        "analysisResidency": doc.analysisResidency,
+                        "analysis": doc.analysis,
                     },
                     require_status=DocumentStatus.analyzing,
                 )

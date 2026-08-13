@@ -206,7 +206,17 @@ async def test_enrich_success_indexes_chunks_and_meters(monkeypatch):
 
 
 async def test_mistral_analyzer_normalizes_into_canonical_artifacts():
-    library = InMemoryDocumentLibraryRepository()
+    class CapturingLibrary(InMemoryDocumentLibraryRepository):
+        terminal_changes: dict | None = None
+
+        async def patch_ingest_fields(self, document, changes, **kwargs):
+            if changes.get("status") == DocumentStatus.ready:
+                self.terminal_changes = dict(changes)
+            return await super().patch_ingest_fields(
+                document, changes, **kwargs
+            )
+
+    library = CapturingLibrary()
     usage = FakeUsage()
     result = CUResult(
         status="Succeeded",
@@ -233,18 +243,19 @@ async def test_mistral_analyzer_normalizes_into_canonical_artifacts():
 
     doc = await library.get_document("u1", stored.document.id)
     assert doc.status == DocumentStatus.ready
-    assert doc.analysisProvider == "mistral"
-    assert doc.analysisModel == "mistral-document-ai-2512"
-    assert doc.analysisVersion == "1"
-    assert doc.analysisPages == 1
+    assert doc.analysis is not None
+    assert doc.analysis.provider == "mistral"
+    assert doc.analysis.model == "mistral-document-ai-2512"
+    assert doc.analysis.version == "1"
+    assert doc.analysis.pages == 1
     assert (
-        doc.analysisDeployment
+        doc.analysis.deployment
         == "mistral-document-ai-2512-slurmfactory-eastus2-glbl"
     )
-    assert doc.analysisRegion == "eastus2"
-    assert doc.analysisSku == "GlobalStandard"
-    assert doc.analysisDataZone == "us"
-    assert doc.analysisResidency == "global"
+    assert doc.analysis.region == "eastus2"
+    assert doc.analysis.sku == "GlobalStandard"
+    assert doc.analysis.dataZone == "us"
+    assert doc.analysis.residency == "global"
     assert doc.parsedPath is not None
     assert mistral.calls == [
         ("mistral-document-ai-2512", b"BYTES", "application/pdf")
@@ -254,6 +265,17 @@ async def test_mistral_analyzer_normalizes_into_canonical_artifacts():
     assert usage.calls[0]["billable_units"] == 1
     assert usage.calls[0]["billing_unit"] == "page"
     assert usage.calls[0]["target"].provider == "mistral"
+    assert library.terminal_changes is not None
+    assert set(library.terminal_changes) == {
+        "status",
+        "error",
+        "summary",
+        "parsedPath",
+        "chunksPath",
+        "chunkCount",
+        "analysis",
+    }
+    assert len(library.terminal_changes) + 1 <= 10
 
 
 async def test_mistral_pages_remain_billable_when_local_persistence_fails(

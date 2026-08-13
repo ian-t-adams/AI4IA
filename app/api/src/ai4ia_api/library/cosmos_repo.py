@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from pydantic import BaseModel
+
 from .hashing import dedupe_key
 from .models import (
     BUILTIN_ANALYZER_IDS,
@@ -36,6 +38,16 @@ from .repository import (
     DocumentConflictError,
     DocumentNotFoundError,
 )
+
+MAX_COSMOS_PATCH_OPERATIONS = 10
+
+
+def _patch_value(value: object) -> object:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    return value
 
 
 class CosmosDocumentLibraryRepository:
@@ -213,11 +225,15 @@ class CosmosDocumentLibraryRepository:
 
         etag = document._etag
         for _attempt in range(3):
+            if len(changes) + 1 > MAX_COSMOS_PATCH_OPERATIONS:
+                raise ValueError(
+                    "ingest field patch exceeds the Cosmos 10-operation limit"
+                )
             operations = [
                 {
                     "op": "set",
                     "path": f"/{field_name}",
-                    "value": value.value if isinstance(value, Enum) else value,
+                    "value": _patch_value(value),
                 }
                 for field_name, value in changes.items()
             ]
