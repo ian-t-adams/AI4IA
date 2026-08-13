@@ -12,12 +12,10 @@ Turns an upload into a manifest + retrievable chunks, governed and fail-soft:
    ``doc_chunks`` vector store, write a ``chunks.jsonl`` sidecar, then flip the
    manifest to ``ready`` (or ``failed`` with the quick-text fallback retained).
 
-Governance: one CU operation is metered per enrich attempt via a *synthetic*
-``DeploymentOption`` (CU has no catalog entry); usage is ``known=False`` so it is
-never priced, mirroring the voice/realtime "unknown call" convention. Embeddings
-are not separately metered (consistent with memory). ``enrich`` never raises — it
-runs detached from the response — so a CU/storage failure degrades the document to
-``failed`` rather than surfacing anywhere.
+Governance: one analyzer operation is metered per enrich attempt. Content
+Understanding remains cost-unknown because its billing dimensions are not exposed
+here; Mistral records returned page count against its catalog deployment. Embeddings
+are not separately metered (consistent with memory). ``enrich`` never raises.
 
 All IO is injected (blob store, CU client, embedder, chunk store), so the
 orchestrator is unit-tested end to end without network or Azure SDKs.
@@ -40,7 +38,7 @@ from ..agents.tools import redact
 from ..documents.extract import DocumentError, extract_text
 from ..memory.embedder import GatewayEmbedder
 from ..logging_setup import emit_custom_event
-from ..usage.models import TokenUsage
+from ..usage.models import TokenUsage, UsageTarget
 from ..usage.service import UsageService
 from .blob_store import CHUNKS_NAME, MEDIA_NAME, PARSED_NAME, RAW_NAME, BlobStore, blob_path
 from .chunking import chunk_audiovisual, chunk_markdown, media_timeline
@@ -48,8 +46,10 @@ from .doc_chunks import DocChunkRecord, DocChunkStore
 from .hashing import content_hash
 from .modality import classify_modality
 from .models import (
+    BUILTIN_ANALYZERS,
     BUILTIN_ANALYZER_IDS,
     Analyzer,
+    AnalyzerProvider,
     DocumentStatus,
     Modality,
     UserDocument,
@@ -174,6 +174,7 @@ class DocumentIngestor:
         settings: Settings,
         usage: UsageService,
         cu_client=None,
+        mistral_client=None,
         embedder: GatewayEmbedder | None = None,
         chunk_store: DocChunkStore | None = None,
     ) -> None:
@@ -182,6 +183,7 @@ class DocumentIngestor:
         self._settings = settings
         self._usage = usage
         self._cu = cu_client
+        self._mistral = mistral_client
         self._embedder = embedder
         self._chunks = chunk_store
         # In-flight enrich tasks keyed by (user_id, document_id) so a delete can
@@ -232,7 +234,7 @@ class DocumentIngestor:
         ``BackgroundTasks.add_task`` so an in-flight crack can be cancelled the
         moment the user deletes the document.
         """
-        if self._cu is None:
+        if self._cu is None and self._mistral is None:
             return EnrichScheduleOutcome.disabled
         if self._closed:
             return EnrichScheduleOutcome.closed
@@ -339,7 +341,9 @@ class DocumentIngestor:
         digest = content_hash(data)
         existing = await self._library.find_by_dedupe_key(user_id, digest, analyzer_id)
         if existing is not None:
-            if self._cu is not None and existing.status == DocumentStatus.stored:
+            if (
+                self._cu is not None or self._mistral is not None
+            ) and existing.status == DocumentStatus.stored:
                 # A prior admission failure may have persisted the raw upload but
                 # failed to mark it terminal. Re-drive scheduling on identical
                 # upload; schedule_enrich deduplicates an already-running task.
@@ -405,8 +409,12 @@ class DocumentIngestor:
     async def _resolve_analyzer(
         self, user_id: str, analyzer_id: str | None
     ) -> Analyzer | None:
-        if not analyzer_id or analyzer_id in BUILTIN_ANALYZER_IDS:
+        if not analyzer_id:
             return None
+        if analyzer_id in BUILTIN_ANALYZER_IDS:
+            return next(
+                analyzer for analyzer in BUILTIN_ANALYZERS if analyzer.id == analyzer_id
+            )
         try:
             return await self._library.get_analyzer(user_id, analyzer_id)
         except AnalyzerNotFoundError:
@@ -425,8 +433,6 @@ class DocumentIngestor:
         Scheduled as a background task; never raises. A no-op (leaves the document
         at ``stored``) when CU is not configured.
         """
-        if self._cu is None:
-            return
         try:
             doc = await self._library.get_document(user_id, document_id)
         except DocumentNotFoundError:
@@ -436,7 +442,28 @@ class DocumentIngestor:
         modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
         started = time.monotonic()
         analyzer = await self._resolve_analyzer(user_id, doc.analyzerId)
-        cu_analyzer_id = resolve_cu_analyzer_id(analyzer, modality, self._settings)
+        provider = (
+            analyzer.provider
+            if analyzer is not None
+            else AnalyzerProvider.content_understanding
+        )
+        mistral_client = self._mistral
+        cu_client = self._cu
+        if provider is AnalyzerProvider.mistral and mistral_client is None:
+            return
+        if provider is AnalyzerProvider.content_understanding and cu_client is None:
+            return
+        analysis_model = (
+            analyzer.modelId
+            if provider is AnalyzerProvider.mistral and analyzer is not None
+            else resolve_cu_analyzer_id(analyzer, modality, self._settings)
+        )
+        if not analysis_model:
+            return
+        analysis_version = analyzer.modelVersion if analyzer is not None else None
+        analysis_deployment: DeploymentOption | None = None
+        analysis_pages: int | None = None
+        provider_completed = False
 
         initial_outcome, committed = await self._safe_update(
             doc,
@@ -471,11 +498,28 @@ class DocumentIngestor:
                     raise RuntimeError("canonical raw document is unavailable")
                 payload = await self._blob.get(doc.rawPath)
             try:
-                result = await self._cu.analyze(
-                    cu_analyzer_id,
-                    payload,
-                    content_type or "application/octet-stream",
-                )
+                if provider is AnalyzerProvider.mistral:
+                    assert mistral_client is not None
+                    try:
+                        result, analysis_deployment = await mistral_client.analyze(
+                            analysis_model,
+                            payload,
+                            content_type or "application/octet-stream",
+                        )
+                    except Exception as exc:
+                        if getattr(exc, "provider_completed", False):
+                            provider_completed = True
+                            analysis_deployment = getattr(exc, "deployment", None)
+                            analysis_pages = getattr(exc, "pages", None)
+                        raise
+                else:
+                    assert cu_client is not None
+                    result = await cu_client.analyze(
+                        analysis_model,
+                        payload,
+                        content_type or "application/octet-stream",
+                    )
+                provider_completed = True
             finally:
                 payload = None
             if not result.succeeded:
@@ -495,6 +539,7 @@ class DocumentIngestor:
                 raise RuntimeError(
                     f"content understanding status={result.status or 'unknown'}{suffix}"
                 )
+            analysis_pages = len(result.contents)
             # The user may have deleted the document during the (potentially long)
             # CU poll. Re-check before writing blob/vector side effects so enrich
             # never resurrects content the delete already purged.
@@ -502,6 +547,16 @@ class DocumentIngestor:
                 deleted_mid_flight = True
             else:
                 await self._persist_enrichment(user_id, doc, result)
+                doc.analysisProvider = provider.value
+                doc.analysisModel = analysis_model
+                doc.analysisVersion = analysis_version
+                doc.analysisPages = analysis_pages
+                if analysis_deployment is not None:
+                    doc.analysisDeployment = analysis_deployment.deploymentName
+                    doc.analysisRegion = analysis_deployment.region
+                    doc.analysisSku = analysis_deployment.sku
+                    doc.analysisDataZone = analysis_deployment.dataZone
+                    doc.analysisResidency = analysis_deployment.residency
                 doc.status = DocumentStatus.ready
                 doc.error = None
         except asyncio.CancelledError:
@@ -522,11 +577,19 @@ class DocumentIngestor:
                 "enrich failed user=%s id=%s: %s", user_id, document_id, exc, exc_info=True
             )
         finally:
-            # Always meter the CU attempt (one synthetic op per enrich).
+            # Always meter the selected analysis attempt.
             try:
-                await self._meter_cu(user_id, cu_analyzer_id, meter_status)
+                await self._meter_analysis(
+                    user_id=user_id,
+                    provider=provider,
+                    model_id=analysis_model,
+                    deployment=analysis_deployment,
+                    pages=analysis_pages,
+                    status=meter_status,
+                    provider_completed=provider_completed,
+                )
             except Exception:  # noqa: BLE001 - telemetry still records terminal status
-                logger.warning("content-understanding metering failed", exc_info=True)
+                logger.warning("document analysis metering failed", exc_info=True)
             if terminal_status == "cancelled":
                 pass
             elif deleted_mid_flight:
@@ -545,6 +608,15 @@ class DocumentIngestor:
                         "parsedPath": doc.parsedPath,
                         "chunksPath": doc.chunksPath,
                         "chunkCount": doc.chunkCount,
+                        "analysisProvider": doc.analysisProvider,
+                        "analysisModel": doc.analysisModel,
+                        "analysisVersion": doc.analysisVersion,
+                        "analysisPages": doc.analysisPages,
+                        "analysisDeployment": doc.analysisDeployment,
+                        "analysisRegion": doc.analysisRegion,
+                        "analysisSku": doc.analysisSku,
+                        "analysisDataZone": doc.analysisDataZone,
+                        "analysisResidency": doc.analysisResidency,
                     },
                     require_status=DocumentStatus.analyzing,
                 )
@@ -565,7 +637,7 @@ class DocumentIngestor:
                 {
                     "status": terminal_status,
                     "modality": modality,
-                    "stage": "content_understanding",
+                    "stage": provider.value,
                     "persistenceOutcome": persistence_outcome,
                     "latencyMs": int((time.monotonic() - started) * 1000),
                 },
@@ -804,19 +876,46 @@ class DocumentIngestor:
             except Exception:  # noqa: BLE001
                 logger.warning("chunk purge failed id=%s", document_id, exc_info=True)
 
-    async def _meter_cu(self, user_id: str, cu_analyzer_id: str, status: str) -> None:
-        # CU has no catalog deployment; meter against a synthetic one. Usage is
-        # known=False so it is counted but never priced (no catalog/price lookup).
-        deployment = DeploymentOption(
-            region="unknown",
-            sku="content-understanding",
-            deploymentName=cu_analyzer_id,
-        )
+    async def _meter_analysis(
+        self,
+        *,
+        user_id: str,
+        provider: AnalyzerProvider,
+        model_id: str,
+        deployment: DeploymentOption | None,
+        pages: int | None,
+        status: str,
+        provider_completed: bool,
+    ) -> None:
+        # Content Understanding has no catalog deployment; Mistral does.
+        if deployment is None:
+            deployment = DeploymentOption(
+                region="unknown",
+                sku="content-understanding",
+                deploymentName=model_id,
+            )
         await self._usage.record_completion(
             user_id=user_id,
             session_id=_INGEST_SESSION,
-            model_id=_CU_MODEL_ID,
-            deployment=deployment,
+            model_id=(
+                _CU_MODEL_ID
+                if provider is AnalyzerProvider.content_understanding
+                else model_id
+            ),
+            target=UsageTarget.from_deployment(
+                deployment, provider=provider.value
+            ),
             usage=TokenUsage(known=False, complete=False, calls=1),
             status="complete" if status == "complete" else "error",
+            provider_completed=provider_completed,
+            billable_units=(
+                pages
+                if provider is AnalyzerProvider.mistral and pages is not None
+                else None
+            ),
+            billing_unit=(
+                "page"
+                if provider is AnalyzerProvider.mistral and pages is not None
+                else None
+            ),
         )

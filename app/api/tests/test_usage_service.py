@@ -169,6 +169,69 @@ def test_provider_completed_unknown_usage_is_a_cost_bearing_attempt():
     assert cost_bearing_attempt(rec) is True
 
 
+def test_image_unit_is_billable_without_token_usage_and_uses_image_rate():
+    pricing = PricingBook(
+        {},
+        currency="USD",
+        version="media-1",
+        image_rates={
+            "image-x": {"basis": "image", "perImageUsd": 0.04}
+        },
+    )
+    rec = _service(pricing=pricing).build_record(
+        user_id="u1",
+        session_id="s1",
+        model_id="image-x",
+        deployment=_deployment(),
+        usage=TokenUsage.parse(None),
+        status="error",
+        provider_completed=True,
+        billable_units=1,
+        billing_unit="image",
+        image_size="1024x1024",
+        image_quality="auto",
+        agent=None,
+        correlation_id=None,
+    )
+
+    assert rec.providerCompleted is True
+    assert rec.billable is True
+    assert rec.usageKnown is False
+    assert rec.billableUnits == 1
+    assert rec.billingUnit == "image"
+    assert rec.costKnown is True
+    assert rec.estCostMicroUsd == 40_000
+    assert rec.pricingBasis == "image"
+
+
+def test_document_pages_are_billable_and_priced_after_provider_completion():
+    pricing = PricingBook(
+        {},
+        currency="USD",
+        version="doc-1",
+        document_rates={
+            "doc-x": {"basis": "page", "perPageUsd": 0.003}
+        },
+    )
+    rec = _service(pricing=pricing).build_record(
+        user_id="u1",
+        session_id="document-ingest",
+        model_id="doc-x",
+        deployment=_deployment(),
+        usage=TokenUsage.parse(None),
+        status="complete",
+        provider_completed=True,
+        billable_units=5,
+        billing_unit="page",
+        agent=None,
+        correlation_id=None,
+    )
+
+    assert rec.billable is True
+    assert rec.billableUnits == 5
+    assert rec.estCostMicroUsd == 15_000
+
+
 def test_build_record_billable_but_unknown_price_marks_cost_unknown():
     svc = _service(pricing=PricingBook({}, currency="USD", version=None))
     rec = svc.build_record(

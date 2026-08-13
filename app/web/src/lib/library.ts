@@ -16,6 +16,15 @@ export interface LibraryDocument {
   modality: string;
   status: "pending" | "stored" | "analyzing" | "ready" | "failed";
   analyzerId: string | null;
+  analysisProvider?: string | null;
+  analysisModel?: string | null;
+  analysisVersion?: string | null;
+  analysisPages?: number | null;
+  analysisDeployment?: string | null;
+  analysisRegion?: string | null;
+  analysisSku?: string | null;
+  analysisDataZone?: string | null;
+  analysisResidency?: string | null;
   summary: string;
   chunkCount: number;
   error?: string | null;
@@ -53,6 +62,9 @@ export interface LibraryAnalyzer {
   name: string;
   description: string;
   kind: "builtin" | "custom";
+  provider?: "content_understanding" | "mistral";
+  modelId?: string | null;
+  modelVersion?: string | null;
   modalities: string[];
   baseAnalyzerId: string | null;
 }

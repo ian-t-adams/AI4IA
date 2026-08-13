@@ -85,6 +85,30 @@ describe("ModelPicker", () => {
     expect(onChange).toHaveBeenCalledWith("llama");
   });
 
+  it("warns when a selected model is text-only and cannot run tools", () => {
+    render(
+      <ModelPicker
+        value="deepseek"
+        onChange={vi.fn()}
+        models={[
+          model({
+            id: "deepseek",
+            displayName: "DeepSeek",
+            supportsTools: false,
+            inputModalities: ["text"],
+          }),
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Plain chat only.*cannot run agent or workflow tools/i),
+    ).toHaveTextContent(/accepts text input only/i);
+    expect(
+      screen.getByRole("combobox", { name: "Model" }),
+    ).toHaveAccessibleDescription(/Plain chat only/i);
+  });
+
   it("shows plain-language category help for the selected model", () => {
     const { rerender } = render(
       <ModelPicker

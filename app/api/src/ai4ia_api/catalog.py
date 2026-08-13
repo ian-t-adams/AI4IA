@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, Field, computed_field
 
 from .model_traits import reasoning_effort_options, supports_sampling
 
@@ -123,6 +123,8 @@ class ModelEntry(BaseModel):
     # app can show the cap and clamp the max-tokens input from one source of truth.
     contextWindow: int | None = None
     maxOutputTokens: int | None = None
+    toolCalling: bool | None = None
+    inputModalities: list[str] = Field(default_factory=lambda: ["text"])
     # Optional provider-specific image controls. Absent means the shared image
     # defaults; a recorded list is authoritative for validation and tooling.
     imageSizes: list[str] | None = None
@@ -161,6 +163,13 @@ class ModelEntry(BaseModel):
         including the whole GPT-5.6 family.
         """
         return supports_sampling(self.id)
+
+    @computed_field
+    @property
+    def supportsTools(self) -> bool:
+        """Whether this conversational model can drive the app's tool loop."""
+
+        return self.conversational and self.toolCalling is not False
 
     @computed_field
     @property

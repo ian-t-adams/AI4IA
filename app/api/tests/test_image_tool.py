@@ -24,7 +24,12 @@ from ai4ia_api.images.capability import (
 )
 from ai4ia_api.images.service import ImageGenerationService
 from ai4ia_api.main import create_app
-from ai4ia_api.sessions.models import Message, MessageAttachment, MessageRole
+from ai4ia_api.sessions.models import (
+    ImageGenerationPreferences,
+    Message,
+    MessageAttachment,
+    MessageRole,
+)
 from tests.conftest import make_settings
 from tests.test_image_api import TINY_PNG_B64, FakeImageGateway
 
@@ -50,7 +55,12 @@ def _internal_id(client, headers) -> str:
     return client.get("/api/entitlement", headers=headers).json()["userId"]
 
 
-def _build_capability(client, user_id: str, sink: list[MessageAttachment]):
+def _build_capability(
+    client,
+    user_id: str,
+    sink: list[MessageAttachment],
+    preferences: ImageGenerationPreferences | None = None,
+):
     service = ImageGenerationService(
         catalog=client.app.state.catalog, gateway=client.app.state.gateway
     )
@@ -63,6 +73,7 @@ def _build_capability(client, user_id: str, sink: list[MessageAttachment]):
         user_id=user_id,
         session_id="s-img",
         sink=sink,
+        preferences=preferences,
     )
     return tools, handlers
 
@@ -103,6 +114,11 @@ def test_handler_generates_persists_sinks_and_meters(client):
     assert att.id == artifact_id
     assert att.kind == "image"
     assert att.prompt == "a red bird"
+    assert att.provider == "openai"
+    assert att.deployment
+    assert att.region
+    assert att.residency
+    assert att.costKnown is False
 
     # The bytes are durably stored, owner-scoped, and decode to the canned PNG.
     stored = asyncio.run(client.app.state.image_artifacts.get(uid, artifact_id))
@@ -111,6 +127,118 @@ def test_handler_generates_persists_sinks_and_meters(client):
     # The call was metered into the usage ledger (rate/budget windows see it).
     summary = client.get("/api/usage", headers=headers).json()
     assert summary["totalRequests"] >= 1
+
+
+def test_session_image_preferences_override_model_authored_tool_arguments(client):
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    tools, handlers = _build_capability(
+        client,
+        uid,
+        sink,
+        ImageGenerationPreferences(
+            models=["FLUX.1-Kontext-pro"],
+            size="1024x1024",
+            quality="auto",
+        ),
+    )
+
+    description = tools[0]["function"]["description"]
+    assert "currently selects FLUX.1-Kontext-pro" in description
+    out = asyncio.run(
+        handlers[GENERATE_IMAGE_TOOL_NAME](
+            {
+                "prompt": "a red bird",
+                "model": "gpt-image-2",
+                "size": "1536x1024",
+                "quality": "high",
+            },
+            ToolContext(),
+        )
+    )
+
+    assert out["model"] == "FLUX.1-Kontext-pro"
+    assert sink[0].costKnown is True
+    assert sink[0].estimatedCostUsd == 0.04
+    call = client.app.state.gateway.calls[-1]
+    assert call["deployment"].startswith("FLUX.1-Kontext-pro")
+    assert call["size"] == "1024x1024"
+    assert call["extra"] is None
+
+
+def test_selected_models_generate_side_by_side_with_one_prompt(client):
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    _, handlers = _build_capability(
+        client,
+        uid,
+        sink,
+        ImageGenerationPreferences(
+            models=["FLUX.2-pro", "gpt-image-2"],
+            size="1024x1024",
+            quality="auto",
+        ),
+    )
+
+    out = asyncio.run(
+        handlers[GENERATE_IMAGE_TOOL_NAME](
+            {"prompt": "the same red bird", "model": "MAI-Image-2.5"},
+            ToolContext(),
+        )
+    )
+
+    assert out["status"] == "generated"
+    assert [item["model"] for item in out["artifacts"]] == [
+        "FLUX.2-pro",
+        "gpt-image-2",
+    ]
+    assert [attachment.model for attachment in sink] == [
+        "FLUX.2-pro",
+        "gpt-image-2",
+    ]
+    assert [call["prompt"] for call in client.app.state.gateway.calls[-2:]] == [
+        "the same red bird",
+        "the same red bird",
+    ]
+
+
+def test_partial_comparison_keeps_a_failure_slot_in_selection_order(client):
+    class FirstModelFails(FakeImageGateway):
+        async def generate_image(self, **kwargs):
+            if kwargs["deployment"].startswith("FLUX.2-pro"):
+                raise ModelGatewayError(400, "provider rejected this prompt")
+            return await super().generate_image(**kwargs)
+
+    client.app.state.gateway = FirstModelFails()
+    uid = _internal_id(client, {"X-Dev-User": "ian"})
+    sink: list[MessageAttachment] = []
+    _, handlers = _build_capability(
+        client,
+        uid,
+        sink,
+        ImageGenerationPreferences(
+            models=["FLUX.2-pro", "gpt-image-2"],
+            size="1024x1024",
+            quality="auto",
+        ),
+    )
+
+    result = asyncio.run(
+        handlers[GENERATE_IMAGE_TOOL_NAME](
+            {"prompt": "the same red bird"}, ToolContext()
+        )
+    )
+
+    assert result["status"] == "generated"
+    assert len(result["artifacts"]) == 1
+    assert len(result["errors"]) == 1
+    assert [attachment.kind for attachment in sink] == [
+        "image_error",
+        "image",
+    ]
+    assert sink[0].model == "FLUX.2-pro"
+    assert sink[0].error == "provider rejected this prompt"
+    assert sink[1].model == "gpt-image-2"
 
 
 def test_successful_provider_attempt_is_metered_once_as_complete(client):
@@ -159,7 +287,9 @@ def test_decode_failure_is_metered_once_as_error(client):
         )
 
     assert out == {"error": "Generated image could not be decoded."}
-    assert sink == []
+    assert len(sink) == 1
+    assert sink[0].kind == "image_error"
+    assert sink[0].error == "Generated image could not be decoded."
     meter.assert_awaited_once()
     assert meter.await_args.kwargs["status"] == "error"
     assert meter.await_args.kwargs["provider_completed"] is True
@@ -183,7 +313,9 @@ def test_post_provider_service_failure_is_metered_once_as_error(client):
         )
 
     assert out == {"error": "Image generation returned no image."}
-    assert sink == []
+    assert len(sink) == 1
+    assert sink[0].kind == "image_error"
+    assert sink[0].error == "Image generation returned no image."
     meter.assert_awaited_once()
     assert meter.await_args.kwargs["status"] == "error"
     assert meter.await_args.kwargs["provider_completed"] is True
@@ -207,7 +339,8 @@ def test_pre_provider_service_failure_is_not_metered(client):
         )
 
     assert "error" in out
-    assert sink == []
+    assert len(sink) == 1
+    assert sink[0].kind == "image_error"
     meter.assert_not_awaited()
 
 
@@ -236,7 +369,9 @@ def test_blob_failure_is_metered_once_as_error(client):
         )
 
     assert out == {"error": "Generated image could not be stored."}
-    assert sink == []
+    assert len(sink) == 1
+    assert sink[0].kind == "image_error"
+    assert sink[0].error == "Generated image could not be stored."
     meter.assert_awaited_once()
     assert meter.await_args.kwargs["status"] == "error"
     assert meter.await_args.kwargs["provider_completed"] is True
@@ -350,12 +485,13 @@ def test_handler_enforces_per_turn_budget(client):
     sink: list[MessageAttachment] = []
     _, handlers = _build_capability(client, uid, sink)
     handler = handlers[GENERATE_IMAGE_TOOL_NAME]
-    for _ in range(MAX_IMAGES_PER_TURN):
+    assert MAX_IMAGES_PER_TURN == 3
+    for _ in range(3):
         ok = asyncio.run(handler({"prompt": "x", "model": "gpt-image-2"}, ToolContext()))
         assert ok["status"] == "generated"
     over = asyncio.run(handler({"prompt": "x", "model": "gpt-image-2"}, ToolContext()))
     assert "error" in over
-    assert len(sink) == MAX_IMAGES_PER_TURN
+    assert len(sink) == 3
 
 
 # ---- serve endpoint ownership ----

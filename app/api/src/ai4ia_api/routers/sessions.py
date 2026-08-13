@@ -15,7 +15,14 @@ from ..auth.dependencies import get_current_user
 from ..agents.mcp_servers import namespaced_tool_name
 from ..library.access import get_accessible_document, list_accessible_documents
 from ..library.repository import DocumentNotFoundError
+from ..images.service import (
+    ALLOWED_QUALITIES,
+    ALLOWED_SIZES,
+    DEFAULT_QUALITY,
+    DEFAULT_SIZE,
+)
 from ..sessions.models import (
+    ImageGenerationPreferences,
     MAX_LIBRARY_DOCUMENTS_PER_SESSION,
     Message,
     MessageRole,
@@ -51,6 +58,9 @@ class CreateSessionRequest(BaseModel):
     )
     agentName: str | None = None
     toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
+    imagePreferences: ImageGenerationPreferences = Field(
+        default_factory=ImageGenerationPreferences
+    )
     libraryDocumentIds: list[str] | None = Field(
         default=None, max_length=MAX_LIBRARY_DOCUMENTS_PER_SESSION
     )
@@ -69,6 +79,7 @@ class UpdateSessionRequest(BaseModel):
     )
     agentName: str | None = None
     toolOverrides: ToolOverrides | None = None
+    imagePreferences: ImageGenerationPreferences | None = None
     libraryDocumentIds: list[str] | None = Field(
         default=None, max_length=MAX_LIBRARY_DOCUMENTS_PER_SESSION
     )
@@ -83,6 +94,62 @@ class UpdateSessionRequest(BaseModel):
 
 def _repo(request: Request) -> SessionRepository:
     return request.app.state.session_repo
+
+
+def _validate_image_preferences(
+    request: Request, value: ImageGenerationPreferences | Mapping[str, object]
+) -> ImageGenerationPreferences:
+    preferences = (
+        value
+        if isinstance(value, ImageGenerationPreferences)
+        else ImageGenerationPreferences.model_validate(value)
+    )
+    model_ids = list(
+        dict.fromkeys(model.strip() for model in preferences.models if model.strip())
+    )
+    if not model_ids:
+        if preferences.size is not None or preferences.quality is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Choose an image model before setting image size or quality.",
+            )
+        return ImageGenerationPreferences()
+    if len(model_ids) > 3:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Choose at most 3 image models for one generation.",
+        )
+
+    catalog = request.app.state.catalog
+    entries = []
+    for model_id in model_ids:
+        entry = catalog.get(model_id)
+        if entry is None or entry.category != "image" or not catalog.available(entry):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Unknown or unavailable image model: {model_id}",
+            )
+        entries.append(entry)
+
+    size = (preferences.size or DEFAULT_SIZE).strip()
+    quality = (preferences.quality or DEFAULT_QUALITY).strip()
+    supported_sizes = [
+        set(entry.imageSizes or ALLOWED_SIZES) for entry in entries
+    ]
+    supported_qualities = [
+        set(entry.imageQualities or ALLOWED_QUALITIES) for entry in entries
+    ]
+    if not all(size in choices for choices in supported_sizes):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Image size is not shared by every selected model: {size}",
+        )
+    if not all(quality in choices for choices in supported_qualities):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Image quality is not shared by every selected model: {quality}",
+        )
+    return ImageGenerationPreferences(models=model_ids, size=size, quality=quality)
 
 
 async def _conversation_addable_tools(request: Request, user_id: str) -> set[str]:
@@ -215,6 +282,7 @@ async def create_session(
         systemPrompt=body.systemPrompt,
         agentName=agent_name,
         toolOverrides=overrides,
+        imagePreferences=_validate_image_preferences(request, body.imagePreferences),
         libraryDocumentIds=document_ids,
     )
     return await _repo(request).create_session(session)
@@ -256,6 +324,9 @@ async def update_session(
     next_agent = data.get("agentName", session.agentName)
     next_overrides = data.get("toolOverrides", session.toolOverrides)
     next_document_ids = data.get("libraryDocumentIds", session.libraryDocumentIds)
+    next_image_preferences = data.get(
+        "imagePreferences", session.imagePreferences
+    )
     next_agent, next_overrides, next_document_ids = await _validate_policy_fields(
         request,
         user,
@@ -273,6 +344,10 @@ async def update_session(
         changes["toolOverrides"] = next_overrides
     if "libraryDocumentIds" in data:
         changes["libraryDocumentIds"] = next_document_ids
+    if "imagePreferences" in data:
+        changes["imagePreferences"] = _validate_image_preferences(
+            request, next_image_preferences
+        )
     if "title" in data:
         changes["titleSource"] = "manual"
     try:

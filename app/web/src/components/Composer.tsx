@@ -102,6 +102,7 @@ export function Composer({
   onRemoveLibraryDocument,
   onError,
   voiceLive,
+  prefill,
 }: {
   disabled: boolean;
   streaming: boolean;
@@ -121,6 +122,7 @@ export function Composer({
   onRemoveDocument: (id: string) => void;
   onRemoveLibraryDocument?: (id: string) => void;
   onError?: (message: string) => void;
+  prefill?: { id: number; text: string } | null;
   // Inline Voice Live controller. Unlike dictation, this starts/stops the
   // realtime conversation without leaving or covering the chat.
   voiceLive?: {
@@ -149,6 +151,21 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Caret position to restore after a programmatic value change (insertion).
   const pendingCaret = useRef<number | null>(null);
+  const appliedPrefillId = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!prefill || appliedPrefillId.current === prefill.id) return;
+    appliedPrefillId.current = prefill.id;
+    setText((current) => {
+      const next = current.startsWith(prefill.text)
+        ? current
+        : `${prefill.text}${current}`;
+      pendingCaret.current = next.length;
+      setCaret(next.length);
+      setSuppressed(false);
+      return next;
+    });
+  }, [prefill]);
 
   const resizeTextarea = useCallback(() => {
     const element = textareaRef.current;

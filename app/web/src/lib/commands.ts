@@ -35,6 +35,7 @@ const TOOL_COMMANDS: SlashCommand[] = [
   { name: "generate_image", label: "Generate image", hint: "Create an image from a description" },
   { name: "generate_video", label: "Generate video", hint: "Create a short video from a description" },
   { name: "process_document", label: "Process document", hint: "Analyze a document in your library" },
+  { name: "run_workflow", label: "Run workflow", hint: "Run one of your saved safe workflows" },
   { name: "recall_memory", label: "Recall memory", hint: "Search your saved memories" },
 ];
 

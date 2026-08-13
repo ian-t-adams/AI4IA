@@ -128,6 +128,11 @@ class ProviderCompletion:
     deployment: DeploymentOption
     usage: TokenUsage
     status: UsageStatus = "complete"
+    provider: str = "azure_openai"
+    image_size: str | None = None
+    image_quality: str | None = None
+    billable_units: int | None = None
+    billing_unit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +223,11 @@ class UsageRecord(BaseModel):
     promptTokens: int | None = None
     completionTokens: int | None = None
     totalTokens: int | None = None
+    # Non-token providers report an explicit count and billing dimension instead.
+    billableUnits: float | None = None
+    billingUnit: str | None = None
+    imageSize: str | None = None
+    imageQuality: str | None = None
 
     # Cost stored as integer micro-USD to avoid float drift in accumulated
     # totals; ``estCostUsd`` is a display convenience derived from it.
@@ -227,6 +237,7 @@ class UsageRecord(BaseModel):
     # Snapshot of the rates used so summaries never recompute from current prices.
     priceInputPer1M: float | None = None
     priceOutputPer1M: float | None = None
+    pricingBasis: str | None = None
     priceVersion: str | None = None
 
     correlationId: str | None = None

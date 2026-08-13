@@ -1,8 +1,8 @@
 {
-  "_comment": "Best-effort per-1M-token USD price estimates for cost tracking ONLY. NOT authoritative billing. Models absent here (image/audio/realtime/tts/video/rerank/transcription) record cost as unknown rather than zero. inputPer1M/outputPer1M are USD per 1,000,000 tokens.",
-  "_source": "Azure Retail Prices API (https://prices.azure.com/api/retail/prices), serviceName eq 'Foundry Models', for Azure retail meters. MAI-Thinking-1 comes from the official Azure MAI registry asset (`azureml://registries/azure-mai/models/MAI-Thinking-1/versions/2026-06-01`), which publishes $2/$8 per 1M input/output tokens. Claude in Microsoft Foundry is billed through Azure Marketplace Claude Consumption Units and has no matching Retail Prices row; its rate comes from Anthropic's official Microsoft Foundry pricing documentation (https://platform.claude.com/docs/en/about-claude/pricing). Rates are undiscounted GlobalStandard/PAYG list prices, excluding Batch, Priority/Fast, cached-input, and Provisioned meters.",
-  "_caveats": "Flat per-model rates cannot express every Azure meter dimension. (1) Long-context: gpt-5.4/5.4-pro bill a higher tier above 272k tokens and the gpt-5.6 family above its short-context tier - roughly 2x these rates. (2) Cached input bills ~10% of input and is not modeled, so estimates are conservative (over-report) on cache-heavy traffic. (3) Priority Processing bills ~2x standard; the app's own P0/P1 fairness queue is a proxy-side concept and does NOT put traffic on those meters. (4) model-router has no meter of its own - it bills as whichever model it routes to, so its entry is a mid-range stand-in. (5) DeepSeek-V3.2 publishes only DataZone meters. (6) Claude US Data Zone applies a 1.1x multiplier; this flat entry records the GlobalStandard base rate, so Data Zone calls are underestimated by 10%. (7) MAI-Thinking-1 is Preview; pricing and limits can change before GA.",
-  "version": "2026-08-12",
+  "_comment": "Best-effort USD estimates for cost tracking ONLY, never authoritative billing. Token models use inputPer1M/outputPer1M. imageModels and documentModels use the explicit billing basis shown. Any absent model or unsupported option records cost as unknown rather than zero.",
+  "_source": "Azure Retail Prices API (https://prices.azure.com/api/retail/prices, 2023-01-01-preview) for Azure BFL Flux Models and Azure Mistral Models Global Standard meters. MAI-Thinking-1 comes from the official Azure MAI registry asset. Claude comes from Anthropic's official Microsoft Foundry pricing documentation.",
+  "_caveats": "Flat rates cannot express every meter dimension. Long-context, cache, priority, Data Zone, regional, batch, reference-image, annotation, and provisioned variants may differ. FLUX.2 estimates use output megapixels; FLUX.1 uses one image. MAI-Image-2.5/Pro/Flash, gpt-image-2, and gpt-image-1-mini remain cost-unknown because no unambiguous Azure retail meter is published. Mistral OCR 4 annotation pricing is excluded because this app requests OCR only.",
+  "version": "2026-08-12-image-doc",
   "currency": "USD",
   "models": {
     "gpt-5.6-sol": { "inputPer1M": 5.0, "outputPer1M": 30.0 },
@@ -34,5 +34,34 @@
     "text-embedding-3-large": { "inputPer1M": 0.13, "outputPer1M": 0.0 },
     "embed-v-4-0": { "inputPer1M": 0.12, "outputPer1M": 0.0 },
     "o3-deep-research": { "inputPer1M": 10.0, "outputPer1M": 40.0 }
+  },
+  "imageModels": {
+    "FLUX.2-pro": {
+      "basis": "megapixel_tiered",
+      "initialMegapixelUsd": 0.03,
+      "additionalMegapixelUsd": 0.015
+    },
+    "FLUX.2-flex": {
+      "basis": "megapixel",
+      "perMegapixelUsd": 0.05
+    },
+    "FLUX.1-Kontext-pro": {
+      "basis": "image",
+      "perImageUsd": 0.04
+    },
+    "FLUX-1.1-pro": {
+      "basis": "image",
+      "perImageUsd": 0.04
+    }
+  },
+  "documentModels": {
+    "mistral-document-ai-2512": {
+      "basis": "page",
+      "perPageUsd": 0.003
+    },
+    "mistral-ocr-4-0": {
+      "basis": "page",
+      "perPageUsd": 0.004
+    }
   }
 }

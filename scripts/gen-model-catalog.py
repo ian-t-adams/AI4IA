@@ -61,6 +61,8 @@ def build_catalog(models: dict) -> dict:
                 "api": model.get("api", "chat"),
                 "contextWindow": model.get("contextWindow"),
                 "maxOutputTokens": model.get("maxOutputTokens"),
+                "toolCalling": model.get("toolCalling"),
+                "inputModalities": model.get("inputModalities", ["text"]),
                 "imageSizes": model.get("imageSizes"),
                 "imageQualities": model.get("imageQualities"),
                 "reasoningEffort": model.get("reasoningEffort"),

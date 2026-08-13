@@ -31,6 +31,7 @@ export const TOOL_LABELS: Record<string, string> = {
   generate_image: "Generate image",
   generate_video: "Generate video",
   process_document: "Process document",
+  run_workflow: "Run workflow",
   recall_memory: "Recall memory",
   remember_memory: "Save memory",
 };
@@ -52,6 +53,12 @@ export const BUILT_IN_TOOL_HELP: Record<string, ToolHelpCopy> = {
     what: "Generates an image and attaches the resulting file to the chat.",
     when: "Use when the user asks for a picture, illustration, diagram, or visual mockup.",
     tradeoffs: "Counts toward usage like any model call, and typically takes longer than a text reply.",
+    risk: "safe",
+  },
+  run_workflow: {
+    what: "Runs one of your saved workflows and returns its final result to this chat.",
+    when: "Use when a repeatable, multi-step process should handle the current request.",
+    tradeoffs: "Only workflows whose resolved step tools are safe and read-only are available; one workflow can run per chat turn.",
     risk: "safe",
   },
   generate_video: {

@@ -153,6 +153,7 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
             "anthropic": "anthropic",
             "mai": "mai",
             "bfl": "providers/blackforestlabs/v1",
+            "mistral_ocr": "providers/mistral/azure",
         }.get(api, "openai")
         operation_path = None
         if api == "bfl":
@@ -161,6 +162,8 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                 raise ValueError(
                     f"{model['name']}: api 'bfl' has no governed provider path"
                 )
+        elif api == "mistral_ocr":
+            operation_path = "ocr"
         resolved = [
             {
                 "region": deployment["region"],

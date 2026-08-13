@@ -329,6 +329,33 @@ def test_responses_model_is_told_its_grounding_tools_are_missing():
         client.__exit__(None, None, None)
 
 
+def test_non_tool_chat_model_is_told_its_grounding_tools_are_missing():
+    client = _make_client()
+    try:
+        web = FakeWebClient()
+        _inject_web(client, web)
+        gw = ScriptedWebGateway(call_tool=True)
+        client.app.state.gateway = gw
+
+        sid = _session_with_model(client, "DeepSeek-V3.2")
+        resp = client.post(
+            "/api/chat",
+            json={"sessionId": sid, "content": "What happened today?", "stream": False},
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert gw.tools_offered_first_call is False
+        assert web.calls == []
+        systems = [
+            message["content"]
+            for message in gw.first_messages
+            if message.get("role") == "system"
+        ]
+        assert _RESPONSES_NO_TOOLS_NOTICE in systems
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_responses_model_gets_no_notice_when_no_capabilities_were_possible():
     # INERTNESS: with web search off and compute off there was nothing to lose, so
     # the turn must be byte-for-byte what it always was — no spurious notice

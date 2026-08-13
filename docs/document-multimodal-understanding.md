@@ -93,31 +93,36 @@ playback, memory save, or sharing.
 All tool paths re-check ownership/access, require `ready` status, apply caps, and
 sanitize untrusted strings before returning them to the model.
 
-## Evaluated alternate parser: Mistral Document AI / OCR
+## Alternate parsers: Mistral Document AI / OCR
 
-The live subscription offers `mistral-document-ai-2512` (GA) and
-`mistral-ocr-4-0` (Preview), but neither is deployed or wired into ingestion.
-They are image-to-text models, not conversational models: Microsoft documents
-image/PDF input, at most 30 pages / 30 MB, and text/JSON/Markdown output.
+`mistral-document-ai-2512` (GA) and `mistral-ocr-4-0` (Preview) are catalog
+deployments and explicit built-in Analyzer choices. They are image-to-text
+models, not conversational models: the API accepts PDF and supported image input,
+enforces at most 30 pages / 30 MB, and sends the bytes through
+SimpleL7Proxy → APIM → Foundry's `/providers/mistral/azure/ocr` route.
+
+Mistral is a selectable parser, not a second canonical store. Its synchronous
+`pages[].markdown` response is normalized into the existing `CUResult` and then
+uses the identical `parsed.md` / manifest / chunk / embed / search path as Content
+Understanding. The manifest persists the analyzer id plus provider, model/version,
+deployment, region, SKU, data zone, residency, and returned page count. Analyzer
+selection remains part of the content-dedupe key and ownership, retry, deletion,
+and rebuild semantics do not change.
+
+Usage is metered by returned page count rather than invented token counts. The
+best-effort Global Standard list-price estimates are $3/1K pages for Document AI
+2512 and $4/1K pages for OCR 4; OCR annotation pricing is not applied because the
+app does not request annotations. These are estimates from the Azure Retail Prices
+API, not billing records.
+
 Microsoft Learn's Foundry capability table currently lists `en`, while Mistral's
-provider material claims broader multilingual coverage (including 170 languages
-for OCR 4). Treat the deployed language contract as unverified until a live
-fixture proves it; do not advertise either limit from provider marketing alone.
+provider material claims broader multilingual coverage. Treat the deployed
+language contract as unverified until live fixtures prove it; the app does not
+promote the provider marketing number.
 
-They can become a useful **explicit parser choice** for PDFs and images,
-but must not become a second implicit canonical parser. Before enablement:
-
-1. normalize their output into the existing `parsed.md` / manifest / chunk contract;
-2. persist parser provider, model/version, region/SKU, and source-page provenance;
-3. make analyzer selection explicit and immutable for one ingest attempt;
-4. preserve the same ownership, dedupe, retry, deletion, and rebuild semantics;
-5. meter by pages/requests rather than pretending OCR is token-priced; and
-6. state the narrower format, language, and page limits in the UI.
-
-Content Understanding remains the default because it already handles documents,
-images, audio, and video through one durable pipeline. Mistral OCR is a future
-specialized path, not a drop-in replacement and not a fallback that silently
-changes parsing semantics.
+Content Understanding remains the automatic default because it handles documents,
+images, audio, and video through one durable pathway. Mistral is never a silent
+fallback, so a provider outage cannot change a document's parsing semantics.
 
 ## Sharing and privacy
 

@@ -75,9 +75,20 @@ class MessageAttachment(BaseModel):
     mimeType: str = "image/png"
     prompt: str | None = None
     model: str | None = None
+    provider: str | None = None
+    deployment: str | None = None
+    region: str | None = None
+    dataZone: str | None = None
+    residency: str | None = None
     size: str | None = None
     # Image-only: the rendering quality the image was generated at.
     quality: str | None = None
+    costKnown: bool | None = None
+    estimatedCostUsd: float | None = None
+    pricingBasis: str | None = None
+    priceVersion: str | None = None
+    status: str | None = None
+    error: str | None = None
     # Video-only: the requested clip length in seconds.
     durationSeconds: int | None = None
     # Document-only: the source library document's display name.
@@ -189,6 +200,19 @@ class ToolOverrides(BaseModel):
     removed: list[str] = Field(default_factory=list)
 
 
+class ImageGenerationPreferences(BaseModel):
+    """Server-validated image defaults owned by one conversation.
+
+    Every field is optional so existing sessions and an explicit "Automatic"
+    selection remain inert. Once ``model`` is set, the chat image capability uses
+    these values ahead of model-authored tool arguments.
+    """
+
+    models: list[str] = Field(default_factory=list, max_length=3)
+    size: str | None = None
+    quality: str | None = None
+
+
 MAX_LIBRARY_DOCUMENTS_PER_SESSION = 20
 MAX_SESSION_TITLE_CHARS = 120
 
@@ -254,6 +278,18 @@ def normalize_session_patch_changes(
                 "toolOverrides must contain string lists named added and removed."
             )
         normalized["toolOverrides"] = normalize_tool_overrides(value)
+    if "imagePreferences" in normalized:
+        value = normalized["imagePreferences"]
+        if not isinstance(value, (ImageGenerationPreferences, Mapping)):
+            raise ValueError("imagePreferences must be an object.")
+        try:
+            normalized["imagePreferences"] = (
+                value
+                if isinstance(value, ImageGenerationPreferences)
+                else ImageGenerationPreferences.model_validate(value)
+            )
+        except ValidationError as exc:
+            raise ValueError("imagePreferences is invalid.") from exc
     if "title" in normalized:
         normalized["title"] = normalize_session_title(normalized["title"])
         normalized.setdefault("titleSource", "manual")
@@ -271,6 +307,9 @@ class Session(BaseModel):
     # records remain valid without a migration.
     agentName: str | None = None
     toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
+    imagePreferences: ImageGenerationPreferences = Field(
+        default_factory=ImageGenerationPreferences
+    )
     # None preserves the legacy behavior: all accessible ready library documents
     # may contribute. An explicit [] opts the conversation out of library context.
     # A non-empty list is the exact selected-document allowlist.
@@ -307,6 +346,17 @@ class Session(BaseModel):
             return value
         try:
             ToolOverrides.model_validate(value)
+        except ValidationError:
+            return {}
+        return value
+
+    @field_validator("imagePreferences", mode="before")
+    @classmethod
+    def _tolerate_malformed_image_preferences(cls, value: object) -> object:
+        if isinstance(value, ImageGenerationPreferences):
+            return value
+        try:
+            ImageGenerationPreferences.model_validate(value)
         except ValidationError:
             return {}
         return value

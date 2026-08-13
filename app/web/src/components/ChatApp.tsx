@@ -379,6 +379,11 @@ export function ChatApp() {
     toolOverrides: { added: [], removed: [] },
     libraryDocumentIds: [],
   });
+  const [composerPrefill, setComposerPrefill] = useState<{
+    id: number;
+    text: string;
+  } | null>(null);
+  const composerPrefillIdRef = useRef(0);
   const [voiceProviderConfig, setVoiceProviderConfig] =
     useState<VoiceLiveProviderCatalogResponse | null>(null);
 
@@ -3024,6 +3029,7 @@ export function ChatApp() {
           onRemoveDocument={removeDocument}
           onRemoveLibraryDocument={removeLibraryDocument}
           onError={setError}
+          prefill={composerPrefill}
           voiceLive={
             voiceLiveEnabled
               ? {
@@ -3093,6 +3099,13 @@ export function ChatApp() {
             }
             setSystemPrompt(updated.systemPrompt ?? "");
             if (updated.model) setSelectedModel(updated.model);
+          }}
+          onStartImagePrompt={() => {
+            composerPrefillIdRef.current += 1;
+            setComposerPrefill({
+              id: composerPrefillIdRef.current,
+              text: "/generate_image ",
+            });
           }}
           onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
           libraryEnabled={libraryEnabled}

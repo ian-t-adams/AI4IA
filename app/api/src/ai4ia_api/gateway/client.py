@@ -8,6 +8,7 @@ be fixed at integration time without code changes.
 """
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
@@ -591,6 +592,78 @@ class ModelGatewayClient:
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)
             return resp.json()
+        finally:
+            if owned:
+                await client.aclose()
+
+    def build_document_ocr_request(
+        self,
+        *,
+        deployment: str,
+        data: bytes,
+        content_type: str,
+        correlation_id: str | None = None,
+    ) -> GatewayRequest:
+        """Build a Mistral document/OCR request through the governed gateway.
+
+        The proxy-facing deployment path exists only so SimpleL7Proxy can stamp
+        the server-owned model header. APIM rewrites it to the provider OCR path
+        and binds the regional failover deployment in ``model``.
+        """
+
+        url = (
+            f"{self._base}/deployments/{deployment}/document/ocr"
+            f"?api-version={self._api_version}"
+        )
+        media_type = (content_type or "application/octet-stream").split(";", 1)[
+            0
+        ].strip()
+        encoded = base64.b64encode(data).decode("ascii")
+        is_image = media_type.startswith("image/")
+        url_key = "image_url" if is_image else "document_url"
+        body = {
+            "model": deployment.lower(),
+            "document": {
+                "type": url_key,
+                url_key: f"data:{media_type};base64,{encoded}",
+            },
+            "include_image_base64": False,
+            "table_format": "markdown",
+        }
+        return GatewayRequest(
+            url=url,
+            headers=self._auth_headers(correlation_id),
+            json=body,
+        )
+
+    async def analyze_document(
+        self,
+        *,
+        deployment: str,
+        data: bytes,
+        content_type: str,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        req = self.build_document_ocr_request(
+            deployment=deployment,
+            data=data,
+            content_type=content_type,
+            correlation_id=correlation_id,
+        )
+        if self._http is not None:
+            client, owned = self._http, False
+        else:
+            client, owned = httpx.AsyncClient(timeout=self._image_timeout), True
+        try:
+            response = await client.post(
+                req.url,
+                headers=req.headers,
+                json=req.json,
+                timeout=self._image_timeout,
+            )
+            if response.status_code >= 400:
+                raise ModelGatewayError(response.status_code, response.text)
+            return response.json()
         finally:
             if owned:
                 await client.aclose()

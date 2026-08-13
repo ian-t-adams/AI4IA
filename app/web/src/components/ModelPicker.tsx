@@ -118,10 +118,16 @@ export function ModelPicker({
   const selected = models.find((m) => m.id === value) ?? null;
   const noteId = useId();
   const residencyId = useId();
+  const capabilityId = useId();
   const categoryHelp = selected?.category ? MODEL_CATEGORY_HELP[selected.category] : undefined;
   const hasResidency = (selected?.options.length ?? 0) > 0;
+  const hasToolLimitation = selected?.supportsTools === false;
   const describedBy =
-    [categoryHelp ? noteId : null, hasResidency ? residencyId : null]
+    [
+      categoryHelp ? noteId : null,
+      hasResidency ? residencyId : null,
+      hasToolLimitation ? capabilityId : null,
+    ]
       .filter(Boolean)
       .join(" ") || undefined;
 
@@ -157,6 +163,16 @@ export function ModelPicker({
       </select>
       <ModelCategoryNote id={noteId} category={selected?.category} />
       <ModelResidencyNote id={residencyId} model={selected} />
+      {hasToolLimitation ? (
+        <small id={capabilityId} style={{ color: "var(--warn)" }}>
+          Plain chat only. This model cannot run agent or workflow tools
+          {selected?.inputModalities?.length === 1 &&
+          selected.inputModalities[0] === "text"
+            ? " and accepts text input only"
+            : ""}
+          . Parse files through the Library before using them here.
+        </small>
+      ) : null}
     </label>
   );
 }

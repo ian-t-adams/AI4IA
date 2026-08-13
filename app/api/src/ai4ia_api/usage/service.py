@@ -15,7 +15,7 @@ Cost honesty rules (see ``usage`` package docstring):
 from __future__ import annotations
 
 import asyncio
-import json
+import hashlib
 import logging
 from datetime import datetime
 
@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 # Bound the summary window so a query can never scan an unbounded history.
 DEFAULT_SUMMARY_DAYS = 30
 MAX_SUMMARY_DAYS = 90
+
+
+def _telemetry_identifier(kind: str, value: str) -> str:
+    """Stable one-way identifier for logs/events; never emit ledger keys raw."""
+    material = f"ai4ia:{kind}:{value}".encode("utf-8")
+    return hashlib.sha256(material).hexdigest()[:24]
 
 
 class UsageService:
@@ -84,10 +90,21 @@ class UsageService:
         agent: str | None,
         correlation_id: str | None,
         provider_completed: bool | None = None,
+        billable_units: int | None = None,
+        billing_unit: str | None = None,
+        image_size: str | None = None,
+        image_quality: str | None = None,
     ) -> UsageRecord:
         descriptor = self._normalize_target(target, deployment)
         completed = status == "complete" if provider_completed is None else provider_completed
-        billable = completed and usage.known and usage.complete
+        unit_billable = (
+            completed
+            and billing_unit in {"image", "page"}
+            and billable_units is not None
+            and billable_units > 0
+        )
+        unit_count = billable_units if unit_billable else None
+        billable = unit_billable or (completed and usage.known and usage.complete)
         rec = UsageRecord(
             userId=user_id,
             sessionId=session_id,
@@ -107,10 +124,36 @@ class UsageService:
             promptTokens=usage.prompt if usage.known else None,
             completionTokens=usage.completion if usage.known else None,
             totalTokens=usage.total if usage.known else None,
+            billableUnits=float(unit_count) if unit_count is not None else None,
+            billingUnit=billing_unit if unit_billable else None,
+            imageSize=image_size,
+            imageQuality=image_quality,
             correlationId=correlation_id,
         )
-        # Estimate cost only for a billable turn with real, complete usage.
-        if billable:
+        if unit_count is not None and billing_unit == "image":
+            operation_est = self._pricing.estimate_image(
+                model_id,
+                size=image_size,
+                quality=image_quality,
+                count=unit_count,
+            )
+            rec.currency = operation_est.currency
+            rec.priceVersion = operation_est.version
+            rec.pricingBasis = operation_est.pricing_basis
+            if operation_est.known and operation_est.micro_usd is not None:
+                rec.costKnown = True
+                rec.estCostMicroUsd = operation_est.micro_usd
+        elif unit_count is not None and billing_unit == "page":
+            operation_est = self._pricing.estimate_pages(
+                model_id, pages=unit_count
+            )
+            rec.currency = operation_est.currency
+            rec.priceVersion = operation_est.version
+            rec.pricingBasis = operation_est.pricing_basis
+            if operation_est.known and operation_est.micro_usd is not None:
+                rec.costKnown = True
+                rec.estCostMicroUsd = operation_est.micro_usd
+        elif billable:
             est = self._pricing.estimate(
                 model_id,
                 prompt_tokens=usage.prompt,
@@ -139,6 +182,10 @@ class UsageService:
         agent: str | None = None,
         correlation_id: str | None = None,
         timing: ChatTiming | None = None,
+        billable_units: int | None = None,
+        billing_unit: str | None = None,
+        image_size: str | None = None,
+        image_quality: str | None = None,
     ) -> None:
         """Meter one turn. Never raises: ledger/log failures are swallowed."""
         if not self._enabled:
@@ -155,13 +202,17 @@ class UsageService:
                 provider_completed=provider_completed,
                 agent=agent,
                 correlation_id=correlation_id,
+                billable_units=billable_units,
+                billing_unit=billing_unit,
+                image_size=image_size,
+                image_quality=image_quality,
             )
         except Exception:  # noqa: BLE001 - metering must never break a turn
             logger.warning("usage record build failed", exc_info=True)
             return
 
         timing_attributes = timing.terminal_attributes() if timing is not None else None
-        self._emit_log_safe(rec, timing_attributes)
+        self._emit_event_safe(rec, timing_attributes)
         try:
             await asyncio.shield(self._repo.record(rec))
         except asyncio.CancelledError:
@@ -171,13 +222,9 @@ class UsageService:
                 "usage ledger write failed (correlation_id=%s)", rec.correlationId, exc_info=True
             )
 
-    def _emit_log_safe(
+    def _emit_event_safe(
         self, rec: UsageRecord, timing_attributes: dict[str, object] | None = None
     ) -> None:
-        try:
-            self._emit_log(rec, timing_attributes)
-        except Exception:  # noqa: BLE001 - telemetry must never break a turn
-            logger.warning("usage telemetry emit failed", exc_info=True)
         try:
             self._emit_event(rec, timing_attributes)
         except Exception:  # noqa: BLE001 - telemetry must never break a turn
@@ -187,12 +234,13 @@ class UsageService:
         self, rec: UsageRecord, timing_attributes: dict[str, object] | None = None
     ) -> None:
         """Emit a ``chat_completion`` Application Insights customEvent so per-model
-        / per-user token + cost analytics are queryable in App Insights/KQL
+        / per-user token + cost analytics are queryable by stable pseudonymous hash
+        in App Insights/KQL
         alongside the stdout signal. No-op unless telemetry is configured (i.e.
         an Application Insights connection string is set); best-effort."""
         attributes: dict[str, object] = {
-            "userId": rec.userId,
-            "sessionId": rec.sessionId,
+            "userHash": _telemetry_identifier("user", rec.userId),
+            "sessionHash": _telemetry_identifier("session", rec.sessionId),
             "provider": rec.provider,
             "model": rec.model,
             "deployment": rec.deployment,
@@ -208,6 +256,10 @@ class UsageService:
             "promptTokens": rec.promptTokens,
             "completionTokens": rec.completionTokens,
             "totalTokens": rec.totalTokens,
+            "billableUnits": rec.billableUnits,
+            "billingUnit": rec.billingUnit,
+            "imageSize": rec.imageSize,
+            "imageQuality": rec.imageQuality,
             "costKnown": rec.costKnown,
             "estCostUsd": rec.estCostUsd,
             "currency": rec.currency,
@@ -216,43 +268,6 @@ class UsageService:
         if timing_attributes is not None:
             attributes.update(timing_attributes)
         emit_custom_event("chat_completion", attributes)
-
-    def _emit_log(
-        self, rec: UsageRecord, timing_attributes: dict[str, object] | None = None
-    ) -> None:
-        """Structured JSON telemetry line (no prompt content). Container stdout is
-        shipped to Log Analytics/App Insights, so this is the queryable cost/traffic
-        signal without adding an App Insights SDK dependency."""
-        payload = {
-            "event": "model_usage",
-            "userId": rec.userId,
-            "sessionId": rec.sessionId,
-            "provider": rec.provider,
-            "model": rec.model,
-            "deployment": rec.deployment,
-            "target": rec.target,
-            "region": rec.region,
-            "agent": rec.agent,
-            "status": rec.status,
-            "providerCompleted": rec.providerCompleted,
-            "billable": rec.billable,
-            "usageKnown": rec.usageKnown,
-            "usageComplete": rec.usageComplete,
-            "calls": rec.calls,
-            "promptTokens": rec.promptTokens,
-            "completionTokens": rec.completionTokens,
-            "totalTokens": rec.totalTokens,
-            "costKnown": rec.costKnown,
-            "estCostUsd": rec.estCostUsd,
-            "currency": rec.currency,
-            "correlationId": rec.correlationId,
-        }
-        if timing_attributes is not None:
-            payload.update(timing_attributes)
-        try:
-            logger.info(json.dumps(payload, separators=(",", ":")))
-        except Exception:  # noqa: BLE001
-            logger.info("model_usage model=%s status=%s", rec.model, rec.status)
 
     async def summarize(self, user_id: str, *, since_days: int | None = None) -> UsageSummary:
         from datetime import datetime, timedelta, timezone

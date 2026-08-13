@@ -106,6 +106,27 @@ def test_analyzers_list_returns_builtins(client):
     assert BUILTIN_ANALYZER_IDS <= ids
 
 
+def test_mistral_analyzers_are_hidden_when_residency_policy_excludes_them():
+    client = _client(
+        document_understanding_enabled=True,
+        data_residency="us",
+    )
+    try:
+        ids = {
+            analyzer["id"]
+            for analyzer in client.get("/api/library/analyzers").json()
+        }
+        assert "builtin-document" in ids
+        assert "mistral-document-ai" not in ids
+        assert "mistral-ocr" not in ids
+        assert (
+            client.get("/api/library/analyzers/mistral-document-ai").status_code
+            == 404
+        )
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_create_get_delete_custom_analyzer(client):
     created = client.post(
         "/api/library/analyzers",

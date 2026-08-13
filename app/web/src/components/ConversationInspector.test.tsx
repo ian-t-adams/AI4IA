@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   createMemory: vi.fn(),
   updateMemory: vi.fn(),
   deleteMemory: vi.fn(),
+  getImageOptions: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -27,6 +28,9 @@ vi.mock("@/lib/api", () => ({
   updateSession: mocks.updateSession,
   associateLibraryDocument: mocks.associateLibraryDocument,
   disassociateLibraryDocument: mocks.disassociateLibraryDocument,
+  getImageOptions: mocks.getImageOptions,
+  apiErrorDetail: (reason: unknown) =>
+    reason instanceof Error ? reason.message : "Something went wrong.",
 }));
 
 function mockToolCatalog(tools: ToolCatalogItem[]): void {
@@ -68,6 +72,7 @@ function snapshot(id: string, prompt = `Prompt ${id}`): InspectorSnapshot {
       effective: [],
       voiceEffective: [],
     },
+    imagePreferences: { models: [], size: null, quality: null },
     attachments: [],
     libraryDocuments: [],
     librarySelectionMode: "explicit",
@@ -158,6 +163,12 @@ beforeEach(() => {
     maxDocuments: 8,
     modalities: ["document"],
   });
+  mocks.getImageOptions.mockResolvedValue({
+    maxSelectedModels: 3,
+    currency: "USD",
+    priceVersion: "test",
+    models: [],
+  });
   mocks.updateSession.mockResolvedValue({
     id: "s1",
     userId: "u1",
@@ -168,6 +179,7 @@ beforeEach(() => {
     agentName: null,
     toolOverrides: { added: [], removed: [] },
     libraryDocumentIds: [],
+    imagePreferences: { models: [], size: null, quality: null },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });

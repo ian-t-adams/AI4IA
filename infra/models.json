@@ -448,6 +448,8 @@
       "name": "Mistral-Large-3",
       "format": "Mistral AI",
       "category": "chat",
+      "toolCalling": true,
+      "inputModalities": ["text", "image"],
       "contextWindow": 128000,
       "maxOutputTokens": 32768,
       "deployments": [
@@ -608,6 +610,8 @@
       "name": "DeepSeek-V3.2",
       "format": "DeepSeek",
       "category": "reasoning-oss",
+      "toolCalling": false,
+      "inputModalities": ["text"],
       "contextWindow": 163840,
       "maxOutputTokens": 32768,
       "deployments": [
@@ -806,6 +810,52 @@
       "api": "bfl",
       "imageSizes": ["1024x1024", "1024x1440", "1440x1024", "auto"],
       "imageQualities": ["auto"],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 1,
+          "version": "1"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 1,
+          "version": "1"
+        }
+      ]
+    },
+    {
+      "name": "mistral-document-ai-2512",
+      "displayName": "Mistral Document AI 25.12",
+      "format": "Mistral AI",
+      "category": "document-ocr",
+      "api": "mistral_ocr",
+      "toolCalling": false,
+      "inputModalities": ["document", "image"],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 1,
+          "version": "1"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 1,
+          "version": "1"
+        }
+      ]
+    },
+    {
+      "name": "mistral-ocr-4-0",
+      "displayName": "Mistral OCR 4",
+      "format": "Mistral AI",
+      "category": "document-ocr",
+      "api": "mistral_ocr",
+      "toolCalling": false,
+      "inputModalities": ["document", "image"],
       "deployments": [
         {
           "region": "eastus2",

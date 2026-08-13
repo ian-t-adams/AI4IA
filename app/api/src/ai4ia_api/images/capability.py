@@ -32,10 +32,12 @@ from typing import Any
 from uuid import uuid4
 
 from ..agents.tool_exec import ToolContext
-from ..catalog import ModelCatalog
+from ..catalog import DeploymentOption, ModelCatalog
 from ..entitlements.service import EntitlementService
 from ..sessions.models import MessageAttachment
-from ..usage.models import UsageStatus
+from ..sessions.models import ImageGenerationPreferences
+from ..usage.models import UsageStatus, UsageTarget
+from ..usage.pricing import load_pricing
 from ..usage.service import UsageService
 from .artifacts import ImageArtifactStore
 from .service import ImageGenerationError, ImageGenerationService
@@ -73,6 +75,7 @@ def build_image_capability(
     user_id: str,
     session_id: str,
     sink: list[MessageAttachment],
+    preferences: ImageGenerationPreferences | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Handler]]:
     """Build the ``generate_image`` tool bound to ``user_id``.
 
@@ -97,6 +100,14 @@ def build_image_capability(
     constraints_hint = (
         f" Provider-specific constraints: {'; '.join(constrained)}." if constrained else ""
     )
+    preferred = preferences or ImageGenerationPreferences()
+    preference_hint = (
+        f" This conversation currently selects {', '.join(preferred.models)}, size "
+        f"{preferred.size}, quality {preferred.quality}. Generate the same prompt "
+        "with every selected model; the user may change this selection between turns."
+        if preferred.models
+        else ""
+    )
 
     schema: dict[str, Any] = {
         "type": "function",
@@ -110,6 +121,7 @@ def build_image_capability(
                 "describe or transcribe the generated image bytes."
                 + models_hint
                 + constraints_hint
+                + preference_hint
             ),
             "parameters": {
                 "type": "object",
@@ -123,8 +135,19 @@ def build_image_capability(
                     "model": {
                         "type": "string",
                         "description": (
-                            "Optional image model id to use. Omit to use the default "
-                            "image model."
+                            "Optional single image model id. Ignored when the "
+                            "conversation already has selected image models."
+                        ),
+                    },
+                    "models": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": MAX_IMAGES_PER_TURN,
+                        "uniqueItems": True,
+                        "description": (
+                            "Optional image model ids for a side-by-side comparison "
+                            "of the same prompt. Ignored when the conversation already "
+                            "has selected image models."
                         ),
                     },
                     "size": {
@@ -158,15 +181,44 @@ def build_image_capability(
     }
 
     async def _handler(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        if budget["used"] >= MAX_IMAGES_PER_TURN:
-            return {"error": "image generation budget exhausted for this turn."}
         prompt = str(args.get("prompt") or "").strip()
         if not prompt:
             return {"error": "prompt must be a non-empty string."}
-        model = args.get("model") if isinstance(args.get("model"), str) else None
-        size = args.get("size") if isinstance(args.get("size"), str) else None
-        quality = args.get("quality") if isinstance(args.get("quality"), str) else None
-        budget["used"] += 1
+        requested_model = (
+            args.get("model") if isinstance(args.get("model"), str) else None
+        )
+        requested_models = (
+            [model for model in args.get("models", []) if isinstance(model, str)]
+            if isinstance(args.get("models"), list)
+            else []
+        )
+        candidates: list[str] = list(preferred.models)
+        if not candidates:
+            candidates.extend(requested_models)
+            if requested_model:
+                candidates.append(requested_model)
+        selected_models: list[str] = list(dict.fromkeys(candidates))
+        # An empty list preserves the service's existing default-model behavior.
+        models_to_run: list[str | None] = (
+            [*selected_models] if selected_models else [None]
+        )
+        if (
+            len(models_to_run) > MAX_IMAGES_PER_TURN
+            or budget["used"] + len(models_to_run) > MAX_IMAGES_PER_TURN
+        ):
+            return {
+                "error": (
+                    f"at most {MAX_IMAGES_PER_TURN} images may be generated "
+                    "in one turn."
+                )
+            }
+        requested_size = args.get("size") if isinstance(args.get("size"), str) else None
+        requested_quality = (
+            args.get("quality") if isinstance(args.get("quality"), str) else None
+        )
+        size = preferred.size or requested_size
+        quality = preferred.quality or requested_quality
+        budget["used"] += len(models_to_run)
 
         # Entitlement gate (mirrors the HTTP endpoint): a disabled user is blocked
         # and any admin-set rate/budget limit applies before we spend on a call.
@@ -174,84 +226,264 @@ def build_image_capability(
         if not decision.allowed:
             return {"error": _one_line(decision.reason or "image generation is not permitted.")}
 
-        try:
-            result = await image_service.generate(
-                prompt=prompt,
-                model=model,
-                size=size,
-                quality=quality,
-                n=1,
-                correlation_id=ctx.correlation_id,
+        generated: list[dict[str, Any]] = []
+        errors: list[str] = []
+
+        def scoped_error(model_id: str | None, detail: str) -> str:
+            if len(models_to_run) == 1:
+                return detail
+            return f"{model_id or 'default image model'}: {detail}"
+
+        def append_failure(
+            *,
+            model_id: str | None,
+            detail: str,
+            provider: str | None = None,
+            deployment: DeploymentOption | None = None,
+            failure_size: str | None = None,
+            failure_quality: str | None = None,
+            provider_completed: bool = False,
+        ) -> None:
+            estimate = (
+                load_pricing().estimate_image(
+                    model_id,
+                    size=failure_size,
+                    quality=failure_quality,
+                    count=1,
+                )
+                if provider_completed and model_id
+                else None
             )
-        except ImageGenerationError as exc:
-            if exc.provider_completion is not None:
-                completion = exc.provider_completion
+            sink.append(
+                MessageAttachment(
+                    id=uuid4().hex,
+                    kind="image_error",
+                    mimeType="application/problem+json",
+                    prompt=prompt[:_PROMPT_KEEP],
+                    model=model_id,
+                    provider=provider,
+                    deployment=(
+                        deployment.deploymentName if deployment is not None else None
+                    ),
+                    region=deployment.region if deployment is not None else None,
+                    dataZone=deployment.dataZone if deployment is not None else None,
+                    residency=deployment.residency if deployment is not None else None,
+                    size=failure_size,
+                    quality=failure_quality,
+                    costKnown=estimate.known if estimate is not None else False,
+                    estimatedCostUsd=(
+                        estimate.micro_usd / 1_000_000
+                        if estimate is not None
+                        and estimate.micro_usd is not None
+                        else None
+                    ),
+                    pricingBasis=(
+                        estimate.pricing_basis if estimate is not None else None
+                    ),
+                    priceVersion=estimate.version if estimate is not None else None,
+                    status="error",
+                    error=_one_line(detail),
+                )
+            )
+
+        for model in models_to_run:
+            try:
+                result = await image_service.generate(
+                    prompt=prompt,
+                    model=model,
+                    size=size,
+                    quality=quality,
+                    n=1,
+                    correlation_id=ctx.correlation_id,
+                )
+            except ImageGenerationError as exc:
+                if exc.provider_completion is not None:
+                    completion = exc.provider_completion
+                    await metering.record_completion(
+                        user_id=user_id,
+                        session_id=session_id,
+                        model_id=completion.model_id,
+                        target=UsageTarget.from_deployment(
+                            completion.deployment, provider=completion.provider
+                        ),
+                        usage=completion.usage,
+                        status="error",
+                        provider_completed=True,
+                        correlation_id=ctx.correlation_id,
+                        billable_units=completion.billable_units,
+                        billing_unit=completion.billing_unit,
+                        image_size=completion.image_size,
+                        image_quality=completion.image_quality,
+                    )
+                    append_failure(
+                        model_id=completion.model_id,
+                        detail=exc.detail,
+                        provider=completion.provider,
+                        deployment=completion.deployment,
+                        failure_size=completion.image_size,
+                        failure_quality=completion.image_quality,
+                        provider_completed=True,
+                    )
+                else:
+                    append_failure(
+                        model_id=model,
+                        detail=exc.detail,
+                        failure_size=size,
+                        failure_quality=quality,
+                    )
+                errors.append(scoped_error(model, _one_line(exc.detail)))
+                continue
+            except Exception:  # noqa: BLE001 - a tool must never crash the turn
+                logger.warning(
+                    "generate_image unexpected error user=%s model=%s",
+                    user_id,
+                    model,
+                    exc_info=True,
+                )
+                append_failure(
+                    model_id=model,
+                    detail="Image generation failed.",
+                    failure_size=size,
+                    failure_quality=quality,
+                )
+                errors.append(scoped_error(model, "Image generation failed."))
+                continue
+
+            meter_status: UsageStatus = "error"
+            artifact_id: str | None = None
+            try:
+                try:
+                    raw = base64.b64decode(result.images_b64[0])
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "generate_image decode error user=%s model=%s",
+                        user_id,
+                        result.model_id,
+                        exc_info=True,
+                    )
+                    errors.append(
+                        scoped_error(
+                            result.model_id,
+                            "Generated image could not be decoded.",
+                        )
+                    )
+                    append_failure(
+                        model_id=result.model_id,
+                        detail="Generated image could not be decoded.",
+                        provider=result.provider,
+                        deployment=result.deployment,
+                        failure_size=result.size,
+                        failure_quality=result.quality,
+                        provider_completed=True,
+                    )
+                    continue
+
+                artifact_id = uuid4().hex
+                try:
+                    await artifact_store.put(user_id, artifact_id, raw)
+                except asyncio.CancelledError:
+                    meter_status = "cancelled"
+                    raise
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "generate_image store error user=%s model=%s",
+                        user_id,
+                        result.model_id,
+                        exc_info=True,
+                    )
+                    errors.append(
+                        scoped_error(
+                            result.model_id,
+                            "Generated image could not be stored.",
+                        )
+                    )
+                    append_failure(
+                        model_id=result.model_id,
+                        detail="Generated image could not be stored.",
+                        provider=result.provider,
+                        deployment=result.deployment,
+                        failure_size=result.size,
+                        failure_quality=result.quality,
+                        provider_completed=True,
+                    )
+                    continue
+                estimate = load_pricing().estimate_image(
+                    result.model_id,
+                    size=result.size,
+                    quality=result.quality,
+                    count=1,
+                )
+                estimated_cost = (
+                    estimate.micro_usd / 1_000_000
+                    if estimate.micro_usd is not None
+                    else None
+                )
+                sink.append(
+                    MessageAttachment(
+                        id=artifact_id,
+                        kind="image",
+                        mimeType="image/png",
+                        prompt=prompt[:_PROMPT_KEEP],
+                        model=result.model_id,
+                        provider=result.provider,
+                        deployment=result.deployment.deploymentName,
+                        region=result.deployment.region,
+                        dataZone=result.deployment.dataZone,
+                        residency=result.deployment.residency,
+                        size=result.size,
+                        quality=result.quality,
+                        costKnown=estimate.known,
+                        estimatedCostUsd=estimated_cost,
+                        pricingBasis=estimate.pricing_basis,
+                        priceVersion=estimate.version,
+                        status="complete",
+                    )
+                )
+                generated.append(
+                    {
+                        "artifact_id": artifact_id,
+                        "model": _one_line(result.model_id),
+                        "size": _one_line(result.size),
+                        "quality": _one_line(result.quality),
+                        "cost_known": estimate.known,
+                        "estimated_cost_usd": estimated_cost,
+                    }
+                )
+                meter_status = "complete"
+            finally:
+                # Provider work remains chargeable when local decode/persistence fails.
                 await metering.record_completion(
                     user_id=user_id,
                     session_id=session_id,
-                    model_id=completion.model_id,
-                    deployment=completion.deployment,
-                    usage=completion.usage,
-                    status="error",
+                    model_id=result.model_id,
+                    target=UsageTarget.from_deployment(
+                        result.deployment, provider=result.provider
+                    ),
+                    usage=result.usage,
+                    status=meter_status,
                     provider_completed=True,
                     correlation_id=ctx.correlation_id,
+                    billable_units=1,
+                    billing_unit="image",
+                    image_size=result.size,
+                    image_quality=result.quality,
                 )
-            return {"error": _one_line(exc.detail)}
-        except Exception:  # noqa: BLE001 - a tool must never crash the turn
-            logger.warning("generate_image unexpected error user=%s", user_id, exc_info=True)
-            return {"error": "Image generation failed."}
 
-        meter_status: UsageStatus = "error"
-        try:
-            try:
-                raw = base64.b64decode(result.images_b64[0])
-            except Exception:  # noqa: BLE001
-                logger.warning("generate_image decode error user=%s", user_id, exc_info=True)
-                return {"error": "Generated image could not be decoded."}
-
-            artifact_id = uuid4().hex
-            try:
-                await artifact_store.put(user_id, artifact_id, raw)
-            except asyncio.CancelledError:
-                meter_status = "cancelled"
-                raise
-            except Exception:  # noqa: BLE001
-                logger.warning("generate_image store error user=%s", user_id, exc_info=True)
-                return {"error": "Generated image could not be stored."}
-            sink.append(
-                MessageAttachment(
-                    id=artifact_id,
-                    kind="image",
-                    mimeType="image/png",
-                    prompt=prompt[:_PROMPT_KEEP],
-                    model=result.model_id,
-                    size=result.size,
-                    quality=result.quality,
-                )
-            )
-            meter_status = "complete"
-        finally:
-            # Provider work remains chargeable when local decode/persistence fails.
-            await metering.record_completion(
-                user_id=user_id,
-                session_id=session_id,
-                model_id=result.model_id,
-                deployment=result.deployment,
-                usage=result.usage,
-                status=meter_status,
-                provider_completed=True,
-                correlation_id=ctx.correlation_id,
-            )
-
+        if not generated:
+            return {"error": "; ".join(errors) or "Image generation failed."}
+        first = generated[0]
         return {
             "status": "generated",
-            "artifact_id": artifact_id,
-            "model": _one_line(result.model_id),
-            "size": _one_line(result.size),
-            "quality": _one_line(result.quality),
+            # Preserve the single-image result fields for existing clients.
+            "artifact_id": first["artifact_id"],
+            "model": first["model"],
+            "size": first["size"],
+            "quality": first["quality"],
+            "artifacts": generated,
+            "errors": errors,
             "note": (
-                "The image was generated and is shown to the user. You do not have "
-                "the pixels; do not describe the image contents."
+                f"{len(generated)} image(s) were generated and shown to the user. "
+                "You do not have the pixels; do not describe the image contents."
             ),
         }
 

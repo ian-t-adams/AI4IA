@@ -42,6 +42,10 @@ MAX_PROMPT_CHARS = 4000
 MAX_TOTAL_B64_CHARS = 12_000_000  # ~9 MB decoded
 
 
+def image_provider_id(provider_format: str) -> str:
+    return provider_format.strip().lower().replace(" ", "_")
+
+
 class ImageGenerationError(Exception):
     """A sanitized, transport-agnostic image-generation failure.
 
@@ -70,6 +74,7 @@ class ImageGenerationResult:
     """A successful generation: the resolved model + the base64 image(s)."""
 
     model_id: str
+    provider: str
     deployment: DeploymentOption
     size: str
     quality: str
@@ -225,6 +230,11 @@ class ImageGenerationService:
             model_id=model_id,
             deployment=deployment,
             usage=image_token_usage(result.get("usage")),
+            provider=image_provider_id(entry.format),
+            image_size=resolved_size,
+            image_quality=resolved_quality,
+            billable_units=count,
+            billing_unit="image",
         )
         images = [
             d["b64_json"]
@@ -248,6 +258,7 @@ class ImageGenerationService:
 
         return ImageGenerationResult(
             model_id=model_id,
+            provider=image_provider_id(entry.format),
             deployment=deployment,
             size=resolved_size,
             quality=resolved_quality,
