@@ -251,7 +251,8 @@
           "baseUrl": {
             "type": "string",
             "minLength": 1,
-            "description": "a2a_preview only: the remote agent's base URL (azure-ai-projects 2.4.0's A2APreviewToolboxTool.base_url). One of `baseUrl` or `projectConnectionId` is required; Microsoft's documented A2A walkthrough uses `projectConnectionId` (a project connection storing the endpoint + auth) -- prefer that where possible."
+            "pattern": "^https://",
+            "description": "a2a_preview only: the remote agent's public HTTPS base URL (azure-ai-projects 2.4.0's A2APreviewToolboxTool.base_url). Microsoft documents that the endpoint must be publicly reachable with a valid TLS certificate. One of `baseUrl` or `projectConnectionId` is required; prefer projectConnectionId because the project connection owns endpoint and authentication configuration."
           },
           "agentCardPath": {
             "type": "string",

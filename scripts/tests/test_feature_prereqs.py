@@ -42,13 +42,17 @@ REAL_PARAMETERS = ROOT / "infra" / "main.parameters.json"
 # Minimum environment for a production / new-tenant standup. The committed
 # parameters file reads these through ${VAR=default} placeholders.
 PROD_ENV = {
+    "AZURE_ENV_NAME": "ai4ia-prod",
     "AI4IA_APP_ENVIRONMENT": "prod",
     "AI4IA_AUTH_PROVIDER": "entra",
     "AI4IA_ENTRA_TENANT_ID": "00000000-0000-0000-0000-000000000000",
     "AI4IA_ENTRA_AUDIENCE": "api://ai4ia-api",
     "AI4IA_ENTRA_WEB_CLIENT_ID": "11111111-1111-1111-1111-111111111111",
     "AI4IA_OWNER": "ai4ia-operations",
+    "AI4IA_COST_CENTER": "platform-engineering",
     "AI4IA_APIM_PUBLISHER_EMAIL": "ai4ia-ops@contoso.com",
+    "AI4IA_BUDGET_START_DATE": "2026-08-01",
+    "AI4IA_ALERT_EMAIL": "ai4ia-alerts@contoso.com",
 }
 CLAUDE_ENV = {
     "AI4IA_CLAUDE_ORGANIZATION_NAME": "Nomad Analytics",
@@ -199,6 +203,7 @@ class ContentUnderstandingPreviewTests(unittest.TestCase):
 class ClaudeMarketplaceAttestationTests(unittest.TestCase):
     def test_disabled_claude_does_not_require_attestation(self) -> None:
         with _environment(
+            **PROD_ENV,
             AI4IA_CLAUDE_ENABLED="false",
             AI4IA_CLAUDE_ORGANIZATION_NAME="",
             AI4IA_CLAUDE_COUNTRY_CODE="",
@@ -260,9 +265,44 @@ class ClaudeMarketplaceAttestationTests(unittest.TestCase):
         self.assertIn("lowercase claudeIndustry", err)
 
     def test_explicit_attestation_values_pass(self) -> None:
-        with _environment(AI4IA_CLAUDE_ENABLED="true", **CLAUDE_ENV):
-            code, _, err = _run(REAL_PARAMETERS)
+        with _environment(**PROD_ENV, AI4IA_CLAUDE_ENABLED="true", **CLAUDE_ENV):
+            code, _, err = _run(
+                REAL_PARAMETERS, require_deployment_attestation=True
+            )
         self.assertEqual(code, 0, err)
+
+
+class DeploymentAttestationTests(unittest.TestCase):
+    def test_real_provision_rejects_shipped_placeholders_and_silent_budget(self) -> None:
+        with _environment(AZURE_ENV_NAME="ai4ia-prod"):
+            code, _, err = _run(
+                REAL_PARAMETERS, require_deployment_attestation=True
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("shipped placeholder 'ai4ia-operator'", err)
+        self.assertIn("AI4IA_COST_CENTER", err)
+        self.assertIn("example address", err)
+        self.assertIn("AI4IA_BUDGET_START_DATE", err)
+        self.assertIn("budget has no notification recipient", err)
+
+    def test_real_provision_accepts_complete_owned_configuration(self) -> None:
+        with _environment(**PROD_ENV):
+            code, _, err = _run(
+                REAL_PARAMETERS, require_deployment_attestation=True
+            )
+        self.assertEqual(code, 0, err)
+
+    def test_invalid_environment_name_fails_before_arm(self) -> None:
+        with _environment(AZURE_ENV_NAME="AI4IA_Production"):
+            code, _, err = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 1)
+        self.assertIn("environmentName must be 3-20 lowercase", err)
+
+    def test_budget_start_date_must_be_first_of_a_real_month(self) -> None:
+        with _environment(AI4IA_BUDGET_START_DATE="2026-02-15"):
+            code, _, err = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 1)
+        self.assertIn("first day of a month", err)
 
 
 class PrimaryLocationCatalogTests(unittest.TestCase):

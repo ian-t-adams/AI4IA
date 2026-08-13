@@ -104,6 +104,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
       - name: Lint YAML (yamllint)
         env:
           YAMLLINT_VERSION: 1.38.0
@@ -119,6 +123,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
       - name: Check portal docs index is in sync
         run: |
           set -euo pipefail
@@ -135,6 +143,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
       - name: Run postprovision hard-gate tests
         run: |
           set -euo pipefail
@@ -165,8 +177,13 @@ jobs:
           # subscription/tenant. Both call Azure, so CI cannot run them end to
           # end -- but their decision logic is pure and is what actually
           # prevents a partial deploy, so it is pinned here. The suite is
-          # stdlib-only and makes no network calls.
+          # makes no network calls. PyYAML parses deploy.yml for the ordering
+          # contract, so install the same pinned version used by the other
+          # workflow-wiring tests in this job.
+          python3 -m pip install --user --quiet "PyYAML==${PYYAML_VERSION}"
           python3 -m unittest scripts.tests.test_subscription_preflight
+        env:
+          PYYAML_VERSION: 6.0.3
 
       - name: Run Entra app provisioning guard tests
         run: |

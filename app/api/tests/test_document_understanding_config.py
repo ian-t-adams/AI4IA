@@ -18,7 +18,11 @@ def _settings(**overrides) -> Settings:
         auth_provider="dev",
         allow_dev_auth=True,
         session_store="memory",
-        model_gateway_url="http://gateway.test",
+        model_gateway_url="https://proxy.test/openai",
+        model_gateway_auth_mode="api_key",
+        model_gateway_api_key="proxy-secret",
+        model_gateway_api_key_header="S7P-KEY",
+        model_gateway_allowed_hosts="proxy.test",
     )
     base.update(overrides)
     return Settings(_env_file=None, **base)
@@ -120,6 +124,46 @@ def test_cu_bearer_mode_without_key_is_allowed():
         cu_auth_mode="bearer",
         cu_api_key=None,
     ).validate_runtime()  # no raise
+
+
+def test_inline_compute_api_key_mode_without_key_is_rejected():
+    with pytest.raises(RuntimeError, match="AI4IA_CODE_INTERPRETER_API_KEY"):
+        _settings(
+            inline_document_compute_enabled=True,
+            code_interpreter_base_url="https://foundry.example/",
+            code_interpreter_model="gpt-5.4-mini",
+            code_interpreter_auth_mode="api_key",
+            code_interpreter_api_key=None,
+        ).validate_runtime()
+
+
+def test_inline_compute_deployed_requires_cosmos_and_blob_storage():
+    base = dict(
+        env="dev",
+        allow_dev_auth=True,
+        inline_document_compute_enabled=True,
+        code_interpreter_base_url="https://foundry.example/",
+        code_interpreter_model="gpt-5.4-mini",
+    )
+    with pytest.raises(RuntimeError, match="SESSION_STORE=cosmos"):
+        _settings(
+            **base,
+            session_store="memory",
+            document_blob_account_url="https://acct.blob.core.windows.net",
+        ).validate_runtime()
+    with pytest.raises(RuntimeError, match="DOCUMENT_BLOB_ACCOUNT_URL"):
+        _settings(
+            **base,
+            session_store="cosmos",
+            cosmos_endpoint="https://cosmos.example/",
+        ).validate_runtime()
+
+    _settings(
+        **base,
+        session_store="cosmos",
+        cosmos_endpoint="https://cosmos.example/",
+        document_blob_account_url="https://acct.blob.core.windows.net",
+    ).validate_runtime()
 
 
 def test_automatic_cu_api_version_cannot_be_changed_to_preview():

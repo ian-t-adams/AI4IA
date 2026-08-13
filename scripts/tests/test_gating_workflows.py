@@ -161,12 +161,24 @@ def _find_bash() -> str | None:
         r"C:\Program Files\Git\bin\bash.exe",
         r"C:\Program Files\Git\usr\bin\bash.exe",
         r"C:\Program Files (x86)\Git\bin\bash.exe",
+        shutil.which("bash"),
     ]
     for candidate in candidates:
-        if Path(candidate).exists():
+        if not candidate or not Path(candidate).exists():
+            continue
+        try:
+            probe = subprocess.run(
+                [candidate, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode == 0:
             return candidate
-    found = shutil.which("bash")
-    return found if found and os.name != "nt" else None
+    return None
 
 
 BASH = _find_bash()
@@ -180,6 +192,17 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         "AZURE_SUBSCRIPTION_ID": "subscription-id",
         "AZURE_ENV_NAME": "prod",
         "AZURE_LOCATION": "westus3",
+        "AI4IA_APP_ENVIRONMENT": "prod",
+        "AI4IA_AUTH_PROVIDER": "entra",
+        "AI4IA_ENTRA_TENANT_ID": "tenant-id",
+        "AI4IA_ENTRA_AUDIENCE": "api://ai4ia-api",
+        "AI4IA_ENTRA_WEB_CLIENT_ID": "web-client-id",
+        "AI4IA_OWNER": "platform-team",
+        "AI4IA_COST_CENTER": "platform-engineering",
+        "AI4IA_APIM_PUBLISHER_EMAIL": "ai4ia-ops@example.org",
+        "AI4IA_BUDGET_AMOUNT": "1500",
+        "AI4IA_BUDGET_START_DATE": "2026-08-01",
+        "AI4IA_ALERT_EMAIL": "ai4ia-alerts@example.org",
         "AI4IA_CLAUDE_ENABLED": "true",
         "AI4IA_CLAUDE_ORGANIZATION_NAME": "Example Legal Entity",
         "AI4IA_CLAUDE_COUNTRY_CODE": "US",
@@ -242,6 +265,8 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
             "AZURE_CLIENT_ID",
             "AZURE_SUBSCRIPTION_ID",
             "AZURE_LOCATION",
+            "AI4IA_OWNER",
+            "AI4IA_BUDGET_START_DATE",
             "AI4IA_CLAUDE_ORGANIZATION_NAME",
         )
         result, output = self.run_validation(missing=missing)

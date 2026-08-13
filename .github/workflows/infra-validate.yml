@@ -17,7 +17,9 @@ on:
       - "foundry/**"
       - "scripts/validate-catalog.py"
       - "scripts/validate-feature-prereqs.py"
+      - "scripts/sync-model-capacity.py"
       - "scripts/tests/test_feature_prereqs.py"
+      - "scripts/tests/test_model_capacity_profile.py"
       - "scripts/gen-gateway-policy.py"
       - "scripts/tests/test_gateway_policy.py"
       - "scripts/tests/test_policy_json_shape.py"
@@ -46,6 +48,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
 
       - name: Install Bicep CLI
         env:
@@ -118,6 +125,18 @@ jobs:
       # invariant that main.bicep now depends on.
       - name: Deployment parameter validator tests
         run: python -m unittest scripts.tests.test_feature_prereqs
+
+      - name: Model capacity profile tests
+        run: python -m unittest scripts.tests.test_model_capacity_profile
+
+      - name: Runtime and IaC posture contract tests
+        run: |
+          python -m unittest \
+            scripts.tests.test_foundry_local_auth \
+            scripts.tests.test_foundry_role_scope \
+            scripts.tests.test_web_auth_config \
+            scripts.tests.test_postgres_retired \
+            scripts.tests.test_runtime_rbac_and_model_pins
 
       # The annotate-only Responsible AI posture runs under an approved
       # guardrails-modification exception. Its failure mode is silent — a

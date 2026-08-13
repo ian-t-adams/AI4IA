@@ -14,12 +14,15 @@ Vendored directories:
 
 Upstream license: MIT License, copyright Microsoft Corporation. A copy of the upstream MIT license is kept at `proxy/LICENSE`. Keep the pinned commit, this notice, `proxy/README.md`, and its documented AI4IA deviations in sync whenever the vendored copy is refreshed.
 
-Last verified 2026-07-18: upstream `main` is still exactly the pinned commit (`git ls-remote` reports no newer tip). A git blob SHA1 comparison (which reads repository object-database bytes and is immune to the checkout-time line-ending normalization that a working-tree hash is not) of all 174 shared files under the three vendored directories found 142 byte-for-byte identical, 28 differing only in stored line-ending style (LF locally vs. CRLF upstream, not a content change), and the 4 documented deviations below, plus 1 new local-only file. See `proxy/README.md`'s "Intentional source deviation" and "Provenance validation" sections for the current deviation list and full validation method.
+`proxy/upstream-provenance.json` is the machine-readable inventory of every
+upstream-equivalent, AI4IA-patched, and AI4IA-added file. See `proxy/README.md`
+for the audited pin, current drift assessment, patch rationale, and regeneration
+procedure; do not copy counts into this notice because the manifest owns them.
 
 ## Application dependencies
 
 - `app/web` uses Next.js, React, TypeScript, ESLint, Vitest, Testing Library, MSAL browser packages, and their transitive npm dependencies. See `app/web/package.json` and `app/web/package-lock.json`.
-- `app/api` uses FastAPI, Pydantic, httpx, Azure SDKs, PyJWT, pytest, ruff, pyright, mem0, Web IQ, OpenTelemetry/Azure Monitor packages, and their transitive Python dependencies. See `app/api/pyproject.toml` and `app/api/uv.lock`.
+- `app/api` uses FastAPI, Pydantic, httpx, Azure SDKs, PyJWT, Durable Task, Web IQ, OpenTelemetry/Azure Monitor packages, pytest, ruff, pyright, and their transitive Python dependencies. See `app/api/pyproject.toml` and `app/api/uv.lock`.
 - `proxy` builds .NET 10 SimpleL7Proxy and NuGet dependencies from the vendored project files.
 
 ## Tooling, containers, and actions

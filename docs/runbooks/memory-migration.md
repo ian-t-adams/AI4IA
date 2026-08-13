@@ -1,5 +1,9 @@
 # Runbook: PostgreSQL memory to Cosmos
 
+> **Historical.** The PostgreSQL Flexible Server this procedure migrated from was
+> retired on 2026-08-06. This document records that cutover and remains useful as
+> a pattern for a future store migration; it is not part of a current standup.
+
 This runbook migrates owned rows from the legacy `mem0_memories` pgvector table
 to the canonical Cosmos `memories` container. It is intentionally manual,
 dry-run-first, and separate from deployment automation.

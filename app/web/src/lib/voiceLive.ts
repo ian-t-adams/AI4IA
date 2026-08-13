@@ -240,37 +240,9 @@ export function base64ToInt16(b64: string): Int16Array {
   return out;
 }
 
-// AudioWorklet processor source (loaded via a Blob URL so it needs no separate
-// public asset and stays bundled with this module). It accumulates ~100 ms of
-// 24 kHz mono frames and posts each batch to the main thread, which keeps the
-// outbound WebSocket message rate low (~10/s) instead of one per 128-sample render.
-const CAPTURE_WORKLET_SRC = `
-class CaptureProcessor extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this._chunks = [];
-    this._count = 0;
-    this._target = 2400; // ~100 ms at 24 kHz
-  }
-  process(inputs) {
-    const ch = inputs[0] && inputs[0][0];
-    if (ch && ch.length) {
-      this._chunks.push(ch.slice(0));
-      this._count += ch.length;
-      if (this._count >= this._target) {
-        const merged = new Float32Array(this._count);
-        let o = 0;
-        for (const c of this._chunks) { merged.set(c, o); o += c.length; }
-        this.port.postMessage(merged, [merged.buffer]);
-        this._chunks = [];
-        this._count = 0;
-      }
-    }
-    return true;
-  }
-}
-registerProcessor('ai4ia-capture', CaptureProcessor);
-`;
+// Same-origin static module so the production `script-src 'self'` CSP permits the
+// AudioWorklet without adding executable `blob:` URLs.
+export const CAPTURE_WORKLET_PATH = "/ai4ia-capture-worklet.js";
 
 export function supportsVoiceLive(): boolean {
   return (
@@ -954,13 +926,7 @@ export function useVoiceLive(
         for (const t of stream.getTracks()) t.stop();
         return;
       }
-      const blob = new Blob([CAPTURE_WORKLET_SRC], { type: "application/javascript" });
-      const moduleUrl = URL.createObjectURL(blob);
-      try {
-        await ctx.audioWorklet.addModule(moduleUrl);
-      } finally {
-        URL.revokeObjectURL(moduleUrl);
-      }
+      await ctx.audioWorklet.addModule(CAPTURE_WORKLET_PATH);
       if (attempt !== attemptRef.current) return;
       const source = ctx.createMediaStreamSource(stream);
       const worklet = new AudioWorkletNode(ctx, "ai4ia-capture");

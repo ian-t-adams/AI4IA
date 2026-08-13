@@ -28,6 +28,19 @@ function formatTimecode(ms: number): string {
 // shots and keyframes are distinct kinds so the strip can label them, but both are
 // just timestamps the user can jump to.
 type Marker = { ms: number; kind: "shot" | "keyframe"; segment: number };
+type MediaLoadState =
+  | {
+      documentId: string;
+      mediaUrl: string;
+      timeline: MediaTimeline | null;
+      error: null;
+    }
+  | {
+      documentId: string;
+      mediaUrl: null;
+      timeline: null;
+      error: string;
+    };
 
 function buildMarkers(segments: MediaTimelineSegment[]): Marker[] {
   const seen = new Set<number>();
@@ -63,14 +76,16 @@ export function MediaPlayer({
   const onModalKeyDown = useModalKeyDown(onClose);
   const isVideo = doc.modality === "video";
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
-  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
-  const [timeline, setTimeline] = useState<MediaTimeline | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const mountedRef = useRef(true);
+  const [loadState, setLoadState] = useState<MediaLoadState | null>(null);
+  const currentLoad =
+    loadState?.documentId === doc.id ? loadState : null;
+  const mediaUrl = currentLoad?.mediaUrl ?? null;
+  const timeline = currentLoad?.timeline ?? null;
+  const error = currentLoad?.error ?? null;
+  const loading = currentLoad === null;
 
   useEffect(() => {
-    mountedRef.current = true;
+    let cancelled = false;
     let objectUrl: string | null = null;
     (async () => {
       try {
@@ -80,18 +95,32 @@ export function MediaPlayer({
           fetchLibraryMedia(doc.id),
           fetchLibraryTimeline(doc.id).catch(() => null),
         ]);
-        if (!mountedRef.current) return;
-        objectUrl = URL.createObjectURL(blob);
-        setMediaUrl(objectUrl);
-        setTimeline(tl);
+        if (cancelled) return;
+        const nextObjectUrl = URL.createObjectURL(blob);
+        if (cancelled) {
+          URL.revokeObjectURL(nextObjectUrl);
+          return;
+        }
+        objectUrl = nextObjectUrl;
+        setLoadState({
+          documentId: doc.id,
+          mediaUrl: objectUrl,
+          timeline: tl,
+          error: null,
+        });
       } catch (e) {
-        if (mountedRef.current) setError((e as Error).message);
-      } finally {
-        if (mountedRef.current) setLoading(false);
+        if (!cancelled) {
+          setLoadState({
+            documentId: doc.id,
+            mediaUrl: null,
+            timeline: null,
+            error: (e as Error).message,
+          });
+        }
       }
     })();
     return () => {
-      mountedRef.current = false;
+      cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [doc.id]);

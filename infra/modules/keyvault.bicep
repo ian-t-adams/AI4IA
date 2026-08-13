@@ -45,7 +45,8 @@ main.bicep's `dataTierPrivate` flag. App Configuration is left public on purpose
 ])
 param publicNetworkAccess string = 'Enabled'
 
-var keyVaultName = take('kv${replace(workload, '-', '')}${uniqueSuffix}', 24)
+var keyVaultPrefix = toLower('kv${replace(workload, '-', '')}')
+var keyVaultName = '${take(keyVaultPrefix, 11)}${uniqueSuffix}'
 
 resource keyVault 'Microsoft.KeyVault/vaults@2024-11-01' = {
   name: keyVaultName

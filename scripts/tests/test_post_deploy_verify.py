@@ -1755,6 +1755,14 @@ class DeployWorkflowWiringTests(unittest.TestCase):
         self.assertIn("steps.canary_token.outcome", condition)
         self.assertIn("!=", condition)
 
+    def test_a_canary_preflight_problem_does_not_roll_back(self) -> None:
+        """A missing grant or audience is a gate problem, not a bad release."""
+        preflight = self.step("Preflight the post-deploy canary token")
+        condition = str(self.step("Roll back").get("if", ""))
+        self.assertEqual(preflight.get("id"), "canary_preflight")
+        self.assertIn("steps.canary_preflight.outcome", condition)
+        self.assertIn("!=", condition)
+
     def test_a_missing_audience_fails_rather_than_silently_skipping(self) -> None:
         """Only the explicit opt-out may skip the canary. A deploy that quietly
         drops its own end-to-end proof is the failure mode this gate removes."""

@@ -117,7 +117,10 @@ def active_subscription(expected_subscription_id: str | None = None) -> dict[str
 
 
 def catalog_requirements(
-    models: dict[str, Any], *, include_anthropic: bool = True
+    models: dict[str, Any],
+    *,
+    include_anthropic: bool = True,
+    capacity_profile: str = "baseline",
 ) -> dict[str, list[dict[str, Any]]]:
     """Group desired deployment records by region, including their exact ARM names."""
     naming = models.get("naming") or {}
@@ -149,7 +152,16 @@ def catalog_requirements(
                     "format": entry.get("format", "OpenAI"),
                     "sku": sku,
                     "version": str(deployment.get("version", "")),
-                    "capacity": deployment.get("capacity", 0),
+                    "capacity": (
+                        deployment.get("maxCapacity", deployment.get("capacity", 0))
+                        if capacity_profile == "maximum"
+                        else deployment.get("capacity", 0)
+                    ),
+                    "capacityPool": (
+                        deployment.get("maxCapacityPool")
+                        if capacity_profile == "maximum"
+                        else None
+                    ),
                     "versionUpgradeOption": "NoAutoUpgrade",
                     "region": region,
                 }
@@ -664,6 +676,60 @@ def evaluate_shared_quota(
     return errors, warnings
 
 
+def evaluate_declared_capacity_pools(
+    by_region: dict[str, list[dict[str, Any]]],
+    index: dict[str, dict[str, Any]],
+) -> tuple[list[str], list[str]]:
+    """Validate generated maximum capacities against their recorded Azure pool."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    all_model_sku: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for required in by_region.values():
+        for item in required:
+            all_model_sku.setdefault((item["sku"], item["name"]), []).append(item)
+            pool = str(item.get("capacityPool") or "")
+            if not pool:
+                warnings.append(
+                    f"{item['name']} ({item['sku']}, {item['region']}): no "
+                    "maxCapacity was recorded, so maximum falls back to baseline."
+                )
+                continue
+            grouped.setdefault((item["sku"], item["name"], pool), []).append(item)
+
+    for (sku, name, pool), items in sorted(grouped.items()):
+        entry = next((index[key] for key in _quota_keys(sku, name) if key in index), None)
+        if entry is None:
+            warnings.append(
+                f"{name} ({sku}, {pool}): no quota counter matched; maximum "
+                "capacity cannot be revalidated."
+            )
+            continue
+        total = sum(int(item.get("capacity") or 0) for item in items)
+        if total > entry["limit"]:
+            errors.append(
+                f"{name} ({sku}, {pool}): maximum profile requests {total}, above "
+                f"the {entry['limit']:.0f} limit [{entry['counter']}]. Regenerate "
+                "the profile after quota changes."
+            )
+    for (sku, name), items in sorted(all_model_sku.items()):
+        entry = next((index[key] for key in _quota_keys(sku, name) if key in index), None)
+        if (
+            entry is None
+            or sku != "GlobalStandard"
+            or entry["counter"].partition(".")[0].casefold() != "aiservices"
+        ):
+            continue
+        total = sum(int(item.get("capacity") or 0) for item in items)
+        if total > entry["limit"]:
+            errors.append(
+                f"{name} ({sku}): {total} total across all profile deployments exceeds "
+                f"the {entry['limit']:.0f} subscription-global partner limit "
+                f"[{entry['counter']}]. Regenerate the maximum profile."
+            )
+    return errors, warnings
+
+
 def index_offered(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, set[str]]]:
     """Index the API response as {model_name_casefolded: {sku: {versions}}}.
 
@@ -840,6 +906,14 @@ def main() -> int:
         "--environment-name",
         help="azd environment name used to identify this stack's Foundry accounts",
     )
+    parser.add_argument(
+        "--capacity-profile",
+        choices=("baseline", "maximum"),
+        default=(
+            os.environ.get("AI4IA_MODEL_CAPACITY_PROFILE") or "baseline"
+        ).strip().casefold(),
+        help="capacity profile to validate; defaults from AI4IA_MODEL_CAPACITY_PROFILE",
+    )
     args = parser.parse_args()
 
     account = active_subscription(os.environ.get("AZURE_SUBSCRIPTION_ID"))
@@ -851,7 +925,9 @@ def main() -> int:
         os.environ.get("AI4IA_CLAUDE_ENABLED") or ""
     ).strip().casefold() in {"1", "true", "yes", "on"}
     by_region = catalog_requirements(
-        models, include_anthropic=claude_enabled
+        models,
+        include_anthropic=claude_enabled,
+        capacity_profile=args.capacity_profile,
     )
     regions = args.region or sorted(by_region)
     environment_name = args.environment_name or os.environ.get("AZURE_ENV_NAME")
@@ -917,9 +993,27 @@ def main() -> int:
         # shared pool is drawn down by every region's deployments regardless of
         # which one the caller asked about, so narrowing it would hide the
         # overcommit that `--region` was used to investigate.
-        shared_errors, shared_warnings = evaluate_shared_quota(
-            by_region, merged_quota, existing_deployments
-        )
+        if args.capacity_profile == "maximum":
+            shared_errors, shared_warnings = evaluate_declared_capacity_pools(
+                by_region, merged_quota
+            )
+            fallback = {
+                region: [
+                    item
+                    for item in required
+                    if not item.get("capacityPool")
+                ]
+                for region, required in by_region.items()
+            }
+            fallback_errors, fallback_warnings = evaluate_shared_quota(
+                fallback, merged_quota, existing_deployments
+            )
+            shared_errors += fallback_errors
+            shared_warnings += fallback_warnings
+        else:
+            shared_errors, shared_warnings = evaluate_shared_quota(
+                by_region, merged_quota, existing_deployments
+            )
         if shared_errors or shared_warnings:
             print("\nSubscription-wide quota (shared across regions) ...")
             for warning in shared_warnings:

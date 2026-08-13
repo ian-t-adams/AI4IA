@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,30 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
     errors: list[str] = []
     warnings: list[str] = []
+    model_capacity_profile = text(
+        parameter_value(parameters, "modelCapacityProfile", "baseline")
+    ).lower()
+    if model_capacity_profile not in {"baseline", "maximum"}:
+        errors.append("modelCapacityProfile must be baseline or maximum.")
+
+    workload = text(parameter_value(parameters, "workload", "ai4ia"))
+    environment_name = text(parameter_value(parameters, "environmentName"))
+    name_pattern = re.compile(r"[a-z0-9](?:[a-z0-9-]{1,18}[a-z0-9])")
+    if re.fullmatch(name_pattern, workload) is None:
+        errors.append(
+            "workload must be 3-20 lowercase letters, digits, or internal hyphens."
+        )
+    if environment_name:
+        if re.fullmatch(name_pattern, environment_name) is None:
+            errors.append(
+                "environmentName must be 3-20 lowercase letters, digits, or internal "
+                "hyphens so every derived Azure resource name is valid."
+            )
+    elif require_deployment_attestation:
+        errors.append(
+            "A real provision requires AZURE_ENV_NAME; placeholders cannot identify "
+            "the deployment or produce valid Azure resource names."
+        )
 
     # Claude deployments auto-accept Anthropic Marketplace terms through the
     # modelProviderData block in modules/models.bicep. These are legal
@@ -149,6 +174,10 @@ def main(*, require_deployment_attestation: bool = False) -> int:
 
     app_environment = text(parameter_value(parameters, "appEnvironment", "dev")).lower()
     auth_provider = text(parameter_value(parameters, "apiAuthProvider", "dev")).lower()
+    if app_environment not in {"dev", "prod"}:
+        errors.append("appEnvironment must be dev or prod.")
+    if auth_provider not in {"dev", "entra"}:
+        errors.append("apiAuthProvider must be dev or entra.")
 
     if app_environment == "prod" and auth_provider != "entra":
         errors.append("appEnvironment=prod requires apiAuthProvider=entra.")
@@ -260,7 +289,14 @@ def main(*, require_deployment_attestation: bool = False) -> int:
                 "cuAgenticAnalyzerId must be a valid Content Understanding analyzer id."
             )
         capacities = [
-            int(deployment.get("capacity") or 0)
+            int(
+                (
+                    deployment.get("maxCapacity", deployment.get("capacity"))
+                    if model_capacity_profile == "maximum"
+                    else deployment.get("capacity")
+                )
+                or 0
+            )
             for model in models.get("catalog", [])
             if model.get("name") == "gpt-5.2"
             for deployment in model.get("deployments", [])
@@ -351,24 +387,42 @@ def main(*, require_deployment_attestation: bool = False) -> int:
         errors.append("dataTierPrivate=true requires vnetIsolationEnabled=true.")
 
     owner = text(parameter_value(parameters, "owner"))
+    cost_center = text(parameter_value(parameters, "costCenter"))
     publisher = text(parameter_value(parameters, "apimPublisherEmail"))
     if owner in {"", "ian-t-adams"}:
         errors.append("owner must be set to the current accountable operator, not a personal default.")
     elif owner == "ai4ia-operator":
-        # The guard above was written against an older repo default and had gone
-        # inert: `ai4ia-operator` is what main.bicep actually ships, so a deploy
-        # that never sets AI4IA_OWNER sailed straight past the check meant to
-        # catch exactly that. Warn rather than error -- infra-validate runs this
-        # with no environment, so the token legitimately resolves to the default
-        # there, and erroring would fail every PR instead of the real deploy.
-        warnings.append(
-            "owner is still the shipped placeholder 'ai4ia-operator'; set the "
-            "AI4IA_OWNER repo variable so cost and ownership tags are accountable."
+        message = (
+            "owner is still the shipped placeholder 'ai4ia-operator'; set "
+            "AI4IA_OWNER so cost and ownership tags are accountable."
+        )
+        (errors if require_deployment_attestation else warnings).append(message)
+    if require_deployment_attestation and cost_center in {"", "genai-demo"}:
+        errors.append(
+            "A real provision requires AI4IA_COST_CENTER to identify the owning "
+            "billing or business unit, not the shipped 'genai-demo' placeholder."
         )
     if publisher in {"", "ianadams@microsoft.com"}:
         errors.append("apimPublisherEmail must be deployment-owned, not a personal mailbox.")
     elif publisher.endswith("@example.com"):
-        warnings.append("apimPublisherEmail is still an example address; set it for live deploys.")
+        message = "apimPublisherEmail is still an example address; set it for live deploys."
+        (errors if require_deployment_attestation else warnings).append(message)
+
+    budget_start_date = text(parameter_value(parameters, "budgetStartDate"))
+    if not budget_start_date:
+        if require_deployment_attestation:
+            errors.append(
+                "A real provision requires AI4IA_BUDGET_START_DATE in yyyy-MM-01 "
+                "form so later months cannot mutate the existing Azure budget."
+            )
+    else:
+        try:
+            parsed_budget_start = date.fromisoformat(budget_start_date)
+        except ValueError:
+            errors.append("budgetStartDate must be a real date in yyyy-MM-01 form.")
+        else:
+            if parsed_budget_start.day != 1:
+                errors.append("budgetStartDate must be the first day of a month.")
 
     # An action group with no receiver is legal ARM and deploys clean, so nothing
     # else fails when alerts are enabled without a recipient -- the rules evaluate
@@ -392,10 +446,11 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     if not text(parameter_value(parameters, "alertEmail")) and not parameter_value(
         parameters, "budgetAlertEmails", []
     ):
-        warnings.append(
+        message = (
             "budget has no notification recipient: thresholds will be tracked but "
             "never emailed. Set AI4IA_ALERT_EMAIL (it feeds the budget too)."
         )
+        (errors if require_deployment_attestation else warnings).append(message)
 
     for warning in warnings:
         print(f"WARNING: {warning}")
@@ -413,7 +468,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--require-deployment-attestation",
         action="store_true",
-        help="Require complete Anthropic Marketplace attestation for a real provision.",
+        help=(
+            "Require deployment-owned identity, cost, budget, and environment values "
+            "in addition to any enabled Marketplace attestation."
+        ),
     )
     args = parser.parse_args()
     raise SystemExit(

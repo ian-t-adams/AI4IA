@@ -5,8 +5,6 @@ import type {
   AgentSummary,
   ChatParams,
   DocumentSummary,
-  ImageRequest,
-  ImageResponse,
   ImageGenerationPreferences,
   ImageOptionsResponse,
   Message,
@@ -91,20 +89,6 @@ export async function getVoiceLiveConfig(): Promise<VoiceLiveProviderCatalogResp
   return jsonOrThrow(
     await apiFetch("/api/voice/live/config", {
       cache: "no-store",
-    }),
-  );
-}
-
-// Generates an image through the backend gateway (gpt-image-2 etc.). Returns
-// base64 image data (no data-URL prefix); callers wrap it as needed.
-export async function generateImage(
-  input: ImageRequest,
-): Promise<ImageResponse> {
-  return jsonOrThrow(
-    await apiFetch("/api/images/generations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
     }),
   );
 }

@@ -7,6 +7,7 @@ window.AI4IA_DOCS = {
       group: "Start here",
       docs: [
         { path: "README.md", title: "Repository overview", desc: "What AI4IA is, current state, layout, key decisions and how to deploy." },
+        { path: "docs/runbooks/deploy-to-azure.md", title: "Deploy to Azure", desc: "Guided Azure deployment from fork and prerequisites through verified release, plus optional maximum model capacity." },
         { path: "docs/runbooks/greenfield-standup.md", title: "Start here: greenfield Azure standup", desc: "New subscription or tenant setup: preflight, both GitHub OIDC subjects, RBAC, repo configuration, Entra apps, first provision, domains and validation." },
         { path: "docs/user-guide.md", title: "User guide", desc: "How to use the app: chat, agents, voice, library, media, memory and admin views." },
         { path: "docs/architecture.md", title: "Architecture", desc: "Governed multi-model design, request lifecycle, components and MCP planes." },
@@ -32,7 +33,7 @@ window.AI4IA_DOCS = {
         { path: "docs/runbooks/deployment.md", title: "Routine deployment", desc: "Exact-digest promotion, capture-before-provision ordering, verification, rollback limits, and current deployment troubleshooting." },
         { path: "docs/runbooks/feature-enablement.md", title: "Feature enablement", desc: "The authoritative flag list and how to safely turn features on/off." },
         { path: "docs/runbooks/key-rotation.md", title: "Key rotation", desc: "Zero-downtime rotation of the proxy-ingress credential using the proxy's dual-key accept, with verification at every step." },
-        { path: "docs/runbooks/memory-migration.md", title: "Memory migration", desc: "Dry-run-first PostgreSQL-to-Cosmos cutover, verification, rollback, and retirement gates." },
+        { path: "docs/runbooks/memory-migration.md", title: "Memory migration (historical)", desc: "Historical record of the completed PostgreSQL-to-Cosmos cutover, retained as a future migration pattern." },
         { path: "docs/runbooks/telemetry.md", title: "Telemetry and admin diagnostics", desc: "Metric sources, privacy boundaries, freshness, unknown states, and diagnosis of unavailable panels." },
         { path: "docs/runbooks/teardown.md", title: "Teardown & rebuild", desc: "Inventory, teardown and soft-delete purge procedures." },
       ],
@@ -59,7 +60,7 @@ window.AI4IA_DOCS = {
     {
       group: "Roadmap & changelog",
       docs: [
-        { path: "docs/repository-audit-2026-08-03.md", title: "Repository audit - 2026-08-03/04", desc: "Evidence-backed review of served capability, runtime behavior, security, Responsible AI, performance, code, documentation, IaC, operations, UX, and prioritized remediation." },
+        { path: "docs/repository-audit-2026-08-03.md", title: "Repository audit - historical snapshot (2026-08-03/04)", desc: "Historical evidence snapshot. Use roadmap.md and current runbooks for present posture." },
         { path: "docs/roadmap.md", title: "Roadmap & open items", desc: "Living list of outstanding work, accepted tradeoffs, and owner decisions \u2014 what is planned or still needed." },
         { path: "CHANGELOG.md", title: "Changelog", desc: "Notable repository changes; merge, deployment, and tagged release remain distinct events." },
       ],

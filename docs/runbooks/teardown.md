@@ -161,24 +161,24 @@ soft-deleted Cognitive/Key Vault names supplied. The purge lists are
 **subscription-wide**, so wildcard and empty selectors are rejected; an approval
 for one resource kind never applies to a same-named resource of the other kind.
 
-## 3. Provision the real environment
-```powershell
-azd env select <env>   # or azd env new <env> in a fresh checkout
-azd up
-```
+## 3. Rebuild as a greenfield environment
 
-## 4. Post-provision
-```powershell
-./scripts/postprovision.ps1
-```
-Then verify any external DNS records for custom domains and run smoke tests. DNS
-records are managed outside this repo; the Azure-side custom-domain binding is
+Deleting the resource group returns the environment to greenfield state. Rebuild
+through [greenfield standup §6](./greenfield-standup.md#6-provision-in-two-phases)
+and its data-plane/validation steps; do not substitute a local `azd up`. The
+GitHub release workflow reconciles the App Configuration sentinel, Content
+Understanding defaults, immutable images, post-deploy canary, and rollback
+capture that a standalone provision cannot complete safely.
+
+Then verify external DNS records for custom domains and run the runbook's smoke
+tests. DNS records are managed outside this repo; the Azure-side binding is
 covered in the
 [greenfield standup guide](./greenfield-standup.md#62-bind-custom-domains-optional).
 
 ## Rollback
 There is no in-place rollback after step 2. The inventory snapshot from step 0 plus
-`infra/models.json` rebuild the **infrastructure** — re-run `azd provision`.
+`infra/models.json` rebuild the **infrastructure** through the greenfield
+workflow.
 
 > **They do not rebuild your data.** Neither input contains a single session,
 > message, memory, usage row, user agent/workflow, uploaded document or secret.

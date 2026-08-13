@@ -76,6 +76,7 @@ jobs:
   validate-deployment-configuration:
     name: validate deployment configuration
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       deployment_enabled: ${{ steps.validate.outputs.deployment_enabled }}
     env:
@@ -85,6 +86,17 @@ jobs:
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AI4IA_APP_ENVIRONMENT: ${{ vars.AI4IA_APP_ENVIRONMENT }}
+      AI4IA_AUTH_PROVIDER: ${{ vars.AI4IA_AUTH_PROVIDER }}
+      AI4IA_ENTRA_TENANT_ID: ${{ vars.AI4IA_ENTRA_TENANT_ID }}
+      AI4IA_ENTRA_AUDIENCE: ${{ vars.AI4IA_ENTRA_AUDIENCE }}
+      AI4IA_ENTRA_WEB_CLIENT_ID: ${{ vars.AI4IA_ENTRA_WEB_CLIENT_ID }}
+      AI4IA_OWNER: ${{ vars.AI4IA_OWNER }}
+      AI4IA_COST_CENTER: ${{ vars.AI4IA_COST_CENTER }}
+      AI4IA_APIM_PUBLISHER_EMAIL: ${{ vars.AI4IA_APIM_PUBLISHER_EMAIL }}
+      AI4IA_BUDGET_AMOUNT: ${{ vars.AI4IA_BUDGET_AMOUNT }}
+      AI4IA_BUDGET_START_DATE: ${{ vars.AI4IA_BUDGET_START_DATE }}
+      AI4IA_ALERT_EMAIL: ${{ vars.AI4IA_ALERT_EMAIL }}
       AI4IA_CLAUDE_ENABLED: ${{ vars.AI4IA_CLAUDE_ENABLED }}
       AI4IA_CLAUDE_ORGANIZATION_NAME: ${{ vars.AI4IA_CLAUDE_ORGANIZATION_NAME }}
       AI4IA_CLAUDE_COUNTRY_CODE: ${{ vars.AI4IA_CLAUDE_COUNTRY_CODE }}
@@ -116,12 +128,33 @@ jobs:
             AZURE_TENANT_ID \
             AZURE_SUBSCRIPTION_ID \
             AZURE_ENV_NAME \
-            AZURE_LOCATION
+            AZURE_LOCATION \
+            AI4IA_APP_ENVIRONMENT \
+            AI4IA_AUTH_PROVIDER \
+            AI4IA_OWNER \
+            AI4IA_COST_CENTER \
+            AI4IA_APIM_PUBLISHER_EMAIL \
+            AI4IA_BUDGET_AMOUNT \
+            AI4IA_BUDGET_START_DATE \
+            AI4IA_ALERT_EMAIL
           do
             if [ -z "${!name:-}" ]; then
               missing+=("$name")
             fi
           done
+
+          auth_provider="${AI4IA_AUTH_PROVIDER:-}"
+          if [ "${auth_provider,,}" = "entra" ]; then
+            for name in \
+              AI4IA_ENTRA_TENANT_ID \
+              AI4IA_ENTRA_AUDIENCE \
+              AI4IA_ENTRA_WEB_CLIENT_ID
+            do
+              if [ -z "${!name:-}" ]; then
+                missing+=("$name")
+              fi
+            done
+          fi
 
           case "${AI4IA_CLAUDE_ENABLED,,}" in
             true)
@@ -184,6 +217,26 @@ jobs:
       AI4IA_CLAUDE_ORGANIZATION_NAME: ${{ vars.AI4IA_CLAUDE_ORGANIZATION_NAME }}
       AI4IA_CLAUDE_COUNTRY_CODE: ${{ vars.AI4IA_CLAUDE_COUNTRY_CODE }}
       AI4IA_CLAUDE_INDUSTRY: ${{ vars.AI4IA_CLAUDE_INDUSTRY }}
+      AI4IA_MODEL_CAPACITY_PROFILE: ${{ vars.AI4IA_MODEL_CAPACITY_PROFILE }}
+      # The checked-in profile keeps the current feature posture as its default,
+      # while each binding lets a fork or lower-cost environment opt out without
+      # editing tracked deployment parameters.
+      AI4IA_ENABLE_OFFICIAL_MCP: ${{ vars.AI4IA_ENABLE_OFFICIAL_MCP }}
+      AI4IA_ENABLE_FOUNDRY_TOOLBOX: ${{ vars.AI4IA_ENABLE_FOUNDRY_TOOLBOX }}
+      AI4IA_ENABLE_PRIVATE_TOOL_CATALOG: ${{ vars.AI4IA_ENABLE_PRIVATE_TOOL_CATALOG }}
+      AI4IA_IMAGE_GENERATION_ENABLED: ${{ vars.AI4IA_IMAGE_GENERATION_ENABLED }}
+      AI4IA_VIDEO_GENERATION_ENABLED: ${{ vars.AI4IA_VIDEO_GENERATION_ENABLED }}
+      AI4IA_DOCUMENT_UNDERSTANDING_ENABLED: ${{ vars.AI4IA_DOCUMENT_UNDERSTANDING_ENABLED }}
+      AI4IA_CU_PREVIEW_ENABLED: ${{ vars.AI4IA_CU_PREVIEW_ENABLED }}
+      AI4IA_DOCUMENT_COMPUTE_ENABLED: ${{ vars.AI4IA_DOCUMENT_COMPUTE_ENABLED }}
+      AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED: ${{ vars.AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED }}
+      AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED: ${{ vars.AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED }}
+      AI4IA_SEARCH_ENABLED: ${{ vars.AI4IA_SEARCH_ENABLED }}
+      AI4IA_VOICE_LIVE_ENABLED: ${{ vars.AI4IA_VOICE_LIVE_ENABLED }}
+      AI4IA_VOICE_LIVE_TOOLS_ENABLED: ${{ vars.AI4IA_VOICE_LIVE_TOOLS_ENABLED }}
+      AI4IA_AUTO_SUMMARIZATION_ENABLED: ${{ vars.AI4IA_AUTO_SUMMARIZATION_ENABLED }}
+      AI4IA_CUSTOM_TOOLS_ENABLED: ${{ vars.AI4IA_CUSTOM_TOOLS_ENABLED }}
+      AI4IA_WEB_SEARCH_ENABLED: ${{ vars.AI4IA_WEB_SEARCH_ENABLED }}
       # Custom-domain + managed-cert binding. Empty -> bicep leaves the ingress
       # with no custom domain (azd would otherwise wipe an imperatively-bound
       # hostname on every deploy). Set as repo variables; see header.
@@ -234,17 +287,11 @@ jobs:
       # It is also read directly by the custom-domain preflight step below, which must
       # look in the same resource group bicep creates.
       AI4IA_WORKLOAD: ${{ vars.AI4IA_WORKLOAD }}
-      # Regional escape hatches. These exist because Postgres, Search, and API Center
-      # are each capacity/offer constrained per region and are the documented remedy
-      # for LocationIsOfferRestricted (deployment.md section 7.1) -- a remedy that does
-      # not work if the pipeline cannot pass the override.
-      # No `|| 'default'` fallback on purpose: none of these three has a repo variable
-      # today, so Actions expands them to '', and azd resolves an empty ${VAR=default}
-      # to the default (verified live -- they landed on centralus/eastus/eastus). A
+      # Regional escape hatches. Search and API Center are capacity/offer constrained
+      # independently of the primary region. No `|| 'default'` fallback on purpose:
+      # an empty Actions variable lets azd resolve the ${VAR=default} token. A
       # fallback here would be dead weight that has to be kept in sync with
-      # main.parameters.json by hand. Do not "harden" this; see
-      # greenfield-standup.md section 3.
-      AI4IA_POSTGRES_LOCATION: ${{ vars.AI4IA_POSTGRES_LOCATION }}
+      # main.parameters.json by hand.
       AI4IA_SEARCH_LOCATION: ${{ vars.AI4IA_SEARCH_LOCATION }}
       AI4IA_API_CENTER_LOCATION: ${{ vars.AI4IA_API_CENTER_LOCATION }}
       # Extra browser origins for Voice Live. Bicep already derives the deployed web
@@ -288,9 +335,8 @@ jobs:
       # Default OFF: without AI4IA_SPEECH_VOICE_LIVE_ENABLED=true the provider
       # never enters the allowlist and the relay never selects it, so the
       # default Azure OpenAI Realtime path is unchanged. Enabling this in
-      # production additionally remains gated on the pending live-validation
-      # confirmation recorded in .azure/plan.md (managed-identity audience +
-      # account posture) -- do not set this true before that gate closes. The
+      # production enablement and validation evidence lives in the tracked
+      # feature-enablement runbook; do not rely on local .azure state. The
       # base URL/gateway key are NOT set here; they come from gateway.bicep's
       # dedicated APIM subscription output, matching the realtime provider
       # pattern (never a repo variable/secret).
@@ -298,10 +344,9 @@ jobs:
       AI4IA_VOICE_PROVIDER_ALLOWLIST: ${{ vars.AI4IA_VOICE_PROVIDER_ALLOWLIST }}
       AI4IA_VOICE_DEFAULT_PROVIDER: ${{ vars.AI4IA_VOICE_DEFAULT_PROVIDER }}
       AI4IA_SPEECH_VOICE_LIVE_MI_AUDIENCE: ${{ vars.AI4IA_SPEECH_VOICE_LIVE_MI_AUDIENCE }}
-      # Budget start date pin. Empty -> bicep uses the first of the current month
-      # (drifts, so the first deploy of each new month fails on the immutable
-      # budget start date). Set this repo variable to a fixed yyyy-MM-01 to keep
-      # redeploys idempotent. See docs/runbooks/deployment.md.
+      # Budget amount and immutable start-date pin. The validation job requires
+      # an explicit yyyy-MM-01 before a real provision.
+      AI4IA_BUDGET_AMOUNT: ${{ vars.AI4IA_BUDGET_AMOUNT }}
       AI4IA_BUDGET_START_DATE: ${{ vars.AI4IA_BUDGET_START_DATE }}
       # Azure Monitor alerting baseline (action group + api 5xx / Cosmos 429 metric
       # alerts). Default OFF so merging is inert; to turn proactive alerts on, set the
@@ -343,6 +388,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
 
       - name: Install azd
         uses: Azure/setup-azd@0b7e3a35ab00f2eee7080c845eb39c3f0ebfa553 # v2.4.0
@@ -416,7 +466,7 @@ jobs:
           python scripts/gen-mcp-catalog.py --check
           python scripts/gen-voice-provider-catalog.py --check
           python scripts/gen-gateway-policy.py --check
-          python scripts/validate-feature-prereqs.py
+          python scripts/validate-feature-prereqs.py --require-deployment-attestation
 
       # A resource provider that is not registered fails the deployment PARTWAY
       # THROUGH, ~10+ minutes in, with `MissingSubscriptionRegistration` -- after
@@ -693,6 +743,7 @@ jobs:
       # gap between this step and the canary, and an expired token would present
       # as a 401 -- i.e. would roll back a healthy release.
       - name: Preflight the post-deploy canary token
+        id: canary_preflight
         run: |
           set -euo pipefail
           if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ]; then
@@ -816,7 +867,7 @@ jobs:
       # timeout, both of which kill the runner outright. See
       # docs/runbooks/deployment.md section 6.
       - name: Roll back to the captured revisions
-        if: ${{ failure() && steps.capture.outcome == 'success' && steps.canary_token.outcome != 'failure' && (steps.provision.outcome != 'skipped' || steps.deploy.outcome == 'failure' || steps.verify.outcome == 'failure') }}
+        if: ${{ failure() && steps.capture.outcome == 'success' && steps.canary_preflight.outcome != 'failure' && steps.canary_token.outcome != 'failure' && (steps.provision.outcome != 'skipped' || steps.deploy.outcome == 'failure' || steps.verify.outcome == 'failure') }}
         timeout-minutes: 20
         run: |
           set -euo pipefail

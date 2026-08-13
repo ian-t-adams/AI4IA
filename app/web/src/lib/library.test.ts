@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatBytes,
   keepMonotonicLibraryDocument,
+  LIBRARY_STATUS_COLORS,
+  LIBRARY_STATUS_LABELS,
   type LibraryDocument,
 } from "./library";
 
@@ -38,6 +41,27 @@ describe("keepMonotonicLibraryDocument", () => {
         at("ready", "2026-08-09T00:00:02Z"),
       ).status,
     ).toBe("ready");
+  });
+
+  describe("library presentation", () => {
+    it("defines one label and color for every ingest state", () => {
+      const statuses: LibraryDocument["status"][] = [
+        "pending",
+        "stored",
+        "analyzing",
+        "ready",
+        "failed",
+      ];
+      expect(Object.keys(LIBRARY_STATUS_LABELS).sort()).toEqual([...statuses].sort());
+      expect(Object.keys(LIBRARY_STATUS_COLORS).sort()).toEqual([...statuses].sort());
+      expect(LIBRARY_STATUS_LABELS.stored).toBe("Stored");
+    });
+
+    it("formats byte sizes consistently", () => {
+      expect(formatBytes(512)).toBe("512 B");
+      expect(formatBytes(1536)).toBe("1.5 KB");
+      expect(formatBytes(1.5 * 1024 * 1024)).toBe("1.5 MB");
+    });
   });
 
   it("rejects a stale response that regresses a terminal document", () => {

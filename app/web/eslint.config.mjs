@@ -24,7 +24,7 @@ const eslintConfig = [
     // explicit version skips detection entirely, keeping this bump config-only.
     settings: {
       react: {
-        version: "19.2.7",
+        version: "19.0",
       },
     },
     // eslint-config-next 16 bundles react-hooks v6, which enables the new

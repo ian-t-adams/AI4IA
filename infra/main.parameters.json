@@ -11,6 +11,9 @@
     "location": {
       "value": "${AZURE_LOCATION=eastus2}"
     },
+    "modelCapacityProfile": {
+      "value": "${AI4IA_MODEL_CAPACITY_PROFILE=baseline}"
+    },
     "claudeEnabled": {
       "value": "${AI4IA_CLAUDE_ENABLED=false}"
     },
@@ -71,6 +74,9 @@
     "apimPublisherEmail": {
       "value": "${AI4IA_APIM_PUBLISHER_EMAIL=ai4ia@example.com}"
     },
+    "budgetAmount": {
+      "value": "${AI4IA_BUDGET_AMOUNT=1500}"
+    },
     "budgetStartDate": {
       "value": "${AI4IA_BUDGET_START_DATE=}"
     },
@@ -84,13 +90,13 @@
       "value": "${AI4IA_ALERT_EMAIL=}"
     },
     "enableOfficialMcp": {
-      "value": true
+      "value": "${AI4IA_ENABLE_OFFICIAL_MCP=true}"
     },
     "enableFoundryToolbox": {
-      "value": true
+      "value": "${AI4IA_ENABLE_FOUNDRY_TOOLBOX=true}"
     },
     "enablePrivateToolCatalog": {
-      "value": true
+      "value": "${AI4IA_ENABLE_PRIVATE_TOOL_CATALOG=true}"
     },
     "apiCenterLocation": {
       "value": "${AI4IA_API_CENTER_LOCATION=eastus}"
@@ -138,28 +144,28 @@
       "value": "${AI4IA_PROXY_APPCONFIG_LABEL=}"
     },
     "imageGenerationEnabled": {
-      "value": true
+      "value": "${AI4IA_IMAGE_GENERATION_ENABLED=true}"
     },
     "videoGenerationEnabled": {
-      "value": true
+      "value": "${AI4IA_VIDEO_GENERATION_ENABLED=true}"
     },
     "documentUnderstandingEnabled": {
-      "value": true
+      "value": "${AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=true}"
     },
     "cuPreviewEnabled": {
-      "value": true
+      "value": "${AI4IA_CU_PREVIEW_ENABLED=true}"
     },
     "cuAgenticAnalyzerId": {
       "value": "${AI4IA_CU_AGENTIC_ANALYZER_ID=}"
     },
     "documentComputeEnabled": {
-      "value": true
+      "value": "${AI4IA_DOCUMENT_COMPUTE_ENABLED=true}"
     },
     "inlineDocumentComputeEnabled": {
-      "value": true
+      "value": "${AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED=true}"
     },
     "codeInterpreterRawFilesEnabled": {
-      "value": true
+      "value": "${AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED=true}"
     },
     "enableDurableWorkflows": {
       "value": "${AI4IA_ENABLE_DURABLE_WORKFLOWS=true}"
@@ -171,19 +177,19 @@
       "value": "${AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS=1800}"
     },
     "searchEnabled": {
-      "value": true
+      "value": "${AI4IA_SEARCH_ENABLED=true}"
     },
     "searchLocation": {
       "value": "${AI4IA_SEARCH_LOCATION=eastus}"
     },
     "voiceLiveEnabled": {
-      "value": true
+      "value": "${AI4IA_VOICE_LIVE_ENABLED=true}"
     },
     "realtimeAllowedOrigins": {
       "value": "${AI4IA_REALTIME_ALLOWED_ORIGINS=}"
     },
     "voiceLiveToolsEnabled": {
-      "value": true
+      "value": "${AI4IA_VOICE_LIVE_TOOLS_ENABLED=true}"
     },
     "speechVoiceLiveEnabled": {
       "value": "${AI4IA_SPEECH_VOICE_LIVE_ENABLED=false}"
@@ -198,13 +204,13 @@
       "value": "${AI4IA_SPEECH_VOICE_LIVE_MI_AUDIENCE=https://ai.azure.com}"
     },
     "autoSummarizationEnabled": {
-      "value": true
+      "value": "${AI4IA_AUTO_SUMMARIZATION_ENABLED=true}"
     },
     "customToolsEnabled": {
-      "value": true
+      "value": "${AI4IA_CUSTOM_TOOLS_ENABLED=true}"
     },
     "webSearchEnabled": {
-      "value": true
+      "value": "${AI4IA_WEB_SEARCH_ENABLED=true}"
     },
     "webIqApiKey": {
       "value": "${AI4IA_WEBIQ_API_KEY=}"

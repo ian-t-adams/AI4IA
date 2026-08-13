@@ -9,7 +9,8 @@ name: pages
 #
 # Status data: site/data/status.js + inventory.js are committed as an accurate seed and
 # refreshed here. On main this job authenticates with the existing deploy
-# identity (id-ai4ia-deploy) via the required credential with subject`n# `repo:ian-t-adams/AI4IA:ref:refs/heads/main` — note
+# identity via the required credential with subject
+# `repo:<owner>/<repo>:ref:refs/heads/main` — note
 # NO `environment:` is set on the build job, so the OIDC subject matches that credential
 # (setting an environment would change the subject to environment:<name> and break login).
 # The main-branch credential and repository variables are required. Publishing an old
@@ -55,6 +56,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
       # Regenerate the portal docs index from the manifest so the published hub
       # always reflects the current repo markdown (titles, descriptions, new docs).
       - name: Regenerate portal docs index
@@ -89,19 +95,37 @@ jobs:
 
       - name: Refresh deployment status snapshot
         shell: pwsh
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
+          AI4IA_WORKLOAD: ${{ vars.AI4IA_WORKLOAD }}
+          AI4IA_WEB_CUSTOM_DOMAIN: ${{ vars.AI4IA_WEB_CUSTOM_DOMAIN }}
+          AI4IA_PROXY_CUSTOM_DOMAIN: ${{ vars.AI4IA_PROXY_CUSTOM_DOMAIN }}
         run: |
-          $workload = '${{ vars.AI4IA_WORKLOAD }}'
+          $workload = $env:AI4IA_WORKLOAD
           if ([string]::IsNullOrWhiteSpace($workload)) { $workload = 'ai4ia' }
-          $resourceGroup = "rg-$workload-${{ vars.AZURE_ENV_NAME }}"
-          $webDomain = '${{ vars.AI4IA_WEB_CUSTOM_DOMAIN }}'
-          $proxyDomain = '${{ vars.AI4IA_PROXY_CUSTOM_DOMAIN }}'
+          $resourceGroup = "rg-$workload-$($env:AZURE_ENV_NAME)"
+          $webDomain = $env:AI4IA_WEB_CUSTOM_DOMAIN
+          $proxyDomain = $env:AI4IA_PROXY_CUSTOM_DOMAIN
           $webUrl = if ($webDomain) { "https://$webDomain" } else { '' }
           $proxyUrl = if ($proxyDomain) { "https://$proxyDomain" } else { '' }
+          $outDir = [System.IO.Path]::Combine($env:GITHUB_WORKSPACE, 'site', 'data')
           ./scripts/status-snapshot.ps1 `
-            -Subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}" `
+            -Subscription $env:AZURE_SUBSCRIPTION_ID `
             -ResourceGroup $resourceGroup `
             -WebUrl $webUrl `
-            -ProxyUrl $proxyUrl
+            -ProxyUrl $proxyUrl `
+            -OutDir $outDir
+          foreach ($name in 'inventory.js', 'status.js') {
+            $path = Join-Path $outDir $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Status refresh did not produce $path"
+            }
+            $age = [DateTime]::UtcNow - (Get-Item -LiteralPath $path).LastWriteTimeUtc
+            if ($age.TotalMinutes -lt 0 -or $age.TotalMinutes -gt 5) {
+              throw "Status refresh produced a stale $name file ($($age.TotalMinutes) minutes old)"
+            }
+          }
 
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0

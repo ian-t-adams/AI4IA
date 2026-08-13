@@ -21,6 +21,9 @@ TRIVY_EXCEPTIONS = ROOT / "proxy" / ".trivyignore"
 TRIVY_MISCONFIG_EXCEPTIONS = ROOT / ".trivyignore.yaml"
 GITLEAKS_IGNORE = ROOT / ".gitleaksignore"
 UPSTREAM_PROVENANCE = ROOT / "proxy" / "upstream-provenance.json"
+APP_CONFIG_SERVICE = (
+    ROOT / "proxy" / "SimpleL7Proxy" / "Config" / "AppConfigService.cs"
+)
 
 
 class ProxyTelemetryContracts(unittest.TestCase):
@@ -59,6 +62,26 @@ class ProxyTelemetryContracts(unittest.TestCase):
                 rf"name: '{env_name}'[\s\S]{{0,100}}"
                 rf"value: string\(proxyContainerConfig\.logging\.{property_name}\)",
             )
+
+
+class ProxyRuntimeContracts(unittest.TestCase):
+    def test_failed_app_config_download_is_checked_before_result_value(self) -> None:
+        source = APP_CONFIG_SERVICE.read_text(encoding="utf-8")
+        start = source.index("private async Task ProcessRefreshAsync")
+        end = source.index("private async Task<string?> ReadSentinelAsync", start)
+        refresh = source[start:end]
+        self.assertEqual(
+            refresh.count("if (result == null)"),
+            1,
+            "ProcessRefreshAsync must have one explicit failed-download guard",
+        )
+        null_guard = refresh.index("if (result == null)")
+        dereference = refresh.index("var (warm, cold) = result.Value")
+        self.assertLess(
+            null_guard,
+            dereference,
+            "a transient App Configuration failure must return before result.Value",
+        )
 
 
 class ProxySupplyChainContracts(unittest.TestCase):

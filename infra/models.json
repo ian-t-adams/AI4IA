@@ -49,31 +49,45 @@
       "category": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["none", "low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-07-09"
+          "version": "2026-07-09",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2026-07-09"
+          "version": "2026-07-09",
+          "maxCapacity": 333,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-07-09"
+          "version": "2026-07-09",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2026-07-09"
+          "version": "2026-07-09",
+          "maxCapacity": 333,
+          "maxCapacityPool": "data-zone:EU"
         }
       ]
     },
@@ -83,31 +97,45 @@
       "category": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["none", "low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-07-09"
+          "version": "2026-07-09",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2026-07-09"
+          "version": "2026-07-09",
+          "maxCapacity": 333,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-07-09"
+          "version": "2026-07-09",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2026-07-09"
+          "version": "2026-07-09",
+          "maxCapacity": 333,
+          "maxCapacityPool": "data-zone:EU"
         }
       ]
     },
@@ -117,31 +145,45 @@
       "category": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["none", "low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-07-09"
+          "version": "2026-07-09",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2026-07-09"
+          "version": "2026-07-09",
+          "maxCapacity": 333,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-07-09"
+          "version": "2026-07-09",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2026-07-09"
+          "version": "2026-07-09",
+          "maxCapacity": 333,
+          "maxCapacityPool": "data-zone:EU"
         }
       ]
     },
@@ -151,31 +193,46 @@
       "category": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-03-05"
+          "version": "2026-03-05",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2026-03-05"
+          "version": "2026-03-05",
+          "maxCapacity": 300,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-03-05"
+          "version": "2026-03-05",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2026-03-05"
+          "version": "2026-03-05",
+          "maxCapacity": 300,
+          "maxCapacityPool": "data-zone:EU"
         }
       ]
     },
@@ -185,25 +242,38 @@
       "category": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-12-11"
+          "version": "2025-12-11",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2025-12-11"
+          "version": "2025-12-11",
+          "maxCapacity": 300,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-12-11"
+          "version": "2025-12-11",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -213,19 +283,30 @@
       "category": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-11-13"
+          "version": "2025-11-13",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-11-13"
+          "version": "2025-11-13",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -235,19 +316,30 @@
       "category": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-08-07"
+          "version": "2025-08-07",
+          "maxCapacity": 950,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-08-07"
+          "version": "2025-08-07",
+          "maxCapacity": 50,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -257,31 +349,46 @@
       "category": "chat-fast",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 100,
-          "version": "2025-08-07"
+          "version": "2025-08-07",
+          "maxCapacity": 4900,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 100,
-          "version": "2025-08-07"
+          "version": "2025-08-07",
+          "maxCapacity": 2000,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 100,
-          "version": "2025-08-07"
+          "version": "2025-08-07",
+          "maxCapacity": 100,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "DataZoneStandard",
           "capacity": 100,
-          "version": "2025-08-07"
+          "version": "2025-08-07",
+          "maxCapacity": 2000,
+          "maxCapacityPool": "data-zone:EU"
         }
       ]
     },
@@ -291,31 +398,44 @@
       "category": "reasoning",
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
-      "reasoningEffort": ["low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-04-16"
+          "version": "2025-04-16",
+          "maxCapacity": 1000,
+          "maxCapacityPool": "region:eastus2"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2025-04-16"
+          "version": "2025-04-16",
+          "maxCapacity": 300,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-04-16"
+          "version": "2025-04-16",
+          "maxCapacity": 1000,
+          "maxCapacityPool": "region:swedencentral"
         },
         {
           "region": "swedencentral",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2025-04-16"
+          "version": "2025-04-16",
+          "maxCapacity": 300,
+          "maxCapacityPool": "data-zone:EU"
         }
       ]
     },
@@ -330,19 +450,25 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 300,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -353,19 +479,25 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["high"],
+      "reasoningEffort": [
+        "high"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-10-06"
+          "version": "2025-10-06",
+          "maxCapacity": 110,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-10-06"
+          "version": "2025-10-06",
+          "maxCapacity": 50,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -376,19 +508,27 @@
       "api": "responses",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-03-05"
+          "version": "2026-03-05",
+          "maxCapacity": 80,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-03-05"
+          "version": "2026-03-05",
+          "maxCapacity": 80,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -399,19 +539,27 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["low", "medium", "high"],
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-09-15"
+          "version": "2025-09-15",
+          "maxCapacity": 950,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-09-15"
+          "version": "2025-09-15",
+          "maxCapacity": 50,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -422,25 +570,37 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["none", "low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-02-24"
+          "version": "2026-02-24",
+          "maxCapacity": 950,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2026-02-24"
+          "version": "2026-02-24",
+          "maxCapacity": 300,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-02-24"
+          "version": "2026-02-24",
+          "maxCapacity": 50,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -449,7 +609,10 @@
       "format": "Mistral AI",
       "category": "chat",
       "toolCalling": true,
-      "inputModalities": ["text", "image"],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
       "contextWindow": 128000,
       "maxOutputTokens": 32768,
       "deployments": [
@@ -457,25 +620,33 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 1000,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 1000,
+          "maxCapacityPool": "data-zone:EU"
         }
       ]
     },
@@ -485,31 +656,46 @@
       "category": "chat-fast",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 100,
-          "version": "2026-03-17"
+          "version": "2026-03-17",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2026-03-17"
+          "version": "2026-03-17",
+          "maxCapacity": 1000,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 100,
-          "version": "2026-03-17"
+          "version": "2026-03-17",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2026-03-17"
+          "version": "2026-03-17",
+          "maxCapacity": 1000,
+          "maxCapacityPool": "data-zone:EU"
         }
       ]
     },
@@ -519,25 +705,38 @@
       "category": "chat-fast",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 100,
-          "version": "2026-03-17"
+          "version": "2026-03-17",
+          "maxCapacity": 2500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 100,
-          "version": "2026-03-17"
+          "version": "2026-03-17",
+          "maxCapacity": 2000,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 100,
-          "version": "2026-03-17"
+          "version": "2026-03-17",
+          "maxCapacity": 2500,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -547,31 +746,46 @@
       "category": "chat-fast",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
-      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 100,
-          "version": "2025-08-07"
+          "version": "2025-08-07",
+          "maxCapacity": 900,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2025-08-07"
+          "version": "2025-08-07",
+          "maxCapacity": 300,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 100,
-          "version": "2025-08-07"
+          "version": "2025-08-07",
+          "maxCapacity": 100,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2025-08-07"
+          "version": "2025-08-07",
+          "maxCapacity": 300,
+          "maxCapacityPool": "data-zone:EU"
         }
       ]
     },
@@ -584,25 +798,33 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-11-18"
+          "version": "2025-11-18",
+          "maxCapacity": 950,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2025-11-18"
+          "version": "2025-11-18",
+          "maxCapacity": 300,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2025-11-18"
+          "version": "2025-11-18",
+          "maxCapacity": 50,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "DataZoneStandard",
           "capacity": 50,
-          "version": "2025-11-18"
+          "version": "2025-11-18",
+          "maxCapacity": 300,
+          "maxCapacityPool": "data-zone:EU"
         }
       ]
     },
@@ -611,7 +833,9 @@
       "format": "DeepSeek",
       "category": "reasoning-oss",
       "toolCalling": false,
-      "inputModalities": ["text"],
+      "inputModalities": [
+        "text"
+      ],
       "contextWindow": 163840,
       "maxOutputTokens": 32768,
       "deployments": [
@@ -619,13 +843,17 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 30,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 30,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -638,25 +866,33 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 9,
-          "version": "2025-12-16"
+          "version": "2025-12-16",
+          "maxCapacity": 9,
+          "maxCapacityPool": "region:eastus2"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 3,
-          "version": "2025-12-16"
+          "version": "2025-12-16",
+          "maxCapacity": 3,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 9,
-          "version": "2025-12-16"
+          "version": "2025-12-16",
+          "maxCapacity": 9,
+          "maxCapacityPool": "region:swedencentral"
         },
         {
           "region": "swedencentral",
           "sku": "DataZoneStandard",
           "capacity": 3,
-          "version": "2025-12-16"
+          "version": "2025-12-16",
+          "maxCapacity": 3,
+          "maxCapacityPool": "data-zone:EU"
         }
       ]
     },
@@ -669,13 +905,17 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 2,
-          "version": "2026-04-21"
+          "version": "2026-04-21",
+          "maxCapacity": 2,
+          "maxCapacityPool": "region:eastus2"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 2,
-          "version": "2026-04-21"
+          "version": "2026-04-21",
+          "maxCapacity": 2,
+          "maxCapacityPool": "region:swedencentral"
         }
       ]
     },
@@ -688,13 +928,17 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 2,
-          "version": "2025-10-06"
+          "version": "2025-10-06",
+          "maxCapacity": 4,
+          "maxCapacityPool": "region:eastus2"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 2,
-          "version": "2025-10-06"
+          "version": "2025-10-06",
+          "maxCapacity": 4,
+          "maxCapacityPool": "region:swedencentral"
         }
       ]
     },
@@ -707,7 +951,9 @@
           "region": "westus",
           "sku": "GlobalStandard",
           "capacity": 2,
-          "version": "2026-06-02"
+          "version": "2026-06-02",
+          "maxCapacity": 2,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -720,7 +966,9 @@
           "region": "westus",
           "sku": "GlobalStandard",
           "capacity": 2,
-          "version": "2026-06-19"
+          "version": "2026-06-19",
+          "maxCapacity": 2,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -733,7 +981,9 @@
           "region": "westus",
           "sku": "GlobalStandard",
           "capacity": 2,
-          "version": "2026-06-02"
+          "version": "2026-06-02",
+          "maxCapacity": 2,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -742,20 +992,31 @@
       "format": "Black Forest Labs",
       "category": "image",
       "api": "bfl",
-      "imageSizes": ["1024x1024", "1024x1536", "1536x1024", "auto"],
-      "imageQualities": ["auto"],
+      "imageSizes": [
+        "1024x1024",
+        "1024x1536",
+        "1536x1024",
+        "auto"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 1,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 2,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 1,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 2,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -764,20 +1025,31 @@
       "format": "Black Forest Labs",
       "category": "image",
       "api": "bfl",
-      "imageSizes": ["1024x1024", "1024x1536", "1536x1024", "auto"],
-      "imageQualities": ["auto"],
+      "imageSizes": [
+        "1024x1024",
+        "1024x1536",
+        "1536x1024",
+        "auto"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 1,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 2,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 1,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 2,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -786,20 +1058,29 @@
       "format": "Black Forest Labs",
       "category": "image",
       "api": "bfl",
-      "imageSizes": ["1024x1024", "auto"],
-      "imageQualities": ["auto"],
+      "imageSizes": [
+        "1024x1024",
+        "auto"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 1,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 15,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 1,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 15,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -808,20 +1089,31 @@
       "format": "Black Forest Labs",
       "category": "image",
       "api": "bfl",
-      "imageSizes": ["1024x1024", "1024x1440", "1440x1024", "auto"],
-      "imageQualities": ["auto"],
+      "imageSizes": [
+        "1024x1024",
+        "1024x1440",
+        "1440x1024",
+        "auto"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 1,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 15,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 1,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 15,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -832,19 +1124,26 @@
       "category": "document-ocr",
       "api": "mistral_ocr",
       "toolCalling": false,
-      "inputModalities": ["document", "image"],
+      "inputModalities": [
+        "document",
+        "image"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 1,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 30,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 1,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 30,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -855,19 +1154,26 @@
       "category": "document-ocr",
       "api": "mistral_ocr",
       "toolCalling": false,
-      "inputModalities": ["document", "image"],
+      "inputModalities": [
+        "document",
+        "image"
+      ],
       "deployments": [
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 1,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 30,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 1,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 30,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -880,25 +1186,33 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 120,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 880,
+          "maxCapacityPool": "global"
         },
         {
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 120,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 1000,
+          "maxCapacityPool": "data-zone:US"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 120,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 120,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "DataZoneStandard",
           "capacity": 120,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 1000,
+          "maxCapacityPool": "data-zone:EU"
         }
       ]
     },
@@ -911,13 +1225,17 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 50,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 50,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -930,13 +1248,17 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 150,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "1"
+          "version": "1",
+          "maxCapacity": 150,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -949,13 +1271,17 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 10,
-          "version": "2025-08-28"
+          "version": "2025-08-28",
+          "maxCapacity": 10,
+          "maxCapacityPool": "region:eastus2"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 10,
-          "version": "2025-08-28"
+          "version": "2025-08-28",
+          "maxCapacity": 10,
+          "maxCapacityPool": "region:swedencentral"
         }
       ]
     },
@@ -968,7 +1294,9 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 10,
-          "version": "2026-05-06"
+          "version": "2026-05-06",
+          "maxCapacity": 10,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -981,13 +1309,17 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 10,
-          "version": "2025-12-15"
+          "version": "2025-12-15",
+          "maxCapacity": 20,
+          "maxCapacityPool": "region:eastus2"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 10,
-          "version": "2025-12-15"
+          "version": "2025-12-15",
+          "maxCapacity": 20,
+          "maxCapacityPool": "region:swedencentral"
         }
       ]
     },
@@ -1000,13 +1332,17 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 10,
-          "version": "2025-08-28"
+          "version": "2025-08-28",
+          "maxCapacity": 30000,
+          "maxCapacityPool": "region:eastus2"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 10,
-          "version": "2025-08-28"
+          "version": "2025-08-28",
+          "maxCapacity": 30000,
+          "maxCapacityPool": "region:swedencentral"
         }
       ]
     },
@@ -1019,13 +1355,17 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 10,
-          "version": "2026-02-23"
+          "version": "2026-02-23",
+          "maxCapacity": 30000,
+          "maxCapacityPool": "region:eastus2"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 10,
-          "version": "2026-02-23"
+          "version": "2026-02-23",
+          "maxCapacity": 30000,
+          "maxCapacityPool": "region:swedencentral"
         }
       ]
     },
@@ -1038,13 +1378,17 @@
           "region": "eastus2",
           "sku": "Standard",
           "capacity": 3,
-          "version": "001"
+          "version": "001",
+          "maxCapacity": 3,
+          "maxCapacityPool": "region:eastus2"
         },
         {
           "region": "swedencentral",
           "sku": "Standard",
           "capacity": 3,
-          "version": "001"
+          "version": "001",
+          "maxCapacity": 3,
+          "maxCapacityPool": "region:swedencentral"
         }
       ]
     },
@@ -1057,7 +1401,9 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 10,
-          "version": "2025-03-20"
+          "version": "2025-03-20",
+          "maxCapacity": 600,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -1070,7 +1416,9 @@
           "region": "swedencentral",
           "sku": "Standard",
           "capacity": 3,
-          "version": "001"
+          "version": "001",
+          "maxCapacity": 3,
+          "maxCapacityPool": "region:swedencentral"
         }
       ]
     },
@@ -1083,13 +1431,17 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 5,
-          "version": "2025-12-08"
+          "version": "2025-12-08",
+          "maxCapacity": 9,
+          "maxCapacityPool": "region:eastus2"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 5,
-          "version": "2025-12-08"
+          "version": "2025-12-08",
+          "maxCapacity": 9,
+          "maxCapacityPool": "region:swedencentral"
         }
       ]
     },
@@ -1099,13 +1451,20 @@
       "category": "research",
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
-      "reasoningEffort": ["low", "medium", "high", "xhigh"],
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "deployments": [
         {
           "region": "westus",
           "sku": "GlobalStandard",
           "capacity": 5,
-          "version": "2025-06-26"
+          "version": "2025-06-26",
+          "maxCapacity": 3000,
+          "maxCapacityPool": "global"
         }
       ]
     },
@@ -1123,13 +1482,17 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-06-01"
+          "version": "2026-06-01",
+          "maxCapacity": 250,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-06-01"
+          "version": "2026-06-01",
+          "maxCapacity": 250,
+          "maxCapacityPool": "global"
         }
       ]
     },

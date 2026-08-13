@@ -25,7 +25,10 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
 
 ### Intentional source deviation
 
-Seven source files carry AI4IA security/correctness patches over the audited pin:
+Fourteen upstream files carry AI4IA security, correctness, dependency, or
+telemetry patches over the audited pin. Four additional files are AI4IA-owned.
+The complete machine-readable list and reason for every deviation lives in
+`upstream-provenance.json`; the behaviorally important groups are:
 
 - `SimpleL7Proxy/Config/IncomingAuthValidator.cs` applies `ValidateAuthConfig`'s `header=` value to the actual key lookup (upstream otherwise keeps
   reading the default `S7P-KEY`, which rejects AI4IA's `Ocp-Apim-Subscription-Key` ingress);
@@ -48,6 +51,10 @@ Seven source files carry AI4IA security/correctness patches over the audited pin
   (`Request:Headers:PriorityKeyHeader`, `Request:Priority:PriorityKeys`).
 - `SimpleL7Proxy/Config/ProxyConfig.cs` marks `ValidateAuthKey1`/`ValidateAuthKey2`
   with that flag. These are the only two options that hold a credential.
+- `SimpleL7Proxy/Config/AppConfigService.cs` checks a failed App Configuration
+  download before dereferencing its nullable result. A transient failure now
+  waits for the normal refresh interval instead of repeatedly throwing in a
+  zero-delay loop.
 - `Shared-parser/StreamProcessor/JsonStreamProcessor.cs` flushes the output
   `StreamWriter` after each line. Upstream's comment says "write each line
   immediately", but `WriteLineAsync` only fills the writer's 4 KiB char buffer,
@@ -75,7 +82,10 @@ Seven source files carry AI4IA security/correctness patches over the audited pin
   are non-null contracts, while retaining that dead branch makes request data appear to control
   whether the later authentication methods execute (CodeQL `cs/user-controlled-bypass`).
 
-All other source files are upstream-identical after line-ending normalization.
+The remaining declared deviations update the Application Insights 3.x /
+OpenTelemetry integration, remove unused parser runtime packages, and keep the
+runtime NuGet graph locked. All undeclared source files are upstream-identical
+after line-ending normalization.
 Re-evaluate and drop the `IncomingAuthValidator.cs` patch when refreshing to an
 upstream commit that fixes both behaviors it addresses.
 
@@ -86,8 +96,8 @@ bytes never gate CI. `scripts/tests/test_proxy_provenance.py` fails for an
 added, deleted, or semantically changed file that is not represented exactly.
 The current measured breakdown is:
 
-- **167 files** are content-equivalent to upstream after CRLF/LF canonicalization.
-- **7 files** contain the documented AI4IA source patches.
+- **160 files** are content-equivalent to upstream after CRLF/LF canonicalization.
+- **14 files** contain the documented AI4IA source patches.
 - **4 files** are AI4IA additions: `Config/SecretComparer.cs` plus three
   `packages.lock.json` files used by the runtime project graph.
 

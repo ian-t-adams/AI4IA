@@ -13,13 +13,6 @@ principles.
 
 ## Current state
 
-*Deployed state below verified against live Azure and repo variables on
-2026-08-04. Flag values can be changed after that date without touching this
-file — `infra/main.parameters.json` plus the repo variables are authoritative,
-and a repo variable overrides the parameter file's default. See
-[`docs/configuration-reference.md`](docs/configuration-reference.md) for which
-mechanism governs each flag.*
-
 Implemented: governed HTTP/SSE model traffic through SimpleL7Proxy -> APIM,
 realtime through the FastAPI relay -> APIM, Entra/MSAL auth, agents
 and workflows (with opt-in durable execution on Durable Task Scheduler, so a
@@ -29,24 +22,14 @@ Voice Live, image/video generation, document and multimodal understanding,
 custom remote MCP tools, admin usage/resource dashboards, and Azure Monitor /
 Application Insights telemetry.
 
-The live deployment is in the Planet Express tenant
-(`6907d2a4-685a-4aea-92ab-d930217467f1`; Entra may still display "Contoso") and
-subscription `sub-planetexpress-slurmfactory`
-(`e852113b-6cb5-441c-ac68-26cff884e479`), resource group
-`rg-ai4ia-slurmfactory`. Public entry points are
-`https://ai4ia.nomad-analytics.com` for the app and
-`https://genaiproxy.nomad-analytics.com` for compatible model traffic.
-
-Advanced capabilities are feature-gated. Code defaults stay safe and mostly OFF;
-the deployed environment is controlled by `infra/main.parameters.json` and azd
-environment values. The checked-in live parameters enable the application
-capabilities, including Web IQ search (the `/research` command) and the
-inline-attachment Code Interpreter. Request-priority banding is also live
-(`AI4IA_PROXY_PRIORITIES_ENABLED=true` overrides the parameter file's `false`
-default, so admins get the reserved band), while the multi-application profile,
-Event Hub telemetry, and durable-async gateway controls remain off. Web IQ
-authenticates with the API's managed identity unless `AI4IA_WEBIQ_API_KEY` is set. See
-[`docs/runbooks/feature-enablement.md`](docs/runbooks/feature-enablement.md).
+Advanced capabilities are feature-gated. The checked-in showcase profile keeps
+the current broad capability set as environment-overridable defaults; a new
+operator can opt out without editing the parameter file. For the dated observed
+deployment posture, use the
+[feature-enablement runbook](docs/runbooks/feature-enablement.md). For template
+defaults and every deployable variable, use the
+[configuration reference](docs/configuration-reference.md). Do not copy an
+observed environment's values into a new tenant.
 
 Known gaps to keep visible:
 
@@ -73,9 +56,11 @@ Known gaps to keep visible:
 /app/web    Next.js web app: chat, admin dashboard, document/media UI, auth
 /app/api    FastAPI backend: auth, chat, agents, tools, memory, documents, usage
 /proxy      Vendored SimpleL7Proxy model gateway plus AI4IA Dockerfile/notes
+/foundry    Toolbox, routine, and A2A manifests plus schemas
 /scripts    Catalog, inventory, teardown, purge, and azd hook scripts
 /site       Self-documenting portal (docs + timestamped status), published to GitHub Pages
 /docs       Architecture, capability map, naming/tagging, and runbooks
+/assets     Generated brand assets
 azure.yaml  Azure Developer CLI service map
 ```
 
@@ -100,23 +85,18 @@ azure.yaml  Azure Developer CLI service map
 
 ## Deploy
 
-> `azd up` is appropriate only for an **already configured** environment. A
-> clean tenant also needs Entra app registrations, provider/model quota
-> preflight, deployment identity/RBAC, auth variables, and the custom-domain
-> two-pass sequence. The checked-in profile enables paid capabilities and
-> intentionally refuses insecure dev auth in a deployed environment.
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](docs/runbooks/deploy-to-azure.md)
 
-```powershell
-# After completing the greenfield standup guide:
-az login
-azd env select <environment>
-azd up
-```
-
-Merges to `main` deploy only after the one-time GitHub OIDC setup is complete.
-Start with the [greenfield Azure standup guide](docs/runbooks/greenfield-standup.md);
-use the [routine deployment runbook](docs/runbooks/deployment.md) for subsequent
-exact-digest releases and rollback.
+Start with the
+[guided Azure deployment](docs/runbooks/deploy-to-azure.md), which routes into
+the greenfield standup guide. It covers
+cost/quota review, tools, deployment identity/RBAC, both GitHub OIDC subjects,
+Entra apps, required variables, provider/model preflight, the first workflow
+provision, data-plane assets, and custom-domain sequencing. Use the
+[routine deployment runbook](docs/runbooks/deployment.md) for subsequent
+exact-digest releases and rollback. A standalone `azd provision` is not the
+release path for an existing environment because Bicep carries placeholder
+images for greenfield creation.
 
 ## Documentation
 
@@ -125,20 +105,12 @@ The **[self-documenting portal](https://ian-t-adams.github.io/AI4IA/)** (publish
 renders the architecture diagrams, catalogues every deployed Azure service, lists the
 requirements (IaC, permissions, packages), and shows a
 **[timestamped status/health snapshot](https://ian-t-adams.github.io/AI4IA/status.html)** of the
-deployed resources. The authoritative Markdown lives here:
-
-- [User guide](docs/user-guide.md)
-- [Architecture](docs/architecture.md)
-- [Editable architecture visual](docs/architecture-overview.excalidraw)
-- [Region & capability map](docs/region-capability-matrix.md)
-- [Naming & tagging](docs/naming-and-tagging.md)
-- [Configuration reference](docs/configuration-reference.md)
-- [Roadmap & open items](docs/roadmap.md)
-- [Greenfield Azure standup](docs/runbooks/greenfield-standup.md)
-- [Routine deployment runbook](docs/runbooks/deployment.md)
-- [Feature enablement runbook](docs/runbooks/feature-enablement.md)
-- [Teardown & rebuild runbook](docs/runbooks/teardown.md)
-- [Document & multimodal understanding](docs/document-multimodal-understanding.md)
+deployed resources. The portal's **Docs** index, generated from
+[`site/data/docs.manifest.json`](site/data/docs.manifest.json), is the complete
+curated list. New operators should begin with the
+[greenfield standup](docs/runbooks/greenfield-standup.md), then the
+[configuration reference](docs/configuration-reference.md) and
+[architecture](docs/architecture.md).
 
 ## Branding
 

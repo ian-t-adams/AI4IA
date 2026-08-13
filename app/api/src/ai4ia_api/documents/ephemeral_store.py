@@ -13,8 +13,8 @@ Design (the lowest-risk mechanism that fits the codebase):
   (:class:`~ai4ia_api.library.blob_store.AzureBlobStore`) but writes to a SEPARATE,
   clearly-ephemeral container (``inline_attachment_blob_container``) so the
   short-lived inline bytes never mingle with the durable library corpus and infra
-  can attach a lifecycle/TTL expiry rule to just that container. Local/dev + tests
-  fall back to a process-local in-memory store with no extra config.
+  can attach a lifecycle/TTL expiry rule to just that container. Local runs and
+  tests fall back to a process-local in-memory store with no extra config.
 * Bytes are keyed ``{userId}/{sessionId}/{documentId}`` — the ``userId`` prefix is
   the storage-tier isolation boundary (mirrors the library + processed-artifact
   stores). The fetch/delete path is ALWAYS recomposed from the *authenticated*
@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 import os
 
-from ..config import Settings
+from ..config import Environment, Settings
 from ..library.blob_store import (
     AzureBlobStore,
     BlobNotFoundError,
@@ -81,19 +81,28 @@ def attachment_path(user_id: str, session_id: str, document_id: str) -> str:
 
 def build_inline_attachment_blob_store(settings: Settings) -> BlobStore:
     """Durable :class:`AzureBlobStore` on a dedicated ephemeral container when the
-    document blob account is configured, else an in-memory store.
+    document blob account is configured, else a local-only in-memory store.
 
     Reuses the document library's blob account (a deployment that wants the inline
     feature already provisions blob storage) but a SEPARATE container so the
-    short-lived bytes stay clearly apart from the durable corpus; local/dev + tests
-    fall back to a process-local store with no extra config.
+    short-lived bytes stay clearly apart from the durable corpus. Disabled
+    deployments keep an inert in-memory store for unconditional cleanup calls;
+    when the feature is enabled, only local runs may use that fallback.
     """
     if settings.document_blob_account_url:
         return AzureBlobStore(
             settings.document_blob_account_url,
             settings.inline_attachment_blob_container,
         )
-    return InMemoryBlobStore()
+    if (
+        settings.env == Environment.local
+        or not settings.inline_document_compute_enabled
+    ):
+        return InMemoryBlobStore()
+    raise RuntimeError(
+        "AI4IA_DOCUMENT_BLOB_ACCOUNT_URL is required for inline attachment "
+        "retention outside local."
+    )
 
 
 class EphemeralAttachmentStore:

@@ -1,4 +1,4 @@
-"""Regression tests proving app/web and app/api .dockerignore files
+"""Regression tests proving every service .dockerignore file
 recursively exclude dotenv secrets from the Docker build context, at any
 directory depth, while still preserving committed .env.example files.
 
@@ -176,6 +176,9 @@ class DockerignoreContextTests(unittest.TestCase):
         self._assert_recursive_dotenv_handling(
             ROOT / "app" / "api" / ".dockerignore"
         )
+
+    def test_proxy_dockerignore_excludes_nested_dotenv_secrets(self) -> None:
+        self._assert_recursive_dotenv_handling(ROOT / "proxy" / ".dockerignore")
 
 
 if __name__ == "__main__":

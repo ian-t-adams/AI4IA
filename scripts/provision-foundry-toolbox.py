@@ -34,11 +34,13 @@ the official MCP plane. Everything is public preview; do not use in production w
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "foundry" / "toolbox.manifest.json"
@@ -180,6 +182,31 @@ def _require_array_or_absent(manifest: dict[str, Any], key: str, errors: list[st
     return value
 
 
+def _public_https_url_error(value: str) -> str | None:
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return "must be a public HTTPS base URL without credentials, query, or fragment"
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host or "." not in host or host == "localhost" or host.endswith(
+        (".localhost", ".local", ".internal")
+    ):
+        return "must use a publicly reachable DNS host"
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if not address.is_global:
+        return "must not target loopback, private, link-local, or reserved IP space"
+    return None
+
+
 def validate_manifest(manifest: dict[str, Any]) -> list[str]:
     """Return a list of human-readable validation errors (empty => valid to provision).
 
@@ -219,6 +246,14 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
         if ttype not in _ALLOWED_TOOL_TYPES:
             errors.append(f"tools[{i}].type '{ttype}' is not one of {sorted(_ALLOWED_TOOL_TYPES)}.")
             continue
+        if ttype == "a2a_preview" and "baseUrl" in tool:
+            base_url = tool["baseUrl"]
+            if not isinstance(base_url, str):
+                errors.append(f"tools[{i}].baseUrl must be a string.")
+            else:
+                url_error = _public_https_url_error(base_url)
+                if url_error:
+                    errors.append(f"tools[{i}].baseUrl {url_error}.")
         # The service identifies a tool by `name` OR `serverLabel` (mcp tools use the latter).
         if not (tool.get("name") or tool.get("serverLabel")):
             unnamed += 1

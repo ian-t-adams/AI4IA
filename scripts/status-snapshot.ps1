@@ -49,7 +49,9 @@ param(
     [string] $ResourceGroup = '',
     [string] $WebUrl        = '',
     [string] $ProxyUrl      = '',
-    [string] $OutDir        = (Join-Path $PSScriptRoot '..\site\data')
+    [string] $OutDir        = ([System.IO.Path]::Combine(
+        (Split-Path -Parent $PSScriptRoot), 'site', 'data'
+    ))
 )
 
 $ErrorActionPreference = 'Stop'

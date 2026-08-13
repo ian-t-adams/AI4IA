@@ -60,7 +60,11 @@ def _settings(**overrides) -> Settings:
         auth_provider="dev",
         allow_dev_auth=True,
         session_store="memory",
-        model_gateway_url="http://gateway.test",
+        model_gateway_url="https://proxy.test/openai",
+        model_gateway_auth_mode="api_key",
+        model_gateway_api_key="proxy-secret",
+        model_gateway_api_key_header="S7P-KEY",
+        model_gateway_allowed_hosts="proxy.test",
     )
     base.update(overrides)
     return Settings(_env_file=None, **base)

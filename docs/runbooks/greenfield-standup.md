@@ -22,7 +22,42 @@ optional capability works.
 7. Provision data-plane assets that Bicep cannot create.
 8. Validate the first release and, for migrations, move tenant-specific state.
 
+## 0. Cost, quota, and entitlement envelope
+
+The checked-in profile is a full Azure capability showcase, not a minimal free
+sample. Before provisioning, review the profile defaults in
+[`../configuration-reference.md`](../configuration-reference.md) and explicitly
+disable capabilities the target does not need. The main fixed or capacity-bearing
+drivers are APIM Basic v2, Container Apps minimum replicas, Cosmos DB, ACR, Azure
+AI Search when enabled, Durable Task when enabled, API Center when enabled, Blob
+storage, and regional Foundry/model usage. Limited-access and partner models may
+also require Marketplace fulfillment or quota approval.
+
+`AI4IA_BUDGET_AMOUNT=1500` is a notification threshold in the subscription's
+billing currency, **not a cost estimate or spending cap**. A real provision now
+requires `AI4IA_BUDGET_START_DATE=yyyy-MM-01` and a deliverable
+`AI4IA_ALERT_EMAIL`; otherwise the preflight stops before ARM creates paid
+resources. Use the Azure pricing calculator for the selected regions/SKUs and
+obtain the required cost approval before continuing.
+
+Keep `AI4IA_MODEL_CAPACITY_PROFILE=baseline` for the first standup. After the
+environment exists, the
+[Deploy to Azure guide](./deploy-to-azure.md#use-all-available-model-capacity)
+shows how to generate and review a subscription-specific maximum profile.
+
 ## 1. Preflight the target
+
+Install and verify the local tools before authenticating:
+
+| Tool | Required posture | Verify |
+| --- | --- | --- |
+| Azure CLI | Current supported release | `az version` |
+| Azure Developer CLI | `1.29.0` (the digest-deploy path is verified against it) | `azd version` |
+| Python | 3.12 | `python --version` |
+| PowerShell | 7.x on every OS; azd postprovision uses `pwsh` | `pwsh --version` |
+| GitHub CLI | Authenticated to the target repository | `gh auth status` |
+| Docker | Required for local service-image validation | `docker version` |
+| Node.js / .NET | Node 22 and .NET 10 for local web/proxy validation | `node --version`; `dotnet --version` |
 
 Use an account authorized to register resource providers and create role
 assignments:
@@ -118,7 +153,7 @@ az identity federated-credential create `
   --identity-name id-ai4ia-deploy -g rg-ai4ia-cicd `
   --name github-ai4ia-production `
   --issuer https://token.actions.githubusercontent.com `
-  --subject "repo:ian-t-adams/AI4IA:environment:production" `
+  --subject "repo:<owner>/<repo>:environment:production" `
   --audiences api://AzureADTokenExchange
 
 # pages.yml has no environment on its build job; live status refresh uses main's ref subject.
@@ -126,7 +161,7 @@ az identity federated-credential create `
   --identity-name id-ai4ia-deploy -g rg-ai4ia-cicd `
   --name github-ai4ia-main `
   --issuer https://token.actions.githubusercontent.com `
-  --subject "repo:ian-t-adams/AI4IA:ref:refs/heads/main" `
+  --subject "repo:<owner>/<repo>:ref:refs/heads/main" `
   --audiences api://AzureADTokenExchange
 ```
 
@@ -199,18 +234,29 @@ Set repository variables under **Settings → Secrets and variables → Actions*
 | `AZURE_CLIENT_ID` | Deployment identity client id |
 | `AZURE_TENANT_ID` | Target Entra tenant GUID |
 | `AZURE_SUBSCRIPTION_ID` | Target subscription GUID |
-| `AZURE_ENV_NAME` | Short azd environment token such as `prod` |
-| `AZURE_LOCATION` | Primary Azure region such as `eastus2` |
+| `AZURE_ENV_NAME` | 3-20 lowercase letters/digits with internal hyphens, such as `prod` or `ai4ia-prod` |
+| `AZURE_LOCATION` | `eastus2` or `swedencentral`; adding another primary region is a catalog/IaC change |
 | `AI4IA_APP_ENVIRONMENT` | `prod` for a real deployment |
 | `AI4IA_AUTH_PROVIDER` | `entra` for a real deployment |
 | `AI4IA_OWNER` | Accountable owner tag |
 | `AI4IA_COST_CENTER` | Chargeback/cost-center tag |
 | `AI4IA_APIM_PUBLISHER_EMAIL` | Operator-owned service mailbox |
+| `AI4IA_BUDGET_AMOUNT` | Approved monthly notification threshold in the subscription billing currency |
 | `AI4IA_BUDGET_START_DATE` | Fixed `yyyy-MM-01` month to keep budget deployment idempotent |
+| `AI4IA_ALERT_EMAIL` | Deliverable mailbox for the budget and enabled Monitor alerts |
 
-Unset `AI4IA_DEPLOYMENT_ENABLED` is treated as enabled for compatibility, but
-the five `AZURE_*` identity/environment variables above are still required.
-Only the explicit value `false` allows the deploy job to skip successfully.
+Unset `AI4IA_DEPLOYMENT_ENABLED` is treated as enabled for compatibility. The
+workflow now fails before checkout/provision when any required identity,
+environment, ownership, publisher, budget, or alert value is missing. Only the
+explicit value `false` allows the deploy job to skip successfully.
+
+The showcase features that default on are individually overridable without a
+code change (`AI4IA_IMAGE_GENERATION_ENABLED`,
+`AI4IA_VIDEO_GENERATION_ENABLED`, `AI4IA_SEARCH_ENABLED`,
+`AI4IA_VOICE_LIVE_ENABLED`, the document-compute flags, official MCP/toolbox/API
+Center, custom tools, Web IQ, and summarization). Use the complete table in the
+[configuration reference](../configuration-reference.md#feature-flags-and-prerequisites)
+to define a lower-cost or narrower environment before the first run.
 
 `AI4IA_ALLOW_DEV_AUTH` must remain false. A production posture ignores it, but
 keeping the value false also prevents a non-production deployment from trusting

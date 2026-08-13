@@ -14,10 +14,29 @@ Thanks for improving AI4IA. Start with the canonical agent/contributor guide in 
 
 ## Local setup
 
+### Prerequisites
+
+| Tool | Supported version / purpose |
+| --- | --- |
+| Node.js | Version range in `app/web/package.json` (CI and the image use Node 22) |
+| Python | 3.12, matching API CI and the container image |
+| `uv` | Lock validation for `app/api/uv.lock` |
+| .NET SDK | 10.x for the vendored proxy build/tests |
+| Docker | Service image builds and `.dockerignore` boundary tests |
+| Azure CLI + Bicep | IaC validation; `az bicep` is acceptable locally |
+| Azure Developer CLI | 1.29.0 for the verified digest-deployment behavior |
+| PowerShell | 7.x (`pwsh`), including on Linux/macOS because azd hooks use it |
+| GitHub CLI | Greenfield workflow setup and operator commands in the runbooks |
+
+Cloud deployment additionally requires the Azure RBAC, provider registration,
+quota, Entra, OIDC, and cost configuration in the
+[greenfield standup guide](docs/runbooks/greenfield-standup.md).
+
 ### Web
 
 ```powershell
 cd app\web
+Copy-Item .env.example .env
 npm ci
 npm run dev
 ```
@@ -34,12 +53,17 @@ npm run build --if-present
 
 ```powershell
 cd app\api
+Copy-Item .env.example .env
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
-uvicorn ai4ia_api.main:app --reload
+uvicorn ai4ia_api.main:app --reload --port 8080
 ```
+
+On Linux/macOS, use `cp .env.example .env` and
+`source .venv/bin/activate`. The web example points `API_BASE_URL` at port 8080,
+so keep the API command and web `.env` aligned.
 
 CI checks:
 
@@ -77,7 +101,13 @@ the whole required-check surface.
 
 ### Infra and operations
 
-Use Bicep and schema validation for infra changes. Do not run `azd up`, `azd provision`, or `azd deploy` unless the maintainer explicitly asks. CI installs a pinned standalone [Bicep CLI](https://learn.microsoft.com/azure/azure-resource-manager/bicep/install) release; if you don't have it locally but already have Azure CLI, substitute `az bicep build --file infra\main.bicep --stdout` (same output, no separate install).
+Use Bicep and schema validation for infra changes. Do not run `azd up`, `azd
+provision`, or `azd deploy` against an existing shared environment unless its
+owner explicitly asks. A first deployment must follow the greenfield guide; the
+GitHub workflow performs release steps a local `azd up` does not. CI installs a
+pinned standalone [Bicep CLI](https://learn.microsoft.com/azure/azure-resource-manager/bicep/install)
+release; if you do not have it locally but already have Azure CLI, substitute
+`az bicep build --file infra\main.bicep --stdout`.
 
 ```powershell
 check-jsonschema --schemafile infra\models.schema.json infra\models.json

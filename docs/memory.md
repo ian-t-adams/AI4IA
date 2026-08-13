@@ -8,7 +8,7 @@ runtime memory stores.
 > Production status: the Planet Express deployment runs the Cosmos memory backend,
 > and the PostgreSQL Flexible Server that preceded it was **retired on 2026-08-06**.
 > The [memory migration runbook](./runbooks/memory-migration.md) records the
-> retirement decision and remains the procedure for future cutovers.
+> completed retirement and is retained as a pattern for a future store migration.
 
 ## Why Cosmos
 

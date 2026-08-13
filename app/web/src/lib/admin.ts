@@ -120,59 +120,9 @@ export interface AdminUserRow {
   email?: string | null;
 }
 
-export interface AdminByModelReport {
-  sinceDays: number;
-  truncated: boolean;
-  scannedRecords: number;
-  byModel: ModelUsageBucket[];
-}
-
-export interface AdminByDayReport {
-  sinceDays: number;
-  truncated: boolean;
-  scannedRecords: number;
-  byDay: DayUsageBucket[];
-}
-
-export interface AdminAgentsReport {
-  sinceDays: number;
-  truncated: boolean;
-  scannedRecords: number;
-  agents: AgentUsageBucket[];
-}
-
-export interface AdminUserAgentsReport {
-  sinceDays: number;
-  truncated: boolean;
-  scannedRecords: number;
-  userAgents: UserAgentBucket[];
-}
-
-export interface AdminDistributionsReport {
-  sinceDays: number;
-  truncated: boolean;
-  scannedRecords: number;
-  byRegion: DimensionBucket[];
-  byDataZone: DimensionBucket[];
-  byDeployment: DimensionBucket[];
-  byStatus: DimensionBucket[];
-}
-
-export interface AdminByUserResponse {
-  sinceDays: number;
-  fromTime: string;
-  toTime: string;
-  truncated: boolean;
-  scannedRecords: number;
-  totalUsers: number;
-  limit: number;
-  offset: number;
-  byUser: AdminUserRow[];
-}
-
 // Mirrors ai4ia_api.routers.admin_usage.AdminUsageOverviewResponse: every usage
 // rollup for one window, produced by ONE bounded ledger scan. The dashboard used
-// to fan out to seven of the endpoints above at once and each independently
+// to fan out to seven legacy endpoints at once and each independently
 // pulled up to 50,000 full ledger rows for the same window, which could consume
 // most of a 1 GiB API replica (audit P1-15).
 //
@@ -329,53 +279,8 @@ export function fetchWhoAmI(): Promise<WhoAmI> {
   return getJson<WhoAmI>("/api/admin/whoami");
 }
 
-export function fetchSummary(days: number, signal?: AbortSignal): Promise<AdminUsageSummary> {
-  return getJson<AdminUsageSummary>(`/api/admin/usage/summary?days=${days}`, signal);
-}
-
-export function fetchByModel(days: number, signal?: AbortSignal): Promise<AdminByModelReport> {
-  return getJson<AdminByModelReport>(`/api/admin/usage/by-model?days=${days}`, signal);
-}
-
-export function fetchByDay(days: number, signal?: AbortSignal): Promise<AdminByDayReport> {
-  return getJson<AdminByDayReport>(`/api/admin/usage/by-day?days=${days}`, signal);
-}
-
-export function fetchAgents(days: number, signal?: AbortSignal): Promise<AdminAgentsReport> {
-  return getJson<AdminAgentsReport>(`/api/admin/usage/agents?days=${days}`, signal);
-}
-
-export function fetchUserAgents(
-  days: number,
-  identify = false,
-  signal?: AbortSignal,
-): Promise<AdminUserAgentsReport> {
-  return getJson<AdminUserAgentsReport>(
-    `/api/admin/usage/user-agents?days=${days}&identify=${identify ? "true" : "false"}`,
-    signal,
-  );
-}
-
-export function fetchDistributions(days: number, signal?: AbortSignal): Promise<AdminDistributionsReport> {
-  return getJson<AdminDistributionsReport>(`/api/admin/usage/distributions?days=${days}`, signal);
-}
-
-export function fetchByUser(
-  days: number,
-  limit = 20,
-  offset = 0,
-  identify = false,
-  signal?: AbortSignal,
-): Promise<AdminByUserResponse> {
-  return getJson<AdminByUserResponse>(
-    `/api/admin/usage/by-user?days=${days}&limit=${limit}&offset=${offset}&identify=${identify ? "true" : "false"}`,
-    signal,
-  );
-}
-
-// One request for every usage panel. Prefer this over the seven fetchers above:
-// each of those is its own full ledger scan of the same window, so calling them
-// together multiplies both Cosmos RU and API memory by seven (audit P1-15).
+// One request for every usage panel. The legacy per-panel fetchers were removed
+// so a future caller cannot accidentally restore seven full ledger scans.
 export function fetchOverview(
   days: number,
   limit = 20,

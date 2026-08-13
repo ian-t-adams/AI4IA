@@ -62,19 +62,27 @@ DIGESTS = {
 
 
 def _find_bash() -> str | None:
-    found = shutil.which("bash")
-    # The WSL shim on Windows agents is named bash.exe but cannot run anything
-    # without a distro installed, so prefer a real Git Bash when one exists.
     candidates = [
         r"C:\Program Files\Git\bin\bash.exe",
         r"C:\Program Files\Git\usr\bin\bash.exe",
         r"C:\Program Files (x86)\Git\bin\bash.exe",
+        shutil.which("bash"),
     ]
     for candidate in candidates:
-        if Path(candidate).exists():
+        if not candidate or not Path(candidate).exists():
+            continue
+        try:
+            probe = subprocess.run(
+                [candidate, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode == 0:
             return candidate
-    if found and os.name != "nt":
-        return found
     return None
 
 
