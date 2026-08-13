@@ -422,6 +422,14 @@ async def run_workflow_endpoint(
                 "chat-completions tool loop). Choose a chat-completions model."
             ),
         )
+    if entry is not None and not entry.supportsTools:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Model '{model_id}' does not support tool calling, which workflow "
+                "steps require. Choose a tool-capable model."
+            ),
+        )
 
     # Entitlements gate BEFORE any persistence/model consumption, so a refused run
     # leaves no dangling user message. Ships unlimited unless an admin set a limit.

@@ -112,6 +112,23 @@ def test_run_rejects_responses_model_422(client):
     assert "Responses API" in resp.json()["detail"]
 
 
+def test_run_rejects_model_without_tool_calling(client):
+    client.app.state.gateway = _EchoGateway()
+    assert _mk_agent(client, "drafter").status_code == 201
+    assert _mk_agent(client, "editor").status_code == 201
+    assert client.post("/api/workflows", json=_wf_body()).status_code == 201
+    sid = _session(client)
+
+    resp = client.post(
+        "/api/workflows/summarize/run",
+        json={"sessionId": sid, "input": "hi", "model": "DeepSeek-V3.2"},
+    )
+
+    assert resp.status_code == 422
+    assert "does not support tool calling" in resp.json()["detail"]
+    assert client.get(f"/api/sessions/{sid}/messages").json() == []
+
+
 def test_run_rejects_blank_and_overlong_input(client):
     client.app.state.gateway = _EchoGateway()
     assert _mk_agent(client, "drafter").status_code == 201

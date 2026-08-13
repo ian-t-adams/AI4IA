@@ -14,6 +14,7 @@ from ai4ia_api.library.blob_store import (
 from ai4ia_api.library.doc_chunks import DocChunkRecord, InMemoryDocChunkStore
 from ai4ia_api.library.ingest import DocumentIngestor, resolve_cu_analyzer_id
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
+from ai4ia_api.catalog import DeploymentOption
 from ai4ia_api.library.models import (
     Analyzer,
     AnalyzerKind,
@@ -56,11 +57,38 @@ class FakeCU:
         return self._result
 
 
+class FakeMistral:
+    def __init__(self, result: CUResult) -> None:
+        self._result = result
+        self.calls: list[tuple] = []
+
+    async def analyze(self, model_id, data, content_type):
+        self.calls.append((model_id, data, content_type))
+        return (
+            self._result,
+            DeploymentOption(
+                region="eastus2",
+                dataZone="us",
+                sku="GlobalStandard",
+                deploymentName=f"{model_id}-slurmfactory-eastus2-glbl",
+            ),
+        )
+
+
 def _succeeded(markdown: str) -> CUResult:
     return CUResult(status="Succeeded", analyzer_id="prebuilt-documentSearch", markdown=markdown)
 
 
-def _make(*, cu=None, embedder=None, chunks=None, usage=None, library=None, **settings_overrides):
+def _make(
+    *,
+    cu=None,
+    mistral=None,
+    embedder=None,
+    chunks=None,
+    usage=None,
+    library=None,
+    **settings_overrides,
+):
     settings = make_settings(
         document_understanding_enabled=True,
         document_chunk_chars=40,
@@ -73,6 +101,7 @@ def _make(*, cu=None, embedder=None, chunks=None, usage=None, library=None, **se
         settings=settings,
         usage=usage or FakeUsage(),
         cu_client=cu,
+        mistral_client=mistral,
         embedder=embedder,
         chunk_store=chunks,
     )
@@ -174,6 +203,99 @@ async def test_enrich_success_indexes_chunks_and_meters(monkeypatch):
         "persistenceOutcome",
         "latencyMs",
     }
+
+
+async def test_mistral_analyzer_normalizes_into_canonical_artifacts():
+    library = InMemoryDocumentLibraryRepository()
+    usage = FakeUsage()
+    result = CUResult(
+        status="Succeeded",
+        analyzer_id="mistral-document-ai-2512",
+        markdown="# Parsed by Mistral",
+        contents=[{"markdown": "# Parsed by Mistral"}],
+    )
+    mistral = FakeMistral(result)
+    ingestor = _make(mistral=mistral, usage=usage, library=library)
+    stored = await ingestor.ingest(
+        user_id="u1",
+        filename="d.pdf",
+        content_type="application/pdf",
+        data=b"BYTES",
+        analyzer_id="mistral-document-ai",
+    )
+
+    await ingestor.enrich(
+        user_id="u1",
+        document_id=stored.document.id,
+        data=b"BYTES",
+        content_type="application/pdf",
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc.status == DocumentStatus.ready
+    assert doc.analysisProvider == "mistral"
+    assert doc.analysisModel == "mistral-document-ai-2512"
+    assert doc.analysisVersion == "1"
+    assert doc.analysisPages == 1
+    assert (
+        doc.analysisDeployment
+        == "mistral-document-ai-2512-slurmfactory-eastus2-glbl"
+    )
+    assert doc.analysisRegion == "eastus2"
+    assert doc.analysisSku == "GlobalStandard"
+    assert doc.analysisDataZone == "us"
+    assert doc.analysisResidency == "global"
+    assert doc.parsedPath is not None
+    assert mistral.calls == [
+        ("mistral-document-ai-2512", b"BYTES", "application/pdf")
+    ]
+    assert usage.calls[0]["model_id"] == "mistral-document-ai-2512"
+    assert usage.calls[0]["provider_completed"] is True
+    assert usage.calls[0]["billable_units"] == 1
+    assert usage.calls[0]["billing_unit"] == "page"
+    assert usage.calls[0]["target"].provider == "mistral"
+
+
+async def test_mistral_pages_remain_billable_when_local_persistence_fails(
+    monkeypatch,
+):
+    library = InMemoryDocumentLibraryRepository()
+    usage = FakeUsage()
+    result = CUResult(
+        status="Succeeded",
+        analyzer_id="mistral-document-ai-2512",
+        markdown="# Parsed",
+        contents=[{"markdown": "# One"}, {"markdown": "# Two"}],
+    )
+    ingestor = _make(
+        mistral=FakeMistral(result), usage=usage, library=library
+    )
+    stored = await ingestor.ingest(
+        user_id="u1",
+        filename="d.pdf",
+        content_type="application/pdf",
+        data=b"BYTES",
+        analyzer_id="mistral-document-ai",
+    )
+
+    async def fail_persistence(*_args, **_kwargs):
+        raise RuntimeError("blob write failed")
+
+    monkeypatch.setattr(ingestor, "_persist_enrichment", fail_persistence)
+    await ingestor.enrich(
+        user_id="u1",
+        document_id=stored.document.id,
+        data=b"BYTES",
+        content_type="application/pdf",
+    )
+
+    assert (await library.get_document("u1", stored.document.id)).status == (
+        DocumentStatus.failed
+    )
+    assert usage.calls[0]["status"] == "error"
+    assert usage.calls[0]["provider_completed"] is True
+    assert usage.calls[0]["billable_units"] == 2
+    assert usage.calls[0]["billing_unit"] == "page"
 
 
 async def test_enrich_cu_failure_degrades_to_failed_and_meters_error(monkeypatch):

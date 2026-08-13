@@ -12,6 +12,7 @@ from ..auth.dependencies import get_current_user
 from ..conversations.policy import resolve_conversation_policy
 from ..library.access import get_accessible_document, list_accessible_documents
 from ..library.repository import DocumentNotFoundError
+from ..sessions.models import ImageGenerationPreferences
 from ..sessions.repository import SessionNotFoundError
 from ..usage.models import SessionUsageSummary, UsageSummary
 from .documents import DocumentSummary
@@ -79,6 +80,7 @@ class InspectorSnapshot(BaseModel):
     instructions: InspectorInstructions
     agent: InspectorAgent
     tools: InspectorTools
+    imagePreferences: ImageGenerationPreferences
     attachments: list[DocumentSummary] = Field(default_factory=list)
     libraryDocuments: list[UserDocumentSummary] = Field(default_factory=list)
     librarySelectionMode: str
@@ -195,6 +197,7 @@ async def get_inspector(
             effective=list(policy.effective_tools),
             voiceEffective=list(policy.voice_tools),
         ),
+        imagePreferences=session.imagePreferences,
         attachments=[DocumentSummary.of(document) for document in attachments],
         libraryDocuments=library_documents,
         librarySelectionMode=(

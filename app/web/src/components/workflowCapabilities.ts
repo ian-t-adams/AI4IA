@@ -52,6 +52,7 @@ export const NOT_IN_WORKFLOW_STEPS = new Set([
   "run_code",
   "export_document",
   "delegate_to_agent",
+  "run_workflow",
 ]);
 
 // MCP tools are namespaced `server/tool`. They are excluded for a different

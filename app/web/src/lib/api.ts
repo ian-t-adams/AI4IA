@@ -7,6 +7,8 @@ import type {
   DocumentSummary,
   ImageRequest,
   ImageResponse,
+  ImageGenerationPreferences,
+  ImageOptionsResponse,
   Message,
   ModelCatalog,
   PendingToolApprovalPrompt,
@@ -103,6 +105,12 @@ export async function generateImage(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     }),
+  );
+}
+
+export async function getImageOptions(): Promise<ImageOptionsResponse> {
+  return jsonOrThrow(
+    await apiFetch("/api/images/options", { cache: "no-store" }),
   );
 }
 
@@ -519,6 +527,7 @@ export async function createSession(
     agentName?: string | null;
     toolOverrides?: ToolOverrides;
     libraryDocumentIds?: string[] | null;
+    imagePreferences?: ImageGenerationPreferences;
   },
   signal?: AbortSignal,
 ): Promise<Session> {
@@ -541,6 +550,7 @@ export async function updateSession(
     agentName?: string | null;
     toolOverrides?: ToolOverrides;
     libraryDocumentIds?: string[] | null;
+    imagePreferences?: ImageGenerationPreferences;
   },
 ): Promise<Session> {
   return jsonOrThrow(

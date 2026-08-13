@@ -12,6 +12,7 @@ ships only the storage spine so the data model and governance are settled first.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -44,9 +45,17 @@ from ..library.access import (
 from ..library.chunking import chunk_markdown
 from ..library.compute_factory import DocumentComputeService
 from ..library.ingest import DocumentIngestor, EnrichScheduleOutcome
+from ..library.modality import classify_modality
+from ..library.mistral_document import (
+    MAX_MISTRAL_DOCUMENT_BYTES,
+    MAX_MISTRAL_DOCUMENT_PAGES,
+    pdf_page_count,
+)
 from ..library.models import (
     Analyzer,
     AnalyzerKind,
+    AnalyzerProvider,
+    BUILTIN_ANALYZERS,
     BUILTIN_ANALYZER_IDS,
     DocumentAnnotation,
     DocumentStatus,
@@ -63,6 +72,16 @@ from ..library.repository import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _analyzer_available(request: Request, analyzer: Analyzer) -> bool:
+    if analyzer.provider is not AnalyzerProvider.mistral:
+        return True
+    return bool(
+        analyzer.modelId
+        and request.app.state.catalog.resolve_deployment(analyzer.modelId)
+        is not None
+    )
 router = APIRouter(prefix="/api/library", tags=["library"])
 
 
@@ -89,6 +108,15 @@ class UserDocumentSummary(BaseModel):
     modality: Modality
     status: DocumentStatus
     analyzerId: str | None
+    analysisProvider: str | None = None
+    analysisModel: str | None = None
+    analysisVersion: str | None = None
+    analysisPages: int | None = None
+    analysisDeployment: str | None = None
+    analysisRegion: str | None = None
+    analysisSku: str | None = None
+    analysisDataZone: str | None = None
+    analysisResidency: str | None = None
     summary: str
     chunkCount: int
     error: str | None = None
@@ -109,6 +137,15 @@ class UserDocumentSummary(BaseModel):
             modality=doc.modality,
             status=doc.status,
             analyzerId=doc.analyzerId,
+            analysisProvider=doc.analysisProvider,
+            analysisModel=doc.analysisModel,
+            analysisVersion=doc.analysisVersion,
+            analysisPages=doc.analysisPages,
+            analysisDeployment=doc.analysisDeployment,
+            analysisRegion=doc.analysisRegion,
+            analysisSku=doc.analysisSku,
+            analysisDataZone=doc.analysisDataZone,
+            analysisResidency=doc.analysisResidency,
             summary=doc.summary,
             chunkCount=doc.chunkCount,
             error=doc.error,
@@ -354,13 +391,20 @@ async def upload_document(
 
     # Validate an explicit analyzer selection (built-in id or an owned custom one).
     analyzer_id = (analyzerId or "").strip() or None
-    if analyzer_id and analyzer_id not in BUILTIN_ANALYZER_IDS:
-        try:
-            await repo.get_analyzer(uid, analyzer_id)
-        except AnalyzerNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Analyzer not found"
+    analyzer: Analyzer | None = None
+    if analyzer_id:
+        if analyzer_id in BUILTIN_ANALYZER_IDS:
+            analyzer = next(
+                item for item in BUILTIN_ANALYZERS if item.id == analyzer_id
             )
+        else:
+            try:
+                analyzer = await repo.get_analyzer(uid, analyzer_id)
+            except AnalyzerNotFoundError:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Analyzer not found",
+                )
 
     data = await file.read(max_bytes + 1)
     if len(data) > max_bytes:
@@ -374,6 +418,52 @@ async def upload_document(
         )
 
     content_type = file.content_type or ""
+    modality = classify_modality(content_type, file.filename or "document")
+    if analyzer is not None and modality not in analyzer.modalities:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"{analyzer.name} does not support {modality.value} files.",
+        )
+    if (
+        analyzer is not None
+        and analyzer.provider is AnalyzerProvider.mistral
+        and len(data) > MAX_MISTRAL_DOCUMENT_BYTES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Mistral document analysis supports files up to 30 MB.",
+        )
+    if analyzer is not None and not _analyzer_available(request, analyzer):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"{analyzer.name} is not available under this environment's "
+                "model and data-residency policy."
+            ),
+        )
+    if (
+        analyzer is not None
+        and analyzer.provider is AnalyzerProvider.mistral
+        and (
+            content_type.split(";", 1)[0].strip().lower() == "application/pdf"
+            or (file.filename or "").lower().endswith(".pdf")
+        )
+    ):
+        try:
+            pages = await asyncio.to_thread(pdf_page_count, data)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        if pages > MAX_MISTRAL_DOCUMENT_PAGES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Mistral document analysis supports PDFs with at most "
+                    f"{MAX_MISTRAL_DOCUMENT_PAGES} pages."
+                ),
+            )
     result = await ingestor.ingest(
         user_id=uid,
         filename=file.filename or "document",
@@ -1255,7 +1345,10 @@ async def list_analyzers(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[Analyzer]:
     repo = _library(request)
-    return await repo.list_analyzers(user.internal_user_id)
+    analyzers = await repo.list_analyzers(user.internal_user_id)
+    return [
+        analyzer for analyzer in analyzers if _analyzer_available(request, analyzer)
+    ]
 
 
 @router.get("/analyzers/{analyzer_id}", response_model=Analyzer)
@@ -1266,9 +1359,12 @@ async def get_analyzer(
 ) -> Analyzer:
     repo = _library(request)
     try:
-        return await repo.get_analyzer(user.internal_user_id, analyzer_id)
+        analyzer = await repo.get_analyzer(user.internal_user_id, analyzer_id)
     except AnalyzerNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analyzer not found")
+    if not _analyzer_available(request, analyzer):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analyzer not found")
+    return analyzer
 
 
 @router.post(

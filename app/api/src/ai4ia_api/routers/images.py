@@ -27,8 +27,11 @@ from ..images.service import (
     MAX_PROMPT_CHARS,
     ImageGenerationError,
     ImageGenerationService,
+    image_provider_id,
 )
 from ..logging_setup import get_correlation_id
+from ..usage.models import UsageTarget
+from ..usage.pricing import load_pricing
 from ..usage.service import UsageService
 
 logger = logging.getLogger(__name__)
@@ -57,10 +60,97 @@ class GeneratedImage(BaseModel):
 
 class ImageResponse(BaseModel):
     model: str
+    provider: str
     deployment: str
+    region: str
+    dataZone: str | None
+    residency: str
     size: str
     quality: str
+    costKnown: bool
+    estimatedCostUsd: float | None = None
+    pricingBasis: str | None = None
+    priceVersion: str | None = None
     images: list[GeneratedImage]
+
+
+class ImagePriceOption(BaseModel):
+    size: str
+    quality: str
+    costKnown: bool
+    estimatedCostUsd: float | None = None
+    pricingBasis: str | None = None
+
+
+class ImageModelOption(BaseModel):
+    id: str
+    displayName: str
+    provider: str
+    sizes: list[str]
+    qualities: list[str]
+    dataZones: list[str]
+    residencies: list[str]
+    prices: list[ImagePriceOption]
+
+
+class ImageOptionsResponse(BaseModel):
+    maxSelectedModels: int = 3
+    currency: str
+    priceVersion: str | None = None
+    models: list[ImageModelOption]
+
+
+@router.get("/options", response_model=ImageOptionsResponse)
+async def image_options(
+    request: Request,
+    _user: AuthenticatedUser = Depends(get_current_user),
+) -> ImageOptionsResponse:
+    catalog = request.app.state.catalog
+    pricing = load_pricing()
+    models: list[ImageModelOption] = []
+    for entry in catalog.models:
+        if entry.category != "image" or not catalog.available(entry):
+            continue
+        sizes = entry.imageSizes or ["1024x1024"]
+        qualities = entry.imageQualities or ["auto"]
+        prices: list[ImagePriceOption] = []
+        for size in sizes:
+            for quality in qualities:
+                estimate = pricing.estimate_image(
+                    entry.id, size=size, quality=quality
+                )
+                prices.append(
+                    ImagePriceOption(
+                        size=size,
+                        quality=quality,
+                        costKnown=estimate.known,
+                        estimatedCostUsd=(
+                            estimate.micro_usd / 1_000_000
+                            if estimate.micro_usd is not None
+                            else None
+                        ),
+                        pricingBasis=estimate.pricing_basis,
+                    )
+                )
+        models.append(
+            ImageModelOption(
+                id=entry.id,
+                displayName=entry.displayName,
+                provider=image_provider_id(entry.format),
+                sizes=sizes,
+                qualities=qualities,
+                dataZones=sorted(
+                    {d.dataZone for d in entry.options if d.dataZone is not None}
+                ),
+                residencies=sorted({d.residency for d in entry.options}),
+                prices=prices,
+            )
+        )
+    return ImageOptionsResponse(
+        currency=pricing.currency,
+        priceVersion=pricing.version,
+        models=models,
+    )
 
 
 @router.post("/generations", response_model=ImageResponse)
@@ -109,11 +199,17 @@ async def generate_images(
                 user_id=user.internal_user_id,
                 session_id="image-generation",
                 model_id=completion.model_id,
-                deployment=completion.deployment,
+                target=UsageTarget.from_deployment(
+                    completion.deployment, provider=completion.provider
+                ),
                 usage=completion.usage,
                 status="error",
                 provider_completed=True,
                 correlation_id=correlation_id,
+                billable_units=completion.billable_units,
+                billing_unit=completion.billing_unit,
+                image_size=completion.image_size,
+                image_quality=completion.image_quality,
             )
         headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
         raise HTTPException(
@@ -126,17 +222,42 @@ async def generate_images(
         user_id=user.internal_user_id,
         session_id="image-generation",
         model_id=result.model_id,
-        deployment=result.deployment,
+        target=UsageTarget.from_deployment(
+            result.deployment, provider=result.provider
+        ),
         usage=result.usage,
         status="complete",
+        provider_completed=True,
         correlation_id=correlation_id,
+        billable_units=len(result.images_b64),
+        billing_unit="image",
+        image_size=result.size,
+        image_quality=result.quality,
     )
 
-    return ImageResponse(
-        model=result.model_id,
-        deployment=result.deployment.deploymentName,
+    estimate = load_pricing().estimate_image(
+        result.model_id,
         size=result.size,
         quality=result.quality,
+        count=len(result.images_b64),
+    )
+    return ImageResponse(
+        model=result.model_id,
+        provider=result.provider,
+        deployment=result.deployment.deploymentName,
+        region=result.deployment.region,
+        dataZone=result.deployment.dataZone,
+        residency=result.deployment.residency,
+        size=result.size,
+        quality=result.quality,
+        costKnown=estimate.known,
+        estimatedCostUsd=(
+            estimate.micro_usd / 1_000_000
+            if estimate.micro_usd is not None
+            else None
+        ),
+        pricingBasis=estimate.pricing_basis,
+        priceVersion=estimate.version,
         images=[GeneratedImage(b64=b) for b in result.images_b64],
     )
 

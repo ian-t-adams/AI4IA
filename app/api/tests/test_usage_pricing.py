@@ -62,9 +62,75 @@ def test_packaged_pricing_loads_and_has_token_models():
     assert est.micro_usd is not None and est.micro_usd > 0
 
 
-# Categories billed per token. Everything else (image/realtime/audio/tts/rerank/
-# transcription/video) bills per image, per second, or per character, which this
-# book deliberately cannot express — those record as cost-unknown by design.
+def test_packaged_flux_image_rates_preserve_each_meter_basis():
+    book = load_pricing()
+
+    fixed = book.estimate_image(
+        "FLUX-1.1-pro", size="1024x1024", quality="auto"
+    )
+    tiered = book.estimate_image(
+        "FLUX.2-pro", size="1024x1024", quality="auto"
+    )
+    megapixel = book.estimate_image(
+        "FLUX.2-flex", size="1024x1440", quality="auto"
+    )
+
+    assert fixed.known and fixed.micro_usd == 40_000
+    assert fixed.pricing_basis == "image"
+    assert tiered.known and tiered.micro_usd == 30_729
+    assert tiered.pricing_basis == "megapixel_tiered"
+    assert megapixel.known and megapixel.micro_usd == 73_728
+    assert megapixel.billable_units == 1.47456
+
+
+def test_openai_and_mai_image_models_remain_unknown_without_azure_meter():
+    book = load_pricing()
+
+    openai = book.estimate_image(
+        "gpt-image-1.5", size="1024x1536", quality="high"
+    )
+    mai = book.estimate_image(
+        "MAI-Image-2.5", size="1024x1024", quality="auto"
+    )
+
+    assert openai.known is False and openai.micro_usd is None
+    assert mai.known is False and mai.micro_usd is None
+
+
+def test_quality_size_basis_is_supported_without_inventing_packaged_rates():
+    book = PricingBook(
+        {},
+        currency="USD",
+        version="test",
+        image_rates={
+            "future-image": {
+                "basis": "quality_size",
+                "pricesUsd": {"high:1024x1024": 0.125},
+            }
+        },
+    )
+
+    estimate = book.estimate_image(
+        "future-image", size="1024x1024", quality="high"
+    )
+
+    assert estimate.known is True
+    assert estimate.micro_usd == 125_000
+
+
+def test_mistral_document_rates_are_page_based():
+    book = load_pricing()
+
+    document_ai = book.estimate_pages("mistral-document-ai-2512", pages=7)
+    ocr = book.estimate_pages("mistral-ocr-4-0", pages=7)
+
+    assert document_ai.known and document_ai.micro_usd == 21_000
+    assert document_ai.billing_unit == "page"
+    assert ocr.known and ocr.micro_usd == 28_000
+
+
+# Categories billed per token. Other modalities use their own explicit price-book
+# sections where an unambiguous meter exists and remain cost-unknown otherwise.
 _TOKEN_BILLED_CATEGORIES = frozenset(
     {"chat", "chat-fast", "reasoning", "reasoning-oss", "research", "router", "embedding"}
 )
@@ -115,4 +181,18 @@ def test_packaged_pricing_rates_are_positive_and_sane() -> None:
             f"{name} prices output below input, which no Foundry meter does — "
             "likely a transposed or stale rate"
         )
-
+    for name, entry in raw["imageModels"].items():
+        numeric_rates = [
+            value
+            for key, value in entry.items()
+            if key.endswith("Usd") and isinstance(value, (int, float))
+        ]
+        if isinstance(entry.get("pricesUsd"), dict):
+            numeric_rates.extend(entry["pricesUsd"].values())
+        assert numeric_rates and all(rate > 0 for rate in numeric_rates), (
+            f"{name} has a missing or non-positive image rate"
+        )
+    for name, entry in raw["documentModels"].items():
+        assert entry["perPageUsd"] > 0, (
+            f"{name} has a non-positive per-page rate"
+        )

@@ -302,6 +302,35 @@ def test_flux_models_are_image_only_and_provider_constrained():
         assert entry.conversational is False
         assert set(entry.imageSizes or []) == sizes
         assert entry.imageQualities == ["auto"]
+        assert entry.supportsTools is False
+        assert {(option.region, option.sku) for option in entry.options} == {
+            ("eastus2", "GlobalStandard"),
+            ("swedencentral", "GlobalStandard"),
+        }
+
+
+def test_provider_capabilities_distinguish_chat_from_agent_models():
+    catalog = load_catalog()
+    deepseek = catalog.get("DeepSeek-V3.2")
+    mistral = catalog.get("Mistral-Large-3")
+    assert deepseek is not None and mistral is not None
+    assert deepseek.conversational is True
+    assert deepseek.supportsTools is False
+    assert deepseek.inputModalities == ["text"]
+    assert mistral.supportsTools is True
+    assert mistral.inputModalities == ["text", "image"]
+
+
+def test_mistral_document_models_are_not_chat_targets():
+    catalog = load_catalog()
+    for model_id in ("mistral-document-ai-2512", "mistral-ocr-4-0"):
+        entry = catalog.get(model_id)
+        assert entry is not None
+        assert entry.category == "document-ocr"
+        assert entry.api == "mistral_ocr"
+        assert entry.conversational is False
+        assert entry.supportsTools is False
+        assert entry.inputModalities == ["document", "image"]
         assert {(option.region, option.sku) for option in entry.options} == {
             ("eastus2", "GlobalStandard"),
             ("swedencentral", "GlobalStandard"),

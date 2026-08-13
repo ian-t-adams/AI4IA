@@ -64,6 +64,138 @@ class ToolThenAnswerGateway:
             yield chunk
 
 
+class WorkflowThenAnswerGateway:
+    """Outer agent calls a saved workflow; nested step runs; outer agent answers."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.outer_tools: list[str] = []
+
+    async def complete(
+        self, *, deployment, messages, params=None, correlation_id=None, api="chat"
+    ):
+        self.calls += 1
+        if self.calls == 1:
+            self.outer_tools = [
+                tool["function"]["name"]
+                for tool in (params or {}).get("tools", [])
+            ]
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "wf1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "run_workflow",
+                                        "arguments": json.dumps(
+                                            {
+                                                "workflow": "safe-flow",
+                                                "input": "hello",
+                                            }
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+        if self.calls == 2:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "nested workflow result",
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 2,
+                    "total_tokens": 4,
+                },
+            }
+        assert any(
+            message.get("role") == "tool"
+            and message.get("tool_call_id") == "wf1"
+            for message in messages
+        )
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "The workflow returned its result.",
+                    }
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+            },
+        }
+
+
+def test_agent_can_invoke_an_eligible_saved_workflow(client):
+    created_agent = client.post(
+        "/api/agents",
+        json={
+            "name": "workflow-agent",
+            "systemPrompt": "Use the saved workflow.",
+            "tools": ["run_workflow"],
+        },
+    )
+    assert created_agent.status_code == 201, created_agent.text
+    created_workflow = client.post(
+        "/api/workflows",
+        json={
+            "name": "safe-flow",
+            "description": "A safe transform.",
+            "steps": [
+                {
+                    "agent": "coder",
+                    "instruction": "Return {input}",
+                    "extraTools": [],
+                }
+            ],
+        },
+    )
+    assert created_workflow.status_code == 201, created_workflow.text
+    gateway = WorkflowThenAnswerGateway()
+    client.app.state.gateway = gateway
+    session_id = _create_session(client)["id"]
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "sessionId": session_id,
+            "content": "@workflow-agent run my process",
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["message"]["content"] == (
+        "The workflow returned its result."
+    )
+    assert gateway.calls == 3
+    assert "run_workflow" in gateway.outer_tools
+    usage = client.get(f"/api/usage/sessions/{session_id}").json()
+    assert usage["totalRequests"] >= 2
+
+
 def test_tool_enabled_agent_runs_tool_and_persists_answer(client):
     gw = ToolThenAnswerGateway()
     client.app.state.gateway = gw
@@ -83,6 +215,22 @@ def test_tool_enabled_agent_runs_tool_and_persists_answer(client):
     assert messages[0]["content"] == "what is 6*7?"  # mention stripped
     assert messages[1]["content"] == "It is 42."
     assert messages[1]["agent"] == "analyst"
+
+
+def test_non_tool_model_is_rejected_before_agent_execution(client):
+    gw = ToolThenAnswerGateway()
+    client.app.state.gateway = gw
+    sid = _create_session(client, model="DeepSeek-V3.2")["id"]
+
+    resp = client.post(
+        "/api/chat",
+        json={"sessionId": sid, "content": "@analyst what is 6*7?", "stream": False},
+    )
+
+    assert resp.status_code == 422
+    assert "does not support tool calling" in resp.json()["detail"]
+    assert gw.calls == 0
+    assert client.get(f"/api/sessions/{sid}/messages").json() == []
 
 
 def test_tool_enabled_agent_streaming_emits_steps_then_answer(client):

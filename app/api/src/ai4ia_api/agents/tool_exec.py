@@ -368,12 +368,13 @@ SELECTABLE_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset(
         "process_document",
         "recall_memory",
         "remember_memory",
+        "run_workflow",
     }
 )
 
-# The subset of the above that ONLY the chat router can build: they deliver their
-# results as message attachments through a per-turn sink, which has no meaning
-# outside a chat turn (and, in a durable run, lives in another process entirely).
+# The subset of the above that ONLY the chat router can build. Media/document tools
+# deliver through a per-turn attachment sink; ``run_workflow`` is excluded from
+# workflow steps to make recursive workflow invocation structurally impossible.
 # Split out as its own constant so `build_shared_capabilities` can report them as
 # unavailable rather than silently ignoring them, and so
 # `tests/test_workflow_capabilities.py` can fail the build when a newly added
@@ -383,6 +384,7 @@ CHAT_ONLY_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset(
         "generate_image",
         "generate_video",
         "process_document",
+        "run_workflow",
     }
 )
 

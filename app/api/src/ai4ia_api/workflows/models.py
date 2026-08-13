@@ -45,6 +45,7 @@ MAX_RUN_INPUT_LEN = 8000
 # user-supplied run input; ``{previous}`` is the prior step's output text.
 INPUT_TOKEN = "{input}"
 PREVIOUS_TOKEN = "{previous}"
+RUN_WORKFLOW_TOOL_NAME = "run_workflow"
 
 __all__ = [
     "NAME_RE",
@@ -58,6 +59,7 @@ __all__ = [
     "MAX_RUN_INPUT_LEN",
     "INPUT_TOKEN",
     "PREVIOUS_TOKEN",
+    "RUN_WORKFLOW_TOOL_NAME",
     "WorkflowError",
     "WorkflowValidationError",
     "WorkflowConflictError",

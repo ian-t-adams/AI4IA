@@ -40,6 +40,7 @@ export const ATTACHABLE_TOOLS = [
   "process_document",
   "recall_memory",
   "remember_memory",
+  "run_workflow",
 ] as const;
 
 // Returns a human-readable reason the name is invalid, or null if it's valid.

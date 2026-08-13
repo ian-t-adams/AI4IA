@@ -332,11 +332,12 @@
                 ))
             )),
 
-            new JProperty(&quot;text-embedding-3-large-slurmfactory-eastus2-glbl&quot;, new JObject(
+            new JProperty(&quot;mistral-document-ai-2512-slurmfactory-eastus2-glbl&quot;, new JObject(
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;text-embedding-3-large-slurmfactory-eastus2-glbl&quot;),
+                    new JProperty(&quot;path&quot;, &quot;providers/mistral/azure&quot;),
+                    new JProperty(&quot;operation&quot;, &quot;/ocr&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;mistral-document-ai-2512-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -345,8 +346,9 @@
                 )),
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;text-embedding-3-large-slurmfactory-swedencentral-glbl&quot;),
+                    new JProperty(&quot;path&quot;, &quot;providers/mistral/azure&quot;),
+                    new JProperty(&quot;operation&quot;, &quot;/ocr&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;mistral-document-ai-2512-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -355,24 +357,12 @@
                 ))
             )),
 
-            new JProperty(&quot;text-embedding-3-large-slurmfactory-eastus2-dz&quot;, new JObject(
-                new JProperty(&quot;EASTUS2&quot;, new JObject(
-                    new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;text-embedding-3-large-slurmfactory-eastus2-dz&quot;),
-                    new JProperty(&quot;priority&quot;, 1),
-                    new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
-                    new JProperty(&quot;timeout&quot;, 120),
-                    new JProperty(&quot;bufferResponse&quot;, false),
-                    new JProperty(&quot;auth&quot;, &quot;MI&quot;)
-                ))
-            )),
-
-            new JProperty(&quot;text-embedding-3-large-slurmfactory-swedencentral-glbl&quot;, new JObject(
+            new JProperty(&quot;mistral-document-ai-2512-slurmfactory-swedencentral-glbl&quot;, new JObject(
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;text-embedding-3-large-slurmfactory-swedencentral-glbl&quot;),
+                    new JProperty(&quot;path&quot;, &quot;providers/mistral/azure&quot;),
+                    new JProperty(&quot;operation&quot;, &quot;/ocr&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;mistral-document-ai-2512-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -381,8 +371,9 @@
                 )),
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;text-embedding-3-large-slurmfactory-eastus2-glbl&quot;),
+                    new JProperty(&quot;path&quot;, &quot;providers/mistral/azure&quot;),
+                    new JProperty(&quot;operation&quot;, &quot;/ocr&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;mistral-document-ai-2512-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -391,24 +382,12 @@
                 ))
             )),
 
-            new JProperty(&quot;text-embedding-3-large-slurmfactory-swedencentral-dz&quot;, new JObject(
-                new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
-                    new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;text-embedding-3-large-slurmfactory-swedencentral-dz&quot;),
-                    new JProperty(&quot;priority&quot;, 1),
-                    new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
-                    new JProperty(&quot;timeout&quot;, 120),
-                    new JProperty(&quot;bufferResponse&quot;, false),
-                    new JProperty(&quot;auth&quot;, &quot;MI&quot;)
-                ))
-            )),
-
-            new JProperty(&quot;embed-v-4-0-slurmfactory-eastus2-glbl&quot;, new JObject(
+            new JProperty(&quot;mistral-ocr-4-0-slurmfactory-eastus2-glbl&quot;, new JObject(
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;embed-v-4-0-slurmfactory-eastus2-glbl&quot;),
+                    new JProperty(&quot;path&quot;, &quot;providers/mistral/azure&quot;),
+                    new JProperty(&quot;operation&quot;, &quot;/ocr&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;mistral-ocr-4-0-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -417,8 +396,9 @@
                 )),
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;embed-v-4-0-slurmfactory-swedencentral-glbl&quot;),
+                    new JProperty(&quot;path&quot;, &quot;providers/mistral/azure&quot;),
+                    new JProperty(&quot;operation&quot;, &quot;/ocr&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;mistral-ocr-4-0-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),

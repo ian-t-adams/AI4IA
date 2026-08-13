@@ -91,6 +91,51 @@ def test_generate_success(client):
     assert body["size"] == "1024x1024"
     assert len(body["images"]) == 1
     assert body["images"][0]["b64"] == TINY_PNG_B64
+    assert body["provider"] == "openai"
+    assert body["region"]
+    assert body["dataZone"]
+    assert body["residency"]
+    assert body["costKnown"] is False
+
+
+def test_image_options_expose_compatible_controls_and_honest_prices(client):
+    response = client.get(
+        "/api/images/options", headers={"X-Dev-User": "ian"}
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["maxSelectedModels"] == 3
+    by_id = {model["id"]: model for model in body["models"]}
+    flux = by_id["FLUX-1.1-pro"]
+    flux_price = next(
+        price
+        for price in flux["prices"]
+        if price["size"] == "1024x1024" and price["quality"] == "auto"
+    )
+    assert flux_price["costKnown"] is True
+    assert flux_price["estimatedCostUsd"] == 0.04
+    mai_price = by_id["MAI-Image-2.5"]["prices"][0]
+    assert mai_price["costKnown"] is False
+    assert mai_price["estimatedCostUsd"] is None
+
+
+def test_image_options_hide_models_excluded_by_residency_policy():
+    client = _client(data_residency="us")
+    try:
+        response = client.get(
+            "/api/images/options", headers={"X-Dev-User": "ian"}
+        )
+        assert response.status_code == 200, response.text
+        advertised = {model["id"] for model in response.json()["models"]}
+        assert "FLUX.2-pro" not in advertised
+        assert advertised
+        assert all(
+            client.app.state.catalog.resolve_deployment(model_id) is not None
+            for model_id in advertised
+        )
+    finally:
+        client.__exit__(None, None, None)
 
 
 def test_default_model_used_when_omitted(client):

@@ -21,6 +21,7 @@ from ..usage.service import UsageService
 from .blob_store import AzureBlobStore, BlobStore, InMemoryBlobStore
 from .doc_chunks import DocChunkStore, InMemoryDocChunkStore
 from .ingest import DocumentIngestor
+from .mistral_document import MistralDocumentClient
 from .repository import DocumentLibraryRepository
 from .retrieval import DocumentRetrievalService
 
@@ -66,6 +67,7 @@ def build_document_ingestor(
     cu_client = (
         ContentUnderstandingClient(settings) if settings.cu_base_url else None
     )
+    mistral_client = MistralDocumentClient(gateway, catalog)
 
     embedder: GatewayEmbedder | None = None
     chunk_store: DocChunkStore | None = None
@@ -87,6 +89,7 @@ def build_document_ingestor(
         settings=settings,
         usage=usage,
         cu_client=cu_client,
+        mistral_client=mistral_client,
         embedder=embedder,
         chunk_store=chunk_store,
     )

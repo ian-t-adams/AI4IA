@@ -4,7 +4,7 @@
 // their cross-session library, watch ingest status, pick an analyzer, and delete.
 // Rendered only when the DOCUMENT_LIBRARY_ENABLED flag is on (gated by ChatApp),
 // so it is inert by default.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteLibraryDocument,
   forgetLibraryDocumentFromMemory,
@@ -63,6 +63,32 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function analysisLabel(document: LibraryDocument): string | null {
+  if (!document.analysisProvider) return null;
+  const provider =
+    document.analysisProvider === "content_understanding"
+      ? "Content Understanding"
+      : document.analysisProvider === "mistral"
+        ? "Mistral"
+        : document.analysisProvider;
+  const model =
+    document.analysisModel &&
+    document.analysisModel !== "content-understanding"
+      ? ` · ${document.analysisModel}`
+      : "";
+  const pages =
+    document.analysisPages !== null &&
+    document.analysisPages !== undefined
+      ? ` · ${document.analysisPages} page${document.analysisPages === 1 ? "" : "s"}`
+      : "";
+  const location = document.analysisRegion
+    ? ` · ${document.analysisRegion}${
+        document.analysisResidency ? ` (${document.analysisResidency})` : ""
+      }`
+    : "";
+  return `${provider}${model}${pages}${location}`;
+}
+
 export function LibraryPanel({ onClose }: { onClose: () => void }) {
   const modalRef = useModalFocus();
   const onModalKeyDown = useModalKeyDown(onClose);
@@ -88,6 +114,10 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
   const refreshGenerationRef = useRef(0);
+  const selectedAnalyzer = useMemo(
+    () => analyzers.find((analyzer) => analyzer.id === analyzerId) ?? null,
+    [analyzerId, analyzers],
+  );
 
   const refresh = useCallback(async () => {
     const generation = ++refreshGenerationRef.current;
@@ -321,11 +351,13 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {analyzers.length > 0 && (
-            <label
+            <div
               style={{ fontSize: "0.8em", color: "var(--fg-muted)", display: "flex", flexDirection: "column", gap: 4 }}
             >
-              Analyzer
+              <label htmlFor="library-analyzer">Analyzer</label>
               <select
+                id="library-analyzer"
+                aria-describedby="library-analyzer-description"
                 value={analyzerId}
                 onChange={(e) => setAnalyzerId(e.target.value)}
                 style={{
@@ -336,15 +368,36 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                   color: "var(--fg)",
                 }}
               >
-                <option value="">Automatic (by file type)</option>
-                {analyzers.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                    {a.kind === "custom" ? " (custom)" : ""}
-                  </option>
-                ))}
+                <option value="">Automatic · Content Understanding</option>
+                <optgroup label="Azure Content Understanding">
+                  {analyzers
+                    .filter((analyzer) => analyzer.provider !== "mistral")
+                    .map((analyzer) => (
+                      <option key={analyzer.id} value={analyzer.id}>
+                        {analyzer.name}
+                        {analyzer.kind === "custom" ? " (custom)" : ""}
+                      </option>
+                    ))}
+                </optgroup>
+                <optgroup label="Mistral">
+                  {analyzers
+                    .filter((analyzer) => analyzer.provider === "mistral")
+                    .map((analyzer) => (
+                      <option key={analyzer.id} value={analyzer.id}>
+                        {analyzer.name}
+                      </option>
+                    ))}
+                </optgroup>
               </select>
-            </label>
+              <span id="library-analyzer-description">
+                {selectedAnalyzer
+                  ? selectedAnalyzer.description
+                  : "Recommended default. Chooses the Azure Content Understanding analyzer that fits the file type, including audio and video."}
+                {selectedAnalyzer?.provider === "mistral"
+                  ? " PDF and image files only; maximum 30 pages and 30 MB. Page-based list-price usage is recorded after analysis."
+                  : ""}
+              </span>
+            </div>
           )}
           <input
             id="library-file-upload"
@@ -352,6 +405,11 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
             type="file"
             multiple
             disabled={uploading}
+            accept={
+              selectedAnalyzer?.provider === "mistral"
+                ? ".pdf,image/jpeg,image/png,image/webp"
+                : undefined
+            }
             onChange={(e) => onFiles(e.target.files)}
             style={{ fontSize: "0.85em" }}
           />
@@ -434,6 +492,7 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                     {doc.status === "ready" && doc.chunkCount > 0
                       ? ` · ${doc.chunkCount} chunks`
                       : ""}
+                    {analysisLabel(doc) ? ` · ${analysisLabel(doc)}` : ""}
                     {(() => {
                       const m = memorySaves[doc.id];
                       if (!m) return null;
@@ -655,6 +714,7 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                     {doc.status === "ready" && doc.chunkCount > 0
                       ? ` · ${doc.chunkCount} chunks`
                       : ""}
+                    {analysisLabel(doc) ? ` · ${analysisLabel(doc)}` : ""}
                     <span style={{ color: "var(--accent)" }}> · shared with you</span>
                   </div>
                 </div>

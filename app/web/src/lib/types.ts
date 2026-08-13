@@ -35,6 +35,8 @@ export interface ModelEntry {
   // it for a model (e.g. model-router); callers fall back to fixed defaults.
   contextWindow: number | null;
   maxOutputTokens: number | null;
+  supportsTools?: boolean;
+  inputModalities?: string[];
   imageSizes?: string[] | null;
   imageQualities?: string[] | null;
   // Whether temperature/top_p actually reach the provider. False for reasoning
@@ -66,6 +68,7 @@ export interface Session {
   agentName: string | null;
   toolOverrides: { added: string[]; removed: string[] };
   libraryDocumentIds: string[] | null;
+  imagePreferences?: ImageGenerationPreferences;
   summaryVersion?: number;
   createdAt: string;
   updatedAt: string;
@@ -82,14 +85,31 @@ export interface ConversationDraftDefaults {
   libraryDocumentIds: string[];
 }
 
+export interface ImageGenerationPreferences {
+  models: string[];
+  size: string | null;
+  quality: string | null;
+}
+
 export interface MessageAttachment {
   id: string;
   kind: string;
   mimeType: string;
   prompt: string | null;
   model: string | null;
+  provider?: string | null;
+  deployment?: string | null;
+  region?: string | null;
+  dataZone?: string | null;
+  residency?: string | null;
   size: string | null;
   quality?: string | null;
+  costKnown?: boolean | null;
+  estimatedCostUsd?: number | null;
+  pricingBasis?: string | null;
+  priceVersion?: string | null;
+  status?: string | null;
+  error?: string | null;
   durationSeconds?: number | null;
   filename?: string | null;
 }
@@ -433,10 +453,44 @@ export interface GeneratedImageData {
 
 export interface ImageResponse {
   model: string;
+  provider: string;
   deployment: string;
+  region: string;
+  dataZone: string | null;
+  residency: string;
   size: string;
   quality: string;
+  costKnown: boolean;
+  estimatedCostUsd: number | null;
+  pricingBasis: string | null;
+  priceVersion: string | null;
   images: GeneratedImageData[];
+}
+
+export interface ImagePriceOption {
+  size: string;
+  quality: string;
+  costKnown: boolean;
+  estimatedCostUsd: number | null;
+  pricingBasis: string | null;
+}
+
+export interface ImageModelOption {
+  id: string;
+  displayName: string;
+  provider: string;
+  sizes: string[];
+  qualities: string[];
+  dataZones: string[];
+  residencies: string[];
+  prices: ImagePriceOption[];
+}
+
+export interface ImageOptionsResponse {
+  maxSelectedModels: number;
+  currency: string;
+  priceVersion: string | null;
+  models: ImageModelOption[];
 }
 
 // --- Document upload ---

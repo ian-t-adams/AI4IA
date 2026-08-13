@@ -70,6 +70,58 @@ def test_create_session_accepts_static_tool_override(client):
     assert resp.status_code == 201, resp.text
 
 
+def test_session_image_preferences_are_catalog_validated_and_patchable(client):
+    created = _create(
+        client,
+        imagePreferences={
+            "models": ["FLUX.2-pro", "gpt-image-2"],
+            "size": "1024x1024",
+            "quality": "auto",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["imagePreferences"] == {
+        "models": ["FLUX.2-pro", "gpt-image-2"],
+        "size": "1024x1024",
+        "quality": "auto",
+    }
+
+    updated = client.patch(
+        f"/api/sessions/{created.json()['id']}",
+        json={
+            "imagePreferences": {
+                "models": ["FLUX.1-Kontext-pro"],
+                "size": "1024x1024",
+                "quality": "auto",
+            }
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["imagePreferences"]["models"] == ["FLUX.1-Kontext-pro"]
+
+
+@pytest.mark.parametrize(
+    "preferences",
+    [
+        {"models": ["gpt-5.2"]},
+        {"models": ["FLUX.1-Kontext-pro"], "size": "1536x1024"},
+        {"models": ["FLUX.2-pro"], "quality": "high"},
+        {"models": [], "size": "1024x1024"},
+        {
+            "models": [
+                "FLUX.2-pro",
+                "FLUX.2-flex",
+                "gpt-image-2",
+                "gpt-image-1.5",
+            ]
+        },
+    ],
+)
+def test_session_rejects_invalid_image_preferences(client, preferences):
+    response = _create(client, imagePreferences=preferences)
+    assert response.status_code == 422
+
+
 def test_create_session_rejects_unknown_tool_override(client):
     resp = _create(client, toolOverrides={"added": ["no-such-tool"], "removed": []})
     assert resp.status_code == 422, resp.text

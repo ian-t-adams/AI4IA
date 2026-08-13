@@ -1,6 +1,7 @@
 import type {
   AgentSummary,
   DocumentSummary,
+  ImageGenerationPreferences,
   Session,
   ToolCatalogItem,
 } from "./types";
@@ -24,6 +25,10 @@ export interface UsageRecordView {
   promptTokens: number | null;
   completionTokens: number | null;
   totalTokens: number | null;
+  billableUnits?: number | null;
+  billingUnit?: string | null;
+  imageSize?: string | null;
+  imageQuality?: string | null;
   costKnown: boolean;
   estCostMicroUsd: number | null;
   createdAt: string;
@@ -82,6 +87,7 @@ export interface InspectorSnapshot {
     effective: string[];
     voiceEffective: string[];
   };
+  imagePreferences: ImageGenerationPreferences;
   attachments: DocumentSummary[];
   libraryDocuments: LibraryDocument[];
   librarySelectionMode: "legacy_all" | "explicit";

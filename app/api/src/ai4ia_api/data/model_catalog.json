@@ -40,6 +40,10 @@
       "api": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -84,6 +88,10 @@
       "api": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -128,6 +136,10 @@
       "api": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -172,6 +184,10 @@
       "api": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -217,6 +233,10 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -256,6 +276,10 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -289,6 +313,10 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -322,6 +350,10 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -367,6 +399,10 @@
       "api": "chat",
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -410,6 +446,10 @@
       "api": "chat",
       "contextWindow": 256000,
       "maxOutputTokens": 32000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -442,6 +482,10 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -470,6 +514,10 @@
       "api": "responses",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -500,6 +548,10 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -530,6 +582,10 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -568,6 +624,11 @@
       "api": "chat",
       "contextWindow": 128000,
       "maxOutputTokens": 32768,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -606,6 +667,10 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -651,6 +716,10 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -690,6 +759,10 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -735,6 +808,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -773,6 +850,10 @@
       "api": "chat",
       "contextWindow": 163840,
       "maxOutputTokens": 32768,
+      "toolCalling": false,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -799,6 +880,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -837,6 +922,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -863,6 +952,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -889,6 +982,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -909,6 +1006,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -929,6 +1030,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -949,6 +1054,10 @@
       "api": "bfl",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": [
         "1024x1024",
         "1024x1536",
@@ -982,6 +1091,10 @@
       "api": "bfl",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": [
         "1024x1024",
         "1024x1536",
@@ -1015,6 +1128,10 @@
       "api": "bfl",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": [
         "1024x1024",
         "auto"
@@ -1046,6 +1163,10 @@
       "api": "bfl",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": [
         "1024x1024",
         "1024x1440",
@@ -1072,6 +1193,68 @@
       ]
     },
     {
+      "id": "mistral-document-ai-2512",
+      "displayName": "Mistral Document AI 25.12",
+      "category": "document-ocr",
+      "format": "Mistral AI",
+      "api": "mistral_ocr",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "toolCalling": false,
+      "inputModalities": [
+        "document",
+        "image"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "mistral-document-ai-2512-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "mistral-document-ai-2512-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "mistral-ocr-4-0",
+      "displayName": "Mistral OCR 4",
+      "category": "document-ocr",
+      "format": "Mistral AI",
+      "api": "mistral_ocr",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "toolCalling": false,
+      "inputModalities": [
+        "document",
+        "image"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "mistral-ocr-4-0-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "mistral-ocr-4-0-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
       "id": "text-embedding-3-large",
       "displayName": "text-embedding-3-large",
       "category": "embedding",
@@ -1079,6 +1262,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -1117,6 +1304,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -1143,6 +1334,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -1169,6 +1364,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -1195,6 +1394,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -1215,6 +1418,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -1241,6 +1448,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -1267,6 +1478,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -1293,6 +1508,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -1319,6 +1538,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -1339,6 +1562,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -1359,6 +1586,10 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": null,
@@ -1385,6 +1616,10 @@
       "api": "chat",
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
@@ -1410,6 +1645,10 @@
       "api": "mai",
       "contextWindow": 256000,
       "maxOutputTokens": 64000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [],
@@ -1436,6 +1675,10 @@
       "api": "anthropic",
       "contextWindow": 1000000,
       "maxOutputTokens": 128000,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [],

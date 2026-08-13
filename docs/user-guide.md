@@ -25,6 +25,9 @@ and tool safety; the web app is the user interface.
   sessions.
 - Treat cited document snippets and tool output as grounded context, not as
   permission to skip review.
+- The model picker labels text-only, non-tool-capable models as **Plain chat
+  only**. They remain usable for ordinary conversation, but the API rejects them
+  for agents and workflows before persistence or provider I/O.
 - Temperature and Top P currently remain visible even when the selected model does
   not support them. The UI bounds Temperature to 0-2 and Top P to 0-1; for compatible
   models, the API forwards those values unchanged. The UI and API cap output tokens
@@ -82,6 +85,13 @@ and tool safety; the web app is the user interface.
   going after two minutes the page stops waiting and says so; the run is *not*
   cancelled, and its reply appears in the run's chat when it finishes. The option
   is hidden entirely on deployments that cannot honour it.
+- To let an agent invoke a saved workflow, attach **Run workflow** to that agent
+  under **Agent & tools**. The chat tool advertises only enabled workflows whose
+  resolved steps use safe, read-only tools; it re-checks that condition when the
+  call executes and permits one workflow run per chat turn. A workflow containing
+  web search, memory writes, media generation, MCP, another workflow, or any
+  unclassified/disabled tool remains available from the workflow runner but is
+  deliberately absent from the agent tool.
 - Attach only the tools an agent needs. Tool output is metered, logged, bounded,
   and redacted where applicable.
 - A selected agent is the standing conversation persona. An explicit `@agent`
@@ -121,6 +131,20 @@ AI4IA has two storage/context paths:
 Library documents move through ingest states. Only `ready` documents contribute to
 RAG, media deep-links, save-to-memory, sharing, `fetch_document`, `run_code`,
 `export_document`, or `process_document`.
+
+The Library **Analyzer** selector chooses the extraction pathway before upload:
+
+- **Automatic · Content Understanding** is the recommended default and selects
+  the modality-appropriate Azure Content Understanding analyzer for documents,
+  images, audio, and video.
+- **Mistral Document AI** and **Mistral OCR 4** are explicit PDF/image pathways.
+  Each request is capped at 30 pages and 30 MB. Their Markdown is normalized into
+  the same canonical `parsed.md` → chunk → embed → search pipeline; the document
+  card records provider, model, page count, region, and residency.
+
+The selected analyzer is part of the dedupe key, so uploading the same bytes
+through two analyzers creates two independently attributable results rather than
+silently changing an existing document.
 
 Sharing is tenant-scoped:
 
@@ -192,6 +216,18 @@ Image, video, document-processing, and export tools return durable artifacts whe
 the relevant feature and storage are configured. Artifacts are served through
 authenticated API routes rather than public blob URLs.
 
+For images, open **Setup → Agent & tools → Image generation** in an existing
+conversation. Select one to three models plus a size and quality shared by all of
+them, then save. **Start image in chat** (or **Start comparison in chat**) prepends
+`/generate_image` to the composer without discarding a draft. The next image
+request snapshots the saved setup and sends the same prompt to every selected
+model. You can change the selection between any two turns.
+
+Comparison results remain in selection order and each image records its model,
+provider, deployment region/data zone, size, quality, and best-effort cost. A
+published estimate is labelled as such; **Cost estimate unavailable** means no
+unambiguous Azure retail meter is mapped and never means free.
+
 ## Memory
 
 When memory is enabled, AI4IA can recall prior user context and can save ready
@@ -206,10 +242,11 @@ memories for your profile. Document deletion also fences and removes memories
 derived from that document. There is no global consent/toggle or per-answer
 recalled-memory indicator yet.
 
-The Usage section reports known token/cost subtotals and request coverage when some
-providers omit usage. `Unknown` is shown instead of zero when every request is
-unknown. Prompt pressure refers only to the latest metered turn and is unavailable
-when that turn used a different model or lacks prompt-token metadata.
+The Usage section reports known token, image, page, and cost subtotals plus request
+coverage when providers omit a billing dimension. `Unknown` is shown instead of
+zero when every request is unknown. Prompt pressure refers only to the latest
+token-metered turn and is unavailable when that turn used a different model or
+lacks prompt-token metadata.
 
 ## Custom tools and web search
 

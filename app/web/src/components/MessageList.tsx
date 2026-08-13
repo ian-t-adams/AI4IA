@@ -285,7 +285,7 @@ function ImageAttachmentView({ attachment }: { attachment: MessageAttachment }) 
     );
   }
   return (
-    <figure style={{ margin: "10px 0 0" }}>
+    <figure className="generated-image">
       {url ? (
         // eslint-disable-next-line @next/next/no-img-element -- authenticated blob object URL; next/image adds no value
         <img
@@ -328,12 +328,59 @@ function ImageAttachmentView({ attachment }: { attachment: MessageAttachment }) 
           attachment.quality && attachment.quality !== "auto"
             ? `${attachment.quality} quality`
             : null,
+          attachment.provider,
+          attachment.region,
+          attachment.dataZone ? `${attachment.dataZone} zone` : null,
+          attachment.residency
+            ? `${attachment.residency} residency`
+            : null,
+          attachment.costKnown === true &&
+          attachment.estimatedCostUsd !== null &&
+          attachment.estimatedCostUsd !== undefined
+            ? `estimated $${attachment.estimatedCostUsd.toFixed(
+                attachment.estimatedCostUsd < 0.01 ? 4 : 3,
+              )}`
+            : attachment.costKnown === false
+              ? "cost estimate unavailable"
+              : null,
         ]
           .filter(Boolean)
           .map((part) => ` · ${part}`)
           .join("")}
       </figcaption>
     </figure>
+  );
+}
+
+function ImageFailureView({ attachment }: { attachment: MessageAttachment }) {
+  return (
+    <div className="generated-image-failure">
+      <strong>{attachment.model || "Image model"}</strong>
+      <span>{attachment.error || "Image generation failed."}</span>
+      <small>
+        {[
+          attachment.provider,
+          attachment.region,
+          attachment.dataZone ? `${attachment.dataZone} zone` : null,
+          attachment.residency
+            ? `${attachment.residency} residency`
+            : null,
+          attachment.size,
+          attachment.quality && attachment.quality !== "auto"
+            ? `${attachment.quality} quality`
+            : null,
+          attachment.costKnown === true &&
+          attachment.estimatedCostUsd !== null &&
+          attachment.estimatedCostUsd !== undefined
+            ? `estimated $${attachment.estimatedCostUsd.toFixed(
+                attachment.estimatedCostUsd < 0.01 ? 4 : 3,
+              )}`
+            : "cost estimate unavailable",
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </small>
+    </div>
   );
 }
 
@@ -613,10 +660,37 @@ function Bubble({
         {!msg.pending && msg.sources && msg.sources.length > 0 ? (
           <SourcesPanel sources={msg.sources} citations={msg.citations} />
         ) : null}
+        {msg.attachments?.some((attachment) =>
+          ["image", "image_error"].includes(attachment.kind)
+        ) ? (
+          <ol
+            className="image-comparison-grid"
+            aria-label={
+              msg.attachments.filter((attachment) =>
+                ["image", "image_error"].includes(attachment.kind)
+              )
+                .length > 1
+                ? "Image model comparison"
+                : "Generated image"
+            }
+          >
+            {msg.attachments
+              .filter((attachment) =>
+                ["image", "image_error"].includes(attachment.kind)
+              )
+              .map((attachment) => (
+                <li key={attachment.id}>
+                  {attachment.kind === "image" ? (
+                    <ImageAttachmentView attachment={attachment} />
+                  ) : (
+                    <ImageFailureView attachment={attachment} />
+                  )}
+                </li>
+              ))}
+          </ol>
+        ) : null}
         {msg.attachments?.map((att) =>
-          att.kind === "image" ? (
-            <ImageAttachmentView key={att.id} attachment={att} />
-          ) : att.kind === "video" ? (
+          att.kind === "video" ? (
             <VideoAttachmentView key={att.id} attachment={att} />
           ) : att.kind === "document" ? (
             <DocumentAttachmentView key={att.id} attachment={att} />

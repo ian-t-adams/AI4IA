@@ -24,8 +24,9 @@ Deliberately **not** here: ``delegate_to_agent`` (workflows reject orchestrator
 steps by construction), ``run_code`` / ``export_document`` and
 ``analyze_attachment`` (gated on a per-turn classification and on inline session
 attachments), MCP tools (they replace the registry/executor pair rather than add
-to it), and ``generate_image`` / ``generate_video`` / ``process_document``. The
-last three write into a *sink* list that the chat router drains onto the
+to it), ``run_workflow`` (chat-only to prevent recursion), and
+``generate_image`` / ``generate_video`` / ``process_document``. The media/document
+tools write into a *sink* list that the chat router drains onto the
 assistant message; a durable workflow activity finishes in a different process
 from the one that persists the run's message, so a sink filled there would be
 silently discarded. Offering a tool whose output cannot be delivered is worse
@@ -191,7 +192,7 @@ def build_shared_capabilities(
     # them: until this existed the step simply ran without the tool, the model
     # narrated work it had not done, and the run was persisted as a success with
     # zero server-side signal — precisely the failure `unavailable` exists to
-    # make visible, and the one documented at the top of this module.
+    # make visible. ``run_workflow`` is also chat-only to prevent recursion.
     for name in sorted(CHAT_ONLY_SYNTHETIC_TOOL_NAMES & set(attached_tool_names)):
         unavailable[name] = "chat only: results are delivered as message attachments"
 

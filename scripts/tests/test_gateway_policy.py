@@ -107,6 +107,33 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("<value>preview</value>", priority)
         self.assertIn("selected.ToLowerInvariant()", priority)
 
+    def test_mistral_document_models_share_governed_ocr_route(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        blocks, _ = gateway_generator.render_catalog(models)
+        mistral = [
+            block
+            for block in blocks
+            if 'new JProperty("mistral-' in block
+            and (
+                "document-ai-2512" in block
+                or "ocr-4-0" in block
+            )
+        ]
+        self.assertEqual(len(mistral), 4)
+        for block in mistral:
+            self.assertIn(
+                'new JProperty("path", "providers/mistral/azure")',
+                block,
+            )
+            self.assertIn('new JProperty("operation", "/ocr")', block)
+
+        priority = gateway_generator.PRIORITY_POLICY_PATH.read_text(encoding="utf-8")
+        self.assertIn(
+            "&quot;providers/mistral/azure&quot;",
+            priority,
+        )
+        self.assertIn("<value>2024-05-01-preview</value>", priority)
+
     def test_anthropic_models_use_the_messages_backend_only(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
         blocks, _ = gateway_generator.render_catalog(models)

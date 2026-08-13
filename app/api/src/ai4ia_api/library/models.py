@@ -73,6 +73,11 @@ class AnalyzerKind(str, Enum):
     custom = "custom"
 
 
+class AnalyzerProvider(str, Enum):
+    content_understanding = "content_understanding"
+    mistral = "mistral"
+
+
 class Analyzer(BaseModel):
     """A selectable Content Understanding analyzer.
 
@@ -87,6 +92,9 @@ class Analyzer(BaseModel):
     name: str
     description: str = ""
     kind: AnalyzerKind = AnalyzerKind.custom
+    provider: AnalyzerProvider = AnalyzerProvider.content_understanding
+    modelId: str | None = None
+    modelVersion: str | None = None
     # Modalities this analyzer is appropriate for (UI filtering + validation).
     modalities: list[Modality] = Field(default_factory=lambda: [Modality.document])
     # CU base analyzer id this one derives from (e.g. a prebuilt). Used by the
@@ -140,6 +148,28 @@ BUILTIN_ANALYZERS: tuple[Analyzer, ...] = (
         description="Video understanding: transcript, key frames, and segments.",
         kind=AnalyzerKind.builtin,
         modalities=[Modality.video],
+    ),
+    Analyzer(
+        id="mistral-document-ai",
+        userId=SYSTEM_OWNER,
+        name="Mistral Document AI",
+        description="Structured PDF/image extraction to Markdown (GA; 30 pages / 30 MB).",
+        kind=AnalyzerKind.builtin,
+        provider=AnalyzerProvider.mistral,
+        modelId="mistral-document-ai-2512",
+        modelVersion="1",
+        modalities=[Modality.document, Modality.image],
+    ),
+    Analyzer(
+        id="mistral-ocr",
+        userId=SYSTEM_OWNER,
+        name="Mistral OCR 4",
+        description="Detailed OCR with blocks and confidence metadata (Preview; 30 pages / 30 MB).",
+        kind=AnalyzerKind.builtin,
+        provider=AnalyzerProvider.mistral,
+        modelId="mistral-ocr-4-0",
+        modelVersion="1",
+        modalities=[Modality.document, Modality.image],
     ),
 )
 
@@ -221,6 +251,15 @@ class UserDocument(BaseModel):
     status: DocumentStatus = DocumentStatus.pending
     # Analyzer selected/used to crack this document (a builtin or custom id).
     analyzerId: str | None = None
+    analysisProvider: str | None = None
+    analysisModel: str | None = None
+    analysisVersion: str | None = None
+    analysisPages: int | None = None
+    analysisDeployment: str | None = None
+    analysisRegion: str | None = None
+    analysisSku: str | None = None
+    analysisDataZone: str | None = None
+    analysisResidency: str | None = None
     # One-line summary produced by Content Understanding (filled in 11B).
     summary: str = ""
     # Blob artifact paths (filled by the 11B ingest path): raw upload, parsed

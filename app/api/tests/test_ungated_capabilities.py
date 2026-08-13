@@ -84,6 +84,8 @@ UNGATED: dict[str, str] = {
     "delegate_to_agent": "A router, not a capability: the sub-turn runs through "
     "the same governed runtime and is built with no extra_handlers, so it cannot "
     "re-enter this table. Bounded fan-out on the supervisor's own deployment.",
+    "run_workflow": "Advertises only workflows whose resolved step tools are safe, "
+    "filters nested capabilities to safe reads, and re-checks at execution time.",
 }
 
 EXPECTED_POSTURE: dict[str, str] = {

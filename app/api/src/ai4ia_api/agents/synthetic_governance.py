@@ -205,6 +205,15 @@ _DELEGATE_TO_AGENT = ToolSpec(
     # is constrained to the agent's own configured `links`.
 )
 
+_RUN_WORKFLOW = ToolSpec(
+    name="run_workflow",
+    description="Run one of the user's saved safe workflows over a bounded input.",
+    risk=ToolRisk.safe,
+    # The capability advertises only workflows whose resolved step tools are safe,
+    # filters nested synthetic capabilities to safe reads, and restores the normal
+    # approval policy as a second guard. It is chat-only to prevent recursion.
+)
+
 
 def _search_spec(name: str, description: str) -> ToolSpec:
     return ToolSpec(
@@ -235,6 +244,7 @@ SYNTHETIC_TOOL_SPECS: dict[str, ToolSpec] = {
         _EXPORT_DOCUMENT,
         *(_read_spec(n, d) for n, d in _READ_ONLY_DESCRIPTIONS.items()),
         _DELEGATE_TO_AGENT,
+        _RUN_WORKFLOW,
     )
 }
 

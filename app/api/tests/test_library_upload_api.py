@@ -4,6 +4,8 @@ configured in these settings, so enrichment is an inert background no-op and the
 document settles at ``stored`` — exactly the local/default posture."""
 from __future__ import annotations
 
+import io
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -165,3 +167,57 @@ def test_upload_builtin_analyzer_accepted(client):
     resp = _upload(client, "a.txt", b"data here", analyzerId="builtin-document")
     assert resp.status_code == 201
     assert resp.json()["analyzerId"] == "builtin-document"
+
+
+def test_upload_rejects_mistral_when_residency_policy_excludes_deployment():
+    client = _client(data_residency="us")
+    try:
+        response = _upload(
+            client,
+            "a.pdf",
+            b"%PDF-1.4",
+            ctype="application/pdf",
+            analyzerId="mistral-document-ai",
+        )
+        assert response.status_code == 422
+        assert "data-residency policy" in response.json()["detail"]
+        assert client.get("/api/library/documents").json() == []
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_mistral_pdf_page_limit_allows_30_and_rejects_31_before_persistence(
+    client,
+):
+    from pypdf import PdfWriter
+
+    client.app.state.document_ingestor._mistral = None
+
+    def pdf_with_pages(count: int) -> bytes:
+        writer = PdfWriter()
+        for _ in range(count):
+            writer.add_blank_page(width=72, height=72)
+        output = io.BytesIO()
+        writer.write(output)
+        return output.getvalue()
+
+    allowed = _upload(
+        client,
+        "thirty.pdf",
+        pdf_with_pages(30),
+        ctype="application/pdf",
+        analyzerId="mistral-document-ai",
+    )
+    rejected = _upload(
+        client,
+        "thirty-one.pdf",
+        pdf_with_pages(31),
+        ctype="application/pdf",
+        analyzerId="mistral-document-ai",
+    )
+
+    assert allowed.status_code == 201, allowed.text
+    assert rejected.status_code == 422
+    assert "at most 30 pages" in rejected.json()["detail"]
+    documents = client.get("/api/library/documents").json()
+    assert [document["filename"] for document in documents] == ["thirty.pdf"]

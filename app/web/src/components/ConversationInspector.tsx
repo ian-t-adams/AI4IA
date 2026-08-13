@@ -26,6 +26,7 @@ import type {
   ToolOverrides,
 } from "@/lib/types";
 import { HelpTooltip } from "./HelpTooltip";
+import { ImageGenerationControls } from "./ImageGenerationControls";
 import { ModelPicker } from "./ModelPicker";
 import { ParamControls } from "./ParamControls";
 import { VoiceSettingsPanel, type VoiceSettingsPanelProps } from "./VoiceSettingsPanel";
@@ -248,6 +249,7 @@ export function ConversationInspector({
   draftDefaults,
   onDraftDefaultsChange,
   onSessionUpdated,
+  onStartImagePrompt,
   onOpenLibrary,
   libraryEnabled,
   attachmentCapabilities,
@@ -270,6 +272,7 @@ export function ConversationInspector({
   draftDefaults: ConversationDraftDefaults;
   onDraftDefaultsChange: (value: ConversationDraftDefaults) => void;
   onSessionUpdated: (session: Session) => void;
+  onStartImagePrompt?: () => void;
   onOpenLibrary?: () => void;
   // Required, not defaulted: `/api/library/summary` 404s when the feature is
   // off, so an inspector that guesses renders a permanent error with a retry
@@ -937,6 +940,27 @@ export function ConversationInspector({
                   </select>
                 </label>
                 {agentDescription ? <p className="inspector-note">{agentDescription}</p> : null}
+                {sessionId ? (
+                  <ImageGenerationControls
+                    preferences={snapshot?.imagePreferences ?? null}
+                    disabled={!canMutate}
+                    onSave={(imagePreferences) => void patch({ imagePreferences })}
+                    onReset={() =>
+                      void patch({
+                        imagePreferences: {
+                          models: [],
+                          size: null,
+                          quality: null,
+                        },
+                      })
+                    }
+                    onStart={() => onStartImagePrompt?.()}
+                  />
+                ) : (
+                  <p className="inspector-note">
+                    Start the conversation to configure image generation for it.
+                  </p>
+                )}
                 <label>
                   Search tools
                   <input
@@ -1594,7 +1618,10 @@ export function ConversationInspector({
                 Latest turn: {snapshot.sessionUsage.latest.model} ·{" "}
                 {new Date(snapshot.sessionUsage.latest.createdAt).toLocaleString()} ·{" "}
                 {!snapshot.sessionUsage.latest.usageKnown
-                  ? "usage unknown"
+                  ? snapshot.sessionUsage.latest.billingUnit &&
+                    snapshot.sessionUsage.latest.billableUnits
+                    ? `${snapshot.sessionUsage.latest.billableUnits} ${snapshot.sessionUsage.latest.billingUnit}${snapshot.sessionUsage.latest.billableUnits === 1 ? "" : "s"}`
+                    : "usage unknown"
                   : snapshot.sessionUsage.latest.usageComplete
                     ? "complete usage"
                     : "partial usage"}

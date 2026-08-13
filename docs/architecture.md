@@ -309,7 +309,7 @@ do with each capability:
 | --- | --- | --- |
 | held on every turn | `browse_url`, `run_code`, `analyze_attachment` | the model chooses the destination/program, or sends attachment bytes to the external Responses sandbox; none is a read confined to an existing local store |
 | held only on a turn carrying untrusted content | the four `*_search` tools, `generate_image`, `generate_video`, `remember_memory`, `export_document` | the destination is fixed by server config and the effect is confined to the caller's own data, so injected text choosing the payload is the whole of the risk — on a clean turn the user is the only possible author |
-| never held | `recall_memory`, `fetch_document`, `process_document`, `delegate_to_agent` | reads over the caller's own data, or a router onto an already-governed sub-turn: no egress, no durable write |
+| never held | `recall_memory`, `fetch_document`, `process_document`, `delegate_to_agent`, `run_workflow` | reads over the caller's own data, or a router onto an already-governed sub-turn: no egress, no durable write. `run_workflow` advertises only workflows whose resolved tools are safe and applies an additional safe-only nested capability filter. |
 
 The middle posture is declared per tool (`ToolSpec.injection_only_risk`), not by
 the operator, and it only ever relaxes a call to `tainted` strength — never to
@@ -321,6 +321,11 @@ step has no open request to return a grant on and nobody watching to click it, s
 holding a call there would mean denying it silently and forever;
 `workflows/runner.py` therefore passes an explicit `ApprovalPolicy.off`, and
 closing that properly needs an out-of-band approval channel for unattended runs.
+The chat `run_workflow` capability does **not** inherit that exception: it rejects
+workflows containing external/destructive, chat-only, disabled, recursive, or
+unclassified tools, re-checks the saved workflow at invocation time, filters the
+nested synthetic surface to safe reads, and passes `ApprovalPolicy.always` as a
+second fail-closed guard.
 And provenance is tracked as a **turn-level** taint bit ("untrusted content
 entered this turn", latched on again by any tool result), not as per-argument
 dataflow. Posture is selectable via `AI4IA_TOOL_APPROVAL_MODE`; see

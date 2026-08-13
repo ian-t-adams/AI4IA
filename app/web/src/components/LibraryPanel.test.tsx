@@ -335,7 +335,7 @@ describe("LibraryPanel uploads and polling", () => {
   it("keeps polling single-flight and never regresses a ready document", async () => {
     let resolvePoll!: (documents: LibraryDocument[]) => void;
     let poll!: () => Promise<void>;
-    vi.spyOn(window, "setInterval").mockImplementation((handler) => {
+    const intervalSpy = vi.spyOn(window, "setInterval").mockImplementation((handler) => {
       poll = handler as () => Promise<void>;
       return 1 as unknown as ReturnType<typeof setInterval>;
     });
@@ -353,13 +353,23 @@ describe("LibraryPanel uploads and polling", () => {
     mocks.uploadLibraryDocument.mockResolvedValue(ready);
     render(<LibraryPanel onClose={vi.fn()} />);
     expect(await screen.findByText("Analyzing…")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        intervalSpy.mock.calls.some((call) => call[1] === 3000),
+      ).toBe(true),
+    );
+    poll = intervalSpy.mock.calls.find(
+      (call) => call[1] === 3000,
+    )?.[0] as () => Promise<void>;
 
     await act(async () => {
       void poll();
       await Promise.resolve();
       void poll();
     });
-    expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(2);
+    await waitFor(() =>
+      expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(2),
+    );
 
     fireEvent.change(screen.getByLabelText("Upload library documents"), {
       target: {

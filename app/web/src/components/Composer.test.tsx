@@ -53,11 +53,18 @@ function setup(overrides: Partial<ComposerProps> = {}) {
     ...overrides,
   };
   const user = userEvent.setup();
-  render(<Composer {...props} />);
+  const rendered = render(<Composer {...props} />);
   const textarea = screen.getByRole("combobox", {
     name: "Message",
   }) as HTMLTextAreaElement;
-  return { user, onSend, onStop, textarea };
+  return {
+    user,
+    onSend,
+    onStop,
+    textarea,
+    rerender: (next: Partial<ComposerProps>) =>
+      rendered.rerender(<Composer {...props} {...next} />),
+  };
 }
 
 describe("Composer", () => {
@@ -77,6 +84,19 @@ describe("Composer", () => {
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(onSend).toHaveBeenCalledWith("hello world");
     expect(textarea.value).toBe("");
+  });
+
+  it("prepends an image command without discarding an existing draft", async () => {
+    const { user, textarea, rerender } = setup();
+    await user.type(textarea, "a lighthouse in a storm");
+
+    rerender({ prefill: { id: 1, text: "/generate_image " } });
+
+    await waitFor(() =>
+      expect(textarea.value).toBe(
+        "/generate_image a lighthouse in a storm",
+      ),
+    );
   });
 
   it("submits when Enter is pressed without Shift", async () => {

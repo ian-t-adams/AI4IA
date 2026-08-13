@@ -35,7 +35,10 @@ from ..sessions.repository import (
     SessionRepository,
 )
 from ..agents.agent_catalog import AgentCatalog, AgentSpec
-from ..agents.capabilities import build_shared_capabilities
+from ..agents.capabilities import (
+    build_shared_capabilities,
+    capability_builder_for_state,
+)
 from ..agents.command_service import (
     DIRECT_SLASH_TOOLS,
     execute_command,
@@ -93,6 +96,11 @@ from ..usage.models import TokenUsage
 from ..usage.service import UsageService
 from ..websearch.capability import WEB_SEARCH_TOOL_NAME
 from ..websearch.factory import WebSearchService
+from ..workflows.capability import (
+    RUN_WORKFLOW_TOOL_NAME,
+    build_workflow_capability,
+    eligible_workflows,
+)
 from ._chat_streaming import (
     CHAT_COMPLETION_FAILED,
     _agentic_stream,
@@ -608,6 +616,12 @@ _TOOL_AGENT_PROMPTS: dict[str, str] = {
         "saved — and say so plainly if a write was skipped. Do not ask clarifying "
         "questions unless the request is empty."
     ),
+    RUN_WORKFLOW_TOOL_NAME: (
+        "The user invoked a saved workflow directly. Call run_workflow once with "
+        "the workflow that best matches their request and pass the user's text as "
+        "its input. Only the safe workflows offered by the tool are eligible. "
+        "Return the workflow's result without claiming any unavailable action ran."
+    ),
 }
 
 _TOOL_COMMAND_USAGE: dict[str, str] = {
@@ -635,6 +649,10 @@ _TOOL_COMMAND_USAGE: dict[str, str] = {
         "Usage: /remember_memory <fact to save> — e.g. /remember_memory I prefer "
         "Python for data work"
     ),
+    RUN_WORKFLOW_TOOL_NAME: (
+        "Usage: /run_workflow <input> — the assistant chooses the best matching "
+        "saved safe workflow"
+    ),
 }
 
 
@@ -647,6 +665,7 @@ def _capability_tool_available(
     retrieval: DocumentRetrievalService | None,
     web_search: WebSearchService | None = None,
     memory: MemoryServiceProtocol | None = None,
+    workflow_service: object | None = None,
 ) -> bool:
     """Whether a capability tool's backing services are present this turn.
 
@@ -666,6 +685,8 @@ def _capability_tool_available(
         return memory is not None and memory.enabled
     if name == REMEMBER_TOOL_NAME:
         return memory is not None and memory.enabled
+    if name == RUN_WORKFLOW_TOOL_NAME:
+        return workflow_service is not None
     return False
 
 
@@ -795,6 +816,7 @@ async def chat(
     # friendly local replies when the tool isn't enabled here or has no arguments;
     # otherwise synthesize the agent and let the normal agent turn run it.
     tool_agent: AgentSpec | None = None
+    workflow_options = None
     if capability_tool is not None:
         if not _capability_tool_available(
             capability_tool,
@@ -804,6 +826,7 @@ async def chat(
             retrieval=retrieval,
             web_search=web_search,
             memory=memory,
+            workflow_service=getattr(request.app.state, "workflow_service", None),
         ):
             user_message, assistant = await _persist_local_reply(
                 repo=repo,
@@ -832,6 +855,35 @@ async def chat(
                 body.stream,
                 user_message_id=user_message.id,
             )
+        if capability_tool == RUN_WORKFLOW_TOOL_NAME:
+            # A direct slash invocation should fail locally when there is nothing
+            # eligible, not spend a model call on a schema that was never injected.
+            agents = await request.app.state.agent_service.catalog_for(
+                user.internal_user_id, agents
+            )
+            workflow_options = await eligible_workflows(
+                request.app.state.workflow_service,
+                user_id=user.internal_user_id,
+                composed=agents,
+                registry=registry,
+            )
+            if not workflow_options:
+                user_message, assistant = await _persist_local_reply(
+                    repo=repo,
+                    session=session,
+                    user=user,
+                    user_content=parsed.raw,
+                    reply=(
+                        "No enabled saved workflow is eligible for chat. "
+                        "Chat-invoked workflows may use only safe, read-only tools."
+                    ),
+                )
+                return _local_reply_response(
+                    body.sessionId,
+                    assistant,
+                    body.stream,
+                    user_message_id=user_message.id,
+                )
         tool_agent = _ephemeral_tool_agent(capability_tool)
 
     # Compose the caller's user-defined agents on top of the curated catalog only
@@ -1049,6 +1101,20 @@ async def chat(
                 f"'{model_id}' is served through the Responses API, which AI4IA "
                 "does not yet support for tool-calling. Choose a chat-completions "
                 "model for this agent."
+            ),
+        )
+    if (
+        agent is not None
+        and (agent.tools or agent.links)
+        and entry is not None
+        and not entry.supportsTools
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Agent @{agent.name} uses tools or agent links, but model "
+                f"'{model_id}' does not support tool calling. Choose a "
+                "tool-capable model for this agent."
             ),
         )
 
@@ -1393,6 +1459,54 @@ async def chat(
         )
         extra_tools = [*extra_tools, *shared.tools]
         extra_handlers = {**extra_handlers, **shared.handlers}
+        # Saved workflows are exposed through one generic tool only when every
+        # resolved step uses safe, workflow-compatible tools. The capability
+        # re-checks that posture at execution time and runs with a safe-only
+        # nested builder, so the unattended workflow runner's approval exemption
+        # cannot be inherited by a chat-triggered run.
+        if RUN_WORKFLOW_TOOL_NAME in agent.tools:
+            try:
+                workflow_service = request.app.state.workflow_service
+                agents = await request.app.state.agent_service.catalog_for(
+                    user.internal_user_id, agents
+                )
+                available_workflows = workflow_options or await eligible_workflows(
+                    workflow_service,
+                    user_id=user.internal_user_id,
+                    composed=agents,
+                    registry=registry,
+                )
+                if available_workflows:
+                    workflow_builder = capability_builder_for_state(
+                        request.app.state,
+                        user_id=user.internal_user_id,
+                        session_id=body.sessionId,
+                        email=user.email,
+                        allowed_document_ids=(
+                            None
+                            if session.libraryDocumentIds is None
+                            else set(session.libraryDocumentIds)
+                        ),
+                    )
+                    w_tools, w_handlers = build_workflow_capability(
+                        workflows=available_workflows,
+                        workflow_service=workflow_service,
+                        composed=agents,
+                        deployment=deployment,
+                        model_id=model_id,
+                        gateway=gateway,
+                        registry=registry,
+                        executor=executor,
+                        capabilities=workflow_builder,
+                        entitlements=entitlements,
+                        metering=metering,
+                        user_id=user.internal_user_id,
+                        session_id=body.sessionId,
+                    )
+                    extra_tools = [*extra_tools, *w_tools]
+                    extra_handlers = {**extra_handlers, **w_handlers}
+            except Exception:  # noqa: BLE001 - workflow tool must never break chat
+                logger.warning("workflow capability build failed", exc_info=True)
         # When the router classifies this turn as compute/transform, additionally
         # offer the run_code + export_document capability over the
         # user's ready library, bound to this user + the turn's library nonce.
@@ -1468,6 +1582,7 @@ async def chat(
                     user_id=user.internal_user_id,
                     session_id=body.sessionId,
                     sink=image_sink,
+                    preferences=session.imagePreferences,
                 )
                 extra_tools = [*extra_tools, *i_tools]
                 extra_handlers = {**extra_handlers, **i_handlers}
@@ -1796,7 +1911,11 @@ async def chat(
         and library_tools_enabled
     )
     plain_capabilities_possible = plain_compute_active or web_search is not None
-    if plain_capabilities_possible and api in CHAT_COMPLETIONS_APIS:
+    if (
+        plain_capabilities_possible
+        and api in CHAT_COMPLETIONS_APIS
+        and (entry is None or entry.supportsTools)
+    ):
         try:
             ctx = ToolContext(
                 correlation_id=correlation_id,

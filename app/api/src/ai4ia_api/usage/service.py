@@ -84,10 +84,21 @@ class UsageService:
         agent: str | None,
         correlation_id: str | None,
         provider_completed: bool | None = None,
+        billable_units: int | None = None,
+        billing_unit: str | None = None,
+        image_size: str | None = None,
+        image_quality: str | None = None,
     ) -> UsageRecord:
         descriptor = self._normalize_target(target, deployment)
         completed = status == "complete" if provider_completed is None else provider_completed
-        billable = completed and usage.known and usage.complete
+        unit_billable = (
+            completed
+            and billing_unit in {"image", "page"}
+            and billable_units is not None
+            and billable_units > 0
+        )
+        unit_count = billable_units if unit_billable else None
+        billable = unit_billable or (completed and usage.known and usage.complete)
         rec = UsageRecord(
             userId=user_id,
             sessionId=session_id,
@@ -107,10 +118,36 @@ class UsageService:
             promptTokens=usage.prompt if usage.known else None,
             completionTokens=usage.completion if usage.known else None,
             totalTokens=usage.total if usage.known else None,
+            billableUnits=float(unit_count) if unit_count is not None else None,
+            billingUnit=billing_unit if unit_billable else None,
+            imageSize=image_size,
+            imageQuality=image_quality,
             correlationId=correlation_id,
         )
-        # Estimate cost only for a billable turn with real, complete usage.
-        if billable:
+        if unit_count is not None and billing_unit == "image":
+            operation_est = self._pricing.estimate_image(
+                model_id,
+                size=image_size,
+                quality=image_quality,
+                count=unit_count,
+            )
+            rec.currency = operation_est.currency
+            rec.priceVersion = operation_est.version
+            rec.pricingBasis = operation_est.pricing_basis
+            if operation_est.known and operation_est.micro_usd is not None:
+                rec.costKnown = True
+                rec.estCostMicroUsd = operation_est.micro_usd
+        elif unit_count is not None and billing_unit == "page":
+            operation_est = self._pricing.estimate_pages(
+                model_id, pages=unit_count
+            )
+            rec.currency = operation_est.currency
+            rec.priceVersion = operation_est.version
+            rec.pricingBasis = operation_est.pricing_basis
+            if operation_est.known and operation_est.micro_usd is not None:
+                rec.costKnown = True
+                rec.estCostMicroUsd = operation_est.micro_usd
+        elif billable:
             est = self._pricing.estimate(
                 model_id,
                 prompt_tokens=usage.prompt,
@@ -139,6 +176,10 @@ class UsageService:
         agent: str | None = None,
         correlation_id: str | None = None,
         timing: ChatTiming | None = None,
+        billable_units: int | None = None,
+        billing_unit: str | None = None,
+        image_size: str | None = None,
+        image_quality: str | None = None,
     ) -> None:
         """Meter one turn. Never raises: ledger/log failures are swallowed."""
         if not self._enabled:
@@ -155,6 +196,10 @@ class UsageService:
                 provider_completed=provider_completed,
                 agent=agent,
                 correlation_id=correlation_id,
+                billable_units=billable_units,
+                billing_unit=billing_unit,
+                image_size=image_size,
+                image_quality=image_quality,
             )
         except Exception:  # noqa: BLE001 - metering must never break a turn
             logger.warning("usage record build failed", exc_info=True)
@@ -208,6 +253,10 @@ class UsageService:
             "promptTokens": rec.promptTokens,
             "completionTokens": rec.completionTokens,
             "totalTokens": rec.totalTokens,
+            "billableUnits": rec.billableUnits,
+            "billingUnit": rec.billingUnit,
+            "imageSize": rec.imageSize,
+            "imageQuality": rec.imageQuality,
             "costKnown": rec.costKnown,
             "estCostUsd": rec.estCostUsd,
             "currency": rec.currency,
@@ -242,6 +291,10 @@ class UsageService:
             "promptTokens": rec.promptTokens,
             "completionTokens": rec.completionTokens,
             "totalTokens": rec.totalTokens,
+            "billableUnits": rec.billableUnits,
+            "billingUnit": rec.billingUnit,
+            "imageSize": rec.imageSize,
+            "imageQuality": rec.imageQuality,
             "costKnown": rec.costKnown,
             "estCostUsd": rec.estCostUsd,
             "currency": rec.currency,

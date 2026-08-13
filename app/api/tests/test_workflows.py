@@ -140,6 +140,14 @@ async def test_mcp_tool_names_are_rejected_as_step_extras():
         await svc.create(_UID, _create(steps=[_tool_step(["mcp:srv/do_thing"])]))
 
 
+async def test_workflow_tool_cannot_be_nested_inside_a_workflow():
+    svc = _svc(frozenset({"run_workflow"}))
+    with pytest.raises(WorkflowValidationError, match="cannot be nested"):
+        await svc.create(
+            _UID, _create(steps=[_tool_step(["run_workflow"])])
+        )
+
+
 async def test_duplicate_step_tools_are_rejected():
     svc = _svc(frozenset({"remember_memory"}))
     with pytest.raises(WorkflowValidationError, match="duplicate"):

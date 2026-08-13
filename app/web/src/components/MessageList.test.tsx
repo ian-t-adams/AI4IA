@@ -13,6 +13,11 @@ const { mockToggle, scrollIntoViewMock } = vi.hoisted(() => ({
   mockToggle: vi.fn(),
   scrollIntoViewMock: vi.fn(),
 }));
+vi.mock("@/lib/api", () => ({
+  fetchImageArtifact: vi.fn(() => new Promise<Blob>(() => {})),
+  fetchVideoArtifact: vi.fn(() => new Promise<Blob>(() => {})),
+  fetchDocumentArtifact: vi.fn(() => new Promise<Blob>(() => {})),
+}));
 vi.mock("@/lib/voice", () => ({
   useSpeechPlayback: () => ({ activeId: null, busyId: null, toggle: mockToggle }),
 }));
@@ -68,6 +73,71 @@ describe("MessageList", () => {
     expect(screen.getByText("You")).toBeInTheDocument();
     expect(screen.getByText("Assistant")).toBeInTheDocument();
     expect(screen.queryByText("SYSTEM_SECRET")).toBeNull();
+  });
+
+  it("renders image comparisons in order with per-result provenance and cost", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "images",
+            role: "assistant",
+            attachments: [
+              {
+                id: "one",
+                kind: "image",
+                mimeType: "image/png",
+                prompt: "A lighthouse",
+                model: "FLUX-1.1-pro",
+                provider: "black_forest_labs",
+                deployment: "flux-eastus2",
+                region: "eastus2",
+                dataZone: "us",
+                residency: "global",
+                size: "1024x1024",
+                quality: "auto",
+                costKnown: true,
+                estimatedCostUsd: 0.04,
+                pricingBasis: "image",
+                priceVersion: "test",
+              },
+              {
+                id: "two",
+                kind: "image_error",
+                mimeType: "application/problem+json",
+                prompt: "A lighthouse",
+                model: "MAI-Image-2.5",
+                provider: "microsoft",
+                deployment: "mai-eastus2",
+                region: "eastus2",
+                dataZone: "us",
+                residency: "global",
+                size: "1024x1024",
+                quality: "auto",
+                costKnown: false,
+                estimatedCostUsd: null,
+                pricingBasis: null,
+                priceVersion: "test",
+                status: "error",
+                error: "Provider capacity was unavailable.",
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    const comparison = screen.getByRole("list", {
+      name: "Image model comparison",
+    });
+    const captions = comparison.querySelectorAll("figcaption");
+    expect(captions).toHaveLength(1);
+    expect(captions[0]).toHaveTextContent(
+      /FLUX-1\.1-pro.*black_forest_labs.*eastus2.*estimated \$0\.040/,
+    );
+    expect(comparison).toHaveTextContent(
+      /MAI-Image-2\.5.*Provider capacity was unavailable.*microsoft.*cost estimate unavailable/,
+    );
   });
 
   it("shows a generating indicator and no speak button while pending", () => {

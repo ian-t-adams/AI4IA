@@ -27,6 +27,7 @@ from .models import (
     MAX_STEPS,
     MAX_WORKFLOWS_PER_USER,
     NAME_RE,
+    RUN_WORKFLOW_TOOL_NAME,
     Workflow,
     WorkflowConflictError,
     WorkflowCreate,
@@ -233,6 +234,10 @@ class WorkflowService:
                 raise WorkflowValidationError(
                     f"Step {index + 1}: tool '{tool}' cannot be added to a "
                     f"workflow step. Allowed: {allowed}."
+                )
+            if tool == RUN_WORKFLOW_TOOL_NAME:
+                raise WorkflowValidationError(
+                    f"Step {index + 1}: tool '{tool}' cannot be nested inside a workflow."
                 )
             seen.add(tool)
             clean.append(tool)

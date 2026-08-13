@@ -24,6 +24,7 @@ _SYNTHETIC_DESCRIPTIONS = {
     "process_document": "Process a ready library document with governed document tools.",
     "recall_memory": "Recall relevant memories owned by the current user.",
     "remember_memory": "Save a short, durable fact to the current user's own memory.",
+    "run_workflow": "Run one of the current user's saved safe workflows.",
 }
 
 
@@ -91,6 +92,8 @@ async def list_tools(
             available = getattr(request.app.state, "video_artifacts", None) is not None
         elif name == "generate_image":
             available = getattr(request.app.state, "image_artifacts", None) is not None
+        elif name == "run_workflow":
+            available = getattr(request.app.state, "workflow_service", None) is not None
         if not available:
             detail = "The required server feature is not enabled."
         items.append(
