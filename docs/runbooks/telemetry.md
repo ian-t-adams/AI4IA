@@ -84,8 +84,8 @@ is preserved rather than overwritten by the recovery snapshot.
   or raw exception bodies.
 - Usage ledger keys never enter logs or custom events. `chat_completion` custom
   events use stable, domain-separated SHA-256 prefixes (`userHash` /
-  `sessionHash`) for correlation, while general container stdout omits user and
-  session dimensions entirely. Raw internal ids remain in the owner-scoped Cosmos
+  `sessionHash`) for correlation. The usage service emits no model-usage payload
+  to general container stdout. Raw internal ids remain in the owner-scoped Cosmos
   ledger only. Admin directory enrichment is a separate, explicitly enabled
   admin-plane lookup.
 - Correlation ids may cross API, SimpleL7Proxy, APIM, and Foundry; they are not

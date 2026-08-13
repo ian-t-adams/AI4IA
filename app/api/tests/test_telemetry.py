@@ -7,7 +7,7 @@ path emits a ``chat_completion`` customEvent best-effort (never raising).
 from __future__ import annotations
 
 import logging
-import json
+
 
 import pytest
 
@@ -290,13 +290,10 @@ async def test_record_completion_emits_chat_completion_event(monkeypatch, caplog
     assert len(attrs["sessionHash"]) == 24
     assert attrs["userHash"] not in {"u1", "s1"}
     assert "turnTotalMs" not in attrs
-    payload = next(
-        json.loads(record.getMessage())
+    assert not any(
+        record.getMessage().startswith('{"event":"model_usage"')
         for record in caplog.records
-        if record.getMessage().startswith('{"event":"model_usage"')
     )
-    assert "userId" not in payload and "sessionId" not in payload
-    assert "userHash" not in payload and "sessionHash" not in payload
 
 
 async def test_record_completion_adds_privacy_safe_lifecycle_timing(monkeypatch):
