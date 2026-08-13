@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 RAW_NAME = "original"
 PARSED_NAME = "parsed.md"
 CHUNKS_NAME = "chunks.jsonl"
+ANALYSIS_NAME = "analysis.json"
 # Audio/video deep-link timeline: per-segment scene/keyframe markers
 # extracted from the CU result, served to the media player. Optional sidecar —
 # absent for documents and for AV without scene detail.

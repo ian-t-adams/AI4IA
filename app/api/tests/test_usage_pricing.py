@@ -129,6 +129,36 @@ def test_mistral_document_rates_are_page_based():
     assert ocr.known and ocr.micro_usd == 28_000
 
 
+def test_content_understanding_page_and_contextualization_rates():
+    book = load_pricing()
+
+    minimal = book.estimate_pages(
+        "content-understanding-document-minimal", pages=3
+    )
+    basic = book.estimate_pages(
+        "content-understanding-document-basic", pages=3
+    )
+    standard = book.estimate_pages(
+        "content-understanding-document-standard", pages=3
+    )
+    context = book.estimate(
+        "content-understanding-contextualization-standard",
+        prompt_tokens=1_000_000,
+        completion_tokens=0,
+    )
+    advanced = book.estimate(
+        "content-understanding-contextualization-advanced",
+        prompt_tokens=1_000_000,
+        completion_tokens=0,
+    )
+
+    assert minimal.micro_usd == 30
+    assert basic.micro_usd == 3_000
+    assert standard.micro_usd == 15_000
+    assert context.micro_usd == 1_000_000
+    assert advanced.micro_usd == 1_500_000
+
+
 # Categories billed per token. Other modalities use their own explicit price-book
 # sections where an unambiguous meter exists and remain cost-unknown otherwise.
 _TOKEN_BILLED_CATEGORIES = frozenset(

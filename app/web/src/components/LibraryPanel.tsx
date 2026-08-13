@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteLibraryDocument,
   forgetLibraryDocumentFromMemory,
+  getLibraryAnalysis,
   listLibraryAnalyzers,
   listLibraryDocuments,
   listSharedWithMe,
@@ -16,6 +17,7 @@ import {
 } from "@/lib/api";
 import type {
   LibraryAnalyzer,
+  LibraryAnalysisDetails,
   LibraryDocument,
   ShareVisibility,
 } from "@/lib/library";
@@ -110,6 +112,17 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
   // The document whose sharing dialog is open, and the documents
   // others have shared with this user.
   const [sharing, setSharing] = useState<LibraryDocument | null>(null);
+  const [analysisDetails, setAnalysisDetails] = useState<{
+    document: LibraryDocument;
+    details: LibraryAnalysisDetails;
+  } | null>(null);
+  const analysisModalRef = useModalFocus<HTMLDivElement>(
+    analysisDetails !== null,
+  );
+  const onAnalysisKeyDown = useModalKeyDown<HTMLDivElement>(
+    () => setAnalysisDetails(null),
+    analysisDetails !== null,
+  );
   const [sharedWithMe, setSharedWithMe] = useState<LibraryDocument[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
@@ -371,11 +384,26 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                 <option value="">Automatic · Content Understanding</option>
                 <optgroup label="Azure Content Understanding">
                   {analyzers
-                    .filter((analyzer) => analyzer.provider !== "mistral")
+                    .filter(
+                      (analyzer) =>
+                        analyzer.provider !== "mistral" && !analyzer.preview,
+                    )
                     .map((analyzer) => (
                       <option key={analyzer.id} value={analyzer.id}>
                         {analyzer.name}
                         {analyzer.kind === "custom" ? " (custom)" : ""}
+                      </option>
+                    ))}
+                </optgroup>
+                <optgroup label="Azure Content Understanding preview">
+                  {analyzers
+                    .filter(
+                      (analyzer) =>
+                        analyzer.provider !== "mistral" && analyzer.preview,
+                    )
+                    .map((analyzer) => (
+                      <option key={analyzer.id} value={analyzer.id}>
+                        {analyzer.name}
                       </option>
                     ))}
                 </optgroup>
@@ -395,6 +423,12 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                   : "Recommended default. Chooses the Azure Content Understanding analyzer that fits the file type, including audio and video."}
                 {selectedAnalyzer?.provider === "mistral"
                   ? " PDF and image files only; maximum 30 pages and 30 MB. Page-based list-price usage is recorded after analysis."
+                  : ""}
+                {selectedAnalyzer?.preview
+                  ? " Preview capability: no SLA; use the GA automatic analyzer for production-critical ingestion."
+                  : ""}
+                {selectedAnalyzer?.operation === "synchronous"
+                  ? " Returns a terminal result in this upload request; maximum 10 MB and five PDF pages."
                   : ""}
               </span>
             </div>
@@ -493,6 +527,12 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                       ? ` · ${doc.chunkCount} chunks`
                       : ""}
                     {analysisLabel(doc) ? ` · ${analysisLabel(doc)}` : ""}
+                    {doc.confidenceCount
+                      ? ` · confidence avg ${(100 * (doc.averageConfidence ?? 0)).toFixed(1)}% (${doc.confidenceCount})`
+                      : ""}
+                    {doc.groundedFieldCount
+                      ? ` · ${doc.groundedFieldCount} grounded`
+                      : ""}
                     {(() => {
                       const m = memorySaves[doc.id];
                       if (!m) return null;
@@ -553,6 +593,31 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                   >
                     {doc.visibility === "public" ? "Org" : "Shared"}
                   </span>
+                )}
+                {doc.analysisDetailsAvailable && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        setAnalysisDetails({
+                          document: doc,
+                          details: await getLibraryAnalysis(doc.id),
+                        });
+                      } catch (reason) {
+                        setError((reason as Error).message);
+                      }
+                    }}
+                    aria-label={`Analysis details for ${doc.filename}`}
+                    title="View confidence, grounding, signatures, metadata, usage, and filter details"
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: "var(--fg-muted)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Evidence
+                  </button>
                 )}
                 <button
                   onClick={() => setSharing(doc)}
@@ -772,6 +837,78 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
           onClose={() => setSharing(null)}
           onChanged={(visibility) => onShareChanged(sharing.id, visibility)}
         />
+      )}
+      {analysisDetails && (
+        <div
+          ref={analysisModalRef}
+          onKeyDown={onAnalysisKeyDown}
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Analysis details for ${analysisDetails.document.filename}`}
+          className="analysis-details-dialog"
+        >
+          <section>
+            <div className="analysis-details-header">
+              <h3>Analysis evidence</h3>
+              <button
+                type="button"
+                onClick={() => setAnalysisDetails(null)}
+                aria-label="Close analysis details"
+              >
+                Close
+              </button>
+            </div>
+            <p className="inspector-note">
+              {analysisDetails.document.analysisProvider} ·{" "}
+              {analysisDetails.document.analysisCompletionModel ??
+                analysisDetails.document.analysisModel} ·{" "}
+              {analysisDetails.document.analysisOperation}
+              {analysisDetails.document.analysisWorkflow
+                ? ` · ${analysisDetails.document.analysisWorkflow} workflow`
+                : ""}
+            </p>
+            {analysisDetails.details.detailsTruncated ? (
+              <p className="inspector-note">
+                Detailed field and element evidence exceeded the safe response
+                cap. Usage, warnings, and filter records are preserved.
+              </p>
+            ) : null}
+            <dl className="usage-grid">
+              <div>
+                <dt>Confidence fields</dt>
+                <dd>{analysisDetails.document.confidenceCount ?? 0}</dd>
+              </div>
+              <div>
+                <dt>Grounded fields</dt>
+                <dd>{analysisDetails.document.groundedFieldCount ?? 0}</dd>
+              </div>
+              <div>
+                <dt>Average confidence</dt>
+                <dd>
+                  {analysisDetails.document.averageConfidence == null
+                    ? "Unavailable"
+                    : `${(analysisDetails.document.averageConfidence * 100).toFixed(1)}%`}
+                </dd>
+              </div>
+              <div>
+                <dt>Content filter records</dt>
+                <dd>{analysisDetails.document.contentFilterCount ?? 0}</dd>
+              </div>
+            </dl>
+            <details>
+              <summary>Structured fields</summary>
+              <pre>{JSON.stringify(analysisDetails.details.fields, null, 2)}</pre>
+            </details>
+            <details>
+              <summary>Usage</summary>
+              <pre>{JSON.stringify(analysisDetails.details.usage, null, 2)}</pre>
+            </details>
+            <details>
+              <summary>Document elements</summary>
+              <pre>{JSON.stringify(analysisDetails.details.contents, null, 2)}</pre>
+            </details>
+          </section>
+        </div>
       )}
     </>
   );

@@ -125,6 +125,77 @@ class CommittedParametersTests(unittest.TestCase):
         self.assertEqual(code, 0, f"production configuration failed validation:\n{err}")
 
 
+class ContentUnderstandingPreviewTests(unittest.TestCase):
+    def test_unsupported_gpt52_version_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            models = json.loads(
+                (ROOT / "infra" / "models.json").read_text(encoding="utf-8")
+            )
+            for model in models["catalog"]:
+                if model["name"] == "gpt-5.2":
+                    for deployment in model["deployments"]:
+                        deployment["version"] = "unsupported"
+            models_path = Path(tmp) / "models.json"
+            models_path.write_text(json.dumps(models), encoding="utf-8")
+            with patch.object(VALIDATOR, "MODELS_FILE", models_path):
+                code, _, err = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 1)
+        self.assertIn("gpt-5.2 2025-12-11", err)
+
+    def test_agentic_id_is_blocked_at_current_50k_capacity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            path = _write_parameters(
+                tmp,
+                {
+                    "cuPreviewEnabled": True,
+                    "cuAgenticAnalyzerId": "agentic.contract",
+                },
+            )
+            code, _, err = _run(path)
+        self.assertEqual(code, 1)
+        self.assertIn("400K TPM", err)
+
+    def test_agentic_id_requires_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            path = _write_parameters(
+                tmp,
+                {
+                    "cuPreviewEnabled": False,
+                    "cuAgenticAnalyzerId": "agentic.contract",
+                },
+            )
+            code, _, err = _run(path)
+        self.assertEqual(code, 1)
+        self.assertIn("cuPreviewEnabled=true", err)
+
+    def test_agentic_id_is_allowed_at_400k_capacity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            models = json.loads(
+                (ROOT / "infra" / "models.json").read_text(encoding="utf-8")
+            )
+            for model in models["catalog"]:
+                if model["name"] != "gpt-5.2":
+                    continue
+                for deployment in model["deployments"]:
+                    if (
+                        deployment["region"] == "eastus2"
+                        and deployment["sku"] == "GlobalStandard"
+                    ):
+                        deployment["capacity"] = 400
+            models_path = Path(tmp) / "models.json"
+            models_path.write_text(json.dumps(models), encoding="utf-8")
+            parameters_path = _write_parameters(
+                tmp,
+                {
+                    "cuPreviewEnabled": True,
+                    "cuAgenticAnalyzerId": "agentic.contract",
+                },
+            )
+            with patch.object(VALIDATOR, "MODELS_FILE", models_path):
+                code, _, err = _run(parameters_path)
+        self.assertEqual(code, 0, err)
+
+
 class ClaudeMarketplaceAttestationTests(unittest.TestCase):
     def test_disabled_claude_does_not_require_attestation(self) -> None:
         with _environment(

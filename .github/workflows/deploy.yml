@@ -218,6 +218,7 @@ jobs:
       AI4IA_ENTRA_AUDIENCE: ${{ vars.AI4IA_ENTRA_AUDIENCE }}
       AI4IA_ENTRA_WEB_CLIENT_ID: ${{ vars.AI4IA_ENTRA_WEB_CLIENT_ID }}
       AI4IA_ENTRA_API_SCOPE: ${{ vars.AI4IA_ENTRA_API_SCOPE }}
+      AI4IA_CU_AGENTIC_ANALYZER_ID: ${{ vars.AI4IA_CU_AGENTIC_ANALYZER_ID }}
       AI4IA_ADMIN_SUBJECTS: ${{ vars.AI4IA_ADMIN_SUBJECTS }}
       # Same failure mode as AI4IA_MEMORY_STORE below: main.parameters.json reads
       # these through ${VAR=default}, but azd only substitutes what is present in the

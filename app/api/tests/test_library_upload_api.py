@@ -187,6 +187,116 @@ def test_generic_image_upload_persists_filename_derived_mime_for_mistral(
     assert response.json()["modality"] == "image"
 
 
+def test_sync_cu_analyzers_are_hidden_until_preview_is_enabled(client):
+    ids = {
+        analyzer["id"] for analyzer in client.get("/api/library/analyzers").json()
+    }
+    assert "cu-read-sync" not in ids
+    assert "cu-layout-sync" not in ids
+    assert "cu-agentic-document" not in ids
+
+
+def test_sync_cu_upload_returns_terminal_result_in_same_request():
+    client = _client(cu_preview_enabled=True)
+    try:
+        async def analyze_inline(_self, *_args, **_kwargs):
+            from ai4ia_api.content_understanding.models import CUResult
+
+            return CUResult(
+                status="Succeeded",
+                analyzer_id="prebuilt-read",
+                markdown="# Read",
+                contents=[{"markdown": "# Read"}],
+                usage={"documentPagesMinimal": 1},
+            )
+
+        client.app.state.document_ingestor._cu = type(
+            "InlineCU", (), {"analyze_inline": analyze_inline}
+        )()
+        client.app.state.document_ingestor._embedder = None
+        client.app.state.document_ingestor._chunks = None
+        response = _upload(
+            client,
+            "scan.png",
+            b"\x89PNG\r\n\x1a\n",
+            ctype="image/png",
+            analyzerId="cu-read-sync",
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["status"] == "ready"
+        assert response.json()["analysisOperation"] == "synchronous"
+        assert response.json()["analysisApiVersion"] == "2026-06-01-preview"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_agentic_analyzer_remains_hidden_without_remote_id():
+    client = _client(cu_preview_enabled=True)
+    try:
+        ids = {
+            analyzer["id"]
+            for analyzer in client.get("/api/library/analyzers").json()
+        }
+        assert "cu-read-sync" in ids
+        assert "cu-layout-sync" in ids
+        assert "cu-tax-1065-k1" in ids
+        assert "cu-agentic-document" not in ids
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_agentic_analyzer_is_advertised_only_with_configured_remote_id():
+    client = _client(
+        cu_preview_enabled=True,
+        cu_agentic_analyzer_id="agentic.contract",
+    )
+    try:
+        analyzers = {
+            analyzer["id"]: analyzer
+            for analyzer in client.get("/api/library/analyzers").json()
+        }
+        assert analyzers["cu-agentic-document"]["preview"] is True
+        assert analyzers["cu-agentic-document"]["apiVersion"] == (
+            "2026-06-01-preview"
+        )
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_sync_cu_limits_reject_oversize_and_more_than_five_pdf_pages():
+    from pypdf import PdfWriter
+
+    client = _client(cu_preview_enabled=True)
+    try:
+        oversized = _upload(
+            client,
+            "large.png",
+            b"x" * (10 * 1024 * 1024 + 1),
+            ctype="image/png",
+            analyzerId="cu-read-sync",
+        )
+        writer = PdfWriter()
+        for _ in range(6):
+            writer.add_blank_page(width=72, height=72)
+        output = io.BytesIO()
+        writer.write(output)
+        too_many_pages = _upload(
+            client,
+            "six.pdf",
+            output.getvalue(),
+            ctype="application/pdf",
+            analyzerId="cu-layout-sync",
+        )
+
+        assert oversized.status_code == 413
+        assert "10 MB" in oversized.json()["detail"]
+        assert too_many_pages.status_code == 422
+        assert "at most 5 pages" in too_many_pages.json()["detail"]
+        assert client.get("/api/library/documents").json() == []
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_upload_rejects_mistral_when_residency_policy_excludes_deployment():
     client = _client(data_residency="us")
     try:

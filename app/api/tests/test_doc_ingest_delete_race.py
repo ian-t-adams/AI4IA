@@ -69,7 +69,7 @@ class _CU:
         self._markdown = markdown
         self.on_analyze = on_analyze
 
-    async def analyze(self, analyzer_id, data, content_type):
+    async def analyze(self, analyzer_id, data, content_type, *, api_version=None):
         if self.on_analyze is not None:
             await self.on_analyze()
         return CUResult(
@@ -84,7 +84,7 @@ class _BlockingCU:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def analyze(self, analyzer_id, data, content_type):
+    async def analyze(self, analyzer_id, data, content_type, *, api_version=None):
         self.started.set()
         await self.release.wait()
         return CUResult(status="Succeeded", analyzer_id="a", markdown="# x\n\nbody")
@@ -316,9 +316,14 @@ async def test_scheduled_enrich_reloads_canonical_blob_after_admission():
     class CapturingCU(_CU):
         seen: bytes | None = None
 
-        async def analyze(self, analyzer_id, data, content_type):
+        async def analyze(self, analyzer_id, data, content_type, *, api_version=None):
             self.seen = data
-            return await super().analyze(analyzer_id, data, content_type)
+            return await super().analyze(
+                analyzer_id,
+                data,
+                content_type,
+                api_version=api_version,
+            )
 
     blob = InMemoryBlobStore()
     cu = CapturingCU("# ready")
@@ -349,7 +354,7 @@ async def test_enrichment_concurrency_is_global_across_ingestors():
             self.at_limit = asyncio.Event()
             self.release = asyncio.Event()
 
-        async def analyze(self, analyzer_id, data, content_type):
+        async def analyze(self, analyzer_id, data, content_type, *, api_version=None):
             self.active += 1
             self.started += 1
             self.maximum = max(self.maximum, self.active)
@@ -441,7 +446,7 @@ async def test_enrichment_admission_permit_releases_after_failed_task(monkeypatc
         def __init__(self) -> None:
             self.calls = 0
 
-        async def analyze(self, analyzer_id, data, content_type):
+        async def analyze(self, analyzer_id, data, content_type, *, api_version=None):
             self.calls += 1
             if self.calls == 1:
                 raise RuntimeError("provider failed")

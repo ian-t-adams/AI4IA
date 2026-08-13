@@ -36,6 +36,7 @@ import type {
   DocumentAnnotation,
   ForgetFromMemoryResult,
   LibraryAnalyzer,
+  LibraryAnalysisDetails,
   LibraryDocument,
   MediaTimeline,
   SaveToMemoryResult,
@@ -722,6 +723,16 @@ export async function deleteLibraryDocument(documentId: string): Promise<void> {
 export async function listLibraryAnalyzers(): Promise<LibraryAnalyzer[]> {
   return jsonOrThrow(
     await apiFetch("/api/library/analyzers", { cache: "no-store" }),
+  );
+}
+
+export async function getLibraryAnalysis(
+  documentId: string,
+): Promise<LibraryAnalysisDetails> {
+  return jsonOrThrow(
+    await apiFetch(`/api/library/documents/${documentId}/analysis`, {
+      cache: "no-store",
+    }),
   );
 }
 

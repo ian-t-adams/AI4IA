@@ -13,6 +13,7 @@ ships only the storage spine so the data model and governance are settled first.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -35,7 +36,11 @@ from ..auth.dependencies import get_current_user
 from ..entitlements.service import EntitlementService
 from ..logging_setup import emit_custom_event
 from ..memory.telemetry import emit_memory_operation
-from ..content_understanding.models import is_valid_analyzer_id
+from ..content_understanding.models import (
+    CU_SYNC_MAX_BYTES,
+    CU_SYNC_MAX_PDF_PAGES,
+    is_valid_analyzer_id,
+)
 from ..library.access import (
     can_access,
     list_accessible_documents,
@@ -44,6 +49,7 @@ from ..library.access import (
 )
 from ..library.chunking import chunk_markdown
 from ..library.compute_factory import DocumentComputeService
+from ..library.blob_store import BlobNotFoundError
 from ..library.ingest import DocumentIngestor, EnrichScheduleOutcome
 from ..library.modality import classify_modality, normalize_content_type
 from ..library.mistral_document import (
@@ -54,6 +60,7 @@ from ..library.mistral_document import (
 from ..library.models import (
     Analyzer,
     AnalyzerKind,
+    AnalyzerOperation,
     AnalyzerProvider,
     BUILTIN_ANALYZERS,
     BUILTIN_ANALYZER_IDS,
@@ -75,13 +82,18 @@ logger = logging.getLogger(__name__)
 
 
 def _analyzer_available(request: Request, analyzer: Analyzer) -> bool:
-    if analyzer.provider is not AnalyzerProvider.mistral:
-        return True
-    return bool(
-        analyzer.modelId
-        and request.app.state.catalog.resolve_deployment(analyzer.modelId)
-        is not None
-    )
+    settings = request.app.state.settings
+    if analyzer.preview and not settings.cu_preview_enabled:
+        return False
+    if analyzer.id == "cu-agentic-document":
+        return bool(settings.cu_agentic_analyzer_id)
+    if analyzer.provider is AnalyzerProvider.mistral:
+        return bool(
+            analyzer.modelId
+            and request.app.state.catalog.resolve_deployment(analyzer.modelId)
+            is not None
+        )
+    return True
 router = APIRouter(prefix="/api/library", tags=["library"])
 
 
@@ -117,6 +129,17 @@ class UserDocumentSummary(BaseModel):
     analysisSku: str | None = None
     analysisDataZone: str | None = None
     analysisResidency: str | None = None
+    analysisApiVersion: str | None = None
+    analysisOperation: str | None = None
+    analysisWorkflow: str | None = None
+    analysisCompletionModel: str | None = None
+    analysisUsage: dict = Field(default_factory=dict)
+    confidenceCount: int = 0
+    groundedFieldCount: int = 0
+    averageConfidence: float | None = None
+    minimumConfidence: float | None = None
+    contentFilterCount: int = 0
+    analysisDetailsAvailable: bool = False
     summary: str
     chunkCount: int
     error: str | None = None
@@ -169,6 +192,27 @@ class UserDocumentSummary(BaseModel):
                 if analysis is not None
                 else doc.analysisResidency
             ),
+            analysisApiVersion=analysis.apiVersion if analysis is not None else None,
+            analysisOperation=analysis.operation if analysis is not None else None,
+            analysisWorkflow=analysis.workflow if analysis is not None else None,
+            analysisCompletionModel=(
+                analysis.completionModel if analysis is not None else None
+            ),
+            analysisUsage=analysis.usage if analysis is not None else {},
+            confidenceCount=analysis.confidenceCount if analysis is not None else 0,
+            groundedFieldCount=(
+                analysis.groundedFieldCount if analysis is not None else 0
+            ),
+            averageConfidence=(
+                analysis.averageConfidence if analysis is not None else None
+            ),
+            minimumConfidence=(
+                analysis.minimumConfidence if analysis is not None else None
+            ),
+            contentFilterCount=(
+                analysis.contentFilterCount if analysis is not None else 0
+            ),
+            analysisDetailsAvailable=bool(doc.analysisPath),
             summary=doc.summary,
             chunkCount=doc.chunkCount,
             error=doc.error,
@@ -466,6 +510,15 @@ async def upload_document(
         )
     if (
         analyzer is not None
+        and analyzer.operation is AnalyzerOperation.synchronous
+        and len(data) > CU_SYNC_MAX_BYTES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Synchronous Content Understanding supports files up to 10 MB.",
+        )
+    if (
+        analyzer is not None
         and analyzer.provider is AnalyzerProvider.mistral
         and (
             content_type.split(";", 1)[0].strip().lower() == "application/pdf"
@@ -487,6 +540,29 @@ async def upload_document(
                     f"{MAX_MISTRAL_DOCUMENT_PAGES} pages."
                 ),
             )
+    if (
+        analyzer is not None
+        and analyzer.operation is AnalyzerOperation.synchronous
+        and (
+            content_type.split(";", 1)[0].strip().lower() == "application/pdf"
+            or (file.filename or "").lower().endswith(".pdf")
+        )
+    ):
+        try:
+            pages = await asyncio.to_thread(pdf_page_count, data)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        if pages > CU_SYNC_MAX_PDF_PAGES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Synchronous Content Understanding supports PDFs with at "
+                    f"most {CU_SYNC_MAX_PDF_PAGES} pages."
+                ),
+            )
     result = await ingestor.ingest(
         user_id=uid,
         filename=file.filename or "document",
@@ -498,7 +574,20 @@ async def upload_document(
     # Schedule CU enrichment only for a freshly stored document (a dedupe hit is
     # already terminal). schedule_enrich is a no-op when CU is not configured and
     # tracks the task so a delete can cancel it mid-crack.
-    if not result.deduped and doc.status == DocumentStatus.stored:
+    if (
+        not result.deduped
+        and doc.status == DocumentStatus.stored
+        and analyzer is not None
+        and analyzer.operation is AnalyzerOperation.synchronous
+    ):
+        await ingestor.enrich(
+            user_id=uid,
+            document_id=doc.id,
+            data=data,
+            content_type=content_type,
+        )
+        doc = await repo.get_document(uid, doc.id)
+    elif not result.deduped and doc.status == DocumentStatus.stored:
         scheduled = ingestor.schedule_enrich(
             user_id=uid,
             document_id=doc.id,
@@ -516,8 +605,10 @@ async def upload_document(
                     headers={"Retry-After": "5"},
                 )
     logger.info(
-        "library upload user=%s id=%s status=%s deduped=%s",
-        uid, doc.id, doc.status, result.deduped,
+        "library upload status=%s deduped=%s analyzer=%s",
+        doc.status,
+        result.deduped,
+        analyzer_id or "automatic",
     )
     emit_custom_event(
         "document_ingest",
@@ -531,6 +622,43 @@ async def upload_document(
         },
     )
     return UserDocumentSummary.of(doc)
+
+
+@router.get("/documents/{document_id}/analysis", response_model=dict)
+async def get_document_analysis(
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    repo = _library(request)
+    try:
+        document = await repo.get_document(
+            user.internal_user_id, document_id
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Analysis not found",
+        ) from exc
+    if document.status is not DocumentStatus.ready or not document.analysisPath:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Analysis not found",
+        )
+    try:
+        raw = await _ingestor(request).blob.get(document.analysisPath)
+        body = json.loads(raw)
+    except (BlobNotFoundError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Analysis not found",
+        ) from exc
+    if not isinstance(body, dict):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Analysis not found",
+        )
+    return body
 
 
 @router.get("/documents/{document_id}", response_model=UserDocumentSummary)
@@ -1417,7 +1545,7 @@ async def create_analyzer(
             status_code=status.HTTP_409_CONFLICT,
             detail="That analyzer id is reserved by a built-in analyzer.",
         )
-    logger.info("library analyzer created user=%s id=%s", uid, created.id)
+    logger.info("library analyzer created")
     return created
 
 

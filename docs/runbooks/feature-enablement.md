@@ -24,6 +24,8 @@ feature posture.
 | Voice Live tools | `AI4IA_REALTIME_TOOLS_ENABLED` | advertised by web env | `voiceLiveToolsEnabled` | Voice Live enabled |
 | Speech Voice Live (2nd voice provider) | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | advertised by web env | `speechVoiceLiveEnabled` | Voice Live enabled; `speech_voice_live` in `AI4IA_VOICE_PROVIDER_ALLOWLIST`; distinct `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`; repeat the standing APIM and authenticated-canary checks after changes |
 | Document library + multimodal understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `DOCUMENT_LIBRARY_ENABLED` | `documentUnderstandingEnabled` | Cosmos session store, blob account URL, CU endpoint outside local |
+| CU synchronous/preview analyzers | `AI4IA_CU_PREVIEW_ENABLED` | analyzer selector | `cuPreviewEnabled` | Document understanding plus successful postprovision GETs for Read, Layout, and the five tax analyzers on `2026-06-01-preview`. Automatic stays GA. |
+| CU Agentic document reasoning | `AI4IA_CU_AGENTIC_ANALYZER_ID` | analyzer selector only when valid | `cuAgenticAnalyzerId` | Preview enabled; existing analyzer resolves to `agentic.*`; primary GPT-5.2 deployment capacity ≥400K TPM. Current live capacity is 50K, so this remains unavailable. |
 | Library compute / export | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | none | `documentComputeEnabled` | Document understanding, Responses API base URL + model outside local |
 | Inline attachment Code Interpreter | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | none | `inlineDocumentComputeEnabled` | Responses API base URL + model outside local |
 | Azure AI Search chunk store | `AI4IA_SEARCH_ENDPOINT` set | none | `searchEnabled` + `searchLocation` | Search service + API identity RBAC |

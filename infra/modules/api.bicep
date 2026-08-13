@@ -158,6 +158,24 @@ param cuBaseUrl string = ''
 @description('Content Understanding REST api-version the ingest worker uses.')
 param cuApiVersion string = '2025-11-01'
 
+@description('Enable selected Content Understanding 2026-06-01-preview operations.')
+param cuPreviewEnabled bool = false
+
+@description('Existing operator-provisioned agentic Content Understanding analyzer id. Empty keeps the analyzer unavailable.')
+param cuAgenticAnalyzerId string = ''
+
+@description('Completion model name mapped by Content Understanding defaults.')
+param cuCompletionModel string = 'gpt-5.2'
+
+@description('Exact primary Foundry deployment Content Understanding uses for completion.')
+param cuCompletionDeployment string = ''
+
+@description('Embedding model name mapped by Content Understanding defaults.')
+param cuEmbeddingModel string = 'text-embedding-3-large'
+
+@description('Exact primary Foundry deployment Content Understanding uses for embeddings.')
+param cuEmbeddingDeployment string = ''
+
 @description('Enable compute over the library: intent router + code_interpreter + "adjust & return" export. Layered ON TOP of documentUnderstandingEnabled. Default OFF (the chat hot path is byte-for-byte unchanged; neither synthetic tool is advertised).')
 param documentComputeEnabled bool = false
 
@@ -483,13 +501,40 @@ var documentCuEnv = (documentUnderstandingEnabled && !empty(cuBaseUrl)) ? [
     name: 'AI4IA_CU_API_VERSION'
     value: cuApiVersion
   }
+  {
+    name: 'AI4IA_CU_COMPLETION_MODEL'
+    value: cuCompletionModel
+  }
+  {
+    name: 'AI4IA_CU_COMPLETION_DEPLOYMENT'
+    value: cuCompletionDeployment
+  }
+  {
+    name: 'AI4IA_CU_EMBEDDING_MODEL'
+    value: cuEmbeddingModel
+  }
+  {
+    name: 'AI4IA_CU_EMBEDDING_DEPLOYMENT'
+    value: cuEmbeddingDeployment
+  }
 ] : []
+var documentCuPreviewEnv = (documentUnderstandingEnabled && cuPreviewEnabled) ? concat([
+  {
+    name: 'AI4IA_CU_PREVIEW_ENABLED'
+    value: 'true'
+  }
+], !empty(cuAgenticAnalyzerId) ? [
+  {
+    name: 'AI4IA_CU_AGENTIC_ANALYZER_ID'
+    value: cuAgenticAnalyzerId
+  }
+] : []) : []
 var documentEnv = documentUnderstandingEnabled ? concat([
   {
     name: 'AI4IA_DOCUMENT_UNDERSTANDING_ENABLED'
     value: 'true'
   }
-], documentBlobEnv, documentCuEnv) : []
+], documentBlobEnv, documentCuEnv, documentCuPreviewEnv) : []
 
 // Code interpreter endpoint (base url + model) is shared by library
 // compute AND the inline-attachment code interpreter, so it is emitted when EITHER

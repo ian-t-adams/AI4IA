@@ -12,10 +12,10 @@ Turns an upload into a manifest + retrievable chunks, governed and fail-soft:
    ``doc_chunks`` vector store, write a ``chunks.jsonl`` sidecar, then flip the
    manifest to ``ready`` (or ``failed`` with the quick-text fallback retained).
 
-Governance: one analyzer operation is metered per enrich attempt. Content
-Understanding remains cost-unknown because its billing dimensions are not exposed
-here; Mistral records returned page count against its catalog deployment. Embeddings
-are not separately metered (consistent with memory). ``enrich`` never raises.
+Governance: every analyzer attempt is metered. Content Understanding records its
+reported page, contextualization, completion-model, and embedding-model dimensions;
+Mistral records returned page count against its catalog deployment. ``enrich`` never
+raises.
 
 All IO is injected (blob store, CU client, embedder, chunk store), so the
 orchestrator is unit-tested end to end without network or Azure SDKs.
@@ -33,14 +33,22 @@ from enum import Enum
 
 from ..catalog import DeploymentOption
 from ..config import Settings
-from ..content_understanding.models import CUResult
+from ..content_understanding.models import CU_GA_API_VERSION, CUResult
 from ..agents.tools import redact
 from ..documents.extract import DocumentError, extract_text
 from ..memory.embedder import GatewayEmbedder
 from ..logging_setup import emit_custom_event
 from ..usage.models import TokenUsage, UsageTarget
 from ..usage.service import UsageService
-from .blob_store import CHUNKS_NAME, MEDIA_NAME, PARSED_NAME, RAW_NAME, BlobStore, blob_path
+from .blob_store import (
+    ANALYSIS_NAME,
+    CHUNKS_NAME,
+    MEDIA_NAME,
+    PARSED_NAME,
+    RAW_NAME,
+    BlobStore,
+    blob_path,
+)
 from .chunking import chunk_audiovisual, chunk_markdown, media_timeline
 from .doc_chunks import DocChunkRecord, DocChunkStore
 from .hashing import content_hash
@@ -49,6 +57,7 @@ from .models import (
     BUILTIN_ANALYZERS,
     BUILTIN_ANALYZER_IDS,
     Analyzer,
+    AnalyzerOperation,
     AnalyzerProvider,
     DocumentAnalysis,
     DocumentStatus,
@@ -71,6 +80,7 @@ _CU_MODEL_ID = "content-understanding"
 _SUMMARY_LIMIT = 240
 MAX_CONCURRENT_DOCUMENT_ENRICHMENTS = 4
 MAX_PENDING_DOCUMENT_ENRICHMENTS = 32
+MAX_ANALYSIS_DETAILS_BYTES = 2_000_000
 
 _ENRICHMENT_GATES: weakref.WeakKeyDictionary[
     asyncio.AbstractEventLoop, asyncio.Semaphore
@@ -117,8 +127,13 @@ def resolve_cu_analyzer_id(
     - No analyzer (default) or a built-in → the per-modality prebuilt default.
     - A custom analyzer → its ``baseAnalyzerId`` if set, else the modality default.
     """
-    if analyzer is not None and not analyzer.builtin and analyzer.baseAnalyzerId:
-        return analyzer.baseAnalyzerId
+    if analyzer is not None:
+        if analyzer.id == "cu-agentic-document":
+            return settings.cu_agentic_analyzer_id
+        if analyzer.serviceAnalyzerId:
+            return analyzer.serviceAnalyzerId
+        if not analyzer.builtin and analyzer.baseAnalyzerId:
+            return analyzer.baseAnalyzerId
     return settings.cu_analyzer_for_modality(modality)
 
 
@@ -246,8 +261,7 @@ class DocumentIngestor:
         _, global_tasks = _global_enrichment_state()
         if len(global_tasks) >= MAX_PENDING_DOCUMENT_ENRICHMENTS:
             logger.warning(
-                "document enrichment queue saturated; leaving stored id=%s",
-                document_id,
+                "document enrichment queue saturated; leaving manifest stored",
             )
             emit_custom_event(
                 "document_ingest_saturated",
@@ -437,7 +451,7 @@ class DocumentIngestor:
         try:
             doc = await self._library.get_document(user_id, document_id)
         except DocumentNotFoundError:
-            logger.warning("enrich: document gone user=%s id=%s", user_id, document_id)
+            logger.warning("document enrichment skipped because manifest is missing")
             return
 
         modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
@@ -465,6 +479,7 @@ class DocumentIngestor:
         analysis_deployment: DeploymentOption | None = None
         analysis_pages: int | None = None
         provider_completed = False
+        result: CUResult | None = None
 
         initial_outcome, committed = await self._safe_update(
             doc,
@@ -515,14 +530,34 @@ class DocumentIngestor:
                         raise
                 else:
                     assert cu_client is not None
-                    result = await cu_client.analyze(
-                        analysis_model,
-                        payload,
-                        content_type or "application/octet-stream",
-                    )
+                    if (
+                        analyzer is not None
+                        and analyzer.operation is AnalyzerOperation.synchronous
+                    ):
+                        result = await cu_client.analyze_inline(
+                            analysis_model,
+                            payload,
+                            content_type or "application/octet-stream",
+                            api_version=analyzer.apiVersion
+                            or "2026-06-01-preview",
+                        )
+                    else:
+                        result = await cu_client.analyze(
+                            analysis_model,
+                            payload,
+                            content_type or "application/octet-stream",
+                            api_version=(
+                                analyzer.apiVersion
+                                if analyzer is not None and analyzer.apiVersion
+                                else CU_GA_API_VERSION
+                            ),
+                        )
                 provider_completed = True
             finally:
                 payload = None
+            if result is None:
+                raise RuntimeError("content analysis returned no result")
+            analysis_pages = result.page_count
             if not result.succeeded:
                 # Surface WHY, not just that it failed. CU returns an `error`
                 # object alongside the terminal status; `parse_result` already
@@ -536,11 +571,15 @@ class DocumentIngestor:
                 # names and analyzer field values back at us, and this string
                 # lands in the persisted document error and in logs.
                 detail = result.raw.get("error") or result.raw.get("result", {}).get("error")
-                suffix = f": {redact(json.dumps(detail, default=str))[:400]}" if detail else ""
+                code = (
+                    str(detail.get("code"))[:80]
+                    if isinstance(detail, dict) and detail.get("code")
+                    else ""
+                )
+                suffix = f": code={redact(code)}" if code else ""
                 raise RuntimeError(
                     f"content understanding status={result.status or 'unknown'}{suffix}"
                 )
-            analysis_pages = len(result.contents)
             # The user may have deleted the document during the (potentially long)
             # CU poll. Re-check before writing blob/vector side effects so enrich
             # never resurrects content the delete already purged.
@@ -548,6 +587,11 @@ class DocumentIngestor:
                 deleted_mid_flight = True
             else:
                 await self._persist_enrichment(user_id, doc, result)
+                evidence = result.field_evidence_summary()
+                confidence_count = evidence["confidenceCount"]
+                grounded_count = evidence["groundedFieldCount"]
+                average_confidence = evidence["averageConfidence"]
+                minimum_confidence = evidence["minimumConfidence"]
                 doc.analysis = DocumentAnalysis(
                     provider=provider.value,
                     model=analysis_model,
@@ -578,6 +622,54 @@ class DocumentIngestor:
                         if analysis_deployment is not None
                         else None
                     ),
+                    apiVersion=(
+                        analyzer.apiVersion
+                        if analyzer is not None and analyzer.apiVersion
+                        else CU_GA_API_VERSION
+                        if provider is AnalyzerProvider.content_understanding
+                        else None
+                    ),
+                    operation=(
+                        analyzer.operation.value
+                        if analyzer is not None
+                        else AnalyzerOperation.asynchronous.value
+                    ),
+                    workflow=(
+                        str(analyzer.config.get("workflow") or "default")
+                        if analyzer is not None
+                        else "default"
+                    ),
+                    completionModel=(
+                        (
+                            analyzer.modelId
+                            if analyzer is not None and analyzer.modelId
+                            else self._settings.cu_completion_model
+                        )
+                        if provider is AnalyzerProvider.content_understanding
+                        else None
+                    ),
+                    usage=result.usage,
+                    confidenceCount=(
+                        int(confidence_count)
+                        if isinstance(confidence_count, (int, float))
+                        else 0
+                    ),
+                    groundedFieldCount=(
+                        int(grounded_count)
+                        if isinstance(grounded_count, (int, float))
+                        else 0
+                    ),
+                    averageConfidence=(
+                        float(average_confidence)
+                        if isinstance(average_confidence, (int, float))
+                        else None
+                    ),
+                    minimumConfidence=(
+                        float(minimum_confidence)
+                        if isinstance(minimum_confidence, (int, float))
+                        else None
+                    ),
+                    contentFilterCount=len(result.content_filters),
                 )
                 doc.status = DocumentStatus.ready
                 doc.error = None
@@ -612,6 +704,33 @@ class DocumentIngestor:
                     pages=analysis_pages,
                     status=meter_status,
                     provider_completed=provider_completed,
+                    model_usages=(
+                        result.token_usage_by_model()
+                        if provider is AnalyzerProvider.content_understanding
+                        and result is not None
+                        else None
+                    ),
+                    page_meters=(
+                        result.page_usage_by_meter()
+                        if provider is AnalyzerProvider.content_understanding
+                        and result is not None
+                        else None
+                    ),
+                    contextualization_tokens=(
+                        int(result.usage.get("contextualizationTokens") or 0)
+                        if provider is AnalyzerProvider.content_understanding
+                        and result is not None
+                        and isinstance(
+                            result.usage.get("contextualizationTokens"),
+                            (int, float),
+                        )
+                        else 0
+                    ),
+                    advanced_contextualization=bool(
+                        analyzer is not None
+                        and analyzer.config.get("workflow")
+                        in {"advanced", "agentic"}
+                    ),
                 )
             except Exception:  # noqa: BLE001 - telemetry still records terminal status
                 logger.warning("document analysis metering failed", exc_info=True)
@@ -632,6 +751,7 @@ class DocumentIngestor:
                         "summary": doc.summary,
                         "parsedPath": doc.parsedPath,
                         "chunksPath": doc.chunksPath,
+                        "analysisPath": doc.analysisPath,
                         "chunkCount": doc.chunkCount,
                         "analysis": doc.analysis,
                     },
@@ -667,6 +787,48 @@ class DocumentIngestor:
         parsed_path = blob_path(user_id, doc.id, PARSED_NAME)
         await self._blob.put(parsed_path, markdown.encode("utf-8"), "text/markdown")
         doc.parsedPath = parsed_path
+        analysis_details = {
+            "analyzerId": result.analyzer_id,
+            "fields": result.fields,
+            "contents": [
+                {
+                    key: content[key]
+                    for key in (
+                        "fields",
+                        "metadata",
+                        "signatures",
+                        "segments",
+                    )
+                    if key in content
+                }
+                for content in result.contents
+                if isinstance(content, dict)
+            ],
+            "warnings": result.warnings,
+            "usage": result.usage,
+            "contentFilters": result.content_filters,
+        }
+        analysis_path = blob_path(user_id, doc.id, ANALYSIS_NAME)
+        encoded_details = json.dumps(
+            analysis_details, ensure_ascii=False
+        ).encode("utf-8")
+        if len(encoded_details) > MAX_ANALYSIS_DETAILS_BYTES:
+            analysis_details = {
+                "analyzerId": result.analyzer_id,
+                "fields": {},
+                "contents": [],
+                "warnings": result.warnings[:20],
+                "usage": result.usage,
+                "contentFilters": result.content_filters[:20],
+                "detailsTruncated": True,
+            }
+            encoded_details = json.dumps(
+                analysis_details, ensure_ascii=False
+            ).encode("utf-8")
+        await self._blob.put(
+            analysis_path, encoded_details, "application/json"
+        )
+        doc.analysisPath = analysis_path
 
         summary = summarize_markdown(markdown)
         if summary:
@@ -701,7 +863,9 @@ class DocumentIngestor:
         max_chunks = self._settings.document_max_chunks
         if max_chunks and len(chunks) > max_chunks:
             logger.info(
-                "enrich: capping chunks %d -> %d id=%s", len(chunks), max_chunks, doc.id
+                "document enrichment capped chunks %d -> %d",
+                len(chunks),
+                max_chunks,
             )
             chunks = chunks[:max_chunks]
         if self._chunks is not None:
@@ -766,12 +930,11 @@ class DocumentIngestor:
             return "committed", updated
         except DocumentNotFoundError:
             logger.info(
-                "enrich: document deleted mid-flight id=%s; skipping manifest write",
-                doc.id,
+                "document deleted mid-flight; skipping manifest write",
             )
             return "missing", None
         except Exception:  # noqa: BLE001 - terminal telemetry reports persistence failure
-            logger.warning("enrich manifest update failed id=%s", doc.id, exc_info=True)
+            logger.warning("document enrichment manifest update failed", exc_info=True)
             return "error", None
 
     async def close(self) -> None:
@@ -873,7 +1036,7 @@ class DocumentIngestor:
         try:
             await self._chunks.delete_document(user_id, document_id)
         except Exception:  # noqa: BLE001
-            logger.warning("chunk purge failed id=%s", document_id, exc_info=True)
+            logger.warning("document chunk purge failed", exc_info=True)
 
     async def purge(self, user_id: str, document_id: str) -> None:
         """Best-effort removal of a document's blob artifacts + indexed chunks.
@@ -886,12 +1049,12 @@ class DocumentIngestor:
         try:
             await self._blob.delete_prefix(document_prefix(user_id, document_id))
         except Exception:  # noqa: BLE001
-            logger.warning("blob purge failed id=%s", document_id, exc_info=True)
+            logger.warning("document blob purge failed", exc_info=True)
         if self._chunks is not None:
             try:
                 await self._chunks.delete_document(user_id, document_id)
             except Exception:  # noqa: BLE001
-                logger.warning("chunk purge failed id=%s", document_id, exc_info=True)
+                logger.warning("document chunk purge failed", exc_info=True)
 
     async def _meter_analysis(
         self,
@@ -903,6 +1066,10 @@ class DocumentIngestor:
         pages: int | None,
         status: str,
         provider_completed: bool,
+        model_usages: dict[str, tuple[int, int]] | None = None,
+        page_meters: dict[str, int] | None = None,
+        contextualization_tokens: int = 0,
+        advanced_contextualization: bool = False,
     ) -> None:
         # Content Understanding has no catalog deployment; Mistral does.
         if deployment is None:
@@ -911,28 +1078,96 @@ class DocumentIngestor:
                 sku="content-understanding",
                 deploymentName=model_id,
             )
-        await self._usage.record_completion(
-            user_id=user_id,
-            session_id=_INGEST_SESSION,
-            model_id=(
-                _CU_MODEL_ID
-                if provider is AnalyzerProvider.content_understanding
-                else model_id
-            ),
-            target=UsageTarget.from_deployment(
-                deployment, provider=provider.value
-            ),
-            usage=TokenUsage(known=False, complete=False, calls=1),
-            status="complete" if status == "complete" else "error",
-            provider_completed=provider_completed,
-            billable_units=(
-                pages
-                if provider is AnalyzerProvider.mistral and pages is not None
-                else None
-            ),
-            billing_unit=(
-                "page"
-                if provider is AnalyzerProvider.mistral and pages is not None
-                else None
-            ),
+        target = UsageTarget.from_deployment(
+            deployment, provider=provider.value
         )
+        if provider is AnalyzerProvider.content_understanding and page_meters:
+            for page_model, page_count in page_meters.items():
+                await self._usage.record_completion(
+                    user_id=user_id,
+                    session_id=_INGEST_SESSION,
+                    model_id=page_model,
+                    target=target,
+                    usage=TokenUsage(
+                        known=False, complete=False, calls=1
+                    ),
+                    status="complete" if status == "complete" else "error",
+                    provider_completed=provider_completed,
+                    billable_units=page_count,
+                    billing_unit="page",
+                    agent="content_understanding",
+                )
+        else:
+            await self._usage.record_completion(
+                user_id=user_id,
+                session_id=_INGEST_SESSION,
+                model_id=(
+                    _CU_MODEL_ID
+                    if provider is AnalyzerProvider.content_understanding
+                    else model_id
+                ),
+                target=target,
+                usage=TokenUsage(known=False, complete=False, calls=1),
+                status="complete" if status == "complete" else "error",
+                provider_completed=provider_completed,
+                billable_units=pages if pages is not None else None,
+                billing_unit="page" if pages is not None else None,
+            )
+        if provider is not AnalyzerProvider.content_understanding:
+            return
+        if contextualization_tokens > 0:
+            await self._usage.record_completion(
+                user_id=user_id,
+                session_id=_INGEST_SESSION,
+                model_id=(
+                    "content-understanding-contextualization-advanced"
+                    if advanced_contextualization
+                    else "content-understanding-contextualization-standard"
+                ),
+                target=target,
+                usage=TokenUsage(
+                    prompt=contextualization_tokens,
+                    completion=0,
+                    total=contextualization_tokens,
+                    known=True,
+                    complete=True,
+                    calls=1,
+                ),
+                status="complete" if status == "complete" else "error",
+                provider_completed=provider_completed,
+                agent="content_understanding",
+            )
+        deployment_by_model = {
+            self._settings.cu_completion_model: (
+                self._settings.cu_completion_deployment
+            ),
+            self._settings.cu_embedding_model: (
+                self._settings.cu_embedding_deployment
+            ),
+        }
+        for token_model, counts in (model_usages or {}).items():
+            prompt, completion = counts
+            deployment_name = deployment_by_model.get(token_model, "")
+            await self._usage.record_completion(
+                user_id=user_id,
+                session_id=_INGEST_SESSION,
+                model_id=token_model,
+                target=UsageTarget(
+                    provider="content_understanding_model",
+                    deployment=deployment_name or None,
+                    target=deployment_name or token_model,
+                    region=None,
+                    dataZone=None,
+                ),
+                usage=TokenUsage(
+                    prompt=prompt,
+                    completion=completion,
+                    total=prompt + completion,
+                    known=True,
+                    complete=True,
+                    calls=1,
+                ),
+                status="complete" if status == "complete" else "error",
+                provider_completed=provider_completed,
+                agent="content_understanding",
+            )

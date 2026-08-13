@@ -739,6 +739,49 @@ button:disabled {
   font-size: 0.72em;
 }
 
+.analysis-details-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(0 0 0 / 55%);
+}
+
+.analysis-details-dialog > section {
+  width: min(680px, 100%);
+  max-height: min(760px, 90vh);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  background: var(--bg-elevated);
+  color: var(--fg);
+}
+
+.analysis-details-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.analysis-details-header h3 {
+  margin: 0;
+}
+
+.analysis-details-dialog pre {
+  max-height: 260px;
+  overflow: auto;
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .usage-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

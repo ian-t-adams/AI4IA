@@ -40,6 +40,9 @@ def _run(
         # reconstructs names instead of consuming outputs, the assertion catches it.
         "AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT": "completion-from-bicep-output",
         "AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT": "embedding-from-bicep-output",
+        "AZURE_CONTENT_UNDERSTANDING_PREVIEW_ENABLED": "true",
+        "AZURE_CONTENT_UNDERSTANDING_COMPLETION_CAPACITY": "50",
+        "AZURE_CONTENT_UNDERSTANDING_AGENTIC_ANALYZER_ID": "",
     }
     values.update(overrides or {})
     env_cases = "\n".join(
@@ -65,6 +68,7 @@ Invoke-Expression $fn.Extent.Text
 $script:Results = @()
 $script:Captured = $null
 $script:PatchCalls = 0
+$script:GetCalls = 0
 $script:TokenCalls = 0
 $script:SleepSeconds = [System.Collections.Generic.List[int]]::new()
 $script:NowSeconds = 0
@@ -97,6 +101,19 @@ function Start-Sleep {{
 function Get-MonotonicTime {{ return [double]$script:NowSeconds }}
 function Invoke-RestMethod {{
   param($Method, $Uri, $Headers, $Body, $TimeoutSec)
+  if ("$Method" -eq 'Get') {{
+    $script:GetCalls++
+    if ($Uri -like '*prebuilt-documentSearch*') {{
+      return @{{ supportedModels = @{{
+        completion = @('gpt-5.2')
+        embedding = @('text-embedding-3-large')
+      }} }}
+    }}
+    if ($Uri -like '*agentic.contract*') {{
+      return @{{ config = @{{ workflow = 'agentic.2026-06-01-preview' }} }}
+    }}
+    return @{{ config = @{{ workflow = 'standard.2026-06-01-preview' }} }}
+  }}
   $script:PatchCalls++
   $script:NowSeconds += [Math]::Min($script:RequestSeconds, $TimeoutSec)
   if ($script:FailuresRemaining -gt 0) {{
@@ -117,6 +134,7 @@ Register-ContentUnderstandingDefault
   results = $script:Results
   captured = $script:Captured
   patchCalls = $script:PatchCalls
+  getCalls = $script:GetCalls
   tokenCalls = $script:TokenCalls
   sleepSeconds = $script:SleepSeconds
   elapsedSeconds = $script:NowSeconds
@@ -159,8 +177,11 @@ class ContentUnderstandingPostprovisionTests(unittest.TestCase):
                 "prebuilt-analyzer-completion-mini": "completion-from-bicep-output",
                 "prebuilt-analyzer-completion": "completion-from-bicep-output",
                 "prebuilt-analyzer-embedding": "embedding-from-bicep-output",
+                "gpt-5.2": "completion-from-bicep-output",
+                "text-embedding-3-large": "embedding-from-bicep-output",
             },
         )
+        self.assertEqual(payload["getCalls"], 8)
 
     def test_disabled_content_understanding_is_the_only_skip_path(self) -> None:
         payload = _run(
@@ -186,6 +207,8 @@ class ContentUnderstandingPostprovisionTests(unittest.TestCase):
             "AZURE_PRIMARY_FOUNDRY_ENDPOINT",
             "AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT",
             "AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT",
+            "AZURE_CONTENT_UNDERSTANDING_PREVIEW_ENABLED",
+            "AZURE_CONTENT_UNDERSTANDING_COMPLETION_CAPACITY",
         )
         for name in names:
             with self.subTest(name=name):
@@ -199,6 +222,34 @@ class ContentUnderstandingPostprovisionTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["status"], "FAIL")
         self.assertIn("token", payload["results"][0]["detail"])
         self.assertEqual(payload["patchCalls"], 0)
+
+    def test_ga_only_mode_checks_document_search_but_skips_preview_analyzers(self) -> None:
+        payload = _run(
+            overrides={"AZURE_CONTENT_UNDERSTANDING_PREVIEW_ENABLED": "false"}
+        )
+        self.assertEqual(payload["results"][0]["status"], "PASS")
+        self.assertEqual(payload["getCalls"], 1)
+
+    def test_agentic_configuration_requires_400k_completion_capacity(self) -> None:
+        payload = _run(
+            overrides={
+                "AZURE_CONTENT_UNDERSTANDING_AGENTIC_ANALYZER_ID": "agentic.contract",
+                "AZURE_CONTENT_UNDERSTANDING_COMPLETION_CAPACITY": "399",
+            }
+        )
+        self.assertEqual(payload["results"][0]["status"], "FAIL")
+        self.assertIn("400K TPM", payload["results"][0]["detail"])
+        self.assertEqual(payload["patchCalls"], 0)
+
+    def test_agentic_configuration_is_verified_when_capacity_is_sufficient(self) -> None:
+        payload = _run(
+            overrides={
+                "AZURE_CONTENT_UNDERSTANDING_AGENTIC_ANALYZER_ID": "agentic.contract",
+                "AZURE_CONTENT_UNDERSTANDING_COMPLETION_CAPACITY": "400",
+            }
+        )
+        self.assertEqual(payload["results"][0]["status"], "PASS")
+        self.assertEqual(payload["getCalls"], 9)
 
     def test_retries_through_role_assignment_propagation(self) -> None:
         payload = _run(patch_failures=2)
@@ -276,6 +327,9 @@ class ContentUnderstandingProvisioningWiringTests(unittest.TestCase):
             "AZURE_PRIMARY_FOUNDRY_ENDPOINT",
             "AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT",
             "AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT",
+            "AZURE_CONTENT_UNDERSTANDING_PREVIEW_ENABLED",
+            "AZURE_CONTENT_UNDERSTANDING_AGENTIC_ANALYZER_ID",
+            "AZURE_CONTENT_UNDERSTANDING_COMPLETION_CAPACITY",
         ):
             self.assertIn(f"output {name} ", main)
         self.assertIn("deployments: modelDeploymentsByRegion[i]", main)

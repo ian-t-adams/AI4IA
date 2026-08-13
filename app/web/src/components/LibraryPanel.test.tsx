@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   uploadLibraryDocument: vi.fn(),
   saveLibraryDocumentToMemory: vi.fn(),
   forgetLibraryDocumentFromMemory: vi.fn(),
+  getLibraryAnalysis: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -31,6 +32,7 @@ vi.mock("@/lib/api", () => ({
   uploadLibraryDocument: mocks.uploadLibraryDocument,
   saveLibraryDocumentToMemory: mocks.saveLibraryDocumentToMemory,
   forgetLibraryDocumentFromMemory: mocks.forgetLibraryDocumentFromMemory,
+  getLibraryAnalysis: mocks.getLibraryAnalysis,
 }));
 
 const DOC: LibraryDocument = {
@@ -54,6 +56,14 @@ beforeEach(() => {
   mocks.listLibraryAnalyzers.mockResolvedValue([]);
   mocks.listSharedWithMe.mockResolvedValue([]);
   mocks.deleteLibraryDocument.mockResolvedValue(undefined);
+  mocks.getLibraryAnalysis.mockResolvedValue({
+    analyzerId: "prebuilt-layout",
+    fields: { signed: { confidence: 0.92 } },
+    contents: [{ signatures: [{ span: { offset: 1, length: 4 } }] }],
+    warnings: [],
+    usage: { documentPagesBasic: 1 },
+    contentFilters: [],
+  });
 });
 
 afterEach(() => {
@@ -110,7 +120,7 @@ describe("LibraryPanel delete", () => {
   it("does not let an older poll reinsert a successfully deleted document", async () => {
     let poll!: () => Promise<void>;
     let resolvePoll!: (documents: LibraryDocument[]) => void;
-    vi.spyOn(window, "setInterval").mockImplementation((handler) => {
+    const intervalSpy = vi.spyOn(window, "setInterval").mockImplementation((handler) => {
       poll = handler as () => Promise<void>;
       return 1 as unknown as ReturnType<typeof setInterval>;
     });
@@ -129,11 +139,19 @@ describe("LibraryPanel delete", () => {
     const remove = await screen.findByRole("button", {
       name: "Permanently delete report.pdf",
     });
+    await waitFor(() =>
+      expect(intervalSpy.mock.calls.some((call) => call[1] === 3000)).toBe(true),
+    );
+    poll = intervalSpy.mock.calls.find(
+      (call) => call[1] === 3000,
+    )?.[0] as () => Promise<void>;
     await act(async () => {
       void poll();
       await Promise.resolve();
     });
-    expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(2);
+    await waitFor(() =>
+      expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(2),
+    );
 
     await user.click(remove);
     await waitFor(() =>
@@ -339,6 +357,7 @@ describe("LibraryPanel uploads and polling", () => {
       poll = handler as () => Promise<void>;
       return 1 as unknown as ReturnType<typeof setInterval>;
     });
+
     const analyzing = { ...DOC, status: "analyzing" as const };
     const ready = { ...DOC, status: "ready" as const };
     mocks.listLibraryDocuments
@@ -384,5 +403,45 @@ describe("LibraryPanel uploads and polling", () => {
     });
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.queryByText("Analyzing…")).not.toBeInTheDocument();
+  });
+
+  it("shows confidence and owner-scoped analysis evidence on demand", async () => {
+    const user = userEvent.setup();
+    mocks.listLibraryDocuments.mockResolvedValueOnce([
+      {
+        ...DOC,
+        analysisProvider: "content_understanding",
+        analysisCompletionModel: "gpt-5.2",
+        analysisOperation: "synchronous",
+        confidenceCount: 1,
+        groundedFieldCount: 1,
+        averageConfidence: 0.92,
+        contentFilterCount: 0,
+        analysisDetailsAvailable: true,
+      },
+    ]);
+    render(<LibraryPanel onClose={vi.fn()} />);
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Analysis details for report.pdf",
+      }),
+    );
+
+    expect(
+      screen.getByRole("dialog", {
+        name: "Analysis details for report.pdf",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("92.0%")).toBeInTheDocument();
+    expect(mocks.getLibraryAnalysis).toHaveBeenCalledWith("doc1");
+    await user.click(
+      screen.getByRole("button", { name: "Close analysis details" }),
+    );
+    expect(
+      screen.queryByRole("dialog", {
+        name: "Analysis details for report.pdf",
+      }),
+    ).not.toBeInTheDocument();
   });
 });

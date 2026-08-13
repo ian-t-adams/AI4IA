@@ -146,6 +146,12 @@
     "documentUnderstandingEnabled": {
       "value": true
     },
+    "cuPreviewEnabled": {
+      "value": true
+    },
+    "cuAgenticAnalyzerId": {
+      "value": "${AI4IA_CU_AGENTIC_ANALYZER_ID=}"
+    },
     "documentComputeEnabled": {
       "value": true
     },

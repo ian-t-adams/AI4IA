@@ -79,14 +79,23 @@ async def test_submit_binary_missing_operation_location_raises():
 
 async def test_submit_binary_upstream_error_raises_with_status():
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(403, text="forbidden")
+        return httpx.Response(
+            403,
+            json={
+                "error": {
+                    "code": "Forbidden",
+                    "message": "received data:image/png;base64,PRIVATE",
+                }
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         client = ContentUnderstandingClient(_settings(), http_client=http)
         with pytest.raises(ContentUnderstandingError) as ei:
             await client.submit_binary("a", b"x", "application/pdf")
     assert ei.value.status_code == 403
-    assert "forbidden" in ei.value.detail
+    assert ei.value.detail == "upstream code=Forbidden"
+    assert "PRIVATE" not in str(ei.value)
 
 
 async def test_bearer_auth_uses_injected_token_provider():
@@ -152,6 +161,91 @@ async def test_analyze_polls_until_succeeded():
     assert state["polls"] == 2
 
 
+async def test_analyze_inline_returns_direct_preview_response_without_polling():
+    seen: dict = {}
+    body = {
+        "analyzerId": "prebuilt-layout",
+        "contents": [
+            {
+                "markdown": "# Layout",
+                "fields": {
+                    "signed": {
+                        "type": "boolean",
+                        "valueBoolean": True,
+                        "confidence": 0.9,
+                        "source": "D(1,0,0,1,1)",
+                    }
+                },
+                "signatures": [{"span": {"offset": 1, "length": 4}}],
+            }
+        ],
+        "usage": {
+            "documentPagesBasic": 1,
+            "contextualizationTokens": 12,
+            "tokens": {"gpt-5.2-input": 10, "gpt-5.2-output": 2},
+        },
+        "content_filters": [{"blocked": False}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["method"] = request.method
+        return httpx.Response(200, json=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = ContentUnderstandingClient(_settings(), http_client=http)
+        result = await client.analyze_inline(
+            "prebuilt-layout", b"PDF", "application/pdf"
+        )
+
+    assert seen == {
+        "method": "POST",
+        "url": (
+            "https://cu.example/contentunderstanding/analyzers/"
+            "prebuilt-layout:analyzeBinaryInline?"
+            "api-version=2026-06-01-preview"
+        ),
+    }
+    assert result.succeeded
+    assert result.markdown == "# Layout"
+    assert result.page_count == 1
+    assert result.model_token_counts() == (10, 2, 12, True)
+    assert result.content_filters == [{"blocked": False}]
+    assert result.field_evidence_summary() == {
+        "confidenceCount": 1,
+        "groundedFieldCount": 1,
+        "averageConfidence": 0.9,
+        "minimumConfidence": 0.9,
+    }
+
+
+async def test_get_analyzer_returns_supported_models_for_requested_version():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url).endswith(
+            "/contentunderstanding/analyzers/prebuilt-documentSearch"
+            "?api-version=2026-06-01-preview"
+        )
+        return httpx.Response(
+            200,
+            json={
+                "analyzerId": "prebuilt-documentSearch",
+                "supportedModels": {
+                    "completion": ["gpt-5.2"],
+                    "embedding": ["text-embedding-3-large"],
+                },
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = ContentUnderstandingClient(_settings(), http_client=http)
+        analyzer = await client.get_analyzer(
+            "prebuilt-documentSearch",
+            api_version="2026-06-01-preview",
+        )
+
+    assert analyzer["supportedModels"]["completion"] == ["gpt-5.2"]
+
+
 async def test_analyze_times_out_when_never_terminal():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
@@ -199,6 +293,57 @@ def test_parse_result_concatenates_contents_and_collects_warnings():
     assert result.fields == {"a": 1}
     assert result.warnings == [{"code": "x"}]
     assert result.succeeded
+
+
+def test_parse_result_collects_usage_and_evidence_from_async_envelope():
+    result = parse_result(
+        {
+            "status": "Succeeded",
+            "result": {
+                "analyzerId": "a",
+                "contents": [
+                    {
+                        "markdown": "text",
+                        "fields": {
+                            "amount": {
+                                "valueNumber": 12,
+                                "confidence": 0.75,
+                                "source": "D(1,0,0,1,1)",
+                            },
+                            "summary": {
+                                "valueString": "ok",
+                                "confidence": 0.5,
+                            },
+                        },
+                    }
+                ],
+            },
+            "usage": {
+                "documentPagesStandard": 2,
+                "tokens": {
+                    "gpt-5.2-input": 100,
+                    "gpt-5.2-output": 20,
+                    "text-embedding-3-large": 10,
+                },
+            },
+        }
+    )
+
+    assert result.page_count == 2
+    assert result.page_usage_by_meter() == {
+        "content-understanding-document-standard": 2
+    }
+    assert result.model_token_counts() == (110, 20, 130, True)
+    assert result.token_usage_by_model() == {
+        "gpt-5.2": (100, 20),
+        "text-embedding-3-large": (10, 0),
+    }
+    assert result.field_evidence_summary() == {
+        "confidenceCount": 2,
+        "groundedFieldCount": 1,
+        "averageConfidence": 0.625,
+        "minimumConfidence": 0.5,
+    }
 
 
 def test_parse_result_handles_missing_result():
@@ -272,4 +417,3 @@ async def test_submit_binary_rejects_invalid_analyzer_id_before_any_request():
         client = ContentUnderstandingClient(_settings(), http_client=http)
         with pytest.raises(ValueError, match="invalid content understanding analyzer id"):
             await client.submit_binary("foo\n", b"x", "application/pdf")
-

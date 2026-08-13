@@ -133,6 +133,19 @@ def main(*, require_deployment_attestation: bool = False) -> int:
                 "Bicep primary-region outputs require Content Understanding model "
                 f"deployments in {location}: missing {rendered}."
             )
+        cu_completion_versions = {
+            deployment.get("version")
+            for model in models.get("catalog", [])
+            if model.get("name") == "gpt-5.2"
+            for deployment in model.get("deployments", [])
+            if deployment.get("region") == location
+            and deployment.get("sku") == "GlobalStandard"
+        }
+        if "2025-12-11" not in cu_completion_versions:
+            errors.append(
+                "Content Understanding requires the supported gpt-5.2 "
+                "2025-12-11 model version in the primary region."
+            )
 
     app_environment = text(parameter_value(parameters, "appEnvironment", "dev")).lower()
     auth_provider = text(parameter_value(parameters, "apiAuthProvider", "dev")).lower()
@@ -224,6 +237,41 @@ def main(*, require_deployment_attestation: bool = False) -> int:
         parameter_value(parameters, "documentUnderstandingEnabled", False)
     ):
         errors.append("documentComputeEnabled=true requires documentUnderstandingEnabled=true.")
+    cu_enabled = truthy(
+        parameter_value(parameters, "documentUnderstandingEnabled", False)
+    )
+    cu_preview_enabled = truthy(
+        parameter_value(parameters, "cuPreviewEnabled", False)
+    )
+    cu_agentic_analyzer_id = text(
+        parameter_value(parameters, "cuAgenticAnalyzerId")
+    )
+    if cu_preview_enabled and not cu_enabled:
+        errors.append(
+            "cuPreviewEnabled=true requires documentUnderstandingEnabled=true."
+        )
+    if cu_agentic_analyzer_id:
+        if not cu_preview_enabled:
+            errors.append(
+                "cuAgenticAnalyzerId requires cuPreviewEnabled=true."
+            )
+        if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", cu_agentic_analyzer_id) is None:
+            errors.append(
+                "cuAgenticAnalyzerId must be a valid Content Understanding analyzer id."
+            )
+        capacities = [
+            int(deployment.get("capacity") or 0)
+            for model in models.get("catalog", [])
+            if model.get("name") == "gpt-5.2"
+            for deployment in model.get("deployments", [])
+            if deployment.get("region") == location
+            and deployment.get("sku") == "GlobalStandard"
+        ]
+        if not capacities or max(capacities) < 400:
+            errors.append(
+                "cuAgenticAnalyzerId requires at least 400K TPM on the primary "
+                "gpt-5.2 GlobalStandard deployment."
+            )
 
     for domain_name, cert_name in (
         ("webCustomDomain", "webManagedCertName"),

@@ -141,6 +141,14 @@ The Library **Analyzer** selector chooses the extraction pathway before upload:
   Each request is capped at 30 pages and 30 MB. Their Markdown is normalized into
   the same canonical `parsed.md` → chunk → embed → search pipeline; the document
   card records provider, model, page count, region, and residency.
+- When the environment enables CU preview, **Content Understanding Read** and
+  **Layout** are synchronous choices for small files (10 MB; first five PDF
+  pages). They return before the upload request finishes and are clearly marked
+  Preview. Automatic remains the GA pathway.
+- Ready CU documents can show confidence and grounding counts. Choose
+  **Evidence** to inspect owner-scoped structured fields, signatures, metadata,
+  usage, and content-filter details. Confidence thresholds are workload- and
+  field-specific; recalibrate them whenever an analyzer or model changes.
 
 The selected analyzer is part of the dedupe key, so uploading the same bytes
 through two analyzers creates two independently attributable results rather than
