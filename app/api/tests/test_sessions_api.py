@@ -122,6 +122,29 @@ def test_session_rejects_invalid_image_preferences(client, preferences):
     assert response.status_code == 422
 
 
+def test_session_patch_revalidates_image_preferences_before_persisting(client):
+    created = _create(client)
+    session_id = created.json()["id"]
+    invalid = {
+        "models": ["gpt-5.2"],
+        "size": "1024x1024",
+        "quality": "auto",
+    }
+
+    response = client.patch(
+        f"/api/sessions/{session_id}",
+        json={"imagePreferences": invalid},
+    )
+
+    assert response.status_code == 422
+    persisted = client.get(f"/api/sessions/{session_id}").json()
+    assert persisted["imagePreferences"] == {
+        "models": [],
+        "size": None,
+        "quality": None,
+    }
+
+
 def test_create_session_rejects_unknown_tool_override(client):
     resp = _create(client, toolOverrides={"added": ["no-such-tool"], "removed": []})
     assert resp.status_code == 422, resp.text

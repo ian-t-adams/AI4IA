@@ -485,12 +485,13 @@ def test_handler_enforces_per_turn_budget(client):
     sink: list[MessageAttachment] = []
     _, handlers = _build_capability(client, uid, sink)
     handler = handlers[GENERATE_IMAGE_TOOL_NAME]
-    for _ in range(MAX_IMAGES_PER_TURN):
+    assert MAX_IMAGES_PER_TURN == 3
+    for _ in range(3):
         ok = asyncio.run(handler({"prompt": "x", "model": "gpt-image-2"}, ToolContext()))
         assert ok["status"] == "generated"
     over = asyncio.run(handler({"prompt": "x", "model": "gpt-image-2"}, ToolContext()))
     assert "error" in over
-    assert len(sink) == MAX_IMAGES_PER_TURN
+    assert len(sink) == 3
 
 
 # ---- serve endpoint ownership ----
