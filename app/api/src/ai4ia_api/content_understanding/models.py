@@ -75,17 +75,14 @@ class CUResult:
         saw_page_meter = False
         for key in _PAGE_USAGE_METERS:
             value = self.usage.get(key)
-            if (
-                isinstance(value, (int, float))
-                and not isinstance(value, bool)
-                and value > 0
-            ):
-                # Only a *non-zero* meter counts as "the service told us pages".
-                # A real CU response zero-fills every documentPages* key, so
-                # treating a present-but-zero key as authoritative made the
-                # segment-count fallback dead and reported 0 pages for analyzers
-                # that have no page meter at all (audio/video/image search).
-                page_total += float(value)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                # A present meter is authoritative even when it is zero: a real CU
+                # response zero-fills every documentPages* key, so "all zero" means
+                # "no page meter applied to this modality", not "unknown". Falling
+                # back to len(contents) there would report audio/video segments as
+                # billable pages. The fallback exists for providers that emit no
+                # page meters at all (Mistral), which is why it stays.
+                page_total += max(0.0, float(value))
                 saw_page_meter = True
         if saw_page_meter:
             return int(ceil(page_total))
@@ -95,13 +92,14 @@ class CUResult:
     def metered_page_count(self) -> int | None:
         """Pages the *service* billed, or ``None`` when it billed none.
 
-        Deliberately narrower than :attr:`page_count`: it never falls back to
-        ``len(contents)``. The fallback is right for a provider whose contents
-        *are* pages (Mistral OCR returns one content per page), but for a
-        Content Understanding audio/video analyzer ``contents`` are timed
-        segments, so billing them as pages invents chargeable units the service
-        never metered. Anything that writes ``billing_unit="page"`` for CU must
-        read this, not :attr:`page_count`.
+        Deliberately narrower than :attr:`page_count`, which must keep the
+        ``len(contents)`` fallback for providers that emit no page meters at all
+        (Mistral OCR returns one content per page). That fallback is wrong as a
+        *billing* signal for Content Understanding, whose contents are timed
+        segments for audio/video: if a CU response ever omits the
+        ``documentPages*`` keys instead of zero-filling them, billing the
+        fallback would invent chargeable units the service never metered.
+        Anything that writes ``billing_unit="page"`` for CU reads this.
         """
         total = 0.0
         seen = False

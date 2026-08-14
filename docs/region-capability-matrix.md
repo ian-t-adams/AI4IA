@@ -200,27 +200,18 @@ then give `rerank` a real provider path in `gen-gateway-policy.py`, add it to
 `ROUTABLE_CATEGORIES`, add a `pricing.json` rate, and wire an actual consumer —
 otherwise the generator will (correctly) refuse to build the catalog.
 
-#### Reclaiming the live capacity
-
-Removing the model from `infra/models.json` stops it being *declared*, but it does
-**not** delete what is already deployed: `azd provision` runs an ARM deployment in
-incremental mode, which leaves a resource alone once it drops out of the template.
-Both deployments therefore survive the next provision and keep holding quota
-against the subscription-wide `AIServices.GlobalStandard.Cohere-Rerank-V4-Pro`
-pool (50 units each).
-
-Delete them explicitly, once, after the catalog change ships:
-
-```powershell
-az cognitiveservices account deployment delete `
-  -g rg-ai4ia-slurmfactory -n mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o `
-  --deployment-name Cohere-rerank-v4.0-pro-slurmfactory-eastus2-glbl
-
-az cognitiveservices account deployment delete `
-  -g rg-ai4ia-slurmfactory -n mf-aiforia-slurmfactory-swedencentral-vypvgrncoed2o `
-  --deployment-name Cohere-rerank-v4.0-pro-slurmfactory-swedencentral-glbl
-```
-
-Verify with `python scripts/check-model-availability.py`, which reads live quota
-and will show the freed pool. Until then the deployments are inert but billed —
-the app has no route to them.
+> **Removing a model from `models.json` is only half the change.** Bicep model
+> deployments are incremental: dropping an entry stops *declaring* the deployment
+> but does not delete the live one, and `postprovision.ps1` then hard-fails the
+> next deploy with `unexpected stale deployment(s)`. That gate is deliberate — it
+> refuses to let the catalog and the subscription drift apart — but it means the
+> live deployments must be deleted in the same change:
+>
+> ```powershell
+> az cognitiveservices account deployment delete -g <rg> -n <account> `
+>   --deployment-name <model>-<token>-<region>-<skuShort>
+> ```
+>
+> Removing `Cohere-rerank-v4.0-pro` hit exactly this: the deploy provisioned
+> cleanly, then failed post-provision on both regions and rolled the app
+> revisions back until the two orphaned deployments were deleted.

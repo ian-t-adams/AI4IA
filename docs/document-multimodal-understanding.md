@@ -151,12 +151,13 @@ When `cuPreviewEnabled` is explicitly on, the Library adds:
 
 Both use `2026-06-01-preview`, carry no SLA, accept at most 10 MB, and process at
 most five PDF pages. Unlike normal enrichment, the upload request waits for their
-terminal result — but that wait is **bounded** by `AI4IA_CU_TIMEOUT_SECONDS`. The
-inline crack shares one process-wide concurrency gate with the asynchronous
-cracks, which hold a slot for the whole poll budget, so under contention the
-upload returns with a non-terminal manifest and the client falls back to the
-ordinary polling path instead of stalling until the ingress times it out. The
-automatic analyzer never silently switches to preview.
+terminal result. That wait is **bounded**: the inline crack shares one
+process-wide concurrency gate with the asynchronous cracks, which hold a slot for
+the whole poll budget, so it waits only
+`INLINE_ENRICH_ADMISSION_TIMEOUT_S` for a slot and otherwise returns
+`saturated` — a retryable 503 with `Retry-After`, rather than queueing behind a
+backlog until the ingress times the request out. The automatic analyzer never
+silently switches to preview.
 
 Every CU result now persists a bounded owner-scoped `analysis.json` sidecar with
 structured fields, source/confidence evidence, signatures/metadata, warnings,

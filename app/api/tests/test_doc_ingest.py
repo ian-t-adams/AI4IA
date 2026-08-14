@@ -1151,3 +1151,37 @@ async def test_cu_failure_message_is_omitted_before_it_is_persisted():
     assert "InvalidArgument" in error, error
     # ...and the credential-shaped value in it did not.
     assert ("Z" * 24) not in error, error
+
+
+async def test_gated_preview_analyzer_fails_the_document_instead_of_falling_back():
+    """A withheld analyzer must fail loudly, not silently use a different one.
+
+    Resolving a gated preview builtin to ``None`` made it indistinguishable from
+    "no analyzer selected", so enrichment would fall through to the modality
+    default and mark the document ready as if the user's choice had been honored.
+    """
+    library = InMemoryDocumentLibraryRepository()
+    cu = FakeCU(result=_succeeded("# should not be reached"))
+    ingestor = _make(cu=cu, library=library, cu_preview_enabled=True)
+
+    stored = await ingestor.ingest(
+        user_id="u1",
+        filename="scan.png",
+        content_type="image/png",
+        data=b"PNG",
+        analyzer_id="cu-read-sync",
+    )
+
+    # The operator turns preview off between upload and enrichment.
+    ingestor._settings.cu_preview_enabled = False
+    await ingestor.enrich(
+        user_id="u1",
+        document_id=stored.document.id,
+        data=b"PNG",
+        content_type="image/png",
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc.status == DocumentStatus.failed
+    assert "not currently available" in (doc.error or "")
+    assert cu.calls == []

@@ -993,20 +993,26 @@ async def _fill_the_gate(cu):
     return holder
 
 
-async def test_inline_enrich_does_not_stall_the_request_on_a_contended_gate():
-    """A saturated gate must degrade to polling, not hang the upload.
+async def test_inline_enrich_does_not_stall_the_request_on_a_contended_gate(
+    monkeypatch,
+):
+    """A contended gate must return a backpressure signal, not hang the upload.
 
-    The gate is shared with asynchronous cracks that hold a slot for the whole
-    poll budget, while the saturation 503 only fires at the pending cap -- eight
-    times the gate width. An unbounded wait here is therefore not backpressure:
+    The concurrency gate is shared with asynchronous cracks that hold a slot for
+    the whole poll budget, while the *pending*-cap 503 only fires at eight times
+    the gate width. Waiting on the gate unbounded is therefore not backpressure:
     the request stalls until the ingress kills it, and the detached task later
-    marks the document ready after the user was told it failed.
+    marks the document ready after the user was already told it failed. The
+    inline path bounds the wait and reports ``saturated``, which the router
+    settles as a retryable 503.
     """
+    monkeypatch.setattr(
+        "ai4ia_api.library.ingest.INLINE_ENRICH_ADMISSION_TIMEOUT_S", 0.25
+    )
     cu = _GateFillingCU()
     holder = await _fill_the_gate(cu)
     try:
-        # cu_timeout_seconds bounds the in-request wait; keep it small.
-        inline = _build(cu=cu, cu_timeout_seconds=0.25)
+        inline = _build(cu=cu)
         stored = await inline.ingest(
             user_id="u1", filename="d.txt", content_type="text/plain", data=b"X"
         )
@@ -1022,15 +1028,13 @@ async def test_inline_enrich_does_not_stall_the_request_on_a_contended_gate():
         )
         waited = asyncio.get_running_loop().time() - started
 
-        assert outcome is EnrichScheduleOutcome.scheduled
-        # Returned on the bound, not on the blocked provider.
+        # Bounded, and an explicit backpressure signal rather than a silent wait.
+        assert outcome is EnrichScheduleOutcome.saturated
         assert waited < 2.0, f"inline wait was {waited:.2f}s"
-        # The crack is still queued behind the gate, so it has not even reached
-        # ``analyzing`` yet. What matters is that the manifest is NON-TERMINAL:
-        # the client keeps polling instead of being told the upload failed.
+        # No provider call was made, so the upload is still retryable rather than
+        # being reported as analyzed.
         doc = await inline.library.get_document("u1", stored.document.id)
-        assert doc.status in {DocumentStatus.stored, DocumentStatus.analyzing}
-        assert doc.status != DocumentStatus.failed
+        assert doc.status is DocumentStatus.stored
     finally:
         cu.release.set()
         await asyncio.wait_for(
