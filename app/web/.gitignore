@@ -24,3 +24,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts.bak
+
+# node >= 26 writes these when tests run with --localstorage-file
+.node-localstorage*

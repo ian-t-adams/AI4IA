@@ -41,6 +41,7 @@ import {
   type WebSearchHealthReport,
   OVERVIEW_SECTION_LABELS,
   barScale,
+  rankModelBuckets,
   canShowAdmin,
   dimensionShare,
   entitlementLabel,
@@ -270,10 +271,11 @@ function formatOperationalValue(
 
 function ModelBars({ items }: { items: ModelUsageBucket[] }) {
   if (!items.length) return <div style={muted}>No usage in this window.</div>;
-  const max = Math.max(...items.map((m) => m.totalTokens), 1);
+  const shown = rankModelBuckets(items, 8);
+  const max = Math.max(...shown.map((m) => m.totalTokens), 1);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      {items.slice(0, 8).map((m) => (
+      {shown.map((m) => (
         <div key={m.model} style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div
             style={{ width: 140, fontSize: "0.8em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
@@ -1004,7 +1006,7 @@ export function AdminDashboard() {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 20 }}>
         <section style={card}>
-          <h2 style={sectionTitle}>Tokens by model</h2>
+          <h2 style={sectionTitle}>Top models by tokens and cost</h2>
           <ModelBars items={data.byModel} />
         </section>
 
