@@ -381,6 +381,37 @@ export function barScale(value: number, max: number, maxPx: number): number {
   return Math.max(0, Math.min(maxPx, (value / max) * maxPx));
 }
 
+// Pick the model rows worth showing, by BOTH tokens and cost.
+//
+// The server sorts `byModel` strictly by token count. That hides the entire
+// document pipeline: Content Understanding page meters and Mistral OCR are
+// billed per page and report no tokens at all, so they sort below every chat
+// model and fall off a "top N" slice -- even when they are the largest line on
+// the bill. Taking the union of the top rows by each dimension means neither a
+// token-heavy model nor a page-billed one can be hidden by the other.
+export function rankModelBuckets<
+  T extends { model: string; totalTokens: number; costMicroUsd: number },
+>(items: readonly T[], limit: number): T[] {
+  if (limit <= 0) return [];
+  const byTokens = [...items].sort((a, b) => b.totalTokens - a.totalTokens);
+  const byCost = [...items].sort((a, b) => b.costMicroUsd - a.costMicroUsd);
+  const half = Math.max(1, Math.ceil(limit / 2));
+  const picked = new Map<string, T>();
+  for (const row of byTokens.slice(0, half)) picked.set(row.model, row);
+  for (const row of byCost) {
+    if (picked.size >= limit) break;
+    if (row.costMicroUsd > 0) picked.set(row.model, row);
+  }
+  // Backfill with the remaining token leaders if cost did not fill the quota.
+  for (const row of byTokens) {
+    if (picked.size >= limit) break;
+    picked.set(row.model, row);
+  }
+  return [...picked.values()].sort(
+    (a, b) => b.totalTokens - a.totalTokens || b.costMicroUsd - a.costMicroUsd,
+  );
+}
+
 // Human label for a web-search failure category (falls back to the raw token).
 const WEB_SEARCH_CATEGORY_LABELS: Record<string, string> = {
   config: "Not configured",

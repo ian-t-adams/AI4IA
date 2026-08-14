@@ -151,13 +151,18 @@ When `cuPreviewEnabled` is explicitly on, the Library adds:
 
 Both use `2026-06-01-preview`, carry no SLA, accept at most 10 MB, and process at
 most five PDF pages. Unlike normal enrichment, the upload request waits for their
-terminal result. That wait is **bounded**: the inline crack shares one
-process-wide concurrency gate with the asynchronous cracks, which hold a slot for
-the whole poll budget, so it waits only
-`INLINE_ENRICH_ADMISSION_TIMEOUT_S` for a slot and otherwise returns
-`saturated` — a retryable 503 with `Retry-After`, rather than queueing behind a
-backlog until the ingress times the request out. The automatic analyzer never
-silently switches to preview.
+terminal result. The automatic analyzer never silently switches to preview.
+
+Because the request waits, the synchronous path takes the *same* admission
+control as background enrichment — the shared pending cap and the four-way
+concurrency semaphore — so concurrent synchronous uploads cannot open unbounded
+concurrent CU calls. It waits only briefly for a slot
+(`INLINE_ENRICH_ADMISSION_TIMEOUT_S`, because a user is holding the
+request open); if none frees up the upload settles as retryable rather than
+hanging. Deleting the document while its synchronous analyzer is still running
+returns **404**, and turning preview off while a preview-analyzed document is
+still awaiting enrichment **fails** that document instead of quietly re-analyzing
+it with the default analyzer.
 
 Every CU result now persists a bounded owner-scoped `analysis.json` sidecar with
 structured fields, source/confidence evidence, signatures/metadata, warnings,

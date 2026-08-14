@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   barScale,
+  rankModelBuckets,
   canShowAdmin,
   dimensionShare,
   entitlementLabel,
@@ -389,5 +390,63 @@ describe("webSearchHint", () => {
   it("is ok when enabled and configured with no failures", () => {
     expect(webSearchHint(report({ totalCalls: 0 })).tone).toBe("ok");
     expect(webSearchHint(report({ totalCalls: 5, successes: 5 })).tone).toBe("ok");
+  });
+});
+
+describe("rankModelBuckets", () => {
+  const bucket = (model: string, totalTokens: number, costMicroUsd: number) => ({
+    model,
+    totalTokens,
+    costMicroUsd,
+  });
+
+  it("keeps page-billed models visible even though they report no tokens", () => {
+    // Content Understanding page meters and Mistral OCR bill per page and report
+    // zero tokens, so a strict token sort pushed them below every chat model and
+    // a top-N slice dropped them entirely -- hiding the document pipeline's cost.
+    const items = [
+      bucket("gpt-5.2", 900_000, 1_000),
+      bucket("gpt-5.4", 800_000, 900),
+      bucket("gpt-5-mini", 700_000, 800),
+      bucket("gpt-5-nano", 600_000, 700),
+      bucket("gpt-5.6-sol", 500_000, 600),
+      bucket("gpt-5.6-luna", 400_000, 500),
+      bucket("model-router", 300_000, 400),
+      bucket("gpt-5.3-codex", 200_000, 300),
+      bucket("content-understanding-document-standard", 0, 5_000_000),
+      bucket("mistral-ocr-4-0", 0, 2_000_000),
+    ];
+
+    const shown = rankModelBuckets(items, 8).map((m) => m.model);
+
+    expect(shown).toContain("content-understanding-document-standard");
+    expect(shown).toContain("mistral-ocr-4-0");
+    expect(shown).toContain("gpt-5.2");
+    expect(shown).toHaveLength(8);
+  });
+
+  it("still shows token leaders when nothing has a known cost", () => {
+    const items = [
+      bucket("a", 30, 0),
+      bucket("b", 20, 0),
+      bucket("c", 10, 0),
+    ];
+    expect(rankModelBuckets(items, 2).map((m) => m.model)).toEqual(["a", "b"]);
+  });
+
+  it("never returns more rows than the limit or duplicates a model", () => {
+    const items = [
+      bucket("a", 10, 5),
+      bucket("b", 0, 9),
+      bucket("c", 3, 3),
+      bucket("d", 1, 0),
+    ];
+    const shown = rankModelBuckets(items, 3);
+    expect(shown).toHaveLength(3);
+    expect(new Set(shown.map((m) => m.model)).size).toBe(3);
+  });
+
+  it("returns nothing for a non-positive limit", () => {
+    expect(rankModelBuckets([bucket("a", 1, 1)], 0)).toEqual([]);
   });
 });
