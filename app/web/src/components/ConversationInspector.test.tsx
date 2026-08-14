@@ -4,9 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import type { InspectorSnapshot } from "@/lib/inspector";
 import type { ConversationDraftDefaults, ToolCatalogItem } from "@/lib/types";
 import { ConversationInspector } from "./ConversationInspector";
+import { makeInspectorSnapshot } from "./chatTestFixtures";
 
 const mocks = vi.hoisted(() => ({
   getInspector: vi.fn(),
@@ -46,64 +46,18 @@ vi.mock("@/lib/inspector", () => ({
   deleteMemory: mocks.deleteMemory,
 }));
 
-function snapshot(id: string, prompt = `Prompt ${id}`): InspectorSnapshot {
-  return {
-    generatedAt: new Date().toISOString(),
-    sessionId: id,
+function snapshot(id: string, prompt = `Prompt ${id}`) {
+  return makeInspectorSnapshot(id, {
     title: id,
-    model: {
-      id: "gpt-5.2",
-      displayName: "GPT-5.2",
-      contextWindow: 128000,
-      maxOutputTokens: 32000,
-    },
-    instructions: {
-      source: "session",
-      editable: true,
-      value: prompt,
-      agentName: null,
-      agentSource: null,
-    },
-    agent: { name: null, displayName: null, description: null, enabled: true },
-    tools: {
-      inherited: [],
-      added: [],
-      removed: [],
-      effective: [],
-      voiceEffective: [],
-    },
-    imagePreferences: { models: [], size: null, quality: null },
-    attachments: [],
-    libraryDocuments: [],
-    librarySelectionMode: "explicit",
-    sessionUsage: {
-      sessionId: id,
-      totalRequests: 1,
-      totalPromptTokens: 10,
-      totalCompletionTokens: 20,
-      totalTokens: 30,
-      totalCostMicroUsd: 10,
-      unknownUsageRequests: 0,
-      costUnknownRequests: 0,
-      latest: null,
-      truncated: false,
-      coveredRequests: 1,
-      coverageStart: null,
-      coverageEnd: null,
-    },
-    monthlyUsage: {
-      totalRequests: 1,
-      totalTokens: 30,
-      totalCostMicroUsd: 10,
-      unknownUsageRequests: 0,
-      costUnknownRequests: 0,
-    },
-    voice: {
-      defaultProviderId: "azure_openai",
-      enabledProviderIds: ["azure_openai"],
-      applies: "next_connection",
-    },
-  };
+    prompt,
+    totalRequests: 1,
+    promptTokens: 10,
+    completionTokens: 20,
+    totalTokens: 30,
+    totalCostMicroUsd: 10,
+    defaultProviderId: "azure_openai",
+    enabledProviderIds: ["azure_openai"],
+  });
 }
 
 function props(sessionId: string | null = "s1") {

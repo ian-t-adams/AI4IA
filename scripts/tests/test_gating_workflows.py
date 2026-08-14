@@ -26,7 +26,6 @@ and a required-check entry that no longer matches anything blocks every PR.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -37,6 +36,8 @@ from pathlib import Path
 # checking nothing, which is exactly the failure mode the rest of this suite
 # exists to prevent. The workflow step installs it.
 import yaml
+
+from scripts.tests._platform import find_bash
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -156,32 +157,7 @@ class DeployWorkflowOperationalScriptTriggers(unittest.TestCase):
         )
 
 
-def _find_bash() -> str | None:
-    candidates = [
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files\Git\usr\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-        shutil.which("bash"),
-    ]
-    for candidate in candidates:
-        if not candidate or not Path(candidate).exists():
-            continue
-        try:
-            probe = subprocess.run(
-                [candidate, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if probe.returncode == 0:
-            return candidate
-    return None
-
-
-BASH = _find_bash()
+BASH = find_bash()
 
 
 @unittest.skipIf(BASH is None, "bash is unavailable on this machine")

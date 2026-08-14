@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { DocumentAnnotation } from "@/lib/library";
@@ -34,6 +34,26 @@ afterEach(() => {
 });
 
 describe("AnnotationsPanel accessibility", () => {
+  it("keeps dialog semantics and closes only from Escape or the backdrop", async () => {
+    const onClose = vi.fn();
+    render(
+      <AnnotationsPanel
+        documentId="doc-1"
+        filename="report.pdf"
+        onClose={onClose}
+      />,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Notes for report.pdf" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+
+    fireEvent.click(screen.getByRole("textbox", { name: "Note" }));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent.click(dialog);
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
   it("requires irreversible confirmation before deleting a note", async () => {
     const confirmSpy = vi
       .spyOn(window, "confirm")

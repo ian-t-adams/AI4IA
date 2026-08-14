@@ -2,25 +2,21 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import unittest
 from pathlib import Path
+
+from scripts.tests._loader import load_script
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "sync-model-capacity.py"
 PREFLIGHT = ROOT / "scripts" / "check-model-availability.py"
 
-spec = importlib.util.spec_from_file_location("sync_model_capacity", SCRIPT)
-assert spec and spec.loader
-capacity = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(capacity)
-preflight_spec = importlib.util.spec_from_file_location(
-    "check_model_availability_capacity_profile", PREFLIGHT
+capacity = load_script("sync_model_capacity", SCRIPT)
+preflight = load_script(
+    "check_model_availability_capacity_profile",
+    PREFLIGHT,
 )
-assert preflight_spec and preflight_spec.loader
-preflight = importlib.util.module_from_spec(preflight_spec)
-preflight_spec.loader.exec_module(preflight)
 
 
 def _models(sku: str = "GlobalStandard") -> dict:

@@ -193,6 +193,22 @@ def _indexing_failure_detail(result: Any) -> str:
     return f"key={key!r} status={status_code!r} error={str(error or '')[:200]!r}"
 
 
+def _validated_batch_count(
+    operation: str,
+    results: Sequence[Any],
+    expected: int,
+) -> int:
+    failed = [result for result in results if not _indexing_succeeded(result)]
+    if len(results) != expected or failed:
+        detail = "; ".join(_indexing_failure_detail(result) for result in failed[:3])
+        raise RuntimeError(
+            f"Azure AI Search {operation} "
+            f"{len(results) - len(failed)}/{expected} document chunks"
+            + (f": {detail}" if detail else "")
+        )
+    return len(results)
+
+
 def _encode_key(raw: str) -> str:
     """Encode a chunk id into a valid AI Search document key.
 
@@ -570,14 +586,7 @@ class AzureSearchDocChunkStore:
             results = list(
                 await client.merge_or_upload_documents(documents=batch)
             )
-            failed = [result for result in results if not _indexing_succeeded(result)]
-            if len(results) != len(batch) or failed:
-                detail = "; ".join(_indexing_failure_detail(result) for result in failed[:3])
-                raise RuntimeError(
-                    "Azure AI Search indexed "
-                    f"{len(results) - len(failed)}/{len(batch)} document chunks"
-                    + (f": {detail}" if detail else "")
-                )
+            _validated_batch_count("indexed", results, len(batch))
 
     async def _collect(self, search_awaitable: Any) -> list[DocChunkRecord]:
         """Await a ``client.search(...)`` call and map its async results in order."""
@@ -675,21 +684,11 @@ class AzureSearchDocChunkStore:
         for start in range(0, len(keys), _UPLOAD_BATCH):
             batch = [{"key": key} for key in keys[start : start + _UPLOAD_BATCH]]
             delete_results = list(await client.delete_documents(documents=batch))
-            failed = [
-                result
-                for result in delete_results
-                if not _indexing_succeeded(result)
-            ]
-            if len(delete_results) != len(batch) or failed:
-                detail = "; ".join(
-                    _indexing_failure_detail(result) for result in failed[:3]
-                )
-                raise RuntimeError(
-                    "Azure AI Search deleted "
-                    f"{len(delete_results) - len(failed)}/{len(batch)} document chunks"
-                    + (f": {detail}" if detail else "")
-                )
-            deleted += len(delete_results)
+            deleted += _validated_batch_count(
+                "deleted",
+                delete_results,
+                len(batch),
+            )
         return deleted
 
     async def close(self) -> None:

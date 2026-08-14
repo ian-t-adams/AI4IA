@@ -4,7 +4,14 @@
 // their cross-session library, watch ingest status, pick an analyzer, and delete.
 // Rendered only when the DOCUMENT_LIBRARY_ENABLED flag is on (gated by ChatApp),
 // so it is inert by default.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   deleteLibraryDocument,
   forgetLibraryDocumentFromMemory,
@@ -27,6 +34,7 @@ import {
 } from "@/lib/library";
 import { MediaPlayer } from "./MediaPlayer";
 import AnnotationsPanel from "./AnnotationsPanel";
+import { ModalShell } from "./ModalShell";
 import SharePanel from "./SharePanel";
 import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
@@ -72,9 +80,65 @@ function analysisLabel(document: LibraryDocument): string | null {
   return `${provider}${model}${pages}${location}`;
 }
 
+function LibraryDocumentRow({
+  document,
+  extraDetails,
+  children,
+}: {
+  document: LibraryDocument;
+  extraDetails?: ReactNode;
+  children?: ReactNode;
+}) {
+  const analysis = analysisLabel(document);
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "10px 12px",
+        borderRadius: 8,
+        border: "1px solid var(--border)",
+        background: "var(--bg)",
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            fontWeight: 600,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={document.filename}
+        >
+          {document.filename}
+        </div>
+        <div style={{ fontSize: "0.75em", color: "var(--fg-muted)" }}>
+          {formatBytes(document.size)}
+          {document.status === "ready" && document.chunkCount > 0
+            ? ` · ${document.chunkCount} chunks`
+            : ""}
+          {analysis ? ` · ${analysis}` : ""}
+          {extraDetails}
+        </div>
+      </div>
+      <span
+        style={{
+          fontSize: "0.75em",
+          fontWeight: 600,
+          color: LIBRARY_STATUS_COLORS[document.status],
+          whiteSpace: "nowrap",
+        }}
+      >
+        {LIBRARY_STATUS_LABELS[document.status]}
+      </span>
+      {children}
+    </div>
+  );
+}
+
 export function LibraryPanel({ onClose }: { onClose: () => void }) {
-  const modalRef = useModalFocus();
-  const onModalKeyDown = useModalKeyDown(onClose);
   const [docs, setDocs] = useState<LibraryDocument[]>([]);
   const [analyzers, setAnalyzers] = useState<LibraryAnalyzer[]>([]);
   const [analyzerId, setAnalyzerId] = useState<string>("");
@@ -287,55 +351,16 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
 
   return (
     <>
-      <div
-        ref={modalRef}
-        onKeyDown={onModalKeyDown}
-        role="dialog"
-        aria-label="Document library"
-        aria-modal="true"
-        style={{
-          position: "fixed",
-          inset: 0,
-          background: "rgba(0,0,0,0.45)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 50,
-        }}
-        onClick={onClose}
+      <ModalShell
+        ariaLabel="Document library"
+        title="Document library"
+        closeLabel="Close library"
+        onClose={onClose}
+        width="min(560px, 94vw)"
+        zIndex={50}
+        headingFontSize="1.2em"
+        headerGap={0}
       >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: "var(--bg-elevated)",
-          color: "var(--fg)",
-          width: "min(560px, 94vw)",
-          borderRadius: "var(--radius)",
-          border: "1px solid var(--border)",
-          padding: 24,
-          display: "flex",
-          flexDirection: "column",
-          gap: 16,
-          maxHeight: "90vh",
-          overflowY: "auto",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <h2 style={{ margin: 0, fontSize: "1.2em" }}>Document library</h2>
-          <button
-            onClick={onClose}
-            aria-label="Close library"
-            style={{
-              border: "none",
-              background: "transparent",
-              color: "var(--fg)",
-              fontSize: "1.2em",
-            }}
-          >
-            ✕
-          </button>
-        </div>
-
         <p style={{ margin: 0, fontSize: "0.85em", color: "var(--fg-muted)" }}>
           Upload documents to your personal library. Once ready, the assistant
           can reference and cite them across all your chats. Use 🧠 to save a
@@ -478,36 +503,11 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
             </span>
           ) : (
             docs.map((doc) => (
-              <div
+              <LibraryDocumentRow
                 key={doc.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid var(--border)",
-                  background: "var(--bg)",
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontWeight: 600,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                    title={doc.filename}
-                  >
-                    {doc.filename}
-                  </div>
-                  <div style={{ fontSize: "0.75em", color: "var(--fg-muted)" }}>
-                    {formatBytes(doc.size)}
-                    {doc.status === "ready" && doc.chunkCount > 0
-                      ? ` · ${doc.chunkCount} chunks`
-                      : ""}
-                    {analysisLabel(doc) ? ` · ${analysisLabel(doc)}` : ""}
+                document={doc}
+                extraDetails={
+                  <>
                     {doc.confidenceCount
                       ? ` · confidence avg ${(100 * (doc.averageConfidence ?? 0)).toFixed(1)}% (${doc.confidenceCount})`
                       : ""}
@@ -515,46 +515,46 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                       ? ` · ${doc.groundedFieldCount} grounded`
                       : ""}
                     {(() => {
-                      const m = memorySaves[doc.id];
-                      if (!m) return null;
-                      if (m.status === "saving")
+                      const memory = memorySaves[doc.id];
+                      if (!memory) return null;
+                      if (memory.status === "saving")
                         return (
-                          <span style={{ color: "var(--info)" }}> · saving to memory…</span>
-                        );
-                      if (m.status === "saved")
-                        return (
-                          <span style={{ color: "var(--success)" }}>
+                          <span style={{ color: "var(--info)" }}>
                             {" "}
-                            · saved {m.saved} to memory ✓
+                            · saving to memory…
                           </span>
                         );
-                      if (m.status === "forgetting")
-                        return (
-                          <span style={{ color: "var(--info)" }}> · forgetting…</span>
-                        );
-                      if (m.status === "forgotten")
+                      if (memory.status === "saved")
                         return (
                           <span style={{ color: "var(--success)" }}>
                             {" "}
-                            · forgot {m.forgotten} from memory ✓
+                            · saved {memory.saved} to memory ✓
+                          </span>
+                        );
+                      if (memory.status === "forgetting")
+                        return (
+                          <span style={{ color: "var(--info)" }}>
+                            {" "}
+                            · forgetting…
+                          </span>
+                        );
+                      if (memory.status === "forgotten")
+                        return (
+                          <span style={{ color: "var(--success)" }}>
+                            {" "}
+                            · forgot {memory.forgotten} from memory ✓
                           </span>
                         );
                       return (
-                        <span style={{ color: "var(--danger)" }}> · {m.error}</span>
+                        <span style={{ color: "var(--danger)" }}>
+                          {" "}
+                          · {memory.error}
+                        </span>
                       );
                     })()}
-                  </div>
-                </div>
-                <span
-                  style={{
-                    fontSize: "0.75em",
-                    fontWeight: 600,
-                    color: LIBRARY_STATUS_COLORS[doc.status],
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {LIBRARY_STATUS_LABELS[doc.status]}
-                </span>
+                  </>
+                }
+              >
                 {doc.visibility && doc.visibility !== "private" && (
                   <span
                     title={
@@ -707,7 +707,7 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                 >
                   🗑
                 </button>
-              </div>
+              </LibraryDocumentRow>
             ))
           )}
         </div>
@@ -731,49 +731,16 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
               and cite them too.
             </p>
             {sharedWithMe.map((doc) => (
-              <div
+              <LibraryDocumentRow
                 key={doc.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid var(--border)",
-                  background: "var(--bg)",
-                }}
+                document={doc}
+                extraDetails={
+                  <span style={{ color: "var(--accent)" }}>
+                    {" "}
+                    · shared with you
+                  </span>
+                }
               >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontWeight: 600,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                    title={doc.filename}
-                  >
-                    {doc.filename}
-                  </div>
-                  <div style={{ fontSize: "0.75em", color: "var(--fg-muted)" }}>
-                    {formatBytes(doc.size)}
-                    {doc.status === "ready" && doc.chunkCount > 0
-                      ? ` · ${doc.chunkCount} chunks`
-                      : ""}
-                    {analysisLabel(doc) ? ` · ${analysisLabel(doc)}` : ""}
-                    <span style={{ color: "var(--accent)" }}> · shared with you</span>
-                  </div>
-                </div>
-                <span
-                  style={{
-                    fontSize: "0.75em",
-                    fontWeight: 600,
-                    color: LIBRARY_STATUS_COLORS[doc.status],
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {LIBRARY_STATUS_LABELS[doc.status]}
-                </span>
                 {doc.status === "ready" &&
                   (doc.modality === "audio" || doc.modality === "video") && (
                     <button
@@ -791,12 +758,11 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                       ▶️
                     </button>
                   )}
-              </div>
+              </LibraryDocumentRow>
             ))}
           </div>
         )}
-      </div>
-    </div>
+      </ModalShell>
       {playing && (
         <MediaPlayer doc={playing} onClose={() => setPlaying(null)} />
       )}

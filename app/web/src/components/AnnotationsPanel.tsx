@@ -14,7 +14,7 @@ import {
   updateLibraryAnnotation,
 } from "@/lib/api";
 import type { DocumentAnnotation } from "@/lib/library";
-import { useModalFocus, useModalKeyDown } from "./useModalFocus";
+import { ModalShell } from "./ModalShell";
 
 interface AnnotationsPanelProps {
   documentId: string;
@@ -33,8 +33,6 @@ export default function AnnotationsPanel({
   filename,
   onClose,
 }: AnnotationsPanelProps) {
-  const modalRef = useModalFocus();
-  const onModalKeyDown = useModalKeyDown(onClose);
   const [annotations, setAnnotations] = useState<DocumentAnnotation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -135,75 +133,19 @@ export default function AnnotationsPanel({
   );
 
   return (
-    <div
-      ref={modalRef}
-      onKeyDown={onModalKeyDown}
-      role="dialog"
-      aria-label={`Notes for ${filename}`}
-      aria-modal="true"
-      onClick={onClose}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 60,
-      }}
+    <ModalShell
+      ariaLabel={`Notes for ${filename}`}
+      title="📝 Notes"
+      filename={filename}
+      closeLabel="Close notes"
+      onClose={onClose}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: "var(--bg-elevated)",
-          color: "var(--fg)",
-          width: "min(520px, 94vw)",
-          borderRadius: "var(--radius)",
-          border: "1px solid var(--border)",
-          padding: 24,
-          display: "flex",
-          flexDirection: "column",
-          gap: 16,
-          maxHeight: "90vh",
-          overflowY: "auto",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-          <h2 style={{ margin: 0, fontSize: "1.1em" }}>
-            📝 Notes
-            <span
-              style={{
-                display: "block",
-                fontSize: "0.7em",
-                fontWeight: 400,
-                color: "var(--fg-muted)",
-                marginTop: 2,
-              }}
-            >
-              {filename}
-            </span>
-          </h2>
-          <button
-            onClick={onClose}
-            aria-label="Close notes"
-            style={{
-              border: "none",
-              background: "transparent",
-              color: "var(--fg)",
-              fontSize: "1.2em",
-              cursor: "pointer",
-            }}
-          >
-            ✕
-          </button>
-        </div>
+      <p style={{ margin: 0, fontSize: "0.8em", color: "var(--fg-muted)" }}>
+        Private notes pinned to this document. They&apos;re only visible to you and
+        are never shared with the assistant.
+      </p>
 
-        <p style={{ margin: 0, fontSize: "0.8em", color: "var(--fg-muted)" }}>
-          Private notes pinned to this document. They&apos;re only visible to you and
-          are never shared with the assistant.
-        </p>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <label className="visually-hidden" htmlFor="annotation-body">
             Note
           </label>
@@ -264,13 +206,13 @@ export default function AnnotationsPanel({
           >
             Add note
           </button>
-        </div>
+      </div>
 
-        {error && (
-          <p style={{ margin: 0, fontSize: "0.8em", color: "var(--danger)" }}>{error}</p>
-        )}
+      {error && (
+        <p style={{ margin: 0, fontSize: "0.8em", color: "var(--danger)" }}>{error}</p>
+      )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {loading ? (
             <p style={{ margin: 0, fontSize: "0.85em", color: "var(--fg-muted)" }}>
               Loading…
@@ -440,8 +382,7 @@ export default function AnnotationsPanel({
               </div>
             ))
           )}
-        </div>
       </div>
-    </div>
+    </ModalShell>
   );
 }

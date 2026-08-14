@@ -73,6 +73,52 @@ class PagesStatusRefreshTests(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
+    def _render_status(self) -> dict[str, str]:
+        app_path = json.dumps(str(APP_JS))
+        harness = f"""
+        const nodes = {{
+          "status-stats": {{ innerHTML: "" }},
+          "status-resource-group": {{ textContent: "" }},
+          "resources-body": {{ innerHTML: "" }},
+          "endpoints": {{ innerHTML: "" }},
+          "updated": {{ innerHTML: "" }}
+        }};
+        global.window = {{
+          AI4IA_STATUS: {{
+            generatedAt: "2026-08-08T11:00:00Z",
+            resourceGroup: "rg-test",
+            summary: {{ total: 1, endpointsUp: 0, endpointsTot: 0 }},
+            endpoints: []
+          }},
+          AI4IA_INVENTORY: {{
+            resources: [{{
+              name: "st-one", label: "Storage", group: "Data",
+              location: "eastus", provisioningState: "Succeeded",
+              availability: "Unknown", state: "provisioned"
+            }}]
+          }},
+          matchMedia: () => ({{ matches: false }})
+        }};
+        global.document = {{
+          getElementById: (id) => nodes[id] || null,
+          addEventListener: (name, callback) => callback(),
+          querySelector: () => null,
+          createElement: () => ({{ innerHTML: "", content: null }})
+        }};
+        require({app_path});
+        process.stdout.write(JSON.stringify({{
+          resources: nodes["resources-body"].innerHTML,
+          stats: nodes["status-stats"].innerHTML
+        }}));
+        """
+        result = subprocess.run(
+            ["node", "-e", harness],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(result.stdout)
+
     def test_refresh_passes_the_resource_group_and_endpoint_urls(self) -> None:
         refresh = next(
             step for step in self._steps() if step.get("name") == "Refresh deployment status snapshot"
@@ -168,6 +214,13 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertIn('id="status-resource-group"', status)
         self.assertNotIn("rg-ai4ia-slurmfactory", status)
         self.assertIn("resourceGroup.textContent = s.resourceGroup", app)
+
+    def test_status_uses_shared_inventory_without_duplicating_resources(self) -> None:
+        rendered = self._render_status()
+
+        self.assertIn("Storage", rendered["resources"])
+        self.assertIn("st-one", rendered["resources"])
+        self.assertIn("1", rendered["stats"])
 
     def test_portal_audience_matches_the_enterprise_product_positioning(self) -> None:
         audience_copy = "\n".join(

@@ -153,6 +153,7 @@ class StatusSnapshotLabelTests(unittest.TestCase):
             self.assertIn('"name": "sttest"', inventory)
             self.assertIn("window.AI4IA_STATUS", status)
             self.assertIn('"total": 1', status)
+            self.assertNotIn('"name": "sttest"', status)
 
 
 class StatusSnapshotCatalogTests(unittest.TestCase):

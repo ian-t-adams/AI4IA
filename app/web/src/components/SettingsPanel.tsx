@@ -1,7 +1,7 @@
 "use client";
 
 import { ThemeName, useTheme } from "./ThemeProvider";
-import { useModalFocus, useModalKeyDown } from "./useModalFocus";
+import { ModalShell } from "./ModalShell";
 
 const THEMES: { id: ThemeName; label: string }[] = [
   { id: "light", label: "Light" },
@@ -30,55 +30,20 @@ export function SettingsPanel({
 }) {
   const { theme, setTheme, fontScale, setFontScale, accent, setAccent } =
     useTheme();
-  const modalRef = useModalFocus();
-  const onModalKeyDown = useModalKeyDown(onClose);
 
   return (
-    <div
-      ref={modalRef}
-      onKeyDown={onModalKeyDown}
-      role="dialog"
-      aria-label="Appearance and accessibility settings"
-      aria-modal="true"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 50,
-      }}
-      onClick={onClose}
+    <ModalShell
+      ariaLabel="Appearance and accessibility settings"
+      title="Appearance & accessibility"
+      closeLabel="Close settings"
+      onClose={onClose}
+      width="min(440px, 92vw)"
+      zIndex={50}
+      contentGap={20}
+      headingFontSize="1.2em"
+      headerGap={0}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: "var(--bg-elevated)",
-          color: "var(--fg)",
-          width: "min(440px, 92vw)",
-          borderRadius: "var(--radius)",
-          border: "1px solid var(--border)",
-          padding: 24,
-          display: "flex",
-          flexDirection: "column",
-          gap: 20,
-          maxHeight: "90vh",
-          overflowY: "auto",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <h2 style={{ margin: 0, fontSize: "1.2em" }}>Appearance &amp; accessibility</h2>
-          <button
-            onClick={onClose}
-            aria-label="Close settings"
-            style={{ border: "none", background: "transparent", color: "var(--fg)", fontSize: "1.2em" }}
-          >
-            ✕
-          </button>
-        </div>
-
-        <fieldset style={{ border: "none", margin: 0, padding: 0 }}>
+      <fieldset style={{ border: "none", margin: 0, padding: 0 }}>
           <legend style={{ fontSize: "0.85em", color: "var(--fg-muted)", marginBottom: 8 }}>
             Theme
           </legend>
@@ -104,9 +69,9 @@ export function SettingsPanel({
               </button>
             ))}
           </div>
-        </fieldset>
+      </fieldset>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <label htmlFor="font-scale" style={{ fontSize: "0.85em", color: "var(--fg-muted)" }}>
             Text size: {Math.round(fontScale * 100)}%
           </label>
@@ -119,9 +84,9 @@ export function SettingsPanel({
             value={fontScale}
             onChange={(e) => setFontScale(Number(e.target.value))}
           />
-        </div>
+      </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {theme === "contrast" && (
             // Kept outside the disabled fieldset below: the fieldset's reduced
             // opacity is appropriate for controls the user can't act on, but it
@@ -163,8 +128,7 @@ export function SettingsPanel({
               ))}
             </div>
           </fieldset>
-        </div>
       </div>
-    </div>
+    </ModalShell>
   );
 }

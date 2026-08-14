@@ -21,10 +21,8 @@ Three things are load-bearing and get disproportionate attention:
 
 from __future__ import annotations
 
-import importlib.util
 import io
 import json
-import sys
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -34,22 +32,14 @@ from unittest.mock import patch
 
 import yaml
 
+from scripts.tests._loader import load_script
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "post-deploy-verify.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "deploy.yml"
 
 
-def load_script():
-    spec = importlib.util.spec_from_file_location("post_deploy_verify", SCRIPT)
-    if spec is None or spec.loader is None:  # pragma: no cover - packaging failure
-        raise RuntimeError("Unable to load the post-deploy verification script")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-pdv = load_script()
+pdv = load_script("post_deploy_verify", SCRIPT, register=True)
 
 STATE_FILE = "state.json"
 # The image a captured revision was running, and therefore the image the app must

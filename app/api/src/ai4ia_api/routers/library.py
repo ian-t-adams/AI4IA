@@ -280,26 +280,28 @@ class AnalyzerCreate(BaseModel):
         return value
 
 
-def _library(request: Request) -> DocumentLibraryRepository:
-    """Return the library repo or 404 when the feature is disabled."""
-    repo = getattr(request.app.state, "document_library", None)
-    if repo is None:
+def _require_state(
+    request: Request,
+    name: str,
+    detail: str = "The document library is not enabled.",
+):
+    service = getattr(request.app.state, name, None)
+    if service is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="The document library is not enabled.",
+            detail=detail,
         )
-    return repo
+    return service
+
+
+def _library(request: Request) -> DocumentLibraryRepository:
+    """Return the library repo or 404 when the feature is disabled."""
+    return _require_state(request, "document_library")
 
 
 def _ingestor(request: Request) -> DocumentIngestor:
     """Return the ingest pipeline or 404 when document understanding is disabled."""
-    ingestor = getattr(request.app.state, "document_ingestor", None)
-    if ingestor is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="The document library is not enabled.",
-        )
-    return ingestor
+    return _require_state(request, "document_ingestor")
 
 
 def _compute(request: Request) -> "DocumentComputeService":
@@ -308,13 +310,11 @@ def _compute(request: Request) -> "DocumentComputeService":
     Gates the version-download endpoints behind the document compute flag: when document
     compute is off (default) there is no export path and no versions, so these
     routes refuse exactly like the library routes do when understanding is off."""
-    compute = getattr(request.app.state, "document_compute", None)
-    if compute is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document compute is not enabled.",
-        )
-    return compute
+    return _require_state(
+        request,
+        "document_compute",
+        "Document compute is not enabled.",
+    )
 
 
 def _retrieval(request: Request):
@@ -323,13 +323,7 @@ def _retrieval(request: Request):
     Gates the media endpoints (timeline + original-media stream): when the
     library is off the retrieval service is never constructed, so these routes refuse
     exactly like the other library routes."""
-    retrieval = getattr(request.app.state, "document_retrieval", None)
-    if retrieval is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="The document library is not enabled.",
-        )
-    return retrieval
+    return _require_state(request, "document_retrieval")
 
 
 async def _block_disabled(request: Request, user_id: str) -> None:
@@ -362,6 +356,40 @@ async def _accessible_document(
     doc = await getter((document_id or "").strip()) if getter is not None else None
     if doc is None or not can_access(uid, doc, email=user.email):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return doc
+
+
+async def _find_owned_document(
+    request: Request,
+    user_id: str,
+    document_id: str,
+) -> UserDocument | None:
+    """Load an owned document, returning None only when it does not exist."""
+    repo = _library(request)
+    try:
+        doc = await repo.get_document(user_id, document_id)
+    except DocumentNotFoundError:
+        return None
+    if not require_owner(user_id, doc):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+    return doc
+
+
+async def _owned_document(
+    request: Request,
+    user_id: str,
+    document_id: str,
+) -> UserDocument:
+    """Load an owned document or raise a generic 404."""
+    doc = await _find_owned_document(request, user_id, document_id)
+    if doc is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
     return doc
 
 
@@ -858,18 +886,8 @@ async def get_document_index(
     itself: how many chunks it contributed, whether rebuildable artifacts still
     exist, and whether retrieval is wired at all in this deployment.
     """
-    repo = _library(request)
     uid = user.internal_user_id
-    try:
-        doc = await repo.get_document(uid, document_id)
-    except DocumentNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        ) from exc
-    if not require_owner(uid, doc):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        )
+    doc = await _owned_document(request, uid, document_id)
     ingestor = getattr(request.app.state, "document_ingestor", None)
     return {
         "documentId": doc.id,
@@ -963,14 +981,9 @@ async def purge_document_chunks(
     """
     repo = _library(request)
     uid = user.internal_user_id
-    try:
-        doc = await repo.get_document(uid, document_id)
-    except DocumentNotFoundError:
+    doc = await _find_owned_document(request, uid, document_id)
+    if doc is None:
         return  # idempotent: nothing indexed for a document that is gone
-    if not require_owner(uid, doc):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        )
     ingestor = getattr(request.app.state, "document_ingestor", None)
     if ingestor is None:
         return
@@ -993,13 +1006,9 @@ async def delete_document(
     race this ordering narrows but does not close."""
     repo = _library(request)
     uid = user.internal_user_id
-    try:
-        doc = await repo.get_document(uid, document_id)
-    except DocumentNotFoundError:
+    doc = await _find_owned_document(request, uid, document_id)
+    if doc is None:
         return  # idempotent: already gone
-    if not require_owner(uid, doc):
-        # Never reveal another user's document via delete.
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     # Forget anything this document contributed to the owner's durable memory
     # (save-to-memory) BEFORE deleting the manifest, and let a failure abort
@@ -1336,14 +1345,8 @@ async def get_document_shares(
 
     A missing or non-owned document returns a generic 404 (never leaks existence):
     only the owner can see or change who a document is shared with."""
-    repo = _library(request)
     uid = user.internal_user_id
-    try:
-        doc = await repo.get_document(uid, document_id)
-    except DocumentNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    if not require_owner(uid, doc):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    doc = await _owned_document(request, uid, document_id)
     return ShareState.of(doc)
 
 
@@ -1362,12 +1365,7 @@ async def set_document_shares(
     and saved memories stay owner-private and are never shared by this."""
     repo = _library(request)
     uid = user.internal_user_id
-    try:
-        doc = await repo.get_document(uid, document_id)
-    except DocumentNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    if not require_owner(uid, doc):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    doc = await _owned_document(request, uid, document_id)
 
     if payload.visibility == Visibility.shared:
         doc.acl = _normalize_grantees(payload.grantees, user.email)
@@ -1418,16 +1416,7 @@ async def revoke_document_share(
     # could race with a concurrent grant. Conflicts are reloaded and retried;
     # after the accepted write, re-read and verify the current ACL is absent.
     for _attempt in range(3):
-        try:
-            doc = await repo.get_document(uid, document_id)
-        except DocumentNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-            )
-        if not require_owner(uid, doc):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-            )
+        doc = await _owned_document(request, uid, document_id)
 
         was_present = principal in doc.acl
         if was_present:
@@ -1442,16 +1431,7 @@ async def revoke_document_share(
         except DocumentConflictError:
             continue
 
-        try:
-            current = await repo.get_document(uid, document_id)
-        except DocumentNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-            )
-        if not require_owner(uid, current):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-            )
+        current = await _owned_document(request, uid, document_id)
         if principal not in current.acl:
             if was_present:
                 logger.info("share-revoke user=%s id=%s", uid, document_id)
@@ -1512,22 +1492,6 @@ class AnnotationView(BaseModel):
             createdAt=a.createdAt,
             updatedAt=a.updatedAt,
         )
-
-
-async def _owned_document(request: Request, user_id: str, document_id: str) -> UserDocument:
-    """Load a document and require ownership, or raise a generic 404.
-
-    Annotations are owner-only (create/read/update/delete) — even after read
-    sharing is enabled later, notes stay private to the owner — so this uses
-    ``require_owner`` rather than ``can_access``."""
-    repo = _library(request)
-    try:
-        doc = await repo.get_document(user_id, document_id)
-    except DocumentNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    if not require_owner(user_id, doc):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    return doc
 
 
 @router.get(

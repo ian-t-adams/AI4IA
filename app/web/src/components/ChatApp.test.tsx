@@ -5,6 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatApp } from "./ChatApp";
 import type { Session, ToolCatalogItem } from "@/lib/types";
+import {
+  CHAT_ATTACHMENT_CAPABILITIES,
+  CHAT_MODEL_CATALOG,
+  DISABLED_MEMORY,
+  emptyLibrarySummary,
+  makeChatSession,
+  makeInspectorSnapshot,
+} from "./chatTestFixtures";
 
 const mocks = vi.hoisted(() => ({
   listModels: vi.fn(),
@@ -196,19 +204,7 @@ vi.mock("./StudioPanel", () => ({
   ),
 }));
 
-const session = (id: string): Session => ({
-  id,
-  userId: "u1",
-  title: `Session ${id}`,
-  titleSource: "auto" as const,
-  model: "gpt-5.2",
-  systemPrompt: null,
-  agentName: null,
-  toolOverrides: { added: [], removed: [] },
-  libraryDocumentIds: [],
-  createdAt: "",
-  updatedAt: "",
-});
+const session = (id: string): Session => makeChatSession(id);
 
 const libraryDocument = (id: string, filename: string) => ({
   id,
@@ -227,31 +223,12 @@ const libraryDocument = (id: string, filename: string) => ({
 
 beforeEach(() => {
   const sessions = [session("A"), session("B")];
-  mocks.listModels.mockResolvedValue({
-    models: [
-      {
-        id: "gpt-5.2",
-        displayName: "GPT-5.2",
-        category: "chat",
-        format: "openai",
-        conversational: true,
-        contextWindow: 128000,
-        maxOutputTokens: 32000,
-        options: [],
-      },
-    ],
-  });
+  mocks.listModels.mockResolvedValue(CHAT_MODEL_CATALOG);
   mocks.listSessions.mockResolvedValue(sessions);
   mocks.listAgents.mockResolvedValue([]);
-  mocks.getAttachmentCapabilities.mockResolvedValue({
-    ingestPath: "library",
-    maxBytes: 1_000_000,
-    maxPerUserDocuments: 100,
-    maxPerSessionDocuments: 20,
-    extensions: [".pdf"],
-    mimeTypes: ["application/pdf"],
-    modalities: ["document"],
-  });
+  mocks.getAttachmentCapabilities.mockResolvedValue(
+    CHAT_ATTACHMENT_CAPABILITIES,
+  );
   mocks.listMessages.mockResolvedValue([]);
   mocks.appendVoiceTurns.mockResolvedValue([]);
   mocks.listDocuments.mockResolvedValue([]);
@@ -279,75 +256,11 @@ beforeEach(() => {
     ...session(id),
     ...value,
   }));
-  mocks.getInspector.mockImplementation(async (id: string) => ({
-    generatedAt: new Date().toISOString(),
-    sessionId: id,
-    title: `Session ${id}`,
-    model: {
-      id: "gpt-5.2",
-      displayName: "GPT-5.2",
-      contextWindow: 128000,
-      maxOutputTokens: 32000,
-    },
-    instructions: { source: "session", editable: true, value: "", agentName: null, agentSource: null },
-    agent: { name: null, displayName: null, description: null },
-    tools: {
-      inherited: [],
-      added: [],
-      removed: [],
-      effective: [],
-      voiceEffective: [],
-    },
-    attachments: [],
-    libraryDocuments: [],
-    librarySelectionMode: "explicit",
-    sessionUsage: {
-      sessionId: id,
-      totalRequests: 0,
-      totalPromptTokens: 0,
-      totalCompletionTokens: 0,
-      totalTokens: 0,
-      totalCostMicroUsd: 0,
-      unknownUsageRequests: 0,
-      costUnknownRequests: 0,
-      latest: null,
-      truncated: false,
-      coveredRequests: 0,
-      coverageStart: null,
-      coverageEnd: null,
-    },
-    monthlyUsage: {
-      totalRequests: 0,
-      totalTokens: 0,
-      totalCostMicroUsd: 0,
-      unknownUsageRequests: 0,
-      costUnknownRequests: 0,
-    },
-    voice: {
-      defaultProviderId: null,
-      enabledProviderIds: [],
-      applies: "next_connection",
-    },
-  }));
-  mocks.listMemories.mockResolvedValue({
-    status: "disabled",
-    supportsCreate: false,
-    supportsEdit: false,
-    supportsDelete: false,
-    items: [],
-    detail: "Memory disabled",
-  });
-  mocks.getLibrarySummary.mockResolvedValue({
-    generatedAt: new Date().toISOString(),
-    status: "ok",
-    total: 0,
-    byStatus: {},
-    byModality: {},
-    recent: [],
-    maxUploadBytes: 100,
-    maxDocuments: 100,
-    modalities: ["document"],
-  });
+  mocks.getInspector.mockImplementation(async (id: string) =>
+    makeInspectorSnapshot(id),
+  );
+  mocks.listMemories.mockResolvedValue(DISABLED_MEMORY);
+  mocks.getLibrarySummary.mockResolvedValue(emptyLibrarySummary());
   mocks.useInlineVoiceLive.mockReturnValue({
     messages: [],
     enabled: false,
