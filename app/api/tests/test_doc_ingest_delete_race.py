@@ -709,3 +709,77 @@ async def test_chunk_cap_truncates_and_batches():
     assert len(embedder.embedded) == 3
     assert embedder.calls == 2
     assert len(await chunks.search("u1", _QUERY, top_k=50)) == 3
+
+
+async def test_inline_enrich_respects_the_shared_pending_admission_cap():
+    """Inline (synchronous-analyzer) enrichment obeys the same admission cap.
+
+    The synchronous CU path makes an upload terminal inside the request, but it
+    is still an outbound analyzer call. Awaiting ``enrich`` directly bypassed the
+    pending cap and the process-wide concurrency semaphore, so concurrent
+    synchronous uploads could open unbounded concurrent CU calls and pin a
+    request worker each for the full CU timeout.
+    """
+    import ai4ia_api.library.ingest as ingest_module
+
+    class _NeverCalledCU:
+        async def analyze(self, *_a, **_k):  # pragma: no cover - must not run
+            raise AssertionError("admission control must reject before analyzing")
+
+        async def analyze_inline(self, *_a, **_k):  # pragma: no cover
+            raise AssertionError("admission control must reject before analyzing")
+
+    ingestor = _build(cu=_NeverCalledCU())
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.txt", content_type="text/plain", data=b"x"
+    )
+
+    _, global_tasks = ingest_module._global_enrichment_state()
+    markers = {object() for _ in range(ingest_module.MAX_PENDING_DOCUMENT_ENRICHMENTS)}
+    global_tasks.update(markers)
+    try:
+        outcome = await ingestor.enrich_inline(
+            user_id="u1",
+            document_id=stored.document.id,
+            data=b"x",
+            content_type="text/plain",
+        )
+    finally:
+        for marker in markers:
+            global_tasks.discard(marker)
+
+    assert outcome is EnrichScheduleOutcome.saturated
+
+
+async def test_inline_enrich_is_cancellable_like_a_scheduled_crack():
+    """An inline crack is tracked, so delete/shutdown can still cancel it."""
+
+    class _BlockingInlineCU:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def analyze(self, *_a, **_k):
+            self.started.set()
+            await self.release.wait()
+            return CUResult(status="Succeeded", analyzer_id="a", markdown="# x\n\nbody")
+
+    cu = _BlockingInlineCU()
+    ingestor = _build(cu=cu)
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.txt", content_type="text/plain", data=b"x"
+    )
+
+    inline = asyncio.create_task(
+        ingestor.enrich_inline(
+            user_id="u1",
+            document_id=stored.document.id,
+            data=b"x",
+            content_type="text/plain",
+        )
+    )
+    await asyncio.wait_for(cu.started.wait(), timeout=5)
+    assert ("u1", stored.document.id) in ingestor._tasks
+
+    await ingestor.cancel_enrich("u1", stored.document.id)
+    await asyncio.wait_for(inline, timeout=5)

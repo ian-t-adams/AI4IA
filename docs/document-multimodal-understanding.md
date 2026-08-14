@@ -157,16 +157,22 @@ Every CU result now persists a bounded owner-scoped `analysis.json` sidecar with
 structured fields, source/confidence evidence, signatures/metadata, warnings,
 usage, and content-filter records. The library card surfaces evidence counts and
 average confidence; **Evidence** opens the detailed response through an
-authenticated ownership/share gate. Model tokens and page meters are recorded in
-the usage ledger instead of treating CU as an unpriced unknown call: the CU page
-meter remains explicitly cost-unknown until an Azure CU rate is mapped, while
-GPT-5.2 and embedding token rows use their existing model prices and exact
-deployment names.
+**owner-only** gate — a shared reader can read and cite the document but cannot
+fetch its evidence sidecar. Model tokens and page meters are recorded in the
+usage ledger instead of treating CU as an unpriced unknown call. CU page meters
+are priced per minimal/basic/standard tier (the synchronous `*Inline` variants
+fold into those same three rows), contextualization is billed as two independent
+tiers taken from the service's own `contextualizationTokens` and
+`advancedContextualizationTokens` usage properties rather than from a locally
+authored analyzer label, and GPT-5.2 and embedding token rows use their existing
+model prices and exact deployment names.
 
 **Agentic mode remains operator-gated.** It appears only when an existing remote
-analyzer id is supplied and the analyzer resolves to an `agentic.*` workflow.
-Provisioning also requires at least 400K TPM on the primary GPT-5.2 deployment,
-matching Microsoft guidance. The live deployment is currently 50K TPM, so
+analyzer id is supplied. The `agentic.*` workflow resolution and the 400K TPM
+floor on the primary GPT-5.2 deployment are **provisioning-time** checks
+(`scripts/validate-feature-prereqs.py` and `scripts/postprovision.ps1`); the API
+does not re-verify them per request, so setting the analyzer id directly on a
+running container bypasses them. The live deployment is currently 50K TPM, so
 AI4IA does not advertise Agentic mode yet.
 
 The announcement's semantic chunking feature belongs to the Azure AI Search

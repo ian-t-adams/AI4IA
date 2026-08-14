@@ -125,7 +125,13 @@ class _FakeIndexClient:
         self.closed = True
 
 
-def _store(search_client=None, index_client=None, expected_dim=_DIM, semantic_ranking=True):
+def _store(
+    search_client=None,
+    index_client=None,
+    expected_dim=_DIM,
+    semantic_ranking=True,
+    time_source=None,
+):
     return AzureSearchDocChunkStore(
         endpoint="https://example.search.windows.net",
         index_name="ai4ia-doc-chunks",
@@ -133,7 +139,38 @@ def _store(search_client=None, index_client=None, expected_dim=_DIM, semantic_ra
         semantic_ranking=semantic_ranking,
         search_client=search_client or _FakeSearchClient(),
         index_client=index_client or _FakeIndexClient(),
+        time_source=time_source,
     )
+
+
+class _Clock:
+    """Manually advanced monotonic clock for the semantic backoff tests."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class _RecoverableSemanticSearchClient(_FakeSearchClient):
+    """Semantic fails until ``heal_after`` semantic attempts have been made."""
+
+    def __init__(self, results=None, heal_after: int = 1) -> None:
+        super().__init__(results)
+        self.heal_after = heal_after
+        self.semantic_attempts = 0
+
+    async def search(self, **kwargs):
+        self.search_calls.append(kwargs)
+        if kwargs.get("query_type") == "semantic":
+            self.semantic_attempts += 1
+            if self.semantic_attempts <= self.heal_after:
+                raise RuntimeError("semantic ranker quota exceeded")
+        return _FakeResults(self.results)
 
 
 def _rec(user_id="u1", document_id="d1", index=0, text="t", **kw) -> DocChunkRecord:
@@ -409,6 +446,87 @@ async def test_search_semantic_failure_falls_back_to_hybrid():
     assert search_client.search_calls[1]["search_text"] == "revenue"
     assert len(hits) == 1
     assert hits[0].content == "hit"
+
+
+async def test_repeated_semantic_failures_stop_retrying_semantic_per_query():
+    """An exhausted semantic quota must not cost a doomed round-trip per query.
+
+    Search's *free* semantic plan is capped at 1,000 queries/month, after which
+    every semantic query fails. Without a cooldown each retrieval paid a failed
+    semantic call plus a stack trace before falling back to hybrid -- silently,
+    for the rest of the month. Only the first query may attempt semantic.
+    """
+    search_client = _FailSemanticSearchClient()
+    clock = _Clock()
+    store = _store(search_client=search_client, time_source=clock)
+
+    for _ in range(5):
+        await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="revenue")
+
+    semantic_calls = [
+        c for c in search_client.search_calls if c.get("query_type") == "semantic"
+    ]
+    hybrid_calls = [
+        c for c in search_client.search_calls if c.get("query_type") is None
+    ]
+    assert len(semantic_calls) == 1
+    assert len(hybrid_calls) == 5
+
+
+async def test_semantic_is_retried_after_the_cooldown_elapses():
+    search_client = _FailSemanticSearchClient()
+    clock = _Clock()
+    store = _store(search_client=search_client, time_source=clock)
+
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="q")
+    clock.advance(299.0)
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="q")
+    assert sum(
+        1 for c in search_client.search_calls if c.get("query_type") == "semantic"
+    ) == 1
+
+    clock.advance(2.0)  # past the 300s initial cooldown
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="q")
+    assert sum(
+        1 for c in search_client.search_calls if c.get("query_type") == "semantic"
+    ) == 2
+
+
+async def test_semantic_cooldown_backs_off_then_resets_after_recovery():
+    """Consecutive failures back off; a success restores immediate semantic use."""
+    search_client = _RecoverableSemanticSearchClient(heal_after=2)
+    clock = _Clock()
+    store = _store(search_client=search_client, time_source=clock)
+
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="q")  # fail 1
+    clock.advance(301.0)
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="q")  # fail 2
+    # Second failure doubles the cooldown to 600s, so 301s is not yet enough.
+    clock.advance(301.0)
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="q")
+    assert search_client.semantic_attempts == 2
+
+    clock.advance(300.0)  # now past the 600s cooldown; this attempt succeeds
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="q")
+    assert search_client.semantic_attempts == 3
+
+    # Recovery clears the backoff: the very next query goes semantic again.
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="q")
+    assert search_client.semantic_attempts == 4
+
+
+async def test_semantic_backoff_does_not_suppress_pure_vector_queries():
+    """A tripped breaker must not change no-text (pure vector) retrieval."""
+    search_client = _FailSemanticSearchClient()
+    clock = _Clock()
+    store = _store(search_client=search_client, time_source=clock)
+
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="q")
+    search_client.search_calls.clear()
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=4)
+
+    assert len(search_client.search_calls) == 1
+    assert search_client.search_calls[0]["search_text"] is None
 
 
 async def test_from_document_prefers_reranker_score():

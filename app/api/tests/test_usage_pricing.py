@@ -156,7 +156,11 @@ def test_content_understanding_page_and_contextualization_rates():
     assert basic.micro_usd == 3_000
     assert standard.micro_usd == 15_000
     assert context.micro_usd == 1_000_000
-    assert advanced.micro_usd == 1_500_000
+    # Microsoft publishes advanced contextualization at $3.00 per 1M tokens --
+    # 3x standard, not 1.5x. Pinning the ratio here keeps the two rows honest
+    # relative to each other if either rate is ever re-sourced.
+    assert advanced.micro_usd == 3_000_000
+    assert advanced.micro_usd == context.micro_usd * 3
 
 
 # Categories billed per token. Other modalities use their own explicit price-book
