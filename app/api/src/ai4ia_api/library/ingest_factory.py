@@ -48,6 +48,7 @@ def _build_chunk_store(settings: Settings) -> DocChunkStore:
             index_name=settings.search_index_name,
             expected_dim=settings.memory_embedding_dimensions,
             semantic_ranking=settings.search_semantic_ranking,
+            per_user_index=settings.search_index_per_user,
         )
     return InMemoryDocChunkStore(expected_dim=settings.memory_embedding_dimensions)
 

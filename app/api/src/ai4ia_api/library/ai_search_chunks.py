@@ -19,9 +19,18 @@ Design mirrors :class:`~ai4ia_api.library.doc_chunks.PgDocChunkStore`:
 * **Lazy, idempotent bootstrap.** The index (HNSW + cosine vector profile over a
   ``memory_embedding_dimensions``-wide vector field) is created on first use via
   ``create_or_update_index`` under a single-flight lock.
-* **Per-user isolation.** A single shared index scoped by a filterable ``user_id``
-  field; ``search`` always filters to the caller and may further restrict to a set
-  of ``document_id`` values ("retrieve over these documents").
+* **Per-user isolation.** Each user gets their **own index**, named
+  ``<prefix>-u<sha256(user_id)[:32]>`` (``search_index_per_user``, default on).
+  The ``user_id`` filter is retained on every query regardless, so isolation
+  never rests on index routing alone -- if resolution were ever wrong, the
+  filter still refuses the read. Set ``AI4IA_SEARCH_INDEX_PER_USER=false`` for
+  one shared index filtered the same way.
+
+  The trade is explicit: an index-per-user service turns the tier's index limit
+  into a ceiling on *users* (15 basic / 50 standard S1 / 200 S2-S3), and the
+  user past it cannot upload at all. That failure is raised as
+  :class:`SearchIndexQuotaError` rather than a bare 400, because the service's
+  own message never mentions tenancy.
 * **Hybrid + semantic retrieval.** When the caller passes ``query_text`` (RAG
   retrieval always does), ``search`` issues a *hybrid* query — the vector kNN
   alongside a BM25 keyword match over ``content`` — and, when ``semantic_ranking``
@@ -48,7 +57,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
+import re
 import time
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
@@ -57,6 +68,76 @@ from typing import Any
 from .doc_chunks import DocChunkRecord
 
 logger = logging.getLogger(__name__)
+
+
+class SearchIndexQuotaError(RuntimeError):
+    """The service is out of index slots.
+
+    Index-per-user trades a per-tier ceiling on *users* for isolation: an
+    Azure AI Search service allows 15 indexes on basic, 50 on standard (S1),
+    and 200 on S2/S3. The user whose index would be number 51 cannot upload at
+    all, and the raw service error ("cannot create more than N indexes") gives
+    an operator no hint that it is the tenancy model talking. This names it.
+    """
+
+
+# An index name must be 2-128 chars, lowercase, start with a letter or digit, and
+# use only letters/digits/dashes/underscores with no consecutive dashes or
+# underscores. The per-user suffix is a hex digest, so it satisfies all of that by
+# construction; the operator-supplied prefix does not, and is validated.
+_INDEX_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,126}[a-z0-9]$")
+_INDEX_NAME_MAX = 128
+# Length of the hashed user token in the index name. 32 hex chars is 128 bits of
+# the digest -- collision-free for any realistic user count, and short enough to
+# leave the prefix room inside the 128-char ceiling.
+_USER_TOKEN_LEN = 32
+
+
+def user_index_token(user_id: str) -> str:
+    """Deterministic, always-name-safe token for a user's index.
+
+    Hashed rather than sanitized for two reasons: an internal user id has no
+    guaranteed shape, so sanitizing could collide two distinct users onto one
+    index (a cross-tenant read, which is the one failure this whole design
+    exists to prevent), and an index name is visible to anyone with control-plane
+    read on the service, so it should not carry an identifier.
+    """
+    digest = hashlib.sha256(user_id.encode("utf-8")).hexdigest()
+    return digest[:_USER_TOKEN_LEN]
+
+
+def index_name_for(prefix: str, user_id: str) -> str:
+    """The index name backing ``user_id``, or raise if it would be invalid."""
+    name = f"{prefix}-u{user_index_token(user_id)}"
+    if len(name) > _INDEX_NAME_MAX or not _INDEX_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"index prefix {prefix!r} yields an invalid Azure AI Search index "
+            f"name {name!r}: names are 2-{_INDEX_NAME_MAX} chars, lowercase, "
+            "start with a letter or digit, and use only letters, digits, dashes "
+            "and underscores with no consecutive dashes or underscores."
+        )
+    return name
+
+
+def _is_index_quota_error(exc: BaseException) -> bool:
+    """Whether ``exc`` is the service refusing to create another index.
+
+    Matched on message text because the SDK surfaces it as a generic 400
+    ``HttpResponseError`` with no distinguishing code. Deliberately narrow: a
+    false positive here would relabel an unrelated 400 as a capacity problem and
+    send an operator to the wrong runbook.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status not in (400, 403):
+        return False
+    text = str(exc).lower()
+    return "index" in text and any(
+        marker in text
+        for marker in ("quota", "maximum number", "cannot create more", "limit")
+    )
+
 
 _VECTOR_FIELD = "embedding"
 _VECTOR_PROFILE = "vprofile"
@@ -157,22 +238,31 @@ class AzureSearchDocChunkStore:
         index_name: str,
         expected_dim: int,
         semantic_ranking: bool = True,
+        per_user_index: bool = True,
         credential: Any | None = None,
         search_client: Any | None = None,
         index_client: Any | None = None,
         time_source: Callable[[], float] | None = None,
     ) -> None:
         self._endpoint = endpoint
+        # With ``per_user_index`` this is a *prefix*; otherwise it is the literal
+        # shared index name.
         self._index_name = index_name
+        self._per_user_index = per_user_index
         self._expected_dim = expected_dim
         self._semantic_ranking = semantic_ranking
         self._credential = credential
         self._owns_credential = credential is None
-        self._search_client = search_client
-        self._owns_search_client = search_client is None
+        # An injected client is a test seam and serves every user: routing by
+        # index name only applies to clients this store builds itself.
+        self._injected_search_client = search_client
+        self._search_clients: dict[str, Any] = {}
         self._index_client = index_client
         self._owns_index_client = index_client is None
-        self._initialized = False
+        # Index names known to exist. Per-user means "created once per user",
+        # not once per process, so a bool would let user 2 skip the creation
+        # user 1 performed and query an index that does not exist yet.
+        self._ready_indexes: set[str] = set()
         self._init_lock = asyncio.Lock()
         # Monotonic clock, injectable so the backoff is tested without sleeping.
         self._now = time_source or time.monotonic
@@ -180,6 +270,12 @@ class AzureSearchDocChunkStore:
         # and the cooldown to apply on the next failure.
         self._semantic_retry_at: float | None = None
         self._semantic_cooldown_s = _SEMANTIC_COOLDOWN_INITIAL_S
+
+    def index_name_for_user(self, user_id: str) -> str:
+        """The index backing ``user_id`` under the configured tenancy model."""
+        if not self._per_user_index:
+            return self._index_name
+        return index_name_for(self._index_name, user_id)
 
     # --- lazy client construction -------------------------------------------------
     async def _get_credential(self) -> Any:
@@ -190,18 +286,22 @@ class AzureSearchDocChunkStore:
             self._owns_credential = True
         return self._credential
 
-    async def _get_search_client(self) -> Any:
-        if self._search_client is None:
+    async def _get_search_client(self, user_id: str) -> Any:
+        if self._injected_search_client is not None:
+            return self._injected_search_client
+        name = self.index_name_for_user(user_id)
+        client = self._search_clients.get(name)
+        if client is None:
             from azure.search.documents.aio import SearchClient
 
             credential = await self._get_credential()
-            self._search_client = SearchClient(
+            client = SearchClient(
                 endpoint=self._endpoint,
-                index_name=self._index_name,
+                index_name=name,
                 credential=credential,
             )
-            self._owns_search_client = True
-        return self._search_client
+            self._search_clients[name] = client
+        return client
 
     async def _get_index_client(self) -> Any:
         if self._index_client is None:
@@ -215,7 +315,7 @@ class AzureSearchDocChunkStore:
         return self._index_client
 
     # --- index bootstrap ----------------------------------------------------------
-    def _build_index(self) -> Any:
+    def _build_index(self, name: str) -> Any:
         from azure.search.documents.indexes.models import (
             HnswAlgorithmConfiguration,
             HnswParameters,
@@ -287,21 +387,35 @@ class AzureSearchDocChunkStore:
             ]
         )
         return SearchIndex(
-            name=self._index_name,
+            name=name,
             fields=fields,
             vector_search=vector_search,
             semantic_search=semantic_search,
         )
 
-    async def ensure_ready(self) -> None:
-        if self._initialized:
+    async def ensure_ready(self, user_id: str) -> None:
+        """Create this user's index if it does not exist yet (idempotent)."""
+        name = self.index_name_for_user(user_id)
+        if name in self._ready_indexes:
             return
         async with self._init_lock:
-            if self._initialized:
+            if name in self._ready_indexes:
                 return
             index_client = await self._get_index_client()
-            await index_client.create_or_update_index(self._build_index())
-            self._initialized = True
+            try:
+                await index_client.create_or_update_index(self._build_index(name))
+            except Exception as exc:  # noqa: BLE001 - re-raised, possibly relabelled
+                if _is_index_quota_error(exc):
+                    raise SearchIndexQuotaError(
+                        "Azure AI Search has no index slots left, so this user's "
+                        f"document index ({name}) could not be created. With "
+                        "per-user indexes the tier's index limit is a ceiling on "
+                        "users (15 on basic, 50 on standard S1, 200 on S2/S3). "
+                        "Raise the tier or move to a shared index "
+                        "(AI4IA_SEARCH_INDEX_PER_USER=false)."
+                    ) from exc
+                raise
+            self._ready_indexes.add(name)
 
     # --- helpers ------------------------------------------------------------------
     def _check_dim(self, vector: Sequence[float]) -> None:
@@ -437,8 +551,19 @@ class AzureSearchDocChunkStore:
             return
         for vector in vectors:
             self._check_dim(vector)
-        await self.ensure_ready()
-        client = await self._get_search_client()
+        # Every record must belong to one user, because the user selects the
+        # index. A mixed batch was harmless when one shared index held everyone;
+        # now it would silently write one user's chunks into another's index,
+        # which is the exact cross-tenant leak this tenancy model exists to make
+        # impossible. Callers already write one document at a time.
+        owners = {record.user_id for record in records}
+        if len(owners) != 1:
+            raise ValueError(
+                f"add_many requires records from exactly one user, got {len(owners)}"
+            )
+        user_id = owners.pop()
+        await self.ensure_ready(user_id)
+        client = await self._get_search_client(user_id)
         documents = [self._to_document(r, v) for r, v in zip(records, vectors)]
         for start in range(0, len(documents), _UPLOAD_BATCH):
             batch = documents[start : start + _UPLOAD_BATCH]
@@ -480,7 +605,7 @@ class AzureSearchDocChunkStore:
             if not ids:
                 return []
             document_ids = ids
-        await self.ensure_ready()
+        await self.ensure_ready(user_id)
 
         from azure.search.documents.models import VectorizedQuery
 
@@ -489,7 +614,7 @@ class AzureSearchDocChunkStore:
             k_nearest_neighbors=k,
             fields=_VECTOR_FIELD,
         )
-        client = await self._get_search_client()
+        client = await self._get_search_client(user_id)
         # A non-empty query text turns the pure-vector kNN into a *hybrid* query
         # (vector + BM25 over ``content``). ``None`` preserves the prior pure-vector
         # behavior. Azure AI Search requires ``search_text=None`` (not "") for a
@@ -530,8 +655,8 @@ class AzureSearchDocChunkStore:
         return await self._collect(client.search(search_text=text, **base_kwargs))
 
     async def delete_document(self, user_id: str, document_id: str) -> int:
-        await self.ensure_ready()
-        client = await self._get_search_client()
+        await self.ensure_ready(user_id)
+        client = await self._get_search_client(user_id)
         filter_str = (
             f"user_id eq '{_odata_escape(user_id)}' "
             f"and document_id eq '{_odata_escape(document_id)}'"
@@ -568,9 +693,14 @@ class AzureSearchDocChunkStore:
         return deleted
 
     async def close(self) -> None:
-        if self._owns_search_client and self._search_client is not None:
-            await self._search_client.close()
-            self._search_client = None
+        # Per-user routing means N clients, not one. Closing only the most
+        # recent would leak a connection pool per user for the process lifetime.
+        for client in list(self._search_clients.values()):
+            try:
+                await client.close()
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                logger.warning("search client close failed", exc_info=True)
+        self._search_clients.clear()
         if self._owns_index_client and self._index_client is not None:
             await self._index_client.close()
             self._index_client = None
@@ -579,4 +709,4 @@ class AzureSearchDocChunkStore:
             if close is not None:
                 await close()
             self._credential = None
-        self._initialized = False
+        self._ready_indexes.clear()

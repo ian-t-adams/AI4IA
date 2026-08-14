@@ -172,13 +172,15 @@ upload and every retrieval:
 
 1. You upload a file and pick an analyzer (Content Understanding, or Mistral).
 2. The parsed Markdown is chunked and embedded.
-3. Those chunks are written to the AI Search index, partitioned by user id.
+3. Those chunks are written to **your own** search index.
 4. Chat retrieval and `fetch_document` query that index — a hybrid of vector
    similarity and BM25 keyword match, with the semantic reranker on top.
 
-So the Library upload *is* the AI Search ingestion path. The index is per-user
-scoped: a query is always filtered to the caller, and may be narrowed further to
-an explicit document selection.
+So the Library upload *is* the AI Search ingestion path.
+
+Each user gets a dedicated index, and every query is *additionally* filtered to
+your user id, so isolation does not depend on the routing being right. A query
+can be narrowed further to an explicit document selection.
 
 It is derived state, not a source of record. Cosmos holds the manifests and Blob
 holds the raw bytes and `parsed.md`, so the index can be rebuilt without data

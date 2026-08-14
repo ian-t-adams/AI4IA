@@ -196,6 +196,9 @@ param searchSku string = 'standard'
 ])
 param searchSemanticPlan string = 'standard'
 
+@description('Give each user their own Search index instead of one shared index filtered by user_id. Per-user makes the tier index limit a ceiling on users (15 basic / 50 standard S1 / 200 S2-S3). Switching this strands existing chunks in the previous index until documents are re-enriched.')
+param searchIndexPerUser bool = true
+
 @description('Region for the Azure AI Search service. Empty => use the primary location. Provided as a separate knob because Search SKU capacity is region-constrained: eastus2 returned InsufficientResourcesAvailable, so Search is placed in a region with capacity (overridable via AI4IA_SEARCH_LOCATION). The service is reached over its global *.search.windows.net endpoint, so a different region from the rest of the stack is fine.')
 param searchLocation string = ''
 
@@ -1004,6 +1007,7 @@ module api 'modules/api.bicep' = {
     // env only when the service is provisioned (searchEnabled); the api reaches it
     // via managed identity (no keys). Empty string when off -> env var not set.
     searchEndpoint: search.outputs.searchEndpoint
+    searchIndexPerUser: searchIndexPerUser
     // Admin resource-metric panels: ARM ids of the provisioned resources the api
     // reads Azure Monitor metrics from via the batch metrics API (Monitoring Reader
     // is granted once at subscription scope above, as the batch API requires).

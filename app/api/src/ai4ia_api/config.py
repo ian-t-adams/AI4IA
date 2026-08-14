@@ -360,6 +360,16 @@ class Settings(BaseSettings):
     # when ``search_endpoint`` is set. A single shared index, scoped per-user by a
     # filterable ``user_id`` field, mirroring the pgvector ``doc_chunks`` table.
     search_index_name: str = "ai4ia-doc-chunks"
+    # Tenancy model for the chunk index. ON: each user gets their own index,
+    # named ``<search_index_name>-u<hash>``. OFF: one shared index filtered by
+    # ``user_id``.
+    #
+    # Per-user indexes give physical isolation, but the tier's index limit then
+    # becomes a hard ceiling on *users* -- 15 on basic, 50 on standard (S1), 200
+    # on S2/S3 -- and the user past that ceiling cannot upload at all. The
+    # per-user ``user_id`` filter is retained either way, so isolation never
+    # depends on index routing alone.
+    search_index_per_user: bool = True
     # When a query carries text (RAG retrieval always does), the Azure AI Search
     # backend issues a *hybrid* query (vector + BM25 keyword) and, when this flag is
     # on, applies the L2 *semantic* reranker for materially better top-k ordering.

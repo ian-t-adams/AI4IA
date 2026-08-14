@@ -227,6 +227,9 @@ param videoBlobContainer string = 'videos'
 @description('Azure AI Search endpoint (e.g. https://<svc>.search.windows.net). Empty unless a search service is provisioned; when set, emitted as AI4IA_SEARCH_ENDPOINT so the api can index/query via managed identity.')
 param searchEndpoint string = ''
 
+@description('Give each user their own Azure AI Search index rather than one shared index filtered by user_id. Emitted as AI4IA_SEARCH_INDEX_PER_USER. Per-user turns the search tier index limit into a ceiling on users (15 basic / 50 standard S1 / 200 S2-S3); set false to fall back to a shared index when that ceiling is reached.')
+param searchIndexPerUser bool = true
+
 @description('ARM resource id of the Azure AI Search service for the admin Search resource panel (empty when search is not deployed).')
 param metricsSearchResourceId string = ''
 
@@ -642,6 +645,14 @@ var searchEnv = !empty(searchEndpoint) ? [
   {
     name: 'AI4IA_SEARCH_ENDPOINT'
     value: searchEndpoint
+  }
+  {
+    // Tenancy model for the chunk index. Emitted alongside the endpoint so the
+    // documented escape hatch is actually reachable: a container env var set by
+    // hand is replaced on the next deploy, which would make the ceiling
+    // permanent without a code change.
+    name: 'AI4IA_SEARCH_INDEX_PER_USER'
+    value: string(searchIndexPerUser)
   }
 ] : []
 

@@ -1083,6 +1083,58 @@ continuity. Request `include: ["reasoning.encrypted_content"]` and pass the
 encrypted reasoning items forward — that is the stateless-mode equivalent and
 keeps the content in the app's control.
 
+## Switching the search index tenancy model
+
+`AI4IA_SEARCH_INDEX_PER_USER` (default `true`) chooses between an index per user
+(`<AI4IA_SEARCH_INDEX_NAME>-u<sha256(user_id)[:32]>`) and one shared index
+filtered by `user_id`. The `user_id` filter is applied on every query in **both**
+modes, so isolation never depends on index routing alone.
+
+**Flipping this value strands existing chunks.** Nothing is deleted, but reads go
+to the other index, so every already-ingested document silently stops being
+retrievable. Chat still answers — it just answers without the library. Plan the
+switch as a migration, not a config change.
+
+The chunk index is derived state: Cosmos holds the manifests and Blob holds the
+raw bytes plus `parsed.md`, so it is always rebuildable. Re-running enrichment on
+a document rebuilds its chunks into whichever index the store now resolves,
+because `_persist_enrichment` deletes then re-adds.
+
+Sequence:
+
+1. Set the value and deploy.
+2. Re-enrich each existing document so its chunks land in the new index. Newly
+   uploaded documents need nothing.
+3. Optionally delete the now-orphaned index. The old one keeps costing storage
+   and counts against the tier's index limit until it is removed:
+
+   ```bash
+   az rest --method delete --url \
+     "https://<service>.search.windows.net/indexes/<old-index>?api-version=2024-07-01" \
+     --resource https://search.azure.com
+   ```
+
+### The index limit is a ceiling on users
+
+With per-user indexes the tier's **index** limit becomes a limit on **users**:
+
+| Tier | Max indexes | Max users in this mode |
+|---|---|---|
+| basic | 15 | 15 |
+| standard (S1) | 50 | 50 |
+| S2 / S3 | 200 | 200 |
+| S3 HD | 1000 per partition | designed for this pattern |
+
+The user who would be number 51 on S1 cannot upload at all — index creation is on
+the ingest path. Azure reports it as a generic 400 that never mentions tenancy,
+so the store raises `SearchIndexQuotaError` naming both remedies: raise the tier,
+or set `AI4IA_SEARCH_INDEX_PER_USER=false`.
+
+Microsoft's own guidance is that a shared index with a tenant filter is the
+cheaper pattern at small and medium scale, and that dedicated indexes suit
+enterprise tiers or tenants past a size threshold. This deployment chose
+per-user deliberately, with the ceiling accepted.
+
 ## Changing the Azure AI Search tier
 
 `AI4IA_SEARCH_SKU` (default `standard`, i.e. S1) and `AI4IA_SEARCH_SEMANTIC_PLAN`
