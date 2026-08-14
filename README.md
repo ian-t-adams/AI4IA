@@ -69,11 +69,10 @@ azure.yaml  Azure Developer CLI service map
 - **IaC:** Bicep + Azure Developer CLI (`azd`).
 - **Stack:** Next.js/TypeScript web, Python FastAPI API, .NET SimpleL7Proxy.
 - **Model gateway:** compatible HTTP/SSE calls go SimpleL7Proxy -> APIM; realtime
-  WebSockets go FastAPI relay -> APIM. Two explicit direct Foundry exceptions are
-  documented in `AGENTS.md`: Content Understanding's native data plane and the
-  Responses-API Code Interpreter (the stateful sandbox is not a routable
-  chat-completions deployment). Azure Monitor is a separate native control/data
-  plane, not model inference.
+  WebSockets go FastAPI relay -> APIM. The Responses-API Code Interpreter is the
+  explicit direct-Foundry exception because its stateful sandbox is not a routable
+  catalog deployment. Content Understanding, WebIQ grounding, and Azure Monitor
+  are separate non-model control/data planes, not model inference.
 - **Catalog-driven models:** `infra/models.json` is the deployment source of truth
   and generates the packaged API model catalog, including per-model
   `reasoning_effort` values.
@@ -85,10 +84,8 @@ azure.yaml  Azure Developer CLI service map
 
 ## Deploy
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](docs/runbooks/deploy-to-azure.md)
-
-Start with the
-[guided Azure deployment](docs/runbooks/deploy-to-azure.md), which routes into
+Start with the **[guided Azure deployment](docs/runbooks/deploy-to-azure.md)**,
+which is a multi-step production setup rather than a one-click template and routes into
 the greenfield standup guide. It covers
 cost/quota review, tools, deployment identity/RBAC, both GitHub OIDC subjects,
 Entra apps, required variables, provider/model preflight, the first workflow

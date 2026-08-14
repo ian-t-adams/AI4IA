@@ -29,6 +29,13 @@ export const VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v4";
 const V3_VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v3";
 export const V2_VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v2";
 const V1_VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v1";
+const VOICE_PREFERENCES_CHANGED_EVENT = "ai4ia:voice-preferences";
+const VOICE_PREFERENCE_STORAGE_NAMES = [
+  VOICE_PREFERENCES_STORAGE_NAME,
+  V3_VOICE_PREFERENCES_STORAGE_NAME,
+  V2_VOICE_PREFERENCES_STORAGE_NAME,
+  V1_VOICE_PREFERENCES_STORAGE_NAME,
+] as const;
 
 export interface VoicePreferences {
   provider: "azure_openai" | "speech_voice_live";
@@ -138,6 +145,13 @@ export function normalizeVoiceSessionSettings(raw: unknown): VoiceSessionSetting
 // exist?) is intentionally NOT checked here — see resolveEffectiveAgent /
 // resolveEffectiveModel, which need the live catalog and so live in the
 // caller (ChatApp).
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 export function normalizeVoicePreferences(raw: unknown): VoicePreferences {
   if (!raw || typeof raw !== "object") return { ...DEFAULT_VOICE_PREFERENCES };
   const r = raw as Record<string, unknown>;
@@ -424,11 +438,131 @@ export function hasStoredVoicePreferences(
 export function saveVoicePreferences(
   prefs: VoicePreferences,
   storage: PreferencesStorage | undefined = safeLocalStorage(),
-): void {
-  if (!storage) return;
+): boolean {
+  if (!storage) return false;
   try {
     storage.setItem(VOICE_PREFERENCES_STORAGE_NAME, JSON.stringify(prefs));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event(VOICE_PREFERENCES_CHANGED_EVENT));
+    }
+    return true;
   } catch {
-    /* best-effort persistence only */
+    return false;
   }
+}
+
+function voicePreferenceSnapshot(
+  storage: PreferencesStorage | undefined = safeLocalStorage(),
+): string {
+  if (!storage) return "";
+  try {
+    return JSON.stringify(
+      VOICE_PREFERENCE_STORAGE_NAMES.map((name) => storage.getItem(name)),
+    );
+  } catch {
+    return "";
+  }
+}
+
+function preferencesFromSnapshot(snapshot: string): {
+  preferences: VoicePreferences;
+  hasStoredPreferences: boolean;
+  needsMigration: boolean;
+} {
+  if (!snapshot) {
+    return {
+      preferences: { ...DEFAULT_VOICE_PREFERENCES },
+      hasStoredPreferences: false,
+      needsMigration: false,
+    };
+  }
+  let values: (string | null)[];
+  try {
+    values = JSON.parse(snapshot) as (string | null)[];
+  } catch {
+    values = [];
+  }
+  const byName = new Map<string, string | null>(
+    VOICE_PREFERENCE_STORAGE_NAMES.map(
+      (name, index): [string, string | null] => [
+        name,
+        values[index] ?? null,
+      ],
+    ),
+  );
+  const snapshotStorage: PreferencesStorage = {
+    getItem: (name) => byName.get(name) ?? null,
+    setItem: () => {},
+  };
+  let needsMigration = false;
+  if (values[0] === null) {
+    for (const legacy of values.slice(1)) {
+      if (legacy === null) continue;
+      try {
+        const parsed = JSON.parse(legacy) as unknown;
+        needsMigration = Boolean(
+          parsed && typeof parsed === "object" && !Array.isArray(parsed),
+        );
+      } catch {
+        needsMigration = false;
+      }
+      break;
+    }
+  }
+  return {
+    preferences: loadVoicePreferences(snapshotStorage),
+    hasStoredPreferences: hasStoredVoicePreferences(snapshotStorage),
+    needsMigration,
+  };
+}
+
+export function usePersistedVoicePreferences(): {
+  preferences: VoicePreferences;
+  hasStoredPreferences: boolean;
+  updatePreferences: (next: VoicePreferences) => void;
+} {
+  const subscribe = useCallback((listener: () => void) => {
+    const onStorage = (event: StorageEvent) => {
+      if (
+        event.key === null ||
+        VOICE_PREFERENCE_STORAGE_NAMES.includes(
+          event.key as (typeof VOICE_PREFERENCE_STORAGE_NAMES)[number],
+        )
+      ) {
+        listener();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(VOICE_PREFERENCES_CHANGED_EVENT, listener);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(VOICE_PREFERENCES_CHANGED_EVENT, listener);
+    };
+  }, []);
+  const snapshot = useSyncExternalStore(
+    subscribe,
+    voicePreferenceSnapshot,
+    () => "",
+  );
+  const stored = useMemo(() => preferencesFromSnapshot(snapshot), [snapshot]);
+  // Keep the current interaction responsive even when privacy settings allow a
+  // read but reject a write. A successful save still updates the external store.
+  const [memoryOverride, setMemoryOverride] =
+    useState<VoicePreferences | null>(null);
+
+  useEffect(() => {
+    if (stored.needsMigration) {
+      saveVoicePreferences(stored.preferences);
+    }
+  }, [stored]);
+
+  const updatePreferences = useCallback((next: VoicePreferences) => {
+    setMemoryOverride(saveVoicePreferences(next) ? null : next);
+  }, []);
+  return {
+    preferences: memoryOverride ?? stored.preferences,
+    hasStoredPreferences:
+      memoryOverride !== null || stored.hasStoredPreferences,
+    updatePreferences,
+  };
 }

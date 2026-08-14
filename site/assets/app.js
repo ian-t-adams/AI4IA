@@ -12,7 +12,28 @@
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
   function el(id) { return document.getElementById(id); }
-  function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content; }
+  var PAGES_WORKFLOW_URL = "https://github.com/ian-t-adams/AI4IA/actions/workflows/pages.yml";
+
+  function unavailableMessage(message) {
+    return '<div class="notice data-unavailable" role="status"><strong>Data unavailable.</strong> ' +
+      esc(message) + ' <a href="' + PAGES_WORKFLOW_URL +
+      '" target="_blank" rel="noopener">Check the portal publishing workflow.</a></div>';
+  }
+
+  function renderUnavailable(host, message) {
+    if (host) host.innerHTML = unavailableMessage(message);
+  }
+
+  function renderUnavailableRow(host, columns, message) {
+    if (host) {
+      host.innerHTML = '<tr><td colspan="' + columns + '">' +
+        unavailableMessage(message) + "</td></tr>";
+    }
+  }
+
+  function renderUnavailableList(host, message) {
+    if (host) host.innerHTML = "<li>" + unavailableMessage(message) + "</li>";
+  }
 
   // Two missed twice-daily refresh windows make the snapshot operationally stale.
   var STATUS_STALE_AFTER_HOURS = 24;
@@ -85,8 +106,17 @@
   // ---------- index.html ----------
   function renderMeta() {
     var m = window.AI4IA_META;
-    if (!m) return;
     var feat = el("features");
+    var stack = el("stack");
+    var regions = el("regions");
+    var envfacts = el("envfacts");
+    if (!m) {
+      renderUnavailable(feat, "The portal metadata file did not load.");
+      renderUnavailableRow(stack, 3, "The technology inventory did not load.");
+      renderUnavailable(regions, "The deployment region inventory did not load.");
+      renderUnavailableRow(envfacts, 2, "The environment summary did not load.");
+      return;
+    }
     if (feat) {
       var posture = m.featurePosture || {};
       var evidence = '<div class="feat"><div class="body"><strong>Evidence boundary</strong><span>' +
@@ -103,20 +133,17 @@
           esc(f.name) + core + template + "</strong>" + (f.note ? "<span>" + esc(f.note) + "</span>" : "") + "</div></div>";
       }).join("");
     }
-    var stack = el("stack");
     if (stack) {
       stack.innerHTML = m.stack.map(function (s) {
         return "<tr><td><strong>" + esc(s.layer) + "</strong></td><td>" + esc(s.tech) +
           '</td><td class="mono">' + esc(s.host) + "</td></tr>";
       }).join("");
     }
-    var regions = el("regions");
     if (regions) {
       regions.innerHTML = m.environment.regions.map(function (r) {
         return '<div class="card"><h3>📍 ' + esc(r.region) + "</h3><p>" + esc(r.role) + "</p></div>";
       }).join("");
     }
-    var envfacts = el("envfacts");
     if (envfacts) {
       var e = m.environment;
       var rows = [
@@ -138,11 +165,24 @@
     var host = el("status-stats");
     var resourceGroup = el("status-resource-group");
     if (resourceGroup && s) resourceGroup.textContent = s.resourceGroup || "unknown";
-    if (!s || !host) return;
+    if (!host) return;
+    if (!s) {
+      if (resourceGroup) resourceGroup.textContent = "unavailable";
+      var updated = el("updated");
+      if (updated) {
+        updated.innerHTML = stateBadge("unavailable", "data unavailable") +
+          "<span>The deployment snapshot file did not load.</span>";
+      }
+      renderUnavailable(host, "The deployment summary did not load.");
+      renderUnavailable(el("endpoints"), "Endpoint probe results did not load.");
+      renderUnavailableRow(el("resources-body"), 5, "The Azure resource inventory did not load.");
+      return;
+    }
     renderSnapshotFreshness(el("updated"), s.generatedAt);
 
     var sum = s.summary;
     var inventory = window.AI4IA_INVENTORY || {};
+    var hasInventory = Array.isArray(inventory.resources) || Array.isArray(s.resources);
     var resources = Array.isArray(inventory.resources)
       ? inventory.resources
       : (Array.isArray(s.resources) ? s.resources : []);
@@ -189,6 +229,10 @@
 
     var body = el("resources-body");
     if (body) {
+      if (!hasInventory) {
+        renderUnavailableRow(body, 5, "The Azure resource inventory did not load.");
+        return;
+      }
       var groups = groupBy(resources, "group");
       var html = "";
       Object.keys(groups).sort().forEach(function (g) {
@@ -208,7 +252,16 @@
   function renderServices() {
     var svc = window.AI4IA_SERVICES;
     var host = el("services-root");
-    if (!svc || !host) return;
+    if (!host) return;
+    if (!svc) {
+      renderUnavailable(host, "The Azure service catalogue did not load.");
+      var servicesUpdated = el("services-updated");
+      if (servicesUpdated) {
+        servicesUpdated.innerHTML = stateBadge("unavailable", "data unavailable") +
+          "<span>The service catalogue file did not load.</span>";
+      }
+      return;
+    }
     var inventory = window.AI4IA_INVENTORY || {};
     var inv = Array.isArray(inventory.resources) ? inventory.resources : [];
     var freshness = renderSnapshotFreshness(el("services-updated"), inventory.generatedAt);
@@ -257,26 +310,35 @@
   // ---------- requirements.html ----------
   function renderRequirements() {
     var r = window.AI4IA_REQUIREMENTS;
-    if (!r) return;
     var mods = el("modules");
+    var iacmeta = el("iac-meta");
+    var rbac = el("rbac");
+    var pk = el("packages");
+    var pre = el("prereqs");
+    if (!mods && !iacmeta && !rbac && !pk && !pre) return;
+    if (!r) {
+      renderUnavailableList(pre, "The prerequisite list did not load.");
+      renderUnavailable(iacmeta, "The infrastructure metadata did not load.");
+      renderUnavailableRow(mods, 2, "The Bicep module inventory did not load.");
+      renderUnavailableRow(rbac, 5, "The RBAC inventory did not load.");
+      renderUnavailable(pk, "The package inventory did not load.");
+      return;
+    }
     if (mods) {
       mods.innerHTML = r.iac.modules.map(function (m) {
         return '<tr><td class="mono">' + esc(m.name) + "</td><td>" + esc(m.purpose) + "</td></tr>";
       }).join("");
     }
-    var iacmeta = el("iac-meta");
     if (iacmeta) {
       iacmeta.innerHTML = "<p><strong>Provider:</strong> " + esc(r.iac.provider) + "</p><p><strong>Entry point:</strong> " +
         esc(r.iac.entry) + "</p><p><strong>Catalog:</strong> " + esc(r.iac.catalog) + "</p>";
     }
-    var rbac = el("rbac");
     if (rbac) {
       rbac.innerHTML = r.rbac.map(function (x) {
         return '<tr><td class="mono">' + esc(x.assignee) + "</td><td><strong>" + esc(x.role) + "</strong></td><td>" +
           esc(x.scope) + "</td><td>" + esc(x.why) + '</td><td class="mono">' + esc(x.module) + "</td></tr>";
       }).join("");
     }
-    var pk = el("packages");
     if (pk) {
       pk.innerHTML = ["api", "web", "proxy"].map(function (k) {
         var p = r.packages[k];
@@ -291,7 +353,6 @@
           (items ? '<div class="table-wrap"><table><tbody>' + items + "</tbody></table></div>" : "") + dev + extra + "</div>";
       }).join("");
     }
-    var pre = el("prereqs");
     if (pre) {
       pre.innerHTML = r.prerequisites.map(function (p) { return "<li>" + esc(p) + "</li>"; }).join("");
     }
@@ -301,7 +362,11 @@
   function renderDocs() {
     var d = window.AI4IA_DOCS;
     var host = el("docs-root");
-    if (!d || !host) return;
+    if (!host) return;
+    if (!d) {
+      renderUnavailable(host, "The generated documentation catalogue did not load.");
+      return;
+    }
     host.innerHTML = d.sections.map(function (sec) {
       var cards = sec.docs.map(function (doc) {
         var url = d.repoBase + doc.path;

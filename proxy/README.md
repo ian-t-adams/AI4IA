@@ -21,7 +21,9 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
 - `Dockerfile` — AI4IA-maintained multi-stage build with **build context = `./proxy`**. It uses
   digest-pinned .NET 10 SDK/chiseled-runtime bases, restores the checked-in NuGet locks with
   `--locked-mode`, exposes AI4IA's `8080` listener, and starts the worker without the upstream
-  web-host `--urls` argument. These are intentional local adaptations.
+  web-host `--urls` argument. These are intentional local adaptations. The upstream
+  `SimpleL7Proxy/Dockerfile`, sample deployment, scratch file, and build helper remain
+  provenance-tracked but are excluded from AI4IA's Docker build context and are never built.
 
 ### Intentional source deviation
 

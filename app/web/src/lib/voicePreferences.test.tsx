@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { installFakeLocalStorage } from "@/test/fakeStorage";
 import {
   DEFAULT_VOICE_PREFERENCES,
   hasStoredVoicePreferences,
@@ -9,6 +13,7 @@ import {
   resolveEffectiveModel,
   resolveEffectiveVoiceProvider,
   saveVoicePreferences,
+  usePersistedVoicePreferences,
   VOICE_PREFERENCES_STORAGE_NAME,
   V2_VOICE_PREFERENCES_STORAGE_NAME,
   type PreferencesStorage,
@@ -18,6 +23,41 @@ import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   DEFAULT_VOICE_SETTINGS,
 } from "./voiceLive";
+
+function PreferenceHarness() {
+  const state = usePersistedVoicePreferences();
+  return (
+    <>
+      <output aria-label="Voice provider">{state.preferences.provider}</output>
+      <output aria-label="Stored preference">
+        {state.hasStoredPreferences ? "stored" : "default"}
+      </output>
+      <button
+        type="button"
+        onClick={() =>
+          state.updatePreferences({
+            ...state.preferences,
+            provider: "speech_voice_live",
+          })
+        }
+      >
+        Use Speech
+      </button>
+    </>
+  );
+}
+
+let restoreLocalStorage: (() => void) | undefined;
+
+beforeEach(() => {
+  restoreLocalStorage = installFakeLocalStorage();
+});
+
+afterEach(() => {
+  cleanup();
+  restoreLocalStorage?.();
+  restoreLocalStorage = undefined;
+});
 
 function fakeStorage(initial: Record<string, string> = {}): PreferencesStorage & {
   data: Record<string, string>;
@@ -31,6 +71,80 @@ function fakeStorage(initial: Record<string, string> = {}): PreferencesStorage &
     },
   };
 }
+
+describe("usePersistedVoicePreferences", () => {
+  it("hydrates after SSR, persists updates, and marks the choice stored", async () => {
+    const user = userEvent.setup();
+    render(<PreferenceHarness />);
+    expect(screen.getByLabelText("Stored preference")).toHaveTextContent(
+      "default",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Use Speech" }));
+    expect(screen.getByLabelText("Voice provider")).toHaveTextContent(
+      "speech_voice_live",
+    );
+    expect(screen.getByLabelText("Stored preference")).toHaveTextContent(
+      "stored",
+    );
+    expect(localStorage.getItem(VOICE_PREFERENCES_STORAGE_NAME)).toContain(
+      "speech_voice_live",
+    );
+  });
+
+  it("accepts a later cross-tab update after a successful local save", async () => {
+    const user = userEvent.setup();
+    render(<PreferenceHarness />);
+    await user.click(screen.getByRole("button", { name: "Use Speech" }));
+    expect(screen.getByLabelText("Voice provider")).toHaveTextContent(
+      "speech_voice_live",
+    );
+
+    const external = {
+      ...DEFAULT_VOICE_PREFERENCES,
+      provider: "azure_openai" as const,
+      tools: true,
+    };
+    localStorage.setItem(
+      VOICE_PREFERENCES_STORAGE_NAME,
+      JSON.stringify(external),
+    );
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: VOICE_PREFERENCES_STORAGE_NAME,
+        newValue: JSON.stringify(external),
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Voice provider")).toHaveTextContent(
+        "azure_openai",
+      ),
+    );
+  });
+
+  it("migrates a legacy preference without a set-state hydration effect", async () => {
+    localStorage.setItem(
+      V2_VOICE_PREFERENCES_STORAGE_NAME,
+      JSON.stringify({
+        ...DEFAULT_VOICE_PREFERENCES,
+        provider: "speech_voice_live",
+      }),
+    );
+    render(<PreferenceHarness />);
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Voice provider")).toHaveTextContent(
+        "speech_voice_live",
+      ),
+    );
+    await waitFor(() =>
+      expect(localStorage.getItem(VOICE_PREFERENCES_STORAGE_NAME)).toContain(
+        "speech_voice_live",
+      ),
+    );
+  });
+});
 
 describe("normalizeVoicePreferences", () => {
   it("returns defaults for non-object/null input", () => {

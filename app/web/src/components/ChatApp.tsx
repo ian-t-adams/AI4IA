@@ -47,12 +47,10 @@ import {
 } from "@/lib/voiceLive";
 import {
   DEFAULT_VOICE_PREFERENCES,
-  hasStoredVoicePreferences,
-  loadVoicePreferences,
   resolveEffectiveAgent,
   normalizeVoicePreferences,
   sanitizeVoicePreferencesForProviders,
-  saveVoicePreferences,
+  usePersistedVoicePreferences,
   type VoicePreferences,
 } from "@/lib/voicePreferences";
 import { LibraryPanel } from "./LibraryPanel";
@@ -70,12 +68,6 @@ import {
 import { useVoiceLiveConfig } from "./VoiceLiveProvider";
 import { useLibraryConfig } from "./LibraryProvider";
 import { useCustomToolsConfig } from "./CustomToolsProvider";
-import { useMediaQuery } from "./useMediaQuery";
-import {
-  closeUnavailableMobileDrawer,
-  toggleMobileDrawer as nextMobileDrawer,
-  type MobileDrawer,
-} from "@/lib/workspaceLayout";
 import {
   isCurrentSessionGeneration,
   reconcileMessages,
@@ -86,9 +78,7 @@ import {
 } from "@/lib/sessionMutation";
 import { performBoundUpload } from "@/lib/uploadSession";
 import { EditableSessionTitle } from "./EditableSessionTitle";
-
-const MOBILE_SIDEBAR_QUERY = "(max-width: 720px)";
-const MOBILE_INSPECTOR_QUERY = "(max-width: 1050px)";
+import { useWorkspacePanels } from "./useWorkspacePanels";
 
 // Bounds how long ANY caller of ensureSession -- not just whichever one
 // started the request -- will wait on a single pending session creation
@@ -169,26 +159,35 @@ function providerModelRegion(models: ModelEntry[], modelId: string | null): stri
   return model?.options[0]?.region ?? null;
 }
 
-function toggleStoredBoolean(
-  key: string,
-  setValue: (update: (previous: boolean) => boolean) => void,
-): void {
-  setValue((previous) => {
-    const next = !previous;
-    try {
-      localStorage.setItem(key, next ? "1" : "0");
-    } catch {
-      // Best-effort persistence.
-    }
-    return next;
-  });
-}
-
 export function ChatApp() {
   const voiceLiveConfig = useVoiceLiveConfig();
   const libraryConfig = useLibraryConfig();
   const customToolsConfig = useCustomToolsConfig();
   const customToolsEnabled = customToolsConfig.enabled;
+  const {
+    preferences: voicePrefs,
+    hasStoredPreferences: hasSavedVoicePrefs,
+    updatePreferences: updateVoicePrefs,
+  } = usePersistedVoicePreferences();
+  const {
+    settingsOpen,
+    studioOpen,
+    libraryOpen,
+    openSettings,
+    closeSettings,
+    openStudio,
+    closeStudio,
+    openLibrary,
+    closeLibrary,
+    mobileSidebar,
+    drawerInspector,
+    mobileSidebarOpen,
+    mobileInspectorOpen,
+    leftIsCollapsed,
+    rightIsCollapsed,
+    toggleLeftPanel,
+    toggleRightPanel,
+  } = useWorkspacePanels();
   // The document library. When on, the Composer paperclip routes
   // uploads through the per-user library CU-ingest pipeline instead of the
   // session-scoped local-extract path, so the doc is parsed, surfaced to the
@@ -267,15 +266,6 @@ export function ChatApp() {
     PendingToolApprovalPrompt[]
   >([]);
   const [error, setError] = useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [studioOpen, setStudioOpen] = useState(false);
-  const [libraryOpen, setLibraryOpen] = useState(false);
-  // Left sidebar + right parameters panel collapse state, persisted across
-  // reloads. Initialized false (matching SSR) and hydrated from localStorage on
-  // mount to avoid a hydration mismatch.
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [rightCollapsed, setRightCollapsed] = useState(false);
-  const [mobileDrawer, setMobileDrawer] = useState<MobileDrawer>(null);
   // Citation deep-link: the audio/video doc a clicked chat citation
   // resolved to, plus the moment to seek. Opens the same MediaPlayer modal the
   // LibraryPanel uses. Null when no citation is open.
@@ -877,10 +867,10 @@ export function ChatApp() {
 
   const openWorkflowRun = useCallback(
     (sessionId: string) => {
-      setStudioOpen(false);
+      closeStudio();
       void selectSession(sessionId);
     },
-    [selectSession],
+    [closeStudio, selectSession],
   );
 
   const deleteSession = useCallback(
@@ -1719,23 +1709,6 @@ export function ChatApp() {
     },
     [refreshSessions],
   );
-
-  // Voice Live settings disclosure: persisted picks (agent/model/voice/tools/
-  // advanced settings), loaded once on mount (localStorage is client-only —
-  // starting from the default keeps SSR/first paint stable).
-  const [voicePrefs, setVoicePrefs] = useState<VoicePreferences>(
-    DEFAULT_VOICE_PREFERENCES,
-  );
-  const [hasSavedVoicePrefs, setHasSavedVoicePrefs] = useState(false);
-  useEffect(() => {
-    setHasSavedVoicePrefs(hasStoredVoicePreferences());
-    setVoicePrefs(loadVoicePreferences());
-  }, []);
-  const updateVoicePrefs = useCallback((next: VoicePreferences) => {
-    setHasSavedVoicePrefs(true);
-    setVoicePrefs(next);
-    saveVoicePreferences(next);
-  }, []);
 
   const realtimeModelList = useMemo(() => realtimeModels(models), [models]);
   const authorizedVoiceProviders = useMemo(
@@ -2610,65 +2583,6 @@ export function ChatApp() {
     activeId,
   ]);
 
-  // Hydrate panel-collapse preferences from localStorage on mount (after SSR).
-  useEffect(() => {
-    try {
-      setLeftCollapsed(localStorage.getItem("ai4ia.leftCollapsed") === "1");
-      setRightCollapsed(localStorage.getItem("ai4ia.rightCollapsed") === "1");
-    } catch {
-      // localStorage unavailable (private mode etc.) — keep expanded defaults.
-    }
-  }, []);
-
-  const toggleLeftCollapsed = useCallback(
-    () => toggleStoredBoolean("ai4ia.leftCollapsed", setLeftCollapsed),
-    [],
-  );
-  const toggleRightCollapsed = useCallback(
-    () => toggleStoredBoolean("ai4ia.rightCollapsed", setRightCollapsed),
-    [],
-  );
-  const mobileSidebar = useMediaQuery(MOBILE_SIDEBAR_QUERY);
-  const drawerInspector = useMediaQuery(MOBILE_INSPECTOR_QUERY);
-  const mobileSidebarOpen = mobileSidebar && mobileDrawer === "sidebar";
-  const mobileInspectorOpen = drawerInspector && mobileDrawer === "inspector";
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const sidebarMedia = window.matchMedia(MOBILE_SIDEBAR_QUERY);
-    const inspectorMedia = window.matchMedia(MOBILE_INSPECTOR_QUERY);
-    const closeUnavailable = () => {
-      setMobileDrawer((current) =>
-        closeUnavailableMobileDrawer(
-          current,
-          sidebarMedia.matches,
-          inspectorMedia.matches,
-        ),
-      );
-    };
-    sidebarMedia.addEventListener("change", closeUnavailable);
-    inspectorMedia.addEventListener("change", closeUnavailable);
-    return () => {
-      sidebarMedia.removeEventListener("change", closeUnavailable);
-      inspectorMedia.removeEventListener("change", closeUnavailable);
-    };
-  }, []);
-  const leftIsCollapsed = mobileSidebar ? !mobileSidebarOpen : leftCollapsed;
-  const rightIsCollapsed = drawerInspector ? !mobileInspectorOpen : rightCollapsed;
-  const toggleLeftPanel = useCallback(() => {
-    if (mobileSidebar) {
-      setMobileDrawer((current) => nextMobileDrawer(current, "sidebar"));
-    } else {
-      toggleLeftCollapsed();
-    }
-  }, [mobileSidebar, toggleLeftCollapsed]);
-  const toggleRightPanel = useCallback(() => {
-    if (drawerInspector) {
-      setMobileDrawer((current) => nextMobileDrawer(current, "inspector"));
-    } else {
-      toggleRightCollapsed();
-    }
-  }, [drawerInspector, toggleRightCollapsed]);
-
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
       {!leftIsCollapsed && mobileSidebar ? (
@@ -2717,7 +2631,9 @@ export function ChatApp() {
               sidebarReturnFocusRef.current = sidebarOpenerRef.current;
               toggleLeftPanel();
             }}
-            aria-label={mobileSidebar ? "Open conversation sidebar" : "Expand sidebar"}
+            aria-label={
+              mobileSidebar ? "Open conversation sidebar" : "Expand sidebar"
+            }
             title={mobileSidebar ? "Open conversations" : "Expand sidebar"}
             style={{
               border: "none",
@@ -2740,9 +2656,9 @@ export function ChatApp() {
           onNewChat={newChat}
           onDelete={deleteSession}
           onRename={renameSession}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onOpenStudio={() => setStudioOpen(true)}
-          onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
+          onOpenSettings={openSettings}
+          onOpenStudio={openStudio}
+          onOpenLibrary={libraryEnabled ? openLibrary : undefined}
           onBeforeSignOut={prepareSignOut}
           onCollapse={toggleLeftPanel}
           openerRef={sidebarReturnFocusRef}
@@ -2754,8 +2670,16 @@ export function ChatApp() {
 
       <main
         id="main"
-        inert={mobileSidebarOpen || mobileInspectorOpen ? true : undefined}
-        aria-hidden={mobileSidebarOpen || mobileInspectorOpen ? true : undefined}
+        inert={
+          mobileSidebarOpen || mobileInspectorOpen
+            ? true
+            : undefined
+        }
+        aria-hidden={
+          mobileSidebarOpen || mobileInspectorOpen
+            ? true
+            : undefined
+        }
         style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}
       >
         <header
@@ -2949,7 +2873,7 @@ export function ChatApp() {
               text: "/generate_image ",
             });
           }}
-          onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
+          onOpenLibrary={libraryEnabled ? openLibrary : undefined}
           libraryEnabled={libraryEnabled}
           attachmentCapabilities={attachmentCapabilities}
           voiceSettings={voiceSettingsProps}
@@ -2960,7 +2884,7 @@ export function ChatApp() {
       </div>
 
       {settingsOpen && (
-        <SettingsPanel onClose={() => setSettingsOpen(false)} />
+        <SettingsPanel onClose={closeSettings} />
       )}
       {studioOpen && (
         <StudioPanel
@@ -2970,11 +2894,11 @@ export function ChatApp() {
           customToolsEnabled={customToolsEnabled}
           onAgentsChanged={refreshAgents}
           onRun={openWorkflowRun}
-          onClose={() => setStudioOpen(false)}
+          onClose={closeStudio}
         />
       )}
       {libraryOpen && libraryEnabled && (
-        <LibraryPanel onClose={() => setLibraryOpen(false)} />
+        <LibraryPanel onClose={closeLibrary} />
       )}
       {citationTarget && libraryEnabled && (
         <MediaPlayer

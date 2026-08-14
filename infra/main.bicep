@@ -291,21 +291,23 @@ close -- the api identity still holds direct Foundry data-plane roles because th
 Responses-API Code Interpreter needs them until it moves to its own workload.''')
 param foundryDisableLocalAuth bool = true
 
-@description('''Network isolation foundation. When true, provisions a VNet +
-private DNS, creates the Container Apps environment VNet-injected (a NEW env under
-a `-vnet` name), and stands up private endpoints for the data tier (Cosmos, both
-storage accounts, Key Vault). Default false = today's public + identity-gated
-posture, byte-for-byte unchanged. Enabling requires a maintenance window: VNet
-injection is creation-time only, so the apps must be redeployed onto the new env
-(see the apply runbook in the PR).''')
+@description('''EXPERIMENTAL direct-Bicep network-isolation foundation. This
+parameter is intentionally absent from main.parameters.json and normal azd/CI
+mapping: it is not an enableable production posture yet and does not cover every
+required Azure service or DNS path. When true, it provisions a VNet + private DNS,
+creates a NEW VNet-injected Container Apps environment under a `-vnet` name, and
+stands up the currently implemented private-endpoint subset. Default false =
+today's public + identity-gated posture, byte-for-byte unchanged. See
+docs/runbooks/feature-enablement.md before extending or using this scaffold.''')
 param vnetIsolationEnabled bool = false
 
-@description('''Private-only data tier. When true, flips the data tier
-(Cosmos + both storage accounts + Key Vault) to `publicNetworkAccess: Disabled`,
-so they are reachable only over the private endpoints. Only valid once
-`vnetIsolationEnabled` is true, the private endpoints resolve, AND the deployer has
-a VNet path (temp IP allow or a jumpbox) — otherwise azd, which runs off-VNet,
-loses the ability to manage these resources. Default false.''')
+@description('''EXPERIMENTAL direct-Bicep private-only data-tier switch. This
+parameter is intentionally absent from main.parameters.json and normal azd/CI
+mapping. When true, it disables public access for the currently covered data
+resources. It is valid only with vnetIsolationEnabled, working private DNS, and a
+deployer that already has a VNet path; otherwise off-VNet azd loses management
+access. The current scaffold is incomplete and must not be presented as end-to-end
+network isolation. Default false.''')
 param dataTierPrivate bool = false
 
 @description('''Enable Key Vault purge protection, which blocks permanent deletion of the

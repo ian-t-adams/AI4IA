@@ -7,5 +7,9 @@
 **/.env*
 !**/.env.example
 SimpleL7Proxy/untracked/
+SimpleL7Proxy/build.sh
+SimpleL7Proxy/Dockerfile
+SimpleL7Proxy/sample-deployment.yaml
+SimpleL7Proxy/scratch
 .git
 README.md

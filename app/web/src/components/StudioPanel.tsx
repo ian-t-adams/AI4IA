@@ -3,9 +3,9 @@
 import { useState, type KeyboardEvent } from "react";
 import type { AgentSummary, ModelEntry } from "@/lib/types";
 import { AgentBuilder } from "./AgentBuilder";
+import { DialogFrame } from "./DialogFrame";
 import { WorkflowBuilder } from "./WorkflowBuilder";
 import { McpServerBuilder } from "./McpServerBuilder";
-import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
 type Tab = "agents" | "workflows" | "tools";
 
@@ -33,8 +33,6 @@ export function StudioPanel({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("agents");
-  const modalRef = useModalFocus();
-  const onModalKeyDown = useModalKeyDown(onClose);
   const tabs: Tab[] = customToolsEnabled
     ? ["agents", "workflows", "tools"]
     : ["agents", "workflows"];
@@ -57,23 +55,11 @@ export function StudioPanel({
   };
 
   return (
-    <div
-      ref={modalRef}
-      onKeyDown={onModalKeyDown}
-      role="dialog"
-      aria-label="Agents and workflows builder"
-      aria-modal="true"
-      style={{
-        position: "fixed",
-        inset: 0,
-        padding: 8,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 50,
-      }}
-      onClick={onClose}
+    <DialogFrame
+      ariaLabel="Agents and workflows builder"
+      onClose={onClose}
+      zIndex={50}
+      overlayPadding={8}
     >
       <div
         data-testid="studio-surface"
@@ -191,6 +177,6 @@ export function StudioPanel({
           )}
         </div>
       </div>
-    </div>
+    </DialogFrame>
   );
 }
