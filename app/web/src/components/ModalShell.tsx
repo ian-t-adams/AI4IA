@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 
-import { useModalFocus, useModalKeyDown } from "./useModalFocus";
+import { DialogFrame } from "./DialogFrame";
 
 export function ModalShell({
   ariaLabel,
@@ -29,27 +29,8 @@ export function ModalShell({
   headerGap?: number;
   children: ReactNode;
 }) {
-  const modalRef = useModalFocus();
-  const onModalKeyDown = useModalKeyDown(onClose);
-
   return (
-    <div
-      ref={modalRef}
-      onKeyDown={onModalKeyDown}
-      role="dialog"
-      aria-label={ariaLabel}
-      aria-modal="true"
-      onClick={onClose}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex,
-      }}
-    >
+    <DialogFrame ariaLabel={ariaLabel} onClose={onClose} zIndex={zIndex}>
       <div
         onClick={(event) => event.stopPropagation()}
         style={{
@@ -98,6 +79,9 @@ export function ModalShell({
               background: "transparent",
               color: "var(--fg)",
               fontSize: "1.2em",
+              minWidth: 44,
+              minHeight: 44,
+              borderRadius: 8,
               cursor: "pointer",
             }}
           >
@@ -106,6 +90,6 @@ export function ModalShell({
         </div>
         {children}
       </div>
-    </div>
+    </DialogFrame>
   );
 }

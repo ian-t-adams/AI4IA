@@ -27,16 +27,14 @@ const eslintConfig = [
         version: "19.0",
       },
     },
-    // eslint-config-next 16 bundles react-hooks v6, which enables the new
-    // React Compiler static-analysis rules as errors. The existing components
-    // predate these checks, so we surface them as warnings (non-blocking) to
-    // keep this dependency bump isolated from the app refactor they'd require.
-    // Tracked for a dedicated follow-up; remove these downgrades once addressed.
+    // Keep the React Compiler static-analysis contract explicit and blocking.
+    // The app has been brought into compliance, so regressions in effect state,
+    // ref access, immutability, or manual memoization now fail CI immediately.
     rules: {
-      "react-hooks/set-state-in-effect": "warn",
-      "react-hooks/refs": "warn",
-      "react-hooks/immutability": "warn",
-      "react-hooks/preserve-manual-memoization": "warn",
+      "react-hooks/set-state-in-effect": "error",
+      "react-hooks/refs": "error",
+      "react-hooks/immutability": "error",
+      "react-hooks/preserve-manual-memoization": "error",
     },
   },
 ];

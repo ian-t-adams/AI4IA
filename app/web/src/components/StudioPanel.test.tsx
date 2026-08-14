@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { StudioPanel } from "./StudioPanel";
@@ -26,6 +26,21 @@ const baseProps = {
 afterEach(cleanup);
 
 describe("StudioPanel", () => {
+  it("keeps dialog semantics and closes only from Escape or the backdrop", () => {
+    const onClose = vi.fn();
+    render(<StudioPanel {...baseProps} onClose={onClose} />);
+    const dialog = screen.getByRole("dialog", {
+      name: "Agents and workflows builder",
+    });
+
+    fireEvent.click(screen.getByTestId("studio-surface"));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent.click(dialog);
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
   it("uses standard tabs with arrow-key focus and selection", async () => {
     const user = userEvent.setup();
     render(<StudioPanel {...baseProps} />);

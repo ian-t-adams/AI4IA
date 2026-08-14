@@ -16,7 +16,7 @@ import type {
   MediaTimeline,
   MediaTimelineSegment,
 } from "@/lib/library";
-import { useModalFocus, useModalKeyDown } from "./useModalFocus";
+import { DialogFrame } from "./DialogFrame";
 
 // Flatten a timeline into a sorted, de-duplicated list of seekable markers. Camera
 // shots and keyframes are distinct kinds so the strip can label them, but both are
@@ -66,8 +66,6 @@ export function MediaPlayer({
   seekToMs?: number;
   onClose: () => void;
 }) {
-  const modalRef = useModalFocus();
-  const onModalKeyDown = useModalKeyDown(onClose);
   const isVideo = doc.modality === "video";
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const [loadState, setLoadState] = useState<MediaLoadState | null>(null);
@@ -158,23 +156,7 @@ export function MediaPlayer({
   );
 
   return (
-    <div
-      ref={modalRef}
-      onKeyDown={onModalKeyDown}
-      role="dialog"
-      aria-label={`Media player for ${doc.filename}`}
-      aria-modal="true"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 60,
-      }}
-      onClick={onClose}
-    >
+    <DialogFrame ariaLabel={`Media player for ${doc.filename}`} onClose={onClose}>
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -205,6 +187,7 @@ export function MediaPlayer({
             {isVideo ? "🎬" : "🔊"} {doc.filename}
           </h2>
           <button
+            type="button"
             onClick={onClose}
             aria-label="Close player"
             style={{
@@ -212,6 +195,10 @@ export function MediaPlayer({
               background: "transparent",
               color: "var(--fg)",
               fontSize: "1.2em",
+              minWidth: 44,
+              minHeight: 44,
+              borderRadius: 8,
+              cursor: "pointer",
             }}
           >
             ✕
@@ -307,6 +294,6 @@ export function MediaPlayer({
           </span>
         )}
       </div>
-    </div>
+    </DialogFrame>
   );
 }
