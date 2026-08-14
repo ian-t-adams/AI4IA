@@ -375,8 +375,8 @@ class Settings(BaseSettings):
     # on, applies the L2 *semantic* reranker for materially better top-k ordering.
     # If the semantic tier is unavailable (quota/SKU), the store degrades gracefully
     # to plain hybrid — never breaking retrieval. Only affects the AI Search backend;
-    # pgvector / in-memory ignore it. Default ON (the search.bicep enables free
-    # semantic ranking); set ``AI4IA_SEARCH_SEMANTIC_RANKING=false`` to force hybrid.
+    # pgvector / in-memory ignore it. Default ON (search.bicep provisions the
+    # standard semantic plan); set ``AI4IA_SEARCH_SEMANTIC_RANKING=false`` to force hybrid.
     search_semantic_ranking: bool = True
 
     # --- Content Understanding ingest ---

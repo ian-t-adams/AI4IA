@@ -1096,14 +1096,27 @@ retrievable. Chat still answers — it just answers without the library. Plan th
 switch as a migration, not a config change.
 
 The chunk index is derived state: Cosmos holds the manifests and Blob holds the
-raw bytes plus `parsed.md`, so it is always rebuildable. Re-running enrichment on
-a document rebuilds its chunks into whichever index the store now resolves,
-because `_persist_enrichment` deletes then re-adds.
+raw bytes, `parsed.md`, and the `chunks.jsonl` sidecar, so it is always
+rebuildable. The reindex endpoint rebuilds a document's chunks into whichever
+index the store now resolves, re-embedding the stored chunk text rather than
+re-running the analyzer.
+
+**The reindex endpoint is per authenticated user.** `POST
+/api/library/documents/reindex` rebuilds only the *caller's own* ready
+documents, because the library is per-user and there is no admin cross-tenant
+surface. There is deliberately no "rebuild everyone" call: it would have to
+enumerate and act on every user's data, which nothing in this app is allowed to
+do. So on a multi-user deployment the migration is a *communication* step rather
+than one command — each user's library rebuilds on their first reindex, and
+until then their documents are simply not retrievable. If that is unacceptable
+for your user count, switch tenancy in a maintenance window and tell users to
+run it, or add a deliberate admin backfill with its own review.
 
 Sequence:
 
 1. Set the value and deploy.
-2. Rebuild each existing document so its chunks land in the new index:
+2. Rebuild each existing document so its chunks land in the new index. Run per
+   user, against that user's own library:
 
    ```bash
    # Per caller, against their own library. Rebuilds every ready document.

@@ -166,9 +166,9 @@ silently changing an existing document.
 ### Where Azure AI Search fits
 
 There is **no separate "upload to AI Search" surface, and you do not need one.**
-Azure AI Search is not a second destination you send files to — it is the chunk
-index sitting behind the document library, and it is used on every library
-upload and every retrieval:
+Azure AI Search is not a second destination you send files to — when it is
+configured it is the chunk index sitting behind the document library, used on
+every library upload and every retrieval:
 
 1. You upload a file and pick an analyzer (Content Understanding, or Mistral).
 2. The parsed Markdown is chunked and embedded.
@@ -200,6 +200,9 @@ Four owner-only operations, all under `/api/library`:
 | Rebuild one | `POST /documents/{id}/reindex` | embeddings only |
 | Rebuild all | `POST /documents/reindex` | embeddings only |
 | Drop from retrieval | `DELETE /documents/{id}/chunks` | nothing |
+
+"Rebuild all" means every *ready* document in **your own** library — the endpoint
+is per authenticated user and there is no cross-user variant.
 
 **Reindex does not re-run the analyzer.** The provider's output is already
 durable — `chunks.jsonl` holds the exact chunk text and its grounding — so a
