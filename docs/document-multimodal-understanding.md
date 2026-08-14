@@ -151,7 +151,12 @@ When `cuPreviewEnabled` is explicitly on, the Library adds:
 
 Both use `2026-06-01-preview`, carry no SLA, accept at most 10 MB, and process at
 most five PDF pages. Unlike normal enrichment, the upload request waits for their
-terminal result. The automatic analyzer never silently switches to preview.
+terminal result — but that wait is **bounded** by `AI4IA_CU_TIMEOUT_SECONDS`. The
+inline crack shares one process-wide concurrency gate with the asynchronous
+cracks, which hold a slot for the whole poll budget, so under contention the
+upload returns with a non-terminal manifest and the client falls back to the
+ordinary polling path instead of stalling until the ingress times it out. The
+automatic analyzer never silently switches to preview.
 
 Every CU result now persists a bounded owner-scoped `analysis.json` sidecar with
 structured fields, source/confidence evidence, signatures/metadata, warnings,
@@ -201,6 +206,12 @@ Four properties hold for every outbound analyzer call, CU or Mistral:
   a 408 timeout.
 - **`Retry-After` is honoured** when the service sends it, clamped to 30s per
   sleep so one bad header cannot consume the whole poll budget.
+
+Read endpoints are deliberately **not** gated on entitlement. The disabled-account
+gate guards spend (upload, memory writes, analyzer creation); a document, its
+media timeline, and its evidence sidecar are already-paid output, and gating only
+some of them would break the evidence viewer without creating any real boundary.
+Ownership and sharing checks still apply to every read.
 
 `AI4IA_CU_BASE_URL` is validated at startup outside `local`: it must be `https`
 with no embedded credentials, query, or fragment. CU receives raw document bytes

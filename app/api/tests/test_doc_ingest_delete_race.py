@@ -951,3 +951,113 @@ async def test_cu_segments_are_not_billed_as_pages():
     await _seed_and_enrich(ingestor, ingestor.library)
 
     assert _page_billed(usage) == []
+
+# --- the inline (synchronous-analyzer) wait must be bounded ---------------------
+
+
+class _GateFillingCU:
+    """Parks in ``analyze`` until released, to hold concurrency-gate slots."""
+
+    def __init__(self) -> None:
+        self.at_limit = asyncio.Event()
+        self.release = asyncio.Event()
+        self.active = 0
+
+    async def analyze(self, analyzer_id, data, content_type, *, api_version=None):
+        self.active += 1
+        if self.active >= MAX_CONCURRENT_DOCUMENT_ENRICHMENTS:
+            self.at_limit.set()
+        try:
+            await self.release.wait()
+            return CUResult(status="Succeeded", analyzer_id="a", markdown="# ready")
+        finally:
+            self.active -= 1
+
+
+async def _fill_the_gate(cu):
+    """Occupy every concurrency slot with background cracks."""
+    holder = _build(cu=cu)
+    for index in range(MAX_CONCURRENT_DOCUMENT_ENRICHMENTS):
+        stored = await holder.ingest(
+            user_id=f"hold{index}",
+            filename=f"{index}.txt",
+            content_type="text/plain",
+            data=f"hold-{index}".encode(),
+        )
+        assert holder.schedule_enrich(
+            user_id=f"hold{index}",
+            document_id=stored.document.id,
+            content_type="text/plain",
+        ) is EnrichScheduleOutcome.scheduled
+    await asyncio.wait_for(cu.at_limit.wait(), timeout=5)
+    return holder
+
+
+async def test_inline_enrich_does_not_stall_the_request_on_a_contended_gate():
+    """A saturated gate must degrade to polling, not hang the upload.
+
+    The gate is shared with asynchronous cracks that hold a slot for the whole
+    poll budget, while the saturation 503 only fires at the pending cap -- eight
+    times the gate width. An unbounded wait here is therefore not backpressure:
+    the request stalls until the ingress kills it, and the detached task later
+    marks the document ready after the user was told it failed.
+    """
+    cu = _GateFillingCU()
+    holder = await _fill_the_gate(cu)
+    try:
+        # cu_timeout_seconds bounds the in-request wait; keep it small.
+        inline = _build(cu=cu, cu_timeout_seconds=0.25)
+        stored = await inline.ingest(
+            user_id="u1", filename="d.txt", content_type="text/plain", data=b"X"
+        )
+        started = asyncio.get_running_loop().time()
+        outcome = await asyncio.wait_for(
+            inline.enrich_inline(
+                user_id="u1",
+                document_id=stored.document.id,
+                data=b"X",
+                content_type="text/plain",
+            ),
+            timeout=5,
+        )
+        waited = asyncio.get_running_loop().time() - started
+
+        assert outcome is EnrichScheduleOutcome.scheduled
+        # Returned on the bound, not on the blocked provider.
+        assert waited < 2.0, f"inline wait was {waited:.2f}s"
+        # The crack is still queued behind the gate, so it has not even reached
+        # ``analyzing`` yet. What matters is that the manifest is NON-TERMINAL:
+        # the client keeps polling instead of being told the upload failed.
+        doc = await inline.library.get_document("u1", stored.document.id)
+        assert doc.status in {DocumentStatus.stored, DocumentStatus.analyzing}
+        assert doc.status != DocumentStatus.failed
+    finally:
+        cu.release.set()
+        await asyncio.wait_for(
+            asyncio.gather(*holder._tasks.values(), return_exceptions=True),
+            timeout=5,
+        )
+
+
+async def test_inline_enrich_still_completes_in_request_when_the_gate_is_free():
+    """Control: with slots available the synchronous analyzer really does make
+    the upload terminal in-request, so the test above is about contention and
+    not about ``enrich_inline`` always returning early."""
+    library = InMemoryDocumentLibraryRepository()
+    cu = _CU("# T\n\nbody")
+    inline = _build(cu=cu, library=library, cu_timeout_seconds=5.0)
+    stored = await inline.ingest(
+        user_id="u1", filename="d.txt", content_type="text/plain", data=b"X"
+    )
+    outcome = await asyncio.wait_for(
+        inline.enrich_inline(
+            user_id="u1",
+            document_id=stored.document.id,
+            data=b"X",
+            content_type="text/plain",
+        ),
+        timeout=5,
+    )
+    assert outcome is EnrichScheduleOutcome.scheduled
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc.status == DocumentStatus.ready

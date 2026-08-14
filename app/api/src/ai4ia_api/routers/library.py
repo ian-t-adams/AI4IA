@@ -652,7 +652,14 @@ async def get_document_analysis(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
     repo = _library(request)
-    await _block_disabled(request, user.internal_user_id)
+    # Deliberately NOT gated by ``_block_disabled``. That gate guards *spend*
+    # (upload, memory writes, analyzer create); this is a pure owner read of
+    # output that was already produced and already billed. Gating it alone
+    # enforced no confidentiality boundary either — the raw document is still
+    # downloadable via ``download_document_version`` and the derived scenes via
+    # ``get_media_timeline``, both ungated — so it only broke the evidence
+    # viewer for a disabled account. If a disabled account should lose library
+    # access, gate every read together; do not re-add it to just this one.
     try:
         document = await repo.get_document(
             user.internal_user_id, document_id

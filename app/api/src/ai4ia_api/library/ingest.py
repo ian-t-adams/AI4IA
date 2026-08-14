@@ -387,6 +387,18 @@ class DocumentIngestor:
         full CU timeout. Routing through the same gate keeps the backpressure and
         the 503 saturation path reachable, and tracking the task keeps
         ``cancel_enrich``/``close`` able to cancel or drain an inline crack.
+
+        The in-request wait is **bounded**. The gate is shared with asynchronous
+        cracks that hold a slot for the whole poll budget
+        (``cu_max_poll_seconds``, 300s), while the saturation 503 only fires at
+        the pending cap — eight times the gate width. Between those two limits an
+        unbounded wait is not backpressure, it is a stall: the request would sit
+        for up to ``(pending_cap / gate_width) * poll_budget``, the ingress would
+        time it out first, and the detached task would later flip the document to
+        ``ready`` after the user had already been told the upload failed. On
+        timeout the crack stays queued under the gate and the caller falls back
+        to the ordinary polling path, which is what an ``analyzing`` manifest
+        already means.
         """
         if self._cu is None and self._mistral is None:
             return EnrichScheduleOutcome.disabled
@@ -433,8 +445,24 @@ class DocumentIngestor:
         task.add_done_callback(_done)
         # ``wait`` rather than ``await task`` so a delete cancelling the crack
         # does not surface as a cancellation of the *request* coroutine; the
-        # caller re-reads the manifest and reports the document as gone.
-        await asyncio.wait({task})
+        # caller re-reads the manifest and reports the document as gone. The
+        # timeout keeps a contended gate from turning this into an unbounded
+        # in-request stall (see the docstring).
+        done, _ = await asyncio.wait(
+            {task}, timeout=max(0.0, self._settings.cu_timeout_seconds)
+        )
+        if not done:
+            logger.info(
+                "inline enrichment still queued after %.1fs; falling back to polling",
+                self._settings.cu_timeout_seconds,
+            )
+            emit_custom_event(
+                "document_ingest_inline_deferred",
+                {
+                    "stage": "inline_wait",
+                    "timeoutSeconds": self._settings.cu_timeout_seconds,
+                },
+            )
         return EnrichScheduleOutcome.scheduled
 
     async def settle_saturated(self, doc: UserDocument) -> tuple[UserDocument, str]:

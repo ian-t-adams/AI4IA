@@ -600,3 +600,54 @@ async def test_poll_without_retry_after_uses_the_configured_interval():
         )
 
     assert slept == [1.5]
+
+# --- billing-signal invariant ---------------------------------------------------
+
+
+def test_metered_page_count_and_page_usage_by_meter_stay_in_lockstep():
+    """The two CU page signals must agree on *whether* pages were metered.
+
+    ``_meter_analysis`` bills per-meter when ``page_usage_by_meter()`` is
+    non-empty and otherwise falls back to the ``pages`` argument, which is fed
+    ``metered_page_count`` for CU. If those two ever disagree, CU either bills
+    twice or silently stops billing pages, and no end-to-end test can see it
+    because whichever branch is taken looks locally correct. Pin the coupling
+    here rather than relying on both reading the same private dict.
+    """
+    from ai4ia_api.content_understanding.models import CUResult
+
+    def result(usage: dict, contents: int = 3) -> CUResult:
+        return CUResult(
+            status="Succeeded",
+            analyzer_id="a",
+            markdown="x",
+            contents=[{"markdown": "c"} for _ in range(contents)],
+            usage=usage,
+        )
+
+    cases = [
+        {},                                     # no usage at all
+        {"documentPagesBasic": 0},              # zero-filled meter
+        {"documentPagesBasic": 2},              # a real meter
+        {"documentPagesBasicInline": 1},        # the synchronous variant
+        {"documentPagesBasic": 0, "documentPagesStandard": 4},  # mixed
+        {"audioSeconds": 90},                   # non-page analyzer
+        {"documentPagesBasic": True},           # bool is not a page count
+    ]
+    saw_metered = False
+    saw_unmetered = False
+    for usage in cases:
+        r = result(usage)
+        metered = r.metered_page_count
+        by_meter = r.page_usage_by_meter()
+        assert (metered is None) == (not by_meter), (
+            f"usage={usage!r}: metered_page_count={metered!r} disagrees with "
+            f"page_usage_by_meter()={by_meter!r}"
+        )
+        if metered is None:
+            saw_unmetered = True
+        else:
+            saw_metered = True
+            assert metered == sum(by_meter.values())
+    # Non-vacuity: the loop must have exercised both sides of the invariant.
+    assert saw_metered and saw_unmetered
