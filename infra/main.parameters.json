@@ -182,6 +182,12 @@
     "searchLocation": {
       "value": "${AI4IA_SEARCH_LOCATION=eastus}"
     },
+    "searchSku": {
+      "value": "${AI4IA_SEARCH_SKU=standard}"
+    },
+    "searchSemanticPlan": {
+      "value": "${AI4IA_SEARCH_SEMANTIC_PLAN=standard}"
+    },
     "voiceLiveEnabled": {
       "value": "${AI4IA_VOICE_LIVE_ENABLED=true}"
     },

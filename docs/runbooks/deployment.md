@@ -1083,6 +1083,53 @@ continuity. Request `include: ["reasoning.encrypted_content"]` and pass the
 encrypted reasoning items forward — that is the stateless-mode equivalent and
 keeps the content in the app's control.
 
+## Changing the Azure AI Search tier
+
+`AI4IA_SEARCH_SKU` (default `standard`, i.e. S1) and `AI4IA_SEARCH_SEMANTIC_PLAN`
+(default `standard`) are deployment parameters, but they behave **differently** on
+an existing service and the difference matters.
+
+| Change | On a new service | On an existing service |
+|---|---|---|
+| `searchSemanticPlan` (`free` -> `standard`) | Applied at create | Applied by `azd provision` — it is a mutable property |
+| `searchSku` (`basic` -> `standard`) | Applied at create | **Not applied.** The tier is set at create time and the ARM PUT that `azd provision` issues does not re-tier a live service |
+
+Azure does support moving an existing service between Basic and Standard
+(S1/S2/S3) — upgrades and downgrades — but only through the portal's **Change
+Pricing Tier** action or the `2025-02-01-preview` Update Service API. The Bicep
+resource is pinned to `2023-11-01`, so a provision run will not do it for you and
+will not fail loudly either: the service simply stays on its current tier while
+the template claims otherwise.
+
+To re-tier the live service:
+
+1. Confirm the current configuration fits the target tier's limits, and that the
+   region has capacity on that tier.
+2. Portal -> the search service -> **Settings / Scale** -> **Change Pricing Tier**,
+   or issue the `2025-02-01-preview` PATCH.
+3. Set `AI4IA_SEARCH_SKU` to the same value so IaC and reality agree.
+4. Re-run `python scripts/status-snapshot.py` (or the next deploy) so the recorded
+   posture matches.
+
+Do **not** delete and recreate the service to force a tier change unless you
+intend to rebuild the index: the service name is derived from `uniqueSuffix`, so a
+recreate reuses the name but starts empty. The chunk index is derived state and
+is rebuildable from the Cosmos manifests plus the blob artifacts, so this is
+recoverable — but retrieval returns nothing until the rebuild completes, which is
+a user-visible outage, not a silent one.
+
+Cost, as of the last check against the Azure retail price API (East US):
+
+| | Basic | Standard S1 |
+|---|---|---|
+| Service | ~$0.10/hour (~$73/month) | ~$0.34/hour (~$248/month) |
+
+The `standard` semantic plan is billed per query (~$1 per 1,000 semantic queries)
+rather than as a monthly unit, and replaces the `free` plan's hard cap of 1,000
+semantic queries/month. The retrieval breaker in `ai_search_chunks.py` is retained
+on the paid plan because throttling and service errors present the same way as an
+exhausted quota.
+
 ## APIM plane (single Basic v2 service)
 
 The model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1), and it is the **only** APIM service in the environment. `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` owns the MCP children and `gateway.bicep` adds model/realtime children through the shared contract. When `speech_voice_live` is enabled, that same service also carries its WebSocket API (`/speech/voice-live/realtime`) and distinct subscription (`ai4ia-api-speech-voice-live`) alongside the Azure OpenAI `/openai/realtime` API and subscription. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; each enabled voice provider also has a distinct key. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update.

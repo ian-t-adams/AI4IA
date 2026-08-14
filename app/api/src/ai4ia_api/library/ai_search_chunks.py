@@ -28,14 +28,17 @@ Design mirrors :class:`~ai4ia_api.library.doc_chunks.PgDocChunkStore`:
   is on, applies the L2 *semantic reranker* for materially better top-k ordering.
   A semantic failure (tier/quota unavailable) degrades gracefully to plain hybrid;
   with no ``query_text`` it is exactly the prior pure-vector search.
-* **Backed-off semantic retries.** The reranker runs on Search's *free* semantic
-  plan (``infra/modules/search.bicep``), which is capped at 1,000 queries/month.
-  Once that cap is hit every semantic query 403s, so retrying it per request would
-  make each retrieval pay a failed round-trip plus a stack trace before falling
-  back — permanently, and silently. After a failure the store therefore suppresses
-  semantic for a cooldown that doubles up to an hour, and clears it on the first
-  success, so a transient blip recovers in minutes and an exhausted quota costs at
-  most one probe per hour instead of one per query.
+* **Backed-off semantic retries.** The semantic plan is a deployment parameter
+  (``searchSemanticPlan`` in ``infra/modules/search.bicep``, default ``standard``
+  — billed per query, no monthly cap). On the ``free`` plan it is capped at 1,000
+  queries/month, and once that cap is hit every semantic query 403s, so retrying
+  per request would make each retrieval pay a failed round-trip plus a stack
+  trace before falling back — permanently, and silently. The breaker is kept on
+  the paid plan because throttling and service errors produce the same shape:
+  after a failure the store suppresses semantic for a cooldown that doubles up to
+  an hour and clears on the first success, so a transient blip recovers in
+  minutes and a hard outage costs at most one probe per hour instead of one per
+  query.
 * **Injectable clients.** The async ``SearchClient`` / ``SearchIndexClient`` and the
   credential can be injected so unit tests run with fakes and no live service.
 
