@@ -92,6 +92,15 @@ and tool safety; the web app is the user interface.
   web search, memory writes, media generation, MCP, another workflow, or any
   unclassified/disabled tool remains available from the workflow runner but is
   deliberately absent from the agent tool.
+- **Start from a template.** When you create a new workflow the builder offers
+  starter templates, including two for documents: **Document review (Content
+  Understanding)** and **Extract from scans (Mistral OCR)**. Choosing one fills
+  the form so you can read and edit every step before saving — nothing is
+  created until you press save, and the name stays editable so you can keep more
+  than one variant. Both document templates read files that are *already* in
+  your library, so upload and analyze the document first (see
+  [Documents and media](#documents-and-media)); a workflow step cannot perform
+  the upload or the analysis itself.
 - Attach only the tools an agent needs. Tool output is metered, logged, bounded,
   and redacted where applicable.
 - A selected agent is the standing conversation persona. An explicit `@agent`
@@ -153,6 +162,31 @@ The Library **Analyzer** selector chooses the extraction pathway before upload:
 The selected analyzer is part of the dedupe key, so uploading the same bytes
 through two analyzers creates two independently attributable results rather than
 silently changing an existing document.
+
+### Where Azure AI Search fits
+
+There is **no separate "upload to AI Search" surface, and you do not need one.**
+Azure AI Search is not a second destination you send files to — it is the chunk
+index sitting behind the document library, and it is used on every library
+upload and every retrieval:
+
+1. You upload a file and pick an analyzer (Content Understanding, or Mistral).
+2. The parsed Markdown is chunked and embedded.
+3. Those chunks are written to the AI Search index, partitioned by user id.
+4. Chat retrieval and `fetch_document` query that index — a hybrid of vector
+   similarity and BM25 keyword match, with the semantic reranker on top.
+
+So the Library upload *is* the AI Search ingestion path. The index is per-user
+scoped: a query is always filtered to the caller, and may be narrowed further to
+an explicit document selection.
+
+It is derived state, not a source of record. Cosmos holds the manifests and Blob
+holds the raw bytes and `parsed.md`, so the index can be rebuilt without data
+loss if it is ever dropped. Deleting a document removes its chunks immediately.
+
+If the deployment has no Search service configured the pipeline still works —
+retrieval falls back to an in-process store — so a missing Search endpoint
+degrades quality, not correctness.
 
 Sharing is tenant-scoped:
 

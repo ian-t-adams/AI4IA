@@ -29,6 +29,7 @@ import {
   type CapabilityChip,
 } from "./workflowCapabilities";
 import { checkRow, ghostBtn, inputStyle, labelStyle, primaryBtn, secondaryBtn } from "./builderStyles";
+import { WORKFLOW_TEMPLATES, templateById } from "../lib/workflowTemplates";
 
 // Client-only stable key so React can track step rows across reorder/remove
 // without the instruction/agent values "travelling" to the wrong row.
@@ -256,6 +257,31 @@ export function WorkflowBuilder({
     setRunState({ phase: "idle" });
     setTab("build");
   }, [firstAgentName]);
+
+  // Load a starter template into the form as a *new* workflow. Deliberately
+  // does not save: the user reviews and edits first, and the name stays
+  // editable so a second copy does not collide with the first.
+  const startFromTemplate = useCallback((templateId: string) => {
+    const template = templateById(templateId);
+    if (!template) return;
+    const { workflow } = template;
+    setEditing(null);
+    setForm({
+      name: workflow.name,
+      displayName: workflow.displayName ?? "",
+      description: workflow.description,
+      enabled: workflow.enabled,
+      steps: workflow.steps.map((s) => ({
+        key: genKey(),
+        agent: s.agent,
+        instruction: s.instruction,
+        extraTools: [...s.extraTools],
+      })),
+    });
+    setError(null);
+    setRunState({ phase: "idle" });
+    setTab("build");
+  }, []);
 
   const startEdit = useCallback((w: Workflow) => {
     setEditing(w.name);
@@ -724,6 +750,34 @@ export function WorkflowBuilder({
               <h3 style={{ margin: 0, fontSize: "1em" }}>
                 {editing ? `Edit ${editing}` : "New workflow"}
               </h3>
+
+              {!editing && (
+                <div>
+                  <label style={labelStyle} htmlFor="wf-template">
+                    Start from a template
+                  </label>
+                  <select
+                    id="wf-template"
+                    value=""
+                    style={inputStyle}
+                    onChange={(e) => {
+                      if (e.target.value) startFromTemplate(e.target.value);
+                    }}
+                  >
+                    <option value="">Blank workflow</option>
+                    {WORKFLOW_TEMPLATES.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.workflow.displayName}
+                      </option>
+                    ))}
+                  </select>
+                  <p style={{ ...labelStyle, marginTop: 4 }}>
+                    Templates fill the form so you can review and edit before saving.
+                    The document ones read files already in your library; upload and
+                    analyze a document first.
+                  </p>
+                </div>
+              )}
 
               <div>
                 <label style={labelStyle} htmlFor="wf-name">
