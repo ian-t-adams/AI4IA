@@ -27,7 +27,9 @@ from ai4ia_api.library.doc_chunks import InMemoryDocChunkStore
 from ai4ia_api.library.ingest import (
     MAX_CONCURRENT_DOCUMENT_ENRICHMENTS,
     DocumentIngestor,
+    EnrichmentNotEntitledError,
     EnrichScheduleOutcome,
+    ReindexUnavailableError,
 )
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
 from ai4ia_api.library.models import (
@@ -1065,3 +1067,158 @@ async def test_inline_enrich_still_completes_in_request_when_the_gate_is_free():
     assert outcome is EnrichScheduleOutcome.scheduled
     doc = await library.get_document("u1", stored.document.id)
     assert doc.status == DocumentStatus.ready
+
+# --- reindex: rebuild from stored artifacts, never re-analyze --------------------
+
+
+async def _ready_doc(ingestor, *, user_id="u1"):
+    """Ingest + enrich one document so it has parsed.md and chunks.jsonl."""
+    stored = await ingestor.ingest(
+        user_id=user_id, filename="d.txt", content_type="text/plain", data=b"X"
+    )
+    await ingestor.enrich(
+        user_id=user_id,
+        document_id=stored.document.id,
+        data=b"X",
+        content_type="text/plain",
+    )
+    return stored.document.id
+
+
+async def test_reindex_rebuilds_chunks_without_calling_the_provider():
+    """The whole point: a rebuild costs embeddings, not a re-analysis.
+
+    Re-running the analyzer would re-bill Content Understanding or Mistral and
+    could produce different chunk boundaries than the citations already stored
+    against this document.
+    """
+    library = InMemoryDocumentLibraryRepository()
+    chunks = InMemoryDocChunkStore(expected_dim=3)
+    embedder = _Embedder()
+    cu = _CountingCU("# T\n\n" + ("alpha beta " * 8))
+    ingestor = _build(cu=cu, embedder=embedder, chunks=chunks, library=library)
+
+    doc_id = await _ready_doc(ingestor)
+    assert cu.calls == 1, "setup should have analyzed exactly once"
+    embed_calls_after_ingest = embedder.calls
+
+    count = await ingestor.reindex("u1", doc_id)
+
+    assert count > 0
+    # The provider was NOT called again...
+    assert cu.calls == 1
+    # ...but embeddings were re-computed, which is what a rebuild costs.
+    assert embedder.calls > embed_calls_after_ingest
+    doc = await library.get_document("u1", doc_id)
+    assert doc.chunkCount == count
+
+
+async def test_reindex_replaces_rather_than_duplicates_chunks():
+    """Rebuilding twice must not double the rows behind a document."""
+    library = InMemoryDocumentLibraryRepository()
+    chunks = InMemoryDocChunkStore(expected_dim=3)
+    ingestor = _build(
+        cu=_CU("# T\n\n" + ("alpha beta " * 8)),
+        embedder=_Embedder(),
+        chunks=chunks,
+        library=library,
+    )
+    doc_id = await _ready_doc(ingestor)
+
+    first = await ingestor.reindex("u1", doc_id)
+    second = await ingestor.reindex("u1", doc_id)
+
+    assert first == second
+    found = await chunks.search("u1", _QUERY, 100, document_ids=[doc_id])
+    assert len(found) == second
+
+
+async def test_reindex_is_blocked_for_a_disabled_owner():
+    """Rebuilding spends on embeddings, so it takes the same gate as analysis."""
+    library = InMemoryDocumentLibraryRepository()
+    entitlements = _Entitlements(_Decision(allowed=True))
+    ingestor = _build(
+        cu=_CU("# T\n\nbody"),
+        embedder=_Embedder(),
+        chunks=InMemoryDocChunkStore(expected_dim=3),
+        library=library,
+        entitlements=entitlements,
+    )
+    doc_id = await _ready_doc(ingestor)
+
+    # Now disable the account and try to rebuild.
+    ingestor._entitlements = _Entitlements(_Decision(allowed=False, code=403))
+    with pytest.raises(EnrichmentNotEntitledError):
+        await ingestor.reindex("u1", doc_id)
+
+
+async def test_reindex_of_an_entitled_owner_succeeds():
+    """Control: the gate above rejects the disabled account, not every rebuild."""
+    library = InMemoryDocumentLibraryRepository()
+    ingestor = _build(
+        cu=_CU("# T\n\nbody"),
+        embedder=_Embedder(),
+        chunks=InMemoryDocChunkStore(expected_dim=3),
+        library=library,
+        entitlements=_Entitlements(_Decision(allowed=True)),
+    )
+    doc_id = await _ready_doc(ingestor)
+    assert await ingestor.reindex("u1", doc_id) > 0
+
+
+async def test_reindex_refuses_when_indexing_is_not_configured():
+    library = InMemoryDocumentLibraryRepository()
+    # No chunk store / embedder: nothing to rebuild into.
+    ingestor = _build(cu=_CU("# T\n\nbody"), library=library)
+    doc_id = await _ready_doc(ingestor)
+
+    with pytest.raises(ReindexUnavailableError):
+        await ingestor.reindex("u1", doc_id)
+
+
+async def test_reindex_preserves_audio_video_time_grounding():
+    """The sidecar is preferred over re-chunking markdown for this reason.
+
+    Markdown chunking cannot recover startMs/endMs/speaker, so a rebuild that
+    went through it would silently break media deep-links.
+    """
+    library = InMemoryDocumentLibraryRepository()
+    chunks = InMemoryDocChunkStore(expected_dim=3)
+    blob = InMemoryBlobStore()
+    ingestor = _build(
+        cu=_CU("# T\n\nbody"),
+        embedder=_Embedder(),
+        chunks=chunks,
+        library=library,
+        blob=blob,
+    )
+    stored = await ingestor.ingest(
+        user_id="u1", filename="a.mp3", content_type="audio/mpeg", data=b"AUDIO"
+    )
+    doc_id = stored.document.id
+    # Hand-write a sidecar carrying time grounding, as an AV enrich would.
+    from ai4ia_api.library.blob_store import blob_path
+
+    rows = [
+        {"index": 0, "text": "hello there", "heading": None, "charStart": 0,
+         "charEnd": 11, "startMs": 1000, "endMs": 2000, "speaker": "S1"},
+        {"index": 1, "text": "second line", "heading": None, "charStart": 12,
+         "charEnd": 23, "startMs": 2000, "endMs": 3000, "speaker": "S2"},
+    ]
+    import json as _json
+
+    await blob.put(
+        blob_path("u1", doc_id, "chunks.jsonl"),
+        "\n".join(_json.dumps(r) for r in rows).encode("utf-8"),
+        "application/json",
+    )
+    doc = await library.get_document("u1", doc_id)
+    doc.chunksPath = blob_path("u1", doc_id, "chunks.jsonl")
+    await library.update_document(doc)
+
+    assert await ingestor.reindex("u1", doc_id) == 2
+    found = await chunks.search("u1", _QUERY, 10, document_ids=[doc_id])
+    by_index = {r.chunk_index: r for r in found}
+    assert by_index[0].start_ms == 1000
+    assert by_index[0].speaker == "S1"
+    assert by_index[1].end_ms == 3000

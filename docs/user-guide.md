@@ -166,19 +166,21 @@ silently changing an existing document.
 ### Where Azure AI Search fits
 
 There is **no separate "upload to AI Search" surface, and you do not need one.**
-Azure AI Search is not a second destination you send files to — it is the chunk
-index sitting behind the document library, and it is used on every library
-upload and every retrieval:
+Azure AI Search is not a second destination you send files to — when it is
+configured it is the chunk index sitting behind the document library, used on
+every library upload and every retrieval:
 
 1. You upload a file and pick an analyzer (Content Understanding, or Mistral).
 2. The parsed Markdown is chunked and embedded.
-3. Those chunks are written to the AI Search index, partitioned by user id.
+3. Those chunks are written to **your own** search index.
 4. Chat retrieval and `fetch_document` query that index — a hybrid of vector
    similarity and BM25 keyword match, with the semantic reranker on top.
 
-So the Library upload *is* the AI Search ingestion path. The index is per-user
-scoped: a query is always filtered to the caller, and may be narrowed further to
-an explicit document selection.
+So the Library upload *is* the AI Search ingestion path.
+
+Each user gets a dedicated index, and every query is *additionally* filtered to
+your user id, so isolation does not depend on the routing being right. A query
+can be narrowed further to an explicit document selection.
 
 It is derived state, not a source of record. Cosmos holds the manifests and Blob
 holds the raw bytes and `parsed.md`, so the index can be rebuilt without data
@@ -187,6 +189,40 @@ loss if it is ever dropped. Deleting a document removes its chunks immediately.
 If the deployment has no Search service configured the pipeline still works —
 retrieval falls back to an in-process store — so a missing Search endpoint
 degrades quality, not correctness.
+
+### Managing the index
+
+Four owner-only operations, all under `/api/library`:
+
+| Action | Endpoint | What it costs |
+|---|---|---|
+| Inspect | `GET /documents/{id}/index` | nothing |
+| Rebuild one | `POST /documents/{id}/reindex` | embeddings only |
+| Rebuild all | `POST /documents/reindex` | embeddings only |
+| Drop from retrieval | `DELETE /documents/{id}/chunks` | nothing |
+
+"Rebuild all" means every *ready* document in **your own** library — the endpoint
+is per authenticated user and there is no cross-user variant.
+
+**Reindex does not re-run the analyzer.** The provider's output is already
+durable — `chunks.jsonl` holds the exact chunk text and its grounding — so a
+rebuild re-embeds and re-indexes without re-billing Content Understanding or
+Mistral. It also reproduces the original chunk boundaries exactly, which matters
+because citations already stored against the document point at them; re-chunking
+could silently move them. Documents indexed before that sidecar existed fall
+back to re-chunking `parsed.md`, which loses audio/video time grounding.
+
+**Dropping chunks is not deleting the document.** The file, its parsed Markdown,
+and its analysis all stay; only the searchable vectors go, and a reindex brings
+them back. Use it to take a document out of retrieval without losing it.
+
+Rebuilding spends on embeddings, so it takes the same entitlement gate as an
+upload. Inspecting and dropping do not.
+
+These are **not** exposed as agent tools. Reindexing is a maintenance action
+whose cost scales with the size of a library, and a model deciding mid-turn to
+rebuild every document is a bad failure mode; the agent reads the index through
+normal retrieval instead.
 
 Sharing is tenant-scoped:
 

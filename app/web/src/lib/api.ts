@@ -704,6 +704,67 @@ export async function deleteLibraryDocument(documentId: string): Promise<void> {
   }
 }
 
+/** Search-index state for one document: why it is or is not being found. */
+export interface LibraryDocumentIndexState {
+  documentId: string;
+  status: string;
+  chunkCount: number;
+  retrievable: boolean;
+  rebuildable: boolean;
+  indexingEnabled: boolean;
+}
+
+export async function getLibraryDocumentIndex(
+  documentId: string,
+): Promise<LibraryDocumentIndexState> {
+  return jsonOrThrow(
+    await apiFetch(`/api/library/documents/${documentId}/index`, {
+      cache: "no-store",
+    }),
+  );
+}
+
+/**
+ * Rebuild one document's chunks from stored artifacts.
+ *
+ * Costs embeddings, not a re-analysis: the analyzer's output is already durable,
+ * so this neither re-bills Content Understanding / Mistral nor risks producing
+ * different chunk boundaries than the citations already stored.
+ */
+export async function reindexLibraryDocument(
+  documentId: string,
+): Promise<{ documentId: string; chunkCount: number }> {
+  return jsonOrThrow(
+    await apiFetch(`/api/library/documents/${documentId}/reindex`, {
+      method: "POST",
+    }),
+  );
+}
+
+/** Rebuild every ready document. The migration path after a tenancy change. */
+export async function reindexAllLibraryDocuments(): Promise<{
+  rebuilt: { documentId: string; chunkCount: number }[];
+  failed: { documentId: string; error: string }[];
+  rebuiltCount: number;
+  failedCount: number;
+}> {
+  return jsonOrThrow(
+    await apiFetch("/api/library/documents/reindex", { method: "POST" }),
+  );
+}
+
+/** Drop a document from retrieval while keeping the file. Undone by reindex. */
+export async function purgeLibraryDocumentChunks(
+  documentId: string,
+): Promise<void> {
+  const resp = await apiFetch(`/api/library/documents/${documentId}/chunks`, {
+    method: "DELETE",
+  });
+  if (!resp.ok && resp.status !== 204) {
+    throw new Error(`${resp.status}: failed to purge document chunks`);
+  }
+}
+
 export async function listLibraryAnalyzers(): Promise<LibraryAnalyzer[]> {
   return jsonOrThrow(
     await apiFetch("/api/library/analyzers", { cache: "no-store" }),

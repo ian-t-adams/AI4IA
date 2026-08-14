@@ -300,6 +300,7 @@ jobs:
       # not perform a tier change) — see the deployment runbook.
       AI4IA_SEARCH_SKU: ${{ vars.AI4IA_SEARCH_SKU }}
       AI4IA_SEARCH_SEMANTIC_PLAN: ${{ vars.AI4IA_SEARCH_SEMANTIC_PLAN }}
+      AI4IA_SEARCH_INDEX_PER_USER: ${{ vars.AI4IA_SEARCH_INDEX_PER_USER }}
       AI4IA_API_CENTER_LOCATION: ${{ vars.AI4IA_API_CENTER_LOCATION }}
       # Extra browser origins for Voice Live. Bicep already derives the deployed web
       # origin, so this stays empty for a normal standup; it is the documented knob for

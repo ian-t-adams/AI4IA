@@ -8,6 +8,8 @@ models are still constructed by ``ensure_ready`` (pure, no network)."""
 from __future__ import annotations
 
 import asyncio
+import re
+from typing import Any
 
 import pytest
 
@@ -19,6 +21,12 @@ from ai4ia_api.library.ai_search_chunks import (
 from ai4ia_api.library.doc_chunks import DocChunkRecord
 
 _DIM = 3
+
+
+class _Http400(Exception):
+    """Stands in for the SDK's HttpResponseError: a 400 carrying a message."""
+
+    status_code = 400
 
 
 class _FakeResults:
@@ -133,12 +141,14 @@ def _store(
     expected_dim=_DIM,
     semantic_ranking=True,
     time_source=None,
+    per_user_index=True,
 ):
     return AzureSearchDocChunkStore(
         endpoint="https://example.search.windows.net",
         index_name="ai4ia-doc-chunks",
         expected_dim=expected_dim,
         semantic_ranking=semantic_ranking,
+        per_user_index=per_user_index,
         search_client=search_client or _FakeSearchClient(),
         index_client=index_client or _FakeIndexClient(),
         time_source=time_source,
@@ -192,11 +202,14 @@ def test_key_encode_decode_round_trips():
 async def test_ensure_ready_creates_index_once_with_vector_field():
     index_client = _FakeIndexClient()
     store = _store(index_client=index_client)
-    await store.ensure_ready()
-    await store.ensure_ready()  # idempotent / single-flight
+    await store.ensure_ready("u1")
+    await store.ensure_ready("u1")  # idempotent / single-flight
     assert len(index_client.created) == 1
     index = index_client.created[0]
-    assert index.name == "ai4ia-doc-chunks"
+    # Per-user tenancy: the created index is the caller's, not the bare prefix.
+    assert index.name == store.index_name_for_user("u1")
+    assert index.name.startswith("ai4ia-doc-chunks-u")
+    assert index.name != "ai4ia-doc-chunks"
     embedding = next(f for f in index.fields if f.name == "embedding")
     assert embedding.vector_search_dimensions == _DIM
 
@@ -364,7 +377,7 @@ async def test_close_does_not_close_injected_clients():
     search_client = _FakeSearchClient()
     index_client = _FakeIndexClient()
     store = _store(search_client=search_client, index_client=index_client)
-    await store.ensure_ready()
+    await store.ensure_ready("u1")
     await store.close()
     # Injected clients are caller-owned: close must not tear them down.
     assert search_client.closed is False
@@ -374,7 +387,7 @@ async def test_close_does_not_close_injected_clients():
 async def test_ensure_ready_index_includes_semantic_config():
     index_client = _FakeIndexClient()
     store = _store(index_client=index_client)
-    await store.ensure_ready()
+    await store.ensure_ready("u1")
     index = index_client.created[0]
     assert index.semantic_search is not None
     cfg = index.semantic_search.configurations[0]
@@ -602,3 +615,189 @@ async def test_concurrent_semantic_failures_advance_the_backoff_once():
         c for c in search_client.search_calls if c.get("query_type") == "semantic"
     ]
     assert len(semantic_calls) == 2
+
+# --- per-user index tenancy -----------------------------------------------------
+
+
+def test_index_name_is_per_user_deterministic_and_name_safe():
+    from ai4ia_api.library.ai_search_chunks import index_name_for
+
+    a1 = index_name_for("ai4ia-doc-chunks", "user-a")
+    a2 = index_name_for("ai4ia-doc-chunks", "user-a")
+    b = index_name_for("ai4ia-doc-chunks", "user-b")
+
+    # Deterministic: the same user must resolve to the same index every process
+    # start, or their documents become unreachable after a restart.
+    assert a1 == a2
+    # Distinct users never collide -- a collision is a cross-tenant read.
+    assert a1 != b
+    # Azure's rules: 2-128 chars, lowercase, starts alphanumeric, no consecutive
+    # dashes/underscores.
+    for name in (a1, b):
+        assert 2 <= len(name) <= 128
+        assert name == name.lower()
+        assert re.fullmatch(r"[a-z0-9][a-z0-9_-]*[a-z0-9]", name)
+        assert "--" not in name and "__" not in name
+    # The raw user id must not appear in a control-plane-visible resource name.
+    assert "user-a" not in a1
+
+
+def test_index_name_rejects_a_prefix_that_would_be_invalid():
+    from ai4ia_api.library.ai_search_chunks import index_name_for
+
+    for bad in ("Has-Upper", "-leading", "has.dot", "has/slash", "x" * 200):
+        with pytest.raises(ValueError):
+            index_name_for(bad, "u1")
+
+
+def test_shared_index_mode_still_uses_one_index():
+    """Control: the per-user naming above is a *choice*, not the only behaviour.
+
+    Without this, the per-user assertions could pass simply because the store
+    always appends a suffix, and the escape hatch operators are told to use
+    when they hit the tier ceiling would be silently broken.
+    """
+    store = _store(per_user_index=False)
+    assert store.index_name_for_user("u1") == "ai4ia-doc-chunks"
+    assert store.index_name_for_user("u2") == "ai4ia-doc-chunks"
+
+
+async def test_each_user_gets_their_own_index():
+    index_client = _FakeIndexClient()
+    store = _store(index_client=index_client)
+
+    await store.ensure_ready("u1")
+    await store.ensure_ready("u2")
+    await store.ensure_ready("u1")  # already created
+
+    created = [i.name for i in index_client.created]
+    assert len(created) == 2, created
+    assert created[0] != created[1]
+    assert set(created) == {
+        store.index_name_for_user("u1"),
+        store.index_name_for_user("u2"),
+    }
+
+
+async def test_add_many_refuses_a_batch_spanning_two_users():
+    """A mixed batch has no single destination index.
+
+    Harmless under one shared index; under per-user tenancy it would write one
+    user's chunks into another user's index.
+    """
+    store = _store(search_client=_FakeSearchClient())
+    mine = _rec(text="mine")
+    theirs = _rec(text="theirs")
+    theirs.user_id = "someone-else"
+
+    with pytest.raises(ValueError, match="exactly one user"):
+        await store.add_many([mine, theirs], [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+
+
+async def test_single_user_batch_is_accepted():
+    """Control for the guard above: it rejects *mixed* batches, not all batches."""
+    search_client = _FakeSearchClient()
+    store = _store(search_client=search_client)
+    await store.add_many([_rec(text="a"), _rec(text="b")], [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+    assert search_client.uploaded
+
+
+async def test_index_quota_exhaustion_is_named_not_a_bare_400():
+    """The tier's index limit is a ceiling on users under this tenancy model.
+
+    Azure reports it as a generic 400 that never mentions tenancy, which sends
+    an operator to the wrong runbook.
+    """
+    from ai4ia_api.library.ai_search_chunks import SearchIndexQuotaError
+
+    class _QuotaIndexClient:
+        closed = False
+
+        async def create_or_update_index(self, index):
+            raise _Http400(
+                "Cannot create more than 50 indexes in this service. "
+                "The index quota has been exceeded."
+            )
+
+        async def close(self):
+            self.closed = True
+
+    store = _store(index_client=_QuotaIndexClient())
+    with pytest.raises(SearchIndexQuotaError) as excinfo:
+        await store.ensure_ready("u1")
+    message = str(excinfo.value)
+    assert "index slots" in message
+    # Actionable: names both ways out.
+    assert "AI4IA_SEARCH_INDEX_PER_USER=false" in message
+    assert "50" in message
+
+
+async def test_an_unrelated_400_is_not_relabelled_as_a_quota_problem():
+    """Control: the quota detector must be narrow.
+
+    Relabelling every 400 would tell an operator to raise their tier when the
+    real problem was, say, a malformed field definition.
+    """
+    from ai4ia_api.library.ai_search_chunks import SearchIndexQuotaError
+
+    class _BadRequestIndexClient:
+        async def create_or_update_index(self, index):
+            raise _Http400("The request is invalid. Field 'embedding' is malformed.")
+
+        async def close(self):
+            pass
+
+    store = _store(index_client=_BadRequestIndexClient())
+    with pytest.raises(_Http400):
+        await store.ensure_ready("u1")
+    # And specifically NOT the quota error.
+    try:
+        await store.ensure_ready("u1")
+    except SearchIndexQuotaError:  # pragma: no cover - would be the bug
+        raise AssertionError("unrelated 400 was relabelled as an index-quota error")
+    except _Http400:
+        pass
+
+
+async def test_search_still_filters_by_user_even_with_a_dedicated_index():
+    """Defense in depth: isolation must not rest on index routing alone.
+
+    If index resolution were ever wrong, the OData filter is the second gate
+    that still refuses another user's rows.
+    """
+    search_client = _FakeSearchClient()
+    store = _store(search_client=search_client)
+    await store.search("u1", [0.1, 0.2, 0.3], 3, query_text="q")
+
+    assert search_client.search_calls, "expected a query to have been issued"
+    assert "user_id eq 'u1'" in search_client.search_calls[-1]["filter"]
+
+
+async def test_close_drains_every_per_user_client():
+    """One client per user means close() must drain them all."""
+    store = _store(index_client=_FakeIndexClient())
+    built: list[Any] = []
+
+    class _Client:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def fake_get(user_id: str):
+        name = store.index_name_for_user(user_id)
+        client = store._search_clients.get(name)
+        if client is None:
+            client = _Client()
+            store._search_clients[name] = client
+            built.append(client)
+        return client
+
+    await fake_get("u1")
+    await fake_get("u2")
+    assert len(built) == 2
+
+    await store.close()
+    assert all(c.closed for c in built)
+    assert store._search_clients == {}

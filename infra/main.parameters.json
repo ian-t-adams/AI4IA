@@ -188,6 +188,9 @@
     "searchSemanticPlan": {
       "value": "${AI4IA_SEARCH_SEMANTIC_PLAN=standard}"
     },
+    "searchIndexPerUser": {
+      "value": "${AI4IA_SEARCH_INDEX_PER_USER=true}"
+    },
     "voiceLiveEnabled": {
       "value": "${AI4IA_VOICE_LIVE_ENABLED=true}"
     },

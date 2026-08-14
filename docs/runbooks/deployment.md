@@ -1083,6 +1083,82 @@ continuity. Request `include: ["reasoning.encrypted_content"]` and pass the
 encrypted reasoning items forward — that is the stateless-mode equivalent and
 keeps the content in the app's control.
 
+## Switching the search index tenancy model
+
+`AI4IA_SEARCH_INDEX_PER_USER` (default `true`) chooses between an index per user
+(`<AI4IA_SEARCH_INDEX_NAME>-u<sha256(user_id)[:32]>`) and one shared index
+filtered by `user_id`. The `user_id` filter is applied on every query in **both**
+modes, so isolation never depends on index routing alone.
+
+**Flipping this value strands existing chunks.** Nothing is deleted, but reads go
+to the other index, so every already-ingested document silently stops being
+retrievable. Chat still answers — it just answers without the library. Plan the
+switch as a migration, not a config change.
+
+The chunk index is derived state: Cosmos holds the manifests and Blob holds the
+raw bytes, `parsed.md`, and the `chunks.jsonl` sidecar, so it is always
+rebuildable. The reindex endpoint rebuilds a document's chunks into whichever
+index the store now resolves, re-embedding the stored chunk text rather than
+re-running the analyzer.
+
+**The reindex endpoint is per authenticated user.** `POST
+/api/library/documents/reindex` rebuilds only the *caller's own* ready
+documents, because the library is per-user and there is no admin cross-tenant
+surface. There is deliberately no "rebuild everyone" call: it would have to
+enumerate and act on every user's data, which nothing in this app is allowed to
+do. So on a multi-user deployment the migration is a *communication* step rather
+than one command — each user's library rebuilds on their first reindex, and
+until then their documents are simply not retrievable. If that is unacceptable
+for your user count, switch tenancy in a maintenance window and tell users to
+run it, or add a deliberate admin backfill with its own review.
+
+Sequence:
+
+1. Set the value and deploy.
+2. Rebuild each existing document so its chunks land in the new index. Run per
+   user, against that user's own library:
+
+   ```bash
+   # Per caller, against their own library. Rebuilds every ready document.
+   curl -X POST https://<api-host>/api/library/documents/reindex \
+     -H "Authorization: Bearer <token>"
+   ```
+
+   This re-embeds from the stored `chunks.jsonl`/`parsed.md`; it does **not**
+   re-run Content Understanding or Mistral, so the migration costs embeddings
+   rather than a second analysis pass. The response reports per-document
+   outcomes, so one unrebuildable document does not strand the sweep. Newly
+   uploaded documents need nothing.
+3. Optionally delete the now-orphaned index. The old one keeps costing storage
+   and counts against the tier's index limit until it is removed:
+
+   ```bash
+   az rest --method delete --url \
+     "https://<service>.search.windows.net/indexes/<old-index>?api-version=2024-07-01" \
+     --resource https://search.azure.com
+   ```
+
+### The index limit is a ceiling on users
+
+With per-user indexes the tier's **index** limit becomes a limit on **users**:
+
+| Tier | Max indexes | Max users in this mode |
+|---|---|---|
+| basic | 15 | 15 |
+| standard (S1) | 50 | 50 |
+| S2 / S3 | 200 | 200 |
+| S3 HD | 1000 per partition | designed for this pattern |
+
+The user who would be number 51 on S1 cannot upload at all — index creation is on
+the ingest path. Azure reports it as a generic 400 that never mentions tenancy,
+so the store raises `SearchIndexQuotaError` naming both remedies: raise the tier,
+or set `AI4IA_SEARCH_INDEX_PER_USER=false`.
+
+Microsoft's own guidance is that a shared index with a tenant filter is the
+cheaper pattern at small and medium scale, and that dedicated indexes suit
+enterprise tiers or tenants past a size threshold. This deployment chose
+per-user deliberately, with the ceiling accepted.
+
 ## Changing the Azure AI Search tier
 
 `AI4IA_SEARCH_SKU` (default `standard`, i.e. S1) and `AI4IA_SEARCH_SEMANTIC_PLAN`
