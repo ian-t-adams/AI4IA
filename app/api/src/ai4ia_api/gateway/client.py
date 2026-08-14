@@ -609,6 +609,13 @@ class ModelGatewayClient:
         The proxy-facing deployment path exists only so SimpleL7Proxy can stamp
         the server-owned model header. APIM rewrites it to the provider OCR path
         and binds the regional failover deployment in ``model``.
+
+        The ``api-version`` below is inert: the generated APIM policy sets the
+        Mistral provider version with ``exists-action="override"``
+        (``infra/policies/simplel7proxy_backend_32.xml``), so the gateway owns it
+        and whatever the client sends is discarded. Do not read this value as the
+        version actually used, and do not "fix" a mismatch here — change the
+        policy generator instead.
         """
 
         url = (
@@ -662,8 +669,22 @@ class ModelGatewayClient:
                 timeout=self._image_timeout,
             )
             if response.status_code >= 400:
-                raise ModelGatewayError(response.status_code, response.text)
-            return response.json()
+                # The provider body can echo the base64 document back at us, so
+                # only a bounded prefix is carried; callers reduce this further to
+                # a status-only message before anything is logged or persisted.
+                raise ModelGatewayError(
+                    response.status_code, response.text[:200]
+                )
+            try:
+                return response.json()
+            except ValueError as exc:
+                # A 2xx with a non-JSON body means the provider ran (and will bill)
+                # but we cannot read the result. Surface it as a gateway error so
+                # the Mistral client records a provider-completed failure instead of
+                # letting a raw JSONDecodeError escape as an opaque ingest crash.
+                raise ModelGatewayError(
+                    502, "malformed provider document response"
+                ) from exc
         finally:
             if owned:
                 await client.aclose()

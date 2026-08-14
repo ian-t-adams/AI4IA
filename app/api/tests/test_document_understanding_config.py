@@ -199,3 +199,45 @@ def test_cu_agentic_analyzer_is_allowed_when_preview_is_enabled():
         cu_preview_enabled=True,
         cu_agentic_analyzer_id="agentic.contract",
     ).validate_runtime()
+
+# --- CU endpoint shape ----------------------------------------------------------
+#
+# CU receives raw document bytes and a Cognitive Services access token, so the
+# endpoint is a confidentiality boundary. Deployed startup must reject shapes
+# that would send both somewhere unintended.
+
+_DEPLOYED = dict(
+    env="dev",
+    allow_dev_auth=True,
+    document_understanding_enabled=True,
+    session_store="cosmos",
+    cosmos_endpoint="https://cosmos.example/",
+    document_blob_account_url="https://acct.blob.core.windows.net",
+)
+
+
+def test_deployed_cu_base_url_must_be_https_without_credentials():
+    for bad in (
+        "http://cu.example",                      # plaintext
+        "https://user:pw@cu.example",             # embedded credentials
+        "https://cu.example?sneak=1",             # query
+        "https://cu.example#frag",                # fragment
+        "not-a-url",                              # no scheme/host
+    ):
+        with pytest.raises(RuntimeError, match="AI4IA_CU_BASE_URL"):
+            _settings(**_DEPLOYED, cu_base_url=bad).validate_runtime()
+
+
+def test_deployed_cu_base_url_https_is_accepted():
+    """Control: the guard above rejects *shapes*, not every deployed CU URL."""
+    _settings(
+        **_DEPLOYED, cu_base_url="https://cu.example/"
+    ).validate_runtime()  # no raise
+
+
+def test_local_cu_base_url_shape_is_not_enforced():
+    """Local/dev may point CU at a loopback emulator over plain http."""
+    _settings(
+        document_understanding_enabled=True,
+        cu_base_url="http://localhost:5000",
+    ).validate_runtime()  # no raise

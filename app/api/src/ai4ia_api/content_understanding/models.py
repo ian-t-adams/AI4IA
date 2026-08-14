@@ -13,8 +13,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # Terminal CU operation states (case-insensitive). ``Running``/``NotStarted`` mean
-# keep polling.
-TERMINAL_STATES = frozenset({"succeeded", "failed"})
+# keep polling. ``Canceled`` is terminal too and is spelled with one "l" by Azure;
+# both spellings are accepted so a service-side change cannot silently turn a
+# finished operation back into "poll until the budget runs out and report 408",
+# which hid the real outcome behind a timeout.
+TERMINAL_STATES = frozenset({"succeeded", "failed", "canceled", "cancelled"})
 CU_GA_API_VERSION = "2025-11-01"
 CU_PREVIEW_API_VERSION = "2026-06-01-preview"
 CU_SYNC_MAX_BYTES = 10 * 1024 * 1024
@@ -72,12 +75,77 @@ class CUResult:
         saw_page_meter = False
         for key in _PAGE_USAGE_METERS:
             value = self.usage.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                page_total += max(0.0, float(value))
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and value > 0
+            ):
+                # Only a *non-zero* meter counts as "the service told us pages".
+                # A real CU response zero-fills every documentPages* key, so
+                # treating a present-but-zero key as authoritative made the
+                # segment-count fallback dead and reported 0 pages for analyzers
+                # that have no page meter at all (audio/video/image search).
+                page_total += float(value)
                 saw_page_meter = True
         if saw_page_meter:
             return int(ceil(page_total))
         return len(self.contents) or None
+
+    @property
+    def metered_page_count(self) -> int | None:
+        """Pages the *service* billed, or ``None`` when it billed none.
+
+        Deliberately narrower than :attr:`page_count`: it never falls back to
+        ``len(contents)``. The fallback is right for a provider whose contents
+        *are* pages (Mistral OCR returns one content per page), but for a
+        Content Understanding audio/video analyzer ``contents`` are timed
+        segments, so billing them as pages invents chargeable units the service
+        never metered. Anything that writes ``billing_unit="page"`` for CU must
+        read this, not :attr:`page_count`.
+        """
+        total = 0.0
+        seen = False
+        for key in _PAGE_USAGE_METERS:
+            value = self.usage.get(key)
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and value > 0
+            ):
+                total += float(value)
+                seen = True
+        return int(ceil(total)) if seen else None
+
+    def contextualization_tokens_by_tier(self) -> dict[str, int]:
+        """Contextualization tokens keyed by the priced model id, per tier.
+
+        Content Understanding reports the two tiers as *separate* usage
+        properties: ``contextualizationTokens`` (standard) and, in the
+        2026-06-01-preview API, ``advancedContextualizationTokens`` (advanced —
+        the rate that ``advanced.*`` and ``agentic.*`` workflows are billed at).
+        Reading only the first left every advanced/agentic analyzer — the five
+        tax analyzers and agentic mode — recording no contextualization usage at
+        all, while a locally authored analyzer label decided which price row the
+        standard tokens landed on. The tier now comes from the provider.
+        """
+        tiers = {
+            "contextualizationTokens": (
+                "content-understanding-contextualization-standard"
+            ),
+            "advancedContextualizationTokens": (
+                "content-understanding-contextualization-advanced"
+            ),
+        }
+        out: dict[str, int] = {}
+        for key, model_id in tiers.items():
+            value = self.usage.get(key)
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and value > 0
+            ):
+                out[model_id] = out.get(model_id, 0) + int(value)
+        return out
 
     def page_usage_by_meter(self) -> dict[str, int]:
         meters: dict[str, int] = {}

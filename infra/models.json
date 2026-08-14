@@ -1240,29 +1240,6 @@
       ]
     },
     {
-      "name": "Cohere-rerank-v4.0-pro",
-      "format": "Cohere",
-      "category": "rerank",
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "1",
-          "maxCapacity": 150,
-          "maxCapacityPool": "global"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "1",
-          "maxCapacity": 150,
-          "maxCapacityPool": "global"
-        }
-      ]
-    },
-    {
       "name": "gpt-realtime",
       "format": "OpenAI",
       "category": "realtime",

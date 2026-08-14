@@ -230,6 +230,53 @@ def test_sync_cu_upload_returns_terminal_result_in_same_request():
         client.__exit__(None, None, None)
 
 
+def test_sync_cu_upload_reports_404_when_deleted_mid_analysis():
+    """A delete during the in-request crack must not surface as a 500.
+
+    The synchronous path re-reads the manifest after enrichment. ``enrich``
+    honours a mid-flight delete by purging the manifest, so that re-read raises
+    ``DocumentNotFoundError`` -- a plain exception with no registered handler,
+    which terminated the request as an unhandled 500 with a stack trace.
+    """
+    client = _client(cu_preview_enabled=True)
+    try:
+        ingestor = client.app.state.document_ingestor
+        library = client.app.state.document_library
+
+        async def analyze_inline(_self, *_args, **_kwargs):
+            from ai4ia_api.content_understanding.models import CUResult
+
+            # Delete every stored document while the analyzer is "running",
+            # reproducing an owner deleting mid-crack.
+            for user_id, docs in list(library._docs.items()):
+                for document_id in list(docs):
+                    await library.delete_document(user_id, document_id)
+            return CUResult(
+                status="Succeeded",
+                analyzer_id="prebuilt-read",
+                markdown="# Read",
+                contents=[{"markdown": "# Read"}],
+                usage={"documentPagesBasicInline": 1},
+            )
+
+        ingestor._cu = type("InlineCU", (), {"analyze_inline": analyze_inline})()
+        ingestor._embedder = None
+        ingestor._chunks = None
+
+        response = _upload(
+            client,
+            "scan.png",
+            b"\x89PNG\r\n\x1a\n",
+            ctype="image/png",
+            analyzerId="cu-read-sync",
+        )
+
+        assert response.status_code == 404, response.text
+        assert response.json()["detail"] == "Document not found"
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_agentic_analyzer_remains_hidden_without_remote_id():
     client = _client(cu_preview_enabled=True)
     try:

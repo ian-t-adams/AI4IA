@@ -59,6 +59,7 @@ def build_document_ingestor(
     gateway: ModelGatewayClient,
     catalog: ModelCatalog,
     usage: UsageService,
+    entitlements=None,
 ) -> DocumentIngestor | None:
     if not settings.document_understanding_enabled or library is None:
         return None
@@ -92,6 +93,7 @@ def build_document_ingestor(
         mistral_client=mistral_client,
         embedder=embedder,
         chunk_store=chunk_store,
+        entitlements=entitlements,
     )
 
 

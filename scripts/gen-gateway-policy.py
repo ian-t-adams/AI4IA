@@ -88,6 +88,36 @@ BFL_MODEL_PATHS = {
     "FLUX-1.1-pro": "flux-pro-1.1",
 }
 
+# Model categories the gateway can actually route. Each one corresponds to a
+# surface the app calls: chat completions, embeddings, images, video, speech,
+# transcription, realtime, or the Mistral document/OCR path.
+#
+# This is an allowlist because `provider_path` defaults to "openai" for any
+# unrecognised api, so a category with no real surface silently gets a plausible
+# looking OpenAI route that can only ever 404. That is exactly what happened to
+# `Cohere-rerank-v4.0-pro`: it was deployed in two regions and emitted into the
+# APIM catalog under `path: "openai"`, while Microsoft documents rerank as
+# reachable only through Cohere's own rerank API. Nothing in the app ever called
+# it, and nothing could have. Fail generation instead of inventing a route.
+ROUTABLE_CATEGORIES = frozenset(
+    {
+        "audio",
+        "chat",
+        "chat-fast",
+        "document-ocr",
+        "embedding",
+        "image",
+        "realtime",
+        "reasoning",
+        "reasoning-oss",
+        "research",
+        "router",
+        "transcription",
+        "tts",
+        "video",
+    }
+)
+
 
 def deployment_name(
     *,
@@ -147,7 +177,15 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
 
     for model in models["catalog"]:
         deployments = model["deployments"]
-        timeout = timeout_seconds(model["category"])
+        category = model["category"]
+        if category not in ROUTABLE_CATEGORIES:
+            raise ValueError(
+                f"{model['name']}: category '{category}' has no gateway surface, "
+                "so routing it would emit a backend the app can never call. Add a "
+                "real provider path and add the category to ROUTABLE_CATEGORIES, "
+                "or remove the model from infra/models.json."
+            )
+        timeout = timeout_seconds(category)
         api = model.get("api", "chat")
         provider_path = {
             "anthropic": "anthropic",

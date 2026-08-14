@@ -157,16 +157,22 @@ Every CU result now persists a bounded owner-scoped `analysis.json` sidecar with
 structured fields, source/confidence evidence, signatures/metadata, warnings,
 usage, and content-filter records. The library card surfaces evidence counts and
 average confidence; **Evidence** opens the detailed response through an
-authenticated ownership/share gate. Model tokens and page meters are recorded in
-the usage ledger instead of treating CU as an unpriced unknown call: the CU page
-meter remains explicitly cost-unknown until an Azure CU rate is mapped, while
-GPT-5.2 and embedding token rows use their existing model prices and exact
-deployment names.
+**owner-only** gate — a shared reader can read and cite the document but cannot
+fetch its evidence sidecar. Model tokens and page meters are recorded in the
+usage ledger instead of treating CU as an unpriced unknown call. CU page meters
+are priced per minimal/basic/standard tier (the synchronous `*Inline` variants
+fold into those same three rows), contextualization is billed as two independent
+tiers taken from the service's own `contextualizationTokens` and
+`advancedContextualizationTokens` usage properties rather than from a locally
+authored analyzer label, and GPT-5.2 and embedding token rows use their existing
+model prices and exact deployment names.
 
 **Agentic mode remains operator-gated.** It appears only when an existing remote
-analyzer id is supplied and the analyzer resolves to an `agentic.*` workflow.
-Provisioning also requires at least 400K TPM on the primary GPT-5.2 deployment,
-matching Microsoft guidance. The live deployment is currently 50K TPM, so
+analyzer id is supplied. The `agentic.*` workflow resolution and the 400K TPM
+floor on the primary GPT-5.2 deployment are **provisioning-time** checks
+(`scripts/validate-feature-prereqs.py` and `scripts/postprovision.ps1`); the API
+does not re-verify them per request, so setting the analyzer id directly on a
+running container bypasses them. The live deployment is currently 50K TPM, so
 AI4IA does not advertise Agentic mode yet.
 
 The announcement's semantic chunking feature belongs to the Azure AI Search
@@ -174,6 +180,32 @@ Content Understanding **skill** (`2026-05-01-preview`). AI4IA does not use that
 indexer skill: it owns canonical Markdown, deterministic chunks, embeddings, and
 rebuild semantics in the API. This release therefore does not silently replace
 existing chunks or mix a second indexer into the canonical pipeline.
+
+### Analyzer-call guarantees
+
+Four properties hold for every outbound analyzer call, CU or Mistral:
+
+- **Entitlement is re-checked immediately before provider IO, not only at
+  upload.** Enrichment is queued work, so the account that was entitled when the
+  file was accepted may be disabled by the time the analyzer actually runs. A
+  disabled owner (403) aborts the crack before any bytes leave, and the attempt
+  is recorded with `provider_completed=false` so nothing is metered as spend.
+  Rate/budget limits (429) deliberately do **not** re-apply — they are admission
+  concerns, and re-applying them would fail work already accepted.
+- **Only pages the service metered are billed as pages.** Content Understanding
+  `contents` are timed segments for audio/video, so the display page-count
+  fallback is not a billing signal; CU page units come solely from its own
+  `documentPages*` meters. Mistral's contents *are* pages, so it keeps the count.
+- **`Canceled` is terminal.** A cancelled operation ends the poll loop with the
+  real outcome instead of being polled until the budget expires and reported as
+  a 408 timeout.
+- **`Retry-After` is honoured** when the service sends it, clamped to 30s per
+  sleep so one bad header cannot consume the whole poll budget.
+
+`AI4IA_CU_BASE_URL` is validated at startup outside `local`: it must be `https`
+with no embedded credentials, query, or fragment. CU receives raw document bytes
+and a Cognitive Services token, so the endpoint is a confidentiality boundary
+rather than a connectivity setting.
 
 ## Sharing and privacy
 
