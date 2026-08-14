@@ -137,6 +137,49 @@ describe("WorkflowBuilder", () => {
     );
   });
 
+  it("loads a starter template into the form without saving it", async () => {
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+
+    const picker = await screen.findByLabelText("Start from a template");
+    await user.selectOptions(picker, "mistral-ocr-extract");
+
+    // The form is populated from the template...
+    await waitFor(() =>
+      expect(screen.getByLabelText("Name")).toHaveValue("ocr-extract"),
+    );
+    expect(screen.getByLabelText("Display name")).toHaveValue(
+      "Extract from scans (Mistral OCR)",
+    );
+    // ...including its steps, which is the part that makes the template useful.
+    const instructions = screen
+      .getAllByRole("textbox")
+      .map((el) => (el as HTMLInputElement | HTMLTextAreaElement).value);
+    expect(instructions.some((v) => v.includes("fetch_document"))).toBe(true);
+    expect(instructions.some((v) => v.includes("{previous}"))).toBe(true);
+
+    // Nothing is persisted until the user explicitly saves. Loading a template
+    // that silently created a workflow would be a surprising side effect from
+    // what reads as a preview control.
+    expect(mocks.createWorkflow).not.toHaveBeenCalled();
+    expect(mocks.updateWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("keeps the template picker out of edit mode", async () => {
+    // Control for the test above: the picker must exist somewhere, so proving
+    // it is absent while editing is only meaningful because it is present when
+    // creating. Loading a template over an existing workflow would silently
+    // rewrite that workflow's steps under its locked name.
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+
+    expect(await screen.findByLabelText("Start from a template")).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: /^Summarize/ }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Start from a template")).not.toBeInTheDocument(),
+    );
+  });
   it("shows the selected step agent's description and explains step chaining on demand", async () => {
     const user = userEvent.setup();
     render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);

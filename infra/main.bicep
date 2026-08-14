@@ -185,8 +185,16 @@ param videoGenerationEnabled bool = false
 @description('Provision an Azure AI Search service (for indexing/retrieval). Default OFF: nothing is created. When on, the api identity gets data-plane RBAC (Index Data Contributor + Service Contributor) and AI4IA_SEARCH_ENDPOINT is emitted to the api.')
 param searchEnabled bool = false
 
-@description('Azure AI Search SKU when searchEnabled (basic is the smallest tier with semantic ranking).')
-param searchSku string = 'basic'
+@description('Azure AI Search SKU when searchEnabled. standard (S1) is the production default; basic is the cheaper single-tenant option. An existing service is re-tiered with `az search service update --sku`, not by a provision run — align this value afterwards (see docs/runbooks/deployment.md).')
+param searchSku string = 'standard'
+
+@description('Semantic ranker plan for the Search service. "standard" bills per query (~$1/1,000) and has no monthly cap; "free" stops working after 1,000 semantic queries/month and silently degrades retrieval to plain hybrid.')
+@allowed([
+  'disabled'
+  'free'
+  'standard'
+])
+param searchSemanticPlan string = 'standard'
 
 @description('Region for the Azure AI Search service. Empty => use the primary location. Provided as a separate knob because Search SKU capacity is region-constrained: eastus2 returned InsufficientResourcesAvailable, so Search is placed in a region with capacity (overridable via AI4IA_SEARCH_LOCATION). The service is reached over its global *.search.windows.net endpoint, so a different region from the rest of the stack is fine.')
 param searchLocation string = ''
@@ -498,6 +506,7 @@ module search 'modules/search.bicep' = {
     apiPrincipalId: apiIdentity.principalId
     deploySearch: searchEnabled
     sku: searchSku
+    semanticSearch: searchSemanticPlan
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
   }
 }

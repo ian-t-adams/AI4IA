@@ -293,6 +293,13 @@ jobs:
       # fallback here would be dead weight that has to be kept in sync with
       # main.parameters.json by hand.
       AI4IA_SEARCH_LOCATION: ${{ vars.AI4IA_SEARCH_LOCATION }}
+      # Search tier + semantic plan. Same "no fallback" rule as the locations
+      # above: empty lets azd resolve the ${VAR=default} token in
+      # main.parameters.json. NOTE: changing AI4IA_SEARCH_SKU here does NOT
+      # re-tier an existing service (the ARM PUT at the pinned API version does
+      # not perform a tier change) — see the deployment runbook.
+      AI4IA_SEARCH_SKU: ${{ vars.AI4IA_SEARCH_SKU }}
+      AI4IA_SEARCH_SEMANTIC_PLAN: ${{ vars.AI4IA_SEARCH_SEMANTIC_PLAN }}
       AI4IA_API_CENTER_LOCATION: ${{ vars.AI4IA_API_CENTER_LOCATION }}
       # Extra browser origins for Voice Live. Bicep already derives the deployed web
       # origin, so this stays empty for a normal standup; it is the documented knob for

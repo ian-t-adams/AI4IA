@@ -3,7 +3,7 @@
 // ourselves"). Provisioned only when search is enabled; AAD-only (local/key auth
 // disabled) so the api reaches the data plane via its managed identity + RBAC —
 // no account keys, mirroring the keyless posture of Cosmos and the document
-// storage account. Optional semantic ranker at the free tier.
+// storage account. Semantic ranker plan is a parameter (see semanticSearch).
 @description('Location for the search service.')
 param location string
 
@@ -25,7 +25,7 @@ param deploySearch bool = false
 @description('Central Log Analytics workspace resource id. When the service is provisioned, diagnostic settings stream its operation logs/metrics there for the admin observability plane.')
 param logAnalyticsWorkspaceId string
 
-@description('Search service SKU. basic is the smallest tier that supports semantic ranking and is plenty for a single-tenant index.')
+@description('Search service SKU. standard (S1) is the production default; basic is cheaper but caps partitions and vector index size. An existing service can move between basic and standard S1/S2/S3 in place, but drive that with `az search service update --sku` rather than assuming a provision run does it (see docs/runbooks/deployment.md).')
 @allowed([
   'free'
   'basic'
@@ -33,7 +33,15 @@ param logAnalyticsWorkspaceId string
   'standard2'
   'standard3'
 ])
-param sku string = 'basic'
+param sku string = 'standard'
+
+@description('Semantic ranker plan. "free" is capped at 1,000 semantic queries/month, after which every semantic query fails and retrieval silently degrades to plain hybrid; "standard" is billed per query (~$1 per 1,000). "disabled" turns the L2 reranker off at the service.')
+@allowed([
+  'disabled'
+  'free'
+  'standard'
+])
+param semanticSearch string = 'standard'
 
 @description('Replica count (query throughput / availability). 1 is fine for a demo index.')
 param replicaCount int = 1
@@ -69,7 +77,7 @@ resource search 'Microsoft.Search/searchServices@2023-11-01' = if (deploySearch)
     publicNetworkAccess: 'enabled'
     // AAD-only: disable api keys so RBAC is the sole data-plane path.
     disableLocalAuth: true
-    semanticSearch: 'free'
+    semanticSearch: semanticSearch
   }
 }
 
