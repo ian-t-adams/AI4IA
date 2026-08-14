@@ -17,29 +17,27 @@ modules) and no test in this file touches the network.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import subprocess
 import sys
 import unittest
 from pathlib import Path
-from types import ModuleType
 from unittest.mock import patch
+
+from scripts.tests._loader import load_script
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load(name: str, filename: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / filename)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-PROVIDERS = _load("check_resource_providers", "check-resource-providers.py")
-AVAILABILITY = _load("check_model_availability", "check-model-availability.py")
+PROVIDERS = load_script(
+    "check_resource_providers",
+    ROOT / "scripts" / "check-resource-providers.py",
+)
+AVAILABILITY = load_script(
+    "check_model_availability",
+    ROOT / "scripts" / "check-model-availability.py",
+)
 
 
 class ProviderDerivationTests(unittest.TestCase):

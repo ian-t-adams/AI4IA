@@ -81,6 +81,17 @@ async function jsonOrThrow<T>(resp: Response): Promise<T> {
   return (await resp.json()) as T;
 }
 
+async function deleteOrThrow(
+  path: string,
+  label: string,
+  action = "delete",
+): Promise<void> {
+  const resp = await apiFetch(path, { method: "DELETE" });
+  if (!resp.ok) {
+    throw new Error(`${resp.status}: failed to ${action} ${label}`);
+  }
+}
+
 export async function listModels(): Promise<ModelCatalog> {
   return jsonOrThrow(await apiFetch("/api/models", { cache: "no-store" }));
 }
@@ -138,13 +149,8 @@ export async function updateAgent(
   );
 }
 
-export async function deleteAgent(name: string): Promise<void> {
-  const resp = await apiFetch(`/api/agents/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
-  if (!resp.ok && resp.status !== 204) {
-    throw new Error(`${resp.status}: failed to delete agent`);
-  }
+export function deleteAgent(name: string): Promise<void> {
+  return deleteOrThrow(`/api/agents/${encodeURIComponent(name)}`, "agent");
 }
 
 export async function listWorkflows(): Promise<WorkflowListResult> {
@@ -184,13 +190,8 @@ export async function updateWorkflow(
   );
 }
 
-export async function deleteWorkflow(name: string): Promise<void> {
-  const resp = await apiFetch(`/api/workflows/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
-  if (!resp.ok && resp.status !== 204) {
-    throw new Error(`${resp.status}: failed to delete workflow`);
-  }
+export function deleteWorkflow(name: string): Promise<void> {
+  return deleteOrThrow(`/api/workflows/${encodeURIComponent(name)}`, "workflow");
 }
 
 export function newWorkflowRunIdempotencyKey(): string {
@@ -361,14 +362,11 @@ export async function updateMcpServer(
   );
 }
 
-export async function deleteMcpServer(name: string): Promise<void> {
-  const resp = await apiFetch(
+export function deleteMcpServer(name: string): Promise<void> {
+  return deleteOrThrow(
     `/api/agents/mcp-servers/${encodeURIComponent(name)}`,
-    { method: "DELETE" },
+    "MCP server",
   );
-  if (!resp.ok && resp.status !== 204) {
-    throw new Error(`${resp.status}: failed to delete MCP server`);
-  }
 }
 
 // Re-connects to a saved server and refreshes its cached tools / lastError. An
@@ -590,11 +588,8 @@ export async function disassociateLibraryDocument(
   );
 }
 
-export async function deleteSession(id: string): Promise<void> {
-  const resp = await apiFetch(`/api/sessions/${id}`, { method: "DELETE" });
-  if (!resp.ok && resp.status !== 204) {
-    throw new Error(`${resp.status}: failed to delete session`);
-  }
+export function deleteSession(id: string): Promise<void> {
+  return deleteOrThrow(`/api/sessions/${id}`, "session");
 }
 
 export async function listMessages(sessionId: string): Promise<Message[]> {
@@ -648,17 +643,14 @@ export async function listDocuments(
   );
 }
 
-export async function deleteDocument(
+export function deleteDocument(
   sessionId: string,
   documentId: string,
 ): Promise<void> {
-  const resp = await apiFetch(
+  return deleteOrThrow(
     `/api/sessions/${sessionId}/documents/${documentId}`,
-    { method: "DELETE" },
+    "document",
   );
-  if (!resp.ok && resp.status !== 204) {
-    throw new Error(`${resp.status}: failed to delete document`);
-  }
 }
 
 // --- Document library: the user's cross-session library. These go
@@ -695,13 +687,8 @@ export async function uploadLibraryDocument(
   );
 }
 
-export async function deleteLibraryDocument(documentId: string): Promise<void> {
-  const resp = await apiFetch(`/api/library/documents/${documentId}`, {
-    method: "DELETE",
-  });
-  if (!resp.ok && resp.status !== 204) {
-    throw new Error(`${resp.status}: failed to delete document`);
-  }
+export function deleteLibraryDocument(documentId: string): Promise<void> {
+  return deleteOrThrow(`/api/library/documents/${documentId}`, "document");
 }
 
 /** Search-index state for one document: why it is or is not being found. */
@@ -754,15 +741,14 @@ export async function reindexAllLibraryDocuments(): Promise<{
 }
 
 /** Drop a document from retrieval while keeping the file. Undone by reindex. */
-export async function purgeLibraryDocumentChunks(
+export function purgeLibraryDocumentChunks(
   documentId: string,
 ): Promise<void> {
-  const resp = await apiFetch(`/api/library/documents/${documentId}/chunks`, {
-    method: "DELETE",
-  });
-  if (!resp.ok && resp.status !== 204) {
-    throw new Error(`${resp.status}: failed to purge document chunks`);
-  }
+  return deleteOrThrow(
+    `/api/library/documents/${documentId}/chunks`,
+    "document chunks",
+    "purge",
+  );
 }
 
 export async function listLibraryAnalyzers(): Promise<LibraryAnalyzer[]> {
@@ -853,17 +839,14 @@ export async function updateLibraryAnnotation(
   );
 }
 
-export async function deleteLibraryAnnotation(
+export function deleteLibraryAnnotation(
   documentId: string,
   annotationId: string,
 ): Promise<void> {
-  const resp = await apiFetch(
+  return deleteOrThrow(
     `/api/library/documents/${documentId}/annotations/${annotationId}`,
-    { method: "DELETE" },
+    "annotation",
   );
-  if (!resp.ok && resp.status !== 204) {
-    throw new Error(`${resp.status}: failed to delete annotation`);
-  }
 }
 
 // --- Document-level sharing. Grants are keyed on grantee EMAIL; the

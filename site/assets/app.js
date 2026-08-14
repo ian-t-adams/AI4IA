@@ -142,7 +142,10 @@
     renderSnapshotFreshness(el("updated"), s.generatedAt);
 
     var sum = s.summary;
-    var resources = s.resources || [];
+    var inventory = window.AI4IA_INVENTORY || {};
+    var resources = Array.isArray(inventory.resources)
+      ? inventory.resources
+      : (Array.isArray(s.resources) ? s.resources : []);
 
     // Derive the displayed state from the availability signal rather than
     // trusting the stored `state`. Two reasons:

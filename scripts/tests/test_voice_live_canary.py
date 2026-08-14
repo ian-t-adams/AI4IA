@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import io
 import json
 import re
@@ -12,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from scripts.tests._loader import load_script
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "voice-live-canary.py"
 DEPLOYMENT_DOC = ROOT / "docs" / "runbooks" / "deployment.md"
@@ -21,17 +22,7 @@ CONFIG_DOC = ROOT / "docs" / "configuration-reference.md"
 ARCHITECTURE_DOC = ROOT / "docs" / "architecture.md"
 
 
-def load_script():
-    spec = importlib.util.spec_from_file_location("voice_live_canary", SCRIPT)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Unable to load Voice Live canary")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-canary = load_script()
+canary = load_script("voice_live_canary", SCRIPT, register=True)
 
 AZURE_UPDATE = (
     '{"type":"session.update","session":{"instructions":"You are a helpful, concise voice '

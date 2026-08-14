@@ -17,10 +17,12 @@ import {
   DEFAULT_SPEECH_MODEL_ID,
   DEFAULT_VOICE_PROVIDER,
   isRealtimeVoice,
+  isSpeechVoiceProvider,
   isVadType,
   type RealtimeVoice,
   type SpeechVoiceLiveSettings,
   type VoiceSessionSettings,
+  type VoiceProvider,
 } from "./voiceLive";
 
 export const VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v4";
@@ -242,6 +244,107 @@ export function normalizeSpeechVoiceLiveSettings(
     echoCancellation,
     interruptResponse,
     autoTruncate,
+  };
+}
+
+function providerDefaultVoice(provider: VoiceProvider): string {
+  const voices = provider.capabilities.voices.options as readonly string[];
+  return provider.capabilities.voices.default ?? voices[0] ?? "";
+}
+
+function sanitizeSpeechPreferences(
+  speech: VoicePreferences["speech"],
+  provider: VoiceProvider | undefined,
+): VoicePreferences["speech"] {
+  const normalized = normalizeSpeechVoiceLiveSettings(speech);
+  const speechProvider = isSpeechVoiceProvider(provider) ? provider : undefined;
+  const voices: readonly string[] =
+    speechProvider?.capabilities.voices.options ?? [normalized.voice];
+  const locales: readonly string[] =
+    speechProvider?.capabilities.locale?.options ?? [normalized.locale];
+  const turnDetections: readonly SpeechVoiceLiveSettings["turnDetection"][] =
+    speechProvider?.capabilities.turnDetection.options ?? [normalized.turnDetection];
+  const noiseSuppression: readonly SpeechVoiceLiveSettings["noiseSuppression"][] =
+    speechProvider?.capabilities.noiseSuppression?.options ?? [normalized.noiseSuppression];
+  const echoCancellation: readonly SpeechVoiceLiveSettings["echoCancellation"][] =
+    speechProvider?.capabilities.echoCancellation?.options ?? [normalized.echoCancellation];
+  return {
+    ...normalized,
+    voice:
+      voices.includes(normalized.voice) && speechProvider
+        ? normalized.voice
+        : speechProvider
+          ? providerDefaultVoice(speechProvider)
+          : normalized.voice,
+    locale:
+      locales.includes(normalized.locale) && speechProvider
+        ? normalized.locale
+        : speechProvider?.capabilities.locale?.default ?? normalized.locale,
+    turnDetection:
+      turnDetections.includes(normalized.turnDetection) && speechProvider
+        ? normalized.turnDetection
+        : speechProvider?.capabilities.turnDetection.default ?? normalized.turnDetection,
+    noiseSuppression:
+      noiseSuppression.includes(normalized.noiseSuppression) && speechProvider
+        ? normalized.noiseSuppression
+        : speechProvider?.capabilities.noiseSuppression?.default ??
+          normalized.noiseSuppression,
+    echoCancellation:
+      echoCancellation.includes(normalized.echoCancellation) && speechProvider
+        ? normalized.echoCancellation
+        : speechProvider?.capabilities.echoCancellation?.default ??
+          normalized.echoCancellation,
+  };
+}
+
+export function sanitizeVoicePreferencesForProviders(
+  prefs: VoicePreferences,
+  providers: VoiceProvider[],
+  realtimeModelIds: ReadonlySet<string>,
+  defaultRealtimeModelId: string | null,
+  voiceToolsAvailable: boolean,
+  defaultProviderId: VoicePreferences["provider"],
+  hasStoredPreferences: boolean,
+): VoicePreferences {
+  let provider = resolveEffectiveVoiceProvider(
+    prefs.provider,
+    providers.map((entry) => entry.id),
+    defaultProviderId,
+    hasStoredPreferences,
+  );
+  if (provider === "azure_openai" && realtimeModelIds.size === 0) {
+    provider =
+      (providers.find((entry) => entry.id === "speech_voice_live")?.id ??
+        provider) as VoicePreferences["provider"];
+  }
+  const speechProvider = providers.find(
+    (entry) => entry.id === "speech_voice_live",
+  );
+  const speechModelIds = isSpeechVoiceProvider(speechProvider)
+    ? new Set(speechProvider.managedModels.map((model) => model.id))
+    : new Set<string>();
+  const defaultSpeechModel = isSpeechVoiceProvider(speechProvider)
+    ? speechProvider.defaultManagedModelId
+    : DEFAULT_SPEECH_MODEL_ID;
+  return {
+    ...normalizeVoicePreferences(prefs),
+    provider,
+    model: resolveEffectiveModel(
+      prefs.model,
+      realtimeModelIds,
+      defaultRealtimeModelId,
+    ),
+    speechModel: speechModelIds.has(prefs.speechModel)
+      ? prefs.speechModel
+      : speechModelIds.has(defaultSpeechModel)
+        ? defaultSpeechModel
+        : [...speechModelIds][0] ?? DEFAULT_SPEECH_MODEL_ID,
+    voice: isRealtimeVoice(prefs.voice)
+      ? prefs.voice
+      : DEFAULT_VOICE_PREFERENCES.voice,
+    tools: voiceToolsAvailable && prefs.tools,
+    settings: normalizeVoiceSessionSettings(prefs.settings),
+    speech: sanitizeSpeechPreferences(prefs.speech, speechProvider),
   };
 }
 

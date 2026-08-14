@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import html
 import io
 import json
@@ -14,25 +13,20 @@ from pathlib import Path
 from unittest.mock import patch
 from xml.etree import ElementTree
 
+from scripts.tests._loader import load_script
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def load_script(name: str, relative_path: str):
-    spec = importlib.util.spec_from_file_location(name, ROOT / relative_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load {relative_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 gateway_generator = load_script(
-    "gen_gateway_policy", "scripts/gen-gateway-policy.py"
+    "gen_gateway_policy", ROOT / "scripts/gen-gateway-policy.py"
 )
 feature_validator = load_script(
-    "validate_feature_prereqs", "scripts/validate-feature-prereqs.py"
+    "validate_feature_prereqs", ROOT / "scripts/validate-feature-prereqs.py"
 )
-docs_generator = load_script("gen_docs_catalog", "scripts/gen-docs-catalog.py")
+docs_generator = load_script(
+    "gen_docs_catalog", ROOT / "scripts/gen-docs-catalog.py"
+)
 
 
 class GatewayPolicyTests(unittest.TestCase):

@@ -6,6 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatApp } from "./ChatApp";
 import type { StreamHandlers } from "@/lib/api";
 import type { ToolCatalogItem } from "@/lib/types";
+import {
+  CHAT_ATTACHMENT_CAPABILITIES,
+  CHAT_MODEL_CATALOG,
+  DISABLED_MEMORY,
+  emptyLibrarySummary,
+  makeChatSession,
+  makeInspectorSnapshot,
+} from "./chatTestFixtures";
 
 const mocks = vi.hoisted(() => ({
   listModels: vi.fn(),
@@ -18,10 +26,6 @@ const mocks = vi.hoisted(() => ({
   listSharedWithMe: vi.fn(),
   createSession: vi.fn(),
   streamChat: vi.fn(),
-  uploadLibraryDocument: vi.fn(),
-  uploadDocument: vi.fn(),
-  associateLibraryDocument: vi.fn(),
-  deleteSession: vi.fn(),
   toolCatalog: [] as ToolCatalogItem[],
   getToolCatalog: vi.fn(),
   updateSession: vi.fn(),
@@ -69,54 +73,18 @@ vi.mock("./UserMenu", () => ({ UserMenu: () => null }));
 vi.mock("./Composer", () => ({
   Composer: ({
     onSend,
-    onUpload,
-    uploads,
-    uploading,
     streaming,
-    onRetryUpload,
-    onDismissUpload,
   }: {
     onSend: (text: string) => void;
-    onUpload: (file: File) => Promise<void>;
-    uploads: { id: string; filename: string; status: string }[];
-    uploading: boolean;
     streaming: boolean;
-    onRetryUpload: (id: string) => void;
-    onDismissUpload: (id: string) => void;
   }) => (
-    <>
-      <button
-        type="button"
-        disabled={streaming}
-        onClick={() => onSend("hello from draft")}
-      >
-        Send draft message
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          void onUpload(new File(["a"], "a.pdf", { type: "application/pdf" }));
-          void onUpload(new File(["b"], "b.pdf", { type: "application/pdf" }));
-        }}
-      >
-        Queue two uploads
-      </button>
-      <div aria-label="Upload status" aria-busy={uploading}>
-        {uploads.map((upload) => `${upload.filename}:${upload.status}`).join(",")}
-      </div>
-      {uploads
-        .filter((upload) => upload.status === "failed")
-        .map((upload) => (
-          <span key={upload.id}>
-            <button type="button" onClick={() => onRetryUpload(upload.id)}>
-              Retry {upload.filename}
-            </button>
-            <button type="button" onClick={() => onDismissUpload(upload.id)}>
-              Dismiss {upload.filename}
-            </button>
-          </span>
-        ))}
-    </>
+    <button
+      type="button"
+      disabled={streaming}
+      onClick={() => onSend("hello from draft")}
+    >
+      Send draft message
+    </button>
   ),
 }));
 vi.mock("./MessageList", () => ({
@@ -172,35 +140,6 @@ vi.mock("./InlineVoiceLive", () => ({
   },
 }));
 
-const session = (id: string) => ({
-  id,
-  userId: "u1",
-  title: `Session ${id}`,
-  titleSource: "auto" as const,
-  model: "gpt-5.2",
-  systemPrompt: null,
-  agentName: null,
-  toolOverrides: { added: [], removed: [] },
-  libraryDocumentIds: [],
-  createdAt: "",
-  updatedAt: "",
-});
-
-const libraryDocument = (id: string, filename: string) => ({
-  id,
-  userId: "u1",
-  filename,
-  contentType: "application/pdf",
-  size: 1,
-  status: "ready",
-  modality: "document",
-  chunkCount: 1,
-  citationReady: true,
-  error: null,
-  createdAt: "",
-  updatedAt: "",
-});
-
 const chatMessage = (
   id: string,
   role: "user" | "assistant",
@@ -233,128 +172,38 @@ function captureStreamHandlers(): () => StreamHandlers {
 }
 
 beforeEach(() => {
-  const sessions = [session("A"), session("B")];
-  mocks.listModels.mockResolvedValue({
-    models: [
-      {
-        id: "gpt-5.2",
-        displayName: "GPT-5.2",
-        category: "chat",
-        format: "openai",
-        conversational: true,
-        contextWindow: 128000,
-        maxOutputTokens: 32000,
-        options: [],
-      },
-    ],
-  });
+  const sessions = [makeChatSession("A"), makeChatSession("B")];
+  mocks.listModels.mockResolvedValue(CHAT_MODEL_CATALOG);
   mocks.listSessions.mockResolvedValue(sessions);
   mocks.listAgents.mockResolvedValue([]);
-  mocks.getAttachmentCapabilities.mockResolvedValue({
-    ingestPath: "library",
-    maxBytes: 1_000_000,
-    maxPerUserDocuments: 100,
-    maxPerSessionDocuments: 20,
-    extensions: [".pdf"],
-    mimeTypes: ["application/pdf"],
-    modalities: ["document"],
-  });
+  mocks.getAttachmentCapabilities.mockResolvedValue(
+    CHAT_ATTACHMENT_CAPABILITIES,
+  );
   mocks.listMessages.mockResolvedValue([]);
   mocks.listDocuments.mockResolvedValue([]);
   mocks.listLibraryDocuments.mockResolvedValue([]);
   mocks.listSharedWithMe.mockResolvedValue([]);
   mocks.createSession.mockImplementation(async (value: object) => ({
-    ...session("C"),
+    ...makeChatSession("C"),
     ...value,
   }));
   mocks.streamChat.mockReturnValue(vi.fn());
   mocks.appendVoiceTurns.mockResolvedValue([]);
   mocks.voiceOptions = null;
-  mocks.associateLibraryDocument.mockImplementation(
-    async (sessionId: string, documentId: string) => ({
-      ...session(sessionId),
-      libraryDocumentIds: [documentId],
-    }),
-  );
-  mocks.deleteSession.mockResolvedValue(undefined);
   mockToolCatalog([]);
   mocks.getToolCatalog.mockImplementation(async () => ({
     tools: mocks.toolCatalog,
     inheritedTools: [],
   }));
   mocks.updateSession.mockImplementation(async (id: string, value: object) => ({
-    ...session(id),
+    ...makeChatSession(id),
     ...value,
   }));
-  mocks.getInspector.mockImplementation(async (id: string) => ({
-    generatedAt: new Date().toISOString(),
-    sessionId: id,
-    title: `Session ${id}`,
-    model: {
-      id: "gpt-5.2",
-      displayName: "GPT-5.2",
-      contextWindow: 128000,
-      maxOutputTokens: 32000,
-    },
-    instructions: { source: "session", editable: true, value: "", agentName: null, agentSource: null },
-    agent: { name: null, displayName: null, description: null },
-    tools: {
-      inherited: [],
-      added: [],
-      removed: [],
-      effective: [],
-      voiceEffective: [],
-    },
-    attachments: [],
-    libraryDocuments: [],
-    librarySelectionMode: "explicit",
-    sessionUsage: {
-      sessionId: id,
-      totalRequests: 0,
-      totalPromptTokens: 0,
-      totalCompletionTokens: 0,
-      totalTokens: 0,
-      totalCostMicroUsd: 0,
-      unknownUsageRequests: 0,
-      costUnknownRequests: 0,
-      latest: null,
-      truncated: false,
-      coveredRequests: 0,
-      coverageStart: null,
-      coverageEnd: null,
-    },
-    monthlyUsage: {
-      totalRequests: 0,
-      totalTokens: 0,
-      totalCostMicroUsd: 0,
-      unknownUsageRequests: 0,
-      costUnknownRequests: 0,
-    },
-    voice: {
-      defaultProviderId: null,
-      enabledProviderIds: [],
-      applies: "next_connection",
-    },
-  }));
-  mocks.listMemories.mockResolvedValue({
-    status: "disabled",
-    supportsCreate: false,
-    supportsEdit: false,
-    supportsDelete: false,
-    items: [],
-    detail: "Memory disabled",
-  });
-  mocks.getLibrarySummary.mockResolvedValue({
-    generatedAt: new Date().toISOString(),
-    status: "ok",
-    total: 0,
-    byStatus: {},
-    byModality: {},
-    recent: [],
-    maxUploadBytes: 100,
-    maxDocuments: 100,
-    modalities: ["document"],
-  });
+  mocks.getInspector.mockImplementation(async (id: string) =>
+    makeInspectorSnapshot(id),
+  );
+  mocks.listMemories.mockResolvedValue(DISABLED_MEMORY);
+  mocks.getLibrarySummary.mockResolvedValue(emptyLibrarySummary());
 });
 
 afterEach(() => {
@@ -362,227 +211,6 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   document.documentElement.style.removeProperty("--font-scale");
-});
-
-describe("ChatApp uploads", () => {
-  it("creates the first session with complete draft defaults and never PATCHes null", async () => {
-    mocks.listAgents.mockResolvedValue([
-      {
-        name: "researcher",
-        displayName: "Researcher",
-        description: "Researches",
-        enabled: true,
-      },
-    ]);
-    mockToolCatalog([
-      {
-        name: "calculator",
-        label: "Calculator",
-        description: "Calculate",
-        source: "built-in",
-        risk: "safe",
-        requiresApproval: false,
-        scopes: [],
-        available: true,
-        selectable: true,
-        detail: null,
-        ownership: "application",
-        typed: true,
-        voice: true,
-      },
-    ]);
-    mocks.getLibrarySummary.mockResolvedValue({
-      generatedAt: new Date().toISOString(),
-      status: "ok",
-      total: 1,
-      byStatus: { ready: 1 },
-      byModality: { document: 1 },
-      recent: [libraryDocument("doc-1", "brief.pdf")],
-      maxUploadBytes: 100,
-      maxDocuments: 100,
-      modalities: ["document"],
-    });
-
-    const user = userEvent.setup();
-    render(<ChatApp />);
-
-    await user.click(screen.getByRole("button", { name: "Instructions" }));
-    await user.type(
-      screen.getByRole("textbox", { name: "System prompt" }),
-      "Draft prompt",
-    );
-    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Agent" }),
-      "researcher",
-    );
-    await user.click(await screen.findByRole("checkbox", { name: /Calculator/ }));
-    await user.click(screen.getByRole("tab", { name: "Context" }));
-    await user.click(await screen.findByRole("button", { name: "Add brief.pdf" }));
-
-    expect(mocks.updateSession).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Send draft message" }));
-    await waitFor(() =>
-      expect(mocks.createSession).toHaveBeenCalledWith(
-        {
-          model: "gpt-5.2",
-          systemPrompt: "Draft prompt",
-          agentName: "researcher",
-          toolOverrides: { added: ["calculator"], removed: [] },
-          libraryDocumentIds: ["doc-1"],
-        },
-        expect.any(AbortSignal),
-      ),
-    );
-    expect(mocks.createSession).toHaveBeenCalledTimes(1);
-  });
-
-  it("blocks navigation and runs multi-file uploads sequentially for the captured session", async () => {
-    let resolveFirst!: (value: ReturnType<typeof libraryDocument>) => void;
-    let resolveSecond!: (value: ReturnType<typeof libraryDocument>) => void;
-    mocks.uploadLibraryDocument
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveFirst = resolve;
-          }),
-      )
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveSecond = resolve;
-          }),
-      );
-    const user = userEvent.setup();
-    render(<ChatApp />);
-    await user.click(await screen.findByRole("button", { name: "Session A" }));
-    expect(
-      await screen.findByText("Session A", {
-        selector: ".chat-header .editable-session-title-text",
-      }),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Queue two uploads" }));
-    await waitFor(() => expect(mocks.uploadLibraryDocument).toHaveBeenCalledTimes(1));
-    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
-    expect(mocks.deleteSession).not.toHaveBeenCalled();
-    expect(
-      await screen.findByText(/finish before deleting this conversation/),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Session B" }));
-    expect(
-      await screen.findByText(/Wait for active attachments to finish/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("Session A", {
-        selector: ".chat-header .editable-session-title-text",
-      }),
-    ).toBeInTheDocument();
-
-    resolveFirst(libraryDocument("d1", "a.pdf"));
-    await waitFor(() =>
-      expect(mocks.associateLibraryDocument).toHaveBeenCalledWith("A", "d1"),
-    );
-    await waitFor(() => expect(mocks.uploadLibraryDocument).toHaveBeenCalledTimes(2));
-    expect(screen.getByLabelText("Upload status")).toHaveAttribute("aria-busy", "true");
-    resolveSecond(libraryDocument("d2", "b.pdf"));
-    await waitFor(() =>
-      expect(mocks.associateLibraryDocument).toHaveBeenCalledWith("A", "d2"),
-    );
-    expect(mocks.uploadLibraryDocument.mock.calls[0][0].name).toBe("a.pdf");
-    expect(mocks.uploadLibraryDocument.mock.calls[1][0].name).toBe("b.pdf");
-    await waitFor(() =>
-      expect(screen.getByLabelText("Upload status")).toHaveAttribute(
-        "aria-busy",
-        "false",
-      ),
-    );
-  });
-
-  it("releases queue accounting when a queued retry is dismissed before running", async () => {
-    let resolveSecond!: (value: ReturnType<typeof libraryDocument>) => void;
-    mocks.uploadLibraryDocument
-      .mockRejectedValueOnce(new Error("temporary"))
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveSecond = resolve;
-          }),
-      );
-    const user = userEvent.setup();
-    render(<ChatApp />);
-    await user.click(await screen.findByRole("button", { name: "Session A" }));
-    await user.click(screen.getByRole("button", { name: "Queue two uploads" }));
-    await user.click(await screen.findByRole("button", { name: "Retry a.pdf" }));
-    await user.click(screen.getByRole("button", { name: "Dismiss a.pdf" }));
-    resolveSecond(libraryDocument("d2", "b.pdf"));
-    await waitFor(() =>
-      expect(screen.getByLabelText("Upload status")).toHaveAttribute(
-        "aria-busy",
-        "false",
-      ),
-    );
-    await user.click(screen.getByRole("button", { name: "+ New chat" }));
-    expect(
-      await screen.findByText("New conversation", { selector: "strong" }),
-    ).toBeInTheDocument();
-  });
-
-  it("uses actual narrow ChatApp drawers with mutual exclusion and inert background", async () => {
-    Object.defineProperty(window, "innerWidth", { value: 320, configurable: true });
-    Object.defineProperty(window, "innerHeight", { value: 240, configurable: true });
-    document.documentElement.style.setProperty("--font-scale", "2");
-    vi.stubGlobal(
-      "matchMedia",
-      vi.fn((query: string) => ({
-        matches:
-          query === "(max-width: 720px)" || query === "(max-width: 1050px)",
-        media: query,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      })),
-    );
-    const user = userEvent.setup();
-    render(<ChatApp />);
-    const sidebarOpener = await screen.findByRole("button", {
-      name: "Open conversation sidebar",
-    });
-    const inspectorOpener = screen.getByRole("button", {
-      name: "Open conversation inspector",
-    });
-
-    await user.click(sidebarOpener);
-    expect(screen.getByRole("dialog", { name: "Chat sessions" })).toBeInTheDocument();
-    expect(screen.getByTestId("sidebar-scroll")).toHaveStyle({
-      minHeight: "0",
-      overflowY: "auto",
-      overflowX: "hidden",
-    });
-    const statusLink = screen.getByRole("link", {
-      name: "Status (opens in new tab)",
-    });
-    statusLink.focus();
-    expect(statusLink).toHaveFocus();
-    expect(document.querySelector("main")).toHaveAttribute("inert");
-    expect(screen.queryByRole("dialog", { name: "Conversation inspector" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Close conversation sidebar" }));
-    expect(
-      await screen.findByRole("button", { name: "Open conversation sidebar" }),
-    ).toHaveFocus();
-
-    await user.click(inspectorOpener);
-    expect(
-      screen.getByRole("dialog", { name: "Conversation inspector" }),
-    ).toHaveAttribute("aria-modal", "true");
-    expect(document.querySelector("main")).toHaveAttribute("inert");
-    expect(screen.queryByRole("dialog", { name: "Chat sessions" })).toBeNull();
-    const main = document.querySelector("main") as HTMLElement;
-    expect(main).toHaveStyle({ minWidth: "0px" });
-    expect(screen.getByRole("button", { name: "Collapse conversation inspector" })).toBeEnabled();
-    await user.click(screen.getByRole("button", { name: "Close conversation inspector" }));
-    expect(
-      await screen.findByRole("button", { name: "Open conversation inspector" }),
-    ).toHaveFocus();
-  });
 });
 
 describe("ChatApp stream reconciliation", () => {

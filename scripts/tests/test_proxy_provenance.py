@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from scripts.tests._loader import load_script
+
 ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = ROOT / "scripts" / "gen-proxy-provenance.py"
 MANIFEST = ROOT / "proxy" / "upstream-provenance.json"
 
-spec = importlib.util.spec_from_file_location("proxy_provenance", GENERATOR)
-assert spec and spec.loader
-proxy_provenance = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(proxy_provenance)
+proxy_provenance = load_script("proxy_provenance", GENERATOR)
 
 
 class ProxyProvenanceTests(unittest.TestCase):

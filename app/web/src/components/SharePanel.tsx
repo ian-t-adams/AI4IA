@@ -13,7 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { getDocumentShares, setDocumentShares } from "@/lib/api";
 import type { ShareVisibility } from "@/lib/library";
-import { useModalFocus, useModalKeyDown } from "./useModalFocus";
+import { ModalShell } from "./ModalShell";
 
 interface SharePanelProps {
   documentId: string;
@@ -59,8 +59,6 @@ export default function SharePanel({
   onClose,
   onChanged,
 }: SharePanelProps) {
-  const modalRef = useModalFocus();
-  const onModalKeyDown = useModalKeyDown(onClose);
   const [visibility, setVisibility] = useState<ShareVisibility>("private");
   const [grantees, setGrantees] = useState<string[]>([]);
   const [draftEmail, setDraftEmail] = useState("");
@@ -153,76 +151,20 @@ export default function SharePanel({
   }, [documentId, grantees, loaded, onChanged, saving, visibility]);
 
   return (
-    <div
-      ref={modalRef}
-      onKeyDown={onModalKeyDown}
-      role="dialog"
-      aria-label={`Share ${filename}`}
-      aria-modal="true"
-      onClick={onClose}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 60,
-      }}
+    <ModalShell
+      ariaLabel={`Share ${filename}`}
+      title="🔗 Share"
+      filename={filename}
+      closeLabel="Close sharing"
+      onClose={onClose}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: "var(--bg-elevated)",
-          color: "var(--fg)",
-          width: "min(520px, 94vw)",
-          borderRadius: "var(--radius)",
-          border: "1px solid var(--border)",
-          padding: 24,
-          display: "flex",
-          flexDirection: "column",
-          gap: 16,
-          maxHeight: "90vh",
-          overflowY: "auto",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-          <h2 style={{ margin: 0, fontSize: "1.1em" }}>
-            🔗 Share
-            <span
-              style={{
-                display: "block",
-                fontSize: "0.7em",
-                fontWeight: 400,
-                color: "var(--fg-muted)",
-                marginTop: 2,
-              }}
-            >
-              {filename}
-            </span>
-          </h2>
-          <button
-            onClick={onClose}
-            aria-label="Close sharing"
-            style={{
-              border: "none",
-              background: "transparent",
-              color: "var(--fg)",
-              fontSize: "1.2em",
-              cursor: "pointer",
-            }}
-          >
-            ✕
-          </button>
-        </div>
+      <p style={{ margin: 0, fontSize: "0.8em", color: "var(--fg-muted)" }}>
+        People you share with can read, search, and run code over this document
+        through their own assistant. Your private notes and saved memories are
+        never shared.
+      </p>
 
-        <p style={{ margin: 0, fontSize: "0.8em", color: "var(--fg-muted)" }}>
-          People you share with can read, search, and run code over this document
-          through their own assistant. Your private notes and saved memories are
-          never shared.
-        </p>
-
-        {loading ? (
+      {loading ? (
           <p style={{ margin: 0, fontSize: "0.85em", color: "var(--fg-muted)" }}>
             Loading…
           </p>
@@ -467,8 +409,7 @@ export default function SharePanel({
               )}
             </div>
           </>
-        )}
-      </div>
-    </div>
+      )}
+    </ModalShell>
   );
 }

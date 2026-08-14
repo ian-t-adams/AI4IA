@@ -9,6 +9,7 @@ Fail-closed posture (per security review):
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import Enum
 from functools import lru_cache
 from typing import TYPE_CHECKING
@@ -59,6 +60,18 @@ _DIRECT_MODEL_GATEWAY_HOST_SUFFIXES = (
     "cognitiveservices.azure.com",
     "azure-api.net",
 )
+
+
+def _csv_items(
+    raw: str | None,
+    *,
+    normalize: Callable[[str], str] = str,
+) -> list[str]:
+    return [
+        value
+        for part in (raw or "").split(",")
+        if (value := normalize(part.strip()))
+    ]
 
 
 class SessionStoreKind(str, Enum):
@@ -726,17 +739,16 @@ class Settings(BaseSettings):
 
     @property
     def allowed_tenants(self) -> list[str]:
-        raw = self.entra_allowed_tenants or self.entra_tenant_id or ""
-        return [t.strip() for t in raw.split(",") if t.strip()]
+        return _csv_items(self.entra_allowed_tenants or self.entra_tenant_id)
 
     @property
     def model_gateway_allowed_host_set(self) -> set[str]:
-        raw = self.model_gateway_allowed_hosts or ""
-        return {
-            host.strip().lower().rstrip(".")
-            for host in raw.split(",")
-            if host.strip().rstrip(".")
-        }
+        return set(
+            _csv_items(
+                self.model_gateway_allowed_hosts,
+                normalize=lambda host: host.lower().rstrip("."),
+            )
+        )
 
     @property
     def auth_provider_is_spoofable(self) -> bool:
@@ -752,13 +764,11 @@ class Settings(BaseSettings):
 
     @property
     def admin_subject_set(self) -> set[str]:
-        raw = self.admin_subjects or ""
-        return {s.strip() for s in raw.split(",") if s.strip()}
+        return set(_csv_items(self.admin_subjects))
 
     @property
     def admin_email_set(self) -> set[str]:
-        raw = self.admin_emails or ""
-        return {s.strip().lower() for s in raw.split(",") if s.strip()}
+        return set(_csv_items(self.admin_emails, normalize=str.lower))
 
     @property
     def dev_auth_permitted(self) -> bool:
@@ -771,20 +781,15 @@ class Settings(BaseSettings):
 
     @property
     def realtime_allowed_origin_list(self) -> list[str]:
-        raw = self.realtime_allowed_origins or ""
-        return [o.strip() for o in raw.split(",") if o.strip()]
+        return _csv_items(self.realtime_allowed_origins)
 
     @property
     def voice_provider_allowlist_list(self) -> list[str]:
-        raw = self.voice_provider_allowlist or ""
-        seen: set[str] = set()
-        out: list[str] = []
-        for item in (part.strip().lower() for part in raw.split(",")):
-            if not item or item in seen:
-                continue
-            seen.add(item)
-            out.append(item)
-        return out
+        return list(
+            dict.fromkeys(
+                _csv_items(self.voice_provider_allowlist, normalize=str.lower)
+            )
+        )
 
     @property
     def voice_default_provider_id(self) -> str:

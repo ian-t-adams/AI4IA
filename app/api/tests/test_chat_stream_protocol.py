@@ -40,6 +40,73 @@ def _sse_payloads(response_text: str) -> list[str]:
     ]
 
 
+class _PersistingRepo:
+    def __init__(self) -> None:
+        self.persisted: list[Message] = []
+
+    async def upsert_message(self, _user_id, message):
+        self.persisted.append(message.model_copy(deep=True))
+        return message
+
+
+class _NoopMemory:
+    async def remember(self, *_args, **_kwargs):
+        return None
+
+
+class _NoopMetering:
+    async def record_completion(self, **_kwargs):
+        return None
+
+
+def _stream_assistant() -> Message:
+    return Message(
+        sessionId="session",
+        userId="user",
+        role=MessageRole.assistant,
+        status=MessageStatus.streaming,
+    )
+
+
+def _test_agentic_stream(
+    *,
+    run,
+    repo,
+    assistant: Message | None = None,
+    memory=None,
+    metering=None,
+    **overrides,
+):
+    return _agentic_stream(
+        assistant=assistant if assistant is not None else _stream_assistant(),
+        run=run,
+        repo=repo,
+        memory=memory if memory is not None else _NoopMemory(),
+        metering=metering if metering is not None else _NoopMetering(),
+        user=AuthenticatedUser(
+            internal_user_id="user",
+            subject="subject",
+            issuer="issuer",
+            provider="dev",
+            email="user@example.com",
+            name="User",
+        ),
+        session_id="session",
+        model_id="model",
+        deployment=DeploymentOption(
+            region="eastus",
+            dataZone=None,
+            sku="GlobalStandard",
+            deploymentName="deployment",
+        ),
+        agent_name="analyst",
+        correlation_id="correlation",
+        content_for_model="hello",
+        user_message_id="user-message",
+        **overrides,
+    )
+
+
 def _track_terminal_yields(monkeypatch, events: list[str]) -> None:
     class TrackedStreamingResponse(StreamingResponse):
         def __init__(self, content, *args, **kwargs):
@@ -228,61 +295,16 @@ def test_the_kill_switch_restores_the_single_terminal_delta():
 async def test_a_disconnect_mid_stream_persists_the_text_the_user_received():
     """Cancellation still leaves no half-written row — it leaves an honest one."""
 
-    class Repo:
-        def __init__(self) -> None:
-            self.persisted: list[Message] = []
-
-        async def upsert_message(self, _user_id, message):
-            self.persisted.append(message.model_copy(deep=True))
-            return message
-
-    class Memory:
-        async def remember(self, *_args, **_kwargs):
-            return None
-
-    class Metering:
-        async def record_completion(self, **_kwargs):
-            return None
-
     async def run(_on_step, on_delta):
         await on_delta("half an ")
         await on_delta("answer")
         await asyncio.sleep(60)
         raise AssertionError("unreachable")
 
-    repo = Repo()
-    assistant = Message(
-        sessionId="session",
-        userId="user",
-        role=MessageRole.assistant,
-        status=MessageStatus.streaming,
-    )
-    stream = _agentic_stream(
-        assistant=assistant,
+    repo = _PersistingRepo()
+    stream = _test_agentic_stream(
         run=run,
-        repo=repo,  # type: ignore[arg-type]
-        memory=Memory(),  # type: ignore[arg-type]
-        metering=Metering(),  # type: ignore[arg-type]
-        user=AuthenticatedUser(
-            internal_user_id="user",
-            subject="subject",
-            issuer="issuer",
-            provider="dev",
-            email="user@example.com",
-            name="User",
-        ),
-        session_id="session",
-        model_id="model",
-        deployment=DeploymentOption(
-            region="eastus",
-            dataZone=None,
-            sku="GlobalStandard",
-            deploymentName="deployment",
-        ),
-        agent_name="analyst",
-        correlation_id="correlation",
-        content_for_model="hello",
-        user_message_id="user-message",
+        repo=repo,
         stream_tokens=True,
     )
     assert "metadata" in await anext(stream)
@@ -298,22 +320,6 @@ async def test_a_disconnect_mid_stream_persists_the_text_the_user_received():
 async def test_a_streamed_preamble_is_kept_when_the_fallback_completes_the_turn():
     """The user cannot un-see a preamble, so it must survive the fallback."""
 
-    class Repo:
-        def __init__(self) -> None:
-            self.persisted: list[Message] = []
-
-        async def upsert_message(self, _user_id, message):
-            self.persisted.append(message.model_copy(deep=True))
-            return message
-
-    class Memory:
-        async def remember(self, *_args, **_kwargs):
-            return None
-
-    class Metering:
-        async def record_completion(self, **_kwargs):
-            return None
-
     async def run(_on_step, on_delta):
         await on_delta("Looking that up. ")
         return AgentRunResult(text="", model="deployment")
@@ -323,39 +329,10 @@ async def test_a_streamed_preamble_is_kept_when_the_fallback_completes_the_turn(
 
         return "Here is the answer.", TokenUsage.empty()
 
-    repo = Repo()
-    assistant = Message(
-        sessionId="session",
-        userId="user",
-        role=MessageRole.assistant,
-        status=MessageStatus.streaming,
-    )
-    stream = _agentic_stream(
-        assistant=assistant,
+    repo = _PersistingRepo()
+    stream = _test_agentic_stream(
         run=run,
-        repo=repo,  # type: ignore[arg-type]
-        memory=Memory(),  # type: ignore[arg-type]
-        metering=Metering(),  # type: ignore[arg-type]
-        user=AuthenticatedUser(
-            internal_user_id="user",
-            subject="subject",
-            issuer="issuer",
-            provider="dev",
-            email="user@example.com",
-            name="User",
-        ),
-        session_id="session",
-        model_id="model",
-        deployment=DeploymentOption(
-            region="eastus",
-            dataZone=None,
-            sku="GlobalStandard",
-            deploymentName="deployment",
-        ),
-        agent_name="analyst",
-        correlation_id="correlation",
-        content_for_model="hello",
-        user_message_id="user-message",
+        repo=repo,
         fallback=fallback,
         stream_tokens=True,
     )
@@ -635,59 +612,14 @@ def test_raw_gateway_error_is_persisted_before_one_sanitized_error(
 
 @pytest.mark.asyncio
 async def test_agentic_stream_close_persists_cancelled_state():
-    class Repo:
-        def __init__(self) -> None:
-            self.persisted: list[Message] = []
-
-        async def upsert_message(self, _user_id, message):
-            self.persisted.append(message.model_copy(deep=True))
-            return message
-
-    class Memory:
-        async def remember(self, *_args, **_kwargs):
-            return None
-
-    class Metering:
-        async def record_completion(self, **_kwargs):
-            return None
-
     async def run(_on_step):
         await asyncio.sleep(60)
         raise AssertionError("unreachable")
 
-    repo = Repo()
-    assistant = Message(
-        sessionId="session",
-        userId="user",
-        role=MessageRole.assistant,
-        status=MessageStatus.streaming,
-    )
-    stream = _agentic_stream(
-        assistant=assistant,
+    repo = _PersistingRepo()
+    stream = _test_agentic_stream(
         run=run,
-        repo=repo,  # type: ignore[arg-type]
-        memory=Memory(),  # type: ignore[arg-type]
-        metering=Metering(),  # type: ignore[arg-type]
-        user=AuthenticatedUser(
-            internal_user_id="user",
-            subject="subject",
-            issuer="issuer",
-            provider="dev",
-            email="user@example.com",
-            name="User",
-        ),
-        session_id="session",
-        model_id="model",
-        deployment=DeploymentOption(
-            region="eastus",
-            dataZone=None,
-            sku="GlobalStandard",
-            deploymentName="deployment",
-        ),
-        agent_name="analyst",
-        correlation_id="correlation",
-        content_for_model="hello",
-        user_message_id="user-message",
+        repo=repo,
     )
     assert "metadata" in await anext(stream)
     await stream.aclose()
@@ -700,21 +632,6 @@ async def test_agentic_stream_backpressures_fast_producer_and_disconnect_unblock
 ):
     assert AGENT_EVENT_QUEUE_MAXSIZE == 32
     caplog.set_level(logging.INFO, logger="ai4ia_api.routers._chat_streaming")
-    class Repo:
-        def __init__(self) -> None:
-            self.persisted: list[Message] = []
-
-        async def upsert_message(self, _user_id, message):
-            self.persisted.append(message.model_copy(deep=True))
-            return message
-
-    class Memory:
-        async def remember(self, *_args, **_kwargs):
-            return None
-
-    class Metering:
-        async def record_completion(self, **_kwargs):
-            return None
 
     produced = 0
     cancelled = asyncio.Event()
@@ -729,39 +646,10 @@ async def test_agentic_stream_backpressures_fast_producer_and_disconnect_unblock
         finally:
             cancelled.set()
 
-    repo = Repo()
-    assistant = Message(
-        sessionId="session",
-        userId="user",
-        role=MessageRole.assistant,
-        status=MessageStatus.streaming,
-    )
-    stream = _agentic_stream(
-        assistant=assistant,
+    repo = _PersistingRepo()
+    stream = _test_agentic_stream(
         run=run,
-        repo=repo,  # type: ignore[arg-type]
-        memory=Memory(),  # type: ignore[arg-type]
-        metering=Metering(),  # type: ignore[arg-type]
-        user=AuthenticatedUser(
-            internal_user_id="user",
-            subject="subject",
-            issuer="issuer",
-            provider="dev",
-            email="user@example.com",
-            name="User",
-        ),
-        session_id="session",
-        model_id="model",
-        deployment=DeploymentOption(
-            region="eastus",
-            dataZone=None,
-            sku="GlobalStandard",
-            deploymentName="deployment",
-        ),
-        agent_name="analyst",
-        correlation_id="correlation",
-        content_for_model="hello",
-        user_message_id="user-message",
+        repo=repo,
         stream_tokens=True,
     )
 
@@ -797,16 +685,10 @@ async def test_unstarted_stream_does_not_persist_placeholder():
         yield "data: never\n\n"
 
     repo = Repo()
-    assistant = Message(
-        sessionId="session",
-        userId="user",
-        role=MessageRole.assistant,
-        status=MessageStatus.streaming,
-    )
     stream = _stream_with_placeholder(
         repo=repo,  # type: ignore[arg-type]
         user_id="user",
-        assistant=assistant,
+        assistant=_stream_assistant(),
         events=body(),
     )
     await stream.aclose()
@@ -822,16 +704,10 @@ async def test_placeholder_failure_is_an_explicit_stream_error():
     async def body():
         yield "data: never\n\n"
 
-    assistant = Message(
-        sessionId="session",
-        userId="user",
-        role=MessageRole.assistant,
-        status=MessageStatus.streaming,
-    )
     stream = _stream_with_placeholder(
         repo=Repo(),  # type: ignore[arg-type]
         user_id="user",
-        assistant=assistant,
+        assistant=_stream_assistant(),
         events=body(),
     )
     payload = json.loads((await anext(stream)).removeprefix("data: "))
@@ -866,16 +742,10 @@ async def test_disconnect_before_first_event_finalizes_owned_placeholder():
         yield "data: never\n\n"
 
     repo = Repo()
-    assistant = Message(
-        sessionId="session",
-        userId="user",
-        role=MessageRole.assistant,
-        status=MessageStatus.streaming,
-    )
     stream = _stream_with_placeholder(
         repo=repo,  # type: ignore[arg-type]
         user_id="user",
-        assistant=assistant,
+        assistant=_stream_assistant(),
         events=body(),
     )
     first_event = asyncio.create_task(anext(stream))
@@ -905,50 +775,13 @@ async def test_cancellation_during_terminal_upsert_confirms_then_persists_cancel
             self.persisted.append(message.model_copy(deep=True))
             return message
 
-    class Memory:
-        async def remember(self, *_args, **_kwargs):
-            return None
-
-    class Metering:
-        async def record_completion(self, **_kwargs):
-            return None
-
     async def run(_on_step):
         return AgentRunResult(text="answer", model="deployment")
 
     repo = Repo()
-    assistant = Message(
-        sessionId="session",
-        userId="user",
-        role=MessageRole.assistant,
-        status=MessageStatus.streaming,
-    )
-    stream = _agentic_stream(
-        assistant=assistant,
+    stream = _test_agentic_stream(
         run=run,
-        repo=repo,  # type: ignore[arg-type]
-        memory=Memory(),  # type: ignore[arg-type]
-        metering=Metering(),  # type: ignore[arg-type]
-        user=AuthenticatedUser(
-            internal_user_id="user",
-            subject="subject",
-            issuer="issuer",
-            provider="dev",
-            email="user@example.com",
-            name="User",
-        ),
-        session_id="session",
-        model_id="model",
-        deployment=DeploymentOption(
-            region="eastus",
-            dataZone=None,
-            sku="GlobalStandard",
-            deploymentName="deployment",
-        ),
-        agent_name="analyst",
-        correlation_id="correlation",
-        content_for_model="hello",
-        user_message_id="user-message",
+        repo=repo,
     )
     assert "metadata" in await anext(stream)
     assert "answer" in await anext(stream)
@@ -968,18 +801,6 @@ async def test_cancellation_during_terminal_upsert_confirms_then_persists_cancel
 
 @pytest.mark.asyncio
 async def test_closing_agentic_stream_waits_for_runner_cleanup():
-    class Repo:
-        async def upsert_message(self, _user_id, message):
-            return message
-
-    class Memory:
-        async def remember(self, *_args, **_kwargs):
-            return None
-
-    class Metering:
-        async def record_completion(self, **_kwargs):
-            return None
-
     started = asyncio.Event()
     cleanup_finished = asyncio.Event()
 
@@ -993,38 +814,9 @@ async def test_closing_agentic_stream_waits_for_runner_cleanup():
             await asyncio.sleep(0.05)
             cleanup_finished.set()
 
-    assistant = Message(
-        sessionId="session",
-        userId="user",
-        role=MessageRole.assistant,
-        status=MessageStatus.streaming,
-    )
-    stream = _agentic_stream(
-        assistant=assistant,
+    stream = _test_agentic_stream(
         run=run,
-        repo=Repo(),  # type: ignore[arg-type]
-        memory=Memory(),  # type: ignore[arg-type]
-        metering=Metering(),  # type: ignore[arg-type]
-        user=AuthenticatedUser(
-            internal_user_id="user",
-            subject="subject",
-            issuer="issuer",
-            provider="dev",
-            email="user@example.com",
-            name="User",
-        ),
-        session_id="session",
-        model_id="model",
-        deployment=DeploymentOption(
-            region="eastus",
-            dataZone=None,
-            sku="GlobalStandard",
-            deploymentName="deployment",
-        ),
-        agent_name="analyst",
-        correlation_id="correlation",
-        content_for_model="hello",
-        user_message_id="user-message",
+        repo=_PersistingRepo(),
     )
 
     assert "metadata" in await anext(stream)

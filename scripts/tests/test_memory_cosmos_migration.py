@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import asyncio
 import sys
 import types
@@ -9,12 +8,13 @@ from typing import Any
 
 import pytest
 
+if __package__:
+    from ._loader import load_script
+else:
+    from _loader import load_script
+
 SCRIPT = Path(__file__).parents[1] / "migrate-memory-to-cosmos.py"
-SPEC = importlib.util.spec_from_file_location("memory_cosmos_migration", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-migration = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = migration
-SPEC.loader.exec_module(migration)
+migration = load_script("memory_cosmos_migration", SCRIPT, register=True)
 
 
 def _row(

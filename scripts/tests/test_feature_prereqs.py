@@ -22,7 +22,6 @@ importable module) and driven through a temporary parameters file.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import sys
@@ -31,9 +30,10 @@ import unittest
 from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 from unittest.mock import patch
+
+from scripts.tests._loader import load_script
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "validate-feature-prereqs.py"
@@ -61,15 +61,7 @@ CLAUDE_ENV = {
 }
 
 
-def _load_validator() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("validate_feature_prereqs", SCRIPT)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-VALIDATOR = _load_validator()
+VALIDATOR = load_script("validate_feature_prereqs", SCRIPT)
 
 
 @contextmanager

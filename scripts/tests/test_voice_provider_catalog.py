@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
 import json
 import re
 import unittest
@@ -9,6 +8,8 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 import jsonschema
+
+from scripts.tests._loader import load_script
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GEN = REPO_ROOT / "scripts" / "gen-voice-provider-catalog.py"
@@ -26,19 +27,11 @@ EXPECTED_MODELS = (
 )
 
 
-def _load_gen():
-    spec = importlib.util.spec_from_file_location("gen_voice_provider_catalog", GEN)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 class VoiceProviderCatalogTests(unittest.TestCase):
     def setUp(self) -> None:
         self.raw = json.loads(SOURCE.read_text(encoding="utf-8"))
         self.schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
-        self.gen = _load_gen()
+        self.gen = load_script("gen_voice_provider_catalog", GEN)
 
     @property
     def speech(self) -> dict:

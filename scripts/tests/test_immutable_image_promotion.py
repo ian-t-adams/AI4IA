@@ -36,12 +36,13 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import unittest
 from pathlib import Path
 
 import yaml
+
+from scripts.tests._platform import find_bash
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/deploy.yml"
@@ -61,32 +62,7 @@ DIGESTS = {
 }
 
 
-def _find_bash() -> str | None:
-    candidates = [
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files\Git\usr\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-        shutil.which("bash"),
-    ]
-    for candidate in candidates:
-        if not candidate or not Path(candidate).exists():
-            continue
-        try:
-            probe = subprocess.run(
-                [candidate, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if probe.returncode == 0:
-            return candidate
-    return None
-
-
-BASH = _find_bash()
+BASH = find_bash()
 
 
 def _steps() -> list[dict]:

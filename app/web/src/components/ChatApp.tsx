@@ -41,24 +41,17 @@ import { StudioPanel } from "./StudioPanel";
 import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   DEFAULT_SPEECH_MODEL_ID,
-  isRealtimeVoice,
-  isSpeechVoiceProvider,
   realtimeModels,
   resolveAuthorizedVoiceProviders,
-  type SpeechVoiceLiveSettings,
   type VoiceLiveProviderCatalogResponse,
-  type VoiceProvider,
 } from "@/lib/voiceLive";
 import {
   DEFAULT_VOICE_PREFERENCES,
   hasStoredVoicePreferences,
   loadVoicePreferences,
-  normalizeSpeechVoiceLiveSettings,
-  normalizeVoiceSessionSettings,
   resolveEffectiveAgent,
-  resolveEffectiveModel,
-  resolveEffectiveVoiceProvider,
   normalizeVoicePreferences,
+  sanitizeVoicePreferencesForProviders,
   saveVoicePreferences,
   type VoicePreferences,
 } from "@/lib/voicePreferences";
@@ -85,6 +78,11 @@ import {
 } from "@/lib/workspaceLayout";
 import {
   isCurrentSessionGeneration,
+  reconcileMessages,
+  RECONCILIATION_DELAYS_MS,
+  replaceTemporaryMessageId,
+  terminalMessage,
+  UNKNOWN_STREAM_OUTCOME,
 } from "@/lib/sessionMutation";
 import { performBoundUpload } from "@/lib/uploadSession";
 import { EditableSessionTitle } from "./EditableSessionTitle";
@@ -165,166 +163,25 @@ function pickDefaultModel(models: ModelEntry[]): string | null {
   );
 }
 
-function reconcileMessages(
-  previous: Message[],
-  fresh: Message[],
-  removeIds: ReadonlySet<string> = new Set(),
-): Message[] {
-  const previousById = new Map(previous.map((message) => [message.id, message]));
-  const byId = new Map<string, Message>(
-    fresh.map((message) => {
-      const existing = previousById.get(message.id);
-      if (
-        existing &&
-        existing.status !== "streaming" &&
-        message.status === "streaming"
-      ) {
-        return [message.id, existing] as [string, Message];
-      }
-      return [message.id, message] as [string, Message];
-    }),
-  );
-  for (const message of previous) {
-    if (!removeIds.has(message.id) && !byId.has(message.id)) {
-      byId.set(message.id, message);
-    }
-  }
-  return [...byId.values()].sort(
-    (left, right) =>
-      Date.parse(left.createdAt) - Date.parse(right.createdAt) ||
-      left.id.localeCompare(right.id),
-  );
-}
-
-function replaceTemporaryMessageId(
-  messages: Message[],
-  temporaryId: string,
-  durableId: string,
-): Message[] {
-  const temporary = messages.find((message) => message.id === temporaryId);
-  if (!temporary) return messages;
-  const durable = messages.find((message) => message.id === durableId);
-  const replacement =
-    durable?.role === "assistant" &&
-    durable.status === "streaming" &&
-    temporary.status !== "streaming"
-      ? { ...temporary, id: durableId }
-      : (durable ?? { ...temporary, id: durableId });
-  return [
-    ...messages.filter(
-      (message) => message.id !== temporaryId && message.id !== durableId,
-    ),
-    replacement,
-  ];
-}
-
-function terminalMessage(messages: Message[], id: string): boolean {
-  const message = messages.find((candidate) => candidate.id === id);
-  return Boolean(message && message.status !== "streaming");
-}
-
-const RECONCILIATION_DELAYS_MS = [250, 750, 1500] as const;
-const UNKNOWN_STREAM_OUTCOME =
-  "Outcome unknown; refresh or leave and reselect the conversation to reconcile.";
-
-function getProviderDefaultVoice(provider: VoiceProvider): string {
-  const voices = provider.capabilities.voices.options as readonly string[];
-  return provider.capabilities.voices.default ?? voices[0] ?? "";
-}
-
-function sanitizeSpeechPreferences(
-  speech: VoicePreferences["speech"],
-  provider: VoiceProvider | undefined,
-): VoicePreferences["speech"] {
-  const normalized = normalizeSpeechVoiceLiveSettings(speech);
-  const speechProvider = isSpeechVoiceProvider(provider) ? provider : undefined;
-  const voices: readonly string[] =
-    speechProvider?.capabilities.voices.options ?? [normalized.voice];
-  const locales: readonly string[] =
-    speechProvider?.capabilities.locale?.options ?? [normalized.locale];
-  const turnDetections: readonly SpeechVoiceLiveSettings["turnDetection"][] =
-    speechProvider?.capabilities.turnDetection.options ?? [normalized.turnDetection];
-  const noiseSuppression: readonly SpeechVoiceLiveSettings["noiseSuppression"][] =
-    speechProvider?.capabilities.noiseSuppression?.options ?? [normalized.noiseSuppression];
-  const echoCancellation: readonly SpeechVoiceLiveSettings["echoCancellation"][] =
-    speechProvider?.capabilities.echoCancellation?.options ?? [normalized.echoCancellation];
-  return {
-    ...normalized,
-    voice:
-      voices.includes(normalized.voice) && speechProvider
-        ? normalized.voice
-        : speechProvider
-          ? getProviderDefaultVoice(speechProvider)
-          : normalized.voice,
-    locale:
-      locales.includes(normalized.locale) && speechProvider
-        ? normalized.locale
-        : speechProvider?.capabilities.locale?.default ?? normalized.locale,
-    turnDetection:
-      turnDetections.includes(normalized.turnDetection) && speechProvider
-        ? normalized.turnDetection
-        : speechProvider?.capabilities.turnDetection.default ?? normalized.turnDetection,
-    noiseSuppression:
-      noiseSuppression.includes(normalized.noiseSuppression) && speechProvider
-        ? normalized.noiseSuppression
-        : speechProvider?.capabilities.noiseSuppression?.default ?? normalized.noiseSuppression,
-    echoCancellation:
-      echoCancellation.includes(normalized.echoCancellation) && speechProvider
-        ? normalized.echoCancellation
-        : speechProvider?.capabilities.echoCancellation?.default ?? normalized.echoCancellation,
-  };
-}
-
-function sanitizeVoicePreferencesForProviders(
-  prefs: VoicePreferences,
-  providers: VoiceProvider[],
-  realtimeModelIds: ReadonlySet<string>,
-  defaultRealtimeModelId: string | null,
-  voiceToolsAvailable: boolean,
-  defaultProviderId: VoicePreferences["provider"],
-  hasStoredPreferences: boolean,
-): VoicePreferences {
-  let provider = resolveEffectiveVoiceProvider(
-    prefs.provider,
-    providers.map((entry) => entry.id),
-    defaultProviderId,
-    hasStoredPreferences,
-  );
-  if (provider === "azure_openai" && realtimeModelIds.size === 0) {
-    provider =
-      (providers.find((entry) => entry.id === "speech_voice_live")?.id ??
-        provider) as VoicePreferences["provider"];
-  }
-  const speechProvider = providers.find(
-    (entry) => entry.id === "speech_voice_live",
-  );
-  const defaultModel = defaultRealtimeModelId ?? null;
-  const speechModelIds = isSpeechVoiceProvider(speechProvider)
-    ? new Set(speechProvider.managedModels.map((model) => model.id))
-    : new Set<string>();
-  const defaultSpeechModel = isSpeechVoiceProvider(speechProvider)
-    ? speechProvider.defaultManagedModelId
-    : DEFAULT_SPEECH_MODEL_ID;
-  return {
-    ...normalizeVoicePreferences(prefs),
-    provider,
-    model: resolveEffectiveModel(prefs.model, realtimeModelIds, defaultModel),
-    speechModel: speechModelIds.has(prefs.speechModel)
-      ? prefs.speechModel
-      : speechModelIds.has(defaultSpeechModel)
-        ? defaultSpeechModel
-        : [...speechModelIds][0] ?? DEFAULT_SPEECH_MODEL_ID,
-    voice: isRealtimeVoice(prefs.voice) ? prefs.voice : DEFAULT_VOICE_PREFERENCES.voice,
-    tools: voiceToolsAvailable && prefs.tools,
-    settings: normalizeVoiceSessionSettings(prefs.settings),
-    speech: sanitizeSpeechPreferences(prefs.speech, speechProvider),
-  };
-}
-
 function providerModelRegion(models: ModelEntry[], modelId: string | null): string | null {
   if (!modelId) return null;
   const model = models.find((entry) => entry.id === modelId);
   return model?.options[0]?.region ?? null;
+}
+
+function toggleStoredBoolean(
+  key: string,
+  setValue: (update: (previous: boolean) => boolean) => void,
+): void {
+  setValue((previous) => {
+    const next = !previous;
+    try {
+      localStorage.setItem(key, next ? "1" : "0");
+    } catch {
+      // Best-effort persistence.
+    }
+    return next;
+  });
 }
 
 export function ChatApp() {
@@ -2763,29 +2620,14 @@ export function ChatApp() {
     }
   }, []);
 
-  const toggleLeftCollapsed = useCallback(() => {
-    setLeftCollapsed((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem("ai4ia.leftCollapsed", next ? "1" : "0");
-      } catch {
-        // best-effort persistence
-      }
-      return next;
-    });
-  }, []);
-
-  const toggleRightCollapsed = useCallback(() => {
-    setRightCollapsed((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem("ai4ia.rightCollapsed", next ? "1" : "0");
-      } catch {
-        // best-effort persistence
-      }
-      return next;
-    });
-  }, []);
+  const toggleLeftCollapsed = useCallback(
+    () => toggleStoredBoolean("ai4ia.leftCollapsed", setLeftCollapsed),
+    [],
+  );
+  const toggleRightCollapsed = useCallback(
+    () => toggleStoredBoolean("ai4ia.rightCollapsed", setRightCollapsed),
+    [],
+  );
   const mobileSidebar = useMediaQuery(MOBILE_SIDEBAR_QUERY);
   const drawerInspector = useMediaQuery(MOBILE_INSPECTOR_QUERY);
   const mobileSidebarOpen = mobileSidebar && mobileDrawer === "sidebar";

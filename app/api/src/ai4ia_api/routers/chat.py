@@ -510,7 +510,7 @@ def _local_reply_response(
     *,
     user_message_id: str | None,
     assistant_persisted: bool = True,
-):
+) -> dict[str, object] | StreamingResponse:
     """Uniform response for a locally-produced reply (command / agent notice).
 
     Durable replies expose their row ids before content. Intentionally suppressed
@@ -535,17 +535,17 @@ def _local_reply_response(
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-async def _persist_local_reply(
+async def _local_reply(
     *,
     repo: SessionRepository,
     session: Session,
     user: AuthenticatedUser,
     user_content: str,
     reply: str,
+    stream: bool,
     agent: str | None = None,
-) -> tuple[Message, Message]:
-    """Persist a user echo + a local assistant reply (both excluded from model
-    context via ``fromCommand``) and return the assistant message."""
+) -> dict[str, object] | StreamingResponse:
+    """Persist and return a local command or agent-notice reply."""
     uid = user.internal_user_id
     user_message = Message(
         sessionId=session.id,
@@ -568,7 +568,12 @@ async def _persist_local_reply(
     )
     await repo.add_message(uid, assistant)
     await repo.touch_session(uid, session.id)
-    return user_message, assistant
+    return _local_reply_response(
+        session.id,
+        assistant,
+        stream,
+        user_message_id=user_message.id,
+    )
 
 
 # --- Capability-tool slash commands -------------------------------------------
@@ -828,32 +833,22 @@ async def chat(
             memory=memory,
             workflow_service=getattr(request.app.state, "workflow_service", None),
         ):
-            user_message, assistant = await _persist_local_reply(
+            return await _local_reply(
                 repo=repo,
                 session=session,
                 user=user,
                 user_content=parsed.raw,
                 reply=f"/{capability_tool} isn't enabled in this environment yet.",
-            )
-            return _local_reply_response(
-                body.sessionId,
-                assistant,
-                body.stream,
-                user_message_id=user_message.id,
+                stream=body.stream,
             )
         if not parsed.text:
-            user_message, assistant = await _persist_local_reply(
+            return await _local_reply(
                 repo=repo,
                 session=session,
                 user=user,
                 user_content=parsed.raw,
                 reply=_TOOL_COMMAND_USAGE[capability_tool],
-            )
-            return _local_reply_response(
-                body.sessionId,
-                assistant,
-                body.stream,
-                user_message_id=user_message.id,
+                stream=body.stream,
             )
         if capability_tool == RUN_WORKFLOW_TOOL_NAME:
             # A direct slash invocation should fail locally when there is nothing
@@ -868,7 +863,7 @@ async def chat(
                 registry=registry,
             )
             if not workflow_options:
-                user_message, assistant = await _persist_local_reply(
+                return await _local_reply(
                     repo=repo,
                     session=session,
                     user=user,
@@ -877,12 +872,7 @@ async def chat(
                         "No enabled saved workflow is eligible for chat. "
                         "Chat-invoked workflows may use only safe, read-only tools."
                     ),
-                )
-                return _local_reply_response(
-                    body.sessionId,
-                    assistant,
-                    body.stream,
-                    user_message_id=user_message.id,
+                    stream=body.stream,
                 )
         tool_agent = _ephemeral_tool_agent(capability_tool)
 
@@ -909,7 +899,7 @@ async def chat(
             agent = agents.get(selected_agent_name)
             if agent is None or not agent.enabled:
                 if parsed.agent is not None:
-                    user_message, assistant = await _persist_local_reply(
+                    return await _local_reply(
                         repo=repo,
                         session=session,
                         user=user,
@@ -918,12 +908,7 @@ async def chat(
                             f"Unknown agent: @{parsed.agent}. "
                             "Type /agents to see the agents you can mention."
                         ),
-                    )
-                    return _local_reply_response(
-                        body.sessionId,
-                        assistant,
-                        body.stream,
-                        user_message_id=user_message.id,
+                        stream=body.stream,
                     )
                 agent = None
 
@@ -978,7 +963,7 @@ async def chat(
     if agent is not None:
         content_for_model = parsed.text
         if not content_for_model:
-            user_message, assistant = await _persist_local_reply(
+            return await _local_reply(
                 repo=repo,
                 session=session,
                 user=user,
@@ -987,13 +972,8 @@ async def chat(
                     f"You mentioned @{agent.name} but didn't include a message. "
                     "What would you like to ask?"
                 ),
+                stream=body.stream,
                 agent=agent.name,
-            )
-            return _local_reply_response(
-                body.sessionId,
-                assistant,
-                body.stream,
-                user_message_id=user_message.id,
             )
         system_prompt = policy.instructions if tool_agent is None else agent.systemPrompt
         # Precedence: explicit body model > session's standing model > agent's
