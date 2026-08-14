@@ -4,7 +4,6 @@ import {
   useCallback,
   useEffect,
   useState,
-  useSyncExternalStore,
 } from "react";
 
 import {
@@ -17,48 +16,29 @@ import { useMediaQuery } from "./useMediaQuery";
 const MOBILE_SIDEBAR_QUERY = "(max-width: 720px)";
 const MOBILE_INSPECTOR_QUERY = "(max-width: 1050px)";
 
-type StoredBooleanSnapshot = "0" | "1" | "unavailable";
-
-function readStoredBoolean(key: string): StoredBooleanSnapshot {
-  try {
-    return localStorage.getItem(key) === "1" ? "1" : "0";
-  } catch {
-    return "unavailable";
-  }
-}
-
 function useStoredBoolean(key: string): readonly [boolean, () => void] {
-  const eventName = `ai4ia:storage:${key}`;
-  const subscribe = useCallback(
-    (listener: () => void) => {
-      const onStorage = (event: StorageEvent) => {
-        if (event.key === key) listener();
-      };
-      window.addEventListener("storage", onStorage);
-      window.addEventListener(eventName, listener);
-      return () => {
-        window.removeEventListener("storage", onStorage);
-        window.removeEventListener(eventName, listener);
-      };
-    },
-    [eventName, key],
-  );
-  const getSnapshot = useCallback(() => readStoredBoolean(key), [key]);
-  const snapshot = useSyncExternalStore(subscribe, getSnapshot, () => "0");
-  // A privacy mode may permit reading storage but reject writes. Preserve the
-  // current-session toggle behavior even when persistence is unavailable.
-  const [memoryOverride, setMemoryOverride] = useState<boolean | null>(null);
-  const value = memoryOverride ?? snapshot === "1";
+  const [value, setValue] = useState(false);
+  useEffect(() => {
+    let stored = false;
+    try {
+      stored = localStorage.getItem(key) === "1";
+    } catch {
+      // Keep the SSR-safe expanded default when storage is unavailable.
+    }
+    // Client-only hydration after SSR; reading storage during render would
+    // create a mismatch between the server and first browser paint.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setValue(stored);
+  }, [key]);
   const toggle = useCallback(() => {
     const next = !value;
+    setValue(next);
     try {
       localStorage.setItem(key, next ? "1" : "0");
-      setMemoryOverride(null);
-      window.dispatchEvent(new Event(eventName));
     } catch {
-      setMemoryOverride(next);
+      // The current session still toggles when persistence is unavailable.
     }
-  }, [eventName, key, value]);
+  }, [key, value]);
   return [value, toggle] as const;
 }
 
