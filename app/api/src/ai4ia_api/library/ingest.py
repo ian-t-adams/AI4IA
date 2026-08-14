@@ -115,6 +115,16 @@ class IngestResult:
     deduped: bool
 
 
+class EnrichmentNotEntitledError(RuntimeError):
+    """The owner lost access between admission and the outbound analyzer call.
+
+    Raised inside :meth:`DocumentIngestor.enrich` *before* any provider IO so a
+    disabled account cannot spend against a paid analyzer on work queued while
+    it was still active. Handled by the normal enrichment failure path, which
+    marks the document terminal and records the attempt as an error with
+    ``provider_completed=False`` — so nothing is metered as provider spend.
+    """
+
 class EnrichScheduleOutcome(str, Enum):
     scheduled = "scheduled"
     already_running = "already_running"
@@ -197,6 +207,7 @@ class DocumentIngestor:
         mistral_client=None,
         embedder: GatewayEmbedder | None = None,
         chunk_store: DocChunkStore | None = None,
+        entitlements=None,
     ) -> None:
         self._library = library
         self._blob = blob_store
@@ -206,6 +217,12 @@ class DocumentIngestor:
         self._mistral = mistral_client
         self._embedder = embedder
         self._chunks = chunk_store
+        # Entitlement checker, consulted again immediately before the outbound
+        # analyzer call. Enrichment is queued work: the upload that admitted it
+        # may have happened long before the provider is actually reached, so the
+        # admission-time check is not the authorization. ``None`` in tests and
+        # wherever entitlements are not wired, which leaves the prior behaviour.
+        self._entitlements = entitlements
         # In-flight enrich tasks keyed by (user_id, document_id) so a delete can
         # cancel the racing enrich and shutdown can drain them. Bounds the
         # delete-during-enrich resurrection window to near-zero; correctness does
@@ -217,6 +234,27 @@ class DocumentIngestor:
     @property
     def cu_enabled(self) -> bool:
         return self._cu is not None
+
+    async def _require_entitled(self, user_id: str) -> None:
+        """Re-check entitlement at execution time, immediately before provider IO.
+
+        Only a *disabled* account (403) blocks, mirroring the upload route's
+        ``_block_disabled``: rate and budget limits are admission-time concerns
+        and re-applying them here would fail work that was already accepted. A
+        checker failure is deliberately non-fatal — entitlements are not the
+        document pipeline's availability dependency — but a genuine denial is.
+        """
+        if self._entitlements is None:
+            return
+        try:
+            decision = await self._entitlements.check(user_id)
+        except Exception:  # noqa: BLE001 - never fail an enrich on checker trouble
+            logger.warning("entitlement re-check failed; allowing", exc_info=True)
+            return
+        if not decision.allowed and decision.code == 403:
+            raise EnrichmentNotEntitledError(
+                decision.reason or "account is not entitled to document analysis"
+            )
 
     # Read-only accessors so the retrieval consumer (11B-2) can share the SAME
     # backing IO instances the producer writes through. This matters for the
@@ -648,6 +686,7 @@ class DocumentIngestor:
         terminal_status: str | None = None
         persistence_outcome = "not_attempted"
         try:
+            await self._require_entitled(user_id)
             payload = data
             data = None
             if payload is None:
@@ -842,7 +881,18 @@ class DocumentIngestor:
                     provider=provider,
                     model_id=analysis_model,
                     deployment=analysis_deployment,
-                    pages=analysis_pages,
+                    # Billing pages, not display pages. Content Understanding
+                    # only charges for pages it actually metered; its
+                    # ``contents`` are timed segments for audio/video, so the
+                    # ``len(contents)`` fallback behind ``page_count`` would
+                    # invent chargeable units. Mistral's contents *are* pages,
+                    # so it keeps the display count.
+                    pages=(
+                        result.metered_page_count
+                        if provider is AnalyzerProvider.content_understanding
+                        and result is not None
+                        else analysis_pages
+                    ),
                     status=meter_status,
                     provider_completed=provider_completed,
                     model_usages=(

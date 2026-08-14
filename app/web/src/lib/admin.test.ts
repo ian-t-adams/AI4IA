@@ -8,7 +8,6 @@ import {
   errorLabel,
   formatCompact,
   formatPercent,
-  formatTokens,
   formatUsd,
   groupUserAgents,
   linePoints,
@@ -35,7 +34,7 @@ describe("canShowAdmin", () => {
   });
 });
 
-describe("formatCompact / formatTokens", () => {
+describe("formatCompact", () => {
   it("passes through small numbers", () => {
     expect(formatCompact(0)).toBe("0");
     expect(formatCompact(950)).toBe("950");
@@ -51,9 +50,9 @@ describe("formatCompact / formatTokens", () => {
     expect(formatCompact(150_000)).toBe("150K");
   });
   it("guards null / undefined / NaN", () => {
-    expect(formatTokens(null)).toBe("0");
-    expect(formatTokens(undefined)).toBe("0");
-    expect(formatTokens(NaN)).toBe("0");
+    expect(formatCompact(null)).toBe("0");
+    expect(formatCompact(undefined)).toBe("0");
+    expect(formatCompact(NaN)).toBe("0");
   });
 });
 

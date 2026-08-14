@@ -46,7 +46,5 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 output logAnalyticsId string = logAnalytics.id
 output logAnalyticsName string = logAnalytics.name
 output logAnalyticsCustomerId string = logAnalytics.properties.customerId
-output appInsightsId string = appInsights.id
-output appInsightsName string = appInsights.name
 @description('App Insights connection string (non-secret; safe to surface to apps).')
 output appInsightsConnectionString string = appInsights.properties.ConnectionString

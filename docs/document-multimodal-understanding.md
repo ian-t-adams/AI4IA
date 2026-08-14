@@ -156,7 +156,8 @@ terminal result. The automatic analyzer never silently switches to preview.
 Because the request waits, the synchronous path takes the *same* admission
 control as background enrichment — the shared pending cap and the four-way
 concurrency semaphore — so concurrent synchronous uploads cannot open unbounded
-concurrent CU calls. It waits only briefly for a slot (a user is holding the
+concurrent CU calls. It waits only briefly for a slot
+(`INLINE_ENRICH_ADMISSION_TIMEOUT_S`, because a user is holding the
 request open); if none frees up the upload settles as retryable rather than
 hanging. Deleting the document while its synchronous analyzer is still running
 returns **404**, and turning preview off while a preview-analyzed document is
@@ -190,6 +191,38 @@ Content Understanding **skill** (`2026-05-01-preview`). AI4IA does not use that
 indexer skill: it owns canonical Markdown, deterministic chunks, embeddings, and
 rebuild semantics in the API. This release therefore does not silently replace
 existing chunks or mix a second indexer into the canonical pipeline.
+
+### Analyzer-call guarantees
+
+Four properties hold for every outbound analyzer call, CU or Mistral:
+
+- **Entitlement is re-checked immediately before provider IO, not only at
+  upload.** Enrichment is queued work, so the account that was entitled when the
+  file was accepted may be disabled by the time the analyzer actually runs. A
+  disabled owner (403) aborts the crack before any bytes leave, and the attempt
+  is recorded with `provider_completed=false` so nothing is metered as spend.
+  Rate/budget limits (429) deliberately do **not** re-apply — they are admission
+  concerns, and re-applying them would fail work already accepted.
+- **Only pages the service metered are billed as pages.** Content Understanding
+  `contents` are timed segments for audio/video, so the display page-count
+  fallback is not a billing signal; CU page units come solely from its own
+  `documentPages*` meters. Mistral's contents *are* pages, so it keeps the count.
+- **`Canceled` is terminal.** A cancelled operation ends the poll loop with the
+  real outcome instead of being polled until the budget expires and reported as
+  a 408 timeout.
+- **`Retry-After` is honoured** when the service sends it, clamped to 30s per
+  sleep so one bad header cannot consume the whole poll budget.
+
+Read endpoints are deliberately **not** gated on entitlement. The disabled-account
+gate guards spend (upload, memory writes, analyzer creation); a document, its
+media timeline, and its evidence sidecar are already-paid output, and gating only
+some of them would break the evidence viewer without creating any real boundary.
+Ownership and sharing checks still apply to every read.
+
+`AI4IA_CU_BASE_URL` is validated at startup outside `local`: it must be `https`
+with no embedded credentials, query, or fragment. CU receives raw document bytes
+and a Cognitive Services token, so the endpoint is a confidentiality boundary
+rather than a connectivity setting.
 
 ## Sharing and privacy
 

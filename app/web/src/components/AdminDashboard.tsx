@@ -54,7 +54,6 @@ import {
   fetchWhoAmI,
   formatCompact,
   formatPercent,
-  formatTokens,
   formatUsd,
   groupUserAgents,
   linePoints,
@@ -253,9 +252,9 @@ function formatOperationalValue(
     const unknown = Number(row.unknownUsage ?? 0);
     if (requests > 0 && unknown >= requests && tokens === 0) return "Unknown";
     if (unknown > 0) {
-      return `Known subtotal ${formatTokens(tokens)} (${Math.max(0, requests - unknown)}/${requests} requests reported)`;
+      return `Known subtotal ${formatCompact(tokens)} (${Math.max(0, requests - unknown)}/${requests} requests reported)`;
     }
-    return formatTokens(tokens);
+    return formatCompact(tokens);
   }
   if (column === "knownCostUsd") {
     const cost = Number(row.knownCostUsd ?? 0);
@@ -295,7 +294,7 @@ function ModelBars({ items }: { items: ModelUsageBucket[] }) {
             />
           </div>
           <div style={{ width: 96, textAlign: "right", fontSize: "0.8em" }}>
-            {formatTokens(m.totalTokens)} · {formatUsd(m.costMicroUsd)}
+            {formatCompact(m.totalTokens)} · {formatUsd(m.costMicroUsd)}
           </div>
         </div>
       ))}
@@ -318,13 +317,13 @@ function DayTrend({ items }: { items: DayUsageBucket[] }) {
         height={H}
         preserveAspectRatio="none"
         role="img"
-        aria-label={`Tokens per day from ${items[0]?.day} to ${items[items.length - 1]?.day}; peak ${formatTokens(peak)} tokens per day`}
+        aria-label={`Tokens per day from ${items[0]?.day} to ${items[items.length - 1]?.day}; peak ${formatCompact(peak)} tokens per day`}
       >
         <polyline points={points} fill="none" stroke="var(--accent)" strokeWidth={2} />
       </svg>
       <div style={{ display: "flex", justifyContent: "space-between", ...muted }}>
         <span>{items[0]?.day}</span>
-        <span>peak {formatTokens(peak)} tok/day</span>
+        <span>peak {formatCompact(peak)} tok/day</span>
         <span>{items[items.length - 1]?.day}</span>
       </div>
     </div>
@@ -392,7 +391,7 @@ function TopUsers({ rows, identified }: { rows: AdminUserRow[]; identified: bool
             <td style={{ padding: "4px 8px" }}>
               <UserCell displayName={u.displayName} email={u.email} identified={identified} userId={u.userId} />
             </td>
-            <td style={{ padding: "4px 8px", textAlign: "right" }}>{formatTokens(u.totalTokens)}</td>
+            <td style={{ padding: "4px 8px", textAlign: "right" }}>{formatCompact(u.totalTokens)}</td>
             <td style={{ padding: "4px 8px", textAlign: "right" }}>
               {u.costKnown ? formatUsd(u.costMicroUsd) : "—"}
             </td>
@@ -425,7 +424,7 @@ function Agents({ items }: { items: AgentUsageBucket[] }) {
           <div key={a.agent} style={{ ...card, padding: "8px 12px" }}>
             <div style={{ fontWeight: 600 }}>{a.agent}</div>
             <div style={muted}>
-              {formatTokens(a.totalTokens)} tok · {a.requests} reqs · {a.users} users
+              {formatCompact(a.totalTokens)} tok · {a.requests} reqs · {a.users} users
               {errors ? (
                 <span style={{ color: "var(--danger)" }}> · {errors}</span>
               ) : null}
@@ -463,7 +462,7 @@ function UserAgents({ rows, identified }: { rows: UserAgentBucket[]; identified:
                   </td>
                 ) : null}
                 <td style={{ padding: "4px 8px" }}>{r.agent}</td>
-                <td style={{ padding: "4px 8px", textAlign: "right" }}>{formatTokens(r.totalTokens)}</td>
+                <td style={{ padding: "4px 8px", textAlign: "right" }}>{formatCompact(r.totalTokens)}</td>
                 <td style={{ padding: "4px 8px", textAlign: "right" }}>{r.requests}</td>
                 <td
                   style={{
@@ -962,15 +961,15 @@ export function AdminDashboard() {
                 s.totalTokens === 0
                 ? "Unknown"
                 : s.unknownUsageRequests > 0
-                  ? `Known subtotal ${formatTokens(s.totalTokens)}`
-                  : formatTokens(s.totalTokens)
+                  ? `Known subtotal ${formatCompact(s.totalTokens)}`
+                  : formatCompact(s.totalTokens)
               : "—"
           }
           sub={
             s
               ? s.unknownUsageRequests > 0
                 ? `${Math.max(0, s.totalRequests - s.unknownUsageRequests)}/${s.totalRequests} requests reported`
-                : `${formatTokens(s.totalPromptTokens)} in · ${formatTokens(s.totalCompletionTokens)} out`
+                : `${formatCompact(s.totalPromptTokens)} in · ${formatCompact(s.totalCompletionTokens)} out`
               : "Usage unavailable"
           }
         />

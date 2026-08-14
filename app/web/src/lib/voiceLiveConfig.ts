@@ -8,6 +8,7 @@
 // returns a disabled config and the browser never surfaces any live-voice UI, so
 // the app's default behavior is unchanged.
 import type { VoiceLiveConfig } from "./voiceLive";
+import { parseEnabledFlag } from "./envFlags";
 
 const DISABLED: VoiceLiveConfig = {
   enabled: false,
@@ -15,8 +16,6 @@ const DISABLED: VoiceLiveConfig = {
   devUser: "",
   toolsAvailable: false,
 };
-
-const TRUTHY = new Set(["1", "true", "yes", "on"]);
 
 // The browser opens the live-voice WebSocket directly against the API's external
 // ingress (the Next.js HTTP proxy can't proxy WebSockets), so we publish the API's
@@ -28,8 +27,8 @@ function toWsUrl(apiPublicUrl: string): string {
   return `${u}/api/voice/live`;
 }
 
-export function getVoiceLiveConfig(): VoiceLiveConfig {
-  const enabled = TRUTHY.has((process.env.VOICE_LIVE_ENABLED || "").toLowerCase());
+export function getVoiceLiveServerConfig(): VoiceLiveConfig {
+  const enabled = parseEnabledFlag(process.env.VOICE_LIVE_ENABLED);
   const apiPublicUrl = process.env.API_PUBLIC_URL || "";
   // Fail closed: a half-config (flag on but no public URL) stays disabled.
   if (!enabled || !apiPublicUrl) return DISABLED;
@@ -43,8 +42,6 @@ export function getVoiceLiveConfig(): VoiceLiveConfig {
     // Whether the API advertises governed tools for live sessions (mirrors the
     // API's AI4IA_REALTIME_TOOLS_ENABLED; infra emits both from one param). Default
     // OFF: when unset the panel never offers the tools opt-in.
-    toolsAvailable: TRUTHY.has(
-      (process.env.VOICE_LIVE_TOOLS_ENABLED || "").toLowerCase(),
-    ),
+    toolsAvailable: parseEnabledFlag(process.env.VOICE_LIVE_TOOLS_ENABLED),
   };
 }

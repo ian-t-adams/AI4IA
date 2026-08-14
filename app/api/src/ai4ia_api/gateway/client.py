@@ -609,6 +609,13 @@ class ModelGatewayClient:
         The proxy-facing deployment path exists only so SimpleL7Proxy can stamp
         the server-owned model header. APIM rewrites it to the provider OCR path
         and binds the regional failover deployment in ``model``.
+
+        The ``api-version`` below is inert: the generated APIM policy sets the
+        Mistral provider version with ``exists-action="override"``
+        (``infra/policies/simplel7proxy_backend_32.xml``), so the gateway owns it
+        and whatever the client sends is discarded. Do not read this value as the
+        version actually used, and do not "fix" a mismatch here — change the
+        policy generator instead.
         """
 
         url = (

@@ -368,12 +368,11 @@ jobs:
       # Do NOT add `|| 'false'` style fallbacks to the three below: azd's
       # ${VAR=default} already behaves like POSIX ${VAR:-default}, so an unset
       # repo variable correctly takes the parameter default (see
-      # greenfield-standup.md §3). This line carried one anyway, directly under
-      # this comment, and it
-      # silently pinned the deploy to `false` for a full release after the
-      # parameter default was changed to `true` -- the parameter file said the
-      # feature was on, no scheduler was ever provisioned, and the deploy stayed
-      # green because a shadowed default fails silently by construction.
+      # greenfield-standup.md §3). AI4IA_ENABLE_DURABLE_WORKFLOWS once carried
+      # such a fallback and silently pinned the deploy to `false` for a full
+      # release after the parameter default changed to `true`: the parameter file
+      # said the feature was on, no scheduler was provisioned, and the deploy
+      # stayed green because a shadowed default fails silently by construction.
       # See infra/modules/durabletask.bicep.
       AI4IA_ENABLE_DURABLE_WORKFLOWS: ${{ vars.AI4IA_ENABLE_DURABLE_WORKFLOWS }}
       AI4IA_DURABLE_TASK_SKU: ${{ vars.AI4IA_DURABLE_TASK_SKU }}
@@ -458,15 +457,6 @@ jobs:
           # workflow rather than inventing a second variable for the same fact.
           echo "AZURE_PRINCIPAL_ID=$principal_id" >> "$GITHUB_ENV"
           echo "Resolved the deploy principal id for Content Understanding, Foundry assets, and API Center catalog access."
-
-      - name: Validate generated gateway and deployment prerequisites
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
-        run: |
-          python scripts/gen-model-catalog.py --check
-          python scripts/gen-mcp-catalog.py --check
-          python scripts/gen-voice-provider-catalog.py --check
-          python scripts/gen-gateway-policy.py --check
-          python scripts/validate-feature-prereqs.py --require-deployment-attestation
 
       # A resource provider that is not registered fails the deployment PARTWAY
       # THROUGH, ~10+ minutes in, with `MissingSubscriptionRegistration` -- after

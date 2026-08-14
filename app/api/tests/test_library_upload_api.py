@@ -277,15 +277,6 @@ def test_sync_cu_upload_reports_404_when_deleted_mid_analysis():
         client.__exit__(None, None, None)
 
 
-def test_sync_cu_upload_obeys_the_shared_enrichment_admission_cap():
-    """Covered at the ingestor layer.
-
-    The global admission state is keyed by the running event loop, which the
-    HTTP test client owns per request, so the cap is exercised directly against
-    the ingestor in ``test_doc_ingest_delete_race.py``.
-    """
-
-
 def test_agentic_analyzer_remains_hidden_without_remote_id():
     client = _client(cu_preview_enabled=True)
     try:

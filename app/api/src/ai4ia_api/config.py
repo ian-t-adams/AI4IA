@@ -1150,6 +1150,31 @@ class Settings(BaseSettings):
         if (
             self.document_understanding_enabled
             and self.cu_base_url
+            and self.env != Environment.local
+        ):
+            # CU receives raw document bytes plus a Cognitive Services access
+            # token, so where that URL points is a confidentiality boundary, not
+            # just a connectivity setting. The check above only proved the value
+            # is non-empty: a typo'd or injected host would happily receive both.
+            # Validated syntactically (like the realtime/Voice Live URLs) rather
+            # than by resolving DNS, so startup keeps no network dependency and
+            # private-endpoint deployments still work.
+            cu_url = urlparse(self.cu_base_url)
+            if (
+                cu_url.scheme != "https"
+                or not cu_url.hostname
+                or cu_url.username
+                or cu_url.password
+                or cu_url.query
+                or cu_url.fragment
+            ):
+                raise RuntimeError(
+                    "AI4IA_CU_BASE_URL must be an https:// endpoint with no "
+                    "embedded credentials, query or fragment."
+                )
+        if (
+            self.document_understanding_enabled
+            and self.cu_base_url
             and self.cu_auth_mode == GatewayAuthMode.api_key
             and not self.cu_api_key
         ):

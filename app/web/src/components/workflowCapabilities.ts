@@ -20,6 +20,7 @@
 // report something (see `web_search` below) the chip says so rather than
 // inventing a verdict.
 
+import { isMcpToolName } from "@/lib/customTools";
 import { ATTACHABLE_TOOLS } from "@/lib/studio";
 import type { ToolCatalogItem } from "@/lib/types";
 
@@ -55,13 +56,6 @@ export const NOT_IN_WORKFLOW_STEPS = new Set([
   "run_workflow",
 ]);
 
-// MCP tools are namespaced `server/tool`. They are excluded for a different
-// reason than the set above: MCP *replaces* the registry/executor pair rather
-// than adding to it, so a workflow step never sees one.
-export function isMcpToolName(name: string): boolean {
-  return name.includes("/");
-}
-
 // The tools a *step* may add to itself, DERIVED rather than hand-listed: every
 // user-attachable tool, minus the ones that cannot work in a workflow step.
 //
@@ -75,7 +69,7 @@ export function isMcpToolName(name: string): boolean {
 // allowlist instead of two that can drift, and a step carrying a chat-only tool
 // already renders an explicit "chat only" chip rather than a silent no-op.
 export const STEP_ATTACHABLE_TOOLS: string[] = ATTACHABLE_TOOLS.filter(
-  (t) => !NOT_IN_WORKFLOW_STEPS.has(t) && !isMcpToolName(t),
+  (t) => !NOT_IN_WORKFLOW_STEPS.has(t),
 );
 
 const MEMORY_TOOLS: Record<string, string> = {

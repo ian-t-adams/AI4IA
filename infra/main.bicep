@@ -60,7 +60,7 @@ param budgetStartDate string = ''
 @description('Internal fallback: first of the current month. utcNow() is only valid in a parameter default, so it lives here and is used only when budgetStartDate is empty (greenfield budget creation). Do not set this.')
 param budgetStartDateCurrentMonth string = utcNow('yyyy-MM-01')
 
-@description('APIM publisher email for the shared active and rollback APIM front doors. Override per deployment.')
+@description('APIM publisher email for the shared active APIM front door. Override per deployment.')
 param apimPublisherEmail string = 'ai4ia@example.com'
 
 @description('Opt-in: provision curated "official" MCP backends/APIs/policies/subscription on the shared active Basic v2 APIM (infra/modules/mcpgateway.bicep), so MCP traffic is gated on an APIM subscription key. The param DEFAULT is false (a fresh consumer of this template provisions no MCP APIs); this repo sets it true in main.parameters.json to front the Foundry toolbox. The shared Basic v2 APIM is created/adopted unconditionally because model and realtime traffic also require it.')

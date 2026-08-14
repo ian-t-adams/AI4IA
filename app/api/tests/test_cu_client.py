@@ -452,3 +452,202 @@ async def test_submit_binary_rejects_invalid_analyzer_id_before_any_request():
         client = ContentUnderstandingClient(_settings(), http_client=http)
         with pytest.raises(ValueError, match="invalid content understanding analyzer id"):
             await client.submit_binary("foo\n", b"x", "application/pdf")
+
+async def test_canceled_operation_is_terminal_not_a_poll_timeout():
+    """A ``Canceled`` operation must end the poll loop with the real outcome.
+
+    Before this, only ``succeeded``/``failed`` were terminal, so a cancelled
+    operation was polled until ``cu_max_poll_seconds`` ran out and surfaced as a
+    408 "timed out" -- reporting the wrong cause and burning the whole budget.
+    """
+    polls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal polls
+        if request.method == "POST":
+            return httpx.Response(202, headers={"operation-location": _OP_URL})
+        polls += 1
+        return httpx.Response(200, json={"status": "Canceled", "result": {}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = ContentUnderstandingClient(_settings(), http_client=http)
+        result = await client.analyze(
+            "prebuilt-read", b"x", "application/pdf", sleep=_noop_sleep
+        )
+
+    # Terminal on the FIRST poll, and reported as a non-success -- not a 408.
+    assert polls == 1
+    assert result.succeeded is False
+    assert result.status.lower() == "canceled"
+
+
+async def test_running_operation_still_polls_and_can_time_out():
+    """Control for the test above.
+
+    Proves the loop genuinely keeps polling a non-terminal status, so the
+    ``Canceled`` assertion above is about terminality and not about the loop
+    exiting for every status.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, headers={"operation-location": _OP_URL})
+        return httpx.Response(200, json={"status": "Running"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = ContentUnderstandingClient(
+            _settings(cu_max_poll_seconds=0.0), http_client=http
+        )
+        with pytest.raises(ContentUnderstandingError) as excinfo:
+            await client.analyze(
+                "prebuilt-read", b"x", "application/pdf", sleep=_noop_sleep
+            )
+
+    assert excinfo.value.status_code == 408
+
+
+async def test_poll_honours_retry_after_over_the_configured_interval():
+    slept: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    state = {"polls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, headers={"operation-location": _OP_URL})
+        state["polls"] += 1
+        if state["polls"] == 1:
+            return httpx.Response(
+                200, json={"status": "Running"}, headers={"retry-after": "7"}
+            )
+        return httpx.Response(
+            200,
+            json={"status": "Succeeded", "result": {"contents": [{"markdown": "x"}]}},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = ContentUnderstandingClient(_settings(), http_client=http)
+        result = await client.analyze(
+            "prebuilt-read", b"x", "application/pdf", sleep=record_sleep
+        )
+
+    assert result.succeeded is True
+    # cu_poll_interval_seconds is 0.0, so a 7s sleep can only have come from the
+    # provider's Retry-After header.
+    assert slept == [7.0]
+
+
+async def test_absurd_retry_after_is_clamped():
+    slept: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    state = {"polls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, headers={"operation-location": _OP_URL})
+        state["polls"] += 1
+        if state["polls"] == 1:
+            return httpx.Response(
+                200, json={"status": "Running"}, headers={"retry-after": "86400"}
+            )
+        return httpx.Response(
+            200,
+            json={"status": "Succeeded", "result": {"contents": [{"markdown": "x"}]}},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = ContentUnderstandingClient(_settings(), http_client=http)
+        await client.analyze(
+            "prebuilt-read", b"x", "application/pdf", sleep=record_sleep
+        )
+
+    # Clamped to the cap rather than stalling for a day.
+    assert slept == [30.0]
+
+
+async def test_poll_without_retry_after_uses_the_configured_interval():
+    """Control: no header => the configured interval, so the two tests above
+    are demonstrably reading the header and not a constant."""
+    slept: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    state = {"polls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, headers={"operation-location": _OP_URL})
+        state["polls"] += 1
+        if state["polls"] == 1:
+            return httpx.Response(200, json={"status": "Running"})
+        return httpx.Response(
+            200,
+            json={"status": "Succeeded", "result": {"contents": [{"markdown": "x"}]}},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = ContentUnderstandingClient(
+            _settings(cu_poll_interval_seconds=1.5), http_client=http
+        )
+        await client.analyze(
+            "prebuilt-read", b"x", "application/pdf", sleep=record_sleep
+        )
+
+    assert slept == [1.5]
+
+# --- billing-signal invariant ---------------------------------------------------
+
+
+def test_metered_page_count_and_page_usage_by_meter_stay_in_lockstep():
+    """The two CU page signals must agree on *whether* pages were metered.
+
+    ``_meter_analysis`` bills per-meter when ``page_usage_by_meter()`` is
+    non-empty and otherwise falls back to the ``pages`` argument, which is fed
+    ``metered_page_count`` for CU. If those two ever disagree, CU either bills
+    twice or silently stops billing pages, and no end-to-end test can see it
+    because whichever branch is taken looks locally correct. Pin the coupling
+    here rather than relying on both reading the same private dict.
+    """
+    from ai4ia_api.content_understanding.models import CUResult
+
+    def result(usage: dict, contents: int = 3) -> CUResult:
+        return CUResult(
+            status="Succeeded",
+            analyzer_id="a",
+            markdown="x",
+            contents=[{"markdown": "c"} for _ in range(contents)],
+            usage=usage,
+        )
+
+    cases = [
+        {},                                     # no usage at all
+        {"documentPagesBasic": 0},              # zero-filled meter
+        {"documentPagesBasic": 2},              # a real meter
+        {"documentPagesBasicInline": 1},        # the synchronous variant
+        {"documentPagesBasic": 0, "documentPagesStandard": 4},  # mixed
+        {"audioSeconds": 90},                   # non-page analyzer
+        {"documentPagesBasic": True},           # bool is not a page count
+    ]
+    saw_metered = False
+    saw_unmetered = False
+    for usage in cases:
+        r = result(usage)
+        metered = r.metered_page_count
+        by_meter = r.page_usage_by_meter()
+        assert (metered is None) == (not by_meter), (
+            f"usage={usage!r}: metered_page_count={metered!r} disagrees with "
+            f"page_usage_by_meter()={by_meter!r}"
+        )
+        if metered is None:
+            saw_unmetered = True
+        else:
+            saw_metered = True
+            assert metered == sum(by_meter.values())
+    # Non-vacuity: the loop must have exercised both sides of the invariant.
+    assert saw_metered and saw_unmetered

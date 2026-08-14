@@ -205,7 +205,7 @@ installs:
 
 ```powershell
 python -m pip install --upgrade pip
-pip install -e ".[dev]"
+pip install -e ".[dev,foundry]"
 ```
 
 Then it runs catalog drift checks from the repo root:
@@ -375,6 +375,7 @@ python scripts/provision-foundry-a2a.py --check
 python scripts/validate-catalog.py
 python scripts/gen-gateway-policy.py --check
 python -m unittest scripts.tests.test_gateway_policy
+python -m unittest scripts.tests.test_policy_json_shape
 python scripts/gen-voice-provider-catalog.py --check
 python -m unittest scripts.tests.test_voice_provider_catalog
 python scripts/validate-feature-prereqs.py
@@ -427,6 +428,7 @@ python3 -m unittest scripts.tests.test_documentation_truth      # governance/Fou
 python3 -m unittest scripts.tests.test_base_image_pins          # base images CI builds must be digest-pinned
 python3 -m unittest scripts.tests.test_immutable_image_promotion # legacy filename; content-addressed exact-digest deployment
 python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name azd vars a deploy can actually read
+python3 -m unittest scripts.tests.test_foundry_assets_workflow # Foundry handoff remains artifact-scoped and commit-bound
 ```
 
 `test_custom_domain_preflight`, `test_pages_status_refresh`,
@@ -605,7 +607,8 @@ re-testing the old one.
 
 3. Update docs if the model changes a user-visible capability, provider protocol, legal prerequisite, safety posture, or region posture. Never type deployment names directly into app code.
 4. A new provider protocol needs a tested adapter in `app/api/src/ai4ia_api/gateway`, generated APIM routing/auth changes, non-streaming plus SSE tool-call controls, and an end-to-end agent-loop test. A catalog row alone is not a working integration.
-5. Anthropic deployments additionally require explicit `modelProviderData` and the default-off `AI4IA_CLAUDE_ENABLED` gate. Never infer the legal entity, country, or industry from tags; `validate-feature-prereqs.py` must fail before provision when Claude is enabled and the attestation is missing or placeholder-shaped. With the gate off, Bicep and the API catalog must both omit Claude.
+5. **The model's `category` must be in `ROUTABLE_CATEGORIES` in `scripts/gen-gateway-policy.py`.** `provider_path` falls back to `"openai"` for any unrecognised `api`, so a category with no served surface silently gets a plausible-looking OpenAI route that can only 404. `Cohere-rerank-v4.0-pro` shipped that way — deployed in two regions, emitted into the APIM catalog, billed, and unreachable, because rerank is served only by Cohere's own rerank API. Generation now fails instead of inventing a route; adding a category to the allowlist without giving it a real provider path just moves the failure later. See `docs/region-capability-matrix.md` for the removal and the re-add procedure.
+6. Anthropic deployments additionally require explicit `modelProviderData` and the default-off `AI4IA_CLAUDE_ENABLED` gate. Never infer the legal entity, country, or industry from tags; `validate-feature-prereqs.py` must fail before provision when Claude is enabled and the attestation is missing or placeholder-shaped. With the gate off, Bicep and the API catalog must both omit Claude.
 
 Model deployment `capacity` is the portable baseline. Optional `maxCapacity`
 values are subscription-specific output from `scripts/sync-model-capacity.py`;

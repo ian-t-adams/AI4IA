@@ -13,8 +13,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # Terminal CU operation states (case-insensitive). ``Running``/``NotStarted`` mean
-# keep polling.
-TERMINAL_STATES = frozenset({"succeeded", "failed"})
+# keep polling. ``Canceled`` is terminal too and is spelled with one "l" by Azure;
+# both spellings are accepted so a service-side change cannot silently turn a
+# finished operation back into "poll until the budget runs out and report 408",
+# which hid the real outcome behind a timeout.
+TERMINAL_STATES = frozenset({"succeeded", "failed", "canceled", "cancelled"})
 CU_GA_API_VERSION = "2025-11-01"
 CU_PREVIEW_API_VERSION = "2026-06-01-preview"
 CU_SYNC_MAX_BYTES = 10 * 1024 * 1024
@@ -84,6 +87,32 @@ class CUResult:
         if saw_page_meter:
             return int(ceil(page_total))
         return len(self.contents) or None
+
+    @property
+    def metered_page_count(self) -> int | None:
+        """Pages the *service* billed, or ``None`` when it billed none.
+
+        Deliberately narrower than :attr:`page_count`, which must keep the
+        ``len(contents)`` fallback for providers that emit no page meters at all
+        (Mistral OCR returns one content per page). That fallback is wrong as a
+        *billing* signal for Content Understanding, whose contents are timed
+        segments for audio/video: if a CU response ever omits the
+        ``documentPages*`` keys instead of zero-filling them, billing the
+        fallback would invent chargeable units the service never metered.
+        Anything that writes ``billing_unit="page"`` for CU reads this.
+        """
+        total = 0.0
+        seen = False
+        for key in _PAGE_USAGE_METERS:
+            value = self.usage.get(key)
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and value > 0
+            ):
+                total += float(value)
+                seen = True
+        return int(ceil(total)) if seen else None
 
     def contextualization_tokens_by_tier(self) -> dict[str, int]:
         """Contextualization tokens keyed by the priced model id, per tier.

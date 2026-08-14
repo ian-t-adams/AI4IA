@@ -90,7 +90,8 @@ class _BlockingCU:
         return CUResult(status="Succeeded", analyzer_id="a", markdown="# x\n\nbody")
 
 
-def _build(*, cu, embedder=None, chunks=None, library=None, blob=None, usage=None, **over):
+def _build(*, cu, embedder=None, chunks=None, library=None, blob=None, usage=None,
+           entitlements=None, **over):
     settings = make_settings(
         document_understanding_enabled=True,
         document_chunk_chars=40,
@@ -105,6 +106,7 @@ def _build(*, cu, embedder=None, chunks=None, library=None, blob=None, usage=Non
         cu_client=cu,
         embedder=embedder,
         chunk_store=chunks,
+        entitlements=entitlements,
     )
 
 
@@ -783,3 +785,283 @@ async def test_inline_enrich_is_cancellable_like_a_scheduled_crack():
 
     await ingestor.cancel_enrich("u1", stored.document.id)
     await asyncio.wait_for(inline, timeout=5)
+
+# --- entitlement is re-checked at execution time, not only at admission ---------
+#
+# Enrichment is queued work: the upload that admitted it can be minutes or hours
+# ahead of the outbound analyzer call. These two tests are a matched pair -- the
+# "denied" assertion is only meaningful because the "allowed" control proves the
+# very same fixture really does reach the provider.
+
+
+class _CountingCU(_CU):
+    """A CU fake that records whether the provider was actually reached."""
+
+    def __init__(self, markdown: str = "# ok\n\nbody") -> None:
+        super().__init__(markdown)
+        self.calls = 0
+
+    async def analyze(self, analyzer_id, data, content_type, *, api_version=None):
+        self.calls += 1
+        return await super().analyze(
+            analyzer_id, data, content_type, api_version=api_version
+        )
+
+
+class _Decision:
+    def __init__(self, allowed: bool, code: int | None = None) -> None:
+        self.allowed = allowed
+        self.code = code
+        self.reason = "account disabled" if not allowed else None
+
+
+class _Entitlements:
+    def __init__(self, decision: _Decision) -> None:
+        self._decision = decision
+        self.checked: list[str] = []
+
+    async def check(self, user_id: str) -> _Decision:
+        self.checked.append(user_id)
+        return self._decision
+
+
+async def _seed_and_enrich(ingestor, library):
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"X"
+    )
+    doc_id = stored.document.id
+    await ingestor.enrich(
+        user_id="u1",
+        document_id=doc_id,
+        data=b"X",
+        content_type="application/pdf",
+    )
+    return doc_id
+
+
+async def test_enrich_reaches_the_provider_when_the_owner_is_entitled():
+    """Control for the denial test below.
+
+    Without this, "the provider was not called" could be true simply because the
+    fixture never reaches the provider at all -- an absence assertion over a code
+    path that never ran is indistinguishable from a working guard.
+    """
+    library = InMemoryDocumentLibraryRepository()
+    cu = _CountingCU()
+    entitlements = _Entitlements(_Decision(allowed=True))
+    ingestor = _build(cu=cu, library=library, entitlements=entitlements)
+
+    doc_id = await _seed_and_enrich(ingestor, library)
+
+    assert entitlements.checked == ["u1"]
+    assert cu.calls == 1
+    doc = await library.get_document("u1", doc_id)
+    assert doc.status == DocumentStatus.ready
+
+
+async def test_enrich_is_gated_before_any_provider_io_when_owner_is_disabled():
+    """A disabled owner must not spend against a paid analyzer.
+
+    The account is entitled at upload and disabled before the queued crack runs,
+    which is exactly the window the admission-time check cannot cover.
+    """
+    library = InMemoryDocumentLibraryRepository()
+    cu = _CountingCU()
+    usage = _Usage()
+    entitlements = _Entitlements(_Decision(allowed=False, code=403))
+    ingestor = _build(
+        cu=cu, library=library, usage=usage, entitlements=entitlements
+    )
+
+    doc_id = await _seed_and_enrich(ingestor, library)
+
+    # The gate ran, and it ran BEFORE the provider.
+    assert entitlements.checked == ["u1"]
+    assert cu.calls == 0
+    doc = await library.get_document("u1", doc_id)
+    assert doc.status == DocumentStatus.failed
+    # Nothing may be metered as provider spend for a call that never happened.
+    assert all(
+        call.get("provider_completed") is not True for call in usage.calls
+    ), usage.calls
+
+
+async def test_rate_limited_owner_is_not_blocked_from_enrichment():
+    """Only a 403 blocks. A 429 is an admission-time concern; re-applying it
+    here would fail work the system already accepted."""
+    library = InMemoryDocumentLibraryRepository()
+    cu = _CountingCU()
+    entitlements = _Entitlements(_Decision(allowed=False, code=429))
+    ingestor = _build(cu=cu, library=library, entitlements=entitlements)
+
+    doc_id = await _seed_and_enrich(ingestor, library)
+
+    assert cu.calls == 1
+    doc = await library.get_document("u1", doc_id)
+    assert doc.status == DocumentStatus.ready
+
+# --- CU must never bill pages the service did not meter -------------------------
+
+
+class _UsageMeteringCU:
+    """CU fake returning a caller-supplied usage envelope."""
+
+    def __init__(self, usage: dict, contents: list[dict] | None = None) -> None:
+        self._usage = usage
+        self._contents = contents if contents is not None else [{"markdown": "# x"}]
+
+    async def analyze(self, analyzer_id, data, content_type, *, api_version=None):
+        return CUResult(
+            status="Succeeded",
+            analyzer_id="prebuilt-documentSearch",
+            markdown="# x",
+            contents=self._contents,
+            usage=self._usage,
+        )
+
+
+def _page_billed(usage: _Usage) -> list[int]:
+    return [
+        call["billable_units"]
+        for call in usage.calls
+        if call.get("billing_unit") == "page"
+    ]
+
+
+async def test_cu_bills_pages_the_service_actually_metered():
+    """Control: an explicit ``documentPages*`` meter is billed as pages."""
+    usage = _Usage()
+    cu = _UsageMeteringCU({"documentPagesBasic": 3})
+    ingestor = _build(cu=cu, usage=usage)
+    await _seed_and_enrich(ingestor, ingestor.library)
+
+    assert _page_billed(usage) == [3]
+
+
+async def test_cu_segments_are_not_billed_as_pages():
+    """An audio/video analyzer reports no page meter, and its ``contents`` are
+    timed segments. Billing ``len(contents)`` as pages invents chargeable units
+    the service never metered -- so the page ledger must stay empty."""
+    usage = _Usage()
+    cu = _UsageMeteringCU(
+        {"audioSeconds": 42},
+        contents=[{"markdown": "seg1"}, {"markdown": "seg2"}, {"markdown": "seg3"}],
+    )
+    ingestor = _build(cu=cu, usage=usage)
+    await _seed_and_enrich(ingestor, ingestor.library)
+
+    assert _page_billed(usage) == []
+
+# --- the inline (synchronous-analyzer) wait must be bounded ---------------------
+
+
+class _GateFillingCU:
+    """Parks in ``analyze`` until released, to hold concurrency-gate slots."""
+
+    def __init__(self) -> None:
+        self.at_limit = asyncio.Event()
+        self.release = asyncio.Event()
+        self.active = 0
+
+    async def analyze(self, analyzer_id, data, content_type, *, api_version=None):
+        self.active += 1
+        if self.active >= MAX_CONCURRENT_DOCUMENT_ENRICHMENTS:
+            self.at_limit.set()
+        try:
+            await self.release.wait()
+            return CUResult(status="Succeeded", analyzer_id="a", markdown="# ready")
+        finally:
+            self.active -= 1
+
+
+async def _fill_the_gate(cu):
+    """Occupy every concurrency slot with background cracks."""
+    holder = _build(cu=cu)
+    for index in range(MAX_CONCURRENT_DOCUMENT_ENRICHMENTS):
+        stored = await holder.ingest(
+            user_id=f"hold{index}",
+            filename=f"{index}.txt",
+            content_type="text/plain",
+            data=f"hold-{index}".encode(),
+        )
+        assert holder.schedule_enrich(
+            user_id=f"hold{index}",
+            document_id=stored.document.id,
+            content_type="text/plain",
+        ) is EnrichScheduleOutcome.scheduled
+    await asyncio.wait_for(cu.at_limit.wait(), timeout=5)
+    return holder
+
+
+async def test_inline_enrich_does_not_stall_the_request_on_a_contended_gate(
+    monkeypatch,
+):
+    """A contended gate must return a backpressure signal, not hang the upload.
+
+    The concurrency gate is shared with asynchronous cracks that hold a slot for
+    the whole poll budget, while the *pending*-cap 503 only fires at eight times
+    the gate width. Waiting on the gate unbounded is therefore not backpressure:
+    the request stalls until the ingress kills it, and the detached task later
+    marks the document ready after the user was already told it failed. The
+    inline path bounds the wait and reports ``saturated``, which the router
+    settles as a retryable 503.
+    """
+    monkeypatch.setattr(
+        "ai4ia_api.library.ingest.INLINE_ENRICH_ADMISSION_TIMEOUT_S", 0.25
+    )
+    cu = _GateFillingCU()
+    holder = await _fill_the_gate(cu)
+    try:
+        inline = _build(cu=cu)
+        stored = await inline.ingest(
+            user_id="u1", filename="d.txt", content_type="text/plain", data=b"X"
+        )
+        started = asyncio.get_running_loop().time()
+        outcome = await asyncio.wait_for(
+            inline.enrich_inline(
+                user_id="u1",
+                document_id=stored.document.id,
+                data=b"X",
+                content_type="text/plain",
+            ),
+            timeout=5,
+        )
+        waited = asyncio.get_running_loop().time() - started
+
+        # Bounded, and an explicit backpressure signal rather than a silent wait.
+        assert outcome is EnrichScheduleOutcome.saturated
+        assert waited < 2.0, f"inline wait was {waited:.2f}s"
+        # No provider call was made, so the upload is still retryable rather than
+        # being reported as analyzed.
+        doc = await inline.library.get_document("u1", stored.document.id)
+        assert doc.status is DocumentStatus.stored
+    finally:
+        cu.release.set()
+        await asyncio.wait_for(
+            asyncio.gather(*holder._tasks.values(), return_exceptions=True),
+            timeout=5,
+        )
+
+
+async def test_inline_enrich_still_completes_in_request_when_the_gate_is_free():
+    """Control: with slots available the synchronous analyzer really does make
+    the upload terminal in-request, so the test above is about contention and
+    not about ``enrich_inline`` always returning early."""
+    library = InMemoryDocumentLibraryRepository()
+    cu = _CU("# T\n\nbody")
+    inline = _build(cu=cu, library=library, cu_timeout_seconds=5.0)
+    stored = await inline.ingest(
+        user_id="u1", filename="d.txt", content_type="text/plain", data=b"X"
+    )
+    outcome = await asyncio.wait_for(
+        inline.enrich_inline(
+            user_id="u1",
+            document_id=stored.document.id,
+            data=b"X",
+            content_type="text/plain",
+        ),
+        timeout=5,
+    )
+    assert outcome is EnrichScheduleOutcome.scheduled
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc.status == DocumentStatus.ready

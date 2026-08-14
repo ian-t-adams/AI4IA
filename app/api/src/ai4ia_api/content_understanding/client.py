@@ -28,7 +28,7 @@ from typing import Any, Protocol
 import httpx
 
 from ..config import GatewayAuthMode, Settings
-from ..http_retry import request_with_retry
+from ..http_retry import parse_retry_after, request_with_retry
 from .models import (
     CU_PREVIEW_API_VERSION,
     TERMINAL_STATES,
@@ -42,6 +42,17 @@ logger = logging.getLogger(__name__)
 # AAD scope for an Azure AI Services / Cognitive Services access token.
 _CS_SCOPE = "https://cognitiveservices.azure.com/.default"
 _TOKEN_REFRESH_MARGIN_S = 300
+# Upper bound on a single honoured ``Retry-After`` sleep. The overall poll budget
+# still applies; this only stops one absurd header from consuming it in one go.
+_MAX_RETRY_AFTER_S = 30.0
+
+
+def _retry_after_seconds(resp: httpx.Response) -> float | None:
+    """The ``Retry-After`` delay on ``resp`` in seconds, or ``None`` if absent."""
+    raw = resp.headers.get("retry-after")
+    if not raw:
+        return None
+    return parse_retry_after(raw)
 
 
 class CUTokenProvider(Protocol):
@@ -223,7 +234,7 @@ class ContentUnderstandingClient:
 
     async def _poll_once(
         self, client: httpx.AsyncClient, operation_url: str
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], float | None]:
         headers = await self._auth_headers()
         resp = await request_with_retry(
             lambda: client.get(operation_url, headers=headers),
@@ -234,7 +245,7 @@ class ContentUnderstandingClient:
             raise ContentUnderstandingError(
                 resp.status_code, _http_error_detail(resp)
             )
-        return resp.json()
+        return resp.json(), _retry_after_seconds(resp)
 
     async def submit_binary(
         self,
@@ -257,7 +268,8 @@ class ContentUnderstandingClient:
     async def poll_once(self, operation_url: str) -> dict[str, Any]:
         client, owned = self._client()
         try:
-            return await self._poll_once(client, operation_url)
+            body, _ = await self._poll_once(client, operation_url)
+            return body
         finally:
             if owned:
                 await client.aclose()
@@ -346,7 +358,7 @@ class ContentUnderstandingClient:
             )
             deadline = time.monotonic() + self._max_poll
             while True:
-                body = await self._poll_once(client, operation_url)
+                body, retry_after = await self._poll_once(client, operation_url)
                 status = str(body.get("status", "")).lower()
                 if status in TERMINAL_STATES:
                     return parse_result(body)
@@ -354,7 +366,14 @@ class ContentUnderstandingClient:
                     raise ContentUnderstandingError(
                         408, "content understanding analyze timed out"
                     )
-                await sleep(self._poll_interval)
+                # Honour the service's own pacing when it asks for it. Polling
+                # faster than Retry-After is what earns a 429 on a busy analyzer;
+                # the value is clamped so a hostile or fat-fingered header cannot
+                # stall a request for the whole poll budget in one sleep.
+                delay = self._poll_interval
+                if retry_after is not None:
+                    delay = max(delay, min(retry_after, _MAX_RETRY_AFTER_S))
+                await sleep(delay)
         finally:
             if owned:
                 await client.aclose()

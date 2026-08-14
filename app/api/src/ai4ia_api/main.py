@@ -259,6 +259,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             gateway=app.state.gateway,
             catalog=app.state.catalog,
             usage=app.state.usage,
+            entitlements=app.state.entitlements,
         )
         # Recover only STALE ``analyzing`` rows left by a lost enrich task. A
         # fresh row may still belong to another healthy replica during rolling

@@ -451,3 +451,28 @@ def test_reasoning_effort_survives_the_gateway_normalizer():
         assert kept.get("reasoning_effort") == effort, entry.id
         checked += 1
     assert checked >= 10, f"expected the reasoning models, saw {checked}"
+
+def test_every_builtin_mistral_analyzer_resolves_in_the_model_catalog():
+    """A builtin analyzer names a catalog model by id, so the two can drift.
+
+    ``infra/models.json`` is the source of truth for what is deployed, but the
+    Mistral analyzers hardcode their ``modelId``. Removing or renaming a
+    ``document-ocr`` entry there would leave the analyzer advertised in the UI
+    and failing only at upload time, per user, with a provider error. This
+    binds them: drop the catalog model and the build fails instead.
+    """
+    from ai4ia_api.library.models import BUILTIN_ANALYZERS, AnalyzerProvider
+
+    catalog = load_catalog()
+    mistral = [
+        analyzer
+        for analyzer in BUILTIN_ANALYZERS
+        if analyzer.provider is AnalyzerProvider.mistral
+    ]
+    # Control: the loop below is meaningless if it iterates nothing.
+    assert mistral, "expected at least one builtin Mistral analyzer"
+    for analyzer in mistral:
+        assert catalog.resolve_deployment(analyzer.modelId) is not None, (
+            f"builtin analyzer {analyzer.id!r} names model {analyzer.modelId!r}, "
+            "which has no deployment in the model catalog"
+        )

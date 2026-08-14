@@ -10,19 +10,13 @@
 // wrap it in an object URL (which also gives client-side seeking for free).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchLibraryMedia, fetchLibraryTimeline } from "@/lib/api";
+import { msToTimecode } from "@/lib/citations";
 import type {
   LibraryDocument,
   MediaTimeline,
   MediaTimelineSegment,
 } from "@/lib/library";
 import { useModalFocus, useModalKeyDown } from "./useModalFocus";
-
-function formatTimecode(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
 
 // Flatten a timeline into a sorted, de-duplicated list of seekable markers. Camera
 // shots and keyframes are distinct kinds so the strip can label them, but both are
@@ -282,10 +276,10 @@ export function MediaPlayer({
                 <button
                   key={`${m.kind}-${m.ms}`}
                   onClick={() => seek(m.ms)}
-                  aria-label={`Jump to ${formatTimecode(m.ms)} (${
+                  aria-label={`Jump to ${msToTimecode(m.ms)} (${
                     m.kind === "shot" ? "camera shot" : "keyframe"
                   })`}
-                  title={`Jump to ${formatTimecode(m.ms)} (${
+                  title={`Jump to ${msToTimecode(m.ms)} (${
                     m.kind === "shot" ? "camera shot" : "keyframe"
                   })`}
                   style={{
@@ -300,7 +294,7 @@ export function MediaPlayer({
                     fontVariantNumeric: "tabular-nums",
                   }}
                 >
-                  {m.kind === "shot" ? "🎞" : "🖼"} {formatTimecode(m.ms)}
+                  {m.kind === "shot" ? "🎞" : "🖼"} {msToTimecode(m.ms)}
                 </button>
               ))}
             </div>

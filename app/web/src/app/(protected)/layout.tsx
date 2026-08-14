@@ -5,7 +5,7 @@ import { VoiceLiveProvider } from "@/components/VoiceLiveProvider";
 import { getAuthConfig } from "@/lib/authConfig";
 import { getCustomToolsConfig } from "@/lib/customToolsConfig";
 import { getLibraryConfig } from "@/lib/libraryConfig";
-import { getVoiceLiveConfig } from "@/lib/voiceLiveConfig";
+import { getVoiceLiveServerConfig } from "@/lib/voiceLiveConfig";
 
 export default function ProtectedLayout({
   children,
@@ -14,7 +14,7 @@ export default function ProtectedLayout({
 }) {
   return (
     <AuthProvider config={getAuthConfig()}>
-      <VoiceLiveProvider config={getVoiceLiveConfig()}>
+      <VoiceLiveProvider config={getVoiceLiveServerConfig()}>
         <LibraryProvider config={getLibraryConfig()}>
           <CustomToolsProvider config={getCustomToolsConfig()}>
             {children}
