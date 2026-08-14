@@ -24,6 +24,11 @@
       </nav>
     </div>
   </header>
+  <noscript>
+    <div class="container" style="padding-top:16px">
+      <div class="notice"><strong>JavaScript is unavailable.</strong> Diagram source remains readable below, but rendered diagrams require JavaScript.</div>
+    </div>
+  </noscript>
 
   <main id="main">
     <section class="hero" style="padding-top:40px">
@@ -32,8 +37,9 @@
         <h1>Architecture</h1>
         <p class="lede">AI4IA is a governed, multi-model chat and agent app on Azure Container Apps. The web frontend
           calls the FastAPI backend; the backend owns auth, session state, tools, memory, document/library access,
-          usage metering and all model routing. The editable source of these diagrams lives in
-          <a href="https://github.com/ian-t-adams/AI4IA/blob/main/docs/architecture.md" target="_blank" rel="noopener"><span class="mono">docs/architecture.md</span></a>.</p>
+          usage metering and all model routing. The architecture narrative and primary request-flow diagram live in
+          <a href="https://github.com/ian-t-adams/AI4IA/blob/main/docs/architecture.md" target="_blank" rel="noopener"><span class="mono">docs/architecture.md</span></a>;
+          this portal maintains the additional operational diagrams alongside it.</p>
       </div>
     </section>
 
@@ -41,7 +47,7 @@
       <div class="container">
         <h2 class="section-title">1 · High-level request flow</h2>
         <p class="section-sub">Compatible HTTP/SSE calls route through SimpleL7Proxy then APIM to a catalog-selected
-          Foundry deployment. Native planes (Content Understanding, Monitor, Cosmos, Storage, Search, Key Vault) are
+          Foundry deployment. Native planes (Content Understanding, WebIQ grounding, Monitor, Cosmos, Storage, Search, Key Vault) are
           called directly with managed identity. Voice Live connects the browser to the API over a WebSocket because
           neither the Next.js HTTP proxy nor SimpleL7Proxy proxies WebSockets; the relay calls the APIM realtime API
           and still enforces auth, Origin, entitlements and metering. Responses-API Code Interpreter is the explicit
@@ -69,7 +75,7 @@ flowchart TB
   APIM --> Toolbox["Curated upstream<br/>MCP servers"]
   API -. "SSRF-guarded" .-> BYO["User BYO<br/>MCP servers"]
           </pre>
-          <figcaption>If a diagram does not render, its Mermaid source is shown above and also lives in <span class="mono">docs/architecture.md</span>.</figcaption>
+          <figcaption>If a diagram does not render, its Mermaid source remains visible above.</figcaption>
         </figure>
       </div>
     </section>

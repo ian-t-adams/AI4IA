@@ -24,6 +24,10 @@ GREENFIELD_DOC = REPO / "docs" / "runbooks" / "greenfield-standup.md"
 STATUS_SCRIPT = REPO / "scripts" / "status-snapshot.ps1"
 META_JS = REPO / "site" / "data" / "meta.js"
 SERVICES_HTML = REPO / "site" / "services.html"
+DOCS_HTML = REPO / "site" / "docs.html"
+REQUIREMENTS_HTML = REPO / "site" / "requirements.html"
+ARCHITECTURE_HTML = REPO / "site" / "architecture.html"
+NOT_FOUND_HTML = REPO / "site" / "404.html"
 
 
 class PagesStatusRefreshTests(unittest.TestCase):
@@ -110,6 +114,39 @@ class PagesStatusRefreshTests(unittest.TestCase):
           resources: nodes["resources-body"].innerHTML,
           stats: nodes["status-stats"].innerHTML
         }}));
+        """
+        result = subprocess.run(
+            ["node", "-e", harness],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(result.stdout)
+
+    def _render_without_data(self) -> dict[str, str]:
+        app_path = json.dumps(str(APP_JS))
+        harness = f"""
+        const ids = [
+          "features", "stack", "regions", "envfacts",
+          "status-stats", "status-resource-group", "resources-body",
+          "endpoints", "updated", "services-root", "services-updated",
+          "modules", "iac-meta", "rbac", "packages", "prereqs", "docs-root"
+        ];
+        const nodes = Object.fromEntries(ids.map((id) => [
+          id,
+          {{ innerHTML: "", textContent: "" }}
+        ]));
+        global.window = {{ matchMedia: () => ({{ matches: false }}) }};
+        global.document = {{
+          getElementById: (id) => nodes[id] || null,
+          addEventListener: (name, callback) => callback(),
+          querySelector: () => null,
+          createElement: () => ({{ innerHTML: "", content: null }})
+        }};
+        require({app_path});
+        process.stdout.write(JSON.stringify(Object.fromEntries(
+          ids.map((id) => [id, nodes[id].innerHTML || nodes[id].textContent])
+        )));
         """
         result = subprocess.run(
             ["node", "-e", harness],
@@ -221,6 +258,59 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertIn("Storage", rendered["resources"])
         self.assertIn("st-one", rendered["resources"])
         self.assertIn("1", rendered["stats"])
+
+    def test_missing_portal_data_renders_recovery_instead_of_staying_blank(self) -> None:
+        rendered = self._render_without_data()
+
+        for host in (
+            "features",
+            "stack",
+            "regions",
+            "envfacts",
+            "status-stats",
+            "resources-body",
+            "endpoints",
+            "updated",
+            "services-root",
+            "services-updated",
+            "modules",
+            "iac-meta",
+            "rbac",
+            "packages",
+            "prereqs",
+            "docs-root",
+        ):
+            with self.subTest(host=host):
+                self.assertIn("unavailable", rendered[host].lower())
+        self.assertIn("portal publishing workflow", rendered["features"])
+
+    def test_every_portal_page_has_a_no_javascript_recovery_message(self) -> None:
+        for page in (
+            INDEX_HTML,
+            STATUS_HTML,
+            SERVICES_HTML,
+            DOCS_HTML,
+            REQUIREMENTS_HTML,
+            ARCHITECTURE_HTML,
+        ):
+            with self.subTest(page=page.name):
+                html = page.read_text(encoding="utf-8")
+                self.assertIn("<noscript>", html)
+                self.assertIn("JavaScript is unavailable.", html)
+
+    def test_portal_has_a_branded_recovery_page_for_stale_links(self) -> None:
+        html = NOT_FOUND_HTML.read_text(encoding="utf-8")
+
+        self.assertIn("<h1>Page not found</h1>", html)
+        self.assertIn(
+            'href="https://ian-t-adams.github.io/AI4IA/"',
+            html,
+        )
+        self.assertIn(
+            'href="https://ian-t-adams.github.io/AI4IA/docs.html"',
+            html,
+        )
+        self.assertIn('aria-label="Primary"', html)
 
     def test_portal_audience_matches_the_enterprise_product_positioning(self) -> None:
         audience_copy = "\n".join(
