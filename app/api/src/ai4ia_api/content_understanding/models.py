@@ -72,17 +72,14 @@ class CUResult:
         saw_page_meter = False
         for key in _PAGE_USAGE_METERS:
             value = self.usage.get(key)
-            if (
-                isinstance(value, (int, float))
-                and not isinstance(value, bool)
-                and value > 0
-            ):
-                # Only a *non-zero* meter counts as "the service told us pages".
-                # A real CU response zero-fills every documentPages* key, so
-                # treating a present-but-zero key as authoritative made the
-                # segment-count fallback dead and reported 0 pages for analyzers
-                # that have no page meter at all (audio/video/image search).
-                page_total += float(value)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                # A present meter is authoritative even when it is zero: a real CU
+                # response zero-fills every documentPages* key, so "all zero" means
+                # "no page meter applied to this modality", not "unknown". Falling
+                # back to len(contents) there would report audio/video segments as
+                # billable pages. The fallback exists for providers that emit no
+                # page meters at all (Mistral), which is why it stays.
+                page_total += max(0.0, float(value))
                 saw_page_meter = True
         if saw_page_meter:
             return int(ceil(page_total))

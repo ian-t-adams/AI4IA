@@ -7,6 +7,8 @@ store's logic is exercised without a live search service. The real azure index
 models are still constructed by ``ensure_ready`` (pure, no network)."""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from ai4ia_api.library.ai_search_chunks import (
@@ -547,3 +549,56 @@ async def test_from_document_prefers_reranker_score():
     store = _store(search_client=search_client)
     hits = await store.search("u1", [1.0, 0.0, 0.0], top_k=3, query_text="q")
     assert hits[0].score == pytest.approx(3.2)
+
+
+class _BadRequestSemanticSearchClient(_FakeSearchClient):
+    """Semantic fails with a request-specific 400, not a service outage."""
+
+    async def search(self, **kwargs):
+        self.search_calls.append(kwargs)
+        if kwargs.get("query_type") == "semantic":
+            err = RuntimeError("invalid semantic query")
+            err.status_code = 400
+            raise err
+        return _FakeResults(self.results)
+
+
+async def test_query_specific_semantic_rejection_does_not_open_the_shared_breaker():
+    """The breaker is process-wide, so one bad query must not downgrade everyone.
+
+    A 400 is about that request; only service-level conditions (403 quota, 429,
+    5xx, transport) may suppress semantic ranking for other users.
+    """
+    search_client = _BadRequestSemanticSearchClient()
+    clock = _Clock()
+    store = _store(search_client=search_client, time_source=clock)
+
+    for _ in range(3):
+        await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="q")
+
+    semantic_calls = [
+        c for c in search_client.search_calls if c.get("query_type") == "semantic"
+    ]
+    assert len(semantic_calls) == 3
+
+
+async def test_concurrent_semantic_failures_advance_the_backoff_once():
+    """One outage wave is one trip, not one per in-flight query."""
+    search_client = _FailSemanticSearchClient()
+    clock = _Clock()
+    store = _store(search_client=search_client, time_source=clock)
+
+    await asyncio.gather(
+        *(
+            store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="q")
+            for _ in range(4)
+        )
+    )
+
+    # Still the initial 300s cooldown, not 300*2^4.
+    clock.advance(301.0)
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="q")
+    semantic_calls = [
+        c for c in search_client.search_calls if c.get("query_type") == "semantic"
+    ]
+    assert len(semantic_calls) == 2

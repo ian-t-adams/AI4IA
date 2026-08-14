@@ -370,12 +370,39 @@ class AzureSearchDocChunkStore:
             return True
         return False
 
+    @staticmethod
+    def _is_service_level_failure(exc: BaseException) -> bool:
+        """Whether a semantic failure is about the *service*, not this query.
+
+        The breaker is process-wide, so it must only open for conditions that
+        affect everyone -- an exhausted semantic plan (403), throttling (429),
+        service errors, or transport failures. A request-specific rejection
+        (typically 400 for a malformed query) still falls back to hybrid for that
+        caller, but must not downgrade unrelated users for an hour.
+        """
+        status = getattr(exc, "status_code", None)
+        if status is None:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+        if not isinstance(status, int):
+            return True  # transport/unknown: treat as a service problem
+        if status in {403, 408, 429}:
+            return True
+        return status >= 500
+
     def _trip_semantic(self) -> None:
         """Record a semantic failure and suppress further attempts for a while.
 
         Logged at WARNING with the traceback exactly once per trip: repeating it
-        per request is what made an exhausted quota fill the logs.
+        per request is what made an exhausted quota fill the logs. Concurrent
+        failures from a single outage wave advance the backoff once, not once per
+        in-flight query.
         """
+        already_open = (
+            self._semantic_retry_at is not None
+            and self._now() < self._semantic_retry_at
+        )
+        if already_open:
+            return
         cooldown = self._semantic_cooldown_s
         self._semantic_retry_at = self._now() + cooldown
         self._semantic_cooldown_s = min(cooldown * 2, _SEMANTIC_COOLDOWN_MAX_S)
@@ -485,8 +512,15 @@ class AzureSearchDocChunkStore:
                         **base_kwargs,
                     )
                 )
-            except Exception:  # noqa: BLE001 - semantic unavailable => degrade to hybrid
-                self._trip_semantic()
+            except Exception as exc:  # noqa: BLE001 - degrade to hybrid on failure
+                if self._is_service_level_failure(exc):
+                    self._trip_semantic()
+                else:
+                    logger.warning(
+                        "AI Search semantic query rejected; falling back to "
+                        "hybrid for this query only",
+                        exc_info=True,
+                    )
             else:
                 self._reset_semantic()
                 return results

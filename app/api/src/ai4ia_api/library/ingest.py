@@ -80,6 +80,10 @@ _CU_MODEL_ID = "content-understanding"
 _SUMMARY_LIMIT = 240
 MAX_CONCURRENT_DOCUMENT_ENRICHMENTS = 4
 MAX_PENDING_DOCUMENT_ENRICHMENTS = 32
+# How long a synchronous (in-request) enrichment waits for a concurrency slot
+# before giving up. A user is holding an HTTP request open, so queueing behind a
+# backlog of background cracks would be indistinguishable from a hang.
+INLINE_ENRICH_ADMISSION_TIMEOUT_S = 5.0
 MAX_ANALYSIS_DETAILS_BYTES = 2_000_000
 
 _ENRICHMENT_GATES: weakref.WeakKeyDictionary[
@@ -349,6 +353,12 @@ class DocumentIngestor:
         full CU timeout. Routing through the same gate keeps the backpressure and
         the 503 saturation path reachable, and tracking the task keeps
         ``cancel_enrich``/``close`` able to cancel or drain an inline crack.
+
+        Unlike a scheduled enrichment this waits only briefly for a slot: a user
+        is holding an HTTP request open, so queueing behind a backlog of
+        background cracks would be indistinguishable from a hang. If the gate is
+        not free within :data:`INLINE_ENRICH_ADMISSION_TIMEOUT_S` the caller gets
+        ``saturated`` and the upload settles as retryable.
         """
         if self._cu is None and self._mistral is None:
             return EnrichScheduleOutcome.disabled
@@ -358,7 +368,7 @@ class DocumentIngestor:
         existing = self._tasks.get(key)
         if existing is not None and not existing.done():
             return EnrichScheduleOutcome.already_running
-        _, global_tasks = _global_enrichment_state()
+        gate, global_tasks = _global_enrichment_state()
         if len(global_tasks) >= MAX_PENDING_DOCUMENT_ENRICHMENTS:
             logger.warning(
                 "document enrichment queue saturated; leaving manifest stored",
@@ -372,31 +382,47 @@ class DocumentIngestor:
                 },
             )
             return EnrichScheduleOutcome.saturated
-        task = asyncio.create_task(
-            self._run_gated_enrich(
-                user_id=user_id,
-                document_id=document_id,
-                data=data,
-                content_type=content_type,
+        try:
+            await asyncio.wait_for(
+                gate.acquire(), timeout=INLINE_ENRICH_ADMISSION_TIMEOUT_S
             )
-        )
-        self._tasks[key] = task
-        global_tasks.add(task)
+        except (asyncio.TimeoutError, TimeoutError):
+            emit_custom_event(
+                "document_ingest_saturated",
+                {
+                    "stage": "concurrency",
+                    "limit": MAX_CONCURRENT_DOCUMENT_ENRICHMENTS,
+                },
+            )
+            return EnrichScheduleOutcome.saturated
+        try:
+            task = asyncio.create_task(
+                self.enrich(
+                    user_id=user_id,
+                    document_id=document_id,
+                    data=data,
+                    content_type=content_type,
+                )
+            )
+            self._tasks[key] = task
+            global_tasks.add(task)
 
-        def _done(t: asyncio.Task[None], _key=key) -> None:
-            if self._tasks.get(_key) is t:
-                self._tasks.pop(_key, None)
-            global_tasks.discard(t)
-            if not t.cancelled():
-                exc = t.exception()
-                if exc is not None:  # pragma: no cover - defensive
-                    logger.warning("enrich task errored: %s", exc, exc_info=exc)
+            def _done(t: asyncio.Task[None], _key=key) -> None:
+                if self._tasks.get(_key) is t:
+                    self._tasks.pop(_key, None)
+                global_tasks.discard(t)
+                if not t.cancelled():
+                    exc = t.exception()
+                    if exc is not None:  # pragma: no cover - defensive
+                        logger.warning("enrich task errored: %s", exc, exc_info=exc)
 
-        task.add_done_callback(_done)
-        # ``wait`` rather than ``await task`` so a delete cancelling the crack
-        # does not surface as a cancellation of the *request* coroutine; the
-        # caller re-reads the manifest and reports the document as gone.
-        await asyncio.wait({task})
+            task.add_done_callback(_done)
+            # ``wait`` rather than ``await task`` so a delete cancelling the crack
+            # does not surface as a cancellation of the *request* coroutine; the
+            # caller re-reads the manifest and reports the document as gone.
+            await asyncio.wait({task})
+        finally:
+            gate.release()
         return EnrichScheduleOutcome.scheduled
 
     async def settle_saturated(self, doc: UserDocument) -> tuple[UserDocument, str]:
@@ -510,25 +536,32 @@ class DocumentIngestor:
         if not analyzer_id:
             return None
         if analyzer_id in BUILTIN_ANALYZER_IDS:
-            builtin = next(
+            return next(
                 analyzer for analyzer in BUILTIN_ANALYZERS if analyzer.id == analyzer_id
             )
-            # Second gate, at the point of use. The router already refuses to
-            # advertise or accept a gated analyzer, but BUILTIN_ANALYZERS carries
-            # the preview entries unconditionally, so a re-enrich of a document
-            # stored while preview was on -- or any future call site -- would
-            # otherwise reach the preview API with preview disabled.
-            if builtin.preview and not self._settings.cu_preview_enabled:
-                return None
-            if builtin.id == "cu-agentic-document" and not (
-                self._settings.cu_agentic_analyzer_id
-            ):
-                return None
-            return builtin
         try:
             return await self._library.get_analyzer(user_id, analyzer_id)
         except AnalyzerNotFoundError:
             return None
+
+    def _analyzer_is_gated(self, analyzer: Analyzer | None) -> bool:
+        """Whether a resolved builtin is currently withheld by an operator gate.
+
+        Second gate, at the point of use. The router refuses to advertise or
+        accept a gated analyzer, but BUILTIN_ANALYZERS carries the preview
+        entries unconditionally, so re-enriching a document stored while preview
+        was on -- or any future call site -- would otherwise reach the preview
+        API with preview disabled. This must *fail* the document rather than
+        resolve to ``None``: falling through to the modality default would
+        silently analyze with an analyzer the user did not choose.
+        """
+        if analyzer is None or not analyzer.builtin:
+            return False
+        if analyzer.preview and not self._settings.cu_preview_enabled:
+            return True
+        return analyzer.id == "cu-agentic-document" and not (
+            self._settings.cu_agentic_analyzer_id
+        )
 
     async def enrich(
         self,
@@ -552,6 +585,19 @@ class DocumentIngestor:
         modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
         started = time.monotonic()
         analyzer = await self._resolve_analyzer(user_id, doc.analyzerId)
+        if self._analyzer_is_gated(analyzer):
+            # The selected analyzer is withheld by an operator gate (preview off,
+            # or agentic with no configured remote id). Fail the document rather
+            # than quietly analyzing it with the modality default the user never
+            # chose, and rather than leaving it stuck at ``stored``.
+            await self._safe_update(
+                doc,
+                {
+                    "status": DocumentStatus.failed,
+                    "error": "The selected analyzer is not currently available.",
+                },
+            )
+            return
         provider = (
             analyzer.provider
             if analyzer is not None
