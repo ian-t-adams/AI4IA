@@ -50,7 +50,11 @@ from ..library.access import (
 from ..library.chunking import chunk_markdown
 from ..library.compute_factory import DocumentComputeService
 from ..library.blob_store import BlobNotFoundError
-from ..library.ingest import DocumentIngestor, EnrichScheduleOutcome
+from ..library.ingest import (
+    DocumentIngestor,
+    EnrichScheduleOutcome,
+    ReindexUnavailableError,
+)
 from ..library.modality import classify_modality, normalize_content_type
 from ..library.mistral_document import (
     MAX_MISTRAL_DOCUMENT_BYTES,
@@ -840,6 +844,139 @@ async def stream_document_media(
             "Cache-Control": "private, no-store",
         },
     )
+
+
+@router.get("/documents/{document_id}/index", response_model=dict)
+async def get_document_index(
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Owner-only view of a document's search-index state.
+
+    Answers "why is this document not being found?" without exposing the index
+    itself: how many chunks it contributed, whether rebuildable artifacts still
+    exist, and whether retrieval is wired at all in this deployment.
+    """
+    repo = _library(request)
+    uid = user.internal_user_id
+    try:
+        doc = await repo.get_document(uid, document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        ) from exc
+    if not require_owner(uid, doc):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+    ingestor = getattr(request.app.state, "document_ingestor", None)
+    return {
+        "documentId": doc.id,
+        "status": doc.status.value if hasattr(doc.status, "value") else str(doc.status),
+        "chunkCount": doc.chunkCount or 0,
+        "retrievable": bool(doc.chunkCount) and str(doc.status).endswith("ready"),
+        "rebuildable": bool(doc.chunksPath or doc.parsedPath),
+        "indexingEnabled": bool(ingestor is not None and ingestor.chunks is not None),
+    }
+
+
+@router.post("/documents/{document_id}/reindex", response_model=dict)
+async def reindex_document(
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Rebuild one document's chunks from stored artifacts.
+
+    Costs embeddings, not a re-analysis: the analyzer's output is already
+    durable. Gated like the other spend paths.
+    """
+    uid = user.internal_user_id
+    await _block_disabled(request, uid)
+    ingestor = _ingestor(request)
+    try:
+        chunks = await ingestor.reindex(uid, document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        ) from exc
+    except ReindexUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    return {"documentId": document_id, "chunkCount": chunks}
+
+
+@router.post("/documents/reindex", response_model=dict)
+async def reindex_all_documents(
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Rebuild every ready document's chunks for the caller.
+
+    This is the migration path after the index tenancy model changes: chunks are
+    written into whichever index the store now resolves. Per-document failures
+    are reported rather than aborting the sweep, so one unrebuildable document
+    cannot strand the rest.
+    """
+    uid = user.internal_user_id
+    await _block_disabled(request, uid)
+    ingestor = _ingestor(request)
+    repo = _library(request)
+    documents = await repo.list_documents(uid)
+    rebuilt: list[dict] = []
+    failed: list[dict] = []
+    for doc in documents:
+        if not require_owner(uid, doc):
+            continue
+        if not str(doc.status).endswith("ready"):
+            continue
+        try:
+            count = await ingestor.reindex(uid, doc.id)
+        except Exception as exc:  # noqa: BLE001 - one bad document must not stop the sweep
+            logger.warning("reindex failed for a document", exc_info=True)
+            failed.append({"documentId": doc.id, "error": type(exc).__name__})
+            continue
+        rebuilt.append({"documentId": doc.id, "chunkCount": count})
+    return {
+        "rebuilt": rebuilt,
+        "failed": failed,
+        "rebuiltCount": len(rebuilt),
+        "failedCount": len(failed),
+    }
+
+
+@router.delete(
+    "/documents/{document_id}/chunks", status_code=status.HTTP_204_NO_CONTENT
+)
+async def purge_document_chunks(
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> None:
+    """Remove a document from retrieval without deleting the document.
+
+    The file, its parsed Markdown, and its analysis stay; only the searchable
+    vectors go. Reversible with reindex, which is why this is separate from
+    deleting the document.
+    """
+    repo = _library(request)
+    uid = user.internal_user_id
+    try:
+        doc = await repo.get_document(uid, document_id)
+    except DocumentNotFoundError:
+        return  # idempotent: nothing indexed for a document that is gone
+    if not require_owner(uid, doc):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+    ingestor = getattr(request.app.state, "document_ingestor", None)
+    if ingestor is None:
+        return
+    await ingestor.purge_chunks(uid, document_id)
+    doc.chunkCount = 0
+    await repo.update_document(doc)
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

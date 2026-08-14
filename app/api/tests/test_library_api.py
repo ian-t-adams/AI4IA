@@ -331,3 +331,111 @@ def test_create_analyzer_accepts_base_analyzer_id_not_starting_with_alnum(client
     )
     assert resp.status_code == 201, resp.text
     assert resp.json()["baseAnalyzerId"] == value
+
+# --- index CRUD surface ---------------------------------------------------------
+
+
+def _seed(client: TestClient, uid: str, **fields) -> UserDocument:
+    doc = UserDocument(userId=uid, filename="report.pdf", size=10, **fields)
+    asyncio.run(client.app.state.document_library.create_document(doc))
+    return doc
+
+
+def test_index_endpoints_are_absent_when_the_library_is_disabled():
+    """Default-OFF posture covers the new routes too, not just the old ones."""
+    c = _client()
+    try:
+        assert c.get("/api/library/documents/x/index").status_code == 404
+        assert c.post("/api/library/documents/x/reindex").status_code == 404
+        assert c.post("/api/library/documents/reindex").status_code == 404
+        assert c.delete("/api/library/documents/x/chunks").status_code == 404
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_index_state_is_owner_only(client):
+    """A stranger must not learn anything about another user's document.
+
+    Reported as 404, not 403: a 403 would confirm the document exists.
+
+    Note what actually enforces this, because the endpoint's `require_owner`
+    call looks like the gate and is not: `get_document(user_id, ...)` is
+    partitioned by user in both repo implementations and raises
+    DocumentNotFoundError for a document outside the caller's partition, so
+    `require_owner` is belt-and-braces (kept for consistency with the sibling
+    endpoints, and in case the repo contract ever widens). Mutating it out does
+    NOT fail this test -- verified -- so read this as covering the observable
+    404, not that guard.
+    """
+    owner = _uid(client)
+    doc = _seed(client, owner, chunkCount=4)
+
+    mine = client.get(f"/api/library/documents/{doc.id}/index")
+    assert mine.status_code == 200
+    assert mine.json()["chunkCount"] == 4
+
+    theirs = client.get(
+        f"/api/library/documents/{doc.id}/index",
+        headers={"X-Dev-User": "stranger"},
+    )
+    assert theirs.status_code == 404
+
+
+def test_reindex_is_owner_only(client):
+    owner = _uid(client)
+    doc = _seed(client, owner)
+
+    theirs = client.post(
+        f"/api/library/documents/{doc.id}/reindex",
+        headers={"X-Dev-User": "stranger"},
+    )
+    # The stranger's own library has no such document.
+    assert theirs.status_code == 404
+
+
+def test_purge_chunks_is_owner_only_and_keeps_the_document(client):
+    owner = _uid(client)
+    doc = _seed(client, owner, chunkCount=7)
+
+    theirs = client.delete(
+        f"/api/library/documents/{doc.id}/chunks",
+        headers={"X-Dev-User": "stranger"},
+    )
+    # Idempotent for a document the caller does not have: no 500, no leak.
+    assert theirs.status_code in (204, 404)
+    # And the owner's document is untouched by the stranger's attempt.
+    still = client.get(f"/api/library/documents/{doc.id}")
+    assert still.status_code == 200
+
+
+def test_purge_chunks_drops_the_count_but_not_the_document(client):
+    """Control for the owner-only test: the owner's purge really does work.
+
+    Without this, "the stranger changed nothing" could be true simply because
+    the endpoint changes nothing for anyone.
+    """
+    owner = _uid(client)
+    doc = _seed(client, owner, chunkCount=7)
+
+    purged = client.delete(f"/api/library/documents/{doc.id}/chunks")
+    assert purged.status_code == 204
+
+    after = client.get(f"/api/library/documents/{doc.id}/index")
+    assert after.status_code == 200
+    assert after.json()["chunkCount"] == 0
+    # The document itself survives -- that is what makes this different from
+    # deleting it, and what makes reindex able to bring it back.
+    assert client.get(f"/api/library/documents/{doc.id}").status_code == 200
+
+
+def test_reindex_all_reports_per_document_outcomes(client):
+    """One unrebuildable document must not strand the rest of the sweep."""
+    owner = _uid(client)
+    _seed(client, owner)  # stored, not ready -> skipped
+
+    body = client.post("/api/library/documents/reindex")
+    assert body.status_code == 200
+    payload = body.json()
+    assert payload["rebuiltCount"] == 0
+    assert payload["failedCount"] == 0
+    assert payload["rebuilt"] == []

@@ -190,6 +190,37 @@ If the deployment has no Search service configured the pipeline still works —
 retrieval falls back to an in-process store — so a missing Search endpoint
 degrades quality, not correctness.
 
+### Managing the index
+
+Four owner-only operations, all under `/api/library`:
+
+| Action | Endpoint | What it costs |
+|---|---|---|
+| Inspect | `GET /documents/{id}/index` | nothing |
+| Rebuild one | `POST /documents/{id}/reindex` | embeddings only |
+| Rebuild all | `POST /documents/reindex` | embeddings only |
+| Drop from retrieval | `DELETE /documents/{id}/chunks` | nothing |
+
+**Reindex does not re-run the analyzer.** The provider's output is already
+durable — `chunks.jsonl` holds the exact chunk text and its grounding — so a
+rebuild re-embeds and re-indexes without re-billing Content Understanding or
+Mistral. It also reproduces the original chunk boundaries exactly, which matters
+because citations already stored against the document point at them; re-chunking
+could silently move them. Documents indexed before that sidecar existed fall
+back to re-chunking `parsed.md`, which loses audio/video time grounding.
+
+**Dropping chunks is not deleting the document.** The file, its parsed Markdown,
+and its analysis all stay; only the searchable vectors go, and a reindex brings
+them back. Use it to take a document out of retrieval without losing it.
+
+Rebuilding spends on embeddings, so it takes the same entitlement gate as an
+upload. Inspecting and dropping do not.
+
+These are **not** exposed as agent tools. Reindexing is a maintenance action
+whose cost scales with the size of a library, and a model deciding mid-turn to
+rebuild every document is a bad failure mode; the agent reads the index through
+normal retrieval instead.
+
 Sharing is tenant-scoped:
 
 - `private` means owner-only.

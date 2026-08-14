@@ -125,6 +125,17 @@ class EnrichmentNotEntitledError(RuntimeError):
     ``provider_completed=False`` — so nothing is metered as provider spend.
     """
 
+
+class ReindexUnavailableError(RuntimeError):
+    """A rebuild was requested but there is nothing to rebuild from or into.
+
+    Distinct from a failure: the document may be perfectly healthy while the
+    search index or embedding model is simply not configured in this
+    deployment, or the parsed artifacts have been purged. The router maps it to
+    409 so it is not confused with a missing document.
+    """
+
+
 class EnrichScheduleOutcome(str, Enum):
     scheduled = "scheduled"
     already_running = "already_running"
@@ -1237,6 +1248,131 @@ class DocumentIngestor:
                 await self._chunks.delete_document(user_id, document_id)
             except Exception:  # noqa: BLE001
                 logger.warning("document chunk purge failed", exc_info=True)
+
+    async def purge_chunks(self, user_id: str, document_id: str) -> None:
+        """Public wrapper: drop a document's searchable chunks, keep its files."""
+        await self._purge_chunks(user_id, document_id)
+
+    async def reindex(self, user_id: str, document_id: str) -> int:
+        """Rebuild a document's chunk index from stored artifacts. Returns chunks.
+
+        Deliberately does **not** re-run the analyzer. The provider's output is
+        already durable — ``chunks.jsonl`` holds the exact chunk text and its
+        grounding, ``parsed.md`` the canonical Markdown — so a rebuild costs
+        embeddings only, and a re-analysis would both re-bill Content
+        Understanding or Mistral and risk producing *different* chunks than the
+        citations already stored against this document.
+
+        The sidecar is preferred over re-chunking ``parsed.md`` for that second
+        reason: it reproduces the original chunk boundaries exactly, including
+        audio/video time grounding that Markdown chunking cannot recover. The
+        Markdown path is the fallback for documents indexed before the sidecar
+        existed.
+
+        This is also the migration tool for a tenancy switch: it writes into
+        whichever index the store currently resolves.
+        """
+        doc = await self._library.get_document(user_id, document_id)
+        if self._chunks is None or self._embedder is None:
+            raise ReindexUnavailableError(
+                "the search index or embedding model is not configured"
+            )
+        # Reindexing spends (embeddings), so it takes the same execution-time
+        # entitlement gate as an analyzer call.
+        await self._require_entitled(user_id)
+
+        records = await self._records_from_sidecar(user_id, doc)
+        if records is None:
+            records = await self._records_from_parsed(user_id, doc)
+        if records is None:
+            raise ReindexUnavailableError(
+                "no parsed artifacts remain for this document; re-upload it"
+            )
+
+        # Drop first so a rebuild that fails part-way cannot leave a mix of old
+        # and new chunks behind, which would return stale text against fresh
+        # citations.
+        await self._chunks.delete_document(user_id, document_id)
+        batch = max(1, self._settings.document_embed_batch)
+        for start in range(0, len(records), batch):
+            window = records[start : start + batch]
+            vectors = await self._embedder.embed([r.content for r in window])
+            await self._chunks.add_many(window, vectors)
+
+        doc.chunkCount = len(records)
+        await self._safe_update(doc, {"chunkCount": len(records)})
+        return len(records)
+
+    async def _records_from_sidecar(
+        self, user_id: str, doc: UserDocument
+    ) -> list[DocChunkRecord] | None:
+        """Chunk records rebuilt verbatim from ``chunks.jsonl``, or ``None``."""
+        path = doc.chunksPath or blob_path(user_id, doc.id, CHUNKS_NAME)
+        try:
+            raw = await self._blob.get(path)
+        except Exception:  # noqa: BLE001 - missing sidecar falls back to parsed.md
+            return None
+        records: list[DocChunkRecord] = []
+        for line in raw.decode("utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                # One malformed line must not silently shrink the index; fall
+                # back to re-chunking rather than indexing a partial document.
+                logger.warning("chunk sidecar has a malformed row; re-chunking")
+                return None
+            text = row.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            records.append(
+                DocChunkRecord(
+                    user_id=user_id,
+                    document_id=doc.id,
+                    chunk_index=int(row.get("index") or len(records)),
+                    content=text,
+                    heading=row.get("heading"),
+                    char_start=row.get("charStart"),
+                    char_end=row.get("charEnd"),
+                    start_ms=row.get("startMs"),
+                    end_ms=row.get("endMs"),
+                    speaker=row.get("speaker"),
+                )
+            )
+        return records or None
+
+    async def _records_from_parsed(
+        self, user_id: str, doc: UserDocument
+    ) -> list[DocChunkRecord] | None:
+        """Fallback: re-chunk the canonical Markdown. Loses AV time grounding."""
+        path = doc.parsedPath or blob_path(user_id, doc.id, PARSED_NAME)
+        try:
+            raw = await self._blob.get(path)
+        except Exception:  # noqa: BLE001 - nothing to rebuild from
+            return None
+        chunks = chunk_markdown(
+            raw.decode("utf-8"),
+            max_chars=self._settings.document_chunk_chars,
+            overlap=self._settings.document_chunk_overlap,
+        )
+        max_chunks = self._settings.document_max_chunks
+        if max_chunks and len(chunks) > max_chunks:
+            chunks = chunks[:max_chunks]
+        records = [
+            DocChunkRecord(
+                user_id=user_id,
+                document_id=doc.id,
+                chunk_index=c.index,
+                content=c.text,
+                heading=c.grounding.get("heading"),
+                char_start=c.grounding.get("charStart"),
+                char_end=c.grounding.get("charEnd"),
+            )
+            for c in chunks
+        ]
+        return records or None
 
     async def _meter_analysis(
         self,

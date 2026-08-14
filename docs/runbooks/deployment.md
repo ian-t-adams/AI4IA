@@ -1103,7 +1103,18 @@ because `_persist_enrichment` deletes then re-adds.
 Sequence:
 
 1. Set the value and deploy.
-2. Re-enrich each existing document so its chunks land in the new index. Newly
+2. Rebuild each existing document so its chunks land in the new index:
+
+   ```bash
+   # Per caller, against their own library. Rebuilds every ready document.
+   curl -X POST https://<api-host>/api/library/documents/reindex \
+     -H "Authorization: Bearer <token>"
+   ```
+
+   This re-embeds from the stored `chunks.jsonl`/`parsed.md`; it does **not**
+   re-run Content Understanding or Mistral, so the migration costs embeddings
+   rather than a second analysis pass. The response reports per-document
+   outcomes, so one unrebuildable document does not strand the sweep. Newly
    uploaded documents need nothing.
 3. Optionally delete the now-orphaned index. The old one keeps costing storage
    and counts against the tier's index limit until it is removed:
