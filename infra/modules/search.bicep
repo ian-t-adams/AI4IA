@@ -25,7 +25,7 @@ param deploySearch bool = false
 @description('Central Log Analytics workspace resource id. When the service is provisioned, diagnostic settings stream its operation logs/metrics there for the admin observability plane.')
 param logAnalyticsWorkspaceId string
 
-@description('Search service SKU. standard (S1) is the smallest tier with production-grade storage/throughput; basic is cheaper but caps partitions and vector index size. Note: an existing service can move between basic and standard S1/S2/S3, but only through the Update Service API / portal — an ARM PUT at this API version does not perform the tier change (see docs/runbooks/deployment.md).')
+@description('Search service SKU. standard (S1) is the production default; basic is cheaper but caps partitions and vector index size. An existing service can move between basic and standard S1/S2/S3 in place, but drive that with `az search service update --sku` rather than assuming a provision run does it (see docs/runbooks/deployment.md).')
 @allowed([
   'free'
   'basic'

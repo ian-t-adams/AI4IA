@@ -185,7 +185,7 @@ param videoGenerationEnabled bool = false
 @description('Provision an Azure AI Search service (for indexing/retrieval). Default OFF: nothing is created. When on, the api identity gets data-plane RBAC (Index Data Contributor + Service Contributor) and AI4IA_SEARCH_ENDPOINT is emitted to the api.')
 param searchEnabled bool = false
 
-@description('Azure AI Search SKU when searchEnabled. standard (S1) is the production default; basic is the cheaper single-tenant option. Changing this on an EXISTING service is not performed by an ARM PUT — use the portal/Update Service API, then align this value (see docs/runbooks/deployment.md).')
+@description('Azure AI Search SKU when searchEnabled. standard (S1) is the production default; basic is the cheaper single-tenant option. An existing service is re-tiered with `az search service update --sku`, not by a provision run — align this value afterwards (see docs/runbooks/deployment.md).')
 param searchSku string = 'standard'
 
 @description('Semantic ranker plan for the Search service. "standard" bills per query (~$1/1,000) and has no monthly cap; "free" stops working after 1,000 semantic queries/month and silently degrades retrieval to plain hybrid.')

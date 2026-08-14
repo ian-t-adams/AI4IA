@@ -1091,34 +1091,48 @@ an existing service and the difference matters.
 
 | Change | On a new service | On an existing service |
 |---|---|---|
-| `searchSemanticPlan` (`free` -> `standard`) | Applied at create | Applied by `azd provision` — it is a mutable property |
-| `searchSku` (`basic` -> `standard`) | Applied at create | **Not applied.** The tier is set at create time and the ARM PUT that `azd provision` issues does not re-tier a live service |
+| `searchSemanticPlan` (`free` -> `standard`) | Applied at create | Applied in place — it is a mutable property |
+| `searchSku` (`basic` -> `standard`) | Applied at create | Applied in place, but **only through the management API/CLI/portal**, not by `azd provision` |
 
-Azure does support moving an existing service between Basic and Standard
-(S1/S2/S3) — upgrades and downgrades — but only through the portal's **Change
-Pricing Tier** action or the `2025-02-01-preview` Update Service API. The Bicep
-resource is pinned to `2023-11-01`, so a provision run will not do it for you and
-will not fail loudly either: the service simply stays on its current tier while
-the template claims otherwise.
+Azure supports moving an existing service between Basic and Standard (S1/S2/S3),
+upgrades and downgrades, since July 2025. The capability landed in the
+`2025-02-01-preview` Update Service API; the Bicep resource here is pinned to
+`2023-11-01`, so do not assume a provision run performs the tier change. Drive it
+explicitly and then align the parameter.
 
-To re-tier the live service:
+Verified on 2026-08-14 against the live `slurmfactory` service, moving
+`basic` -> `standard` (S1):
 
-1. Confirm the current configuration fits the target tier's limits, and that the
-   region has capacity on that tier.
-2. Portal -> the search service -> **Settings / Scale** -> **Change Pricing Tier**,
-   or issue the `2025-02-01-preview` PATCH.
-3. Set `AI4IA_SEARCH_SKU` to the same value so IaC and reality agree.
-4. Re-run `python scripts/status-snapshot.py` (or the next deploy) so the recorded
-   posture matches.
+```bash
+# Semantic plan: fast, no downtime.
+az search service update -n <service> -g <resource-group> --semantic-search standard
 
-Do **not** delete and recreate the service to force a tier change unless you
-intend to rebuild the index: the service name is derived from `uniqueSuffix`, so a
-recreate reuses the name but starts empty. The chunk index is derived state and
-is rebuildable from the Cosmos manifests plus the blob artifacts, so this is
-recoverable — but retrieval returns nothing until the rebuild completes, which is
-a user-visible outage, not a silent one.
+# Tier: a long-running operation. Took ~10 minutes end to end.
+az search service update -n <service> -g <resource-group> --sku standard
+```
 
-Cost, as of the last check against the Azure retail price API (East US):
+During the tier change `provisioningState` reports `Provisioning` and `status`
+reports `provisioning`; both return to `Succeeded`/`running` when it completes.
+**The index survived the upgrade** — `ai4ia-doc-chunks` was present and intact
+afterwards, so no reindex was required. Confirm with:
+
+```bash
+az search service show -n <service> -g <resource-group> \
+  --query "{sku:sku.name,semantic:semanticSearch,state:provisioningState}"
+```
+
+Then set `AI4IA_SEARCH_SKU` / `AI4IA_SEARCH_SEMANTIC_PLAN` to match so IaC and
+reality agree; leaving them behind means the next greenfield standup silently
+provisions a different tier than production runs.
+
+Do **not** delete and recreate the service to force a tier change. The service
+name is derived from `uniqueSuffix`, so a recreate reuses the name but starts
+empty. The chunk index is derived state and is rebuildable from the Cosmos
+manifests plus the blob artifacts, so it is recoverable — but retrieval returns
+nothing until the rebuild completes, which is a user-visible outage that the
+in-place upgrade above avoids entirely.
+
+Cost, from the Azure retail price API (East US, checked 2026-08-14):
 
 | | Basic | Standard S1 |
 |---|---|---|
