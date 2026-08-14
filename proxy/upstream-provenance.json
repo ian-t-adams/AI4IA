@@ -603,7 +603,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Config/ConfigFactory.cs": {
-      "localCanonicalSha256": "f37ff90cc153c55764b5ef9e29cf26d38a17469d3c02e09170fa8b3cd9a73aad",
+      "localCanonicalSha256": "25b4307b566309683ebbf0c4d8c37de4e4b95d1a02afc12e02f7b315ee23b8dc",
       "upstreamRawSha256": "3fbb160f2f751ac9204a418951717d99bc4eacb0551867f28aaef716b8a7366b",
       "upstreamCanonicalSha256": "3fbb160f2f751ac9204a418951717d99bc4eacb0551867f28aaef716b8a7366b",
       "disposition": "ai4ia-patched"

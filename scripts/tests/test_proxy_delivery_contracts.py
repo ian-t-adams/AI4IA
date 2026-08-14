@@ -21,6 +21,10 @@ TRIVY_EXCEPTIONS = ROOT / "proxy" / ".trivyignore"
 TRIVY_MISCONFIG_EXCEPTIONS = ROOT / ".trivyignore.yaml"
 GITLEAKS_IGNORE = ROOT / ".gitleaksignore"
 UPSTREAM_PROVENANCE = ROOT / "proxy" / "upstream-provenance.json"
+PROXY_DOCKERIGNORE = ROOT / "proxy" / ".dockerignore"
+CONFIG_FACTORY = (
+    ROOT / "proxy" / "SimpleL7Proxy" / "Config" / "ConfigFactory.cs"
+)
 APP_CONFIG_SERVICE = (
     ROOT / "proxy" / "SimpleL7Proxy" / "Config" / "AppConfigService.cs"
 )
@@ -65,6 +69,11 @@ class ProxyTelemetryContracts(unittest.TestCase):
 
 
 class ProxyRuntimeContracts(unittest.TestCase):
+    def test_secret_adjacent_warm_reload_debug_output_cannot_be_reenabled(self) -> None:
+        source = CONFIG_FACTORY.read_text(encoding="utf-8")
+        self.assertNotIn("[WARM]", source)
+        self.assertNotIn("TODO: remove debug", source)
+
     def test_failed_app_config_download_is_checked_before_result_value(self) -> None:
         source = APP_CONFIG_SERVICE.read_text(encoding="utf-8")
         start = source.index("private async Task ProcessRefreshAsync")
@@ -85,6 +94,21 @@ class ProxyRuntimeContracts(unittest.TestCase):
 
 
 class ProxySupplyChainContracts(unittest.TestCase):
+    def test_proxy_build_context_excludes_inert_upstream_delivery_files(self) -> None:
+        patterns = {
+            line.strip()
+            for line in PROXY_DOCKERIGNORE.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        self.assertTrue(
+            {
+                "SimpleL7Proxy/build.sh",
+                "SimpleL7Proxy/Dockerfile",
+                "SimpleL7Proxy/sample-deployment.yaml",
+                "SimpleL7Proxy/scratch",
+            }.issubset(patterns)
+        )
+
     def test_pr_build_scans_final_proxy_image_and_retains_evidence(self) -> None:
         workflow = yaml.safe_load(DOCKER_BUILD.read_text(encoding="utf-8"))
         api_steps = workflow["jobs"]["api"]["steps"]

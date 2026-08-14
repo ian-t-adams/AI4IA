@@ -112,12 +112,9 @@ public static class ConfigFactory
     foreach (var kvp in parsedValues)
     {
       var field = fields[kvp.Key];
-      var before = field.GetValue(liveOptions); // TODO: remove debug
       ds.Clear();
       ds[kvp.Key] = kvp.Value?.ToString() ?? "";
       liveOptions.ApplyFieldFromEnv(ds, kvp.Key, field.Name);
-      var after = field.GetValue(liveOptions); // TODO: remove debug
-                                               // Console.WriteLine($"[WARM] Applied {kvp.Key} ({field.Name}): '{before}' -> '{after}'"); // TODO: remove debug
     }
 
     // Collect changed PropertyInfos for derived-settings recalculation.
@@ -127,19 +124,16 @@ public static class ConfigFactory
       if (fields.TryGetValue(change.PropertyName, out var prop))
         changedProps.Add(prop);
     }
-    // Console.WriteLine($"[WARM] {changedProps.Count} derived-settings prop(s) to recalculate"); // TODO: remove debug
     if (changedProps.Count > 0)
       ConfigParser.ApplyDerivedSettings(liveOptions, [.. changedProps]);
 
     if (hostChanges.Count > 0)
     {
-      // Console.WriteLine($"[WARM] {hostChanges.Count} host change(s) detected, re-registering backends"); // TODO: remove debug
       RegisterBackends(liveOptions, null, hostChanges, hostCollection);
     }
 
     if (changes.Count > 0)
     {
-      // Console.WriteLine($"[WARM] Notifying {changes.Count} change(s): {string.Join(", ", changes.Select(c => c.PropertyName))}"); // TODO: remove debug
       logger.LogInformation("[BOOTSTRAP] Applied {Count} warm change(s): {Names}",
           changes.Count, string.Join(", ", changes.Select(c => c.PropertyName)));
       if (notifier != null)
