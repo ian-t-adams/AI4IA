@@ -322,7 +322,10 @@ async def test_synchronous_cu_analyzer_uses_inline_preview_and_persists_evidence
         ],
         usage={
             "documentPagesStandardInline": 1,
-            "contextualizationTokens": 12,
+            # Deliberately distinct from the gpt-5.2 token magnitudes below so a
+            # regression that double-counts completion tokens into the
+            # contextualization meter cannot pass by coincidence.
+            "contextualizationTokens": 47,
             "tokens": {
                 "gpt-5.2-input": 10,
                 "gpt-5.2-output": 2,
@@ -390,7 +393,7 @@ async def test_synchronous_cu_analyzer_uses_inline_preview_and_persists_evidence
     assert contextualization_meter["model_id"] == (
         "content-understanding-contextualization-standard"
     )
-    assert contextualization_meter["usage"].prompt == 12
+    assert contextualization_meter["usage"].prompt == 47
     model_meter = usage.calls[2]
     assert model_meter["model_id"] == "gpt-5.2"
     assert model_meter["target"].provider == "content_understanding_model"
@@ -401,6 +404,110 @@ async def test_synchronous_cu_analyzer_uses_inline_preview_and_persists_evidence
     assert embedding_meter["model_id"] == "text-embedding-3-large"
     assert embedding_meter["target"].deployment == "embedding-cu-deployment"
     assert embedding_meter["usage"].prompt == 3
+
+
+async def test_advanced_contextualization_is_metered_from_the_provider_response():
+    """Advanced/agentic contextualization has its own reported usage property.
+
+    Content Understanding reports the advanced tier as
+    ``advancedContextualizationTokens``, separate from the standard
+    ``contextualizationTokens``. Reading only the latter left every advanced and
+    agentic analyzer — the five tax analyzers and agentic mode, i.e. the most
+    expensive tier — recording no contextualization usage at all.
+    """
+    library = InMemoryDocumentLibraryRepository()
+    usage = FakeUsage()
+    result = CUResult(
+        status="Succeeded",
+        analyzer_id="prebuilt-tax.us.1041ScheduleK1",
+        markdown="# K-1",
+        contents=[{"markdown": "# K-1"}],
+        usage={
+            "documentPagesStandard": 1,
+            "contextualizationTokens": 0,
+            "advancedContextualizationTokens": 900,
+        },
+    )
+    ingestor = _make(cu=FakeCU(result=result), usage=usage, library=library)
+    stored = await ingestor.ingest(
+        user_id="u1",
+        filename="k1.pdf",
+        content_type="application/pdf",
+        data=b"PDF",
+    )
+    await ingestor.enrich(
+        user_id="u1",
+        document_id=stored.document.id,
+        data=b"PDF",
+        content_type="application/pdf",
+    )
+
+    context_meters = [
+        call
+        for call in usage.calls
+        if str(call["model_id"]).startswith(
+            "content-understanding-contextualization"
+        )
+    ]
+    assert len(context_meters) == 1
+    assert context_meters[0]["model_id"] == (
+        "content-understanding-contextualization-advanced"
+    )
+    assert context_meters[0]["usage"].prompt == 900
+
+
+async def test_contextualization_tier_ignores_a_user_authored_workflow_label():
+    """The billing tier must come from the response, not the analyzer record.
+
+    ``Analyzer.config`` is a free-form, user-supplied dict that is never sent to
+    Content Understanding. Deriving the price row from it let a user-created
+    analyzer choose which contextualization rate it was billed at.
+    """
+    library = InMemoryDocumentLibraryRepository()
+    usage = FakeUsage()
+    result = CUResult(
+        status="Succeeded",
+        analyzer_id="prebuilt-documentSearch",
+        markdown="# Doc",
+        contents=[{"markdown": "# Doc"}],
+        usage={"documentPagesStandard": 1, "contextualizationTokens": 100},
+    )
+    ingestor = _make(cu=FakeCU(result=result), usage=usage, library=library)
+    analyzer = Analyzer(
+        id="custom-cheap",
+        userId="u1",
+        name="Custom",
+        kind=AnalyzerKind.custom,
+        serviceAnalyzerId="prebuilt-documentSearch",
+        config={"workflow": "advanced"},  # user assertion, not a service fact
+        modalities=[Modality.document],
+    )
+    await library.create_analyzer(analyzer)
+    stored = await ingestor.ingest(
+        user_id="u1",
+        filename="d.pdf",
+        content_type="application/pdf",
+        data=b"PDF",
+        analyzer_id="custom-cheap",
+    )
+    await ingestor.enrich(
+        user_id="u1",
+        document_id=stored.document.id,
+        data=b"PDF",
+        content_type="application/pdf",
+    )
+
+    context_meters = [
+        call
+        for call in usage.calls
+        if str(call["model_id"]).startswith(
+            "content-understanding-contextualization"
+        )
+    ]
+    assert len(context_meters) == 1
+    assert context_meters[0]["model_id"] == (
+        "content-understanding-contextualization-standard"
+    )
 
 
 async def test_analysis_details_are_bounded_without_losing_usage():
@@ -1044,3 +1151,37 @@ async def test_cu_failure_message_is_omitted_before_it_is_persisted():
     assert "InvalidArgument" in error, error
     # ...and the credential-shaped value in it did not.
     assert ("Z" * 24) not in error, error
+
+
+async def test_gated_preview_analyzer_fails_the_document_instead_of_falling_back():
+    """A withheld analyzer must fail loudly, not silently use a different one.
+
+    Resolving a gated preview builtin to ``None`` made it indistinguishable from
+    "no analyzer selected", so enrichment would fall through to the modality
+    default and mark the document ready as if the user's choice had been honored.
+    """
+    library = InMemoryDocumentLibraryRepository()
+    cu = FakeCU(result=_succeeded("# should not be reached"))
+    ingestor = _make(cu=cu, library=library, cu_preview_enabled=True)
+
+    stored = await ingestor.ingest(
+        user_id="u1",
+        filename="scan.png",
+        content_type="image/png",
+        data=b"PNG",
+        analyzer_id="cu-read-sync",
+    )
+
+    # The operator turns preview off between upload and enrichment.
+    ingestor._settings.cu_preview_enabled = False
+    await ingestor.enrich(
+        user_id="u1",
+        document_id=stored.document.id,
+        data=b"PNG",
+        content_type="image/png",
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc.status == DocumentStatus.failed
+    assert "not currently available" in (doc.error or "")
+    assert cu.calls == []

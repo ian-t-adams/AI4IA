@@ -73,11 +73,48 @@ class CUResult:
         for key in _PAGE_USAGE_METERS:
             value = self.usage.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
+                # A present meter is authoritative even when it is zero: a real CU
+                # response zero-fills every documentPages* key, so "all zero" means
+                # "no page meter applied to this modality", not "unknown". Falling
+                # back to len(contents) there would report audio/video segments as
+                # billable pages. The fallback exists for providers that emit no
+                # page meters at all (Mistral), which is why it stays.
                 page_total += max(0.0, float(value))
                 saw_page_meter = True
         if saw_page_meter:
             return int(ceil(page_total))
         return len(self.contents) or None
+
+    def contextualization_tokens_by_tier(self) -> dict[str, int]:
+        """Contextualization tokens keyed by the priced model id, per tier.
+
+        Content Understanding reports the two tiers as *separate* usage
+        properties: ``contextualizationTokens`` (standard) and, in the
+        2026-06-01-preview API, ``advancedContextualizationTokens`` (advanced —
+        the rate that ``advanced.*`` and ``agentic.*`` workflows are billed at).
+        Reading only the first left every advanced/agentic analyzer — the five
+        tax analyzers and agentic mode — recording no contextualization usage at
+        all, while a locally authored analyzer label decided which price row the
+        standard tokens landed on. The tier now comes from the provider.
+        """
+        tiers = {
+            "contextualizationTokens": (
+                "content-understanding-contextualization-standard"
+            ),
+            "advancedContextualizationTokens": (
+                "content-understanding-contextualization-advanced"
+            ),
+        }
+        out: dict[str, int] = {}
+        for key, model_id in tiers.items():
+            value = self.usage.get(key)
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and value > 0
+            ):
+                out[model_id] = out.get(model_id, 0) + int(value)
+        return out
 
     def page_usage_by_meter(self) -> dict[str, int]:
         meters: dict[str, int] = {}

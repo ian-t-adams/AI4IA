@@ -154,3 +154,48 @@ then re-run `gen-model-catalog.py`, `gen-gateway-policy.py`, and
 [greenfield standup §1](runbooks/greenfield-standup.md#1-preflight-the-target)).
 Confirm with `check-model-availability.py` **before** deploying —
 approval is per-subscription and is not visible until the deployment step.
+
+### `Cohere-rerank-v4.0-pro` removed from the catalog
+
+`Cohere-rerank-v4.0-pro` was deployed in both primary regions and carried into the
+model catalog and the generated APIM backend catalog, but **nothing could call
+it**:
+
+- No application code referenced it. Retrieval reranking is the Azure AI Search
+  L2 semantic reranker inside `AzureSearchDocChunkStore`, not a Cohere call.
+- It had no `pricing.json` entry, so any use would have been cost-unknown.
+- The generated route used `path: "openai"` — the generator defaults every
+  unrecognised `api` to the OpenAI surface — while Microsoft documents rerank as
+  reachable **only** through Cohere's own rerank API, not the OpenAI surface.
+- Probing the live deployment confirmed it: `/cohere/v2/rerank`, `/cohere/v1/rerank`,
+  `/v2/rerank`, `/v1/rerank`, `/models/rerank`, `/cohere/rerank` and
+  `/openai/deployments/<name>/rerank` all returned **404** against the AI Services
+  account endpoint, with and without an `api-version`.
+
+So it was a `rerank`-category entry with no served surface — deployed capacity the
+app had no way to reach. `scripts/gen-gateway-policy.py` now fails generation for
+any category outside `ROUTABLE_CATEGORIES` instead of fabricating an OpenAI route,
+which is what let this ship silently.
+
+No capability was lost: hybrid vector + BM25 retrieval with L2 semantic reranking
+is unchanged, and `embed-v-4-0` (also Cohere) remains deployed and is selectable
+via `AI4IA_MEMORY_EMBEDDING_MODEL`.
+
+To restore it once a supported rerank surface exists, re-add the entry to
+`infra/models.json`:
+
+```jsonc
+{
+  "name": "Cohere-rerank-v4.0-pro",
+  "format": "Cohere",
+  "category": "rerank",
+  "deployments": [
+    { "region": "eastus2",       "sku": "GlobalStandard", "capacity": 50, "version": "1", "maxCapacity": 150, "maxCapacityPool": "global" },
+    { "region": "swedencentral", "sku": "GlobalStandard", "capacity": 50, "version": "1", "maxCapacity": 150, "maxCapacityPool": "global" }
+  ]
+}
+```
+
+then give `rerank` a real provider path in `gen-gateway-policy.py`, add it to
+`ROUTABLE_CATEGORIES`, add a `pricing.json` rate, and wire an actual consumer —
+otherwise the generator will (correctly) refuse to build the catalog.

@@ -80,6 +80,10 @@ _CU_MODEL_ID = "content-understanding"
 _SUMMARY_LIMIT = 240
 MAX_CONCURRENT_DOCUMENT_ENRICHMENTS = 4
 MAX_PENDING_DOCUMENT_ENRICHMENTS = 32
+# How long a synchronous (in-request) enrichment waits for a concurrency slot
+# before giving up. A user is holding an HTTP request open, so queueing behind a
+# backlog of background cracks would be indistinguishable from a hang.
+INLINE_ENRICH_ADMISSION_TIMEOUT_S = 5.0
 MAX_ANALYSIS_DETAILS_BYTES = 2_000_000
 
 _ENRICHMENT_GATES: weakref.WeakKeyDictionary[
@@ -299,6 +303,21 @@ class DocumentIngestor:
     async def _run_scheduled_enrich(
         self, *, user_id: str, document_id: str, content_type: str
     ) -> None:
+        await self._run_gated_enrich(
+            user_id=user_id,
+            document_id=document_id,
+            data=None,
+            content_type=content_type,
+        )
+
+    async def _run_gated_enrich(
+        self,
+        *,
+        user_id: str,
+        document_id: str,
+        data: bytes | None,
+        content_type: str,
+    ) -> None:
         gate, _ = _global_enrichment_state()
         if gate.locked():
             emit_custom_event(
@@ -312,9 +331,99 @@ class DocumentIngestor:
             await self.enrich(
                 user_id=user_id,
                 document_id=document_id,
-                data=None,
+                data=data,
                 content_type=content_type,
             )
+
+    async def enrich_inline(
+        self,
+        *,
+        user_id: str,
+        document_id: str,
+        data: bytes | None,
+        content_type: str,
+    ) -> EnrichScheduleOutcome:
+        """Run enrichment in-request under the *same* admission control.
+
+        The synchronous CU analyzers make an upload terminal inside the request,
+        but they are still outbound analyzer calls: awaiting :meth:`enrich`
+        directly would bypass the pending cap and the process-wide concurrency
+        semaphore that every scheduled enrichment obeys, so N concurrent uploads
+        would open N concurrent CU requests and pin N request workers for the
+        full CU timeout. Routing through the same gate keeps the backpressure and
+        the 503 saturation path reachable, and tracking the task keeps
+        ``cancel_enrich``/``close`` able to cancel or drain an inline crack.
+
+        Unlike a scheduled enrichment this waits only briefly for a slot: a user
+        is holding an HTTP request open, so queueing behind a backlog of
+        background cracks would be indistinguishable from a hang. If the gate is
+        not free within :data:`INLINE_ENRICH_ADMISSION_TIMEOUT_S` the caller gets
+        ``saturated`` and the upload settles as retryable.
+        """
+        if self._cu is None and self._mistral is None:
+            return EnrichScheduleOutcome.disabled
+        if self._closed:
+            return EnrichScheduleOutcome.closed
+        key = (user_id, document_id)
+        existing = self._tasks.get(key)
+        if existing is not None and not existing.done():
+            return EnrichScheduleOutcome.already_running
+        gate, global_tasks = _global_enrichment_state()
+        if len(global_tasks) >= MAX_PENDING_DOCUMENT_ENRICHMENTS:
+            logger.warning(
+                "document enrichment queue saturated; leaving manifest stored",
+            )
+            emit_custom_event(
+                "document_ingest_saturated",
+                {
+                    "stage": "admission",
+                    "pending": len(global_tasks),
+                    "limit": MAX_PENDING_DOCUMENT_ENRICHMENTS,
+                },
+            )
+            return EnrichScheduleOutcome.saturated
+        try:
+            await asyncio.wait_for(
+                gate.acquire(), timeout=INLINE_ENRICH_ADMISSION_TIMEOUT_S
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            emit_custom_event(
+                "document_ingest_saturated",
+                {
+                    "stage": "concurrency",
+                    "limit": MAX_CONCURRENT_DOCUMENT_ENRICHMENTS,
+                },
+            )
+            return EnrichScheduleOutcome.saturated
+        try:
+            task = asyncio.create_task(
+                self.enrich(
+                    user_id=user_id,
+                    document_id=document_id,
+                    data=data,
+                    content_type=content_type,
+                )
+            )
+            self._tasks[key] = task
+            global_tasks.add(task)
+
+            def _done(t: asyncio.Task[None], _key=key) -> None:
+                if self._tasks.get(_key) is t:
+                    self._tasks.pop(_key, None)
+                global_tasks.discard(t)
+                if not t.cancelled():
+                    exc = t.exception()
+                    if exc is not None:  # pragma: no cover - defensive
+                        logger.warning("enrich task errored: %s", exc, exc_info=exc)
+
+            task.add_done_callback(_done)
+            # ``wait`` rather than ``await task`` so a delete cancelling the crack
+            # does not surface as a cancellation of the *request* coroutine; the
+            # caller re-reads the manifest and reports the document as gone.
+            await asyncio.wait({task})
+        finally:
+            gate.release()
+        return EnrichScheduleOutcome.scheduled
 
     async def settle_saturated(self, doc: UserDocument) -> tuple[UserDocument, str]:
         """Make an admission-rejected upload terminal and retryable."""
@@ -435,6 +544,25 @@ class DocumentIngestor:
         except AnalyzerNotFoundError:
             return None
 
+    def _analyzer_is_gated(self, analyzer: Analyzer | None) -> bool:
+        """Whether a resolved builtin is currently withheld by an operator gate.
+
+        Second gate, at the point of use. The router refuses to advertise or
+        accept a gated analyzer, but BUILTIN_ANALYZERS carries the preview
+        entries unconditionally, so re-enriching a document stored while preview
+        was on -- or any future call site -- would otherwise reach the preview
+        API with preview disabled. This must *fail* the document rather than
+        resolve to ``None``: falling through to the modality default would
+        silently analyze with an analyzer the user did not choose.
+        """
+        if analyzer is None or not analyzer.builtin:
+            return False
+        if analyzer.preview and not self._settings.cu_preview_enabled:
+            return True
+        return analyzer.id == "cu-agentic-document" and not (
+            self._settings.cu_agentic_analyzer_id
+        )
+
     async def enrich(
         self,
         *,
@@ -457,6 +585,19 @@ class DocumentIngestor:
         modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
         started = time.monotonic()
         analyzer = await self._resolve_analyzer(user_id, doc.analyzerId)
+        if self._analyzer_is_gated(analyzer):
+            # The selected analyzer is withheld by an operator gate (preview off,
+            # or agentic with no configured remote id). Fail the document rather
+            # than quietly analyzing it with the modality default the user never
+            # chose, and rather than leaving it stuck at ``stored``.
+            await self._safe_update(
+                doc,
+                {
+                    "status": DocumentStatus.failed,
+                    "error": "The selected analyzer is not currently available.",
+                },
+            )
+            return
         provider = (
             analyzer.provider
             if analyzer is not None
@@ -717,19 +858,10 @@ class DocumentIngestor:
                         else None
                     ),
                     contextualization_tokens=(
-                        int(result.usage.get("contextualizationTokens") or 0)
+                        result.contextualization_tokens_by_tier()
                         if provider is AnalyzerProvider.content_understanding
                         and result is not None
-                        and isinstance(
-                            result.usage.get("contextualizationTokens"),
-                            (int, float),
-                        )
-                        else 0
-                    ),
-                    advanced_contextualization=bool(
-                        analyzer is not None
-                        and analyzer.config.get("workflow")
-                        in {"advanced", "agentic"}
+                        else None
                     ),
                 )
             except Exception:  # noqa: BLE001 - telemetry still records terminal status
@@ -1068,8 +1200,7 @@ class DocumentIngestor:
         provider_completed: bool,
         model_usages: dict[str, tuple[int, int]] | None = None,
         page_meters: dict[str, int] | None = None,
-        contextualization_tokens: int = 0,
-        advanced_contextualization: bool = False,
+        contextualization_tokens: dict[str, int] | None = None,
     ) -> None:
         # Content Understanding has no catalog deployment; Mistral does.
         if deployment is None:
@@ -1115,20 +1246,23 @@ class DocumentIngestor:
             )
         if provider is not AnalyzerProvider.content_understanding:
             return
-        if contextualization_tokens > 0:
+        # Standard and advanced contextualization are separate meters reported
+        # separately by the service (``contextualizationTokens`` vs
+        # ``advancedContextualizationTokens``). The tier comes from the response,
+        # never from a locally authored analyzer label — a user-created analyzer
+        # must not be able to pick which price row it is billed against.
+        for tier_model_id, tier_tokens in (contextualization_tokens or {}).items():
+            if tier_tokens <= 0:
+                continue
             await self._usage.record_completion(
                 user_id=user_id,
                 session_id=_INGEST_SESSION,
-                model_id=(
-                    "content-understanding-contextualization-advanced"
-                    if advanced_contextualization
-                    else "content-understanding-contextualization-standard"
-                ),
+                model_id=tier_model_id,
                 target=target,
                 usage=TokenUsage(
-                    prompt=contextualization_tokens,
+                    prompt=tier_tokens,
                     completion=0,
-                    total=contextualization_tokens,
+                    total=tier_tokens,
                     known=True,
                     complete=True,
                     calls=1,

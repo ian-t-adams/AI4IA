@@ -580,13 +580,34 @@ async def upload_document(
         and analyzer is not None
         and analyzer.operation is AnalyzerOperation.synchronous
     ):
-        await ingestor.enrich(
+        inline = await ingestor.enrich_inline(
             user_id=uid,
             document_id=doc.id,
             data=data,
             content_type=content_type,
         )
-        doc = await repo.get_document(uid, doc.id)
+        if inline is EnrichScheduleOutcome.saturated:
+            doc, settlement = await ingestor.settle_saturated(doc)
+            if settlement != "committed":
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=(
+                        "The file was stored, but analysis capacity could not be "
+                        "recorded. Retry the same upload shortly."
+                    ),
+                    headers={"Retry-After": "5"},
+                )
+        else:
+            try:
+                doc = await repo.get_document(uid, doc.id)
+            except DocumentNotFoundError:
+                # The owner deleted the document while the synchronous analyzer
+                # was still running; enrich honoured the delete and purged it.
+                # Report it as gone rather than raising an unhandled 500.
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Document not found",
+                ) from None
     elif not result.deduped and doc.status == DocumentStatus.stored:
         scheduled = ingestor.schedule_enrich(
             user_id=uid,
@@ -631,6 +652,7 @@ async def get_document_analysis(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
     repo = _library(request)
+    await _block_disabled(request, user.internal_user_id)
     try:
         document = await repo.get_document(
             user.internal_user_id, document_id

@@ -28,6 +28,14 @@ Design mirrors :class:`~ai4ia_api.library.doc_chunks.PgDocChunkStore`:
   is on, applies the L2 *semantic reranker* for materially better top-k ordering.
   A semantic failure (tier/quota unavailable) degrades gracefully to plain hybrid;
   with no ``query_text`` it is exactly the prior pure-vector search.
+* **Backed-off semantic retries.** The reranker runs on Search's *free* semantic
+  plan (``infra/modules/search.bicep``), which is capped at 1,000 queries/month.
+  Once that cap is hit every semantic query 403s, so retrying it per request would
+  make each retrieval pay a failed round-trip plus a stack trace before falling
+  back — permanently, and silently. After a failure the store therefore suppresses
+  semantic for a cooldown that doubles up to an hour, and clears it on the first
+  success, so a transient blip recovers in minutes and an exhausted quota costs at
+  most one probe per hour instead of one per query.
 * **Injectable clients.** The async ``SearchClient`` / ``SearchIndexClient`` and the
   credential can be injected so unit tests run with fakes and no live service.
 
@@ -38,7 +46,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -53,6 +62,12 @@ _HNSW_CONFIG = "hnsw"
 # (harmless when unused); a query opts into it via ``query_type="semantic"`` when
 # semantic ranking is enabled and the query carries text.
 _SEMANTIC_CONFIG = "ai4ia-semantic"
+# Cooldown applied after a failed semantic query, doubling per consecutive failure
+# up to the cap. Bounds the cost of a permanently unavailable reranker (an
+# exhausted free-plan quota lasts until the month rolls over) while still letting a
+# transient failure recover on its own within minutes.
+_SEMANTIC_COOLDOWN_INITIAL_S = 300.0
+_SEMANTIC_COOLDOWN_MAX_S = 3600.0
 # AI Search caps an index batch at 1000 documents.
 _UPLOAD_BATCH = 1000
 # Fields read back on a query (the embedding vector is deliberately omitted — it is
@@ -142,6 +157,7 @@ class AzureSearchDocChunkStore:
         credential: Any | None = None,
         search_client: Any | None = None,
         index_client: Any | None = None,
+        time_source: Callable[[], float] | None = None,
     ) -> None:
         self._endpoint = endpoint
         self._index_name = index_name
@@ -155,6 +171,12 @@ class AzureSearchDocChunkStore:
         self._owns_index_client = index_client is None
         self._initialized = False
         self._init_lock = asyncio.Lock()
+        # Monotonic clock, injectable so the backoff is tested without sleeping.
+        self._now = time_source or time.monotonic
+        # Deadline before which semantic rerank is suppressed (None => allowed),
+        # and the cooldown to apply on the next failure.
+        self._semantic_retry_at: float | None = None
+        self._semantic_cooldown_s = _SEMANTIC_COOLDOWN_INITIAL_S
 
     # --- lazy client construction -------------------------------------------------
     async def _get_credential(self) -> Any:
@@ -339,6 +361,69 @@ class AzureSearchDocChunkStore:
             parts.append(f"({clauses})")
         return " and ".join(parts)
 
+    # --- semantic rerank availability ---------------------------------------------
+    def _semantic_allowed(self) -> bool:
+        """Whether to attempt a semantic query now (False while backing off)."""
+        if self._semantic_retry_at is None:
+            return True
+        if self._now() >= self._semantic_retry_at:
+            return True
+        return False
+
+    @staticmethod
+    def _is_service_level_failure(exc: BaseException) -> bool:
+        """Whether a semantic failure is about the *service*, not this query.
+
+        The breaker is process-wide, so it must only open for conditions that
+        affect everyone -- an exhausted semantic plan (403), throttling (429),
+        service errors, or transport failures. A request-specific rejection
+        (typically 400 for a malformed query) still falls back to hybrid for that
+        caller, but must not downgrade unrelated users for an hour.
+        """
+        status = getattr(exc, "status_code", None)
+        if status is None:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+        if not isinstance(status, int):
+            return True  # transport/unknown: treat as a service problem
+        if status in {403, 408, 429}:
+            return True
+        return status >= 500
+
+    def _trip_semantic(self) -> None:
+        """Record a semantic failure and suppress further attempts for a while.
+
+        Logged at WARNING with the traceback exactly once per trip: repeating it
+        per request is what made an exhausted quota fill the logs. Concurrent
+        failures from a single outage wave advance the backoff once, not once per
+        in-flight query.
+        """
+        already_open = (
+            self._semantic_retry_at is not None
+            and self._now() < self._semantic_retry_at
+        )
+        if already_open:
+            return
+        cooldown = self._semantic_cooldown_s
+        self._semantic_retry_at = self._now() + cooldown
+        self._semantic_cooldown_s = min(cooldown * 2, _SEMANTIC_COOLDOWN_MAX_S)
+        logger.warning(
+            "AI Search semantic rerank unavailable; falling back to hybrid and "
+            "suppressing semantic for %.0fs",
+            cooldown,
+            exc_info=True,
+        )
+
+    def _reset_semantic(self) -> None:
+        """Clear the backoff after a semantic query succeeds."""
+        if (
+            self._semantic_retry_at is None
+            and self._semantic_cooldown_s == _SEMANTIC_COOLDOWN_INITIAL_S
+        ):
+            return
+        self._semantic_retry_at = None
+        self._semantic_cooldown_s = _SEMANTIC_COOLDOWN_INITIAL_S
+        logger.info("AI Search semantic rerank recovered; resuming semantic queries")
+
     # --- DocChunkStore protocol ---------------------------------------------------
     async def add_many(
         self, records: Sequence[DocChunkRecord], vectors: Sequence[Sequence[float]]
@@ -415,10 +500,11 @@ class AzureSearchDocChunkStore:
         }
         # Hybrid + semantic L2 rerank when enabled and the query carries text. If the
         # semantic tier is unavailable (SKU/quota), degrade to plain hybrid rather
-        # than failing the retrieval turn.
-        if text is not None and self._semantic_ranking:
+        # than failing the retrieval turn, and back off so the next queries don't
+        # each pay a doomed round-trip.
+        if text is not None and self._semantic_ranking and self._semantic_allowed():
             try:
-                return await self._collect(
+                results = await self._collect(
                     client.search(
                         search_text=text,
                         query_type="semantic",
@@ -426,11 +512,18 @@ class AzureSearchDocChunkStore:
                         **base_kwargs,
                     )
                 )
-            except Exception:  # noqa: BLE001 - semantic unavailable => degrade to hybrid
-                logger.warning(
-                    "AI Search semantic rerank unavailable; falling back to hybrid",
-                    exc_info=True,
-                )
+            except Exception as exc:  # noqa: BLE001 - degrade to hybrid on failure
+                if self._is_service_level_failure(exc):
+                    self._trip_semantic()
+                else:
+                    logger.warning(
+                        "AI Search semantic query rejected; falling back to "
+                        "hybrid for this query only",
+                        exc_info=True,
+                    )
+            else:
+                self._reset_semantic()
+                return results
         return await self._collect(client.search(search_text=text, **base_kwargs))
 
     async def delete_document(self, user_id: str, document_id: str) -> int:

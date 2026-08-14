@@ -97,3 +97,57 @@ async def test_provider_error_cannot_persist_or_log_echoed_document_bytes():
     assert "PRIVATE_DOCUMENT_BYTES" not in str(captured.value)
     assert captured.value.__cause__ is None
     assert captured.value.provider_completed is True
+
+
+async def test_malformed_success_body_becomes_a_provider_error_not_a_crash():
+    """A 2xx with a non-JSON body must not escape as a raw JSONDecodeError.
+
+    The provider ran (and will bill) but the result is unreadable. Surfacing it as
+    a gateway error keeps ingest on its normal terminal-failure path and records a
+    provider-completed attempt, instead of an opaque decode crash.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>gateway timeout page</html>")
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = ModelGatewayClient(make_settings(), http_client=http)
+    try:
+        with pytest.raises(ModelGatewayError) as captured:
+            await client.analyze_document(
+                deployment="mistral-ocr-4-0-slurmfactory-eastus2-glbl",
+                data=b"%PDF",
+                content_type="application/pdf",
+            )
+    finally:
+        await http.aclose()
+
+    assert captured.value.status_code == 502
+    assert captured.value.detail == "malformed provider document response"
+
+
+async def test_provider_error_body_is_bounded_at_the_gateway():
+    """Defense in depth: the raw provider body never travels whole.
+
+    The Mistral client already reduces this to a status-only message, but the
+    gateway is the boundary where an arbitrarily long base64 echo would otherwise
+    be copied into an exception that other call sites might log.
+    """
+    echoed = "data:image/png;base64," + ("A" * 5000)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text=echoed)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = ModelGatewayClient(make_settings(), http_client=http)
+    try:
+        with pytest.raises(ModelGatewayError) as captured:
+            await client.analyze_document(
+                deployment="mistral-ocr-4-0-slurmfactory-eastus2-glbl",
+                data=b"%PDF",
+                content_type="application/pdf",
+            )
+    finally:
+        await http.aclose()
+
+    assert len(captured.value.detail) <= 200

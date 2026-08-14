@@ -117,7 +117,6 @@ def test_capability_and_voice_models_are_not_chat_targets():
         "gpt-audio",                # audio
         "gpt-realtime",             # realtime
         "text-embedding-3-large",   # embedding
-        "Cohere-rerank-v4.0-pro",   # rerank
     ):
         entry = catalog.get(model_id)
         assert entry is not None, model_id

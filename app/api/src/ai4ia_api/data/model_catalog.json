@@ -1327,36 +1327,6 @@
       ]
     },
     {
-      "id": "Cohere-rerank-v4.0-pro",
-      "displayName": "Cohere-rerank-v4.0-pro",
-      "category": "rerank",
-      "format": "Cohere",
-      "api": "chat",
-      "contextWindow": null,
-      "maxOutputTokens": null,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": null,
-      "imageQualities": null,
-      "reasoningEffort": null,
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "deploymentName": "Cohere-rerank-v4.0-pro-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "Cohere-rerank-v4.0-pro-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
       "id": "gpt-realtime",
       "displayName": "gpt-realtime",
       "category": "realtime",

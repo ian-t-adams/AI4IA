@@ -662,8 +662,22 @@ class ModelGatewayClient:
                 timeout=self._image_timeout,
             )
             if response.status_code >= 400:
-                raise ModelGatewayError(response.status_code, response.text)
-            return response.json()
+                # The provider body can echo the base64 document back at us, so
+                # only a bounded prefix is carried; callers reduce this further to
+                # a status-only message before anything is logged or persisted.
+                raise ModelGatewayError(
+                    response.status_code, response.text[:200]
+                )
+            try:
+                return response.json()
+            except ValueError as exc:
+                # A 2xx with a non-JSON body means the provider ran (and will bill)
+                # but we cannot read the result. Surface it as a gateway error so
+                # the Mistral client records a provider-completed failure instead of
+                # letting a raw JSONDecodeError escape as an opaque ingest crash.
+                raise ModelGatewayError(
+                    502, "malformed provider document response"
+                ) from exc
         finally:
             if owned:
                 await client.aclose()

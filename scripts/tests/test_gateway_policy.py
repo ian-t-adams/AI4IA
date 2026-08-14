@@ -36,6 +36,44 @@ docs_generator = load_script("gen_docs_catalog", "scripts/gen-docs-catalog.py")
 
 
 class GatewayPolicyTests(unittest.TestCase):
+    def test_category_without_a_gateway_surface_fails_generation(self) -> None:
+        """A capability the gateway cannot serve must not get a fabricated route.
+
+        `provider_path` falls back to "openai" for any unrecognised api, so a
+        category with no real surface silently produced a plausible-looking
+        OpenAI backend that could only ever 404. `Cohere-rerank-v4.0-pro` shipped
+        that way: deployed in two regions, emitted into the APIM catalog under
+        `path: "openai"`, callable by nothing.
+        """
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        models["catalog"].append(
+            {
+                "name": "Some-rerank-v1",
+                "format": "Cohere",
+                "category": "rerank",
+                "deployments": [
+                    {
+                        "region": "eastus2",
+                        "sku": "GlobalStandard",
+                        "capacity": 50,
+                        "version": "1",
+                    }
+                ],
+            }
+        )
+        with self.assertRaises(ValueError) as captured:
+            gateway_generator.render_catalog(models)
+        self.assertIn("no gateway surface", str(captured.exception))
+
+    def test_every_shipped_category_is_routable(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        categories = {model["category"] for model in models["catalog"]}
+        self.assertTrue(
+            categories <= gateway_generator.ROUTABLE_CATEGORIES,
+            f"unroutable categories shipped: "
+            f"{sorted(categories - gateway_generator.ROUTABLE_CATEGORIES)}",
+        )
+
     def test_mixed_case_catalog_keys_match_normalized_model_headers(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
         blocks, _ = gateway_generator.render_catalog(models)
