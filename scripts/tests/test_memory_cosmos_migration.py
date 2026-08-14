@@ -8,7 +8,10 @@ from typing import Any
 
 import pytest
 
-from scripts.tests._loader import load_script
+if __package__:
+    from ._loader import load_script
+else:
+    from _loader import load_script
 
 SCRIPT = Path(__file__).parents[1] / "migrate-memory-to-cosmos.py"
 migration = load_script("memory_cosmos_migration", SCRIPT, register=True)
