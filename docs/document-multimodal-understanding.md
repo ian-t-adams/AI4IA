@@ -153,6 +153,16 @@ Both use `2026-06-01-preview`, carry no SLA, accept at most 10 MB, and process a
 most five PDF pages. Unlike normal enrichment, the upload request waits for their
 terminal result. The automatic analyzer never silently switches to preview.
 
+Because the request waits, the synchronous path takes the *same* admission
+control as background enrichment — the shared pending cap and the four-way
+concurrency semaphore — so concurrent synchronous uploads cannot open unbounded
+concurrent CU calls. It waits only briefly for a slot (a user is holding the
+request open); if none frees up the upload settles as retryable rather than
+hanging. Deleting the document while its synchronous analyzer is still running
+returns **404**, and turning preview off while a preview-analyzed document is
+still awaiting enrichment **fails** that document instead of quietly re-analyzing
+it with the default analyzer.
+
 Every CU result now persists a bounded owner-scoped `analysis.json` sidecar with
 structured fields, source/confidence evidence, signatures/metadata, warnings,
 usage, and content-filter records. The library card surfaces evidence counts and
