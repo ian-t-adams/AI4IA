@@ -104,15 +104,33 @@ cd D:\ai4ia-web-scratch; npm install --no-audit --no-fund
 # 2. Junction it in (app/web/.gitignore already ignores /node_modules).
 cmd /c mklink /J <repo>\app\web\node_modules D:\ai4ia-web-scratch\node_modules
 
-# 3. Both gates now run.
+# 3. These two gates now run.
 cd <repo>\app\web; npm test; npm run lint
 ```
 
-Two caveats. The tree is **not lockfile-exact** — that is why it installs at all;
-CI remains authoritative for reproducibility. And on a workstation running a
+Three caveats. The tree is **not lockfile-exact** — that is why it installs at all;
+CI remains authoritative for reproducibility. On a workstation running a
 Node major above the pinned 22, `ThemeProvider.test.tsx` fails with
 `localStorage is not available because --localstorage-file was not provided`.
 That is an engine mismatch, not a defect. Do not "fix" those tests.
+
+And **`npm run build` does not work through the junction at all**, on any drive.
+Turbopack refuses to resolve a reparse point whose target lies outside the
+project tree and fails during entrypoint discovery, before it compiles a single
+source file:
+
+```text
+Symlink [project]/node_modules is invalid, it points out of the filesystem root
+  - Execution of find_package failed
+```
+
+Nothing in that message mentions the junction you created, so it reads as a
+project defect. It is not: `tsc --noEmit` and `npm test` both pass against the
+same tree. To run the build, replace the junction with a real directory
+(`robocopy <scratch>\node_modules <repo>\app\web\node_modules /E /MT:16`) and
+delete `app\web\.next` afterwards. That matters because `tsc` does **not** cover
+everything the build does — a missing `"use client"` directive on an extracted
+component type-checks cleanly and fails only at build time.
 
 ### API (`app/api`), Python 3.12
 
