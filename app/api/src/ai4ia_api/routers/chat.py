@@ -31,7 +31,6 @@ from ..logging_setup import emit_custom_event, emit_security_block, get_correlat
 from ..sessions.models import Message, MessageAttachment, MessageRole, MessageStatus, Session
 from ..sessions.repository import (
     SessionConflictError,
-    SessionNotFoundError,
     SessionRepository,
 )
 from ..agents.agent_catalog import AgentCatalog, AgentSpec
@@ -233,22 +232,6 @@ def _prompt_byte_budget(entry: ModelEntry | None, params: dict) -> int:
     )
 
 
-def _message_budget_bytes(message: dict) -> int:
-    return message_budget_bytes(message)
-
-
-def _bound_payload_history(
-    messages: list[dict], *, prompt_budget_bytes: int
-) -> tuple[list[dict], int, int]:
-    """Drop the oldest contiguous history suffix overflow.
-
-    Every system message and the current (last) user message are fixed. Remaining
-    conversational history is admitted newest-first as a contiguous suffix, so
-    truncation never keeps an older turn while dropping a newer one.
-    """
-    return bound_payload_history(messages, prompt_budget_bytes=prompt_budget_bytes)
-
-
 def _bound_history_with_optional_summary(
     recent_messages: list[dict],
     fallback_messages: list[dict],
@@ -257,18 +240,18 @@ def _bound_history_with_optional_summary(
     prompt_budget_bytes: int,
 ) -> tuple[list[dict], int, int, bool]:
     """Admit a summary only after the newest verbatim suffix has won its budget."""
-    bounded, dropped, dropped_bytes = _bound_payload_history(
+    bounded, dropped, dropped_bytes = bound_payload_history(
         recent_messages, prompt_budget_bytes=prompt_budget_bytes
     )
     if not summary_block:
         return bounded, dropped, dropped_bytes, False
     summary_message = {"role": "system", "content": summary_block}
-    used = sum(_message_budget_bytes(message) for message in bounded)
-    if used + _message_budget_bytes(summary_message) <= prompt_budget_bytes:
+    used = sum(message_budget_bytes(message) for message in bounded)
+    if used + message_budget_bytes(summary_message) <= prompt_budget_bytes:
         insert_at = 1 if bounded and bounded[0].get("role") == "system" else 0
         bounded.insert(insert_at, summary_message)
         return bounded, dropped, dropped_bytes, True
-    bounded, dropped, dropped_bytes = _bound_payload_history(
+    bounded, dropped, dropped_bytes = bound_payload_history(
         fallback_messages, prompt_budget_bytes=prompt_budget_bytes
     )
     return bounded, dropped, dropped_bytes, False
@@ -773,10 +756,7 @@ async def chat(
         request.app.state, "document_artifacts", None
     )
 
-    try:
-        session = await repo.get_session(user.internal_user_id, body.sessionId)
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    session = await repo.get_session(user.internal_user_id, body.sessionId)
 
     parsed = parse_input(body.content)
 
@@ -1023,7 +1003,7 @@ async def chat(
     bounded_prompt_budget = max(
         1,
         prompt_budget_bytes
-        - _message_budget_bytes(
+        - message_budget_bytes(
             {"role": "system", "content": _RESPONSES_NO_TOOLS_NOTICE}
         ),
     )
@@ -1243,7 +1223,7 @@ async def chat(
     if summary_block and not summary_retained:
         summary_block = ""
         dropped_context_blocks.append("summary")
-    used_prompt_bytes = sum(_message_budget_bytes(message) for message in payload_messages)
+    used_prompt_bytes = sum(message_budget_bytes(message) for message in payload_messages)
     insert_at = 1 if (payload_messages and payload_messages[0]["role"] == "system") else 0
     if summary_retained:
         insert_at += 1
@@ -1257,7 +1237,7 @@ async def chat(
         if not block:
             continue
         context_message = {"role": "system", "content": block}
-        context_bytes = _message_budget_bytes(context_message)
+        context_bytes = message_budget_bytes(context_message)
         if used_prompt_bytes + context_bytes > bounded_prompt_budget:
             dropped_context_blocks.append(block_name)
             if block_name == "library":

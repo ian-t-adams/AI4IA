@@ -52,6 +52,11 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
 
 ### MAI capacity and version review (2026-08-12)
 
+> **Point-in-time snapshot of one subscription.** Quota, platform capacity, and
+> model availability change continuously. Run `python scripts/check-model-availability.py`
+> and `az cognitiveservices usage list --location <region>` against your own
+> subscription before acting on this table.
+
 | Model | Catalog state | Subscription/platform capacity | Decision |
 |---|---|---|---|
 | `MAI-Thinking-1` `2026-06-01` | Public Preview, current/default; both deployments `Succeeded` | 100K of 500K quota used | Live at 50K in East US 2 + 50K in Sweden Central, preserving 400K headroom and regional failover. Both use globally routed `GlobalStandard`. |
@@ -62,6 +67,11 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
 | `MAI-DS-R1` | Quota counter exists, but no deployable offer in the checked regions | 1000K unused quota is not entitlement | Do not add unless the live model catalog offers it again. |
 
 ### FLUX and requested-model review (2026-08-12)
+
+> **Point-in-time snapshot of one subscription.** Quota, platform capacity, and
+> model availability change continuously. Run `python scripts/check-model-availability.py`
+> and `az cognitiveservices usage list --location <region>` against your own
+> subscription before acting on this table.
 
 | Model/family | Live subscription state | Decision |
 |---|---|---|

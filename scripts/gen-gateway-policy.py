@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import html
 import json
 import re
@@ -11,6 +10,9 @@ import sys
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _generator import build_parser
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_PATH = ROOT / "infra" / "models.json"
@@ -1047,12 +1049,7 @@ def validate_speech_voice_live_policy(policy: str, source: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="fail when the checked-in fragment differs from generated output",
-    )
+    parser = build_parser(__doc__)
     args = parser.parse_args()
     models = json.loads(MODELS_PATH.read_text(encoding="utf-8"))
     generated, catalog_fragments = generate_endpoint_policies()

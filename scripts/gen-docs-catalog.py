@@ -27,12 +27,14 @@ Verify-only (CI drift):  python scripts/gen-docs-catalog.py --check
 """
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _generator import build_parser, check_or_write
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "site" / "data" / "docs.manifest.json"
@@ -218,12 +220,7 @@ def check_meta_posture(errors: list[str]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Exit non-zero if docs.js is stale or the portal docs are untriaged/inconsistent (no write).",
-    )
+    parser = build_parser(__doc__)
     args = parser.parse_args()
 
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -238,17 +235,17 @@ def main() -> int:
         return 1
 
     if args.check:
-        current = TARGET.read_text(encoding="utf-8") if TARGET.exists() else ""
-        if current != rendered:
-            print(
-                "docs.js is stale. Run: python scripts/gen-docs-catalog.py",
-                file=sys.stderr,
-            )
-            return 1
-        print("docs.js is up to date; portal docs are complete and consistent.")
-        return 0
+        rc = check_or_write(
+            TARGET,
+            rendered,
+            regenerate_hint="docs.js is stale. Run: python scripts/gen-docs-catalog.py",
+            check=True,
+        )
+        if rc == 0:
+            print("docs.js is up to date; portal docs are complete and consistent.")
+        return rc
 
-    TARGET.write_text(rendered, encoding="utf-8")
+    check_or_write(TARGET, rendered, regenerate_hint="", check=False)
     doc_count = sum(len(s["docs"]) for s in manifest["sections"])
     print(f"Wrote {TARGET.relative_to(REPO_ROOT)} ({doc_count} docs).")
     return 0

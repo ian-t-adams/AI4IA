@@ -483,7 +483,13 @@ class VoiceLiveDocumentationContractTests(unittest.TestCase):
             config,
         )
 
-    def test_live_evidence_does_not_replace_template_default(self) -> None:
+    def test_enabling_both_providers_does_not_replace_the_template_default(self) -> None:
+        """Both providers can be served, and the template still defaults to one.
+
+        The two-provider configuration is the thing an operator most easily
+        mistakes for the shipped default, so each document must carry the exact
+        settings *and* restate that the template ships Speech Voice Live off.
+        """
         deployment = self._read(DEPLOYMENT_DOC)
         config = self._read(CONFIG_DOC)
         architecture = self._read(ARCHITECTURE_DOC)
@@ -498,10 +504,11 @@ class VoiceLiveDocumentationContractTests(unittest.TestCase):
                     "AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live",
                     text,
                 )
+                # The canary must be described as covering both providers, so a
+                # reader cannot enable Speech and verify only Azure OpenAI.
                 self.assertIn("speech_voice_live/gpt-realtime", text)
                 self.assertIn("azure_openai/gpt-realtime", text)
                 self.assertIn("outcome=success", text)
-                self.assertIn("2026-08-08", text)
 
         self.assertIn("speechVoiceLiveEnabled=false", deployment)
         self.assertIn("Template default OFF", config)

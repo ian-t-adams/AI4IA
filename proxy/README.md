@@ -239,7 +239,7 @@ against `upstream-provenance.json` as unpatched blobs.
 
 The retained provenance is deliberately marked unsigned. Production signing and
 verification would require an approved keyless identity policy or managed key
-and a deploy-time verification design; those remain a roadmap gap rather than
+and a deploy-time verification design; those remain open work rather than
 new unreviewed Azure infrastructure in this repository.
 
 ## Current scope

@@ -3,13 +3,15 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _generator import build_parser
 
 ROOT = Path(__file__).resolve().parents[1]
 PROXY_ROOT = ROOT / "proxy"
@@ -265,8 +267,7 @@ def check() -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true")
+    parser = build_parser(__doc__)
     parser.add_argument("--upstream-ref", default="FETCH_HEAD")
     args = parser.parse_args()
     if args.check:

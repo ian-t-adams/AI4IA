@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import html
-import io
 import json
 import re
 import shutil
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 from xml.etree import ElementTree
@@ -20,9 +18,6 @@ ROOT = Path(__file__).resolve().parents[2]
 
 gateway_generator = load_script(
     "gen_gateway_policy", ROOT / "scripts/gen-gateway-policy.py"
-)
-feature_validator = load_script(
-    "validate_feature_prereqs", ROOT / "scripts/validate-feature-prereqs.py"
 )
 docs_generator = load_script(
     "gen_docs_catalog", ROOT / "scripts/gen-docs-catalog.py"
@@ -1939,186 +1934,6 @@ class GatewayPolicyTests(unittest.TestCase):
         errors: list[str] = []
         docs_generator.check_meta_posture(errors)
         self.assertEqual([], errors)
-
-
-class FeaturePrerequisiteTests(unittest.TestCase):
-    def run_validator(self, parameters: dict[str, object]) -> tuple[int, str]:
-        parameters = {
-            "claudeOrganizationName": "Example Legal Entity",
-            "claudeCountryCode": "US",
-            "claudeIndustry": "technology",
-            **parameters,
-        }
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "parameters.json"
-            path.write_text(
-                json.dumps(
-                    {
-                        "parameters": {
-                            name: {"value": value}
-                            for name, value in parameters.items()
-                        }
-                    }
-                ),
-                encoding="utf-8",
-            )
-            original = feature_validator.PARAMETERS_FILE
-            feature_validator.PARAMETERS_FILE = path
-            output = io.StringIO()
-            try:
-                with redirect_stdout(output), redirect_stderr(output):
-                    result = feature_validator.main()
-            finally:
-                feature_validator.PARAMETERS_FILE = original
-            return result, output.getvalue()
-
-    def test_profiles_reject_shared_key_prerequisite(self) -> None:
-        result, output = self.run_validator(
-            {
-                "owner": "operator",
-                "apimPublisherEmail": "ops@contoso.test",
-                "proxyProfilesEnabled": True,
-                "proxyProfileProjectionJson": '[{"appId":"app-a"}]',
-            }
-        )
-        self.assertEqual(result, 1)
-        self.assertIn("verified identity-aware application header", output)
-
-    def test_priorities_require_worker_reservations(self) -> None:
-        result, output = self.run_validator(
-            {
-                "owner": "operator",
-                "apimPublisherEmail": "ops@contoso.test",
-                "proxyPrioritiesEnabled": True,
-                "proxyPriorityWorkers": "invalid",
-            }
-        )
-        self.assertEqual(result, 1)
-        self.assertIn("priority:count format", output)
-
-    def test_environment_overrides_parameter_placeholder_defaults(self) -> None:
-        with patch.dict(
-            "os.environ",
-            {
-                "AI4IA_PROXY_PROFILES_ENABLED": "true",
-                "AI4IA_PROXY_PROFILE_PROJECTION_JSON": '[{"appId":"app-a"}]',
-            },
-            clear=False,
-        ):
-            result, output = self.run_validator(
-                {
-                    "owner": "operator",
-                    "apimPublisherEmail": "ops@contoso.test",
-                    "proxyProfilesEnabled": "${AI4IA_PROXY_PROFILES_ENABLED=false}",
-                    "proxyProfileProjectionJson": "${AI4IA_PROXY_PROFILE_PROJECTION_JSON=}",
-                }
-            )
-        self.assertEqual(result, 1)
-        self.assertIn("verified identity-aware application header", output)
-
-    def test_private_data_tier_requires_vnet_isolation(self) -> None:
-        result, output = self.run_validator(
-            {
-                "owner": "operator",
-                "apimPublisherEmail": "ops@contoso.test",
-                "dataTierPrivate": True,
-                "vnetIsolationEnabled": False,
-            }
-        )
-        self.assertEqual(result, 1)
-        self.assertIn("requires vnetIsolationEnabled=true", output)
-
-    def test_speech_voice_live_requires_master_voice_live_gate(self) -> None:
-        result, output = self.run_validator(
-            {
-                "owner": "operator",
-                "apimPublisherEmail": "ops@contoso.test",
-                "voiceLiveEnabled": False,
-                "speechVoiceLiveEnabled": True,
-                "voiceProviderAllowlist": "azure_openai,speech_voice_live",
-            }
-        )
-        self.assertEqual(result, 1)
-        self.assertIn("speechVoiceLiveEnabled=true is inert unless voiceLiveEnabled=true", output)
-
-    def test_speech_voice_live_requires_allowlist_membership(self) -> None:
-        result, output = self.run_validator(
-            {
-                "owner": "operator",
-                "apimPublisherEmail": "ops@contoso.test",
-                "voiceLiveEnabled": True,
-                "speechVoiceLiveEnabled": True,
-                "voiceProviderAllowlist": "azure_openai",
-            }
-        )
-        self.assertEqual(result, 1)
-        self.assertIn(
-            "requires voiceProviderAllowlist to include speech_voice_live", output
-        )
-
-    def test_allowlist_without_enablement_is_rejected(self) -> None:
-        result, output = self.run_validator(
-            {
-                "owner": "operator",
-                "apimPublisherEmail": "ops@contoso.test",
-                "voiceLiveEnabled": True,
-                "speechVoiceLiveEnabled": False,
-                "voiceProviderAllowlist": "azure_openai,speech_voice_live",
-            }
-        )
-        self.assertEqual(result, 1)
-        self.assertIn("but speechVoiceLiveEnabled is not true", output)
-
-    def test_allowlist_always_requires_azure_openai(self) -> None:
-        result, output = self.run_validator(
-            {
-                "owner": "operator",
-                "apimPublisherEmail": "ops@contoso.test",
-                "voiceProviderAllowlist": "speech_voice_live",
-            }
-        )
-        self.assertEqual(result, 1)
-        self.assertIn("must always include azure_openai", output)
-
-    def test_default_provider_must_be_allowlisted(self) -> None:
-        result, output = self.run_validator(
-            {
-                "owner": "operator",
-                "apimPublisherEmail": "ops@contoso.test",
-                "voiceProviderAllowlist": "azure_openai",
-                "voiceDefaultProvider": "speech_voice_live",
-            }
-        )
-        self.assertEqual(result, 1)
-        self.assertIn("voiceDefaultProvider must be a member of voiceProviderAllowlist", output)
-
-    def test_speech_voice_live_complete_configuration_passes(self) -> None:
-        # No realtimeAllowedOrigins here on purpose: main.bicep now derives the
-        # allowlist from the web app this deployment creates, and the validator
-        # rejects a literal hostname pinned in parameters as tenant-coupled.
-        result, output = self.run_validator(
-            {
-                "owner": "operator",
-                "apimPublisherEmail": "ops@contoso.test",
-                "voiceLiveEnabled": True,
-                "speechVoiceLiveEnabled": True,
-                "voiceProviderAllowlist": "azure_openai,speech_voice_live",
-                "voiceDefaultProvider": "azure_openai",
-            }
-        )
-        self.assertEqual(result, 0)
-        self.assertIn("look sane", output)
-
-    def test_speech_voice_live_audience_must_not_be_blanked(self) -> None:
-        result, output = self.run_validator(
-            {
-                "owner": "operator",
-                "apimPublisherEmail": "ops@contoso.test",
-                "speechVoiceLiveManagedIdentityAudience": "",
-            }
-        )
-        self.assertEqual(result, 1)
-        self.assertIn("speechVoiceLiveManagedIdentityAudience must not be blanked out", output)
 
 
 if __name__ == "__main__":

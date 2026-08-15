@@ -1,9 +1,8 @@
 // Application data stores: Cosmos DB (NoSQL) — the canonical store for app data
 // and per-user vector memory. Identity-based auth only (no keys/passwords).
 //
-// PostgreSQL Flexible Server was retired here on 2026-08-06 after the memory
-// migration to Cosmos completed. Do not reintroduce it without re-reading
-// `docs/runbooks/memory-migration.md`; `scripts/tests/test_postgres_retired.py`
+// PostgreSQL Flexible Server was retired here after the memory migration to
+// Cosmos completed. Do not reintroduce it: `scripts/tests/test_postgres_retired.py`
 // fails if provisioning comes back.
 @description('Location for the data stores.')
 param location string

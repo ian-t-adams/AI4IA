@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from typing import Awaitable, Callable
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,6 +23,42 @@ def make_settings(**overrides) -> Settings:
     base.update(overrides)
     # _env_file=None isolates tests from a developer's local .env file.
     return Settings(_env_file=None, **base)
+
+
+class FakeUsage:
+    """Minimal usage-service stub shared by doc-ingest test modules."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def record_completion(self, **kwargs) -> None:
+        self.calls.append(kwargs)
+
+
+class FakeEmbedder:
+    """Minimal embedder stub shared by doc-ingest test modules.
+
+    Supports an optional ``on_embed`` async callback (used by the race tests for
+    precise timing control) and a ``calls`` counter alongside the ``embedded``
+    text list.  The output shape is always a 3-element float vector so that the
+    in-memory chunk store (``expected_dim=3``) accepts it without adjustment.
+    """
+
+    def __init__(
+        self,
+        *,
+        on_embed: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        self.on_embed = on_embed
+        self.embedded: list[str] = []
+        self.calls: int = 0
+
+    async def embed(self, inputs: list[str]) -> list[list[float]]:
+        self.calls += 1
+        self.embedded.extend(inputs)
+        if self.on_embed is not None:
+            await self.on_embed()
+        return [[float(len(t) % 5), 1.0, 0.0] for t in inputs]
 
 
 class FakeGateway:

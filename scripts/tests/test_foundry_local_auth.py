@@ -29,8 +29,7 @@ a future reader will want when something 401s:
   Foundry, so it is unaffected.
 
 What this does NOT close: the api identity still holds Foundry data-plane roles,
-because Code Interpreter needs them until it runs in its own workload. See
-`docs/roadmap.md` P1-4(b).
+because Code Interpreter needs them until it runs in its own workload.
 """
 from __future__ import annotations
 

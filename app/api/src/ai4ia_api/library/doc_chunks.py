@@ -8,8 +8,8 @@ Search is always scoped to ``user_id`` and may be further restricted to a set of
 
 The durable implementation is
 :class:`~ai4ia_api.library.ai_search_chunks.AzureSearchDocChunkStore`. A
-Postgres/pgvector store lived here until 2026-08-06; it was removed with the
-PostgreSQL server it required (see ``docs/runbooks/memory-migration.md``).
+Postgres/pgvector store lived here until it was removed with the PostgreSQL
+server it required; Azure AI Search is now the only durable chunk index.
 """
 from __future__ import annotations
 

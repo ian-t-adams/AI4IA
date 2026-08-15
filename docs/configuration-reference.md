@@ -101,7 +101,7 @@ the container — those names are *outputs*, not knobs you set.
 | Inline attachment compute | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | `inlineDocumentComputeEnabled` | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | Profile default `true`; uses the same Code Interpreter endpoint/model as library compute. |
 | Raw-file compute | `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` | `codeInterpreterRawFilesEnabled` | `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` (Bicep default `false`; profile default `true`), `AI4IA_CODE_INTERPRETER_MAX_RAW_FILE_BYTES` (default 25 MiB) | Requires library compute (`documentUnderstandingEnabled` + `documentComputeEnabled` + a code-interpreter base URL; `api.bicep` emits the env var only when all three hold). When off, `run_code` sees only Content Understanding's **parsed text**; when on it uploads the document's **original bytes** to the sandbox so the model reads the real PDF/xlsx/csv. Falls back to parsed text on any unsupported type, oversize original, or upload failure. |
 | Azure AI Search | `AI4IA_SEARCH_ENABLED`, `AI4IA_SEARCH_LOCATION`, `AI4IA_SEARCH_SKU`, `AI4IA_SEARCH_SEMANTIC_PLAN`, `AI4IA_SEARCH_INDEX_PER_USER` | `searchEnabled`, `searchLocation`, `searchSku`, `searchSemanticPlan`, `searchIndexPerUser` | `AI4IA_SEARCH_ENDPOINT` and `AI4IA_SEARCH_INDEX_PER_USER` when provisioned | Profile default `true`; `AI4IA_SEARCH_LOCATION` profile default `eastus` (the raw Bicep default is empty, meaning "use the primary location"), and the region must have Search SKU capacity. Retrieval is hybrid vector + BM25, with the L2 semantic reranker on top when semantic ranking is on. `AI4IA_SEARCH_INDEX_NAME` (default `ai4ia-doc-chunks`) and `AI4IA_SEARCH_SEMANTIC_RANKING` (default `true`) are **API-side defaults that Bicep does not emit** — change them in code, not by setting a container env var, which a deploy would replace. **`AI4IA_SEARCH_INDEX_PER_USER=true` gives each user their own index** (`<AI4IA_SEARCH_INDEX_NAME>-u<hash>`), so the index name is a *prefix* in that mode; the per-user `user_id` filter is applied on every query either way, so isolation never rests on index routing alone. The trade is that the tier's index limit becomes a ceiling on **users** — 15 basic / **50 standard S1** / 200 S2-S3 — and the user past it cannot upload; that is raised as a named quota error, not a bare 400. Set `AI4IA_SEARCH_INDEX_PER_USER=false` for one shared index. Switching this value **strands existing chunks in the previous index** and needs a reindex (see [deployment runbook](runbooks/deployment.md#switching-the-search-index-tenancy-model)). Defaults are SKU `standard` (S1) and the **`standard` semantic plan**, which is billed per query (~$1 per 1,000) and has no monthly cap. Setting `AI4IA_SEARCH_SEMANTIC_PLAN=free` reverts to the free plan's 1,000 semantic queries/month, past which every semantic query fails, retrieval degrades to plain hybrid, and the store suppresses further semantic attempts for a cooldown that starts at 5 minutes, doubles per consecutive failure to a 1-hour cap, and clears on the first success. That breaker is retained on the paid plan too — only service-level failures (403/408/429/5xx/transport) open it; a request-specific rejection falls back for that query alone. Set `AI4IA_SEARCH_SEMANTIC_RANKING=false` to force plain hybrid. **`AI4IA_SEARCH_SKU` is not applied to an existing service by `azd provision`** — re-tier it explicitly with `az search service update --sku`, then align this value (see [deployment runbook](runbooks/deployment.md#changing-the-azure-ai-search-tier)). |
-| Durable workflow execution | `AI4IA_ENABLE_DURABLE_WORKFLOWS` | `enableDurableWorkflows`, `durableTaskSkuName`, `durableWorkflowTimeoutSeconds` | `AI4IA_DURABLE_WORKFLOWS_ENABLED`, `AI4IA_DURABLE_TASK_ENDPOINT`, `AI4IA_DURABLE_TASK_HUB_NAME`, `AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS` (default 1800) | **Provisions a paid Azure resource** (Durable Task Scheduler + task hub), so enabling it needs an approved deploy; approved and **on since 2026-08-02**, with the azd token retained for per-environment opt-out. Requires `AI4IA_SESSION_STORE=cosmos` — durability without shared storage is theatre, since a resumed orchestration on another replica must see the same session state. Both the endpoint and hub name are required outside `local`; `validate_runtime` fails closed if either is missing. When off, `POST /api/workflows/{name}/run` with `"durable": true` returns **422**, never a silent synchronous fallback. |
+| Durable workflow execution | `AI4IA_ENABLE_DURABLE_WORKFLOWS` | `enableDurableWorkflows`, `durableTaskSkuName`, `durableWorkflowTimeoutSeconds` | `AI4IA_DURABLE_WORKFLOWS_ENABLED`, `AI4IA_DURABLE_TASK_ENDPOINT`, `AI4IA_DURABLE_TASK_HUB_NAME`, `AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS` (default 1800) | **Provisions a paid Azure resource** (Durable Task Scheduler + task hub), so enabling it needs an approved deploy; the azd token is retained for per-environment opt-out. Requires `AI4IA_SESSION_STORE=cosmos` — durability without shared storage is theatre, since a resumed orchestration on another replica must see the same session state. Both the endpoint and hub name are required outside `local`; `validate_runtime` fails closed if either is missing. When off, `POST /api/workflows/{name}/run` with `"durable": true` returns **422**, never a silent synchronous fallback. |
 | Image generation | `AI4IA_IMAGE_GENERATION_ENABLED` | `imageGenerationEnabled` | `AI4IA_IMAGE_BLOB_ACCOUNT_URL` when provisioned | Profile default `true`; requires an image-capable deployment and generated-media storage. |
 | Video generation | `AI4IA_VIDEO_GENERATION_ENABLED` | `videoGenerationEnabled` | `AI4IA_VIDEO_BLOB_ACCOUNT_URL` when provisioned | Profile default `true`; requires a video-capable deployment and generated-media storage. |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | `AI4IA_CUSTOM_TOOLS_ENABLED`, `CUSTOM_TOOLS_ENABLED` | Profile default `true`; requires Cosmos + Key Vault and Entra auth outside local/dev. |
@@ -228,7 +228,7 @@ server-authoritative default). It routes
   parameter `speechVoiceLiveManagedIdentityAudience` (default `https://ai.azure.com`,
   matching the `azure-ai-voicelive` SDK default) — this is not an app runtime
   setting and the browser cannot influence it. The selected account accepted this
-  audience during the authenticated 2026-08-08 Speech canary; do not change the
+  audience during the authenticated Speech canary; do not change the
   default without repeating that validation.
 - APIM grants that identity **Cognitive Services User** and **Foundry User**
   (formerly Azure AI User) roles scoped only to the one selected AIServices
@@ -286,14 +286,20 @@ must resolve to the direct FastAPI Container App origin. Never point this canary
 at the web/Next.js hostname: that HTTP proxy does not support WebSockets. The web
 origin is still required as `--origin`.
 
-> **Observed current environment, 2026-08-08.** Repository variables set
-> `AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` and
-> `AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live`; the running API
-> environment matches, the shared APIM contains the Speech API, and authenticated
-> direct-FastAPI canaries returned `outcome=success` for both
-> `speech_voice_live/gpt-realtime` and `azure_openai/gpt-realtime`. The default
-> remains `azure_openai`. This evidence does not change the template-default table
-> above.
+> **Verify current enablement by reading the deployed Container App environment.**
+> Do not infer Voice Live or Speech Voice Live posture from repository variables
+> alone: the template default for Speech Voice Live is off, and per-environment
+> overrides take precedence. The `default` in the table above reflects the template
+> default only.
+
+To serve both voice providers, set `AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` and
+`AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live`, and confirm the
+shared APIM carries the Speech API. `azure_openai` remains the default provider;
+the allowlist widens what a user may select, it does not change the default.
+Prove the result rather than assuming it — an authenticated direct-FastAPI canary
+must return `outcome=success` for both `speech_voice_live/gpt-realtime` and
+`azure_openai/gpt-realtime` before you rely on either. None of this changes the
+template-default table above.
 
 The relay's `voice_live_completion` record carries `correlationId`, provider,
 model/usage target, outcome, bounded protocol error and close metadata, source

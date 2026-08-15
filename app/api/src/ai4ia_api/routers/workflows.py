@@ -42,7 +42,7 @@ from ..entitlements.service import EntitlementService
 from ..gateway.client import ModelGatewayClient
 from ..logging_setup import get_correlation_id
 from ..sessions.models import Message, MessageRole, MessageStatus
-from ..sessions.repository import SessionNotFoundError, SessionRepository
+from ..sessions.repository import SessionRepository
 from ..usage.service import UsageService
 from ..workflows.durable import (
     DurableScheduleAcceptanceUnknownError,
@@ -364,10 +364,7 @@ async def run_workflow_endpoint(
     entitlements: EntitlementService = request.app.state.entitlements
     uid = user.internal_user_id
 
-    try:
-        session = await repo.get_session(uid, body.sessionId)
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    session = await repo.get_session(uid, body.sessionId)
 
     workflow = await _service(request).get(uid, name)
     if workflow is None:

@@ -25,25 +25,7 @@ from ai4ia_api.library.models import (
     UserDocument,
 )
 from ai4ia_api.library.repository import DocumentNotFoundError
-from tests.conftest import make_settings
-
-
-class FakeUsage:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
-
-    async def record_completion(self, **kwargs) -> None:
-        self.calls.append(kwargs)
-
-
-class FakeEmbedder:
-    def __init__(self, dim: int = 3) -> None:
-        self.dim = dim
-        self.embedded: list[str] = []
-
-    async def embed(self, inputs):
-        self.embedded.extend(inputs)
-        return [[float(len(t) % 5), 1.0, 0.0] for t in inputs]
+from tests.conftest import FakeEmbedder, FakeUsage, make_settings
 
 
 class FakeCU:
@@ -921,16 +903,7 @@ async def test_enrich_caps_chunks_and_batches_embed():
     library = InMemoryDocumentLibraryRepository()
     chunks = InMemoryDocChunkStore(expected_dim=3)
 
-    class CountingEmbedder(FakeEmbedder):
-        def __init__(self) -> None:
-            super().__init__()
-            self.batches = 0
-
-        async def embed(self, inputs):
-            self.batches += 1
-            return await super().embed(inputs)
-
-    embedder = CountingEmbedder()
+    embedder = FakeEmbedder()
     # ~28-char paragraphs at document_chunk_chars=40 → one chunk each (>3 total).
     md = "# T\n\n" + "\n\n".join(f"paragraph number {i:02d} text" for i in range(12))
     cu = FakeCU(result=_succeeded(md))
@@ -955,7 +928,7 @@ async def test_enrich_caps_chunks_and_batches_embed():
     assert doc.chunkCount == 3  # capped from >3
     hits = await chunks.search("u1", [1.0, 1.0, 0.0], top_k=50)
     assert len(hits) == 3
-    assert embedder.batches == 3  # batch size 1 → one embed round-trip per chunk
+    assert embedder.calls == 3  # batch size 1 → one embed round-trip per chunk
 
 
 # --- audio/video time-grounded enrich ---

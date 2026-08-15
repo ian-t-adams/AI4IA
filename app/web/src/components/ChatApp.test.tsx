@@ -6,12 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatApp } from "./ChatApp";
 import type { Session, ToolCatalogItem } from "@/lib/types";
 import {
-  CHAT_ATTACHMENT_CAPABILITIES,
-  CHAT_MODEL_CATALOG,
-  DISABLED_MEMORY,
-  emptyLibrarySummary,
   makeChatSession,
-  makeInspectorSnapshot,
+  resetChatAppMocks,
 } from "./chatTestFixtures";
 
 const mocks = vi.hoisted(() => ({
@@ -222,24 +218,8 @@ const libraryDocument = (id: string, filename: string) => ({
 });
 
 beforeEach(() => {
-  const sessions = [session("A"), session("B")];
-  mocks.listModels.mockResolvedValue(CHAT_MODEL_CATALOG);
-  mocks.listSessions.mockResolvedValue(sessions);
-  mocks.listAgents.mockResolvedValue([]);
-  mocks.getAttachmentCapabilities.mockResolvedValue(
-    CHAT_ATTACHMENT_CAPABILITIES,
-  );
-  mocks.listMessages.mockResolvedValue([]);
-  mocks.appendVoiceTurns.mockResolvedValue([]);
-  mocks.listDocuments.mockResolvedValue([]);
-  mocks.listLibraryDocuments.mockResolvedValue([]);
+  resetChatAppMocks(mocks);
   mocks.getLibraryDocument.mockRejectedValue(new Error("not configured"));
-  mocks.listSharedWithMe.mockResolvedValue([]);
-  mocks.createSession.mockImplementation(async (value: object) => ({
-    ...session("C"),
-    ...value,
-  }));
-  mocks.streamChat.mockReturnValue(vi.fn());
   mocks.associateLibraryDocument.mockImplementation(
     async (sessionId: string, documentId: string) => ({
       ...session(sessionId),
@@ -247,20 +227,6 @@ beforeEach(() => {
     }),
   );
   mocks.deleteSession.mockResolvedValue(undefined);
-  mockToolCatalog([]);
-  mocks.getToolCatalog.mockImplementation(async () => ({
-    tools: mocks.toolCatalog,
-    inheritedTools: [],
-  }));
-  mocks.updateSession.mockImplementation(async (id: string, value: object) => ({
-    ...session(id),
-    ...value,
-  }));
-  mocks.getInspector.mockImplementation(async (id: string) =>
-    makeInspectorSnapshot(id),
-  );
-  mocks.listMemories.mockResolvedValue(DISABLED_MEMORY);
-  mocks.getLibrarySummary.mockResolvedValue(emptyLibrarySummary());
   mocks.useInlineVoiceLive.mockReturnValue({
     messages: [],
     enabled: false,

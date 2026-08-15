@@ -656,8 +656,8 @@ for every row; keep failures as failures rather than converting them to notes.
    WebSockets. A fresh standup keeps Speech Voice Live off unless both
    `AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` and
    `AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live` are supplied.
-   The current production override and its 2026-08-08 successful canaries do not
-   change that template default.
+   Run the authenticated canary for both providers and verify `outcome=success`
+   after enabling either one.
 7. Confirm the expected admin user can reach `/api/admin/*`.
 8. Confirm Web search health reports the intended auth mode.
 9. If Pages is enabled, run/publish it and confirm the status snapshot names the
@@ -719,9 +719,8 @@ Do not carry these values across unchanged:
 - Managed certificate names.
 - Subscription/resource ids or Foundry endpoints.
 
-Memory is already Cosmos-backed in a greenfield environment. The
-[memory migration runbook](./memory-migration.md) documents the retired
-legacy memory-store transition and is not a prerequisite for a new tenant.
+Memory is already Cosmos-backed in a greenfield environment; no store migration
+is required for a new tenant.
 
 Operator scripts such as `inventory.ps1`,
 `capture-data-recovery-state.ps1`, `teardown.ps1`,

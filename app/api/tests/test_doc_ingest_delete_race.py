@@ -39,31 +39,9 @@ from ai4ia_api.library.models import (
     Visibility,
 )
 from ai4ia_api.library.repository import DocumentNotFoundError
-from tests.conftest import make_settings
+from tests.conftest import FakeEmbedder, FakeUsage, make_settings
 
 _QUERY = [1.0, 1.0, 0.0]
-
-
-class _Usage:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
-
-    async def record_completion(self, **kwargs) -> None:
-        self.calls.append(kwargs)
-
-
-class _Embedder:
-    def __init__(self, on_embed=None) -> None:
-        self.on_embed = on_embed
-        self.embedded: list[str] = []
-        self.calls = 0
-
-    async def embed(self, inputs):
-        self.calls += 1
-        self.embedded.extend(inputs)
-        if self.on_embed is not None:
-            await self.on_embed()
-        return [[float(len(t) % 5), 1.0, 0.0] for t in inputs]
 
 
 class _CU:
@@ -104,7 +82,7 @@ def _build(*, cu, embedder=None, chunks=None, library=None, blob=None, usage=Non
         library=library or InMemoryDocumentLibraryRepository(),
         blob_store=blob or InMemoryBlobStore(),
         settings=settings,
-        usage=usage or _Usage(),
+        usage=usage or FakeUsage(),
         cu_client=cu,
         embedder=embedder,
         chunk_store=chunks,
@@ -122,7 +100,7 @@ async def test_delete_during_cu_poll_does_not_resurrect():
     library = InMemoryDocumentLibraryRepository()
     blob = InMemoryBlobStore()
     chunks = InMemoryDocChunkStore(expected_dim=3)
-    embedder = _Embedder()
+    embedder = FakeEmbedder()
     cu = _CU("# T\n\n" + ("word " * 30))
     ingestor = _build(
         cu=cu, embedder=embedder, chunks=chunks, library=library, blob=blob
@@ -161,7 +139,7 @@ async def test_delete_during_persist_does_not_resurrect():
     blob = InMemoryBlobStore()
     chunks = InMemoryDocChunkStore(expected_dim=3)
     cu = _CU("# T\n\n" + ("word " * 30))
-    embedder = _Embedder()
+    embedder = FakeEmbedder()
     ingestor = _build(
         cu=cu, embedder=embedder, chunks=chunks, library=library, blob=blob
     )
@@ -201,7 +179,7 @@ async def test_cancel_enrich_on_delete_does_not_resurrect(monkeypatch):
     chunks = InMemoryDocChunkStore(expected_dim=3)
     cu = _BlockingCU()
     ingestor = _build(
-        cu=cu, embedder=_Embedder(), chunks=chunks, library=library, blob=blob
+        cu=cu, embedder=FakeEmbedder(), chunks=chunks, library=library, blob=blob
     )
 
     stored = await ingestor.ingest(
@@ -240,7 +218,7 @@ async def test_enrich_preserves_revoked_acl_and_owner_metadata(monkeypatch):
     cu = _BlockingCU()
     ingestor = _build(
         cu=cu,
-        embedder=_Embedder(),
+        embedder=FakeEmbedder(),
         chunks=InMemoryDocChunkStore(expected_dim=3),
         library=library,
     )
@@ -302,7 +280,7 @@ async def test_schedule_enrich_runs_to_ready():
     library = InMemoryDocumentLibraryRepository()
     chunks = InMemoryDocChunkStore(expected_dim=3)
     cu = _CU("# T\n\n" + ("alpha beta " * 8))
-    ingestor = _build(cu=cu, embedder=_Embedder(), chunks=chunks, library=library)
+    ingestor = _build(cu=cu, embedder=FakeEmbedder(), chunks=chunks, library=library)
     stored = await ingestor.ingest(
         user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"X"
     )
@@ -495,7 +473,7 @@ async def test_enrich_failure_midpersist_purges_partial_chunks():
         if calls["n"] >= 2:
             raise RuntimeError("embed gateway down")
 
-    embedder = _Embedder(on_embed=fail_second_batch)
+    embedder = FakeEmbedder(on_embed=fail_second_batch)
     cu = _CU("# T\n\n" + ("word " * 200))  # many chunks at 40 chars/chunk
     ingestor = _build(
         cu=cu,
@@ -551,7 +529,7 @@ async def test_recover_interrupted_purges_partial_artifacts():
     blob = InMemoryBlobStore()
     chunks = InMemoryDocChunkStore(expected_dim=3)
     ingestor = _build(
-        cu=_CU(""), embedder=_Embedder(), chunks=chunks, library=library, blob=blob
+        cu=_CU(""), embedder=FakeEmbedder(), chunks=chunks, library=library, blob=blob
     )
     stored = await ingestor.ingest(
         user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"BYTES"
@@ -691,7 +669,7 @@ async def test_reupload_of_failed_dedupe_hit_resets_and_retries():
 async def test_chunk_cap_truncates_and_batches():
     library = InMemoryDocumentLibraryRepository()
     chunks = InMemoryDocChunkStore(expected_dim=3)
-    embedder = _Embedder()
+    embedder = FakeEmbedder()
     cu = _CU("# T\n\n" + ("word " * 200))  # many chunks at 40 chars/chunk
     ingestor = _build(
         cu=cu,
@@ -869,7 +847,7 @@ async def test_enrich_is_gated_before_any_provider_io_when_owner_is_disabled():
     """
     library = InMemoryDocumentLibraryRepository()
     cu = _CountingCU()
-    usage = _Usage()
+    usage = FakeUsage()
     entitlements = _Entitlements(_Decision(allowed=False, code=403))
     ingestor = _build(
         cu=cu, library=library, usage=usage, entitlements=entitlements
@@ -922,7 +900,7 @@ class _UsageMeteringCU:
         )
 
 
-def _page_billed(usage: _Usage) -> list[int]:
+def _page_billed(usage: FakeUsage) -> list[int]:
     return [
         call["billable_units"]
         for call in usage.calls
@@ -932,7 +910,7 @@ def _page_billed(usage: _Usage) -> list[int]:
 
 async def test_cu_bills_pages_the_service_actually_metered():
     """Control: an explicit ``documentPages*`` meter is billed as pages."""
-    usage = _Usage()
+    usage = FakeUsage()
     cu = _UsageMeteringCU({"documentPagesBasic": 3})
     ingestor = _build(cu=cu, usage=usage)
     await _seed_and_enrich(ingestor, ingestor.library)
@@ -944,7 +922,7 @@ async def test_cu_segments_are_not_billed_as_pages():
     """An audio/video analyzer reports no page meter, and its ``contents`` are
     timed segments. Billing ``len(contents)`` as pages invents chargeable units
     the service never metered -- so the page ledger must stay empty."""
-    usage = _Usage()
+    usage = FakeUsage()
     cu = _UsageMeteringCU(
         {"audioSeconds": 42},
         contents=[{"markdown": "seg1"}, {"markdown": "seg2"}, {"markdown": "seg3"}],
@@ -1094,7 +1072,7 @@ async def test_reindex_rebuilds_chunks_without_calling_the_provider():
     """
     library = InMemoryDocumentLibraryRepository()
     chunks = InMemoryDocChunkStore(expected_dim=3)
-    embedder = _Embedder()
+    embedder = FakeEmbedder()
     cu = _CountingCU("# T\n\n" + ("alpha beta " * 8))
     ingestor = _build(cu=cu, embedder=embedder, chunks=chunks, library=library)
 
@@ -1119,7 +1097,7 @@ async def test_reindex_replaces_rather_than_duplicates_chunks():
     chunks = InMemoryDocChunkStore(expected_dim=3)
     ingestor = _build(
         cu=_CU("# T\n\n" + ("alpha beta " * 8)),
-        embedder=_Embedder(),
+        embedder=FakeEmbedder(),
         chunks=chunks,
         library=library,
     )
@@ -1139,7 +1117,7 @@ async def test_reindex_is_blocked_for_a_disabled_owner():
     entitlements = _Entitlements(_Decision(allowed=True))
     ingestor = _build(
         cu=_CU("# T\n\nbody"),
-        embedder=_Embedder(),
+        embedder=FakeEmbedder(),
         chunks=InMemoryDocChunkStore(expected_dim=3),
         library=library,
         entitlements=entitlements,
@@ -1157,7 +1135,7 @@ async def test_reindex_of_an_entitled_owner_succeeds():
     library = InMemoryDocumentLibraryRepository()
     ingestor = _build(
         cu=_CU("# T\n\nbody"),
-        embedder=_Embedder(),
+        embedder=FakeEmbedder(),
         chunks=InMemoryDocChunkStore(expected_dim=3),
         library=library,
         entitlements=_Entitlements(_Decision(allowed=True)),
@@ -1187,7 +1165,7 @@ async def test_reindex_preserves_audio_video_time_grounding():
     blob = InMemoryBlobStore()
     ingestor = _build(
         cu=_CU("# T\n\nbody"),
-        embedder=_Embedder(),
+        embedder=FakeEmbedder(),
         chunks=chunks,
         library=library,
         blob=blob,

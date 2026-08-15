@@ -326,7 +326,7 @@ jobs:
       # inactive until the cutover was applied and verified. That cutover is done --
       # the repo variable and the live container app are both `cosmos` -- and the
       # fallback had become a second, divergent default shadowing the parameter file
-      # (which says `cosmos`), so it is gone. See docs/runbooks/memory-migration.md.
+      # (which says `cosmos`), so it is gone.
       AI4IA_MEMORY_STORE: ${{ vars.AI4IA_MEMORY_STORE }}
       # Identity-only auth on the Foundry accounts (audit P1-4a). Default true in
       # main.parameters.json, and plumbed here for the same reason as the vars
@@ -360,7 +360,7 @@ jobs:
       # alerts). Default OFF so merging is inert; to turn proactive alerts on, set the
       # AI4IA_ENABLE_ALERTS repo variable to 'true' AND set AI4IA_ALERT_EMAIL to a
       # recipient (an enabled action group with no receiver notifies no one). See
-      # infra/modules/alerts.bicep and docs/roadmap.md.
+      # infra/modules/alerts.bicep.
       AI4IA_ENABLE_ALERTS: ${{ vars.AI4IA_ENABLE_ALERTS }}
       AI4IA_ALERT_EMAIL: ${{ vars.AI4IA_ALERT_EMAIL }}
       # Key Vault purge protection. Default OFF so the wipe-and-rebuild workflow can

@@ -12,7 +12,6 @@ from ..agents.tools import ToolRisk
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..conversations.policy import resolve_conversation_policy
-from ..sessions.repository import SessionNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -197,14 +196,9 @@ async def list_tools(
             )
     inherited_tools: tuple[str, ...] = ()
     if session_id:
-        try:
-            session = await request.app.state.session_repo.get_session(
-                user.internal_user_id, session_id
-            )
-        except SessionNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
-            )
+        session = await request.app.state.session_repo.get_session(
+            user.internal_user_id, session_id
+        )
         policy = await resolve_conversation_policy(
             request.app.state, user.internal_user_id, session
         )

@@ -5,10 +5,9 @@ The same item holds the readable memory and its embedding, so text and vector
 cannot drift into separate stores. PostgreSQL and replica-local SQLite are not
 runtime memory stores.
 
-> Production status: the Planet Express deployment runs the Cosmos memory backend,
-> and the PostgreSQL Flexible Server that preceded it was **retired on 2026-08-06**.
-> The [memory migration runbook](./runbooks/memory-migration.md) records the
-> completed retirement and is retained as a pattern for a future store migration.
+> Production status: the Cosmos memory backend is the only supported backend,
+> and the PostgreSQL Flexible Server that preceded it has been **retired**.
+> There is no PostgreSQL fallback path.
 
 ## Why Cosmos
 
@@ -25,7 +24,7 @@ Cosmos consolidates:
 - transactional state fencing for concurrent replicas;
 - the existing managed-identity and user-partition repository pattern.
 
-PostgreSQL was retired on 2026-08-06 once the migration completed and Azure AI
+PostgreSQL was retired once the migration completed and Azure AI
 Search became the only document-chunk index. It is neither a memory backend nor a
 provisioned resource.
 

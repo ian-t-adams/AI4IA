@@ -76,8 +76,8 @@ Every resource group and resource carries these tags (applied via Bicep):
 | Tag | Purpose | Example |
 |---|---|---|
 | `workload` | App identifier | `ai4ia` |
-| `env` | azd environment name | `slurmfactory` |
-| `azd-env-name` | azd environment binding | `slurmfactory` |
+| `env` | azd environment name | `<your-env>` (e.g. `prod`, `dev`) |
+| `azd-env-name` | azd environment binding | `<your-env>` |
 | `costCenter` | Chargeback | `genai-demo` |
 | `owner` | Accountable owner | `ai4ia-operator` or the owning team/person |
 | `managedBy` | Provisioning system | `azd-bicep` |

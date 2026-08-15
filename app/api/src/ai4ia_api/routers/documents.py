@@ -35,7 +35,7 @@ from ..documents.extract import DocumentError
 from ..documents.ephemeral_store import EphemeralAttachmentStore, ci_supports_file
 from ..entitlements.service import EntitlementService
 from ..sessions.models import Document
-from ..sessions.repository import SessionNotFoundError, SessionRepository
+from ..sessions.repository import SessionRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["documents"])
@@ -90,12 +90,7 @@ def _ephemeral_store(request: Request) -> EphemeralAttachmentStore | None:
 
 
 async def _require_session(repo: SessionRepository, user_id: str, session_id: str) -> None:
-    try:
-        await repo.get_session(user_id, session_id)
-    except SessionNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
-        )
+    await repo.get_session(user_id, session_id)
 
 
 async def _block_disabled(request: Request, user_id: str) -> None:

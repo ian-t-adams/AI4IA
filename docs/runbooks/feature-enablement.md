@@ -47,11 +47,11 @@ feature posture.
 | Raw-file compute (code interpreter) | `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` | none | `codeInterpreterRawFilesEnabled` | Requires document understanding + document compute + a code-interpreter base URL; `api.bicep` emits the env var only when all three hold. Uploads a document's **original bytes** to the sandbox instead of Content Understanding's parsed text, falling back transparently on unsupported/oversize/failed uploads. Had **no Bicep parameter at all** until now, so it was implemented but unreachable from a normal `azd` deploy |
 | Azure Monitor alerting baseline | n/a (infra only) | none | `enableAlerts`, `alertEmail` | Action group + api-5xx / Cosmos-429 metric alerts. An action group with **no** receiver is legal ARM and notifies nobody — see the note below |
 | Key Vault purge protection | n/a (infra only) | none | `keyVaultPurgeProtection` (`AI4IA_KEYVAULT_PURGE_PROTECTION`) | None — but enabling it is **irreversible**, and it reserves the vault name for the soft-delete retention window, which blocks teardown-and-redeploy of the same environment name. Default `false` for that reason; see the note below |
-| Durable workflow execution | `AI4IA_DURABLE_WORKFLOWS_ENABLED` | none | `enableDurableWorkflows`, `durableTaskSkuName`, `durableWorkflowTimeoutSeconds` (`AI4IA_ENABLE_DURABLE_WORKFLOWS`, `AI4IA_DURABLE_TASK_SKU`, `AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS`) | **Provisions a paid Azure resource** (Durable Task Scheduler + task hub). Approved and **enabled 2026-08-02**; the azd token still allows a per-environment opt-out. Also requires `AI4IA_SESSION_STORE=cosmos`, a region that offers `Microsoft.DurableTask`, and that provider registered. See the note below |
-| Streamed tool loop | `AI4IA_GATEWAY_STREAM_TOOL_LOOP` | none (read server-side only) | none — API-only setting | None. **Default `true`, i.e. ON**, because OFF is the defect it fixes (audit P1-16): a turn that calls a tool would again run every model round trip to completion before emitting anything. It is a kill switch, not a feature gate — it exists so a streaming regression in the one path every chat request takes can be rolled back by an env var instead of a deploy. Off restores the previous wire bytes exactly: the runtime takes the non-streaming `gateway.complete` path and the router emits a single terminal content delta |
+| Durable workflow execution | `AI4IA_DURABLE_WORKFLOWS_ENABLED` | none | `enableDurableWorkflows`, `durableTaskSkuName`, `durableWorkflowTimeoutSeconds` (`AI4IA_ENABLE_DURABLE_WORKFLOWS`, `AI4IA_DURABLE_TASK_SKU`, `AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS`) | **Provisions a paid Azure resource** (Durable Task Scheduler + task hub); the azd token allows a per-environment opt-out. Also requires `AI4IA_SESSION_STORE=cosmos`, a region that offers `Microsoft.DurableTask`, and that provider registered. See the note below |
+| Streamed tool loop | `AI4IA_GATEWAY_STREAM_TOOL_LOOP` | none (read server-side only) | none — API-only setting | None. **Default `true`, i.e. ON**, because OFF is the defect it fixes: a turn that calls a tool would again run every model round trip to completion before emitting anything. It is a kill switch, not a feature gate — it exists so a streaming regression in the one path every chat request takes can be rolled back by an env var instead of a deploy. Off restores the previous wire bytes exactly: the runtime takes the non-streaming `gateway.complete` path and the router emits a single terminal content delta |
 | Per-invocation tool approval | `AI4IA_TOOL_APPROVAL_MODE` (`always` \| `tainted` \| `off`) | none (prompt renders from the stream) | none — API-only setting | None. **Default `always`, i.e. ON**; this is the one row in this table that is a security control rather than a feature, so its safe default is *enabled*. See the note below |
 
-**Per-invocation tool approval** (audit finding P1-13) is the inverse of every
+**Per-invocation tool approval** is the inverse of every
 other row here: leaving it alone is the secure choice, and changing it is what
 needs justifying. Every external/destructive tool call is held until the user
 approves *that call with those exact arguments*. That covers every MCP tool on
@@ -68,7 +68,7 @@ web result or a previous tool response chooses an outbound call's arguments.
   documents, recalled memory, library excerpts, or an earlier tool result in the
   same turn). Keeps a trusted server frictionless on turns with no injection
   surface, at the cost of trusting the turn-level taint bit to be complete.
-* `off` — restore the pre-P1-13 behavior exactly. Not a supported posture for a
+* `off` — restore the pre-approval-control behavior exactly. Not a supported posture for a
   deployment where users register their own MCP servers.
 
 **What a user actually sees under the default.** Three capabilities prompt on
@@ -118,9 +118,8 @@ The template and last observed live posture are deliberately separate:
 | Speech Voice Live | `${AI4IA_SPEECH_VOICE_LIVE_ENABLED=false}` | Enabled; allowlist includes `speech_voice_live`, while Azure OpenAI remains the default |
 | Proxy profiles, Event Hub telemetry, proxy durable async | `false` | Disabled |
 
-Authenticated direct-FastAPI protocol canaries succeeded for both voice providers
-on 2026-08-08; the manual microphone retest remains tracked in
-[Speech Voice Live](#speech-voice-live-second-voice-provider) below. Read the
+Run authenticated direct-FastAPI protocol canaries for both voice providers
+after any change. Read the
 deployed Container App env when you need the current answer; do not infer it from
 the profile default.
 
@@ -189,8 +188,8 @@ accepted. The shared APIM managed identity additionally needs **Cognitive
 Services User** and **Foundry User** (formerly Azure AI User) on that one
 account; the `speechVoiceLiveManagedIdentityAudience` parameter (default
 `https://ai.azure.com`) is deployment-only, never an app runtime setting.
-The current account accepted that audience in the authenticated 2026-08-08
-Speech canary.
+Verify the selected account accepts this audience by running the authenticated
+Speech canary after any account or audience change.
 
 **Enablement status and standing rules.** This provider is **enabled in production**
 (`AI4IA_SPEECH_VOICE_LIVE_ENABLED=true`, with `speech_voice_live` in
@@ -218,12 +217,11 @@ that are standing rules still apply to any future change to this surface:
    which cannot proxy WebSockets. Direct APIM handshakes are infrastructure
    diagnostics, not app proof.
 
-Authenticated canaries against the direct API Container App returned
-`outcome=success` on 2026-08-08 for `speech_voice_live/gpt-realtime` and
-`azure_openai/gpt-realtime`. The signed-in manual microphone retest in step 5 is
-the remaining audio/UX validation and is tracked in
-[`roadmap.md`](../roadmap.md). Deploying and merging remain separate, explicitly
-authorized decisions that this runbook does not grant.
+Run authenticated canaries against the direct API Container App for both
+`speech_voice_live/gpt-realtime` and `azure_openai/gpt-realtime` after enabling
+and verify `outcome=success` for each. The signed-in manual microphone retest in step 5 is
+the remaining audio/UX validation. Deploying and merging remain separate,
+explicitly authorized decisions that this runbook does not grant.
 
 **Rollback and retained resources.** Disabling Speech Voice Live is immediate
 and non-destructive:
@@ -444,8 +442,7 @@ The Conversation Inspector exposes create, inline edit, and confirmed delete.
 Automatic recall and planner consolidation remain best-effort so a memory service
 failure cannot break chat; explicit CRUD and forget operations surface failures.
 There is still no global consent toggle or recalled-memory provenance indicator.
-See [Memory architecture](../memory.md) and the
-[migration runbook](./memory-migration.md).
+See [Memory architecture](../memory.md).
 
 ### Custom MCP tools
 
@@ -653,8 +650,7 @@ purgeable by someone holding the purge permission.
 `enableDurableWorkflows` is the only feature flag in this repo that creates a new
 **billable Azure resource** when flipped: `infra/modules/durabletask.bicep` stands
 up a Durable Task Scheduler plus a task hub. Per AGENTS.md that is a stop-and-ask
-change; it was approved and **enabled on 2026-08-02**, so a scheduler is
-provisioned today. The `${AI4IA_ENABLE_DURABLE_WORKFLOWS=true}` token is retained
+change; the `${AI4IA_ENABLE_DURABLE_WORKFLOWS=true}` token is retained
 so a second environment can still opt out without a code change.
 
 What it changes when on. `POST /api/workflows/{name}/run` gains an opt-in
@@ -682,10 +678,10 @@ Enabling it in a new environment, in order:
    that the **region supports it** — it is not available everywhere, and the
    scheduler inherits the resource group's location. `azd` deploys run
    `scripts/check-resource-providers.py --register` automatically; for a manual
-   provision run it yourself. This is not hypothetical: the provider was
-   `NotRegistered` in `sub-planetexpress-slurmfactory` right up until this flag
-   was flipped, because a flag-gated module never submits its resource type while
-   the flag is off, so nothing had ever caused ARM to register it.
+   provision run it yourself. This is not hypothetical: the provider can be
+   `NotRegistered` in a subscription right up until this flag is flipped, because
+   a flag-gated module never submits its resource type while the flag is off, so
+   nothing had ever caused ARM to register it.
 1. Set the repo variables `AI4IA_ENABLE_DURABLE_WORKFLOWS=true` and — only if you
    want something other than the defaults — `AI4IA_DURABLE_TASK_SKU`
    (`Consumption` | `Dedicated`, default `Consumption`) and

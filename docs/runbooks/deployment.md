@@ -105,10 +105,12 @@ Other operational properties:
   fragments, named values, model deployments, and RBAC changed by provision must
   be fixed forward or explicitly reverted and reprovisioned.
 
-That last limit is measured, not hypothetical. On 2026-08-05 a duplicate backend
-label in the generated APIM catalog made model requests return 500. Seven
-consecutive deployments restored the containers but could not restore the APIM
-policy; chat recovered only after the policy was corrected and provisioned.
+That last limit is real, not theoretical. A runtime-only APIM policy failure is not
+covered by rollback, which restores container revisions only. `scripts/tests/test_policy_json_shape.py`
+fails CI on a duplicate `JObject` property — the specific defect class that has caused a
+complete model-plane outage here; any other runtime-only policy failure can still ship.
+Treat a policy change as higher risk than a code change: a broken policy requires a fix
+commit and a fresh provision, not a rollback.
 
 ## 2. Before a routine deployment
 
@@ -181,15 +183,12 @@ mean "leave the current binding unchanged." The workflow's custom-domain
 preflight fails before capture/provision when a live binding exists but its
 variable is missing. DNS remains external to Azure.
 
-Current production evidence:
+Read the current custom-domain bindings for your environment with:
 
-| Setting | Value |
-|---|---|
-| Tenant | Planet Express `6907d2a4-685a-4aea-92ab-d930217467f1` (Entra can still display "Contoso") |
-| Subscription | `sub-planetexpress-slurmfactory` / `e852113b-6cb5-441c-ac68-26cff884e479` |
-| Resource group | `rg-ai4ia-slurmfactory` |
-| Web domain / certificate | `ai4ia.nomad-analytics.com` / `mc-cae-ai4ia-slur-ai4ia-nomad-anal-2891` |
-| Proxy domain / certificate | `genaiproxy.nomad-analytics.com` / `mc-cae-ai4ia-slur-genaiproxy-nomad-6552` |
+```powershell
+az containerapp hostname list -g rg-ai4ia-<env> -n ca-web-<env>
+az containerapp hostname list -g rg-ai4ia-<env> -n ca-proxy-<env>
+```
 
 First-time bindings belong in the
 [greenfield two-phase sequence](./greenfield-standup.md#62-bind-custom-domains-optional).
@@ -452,7 +451,7 @@ again.
 > Entry numbers are stable identifiers, not positions — they are referenced from
 > other docs, from commit messages, and from CI failure output. A retired entry
 > leaves its number vacant rather than renumbering everything below it.
-> §7.1 (Postgres `LocationIsOfferRestricted`) was retired with the PostgreSQL server on 2026-08-06.
+> §7.1 (Postgres `LocationIsOfferRestricted`) was retired with the PostgreSQL server.
 > §7.7 (Postgres `ServerIsBusy`) was retired at the same time.
 
 ### 7.2 `Provision infrastructure` fails with `Start date of budgets cannot be updated`
@@ -514,11 +513,11 @@ than silently degrading to a different provider or deployment.
 
 The safe protocol-error/close capture, correlation/outcome/frame-count completion
 record, deterministic cleanup, retry messaging, and isolated inline selectors are
-confirmed code-level diagnostics/UX fixes. Authenticated protocol canaries for
-both `azure_openai/gpt-realtime` and `speech_voice_live/gpt-realtime` succeeded on
-2026-08-08. For a new failure, correlate the canary output with API and APIM
-diagnostics before assigning an upstream service or model root cause; the
-signed-in microphone retest remains the end-to-end audio/UX check.
+confirmed code-level diagnostics/UX fixes. Run the authenticated canary for both
+`azure_openai/gpt-realtime` and `speech_voice_live/gpt-realtime` providers after any
+change and correlate the canary output with API and APIM diagnostics before assigning
+an upstream service or model root cause; the signed-in microphone retest is the
+end-to-end audio/UX check.
 
 ### 7.4 `Provision infrastructure` fails: Cosmos "Container Vector Policy ... capability has not been enabled"
 
@@ -811,7 +810,7 @@ through APIM must satisfy three things at once, and only the first is intuitive:
 | # | Requirement | Wrong value produces |
 | --- | --- | --- |
 | 1 | `Ocp-Apim-Subscription-Key` header | `401 SubscriptionKeyInvalid` (see §7.10) |
-| 2 | Path deployment is the **full** name — `gpt-5.6-luna-slurmfactory-eastus2-glbl`, not the catalog id `gpt-5.6-luna` | `400 model_path_mismatch` |
+| 2 | Path deployment is the **full** name — `gpt-5.6-luna-<subscriptionToken>-eastus2-glbl`, not the catalog id `gpt-5.6-luna` | `400 model_path_mismatch` |
 | 3 | `x-LLMModel` header, **equal to the path deployment** | `400 model_path_mismatch` |
 
 Requirement 3 is the one that surprises people: the gateway resolves the backend from the
@@ -825,7 +824,7 @@ The guard itself is deliberate: it stops a caller from being billed against one 
 while the body names another. Canonical call:
 
 ```powershell
-$dep = "gpt-5.6-luna-slurmfactory-eastus2-glbl"   # az cognitiveservices account deployment list
+$dep = "gpt-5.6-luna-<subscriptionToken>-eastus2-glbl"   # az cognitiveservices account deployment list
 $h = @{
   'Ocp-Apim-Subscription-Key' = $key
   'Content-Type'              = 'application/json'
@@ -1176,8 +1175,8 @@ upgrades and downgrades, since July 2025. The capability landed in the
 `2023-11-01`, so do not assume a provision run performs the tier change. Drive it
 explicitly and then align the parameter.
 
-Verified on 2026-08-14 against the live `slurmfactory` service, moving
-`basic` -> `standard` (S1):
+The `az search service update` command performs the in-place upgrade — no index
+data is lost, and no reindex is required. Moving `basic` -> `standard` (S1):
 
 ```bash
 # Semantic plan: fast, no downtime.
@@ -1189,8 +1188,8 @@ az search service update -n <service> -g <resource-group> --sku standard
 
 During the tier change `provisioningState` reports `Provisioning` and `status`
 reports `provisioning`; both return to `Succeeded`/`running` when it completes.
-**The index survived the upgrade** — `ai4ia-doc-chunks` was present and intact
-afterwards, so no reindex was required. Confirm with:
+**The index survives the upgrade** — no reindex is required. Confirm when the
+upgrade completes:
 
 ```bash
 az search service show -n <service> -g <resource-group> \
@@ -1208,7 +1207,7 @@ manifests plus the blob artifacts, so it is recoverable — but retrieval return
 nothing until the rebuild completes, which is a user-visible outage that the
 in-place upgrade above avoids entirely.
 
-Cost, from the Azure retail price API (East US, checked 2026-08-14):
+Cost, from the Azure retail price API (East US; verify current prices before capacity decisions):
 
 | | Basic | Standard S1 |
 |---|---|---|
@@ -1237,13 +1236,13 @@ and handle it through a separate explicitly approved cleanup.
 
 ### Speech Voice Live posture
 
-The template remains default-off (`speechVoiceLiveEnabled=false`). The observed
-environment sets `AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` and
-`AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live`; authenticated
-`speech_voice_live/gpt-realtime` and `azure_openai/gpt-realtime` canaries returned
-`outcome=success` on 2026-08-08. Current enablement details live in
+The template remains default-off (`speechVoiceLiveEnabled=false`). When enabled,
+set `AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` and
+`AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live`. After any
+change, run the authenticated canary for both providers and verify
+`outcome=success`. Current enablement details live in
 [`feature-enablement.md`](./feature-enablement.md#speech-voice-live-second-voice-provider);
-do not infer them from retained APIM objects.
+do not infer enablement from retained APIM objects.
 
 The canary target must be the `wss://` form of `AZURE_API_URL` with
 `/api/voice/live`, never the web/Next.js hostname. Follow

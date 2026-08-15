@@ -14,13 +14,15 @@ Verify-only (CI drift):  python scripts/gen-voice-provider-catalog.py --check
 """
 from __future__ import annotations
 
-import argparse
 import copy
 import html
 import json
 import sys
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _generator import build_parser
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE = REPO_ROOT / "infra" / "voice-providers.json"
@@ -726,12 +728,7 @@ def _write_if_needed(path: Path, content: str, *, check: bool) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Exit non-zero if the generated catalogs are stale (no write).",
-    )
+    parser = build_parser(__doc__)
     args = parser.parse_args()
 
     raw = json.loads(SOURCE.read_text(encoding="utf-8"))
