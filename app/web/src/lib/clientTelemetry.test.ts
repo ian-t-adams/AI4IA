@@ -27,10 +27,8 @@ describe("reportClientEvent", () => {
   it("posts a content-free, bounded event body to /api/client-events", async () => {
     const { reportClientEvent } = await freshModule();
 
-    reportClientEvent("render_error", {
-      code: "TypeError",
-      severity: "error",
-      hasDigest: true,
+    reportClientEvent("voice_playback_rebuffer", {
+      severity: "warning",
     });
 
     expect(mocks.apiFetch).toHaveBeenCalledTimes(1);
@@ -40,10 +38,10 @@ describe("reportClientEvent", () => {
     expect(init.headers).toEqual({ "Content-Type": "application/json" });
     const body = JSON.parse(init.body);
     expect(body).toEqual({
-      event: "render_error",
-      code: "TypeError",
-      severity: "error",
-      hasDigest: true,
+      event: "voice_playback_rebuffer",
+      code: "unknown",
+      severity: "warning",
+      hasDigest: false,
     });
     // Exactly these four keys, always -- there is no fifth field a caller
     // (or a compromised copy of this module) could smuggle free text into.

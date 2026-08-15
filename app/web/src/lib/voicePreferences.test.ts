@@ -50,6 +50,7 @@ describe("normalizeVoicePreferences", () => {
       tools: true,
       settings: {
         ...DEFAULT_VOICE_SETTINGS,
+        playbackProfile: "smooth",
         temperature: 0.8,
         vadThreshold: 0.5,
         vadSilenceMs: 400,
@@ -83,6 +84,7 @@ describe("normalizeVoicePreferences", () => {
       voice: "cedar",
       tools: true,
       settings: {
+        playbackProfile: "balanced",
         temperature: 0.5,
         vadType: "semantic_vad",
         vadThreshold: null,
@@ -168,6 +170,15 @@ describe("normalizeVoiceSessionSettings", () => {
     );
     expect(normalizeVoiceSessionSettings({ vadType: "semantic_vad" }).vadType).toBe(
       "semantic_vad",
+    );
+  });
+
+  it("accepts only bounded playback profiles", () => {
+    expect(normalizeVoiceSessionSettings({ playbackProfile: "smooth" }).playbackProfile).toBe(
+      "smooth",
+    );
+    expect(normalizeVoiceSessionSettings({ playbackProfile: 500 }).playbackProfile).toBe(
+      DEFAULT_VOICE_SETTINGS.playbackProfile,
     );
   });
 

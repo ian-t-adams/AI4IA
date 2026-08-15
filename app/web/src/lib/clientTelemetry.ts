@@ -35,7 +35,8 @@ export type ClientTelemetryEvent =
   | "window_error"
   | "unhandled_rejection"
   | "media_playback_error"
-  | "microphone_error";
+  | "microphone_error"
+  | "voice_playback_rebuffer";
 
 // Mirrors the backend's ClientEventSeverity literal. Keep in sync. Every
 // current call site reports a genuine failure, so "error" is both the

@@ -29,6 +29,21 @@ import {
 
 // Azure realtime speaks 24 kHz mono PCM16 in both directions.
 export const PCM_SAMPLE_RATE = 24000;
+export const PLAYBACK_PROFILES = ["fast", "balanced", "smooth"] as const;
+export type PlaybackProfile = (typeof PLAYBACK_PROFILES)[number];
+export const DEFAULT_PLAYBACK_PROFILE: PlaybackProfile = "balanced";
+export const PLAYBACK_BUFFER_MS = {
+  fast: 80,
+  balanced: 120,
+  smooth: 180,
+} as const satisfies Record<PlaybackProfile, number>;
+
+export function isPlaybackProfile(value: unknown): value is PlaybackProfile {
+  return (
+    typeof value === "string" &&
+    (PLAYBACK_PROFILES as readonly string[]).includes(value)
+  );
+}
 
 // WebSocket subprotocol markers the relay understands (see routers/realtime.py).
 const BEARER_SUBPROTOCOL = "ai4ia-bearer";
@@ -145,8 +160,6 @@ export interface SpeechVoiceLiveSettings {
   voice: string;
   locale: string;
   turnDetection: "azure_semantic_vad" | "azure_semantic_vad_multilingual";
-  noiseSuppression: "azure_deep_noise_suppression";
-  echoCancellation: "server_echo_cancellation";
   interruptResponse: boolean;
   autoTruncate: boolean;
 }
@@ -156,8 +169,6 @@ export const DEFAULT_SPEECH_VOICE_LIVE_SETTINGS: SpeechVoiceLiveSettings = {
   voice: DEFAULT_SPEECH_VOICE,
   locale: DEFAULT_SPEECH_LOCALE,
   turnDetection: DEFAULT_SPEECH_TURN_DETECTION,
-  noiseSuppression: DEFAULT_SPEECH_NOISE_SUPPRESSION,
-  echoCancellation: DEFAULT_SPEECH_ECHO_CANCELLATION,
   interruptResponse: true,
   autoTruncate: false,
 };
@@ -257,6 +268,27 @@ export function supportsVoiceLive(): boolean {
   );
 }
 
+export function microphoneConstraints(
+  providerId: VoiceProviderId,
+): MediaTrackConstraints {
+  if (providerId === "speech_voice_live") {
+    // Speech Voice Live applies server-side deep noise suppression and echo
+    // cancellation. Running browser DSP first produces the robotic/pumping
+    // artifacts associated with two independent processors in series.
+    return {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    };
+  }
+  return {
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true,
+  };
+}
+
 function subscribeVoiceSupport(): () => void {
   return () => {};
 }
@@ -284,6 +316,8 @@ export type VadType = (typeof VAD_TYPES)[number];
 // ``null``/empty fields are omitted from the payload entirely (the model applies
 // its own default), which is how today's payload omits e.g. temperature.
 export interface VoiceSessionSettings {
+  // Browser-side startup/recovery buffering. This never leaves the client.
+  playbackProfile: PlaybackProfile;
   // Sampling temperature, or null to omit (model default — today's behavior).
   temperature: number | null;
   vadType: VadType;
@@ -298,6 +332,7 @@ export interface VoiceSessionSettings {
 }
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSessionSettings = {
+  playbackProfile: DEFAULT_PLAYBACK_PROFILE,
   temperature: null,
   vadType: "server_vad",
   vadThreshold: null,
@@ -385,14 +420,6 @@ export function speechSessionUpdate(
       DEFAULT_SPEECH_TURN_DETECTION,
       "azure_semantic_vad_multilingual",
     ]) as readonly string[];
-  const allowedNoiseSuppression =
-    (provider?.capabilities.noiseSuppression?.options ?? [
-      DEFAULT_SPEECH_NOISE_SUPPRESSION,
-    ]) as readonly string[];
-  const allowedEchoCancellation =
-    (provider?.capabilities.echoCancellation?.options ?? [
-      DEFAULT_SPEECH_ECHO_CANCELLATION,
-    ]) as readonly string[];
   const voice =
     typeof settings.voice === "string" && allowedVoices.includes(settings.voice)
       ? settings.voice
@@ -407,15 +434,11 @@ export function speechSessionUpdate(
       ? settings.turnDetection
       : allowedTurnDetection[0] ?? DEFAULT_SPEECH_TURN_DETECTION;
   const noiseSuppression =
-    typeof settings.noiseSuppression === "string" &&
-    allowedNoiseSuppression.includes(settings.noiseSuppression)
-      ? settings.noiseSuppression
-      : allowedNoiseSuppression[0] ?? DEFAULT_SPEECH_NOISE_SUPPRESSION;
+    provider?.capabilities.noiseSuppression?.default ??
+    DEFAULT_SPEECH_NOISE_SUPPRESSION;
   const echoCancellation =
-    typeof settings.echoCancellation === "string" &&
-    allowedEchoCancellation.includes(settings.echoCancellation)
-      ? settings.echoCancellation
-      : allowedEchoCancellation[0] ?? DEFAULT_SPEECH_ECHO_CANCELLATION;
+    provider?.capabilities.echoCancellation?.default ??
+    DEFAULT_SPEECH_ECHO_CANCELLATION;
   const session: Record<string, unknown> = {
     voice: {
       type: provider?.capabilities.voices.kind ?? "azure-standard",
@@ -885,7 +908,7 @@ export function useVoiceLive(
       // still directly attributable to the microphone button's user gesture.
       const streamPromise = navigator.mediaDevices
         .getUserMedia({
-          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+          audio: microphoneConstraints(providerIdRef.current),
         })
         .catch((error: unknown) => {
           if (attempt === attemptRef.current) {
@@ -1073,6 +1096,7 @@ export function useVoiceLive(
       let activeAssistantContentIndex: number | null = null;
       let responseAudioStartTime: number | null = null;
       let responseAudioDurationMs = 0;
+      let responsePlaybackGapMs = 0;
       let cancellationRequested = false;
 
       const enqueuePlayback = (b64: string) => {
@@ -1084,7 +1108,26 @@ export function useVoiceLive(
         const node = ctx.createBufferSource();
         node.buffer = buffer;
         node.connect(ctx.destination);
-        const startAt = Math.max(ctx.currentTime, session.nextPlayTime);
+        const starved =
+          responseAudioStartTime !== null &&
+          session.nextPlayTime > 0 &&
+          session.nextPlayTime <= ctx.currentTime;
+        const previousEnd = session.nextPlayTime;
+        const startAt =
+          session.nextPlayTime > ctx.currentTime
+            ? session.nextPlayTime
+            : ctx.currentTime +
+              PLAYBACK_BUFFER_MS[settingsRef.current.playbackProfile] / 1000;
+        if (starved) {
+          responsePlaybackGapMs +=
+            Math.max(0, startAt - previousEnd) * 1000;
+          // The telemetry bridge intentionally emits one event of each shape per
+          // page load. Presence diagnoses an underrun without turning audio chunk
+          // timing into high-cardinality or flood-prone telemetry.
+          reportClientEvent("voice_playback_rebuffer", {
+            severity: "warning",
+          });
+        }
         if (responseAudioStartTime === null) responseAudioStartTime = startAt;
         responseAudioDurationMs += buffer.duration * 1000;
         node.start(startAt);
@@ -1107,7 +1150,11 @@ export function useVoiceLive(
                 0,
                 Math.min(
                   responseAudioDurationMs,
-                  Math.round(ctx.currentTime * 1000 - responseAudioStartTime * 1000),
+                  Math.round(
+                    ctx.currentTime * 1000 -
+                      responseAudioStartTime * 1000 -
+                      responsePlaybackGapMs,
+                  ),
                 ),
               );
         for (const node of session.scheduled) {
@@ -1303,6 +1350,7 @@ export function useVoiceLive(
             cancellationRequested = false;
             responseAudioStartTime = null;
             responseAudioDurationMs = 0;
+            responsePlaybackGapMs = 0;
             activeAssistantItemId = null;
             activeAssistantContentIndex = null;
             const responseId =
@@ -1330,6 +1378,7 @@ export function useVoiceLive(
             activeAssistantContentIndex = null;
             responseAudioStartTime = null;
             responseAudioDurationMs = 0;
+            responsePlaybackGapMs = 0;
             cancellationRequested = false;
             break;
           }

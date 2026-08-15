@@ -72,6 +72,7 @@ ClientEventType = Literal[
     "unhandled_rejection",
     "media_playback_error",
     "microphone_error",
+    "voice_playback_rebuffer",
 ]
 
 # Mirrors the browser's ClientEventSeverity (clientTelemetry.ts — keep in

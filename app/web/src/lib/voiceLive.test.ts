@@ -3,6 +3,11 @@ import {
   DEFAULT_VOICE,
   DEFAULT_VOICE_SETTINGS,
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  DEFAULT_SPEECH_ECHO_CANCELLATION,
+  DEFAULT_SPEECH_NOISE_SUPPRESSION,
+  DEFAULT_PLAYBACK_PROFILE,
+  microphoneConstraints,
+  PLAYBACK_BUFFER_MS,
   buildInitialVoiceFrames,
   buildVoiceLiveWebSocketUrl,
   isVadType,
@@ -18,6 +23,32 @@ import { voiceProviderCatalog } from "./data/voice_provider_catalog";
 // regression in the default payload (key order, extra fields) fails loudly.
 const DEFAULT_SESSION_UPDATE =
   '{"type":"session.update","session":{"voice":"alloy","input_audio_format":"pcm16","output_audio_format":"pcm16","turn_detection":{"type":"server_vad"},"input_audio_transcription":{"model":"whisper-1"}}}';
+
+describe("voice audio transport", () => {
+  it("uses browser DSP only when the provider does not already process audio", () => {
+    expect(microphoneConstraints("azure_openai")).toEqual({
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+    });
+    expect(microphoneConstraints("speech_voice_live")).toEqual({
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    });
+  });
+
+  it("keeps every playback profile within a conversational latency budget", () => {
+    expect(DEFAULT_PLAYBACK_PROFILE).toBe("balanced");
+    expect(PLAYBACK_BUFFER_MS).toEqual({
+      fast: 80,
+      balanced: 120,
+      smooth: 180,
+    });
+    expect(Math.max(...Object.values(PLAYBACK_BUFFER_MS))).toBeLessThanOrEqual(200);
+  });
+});
 
 describe("realtimeModels", () => {
   it("keeps only realtime-category models", () => {
@@ -160,10 +191,10 @@ describe("speechSessionUpdate", () => {
           auto_truncate: false,
         },
         input_audio_noise_reduction: {
-          type: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.noiseSuppression,
+          type: DEFAULT_SPEECH_NOISE_SUPPRESSION,
         },
         input_audio_echo_cancellation: {
-          type: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.echoCancellation,
+          type: DEFAULT_SPEECH_ECHO_CANCELLATION,
         },
       },
     });
@@ -178,8 +209,6 @@ describe("speechSessionUpdate", () => {
           locale: "xx-XX",
           transcription: "custom-transcriber",
           turnDetection: "custom-vad" as never,
-          noiseSuppression: "custom-noise" as never,
-          echoCancellation: "custom-echo" as never,
         } as typeof DEFAULT_SPEECH_VOICE_LIVE_SETTINGS),
     );
 
@@ -193,10 +222,10 @@ describe("speechSessionUpdate", () => {
       DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.turnDetection,
     );
     expect(parsed.session.input_audio_noise_reduction.type).toBe(
-      DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.noiseSuppression,
+      DEFAULT_SPEECH_NOISE_SUPPRESSION,
     );
     expect(parsed.session.input_audio_echo_cancellation.type).toBe(
-      DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.echoCancellation,
+      DEFAULT_SPEECH_ECHO_CANCELLATION,
     );
   });
 

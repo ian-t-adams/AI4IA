@@ -2,7 +2,12 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { supportsVoiceLive, useVoiceLive } from "./voiceLive";
+import {
+  microphoneConstraints,
+  PLAYBACK_BUFFER_MS,
+  supportsVoiceLive,
+  useVoiceLive,
+} from "./voiceLive";
 import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   DEFAULT_VOICE_SETTINGS,
@@ -277,6 +282,9 @@ describe("useVoiceLive lifecycle", () => {
       result.current.start();
     });
     expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: microphoneConstraints("azure_openai"),
+    });
     expect(FakeAudioContext.instances).toHaveLength(1);
     expect(result.current.status).toBe("connecting");
 
@@ -513,13 +521,144 @@ describe("useVoiceLive lifecycle", () => {
     expect(result.current.status).toBe("idle");
   });
 
-  it("does not stop, cancel, or truncate Speech playback when interruption is disabled", async () => {
+  it("buffers playback across network starvation and reports the recovered underrun", async () => {
     auth.getToken.mockResolvedValue("token");
     Object.defineProperty(navigator, "mediaDevices", {
       configurable: true,
       value: {
-        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
+        getUserMedia: vi
+          .fn()
+          .mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
       },
+    });
+    const { result } = renderHook(() =>
+      useVoiceLive(
+        CONFIG,
+        "azure_openai",
+        "gpt-realtime",
+        "eastus2",
+        "alloy",
+        vi.fn(),
+        null,
+        [],
+        { ...DEFAULT_VOICE_SETTINGS, playbackProfile: "smooth" },
+      ),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    const context = FakeAudioContext.instances[0];
+    act(() => {
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onopen?.();
+      context.currentTime = 1;
+      socket.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "response.created",
+            response: { id: "r1" },
+          }),
+        }),
+      );
+      socket.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "response.audio.delta",
+            response_id: "r1",
+            item_id: "a1",
+            content_index: 0,
+            delta: "AQACAA==",
+          }),
+        }),
+      );
+    });
+    expect(context.bufferSources[0].start).toHaveBeenCalledWith(
+      1 + PLAYBACK_BUFFER_MS.smooth / 1000,
+    );
+    expect(telemetry.reportClientEvent).not.toHaveBeenCalled();
+
+    act(() => {
+      context.currentTime = 2;
+      socket.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "response.done" }),
+        }),
+      );
+      socket.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "response.created",
+            response: { id: "r2" },
+          }),
+        }),
+      );
+      socket.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "response.audio.delta",
+            response_id: "r2",
+            item_id: "a2",
+            content_index: 0,
+            delta: "AQACAA==",
+          }),
+        }),
+      );
+    });
+    expect(context.bufferSources[1].start).toHaveBeenCalledWith(
+      2 + PLAYBACK_BUFFER_MS.smooth / 1000,
+    );
+    expect(telemetry.reportClientEvent).not.toHaveBeenCalled();
+
+    act(() => {
+      context.currentTime = 2.35;
+      socket.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "response.audio.delta",
+            response_id: "r2",
+            item_id: "a2",
+            content_index: 0,
+            delta: "AQACAA==",
+          }),
+        }),
+      );
+    });
+    expect(context.bufferSources[2].start).toHaveBeenCalledWith(
+      2.35 + PLAYBACK_BUFFER_MS.smooth / 1000,
+    );
+    expect(telemetry.reportClientEvent).toHaveBeenCalledWith(
+      "voice_playback_rebuffer",
+      { severity: "warning" },
+    );
+
+    act(() => {
+      context.currentTime = 2.35 + PLAYBACK_BUFFER_MS.smooth / 1000 + 0.05;
+      socket.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "input_audio_buffer.speech_started" }),
+        }),
+      );
+    });
+    const sent = socket.send.mock.calls.map(([frame]) => JSON.parse(frame));
+    expect(sent).toContainEqual({
+      type: "conversation.item.truncate",
+      item_id: "a2",
+      content_index: 0,
+      audio_end_ms: 150,
+    });
+  });
+
+  it("does not stop, cancel, or truncate Speech playback when interruption is disabled", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const getUserMedia = vi
+      .fn()
+      .mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] });
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia },
     });
     const { result } = renderHook(() =>
       useVoiceLive(
@@ -540,6 +679,9 @@ describe("useVoiceLive lifecycle", () => {
       result.current.start();
     });
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: microphoneConstraints("speech_voice_live"),
+    });
     const socket = FakeWebSocket.instances[0];
     act(() => {
       socket.readyState = FakeWebSocket.OPEN;
@@ -621,7 +763,7 @@ describe("useVoiceLive lifecycle", () => {
           }),
         }),
       );
-      context.currentTime = 0.05;
+      context.currentTime = PLAYBACK_BUFFER_MS.balanced / 1000 + 0.05;
       socket.onmessage?.(
         new MessageEvent("message", {
           data: JSON.stringify({ type: "input_audio_buffer.speech_started" }),

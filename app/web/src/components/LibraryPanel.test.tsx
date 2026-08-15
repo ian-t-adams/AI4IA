@@ -120,10 +120,12 @@ describe("LibraryPanel delete", () => {
   it("does not let an older poll reinsert a successfully deleted document", async () => {
     let poll!: () => Promise<void>;
     let resolvePoll!: (documents: LibraryDocument[]) => void;
-    const intervalSpy = vi.spyOn(window, "setInterval").mockImplementation((handler) => {
-      poll = handler as () => Promise<void>;
-      return 1 as unknown as ReturnType<typeof setInterval>;
-    });
+    const intervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation((handler) => {
+        poll = handler as () => Promise<void>;
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      });
     const analyzing = { ...DOC, status: "analyzing" as const };
     mocks.listLibraryDocuments
       .mockResolvedValueOnce([analyzing])

@@ -1958,6 +1958,10 @@ export function ChatApp() {
                   ? {
                       ...voicePrefsResolved,
                       speechModel: DEFAULT_SPEECH_MODEL_ID,
+                      settings: {
+                        ...voicePrefsResolved.settings,
+                        playbackProfile: DEFAULT_VOICE_PREFERENCES.settings.playbackProfile,
+                      },
                       speech: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
                     }
                   : {
