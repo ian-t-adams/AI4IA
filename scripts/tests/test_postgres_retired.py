@@ -44,24 +44,17 @@ _RUNTIME_ENV = re.compile(r"AI4IA_(?:POSTGRES_[A-Z_]+|METRICS_POSTGRES_RESOURCE_
 # "PostgreSQL" without tripping the guard.
 _PROSE_EXEMPT = {
     Path("scripts/tests/test_postgres_retired.py"),
-    Path("docs/runbooks/memory-migration.md"),
     Path("CHANGELOG.md"),
-    Path("docs/repository-audit-2026-08-03.md"),
-    Path("docs/roadmap.md"),
     # "Why Cosmos" is a comparison against the design that was replaced, and the
     # page now states the retirement outright. It has to be able to name the thing
     # it replaced.
     Path("docs/memory.md"),
     # Generated point-in-time snapshots of the *live* subscription, produced by
     # scripts/status-snapshot.ps1 from Azure Resource Graph. They report what is
-    # actually deployed, so they are correct while the server still exists and
-    # self-correct on the next run after it is deleted. Asserting on them here
-    # would mean asserting on Azure's state, not the repo's claims.
+    # actually deployed, so asserting on them here would mean asserting on
+    # Azure's state, not the repo's claims.
     Path("site/data/inventory.js"),
     Path("site/data/status.js"),
-    # Generated from site/data/docs.manifest.json; the matching text is the
-    # description of the memory-migration runbook itself.
-    Path("site/data/docs.js"),
 }
 
 
@@ -86,10 +79,11 @@ class PostgresProvisioningStaysRetired(unittest.TestCase):
         self.assertEqual(
             offenders,
             [],
-            "PostgreSQL was retired on 2026-08-06 and the server deleted, but these "
+            "PostgreSQL was retired and the server deleted, but these "
             f"Bicep files declare a Microsoft.DBforPostgreSQL resource: {offenders}. "
             "A reintroduced server bills from the next provision and has no data to "
-            "serve. Read docs/runbooks/memory-migration.md before undoing this.",
+            "serve. Cosmos is the only memory backend and Azure AI Search the only "
+            "document-chunk index.",
         )
 
     def test_compiled_arm_template_contains_no_postgres(self) -> None:

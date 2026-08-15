@@ -184,10 +184,9 @@ instructions with the selected agent persona or saved session prompt.
 `azure_openai` resolves a realtime deployment from `infra/models.json` and remains
 the server-authoritative default. The additive `speech_voice_live` provider has a
 separate APIM API/key and account-scoped managed-identity path. Its Bicep template
-default is off, but the current production environment overrides it on and
-allowlists both providers. Authenticated direct-FastAPI canaries succeeded for
-both providers on 2026-08-08; the web/Next.js hostname is not a valid WebSocket
-canary target.
+default is off. When enabled, run the authenticated canary for both providers
+(target the `wss://` form of `AZURE_API_URL`, never the web/Next.js hostname)
+before relying on either.
 FastAPI presents key 3 only to the Azure OpenAI realtime APIM API and optional key
 4 only to the Speech Voice Live APIM API; neither key crosses the APIM boundary.
 Turn-based transcription and text-to-speech remain compatible HTTP calls and use
@@ -336,9 +335,9 @@ dataflow. Posture is selectable via `AI4IA_TOOL_APPROVAL_MODE`; see
 Multi-step workflows run **synchronously inside the HTTP request** unless a run
 explicitly requests durability, so synchronous runs die with the replica on
 deploy, scale-in, or crash. The Bicep feature gate defaults off for a minimal
-stand-up, but the checked-in production profile enables it; live state was
-revalidated on 2026-08-08 (scheduler, task hub, and all three API settings were
-present). When available, an opt-in run moves onto an **Azure Durable Task
+stand-up, but the checked-in production profile enables it; verify the scheduler,
+task hub, and all three API settings are present before marking the feature ready.
+When available, an opt-in run moves onto an **Azure Durable Task
 Scheduler** orchestration: `POST /api/workflows/{name}/run` with
 `"durable": true` returns `202` and a run id, polled from
 `GET /api/workflows/runs/{run_id}`.
@@ -467,5 +466,5 @@ label those gaps rather than infer precision.
   unavailable; absence is reported explicitly.
 - Repository state is documented here; operators still need to record revision
   SHAs and smoke-test evidence after each deploy because live parity is temporal.
-- Outstanding governance decisions, open work, and owner actions are tracked in
-  [`roadmap.md`](./roadmap.md).
+- Outstanding governance decisions and owner actions are recorded as issues in
+  the repository's issue tracker.

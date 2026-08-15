@@ -8,7 +8,7 @@
 > trigger 3 has fired. No modality-scope approval artifact is present in this
 > repository; do not infer one.
 >
-> Assembled from the implemented state on 2026-08-05. The review cadence is a
+> Assembled from the implemented state of the repository. The review cadence is a
 > judgement rather than a fact — the default recorded here was proposed by the
 > implementer and stands until the owner replaces it. Change the row and the
 > triggers together; a date without triggers is the weaker half.
@@ -38,7 +38,7 @@ therefore owns a fixed BFL `safety_tolerance=2`, permits one generated image per
 call, restricts model/size/quality through the server catalog, applies entitlement
 and per-turn spend bounds, and rejects oversized output. These are real
 compensating controls, but FLUX responses carry no Azure annotation verdict for
-AI4IA to persist or display. The owner's 2026-08-12 direction to deploy FLUX is
+AI4IA to persist or display. The owner's direction to deploy FLUX is
 recorded as enablement direction, not as the still-missing modality-wide approval
 needed to close this control.
 
@@ -58,8 +58,8 @@ needed to close this control.
 
 **What the deployed policy proves.** Azure's control plane refuses
 a RAI policy that disables blocking on the abuse filters unless the subscription
-holds an approved modification request. Verified against the live account
-`mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o` on 2026-08-06:
+holds an approved modification request. Verify against your own Foundry account
+(`<foundry-account>`) at deployment time:
 
 | Policy | Filters | Non-blocking |
 | --- | --- | --- |
@@ -123,7 +123,7 @@ Two details worth stating plainly, because both are easy to misread:
 discarded: verdicts returned on the text-completion path are normalized
 (`app/api/src/ai4ia_api/safety.py`), persisted on the message, and shown in a
 per-turn panel that states plainly that the displayed text was not blocked or
-rewritten. Before 2026-08-04 that chat-path evidence was thrown away.
+rewritten. Previously that chat-path evidence was thrown away.
 `filtered: true` is always treated as notable, so a future switch to blocking would
 surface rather than change behaviour silently.
 
@@ -154,7 +154,7 @@ response.
 
 That argument depends on the user population staying small, known and internal. It
 stops holding the moment the platform is exposed to a second tenant or to
-unauthenticated use — which is also when audit finding P1-10 (tenant-public means
+unauthenticated use — which is also when the latent risk (tenant-public means
 application-public) stops being latent. That is trigger 1 in "Review triggers"
 below, and it is why the review is trigger-driven rather than only annual.
 
@@ -167,7 +167,7 @@ annotate-only posture continues:
 
 | # | Trigger | Why it breaks the argument | How you would notice |
 | --- | --- | --- | --- |
-| 1 | A second Entra tenant is allowed, or any unauthenticated access is enabled | The whole justification is "small, known, internal, authenticated". This is also the moment P1-10 (tenant-public means application-public) stops being latent. | Startup already **refuses** when more than one tenant is allowed, so this cannot happen silently — the refusal is the notification. |
+| 1 | A second Entra tenant is allowed, or any unauthenticated access is enabled | The whole justification is "small, known, internal, authenticated". This is also the moment the latent risk (tenant-public means application-public) stops being latent. | Startup already **refuses** when more than one tenant is allowed, so this cannot happen silently — the refusal is the notification. |
 | 2 | A high-severity annotation is observed on a production completion | The premise is that filters would fire on legitimate technical work, not on genuinely harmful content. One high-severity hit is evidence the premise is wrong. | `AppEvents` in the Log Analytics workspace. **Nothing alerts on this today** — see the gap below. |
 | 3 | A new output modality or model provider is enabled that this record did not reason about | The decision was made about Azure OpenAI text completions. Claude, image, video, and realtime voice have different safety evidence and failure modes. **Fired:** Claude, image, video, Azure OpenAI Voice Live, and Speech Voice Live are enabled; provider/modality re-approval is not evidenced here. | Repository/deployment feature posture plus the evidence list above. |
 | 4 | The Azure guardrails-modification approval lapses, or a deployment is recreated on a stock policy | The approval *is* the deployed policy. If the policy reverts, the exception has already ended in fact. | `scripts/tests/test_rai_policy.py` pins the posture in IaC; a live drift would need a control-plane read. |
@@ -193,4 +193,3 @@ annotate-only posture continues:
 - Invariants: `scripts/tests/test_rai_policy.py`
 - Annotation surfacing: `app/api/src/ai4ia_api/safety.py`,
   `app/web/src/components/MessageList.tsx`
-- Audit finding: [P0-2 in the repository audit](./repository-audit-2026-08-03.md)

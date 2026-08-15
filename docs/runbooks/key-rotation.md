@@ -3,10 +3,9 @@
 The credential the FastAPI API presents to SimpleL7Proxy (`S7P-KEY`). Rotate it
 when it may have been disclosed, or on whatever schedule you adopt.
 
-This procedure is designed for zero downtime. It was executed end-to-end in the
-production `slurmfactory` environment on 2026-08-04; the reusable commands below
-derive their targets from the selected azd environment rather than embedding those
-production names.
+This procedure is designed for zero downtime. The reusable commands below
+derive their targets from the selected azd environment rather than embedding
+specific production names.
 
 ## Why it is not just "regenerate the key"
 
@@ -69,12 +68,9 @@ foreach ($required in @($sub, $envName, $rg, $proxyApp, $apiApp, $apim, $apimId,
 `az apim subscription` does **not** exist in current Azure CLI — use `az rest`
 against the ARM endpoint, as below.
 
-The executed production instance resolved to subscription
-`e852113b-6cb5-441c-ac68-26cff884e479`, resource group
-`rg-ai4ia-slurmfactory`, apps `ca-proxy-slurmfactory` /
-`ca-api-slurmfactory`, subscription `ai4ia-api-proxy-ingress`, and proxy
-`https://genaiproxy.nomad-analytics.com`. Those values are evidence, not reusable
-inputs.
+The prerequisite block above resolves every rotation target from the selected azd
+environment, and throws if any one of them comes back empty. Never hardcode the
+resolved names: they are specific to one subscription and environment.
 
 ## 0. Establish the oracle
 
@@ -206,11 +202,10 @@ fix only protects revisions running an image built after it.
 **Rotate *after* deploying that fix, not before**, or the new key is written to
 the same place the old one was.
 
-Measured on 2026-08-04, this deployment's exposure was narrower than it looks:
-`EVENT_LOGGERS` is unset, so the event goes to the default **file** client
+In practice, the exposure is often narrower than it looks:
+`EVENT_LOGGERS` is commonly unset, so the event goes to the default **file** client
 (`eventslog.json`) inside the container, which is ephemeral and dies with the
-revision. A workspace-table search found no occurrence in API telemetry, and a
-separate `ContainerAppConsoleLogs_CL` search covered the proxy. **Do not use**
+revision. Even so, search the workspace table to confirm — **do not use**
 `az monitor app-insights query` with the classic `traces`/`customEvents` names
 here: this is a workspace-based component, and that command returns an empty
 result set rather than an error — a false all-clear documented in

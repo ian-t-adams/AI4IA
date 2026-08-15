@@ -2,17 +2,13 @@
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 import unittest
 from pathlib import Path
 
+from scripts.tests._postprovision import _ps_literal, _run_pwsh
+
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "postprovision.ps1"
-
-
-def _ps_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
 
 
 def _run_model(
@@ -21,8 +17,6 @@ def _run_model(
     token: str | None = "fake-management-token",
     deployments: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
-    if shutil.which("pwsh") is None:
-        raise unittest.SkipTest("pwsh is required for executable postprovision tests")
     values: dict[str, str | None] = {
         "AZURE_EXPECTED_MODEL_DEPLOYMENTS": json.dumps(
             [
@@ -95,22 +89,10 @@ Test-ModelDeployment
 [pscustomobject]@{{ results=$script:Results; captured=$script:Captured }} |
   ConvertTo-Json -Depth 8 -Compress
 """
-    proc = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command],
-        cwd=REPO,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=45,
-    )
-    if proc.returncode != 0:
-        raise AssertionError(f"PowerShell failed ({proc.returncode}):\n{proc.stderr}\n{proc.stdout}")
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+    return _run_pwsh(command, cwd=REPO)
 
 
 def _run_topology(overrides: dict[str, str | None] | None = None) -> dict[str, object]:
-    if shutil.which("pwsh") is None:
-        raise unittest.SkipTest("pwsh is required for executable postprovision tests")
     values: dict[str, str | None] = {
         "AZURE_PROXY_URL": "https://proxy.example.test",
         "AZURE_MODEL_GATEWAY_URL": "https://proxy.example.test/openai",
@@ -151,22 +133,10 @@ function Get-EnvValue {{
 Test-GatewayTopology
 [pscustomobject]@{{ results=$script:Results }} | ConvertTo-Json -Depth 8 -Compress
 """
-    proc = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command],
-        cwd=REPO,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=45,
-    )
-    if proc.returncode != 0:
-        raise AssertionError(f"PowerShell failed ({proc.returncode}):\n{proc.stderr}\n{proc.stdout}")
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+    return _run_pwsh(command, cwd=REPO)
 
 
 def _run_token_helper(name: str) -> dict[str, object]:
-    if shutil.which("pwsh") is None:
-        raise unittest.SkipTest("pwsh is required for executable postprovision tests")
     command = rf"""
 $tokens = $null
 $errors = $null
@@ -207,17 +177,7 @@ $value = if ({_ps_literal(name)} -eq 'Get-CognitiveServicesToken') {{
 [pscustomobject]@{{ token=$value; azdArgs=$script:AzdArgs; nativeCalls=$script:NativeCalls }} |
   ConvertTo-Json -Depth 5 -Compress
 """
-    proc = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command],
-        cwd=REPO,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=45,
-    )
-    if proc.returncode != 0:
-        raise AssertionError(f"PowerShell failed ({proc.returncode}):\n{proc.stderr}\n{proc.stdout}")
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+    return _run_pwsh(command, cwd=REPO)
 
 
 class TokenAcquisitionTests(unittest.TestCase):

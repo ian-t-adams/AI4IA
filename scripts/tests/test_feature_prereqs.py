@@ -27,7 +27,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -468,6 +468,193 @@ class ContradictionTests(unittest.TestCase):
             code, _, err = _run(REAL_PARAMETERS)
         self.assertEqual(code, 1)
         self.assertIn("apiAuthProvider=entra", err)
+
+
+class FeaturePrerequisiteTests(unittest.TestCase):
+    """Individual feature-gate contradiction rules, driven against minimal parameter dicts.
+
+    These tests create a stripped-down parameters file containing only the params
+    relevant to the rule under test (plus Claude attestation defaults), so a gate
+    cannot accidentally pass because an unrelated real-parameters value hides it.
+    """
+
+    def run_validator(self, parameters: dict[str, object]) -> tuple[int, str]:
+        parameters = {
+            "claudeOrganizationName": "Example Legal Entity",
+            "claudeCountryCode": "US",
+            "claudeIndustry": "technology",
+            **parameters,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "parameters.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "parameters": {
+                            name: {"value": value}
+                            for name, value in parameters.items()
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            original = VALIDATOR.PARAMETERS_FILE
+            VALIDATOR.PARAMETERS_FILE = path
+            output = StringIO()
+            try:
+                with redirect_stdout(output), redirect_stderr(output):
+                    result = VALIDATOR.main()
+            finally:
+                VALIDATOR.PARAMETERS_FILE = original
+            return result, output.getvalue()
+
+    def test_profiles_reject_shared_key_prerequisite(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "proxyProfilesEnabled": True,
+                "proxyProfileProjectionJson": '[{"appId":"app-a"}]',
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("verified identity-aware application header", output)
+
+    def test_priorities_require_worker_reservations(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "proxyPrioritiesEnabled": True,
+                "proxyPriorityWorkers": "invalid",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("priority:count format", output)
+
+    def test_environment_overrides_parameter_placeholder_defaults(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "AI4IA_PROXY_PROFILES_ENABLED": "true",
+                "AI4IA_PROXY_PROFILE_PROJECTION_JSON": '[{"appId":"app-a"}]',
+            },
+            clear=False,
+        ):
+            result, output = self.run_validator(
+                {
+                    "owner": "operator",
+                    "apimPublisherEmail": "ops@contoso.test",
+                    "proxyProfilesEnabled": "${AI4IA_PROXY_PROFILES_ENABLED=false}",
+                    "proxyProfileProjectionJson": "${AI4IA_PROXY_PROFILE_PROJECTION_JSON=}",
+                }
+            )
+        self.assertEqual(result, 1)
+        self.assertIn("verified identity-aware application header", output)
+
+    def test_private_data_tier_requires_vnet_isolation(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "dataTierPrivate": True,
+                "vnetIsolationEnabled": False,
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("requires vnetIsolationEnabled=true", output)
+
+    def test_speech_voice_live_requires_master_voice_live_gate(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "voiceLiveEnabled": False,
+                "speechVoiceLiveEnabled": True,
+                "voiceProviderAllowlist": "azure_openai,speech_voice_live",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("speechVoiceLiveEnabled=true is inert unless voiceLiveEnabled=true", output)
+
+    def test_speech_voice_live_requires_allowlist_membership(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "voiceLiveEnabled": True,
+                "speechVoiceLiveEnabled": True,
+                "voiceProviderAllowlist": "azure_openai",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn(
+            "requires voiceProviderAllowlist to include speech_voice_live", output
+        )
+
+    def test_allowlist_without_enablement_is_rejected(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "voiceLiveEnabled": True,
+                "speechVoiceLiveEnabled": False,
+                "voiceProviderAllowlist": "azure_openai,speech_voice_live",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("but speechVoiceLiveEnabled is not true", output)
+
+    def test_allowlist_always_requires_azure_openai(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "voiceProviderAllowlist": "speech_voice_live",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("must always include azure_openai", output)
+
+    def test_default_provider_must_be_allowlisted(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "voiceProviderAllowlist": "azure_openai",
+                "voiceDefaultProvider": "speech_voice_live",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("voiceDefaultProvider must be a member of voiceProviderAllowlist", output)
+
+    def test_speech_voice_live_complete_configuration_passes(self) -> None:
+        # No realtimeAllowedOrigins here on purpose: main.bicep now derives the
+        # allowlist from the web app this deployment creates, and the validator
+        # rejects a literal hostname pinned in parameters as tenant-coupled.
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "voiceLiveEnabled": True,
+                "speechVoiceLiveEnabled": True,
+                "voiceProviderAllowlist": "azure_openai,speech_voice_live",
+                "voiceDefaultProvider": "azure_openai",
+            }
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("look sane", output)
+
+    def test_speech_voice_live_audience_must_not_be_blanked(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "speechVoiceLiveManagedIdentityAudience": "",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("speechVoiceLiveManagedIdentityAudience must not be blanked out", output)
 
 
 if __name__ == "__main__":

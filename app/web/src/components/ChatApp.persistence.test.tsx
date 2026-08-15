@@ -6,14 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatApp } from "./ChatApp";
 import type { StreamHandlers } from "@/lib/api";
 import type { ToolCatalogItem } from "@/lib/types";
-import {
-  CHAT_ATTACHMENT_CAPABILITIES,
-  CHAT_MODEL_CATALOG,
-  DISABLED_MEMORY,
-  emptyLibrarySummary,
-  makeChatSession,
-  makeInspectorSnapshot,
-} from "./chatTestFixtures";
+import { resetChatAppMocks } from "./chatTestFixtures";
 
 const mocks = vi.hoisted(() => ({
   listModels: vi.fn(),
@@ -48,9 +41,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/api", () => mocks);
 
-function mockToolCatalog(tools: ToolCatalogItem[]): void {
-  mocks.toolCatalog = tools;
-}
 vi.mock("@/lib/inspector", () => ({
   getInspector: mocks.getInspector,
   listMemories: mocks.listMemories,
@@ -172,38 +162,8 @@ function captureStreamHandlers(): () => StreamHandlers {
 }
 
 beforeEach(() => {
-  const sessions = [makeChatSession("A"), makeChatSession("B")];
-  mocks.listModels.mockResolvedValue(CHAT_MODEL_CATALOG);
-  mocks.listSessions.mockResolvedValue(sessions);
-  mocks.listAgents.mockResolvedValue([]);
-  mocks.getAttachmentCapabilities.mockResolvedValue(
-    CHAT_ATTACHMENT_CAPABILITIES,
-  );
-  mocks.listMessages.mockResolvedValue([]);
-  mocks.listDocuments.mockResolvedValue([]);
-  mocks.listLibraryDocuments.mockResolvedValue([]);
-  mocks.listSharedWithMe.mockResolvedValue([]);
-  mocks.createSession.mockImplementation(async (value: object) => ({
-    ...makeChatSession("C"),
-    ...value,
-  }));
-  mocks.streamChat.mockReturnValue(vi.fn());
-  mocks.appendVoiceTurns.mockResolvedValue([]);
+  resetChatAppMocks(mocks);
   mocks.voiceOptions = null;
-  mockToolCatalog([]);
-  mocks.getToolCatalog.mockImplementation(async () => ({
-    tools: mocks.toolCatalog,
-    inheritedTools: [],
-  }));
-  mocks.updateSession.mockImplementation(async (id: string, value: object) => ({
-    ...makeChatSession(id),
-    ...value,
-  }));
-  mocks.getInspector.mockImplementation(async (id: string) =>
-    makeInspectorSnapshot(id),
-  );
-  mocks.listMemories.mockResolvedValue(DISABLED_MEMORY);
-  mocks.getLibrarySummary.mockResolvedValue(emptyLibrarySummary());
 });
 
 afterEach(() => {

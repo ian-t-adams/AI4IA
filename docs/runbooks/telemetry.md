@@ -51,7 +51,7 @@ no `APPLICATIONINSIGHTS_CONNECTION_STRING` and no `EVENT_LOGGERS`, so **none** o
 its events ever reach Application Insights. Searching `App*` tables for proxy
 content will always return zero, whatever happened. Its logs are in
 `ContainerAppConsoleLogs_CL` filtered on `ContainerAppName_s ==
-'ca-proxy-slurmfactory'`.
+'ca-proxy-<env>'`.
 
 
 - `GET /api/admin/metrics/operations?minutes=15..1440`

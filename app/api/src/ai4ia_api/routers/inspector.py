@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from ..auth.base import AuthenticatedUser
@@ -13,7 +13,6 @@ from ..conversations.policy import resolve_conversation_policy
 from ..library.access import get_accessible_document, list_accessible_documents
 from ..library.repository import DocumentNotFoundError
 from ..sessions.models import ImageGenerationPreferences
-from ..sessions.repository import SessionNotFoundError
 from ..usage.models import SessionUsageSummary, UsageSummary
 from .documents import DocumentSummary
 from .library import UserDocumentSummary
@@ -95,14 +94,9 @@ async def get_inspector(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> InspectorSnapshot:
-    try:
-        session = await request.app.state.session_repo.get_session(
-            user.internal_user_id, session_id
-        )
-    except SessionNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
-        )
+    session = await request.app.state.session_repo.get_session(
+        user.internal_user_id, session_id
+    )
 
     policy = await resolve_conversation_policy(
         request.app.state, user.internal_user_id, session

@@ -432,30 +432,24 @@ export async function synthesizeSpeech(
   return blob;
 }
 
+async function fetchBlob(url: string, errorMsg: string): Promise<Blob> {
+  const resp = await apiFetch(url, { cache: "no-store" });
+  if (!resp.ok) throw new Error(`${resp.status}: ${errorMsg}`);
+  return resp.blob();
+}
+
 // Fetches a tool-generated image's bytes from the authenticated serve endpoint.
 // A raw <img src> would not carry the bearer token, so (like synthesizeSpeech) we
 // fetch via apiFetch and hand back a Blob the caller wraps in an object URL.
 export async function fetchImageArtifact(artifactId: string): Promise<Blob> {
-  const resp = await apiFetch(`/api/images/artifacts/${artifactId}`, {
-    cache: "no-store",
-  });
-  if (!resp.ok) {
-    throw new Error(`${resp.status}: failed to load image`);
-  }
-  return await resp.blob();
+  return fetchBlob(`/api/images/artifacts/${artifactId}`, "failed to load image");
 }
 
 // Fetches a tool-generated video's MP4 bytes from the authenticated serve
 // endpoint (mirrors fetchImageArtifact). The caller wraps the Blob in an object
 // URL for a <video> element, since a raw src would not carry the bearer token.
 export async function fetchVideoArtifact(artifactId: string): Promise<Blob> {
-  const resp = await apiFetch(`/api/videos/artifacts/${artifactId}`, {
-    cache: "no-store",
-  });
-  if (!resp.ok) {
-    throw new Error(`${resp.status}: failed to load video`);
-  }
-  return await resp.blob();
+  return fetchBlob(`/api/videos/artifacts/${artifactId}`, "failed to load video");
 }
 
 // Fetches an over-cap process_document result's markdown text from the
@@ -476,13 +470,7 @@ export async function fetchDocumentArtifact(artifactId: string): Promise<string>
 // bearer token rides along — a raw <video src> URL could not carry it — then the
 // caller wraps the Blob in an object URL, which also gives client-side seeking.
 export async function fetchLibraryMedia(documentId: string): Promise<Blob> {
-  const resp = await apiFetch(`/api/library/documents/${documentId}/media`, {
-    cache: "no-store",
-  });
-  if (!resp.ok) {
-    throw new Error(`${resp.status}: failed to load media`);
-  }
-  return await resp.blob();
+  return fetchBlob(`/api/library/documents/${documentId}/media`, "failed to load media");
 }
 
 // The scene/keyframe timeline for an audio/video document, used to draw

@@ -34,7 +34,6 @@ from ..sessions.models import (
 )
 from ..sessions.repository import (
     SessionConflictError,
-    SessionNotFoundError,
     SessionRepository,
 )
 
@@ -302,10 +301,7 @@ async def get_session(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Session:
-    try:
-        return await _repo(request).get_session(user.internal_user_id, session_id)
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    return await _repo(request).get_session(user.internal_user_id, session_id)
 
 
 @router.patch("/{session_id}", response_model=Session)
@@ -316,10 +312,7 @@ async def update_session(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Session:
     repo = _repo(request)
-    try:
-        session = await repo.get_session(user.internal_user_id, session_id)
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    session = await repo.get_session(user.internal_user_id, session_id)
     data = body.model_dump(exclude_unset=True)
     next_agent = data.get("agentName", session.agentName)
     next_overrides = data.get("toolOverrides", session.toolOverrides)
@@ -352,10 +345,6 @@ async def update_session(
         changes["titleSource"] = "manual"
     try:
         return await repo.patch_session(user.internal_user_id, session_id, changes)
-    except SessionNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
-        ) from exc
     except SessionConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -375,10 +364,7 @@ async def associate_library_document(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Session:
     repo = _repo(request)
-    try:
-        await repo.get_session(user.internal_user_id, session_id)
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    await repo.get_session(user.internal_user_id, session_id)
     library = getattr(request.app.state, "document_library", None)
     if library is None:
         raise HTTPException(
@@ -415,10 +401,7 @@ async def disassociate_library_document(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Session:
     repo = _repo(request)
-    try:
-        session = await repo.get_session(user.internal_user_id, session_id)
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    session = await repo.get_session(user.internal_user_id, session_id)
     legacy_ids = None
     if session.libraryDocumentIds is None:
         library = getattr(request.app.state, "document_library", None)
@@ -451,10 +434,7 @@ async def delete_session(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> None:
-    try:
-        await _repo(request).delete_session(user.internal_user_id, session_id)
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    await _repo(request).delete_session(user.internal_user_id, session_id)
     # Best-effort purge of any inline-attachment original bytes retained for this
     # session (inline code-interpreter feature). The store no-ops when nothing was
     # retained and never raises, so it can't break the delete.
@@ -469,10 +449,7 @@ async def list_messages(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[Message]:
-    try:
-        return await _repo(request).list_messages(user.internal_user_id, session_id)
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    return await _repo(request).list_messages(user.internal_user_id, session_id)
 
 
 class VoiceTurnInput(BaseModel):
@@ -525,10 +502,7 @@ async def append_voice_turns(
     same message ids instead of duplicating an exchange after a lost response.
     """
     repo = _repo(request)
-    try:
-        await repo.get_session(user.internal_user_id, session_id)
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    await repo.get_session(user.internal_user_id, session_id)
 
     if len(body.turns) > MAX_VOICE_TURNS:
         raise HTTPException(

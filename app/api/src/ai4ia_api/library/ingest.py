@@ -1217,11 +1217,11 @@ class DocumentIngestor:
 
 
     async def _purge_chunks(self, user_id: str, document_id: str) -> None:
-        """Drop only the document's pgvector chunk index (best-effort, idempotent).
+        """Drop only the document's chunk index (best-effort, idempotent).
 
         Unlike :meth:`purge`, the raw upload + parsed artifacts are kept — used when
         a document settles ``failed`` after a clean enrich error so the user retains
-        their upload + quick-text summary, while the searchable vectors (the only
+        their upload + quick-text summary, while the searchable chunks (the only
         retrieval-reachable surface) are removed.
         """
         if self._chunks is None:

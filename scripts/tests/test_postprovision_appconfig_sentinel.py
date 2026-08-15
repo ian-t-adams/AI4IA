@@ -1,7 +1,6 @@
 """Execute App Configuration sentinel reconciliation with Azure CLI stubbed."""
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -10,12 +9,10 @@ import time
 import unittest
 from pathlib import Path
 
+from scripts.tests._postprovision import _ps_literal, _run_pwsh
+
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "postprovision.ps1"
-
-
-def _ps_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
 
 
 def _run(
@@ -26,8 +23,6 @@ def _run(
     principal_id: str | None = "deploy-principal",
     command_seconds: int = 0,
 ) -> dict[str, object]:
-    if shutil.which("pwsh") is None:
-        raise unittest.SkipTest("pwsh is required for executable postprovision tests")
     values = {
         "AZURE_APP_CONFIG_ENDPOINT": endpoint,
         "AZURE_APP_CONFIG_LABEL": label,
@@ -97,17 +92,7 @@ Register-AppConfigurationSentinel
   elapsedSeconds = $script:NowSeconds
 }} | ConvertTo-Json -Depth 8 -Compress
 """
-    proc = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command],
-        cwd=REPO,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=45,
-    )
-    if proc.returncode != 0:
-        raise AssertionError(f"PowerShell failed ({proc.returncode}):\n{proc.stderr}\n{proc.stdout}")
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+    return _run_pwsh(command, cwd=REPO)
 
 
 def _run_timeout_helper(*, mode: str, exit_code: int = 0) -> tuple[int, float]:

@@ -6,19 +6,14 @@ network access or Azure mutation.
 """
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
 import unittest
 from pathlib import Path
+
+from scripts.tests._postprovision import _ps_literal, _run_pwsh
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "postprovision.ps1"
 GREENFIELD = REPO / "docs" / "runbooks" / "greenfield-standup.md"
-
-
-def _ps_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
 
 
 def _run(
@@ -29,8 +24,6 @@ def _run(
     request_seconds: int = 0,
     token_seconds: int = 0,
 ) -> dict[str, object]:
-    if shutil.which("pwsh") is None:
-        raise unittest.SkipTest("pwsh is required for executable postprovision tests")
     values: dict[str, str | None] = {
         "AZURE_CONTENT_UNDERSTANDING_ENABLED": "true",
         "AZURE_PRIMARY_FOUNDRY_ACCOUNT_NAME": "mf-example-sweden",
@@ -140,17 +133,7 @@ Register-ContentUnderstandingDefault
   elapsedSeconds = $script:NowSeconds
 }} | ConvertTo-Json -Depth 8 -Compress
 """
-    proc = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command],
-        cwd=REPO,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=45,
-    )
-    if proc.returncode != 0:
-        raise AssertionError(f"PowerShell failed ({proc.returncode}):\n{proc.stderr}\n{proc.stdout}")
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+    return _run_pwsh(command, cwd=REPO)
 
 
 class ContentUnderstandingPostprovisionTests(unittest.TestCase):

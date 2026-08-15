@@ -24,30 +24,19 @@ Application Insights telemetry.
 
 Advanced capabilities are feature-gated. The checked-in showcase profile keeps
 the current broad capability set as environment-overridable defaults; a new
-operator can opt out without editing the parameter file. For the dated observed
+operator can opt out without editing the parameter file. For the observed
 deployment posture, use the
 [feature-enablement runbook](docs/runbooks/feature-enablement.md). For template
 defaults and every deployable variable, use the
 [configuration reference](docs/configuration-reference.md). Do not copy an
 observed environment's values into a new tenant.
 
-Known gaps to keep visible:
-
-- The Responsible AI decision record is document-complete but the control is
-  **not approved for the full live modality scope**. Image, video, Azure OpenAI
-  Voice Live, and Speech Voice Live are enabled, while the record contains no
-  evidenced trigger-3 re-approval for those modalities.
-- The document library UI is still document-centric; custom analyzer authoring,
-  folder-level sharing, and unauthenticated public links are not implemented.
-- Memory has save/forget APIs and automatic recall, but no global user-facing
-  memory toggle or recalled-memory indicator in chat.
-- Multi-application profiles remain blocked until the public proxy edge validates
-  a workload identity; shared-key ingress is not sufficient for trusted app
-  identity or per-app policy.
-- Network isolation is design-only and incomplete. Bicep contains partial
-  `vnetIsolationEnabled` / `dataTierPrivate` wiring, but normal azd/CI cannot set
-  those parameters and private endpoints do not yet cover ACR, App Configuration,
-  Search, Foundry, APIM, or monitoring.
+Some capabilities are deliberately incomplete, and the docs say so where it
+matters: the Responsible AI record is document-complete but not approved for the
+full live modality scope ([decision record](docs/rai-decision-record.md)); memory
+has no global user-facing consent toggle ([memory](docs/memory.md)); and network
+isolation is design scaffolding rather than a served private mode
+([architecture](docs/architecture.md)).
 
 ## Repository layout
 
@@ -94,6 +83,11 @@ provision, data-plane assets, and custom-domain sequencing. Use the
 exact-digest releases and rollback. A standalone `azd provision` is not the
 release path for an existing environment because Bicep carries placeholder
 images for greenfield creation.
+
+If an AI coding agent is doing the work, point it at
+**[deploying with a coding agent](docs/deploy-with-an-agent.md)**, which states
+what the agent may do alone, what needs your approval, and the traps that cost
+the most time.
 
 ## Documentation
 

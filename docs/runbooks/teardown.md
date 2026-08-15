@@ -32,11 +32,10 @@ authorized operator must remove whichever of those still exist. This is
 intentionally not a deploy hook: changing a feature flag must never delete live
 Azure.
 
-> **Reference environment status.** All three were removed from
-> `rg-ai4ia-slurmfactory` on 2026-08-08 and verified absent, so this section is
-> historical there. It still applies to any environment first provisioned before
-> the Lean Azure migration. Treat the discovery step below as the gate: if a
-> lookup returns nothing, that resource is already gone and needs no action.
+> **Check first; act only if present.** Run the discovery step below before
+> removing anything. An environment first provisioned after the Lean Azure
+> migration will show empty results, meaning there is nothing to clean up.
+> Treat a lookup that returns nothing as confirmation the resource is already gone.
 
 Resolve and inspect the three exact IDs first — an empty result means there is
 nothing to clean up for that resource, not that the lookup failed:

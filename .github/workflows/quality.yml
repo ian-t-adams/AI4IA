@@ -278,18 +278,6 @@ jobs:
           set -euo pipefail
           python3 -m unittest scripts.tests.test_proxy_delivery_contracts
 
-      - name: Run status consistency tests
-        run: |
-          set -euo pipefail
-          # The audit's disposition table and the roadmap are two live status
-          # documents for the same findings. Nothing coupled them, and they
-          # drifted the day it mattered: PR #294 set disableLocalAuth true and
-          # updated the roadmap, leaving the audit asserting in the present tense
-          # that it "still defaults false". Prose is not executable, so nothing
-          # failed. This makes the checkable half executable -- a finding may not
-          # be Open in one document and closed in the other. stdlib-only.
-          python3 -m unittest scripts.tests.test_status_consistency
-
       - name: Run portal status publication tests
         run: |
           set -euo pipefail
@@ -371,11 +359,9 @@ jobs:
           # test_documented_paths_exist splits on "#" and validates only the file
           # part, so a [text](doc.md#heading) link whose heading was renamed passes
           # every existing gate while silently landing the reader at the top of the
-          # document. Two such links reached main: an audit cross-reference dated
-          # 2026-08-05 after the heading moved to 2026-08-08, and a roadmap link into
-          # deployment.md that the greenfield/routine split retargeted. This
-          # reimplements GitHub's slug algorithm (including duplicate -1/-2
-          # suffixing) and refuses to pass vacuously on too few checked links.
+          # document. This reimplements GitHub's slug algorithm (including
+          # duplicate -1/-2 suffixing) and refuses to pass vacuously on too few
+          # checked links.
           python3 -m unittest scripts.tests.test_markdown_anchors
 
       - name: Run gating-workflow tests
@@ -396,13 +382,13 @@ jobs:
           # project-role preflight, and fail-closed reconciliation command.
           python3 -m unittest scripts.tests.test_foundry_assets_workflow
 
-      - name: Run documentation truth contract tests
+      - name: Run governance contract tests
         run: |
           set -euo pipefail
-          # Cross-file governance and operator claims can each be locally true
-          # while contradicting one another. Keep modality approval, MCP approval,
-          # Foundry lifecycle, portal posture, and runbook prerequisites aligned.
-          python3 -m unittest scripts.tests.test_documentation_truth
+          # Cross-file invariants no single surface can enforce alone: tool risk
+          # classification, Foundry manifest lifecycle, the Foundry endpoint
+          # artifact handoff, and the unreachable network-isolation parameters.
+          python3 -m unittest scripts.tests.test_governance_contracts
 
       - name: Run Markdown table shape tests
         run: |

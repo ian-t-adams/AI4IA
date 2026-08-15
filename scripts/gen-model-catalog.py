@@ -17,10 +17,12 @@ Verify-only (CI drift):  python scripts/gen-model-catalog.py --check
 """
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _generator import build_parser, check_or_write
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE = REPO_ROOT / "infra" / "models.json"
@@ -79,12 +81,7 @@ def build_catalog(models: dict) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Exit non-zero if the bundled catalog is stale (no write).",
-    )
+    parser = build_parser(__doc__)
     args = parser.parse_args()
 
     models = json.loads(SOURCE.read_text(encoding="utf-8"))
@@ -92,18 +89,17 @@ def main() -> int:
     rendered = json.dumps(catalog, indent=2) + "\n"
 
     if args.check:
-        current = TARGET.read_text(encoding="utf-8") if TARGET.exists() else ""
-        if current != rendered:
-            print(
-                "model_catalog.json is stale. Run: python scripts/gen-model-catalog.py",
-                file=sys.stderr,
-            )
-            return 1
-        print("model_catalog.json is up to date.")
-        return 0
+        rc = check_or_write(
+            TARGET,
+            rendered,
+            regenerate_hint="model_catalog.json is stale. Run: python scripts/gen-model-catalog.py",
+            check=True,
+        )
+        if rc == 0:
+            print("model_catalog.json is up to date.")
+        return rc
 
-    TARGET.parent.mkdir(parents=True, exist_ok=True)
-    TARGET.write_text(rendered, encoding="utf-8")
+    check_or_write(TARGET, rendered, regenerate_hint="", check=False)
     print(f"Wrote {TARGET.relative_to(REPO_ROOT)} ({len(catalog['models'])} models).")
     return 0
 
