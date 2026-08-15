@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   microphoneConstraints,
-  PLAYBACK_REBUFFER_SECONDS,
+  PLAYBACK_BUFFER_MS,
   supportsVoiceLive,
   useVoiceLive,
 } from "./voiceLive";
@@ -539,6 +539,9 @@ describe("useVoiceLive lifecycle", () => {
         "eastus2",
         "alloy",
         vi.fn(),
+        null,
+        [],
+        { ...DEFAULT_VOICE_SETTINGS, playbackProfile: "smooth" },
       ),
     );
 
@@ -573,7 +576,7 @@ describe("useVoiceLive lifecycle", () => {
       );
     });
     expect(context.bufferSources[0].start).toHaveBeenCalledWith(
-      1 + PLAYBACK_REBUFFER_SECONDS,
+      1 + PLAYBACK_BUFFER_MS.smooth / 1000,
     );
     expect(telemetry.reportClientEvent).not.toHaveBeenCalled();
 
@@ -605,12 +608,12 @@ describe("useVoiceLive lifecycle", () => {
       );
     });
     expect(context.bufferSources[1].start).toHaveBeenCalledWith(
-      2 + PLAYBACK_REBUFFER_SECONDS,
+      2 + PLAYBACK_BUFFER_MS.smooth / 1000,
     );
     expect(telemetry.reportClientEvent).not.toHaveBeenCalled();
 
     act(() => {
-      context.currentTime = 2.25;
+      context.currentTime = 2.35;
       socket.onmessage?.(
         new MessageEvent("message", {
           data: JSON.stringify({
@@ -624,7 +627,7 @@ describe("useVoiceLive lifecycle", () => {
       );
     });
     expect(context.bufferSources[2].start).toHaveBeenCalledWith(
-      2.25 + PLAYBACK_REBUFFER_SECONDS,
+      2.35 + PLAYBACK_BUFFER_MS.smooth / 1000,
     );
     expect(telemetry.reportClientEvent).toHaveBeenCalledWith(
       "voice_playback_rebuffer",
@@ -632,7 +635,7 @@ describe("useVoiceLive lifecycle", () => {
     );
 
     act(() => {
-      context.currentTime = 2.25 + PLAYBACK_REBUFFER_SECONDS + 0.05;
+      context.currentTime = 2.35 + PLAYBACK_BUFFER_MS.smooth / 1000 + 0.05;
       socket.onmessage?.(
         new MessageEvent("message", {
           data: JSON.stringify({ type: "input_audio_buffer.speech_started" }),
@@ -760,7 +763,7 @@ describe("useVoiceLive lifecycle", () => {
           }),
         }),
       );
-      context.currentTime = PLAYBACK_REBUFFER_SECONDS + 0.05;
+      context.currentTime = PLAYBACK_BUFFER_MS.balanced / 1000 + 0.05;
       socket.onmessage?.(
         new MessageEvent("message", {
           data: JSON.stringify({ type: "input_audio_buffer.speech_started" }),

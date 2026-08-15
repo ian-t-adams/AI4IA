@@ -116,9 +116,14 @@ describe("VoiceSettingsPanel", () => {
     setup();
     expect(screen.queryByRole("textbox", { name: "Instructions" })).toBeNull();
     expect(screen.getByRole("spinbutton", { name: "Temperature" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Playback stability" })).toHaveValue(
+      "balanced",
+    );
     expect(screen.getByRole("combobox", { name: "Turn detection" })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "VAD threshold" })).toBeInTheDocument();
-    expect(screen.getByRole("spinbutton", { name: "Silence (ms)" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("spinbutton", { name: "Reply after silence (ms)" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("textbox", { name: "Transcription model" }),
     ).toBeInTheDocument();
@@ -133,14 +138,14 @@ describe("VoiceSettingsPanel", () => {
       voice: voiceProviderCatalog.providers[1].capabilities.voices.default,
       speechSettings: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
     });
-    expect(screen.getByRole("combobox", { name: "Locale" })).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Locale" })).toBeNull();
     const model = screen.getByRole("combobox", { name: "Speech model" });
     expect(within(model).getAllByRole("option")).toHaveLength(6);
     expect(screen.queryByRole("combobox", { name: "Transcription" })).toBeNull();
     expect(screen.getByText(/Native audio · GPT-4o Transcribe · eastus2/)).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Turn detection" })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Noise suppression" })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Echo cancellation" })).toBeInTheDocument();
+    expect(screen.getByText("Managed by Azure Speech")).toBeInTheDocument();
+    expect(screen.getByText(/deep noise suppression and echo cancellation/)).toBeInTheDocument();
   });
 
   it("selects a Speech model and shows its catalog profile without changing OpenAI", async () => {
@@ -178,6 +183,26 @@ describe("VoiceSettingsPanel", () => {
       temperature: 0.7,
     });
     expect(onSettingsChange).not.toHaveBeenCalled();
+  });
+
+  it("changes the shared browser playback profile without changing provider settings", async () => {
+    const { user, onSettingsChange, onSpeechSettingsChange } = setup({
+      provider: "speech_voice_live",
+      activeProvider: voiceProviderCatalog.providers[1],
+      voice: voiceProviderCatalog.providers[1].capabilities.voices.default,
+    });
+
+    const playback = screen.getByRole("combobox", { name: "Playback stability" });
+    expect(playback).toHaveAccessibleDescription(
+      "Higher stability adds a little delay to smooth network jitter.",
+    );
+    await user.selectOptions(playback, "smooth");
+
+    expect(onSettingsChange).toHaveBeenCalledWith({
+      ...DEFAULT_VOICE_SETTINGS,
+      playbackProfile: "smooth",
+    });
+    expect(onSpeechSettingsChange).not.toHaveBeenCalled();
   });
 
   it("calls onReset when Reset defaults is clicked", async () => {

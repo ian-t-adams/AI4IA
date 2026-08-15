@@ -18,6 +18,7 @@ import {
   DEFAULT_SPEECH_MODEL_ID,
   DEFAULT_VOICE_PROVIDER,
   isRealtimeVoice,
+  isPlaybackProfile,
   isSpeechVoiceProvider,
   isVadType,
   type RealtimeVoice,
@@ -100,6 +101,10 @@ export function normalizeVoiceSessionSettings(raw: unknown): VoiceSessionSetting
     ? clamp(r.temperature, TEMPERATURE_MIN, TEMPERATURE_MAX)
     : null;
 
+  const playbackProfile = isPlaybackProfile(r.playbackProfile)
+    ? r.playbackProfile
+    : DEFAULT_VOICE_SETTINGS.playbackProfile;
+
   const vadType =
     typeof r.vadType === "string" && isVadType(r.vadType)
       ? r.vadType
@@ -124,6 +129,7 @@ export function normalizeVoiceSessionSettings(raw: unknown): VoiceSessionSetting
       : "";
 
   return {
+    playbackProfile,
     temperature,
     vadType,
     vadThreshold,
@@ -220,14 +226,6 @@ export function normalizeSpeechVoiceLiveSettings(
     typeof r.turnDetection === "string" && r.turnDetection.trim().length > 0
       ? (r.turnDetection.trim() as SpeechVoiceLiveSettings["turnDetection"])
       : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.turnDetection;
-  const noiseSuppression =
-    typeof r.noiseSuppression === "string" && r.noiseSuppression.trim().length > 0
-      ? (r.noiseSuppression.trim() as SpeechVoiceLiveSettings["noiseSuppression"])
-      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.noiseSuppression;
-  const echoCancellation =
-    typeof r.echoCancellation === "string" && r.echoCancellation.trim().length > 0
-      ? (r.echoCancellation.trim() as SpeechVoiceLiveSettings["echoCancellation"])
-      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.echoCancellation;
   const interruptResponse =
     typeof r.interruptResponse === "boolean"
       ? r.interruptResponse
@@ -241,8 +239,6 @@ export function normalizeSpeechVoiceLiveSettings(
     voice,
     locale,
     turnDetection,
-    noiseSuppression,
-    echoCancellation,
     interruptResponse,
     autoTruncate,
   };
@@ -265,10 +261,6 @@ function sanitizeSpeechPreferences(
     speechProvider?.capabilities.locale?.options ?? [normalized.locale];
   const turnDetections: readonly SpeechVoiceLiveSettings["turnDetection"][] =
     speechProvider?.capabilities.turnDetection.options ?? [normalized.turnDetection];
-  const noiseSuppression: readonly SpeechVoiceLiveSettings["noiseSuppression"][] =
-    speechProvider?.capabilities.noiseSuppression?.options ?? [normalized.noiseSuppression];
-  const echoCancellation: readonly SpeechVoiceLiveSettings["echoCancellation"][] =
-    speechProvider?.capabilities.echoCancellation?.options ?? [normalized.echoCancellation];
   return {
     ...normalized,
     voice:
@@ -285,16 +277,6 @@ function sanitizeSpeechPreferences(
       turnDetections.includes(normalized.turnDetection) && speechProvider
         ? normalized.turnDetection
         : speechProvider?.capabilities.turnDetection.default ?? normalized.turnDetection,
-    noiseSuppression:
-      noiseSuppression.includes(normalized.noiseSuppression) && speechProvider
-        ? normalized.noiseSuppression
-        : speechProvider?.capabilities.noiseSuppression?.default ??
-          normalized.noiseSuppression,
-    echoCancellation:
-      echoCancellation.includes(normalized.echoCancellation) && speechProvider
-        ? normalized.echoCancellation
-        : speechProvider?.capabilities.echoCancellation?.default ??
-          normalized.echoCancellation,
   };
 }
 

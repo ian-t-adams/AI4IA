@@ -29,10 +29,21 @@ import {
 
 // Azure realtime speaks 24 kHz mono PCM16 in both directions.
 export const PCM_SAMPLE_RATE = 24000;
-// Hold the first chunk (and the first chunk after an underrun) briefly so normal
-// network jitter does not become an audible gap between otherwise contiguous
-// response.audio.delta frames.
-export const PLAYBACK_REBUFFER_SECONDS = 0.12;
+export const PLAYBACK_PROFILES = ["fast", "balanced", "smooth"] as const;
+export type PlaybackProfile = (typeof PLAYBACK_PROFILES)[number];
+export const DEFAULT_PLAYBACK_PROFILE: PlaybackProfile = "balanced";
+export const PLAYBACK_BUFFER_MS = {
+  fast: 80,
+  balanced: 120,
+  smooth: 180,
+} as const satisfies Record<PlaybackProfile, number>;
+
+export function isPlaybackProfile(value: unknown): value is PlaybackProfile {
+  return (
+    typeof value === "string" &&
+    (PLAYBACK_PROFILES as readonly string[]).includes(value)
+  );
+}
 
 // WebSocket subprotocol markers the relay understands (see routers/realtime.py).
 const BEARER_SUBPROTOCOL = "ai4ia-bearer";
@@ -149,8 +160,6 @@ export interface SpeechVoiceLiveSettings {
   voice: string;
   locale: string;
   turnDetection: "azure_semantic_vad" | "azure_semantic_vad_multilingual";
-  noiseSuppression: "azure_deep_noise_suppression";
-  echoCancellation: "server_echo_cancellation";
   interruptResponse: boolean;
   autoTruncate: boolean;
 }
@@ -160,8 +169,6 @@ export const DEFAULT_SPEECH_VOICE_LIVE_SETTINGS: SpeechVoiceLiveSettings = {
   voice: DEFAULT_SPEECH_VOICE,
   locale: DEFAULT_SPEECH_LOCALE,
   turnDetection: DEFAULT_SPEECH_TURN_DETECTION,
-  noiseSuppression: DEFAULT_SPEECH_NOISE_SUPPRESSION,
-  echoCancellation: DEFAULT_SPEECH_ECHO_CANCELLATION,
   interruptResponse: true,
   autoTruncate: false,
 };
@@ -309,6 +316,8 @@ export type VadType = (typeof VAD_TYPES)[number];
 // ``null``/empty fields are omitted from the payload entirely (the model applies
 // its own default), which is how today's payload omits e.g. temperature.
 export interface VoiceSessionSettings {
+  // Browser-side startup/recovery buffering. This never leaves the client.
+  playbackProfile: PlaybackProfile;
   // Sampling temperature, or null to omit (model default — today's behavior).
   temperature: number | null;
   vadType: VadType;
@@ -323,6 +332,7 @@ export interface VoiceSessionSettings {
 }
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSessionSettings = {
+  playbackProfile: DEFAULT_PLAYBACK_PROFILE,
   temperature: null,
   vadType: "server_vad",
   vadThreshold: null,
@@ -410,14 +420,6 @@ export function speechSessionUpdate(
       DEFAULT_SPEECH_TURN_DETECTION,
       "azure_semantic_vad_multilingual",
     ]) as readonly string[];
-  const allowedNoiseSuppression =
-    (provider?.capabilities.noiseSuppression?.options ?? [
-      DEFAULT_SPEECH_NOISE_SUPPRESSION,
-    ]) as readonly string[];
-  const allowedEchoCancellation =
-    (provider?.capabilities.echoCancellation?.options ?? [
-      DEFAULT_SPEECH_ECHO_CANCELLATION,
-    ]) as readonly string[];
   const voice =
     typeof settings.voice === "string" && allowedVoices.includes(settings.voice)
       ? settings.voice
@@ -432,15 +434,11 @@ export function speechSessionUpdate(
       ? settings.turnDetection
       : allowedTurnDetection[0] ?? DEFAULT_SPEECH_TURN_DETECTION;
   const noiseSuppression =
-    typeof settings.noiseSuppression === "string" &&
-    allowedNoiseSuppression.includes(settings.noiseSuppression)
-      ? settings.noiseSuppression
-      : allowedNoiseSuppression[0] ?? DEFAULT_SPEECH_NOISE_SUPPRESSION;
+    provider?.capabilities.noiseSuppression?.default ??
+    DEFAULT_SPEECH_NOISE_SUPPRESSION;
   const echoCancellation =
-    typeof settings.echoCancellation === "string" &&
-    allowedEchoCancellation.includes(settings.echoCancellation)
-      ? settings.echoCancellation
-      : allowedEchoCancellation[0] ?? DEFAULT_SPEECH_ECHO_CANCELLATION;
+    provider?.capabilities.echoCancellation?.default ??
+    DEFAULT_SPEECH_ECHO_CANCELLATION;
   const session: Record<string, unknown> = {
     voice: {
       type: provider?.capabilities.voices.kind ?? "azure-standard",
@@ -1118,7 +1116,8 @@ export function useVoiceLive(
         const startAt =
           session.nextPlayTime > ctx.currentTime
             ? session.nextPlayTime
-            : ctx.currentTime + PLAYBACK_REBUFFER_SECONDS;
+            : ctx.currentTime +
+              PLAYBACK_BUFFER_MS[settingsRef.current.playbackProfile] / 1000;
         if (starved) {
           responsePlaybackGapMs +=
             Math.max(0, startAt - previousEnd) * 1000;

@@ -8,8 +8,11 @@
 import { useId } from "react";
 
 import {
+  PLAYBACK_BUFFER_MS,
+  PLAYBACK_PROFILES,
   isSpeechVoiceProvider,
   VAD_TYPES,
+  type PlaybackProfile,
   type SpeechVoiceLiveSettings,
   type VadType,
   type VoiceProvider,
@@ -29,6 +32,11 @@ import {
 // HTML <select> options can't carry a real null, so "" round-trips to/from it
 // at the call boundary.
 const DEFAULT_OPTION_VALUE = "";
+const PLAYBACK_PROFILE_LABELS: Record<PlaybackProfile, string> = {
+  fast: "Fast",
+  balanced: "Balanced",
+  smooth: "Smooth",
+};
 
 export interface VoiceSettingsModel {
   id: string;
@@ -113,10 +121,6 @@ export function VoiceSettingsPanel({
   );
   const turnDetectionOptions: readonly SpeechVoiceLiveSettings["turnDetection"][] =
     speechProvider?.capabilities.turnDetection.options ?? [];
-  const noiseSuppressionOptions: readonly SpeechVoiceLiveSettings["noiseSuppression"][] =
-    speechProvider?.capabilities.noiseSuppression?.options ?? [];
-  const echoCancellationOptions: readonly SpeechVoiceLiveSettings["echoCancellation"][] =
-    speechProvider?.capabilities.echoCancellation?.options ?? [];
 
   function patchSettings(patch: Partial<VoiceSessionSettings>) {
     onSettingsChange({ ...settings, ...patch });
@@ -289,24 +293,54 @@ export function VoiceSettingsPanel({
               />
             </label>
 
+            <div style={FIELD_STYLE}>
+              <label htmlFor={`${idPrefix}-playback-profile`}>Playback stability</label>
+              <select
+                id={`${idPrefix}-playback-profile`}
+                aria-describedby={`${idPrefix}-playback-profile-description`}
+                value={settings.playbackProfile}
+                disabled={locked}
+                onChange={(event) =>
+                  patchSettings({
+                    playbackProfile: event.target.value as PlaybackProfile,
+                  })
+                }
+                style={CONTROL_STYLE}
+              >
+                {PLAYBACK_PROFILES.map((profile) => (
+                  <option key={profile} value={profile}>
+                    {PLAYBACK_PROFILE_LABELS[profile]} ({PLAYBACK_BUFFER_MS[profile]} ms)
+                  </option>
+                ))}
+              </select>
+              <span
+                id={`${idPrefix}-playback-profile-description`}
+                style={{ maxWidth: 240 }}
+              >
+                Higher stability adds a little delay to smooth network jitter.
+              </span>
+            </div>
+
             {isSpeechProvider ? (
               <>
-                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-locale`}>
-                  Locale
-                  <select
-                    id={`${idPrefix}-locale`}
-                    value={speechSettings.locale}
-                    disabled={locked || localeOptions.length === 0}
-                    onChange={(e) => patchSpeechSettings({ locale: e.target.value })}
-                    style={CONTROL_STYLE}
-                  >
-                    {localeOptions.map((value) => (
-                      <option key={value} value={value}>
-                        {value}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                {localeOptions.length > 1 && (
+                  <label style={FIELD_STYLE} htmlFor={`${idPrefix}-locale`}>
+                    Locale
+                    <select
+                      id={`${idPrefix}-locale`}
+                      value={speechSettings.locale}
+                      disabled={locked}
+                      onChange={(e) => patchSpeechSettings({ locale: e.target.value })}
+                      style={CONTROL_STYLE}
+                    >
+                      {localeOptions.map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
 
                 <label style={FIELD_STYLE} htmlFor={`${idPrefix}-speech-turn`}>
                   Turn detection
@@ -329,53 +363,13 @@ export function VoiceSettingsPanel({
                   </select>
                 </label>
 
-                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-noise-suppression`}>
-                  Noise suppression
-                  <select
-                    id={`${idPrefix}-noise-suppression`}
-                    value={speechSettings.noiseSuppression}
-                    disabled={locked || noiseSuppressionOptions.length === 0}
-                    onChange={(e) =>
-                      patchSpeechSettings({
-                        noiseSuppression:
-                          e.target.value as SpeechVoiceLiveSettings["noiseSuppression"],
-                      })
-                    }
-                    style={CONTROL_STYLE}
-                  >
-                    {noiseSuppressionOptions.map(
-                      (value: SpeechVoiceLiveSettings["noiseSuppression"]) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ),
-                    )}
-                  </select>
-                </label>
-
-                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-echo-cancellation`}>
-                  Echo cancellation
-                  <select
-                    id={`${idPrefix}-echo-cancellation`}
-                    value={speechSettings.echoCancellation}
-                    disabled={locked || echoCancellationOptions.length === 0}
-                    onChange={(e) =>
-                      patchSpeechSettings({
-                        echoCancellation:
-                          e.target.value as SpeechVoiceLiveSettings["echoCancellation"],
-                      })
-                    }
-                    style={CONTROL_STYLE}
-                  >
-                    {echoCancellationOptions.map(
-                      (value: SpeechVoiceLiveSettings["echoCancellation"]) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ),
-                    )}
-                  </select>
-                </label>
+                <div style={{ ...FIELD_STYLE, maxWidth: 260 }}>
+                  <span>Input processing</span>
+                  <strong style={{ color: "var(--fg)" }}>Managed by Azure Speech</strong>
+                  <span>
+                    {speechSettings.locale}; deep noise suppression and echo cancellation.
+                  </span>
+                </div>
 
                 <label
                   style={{
@@ -461,7 +455,7 @@ export function VoiceSettingsPanel({
                 </label>
 
                 <label style={FIELD_STYLE} htmlFor={`${idPrefix}-vad-silence`}>
-                  Silence (ms)
+                  Reply after silence (ms)
                   <input
                     id={`${idPrefix}-vad-silence`}
                     type="number"
