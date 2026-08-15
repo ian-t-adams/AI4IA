@@ -3,6 +3,8 @@ import {
   DEFAULT_VOICE,
   DEFAULT_VOICE_SETTINGS,
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  microphoneConstraints,
+  PLAYBACK_REBUFFER_SECONDS,
   buildInitialVoiceFrames,
   buildVoiceLiveWebSocketUrl,
   isVadType,
@@ -18,6 +20,27 @@ import { voiceProviderCatalog } from "./data/voice_provider_catalog";
 // regression in the default payload (key order, extra fields) fails loudly.
 const DEFAULT_SESSION_UPDATE =
   '{"type":"session.update","session":{"voice":"alloy","input_audio_format":"pcm16","output_audio_format":"pcm16","turn_detection":{"type":"server_vad"},"input_audio_transcription":{"model":"whisper-1"}}}';
+
+describe("voice audio transport", () => {
+  it("uses browser DSP only when the provider does not already process audio", () => {
+    expect(microphoneConstraints("azure_openai")).toEqual({
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+    });
+    expect(microphoneConstraints("speech_voice_live")).toEqual({
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    });
+  });
+
+  it("keeps the playback rebuffer small enough for conversational latency", () => {
+    expect(PLAYBACK_REBUFFER_SECONDS).toBeGreaterThanOrEqual(0.08);
+    expect(PLAYBACK_REBUFFER_SECONDS).toBeLessThanOrEqual(0.15);
+  });
+});
 
 describe("realtimeModels", () => {
   it("keeps only realtime-category models", () => {

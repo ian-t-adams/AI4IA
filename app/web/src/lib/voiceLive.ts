@@ -29,6 +29,10 @@ import {
 
 // Azure realtime speaks 24 kHz mono PCM16 in both directions.
 export const PCM_SAMPLE_RATE = 24000;
+// Hold the first chunk (and the first chunk after an underrun) briefly so normal
+// network jitter does not become an audible gap between otherwise contiguous
+// response.audio.delta frames.
+export const PLAYBACK_REBUFFER_SECONDS = 0.12;
 
 // WebSocket subprotocol markers the relay understands (see routers/realtime.py).
 const BEARER_SUBPROTOCOL = "ai4ia-bearer";
@@ -255,6 +259,27 @@ export function supportsVoiceLive(): boolean {
       typeof (window as unknown as { webkitAudioContext?: unknown })
         .webkitAudioContext !== "undefined")
   );
+}
+
+export function microphoneConstraints(
+  providerId: VoiceProviderId,
+): MediaTrackConstraints {
+  if (providerId === "speech_voice_live") {
+    // Speech Voice Live applies server-side deep noise suppression and echo
+    // cancellation. Running browser DSP first produces the robotic/pumping
+    // artifacts associated with two independent processors in series.
+    return {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    };
+  }
+  return {
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true,
+  };
 }
 
 function subscribeVoiceSupport(): () => void {
@@ -885,7 +910,7 @@ export function useVoiceLive(
       // still directly attributable to the microphone button's user gesture.
       const streamPromise = navigator.mediaDevices
         .getUserMedia({
-          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+          audio: microphoneConstraints(providerIdRef.current),
         })
         .catch((error: unknown) => {
           if (attempt === attemptRef.current) {
@@ -1073,6 +1098,7 @@ export function useVoiceLive(
       let activeAssistantContentIndex: number | null = null;
       let responseAudioStartTime: number | null = null;
       let responseAudioDurationMs = 0;
+      let responsePlaybackGapMs = 0;
       let cancellationRequested = false;
 
       const enqueuePlayback = (b64: string) => {
@@ -1084,7 +1110,25 @@ export function useVoiceLive(
         const node = ctx.createBufferSource();
         node.buffer = buffer;
         node.connect(ctx.destination);
-        const startAt = Math.max(ctx.currentTime, session.nextPlayTime);
+        const starved =
+          responseAudioStartTime !== null &&
+          session.nextPlayTime > 0 &&
+          session.nextPlayTime <= ctx.currentTime;
+        const previousEnd = session.nextPlayTime;
+        const startAt =
+          session.nextPlayTime > ctx.currentTime
+            ? session.nextPlayTime
+            : ctx.currentTime + PLAYBACK_REBUFFER_SECONDS;
+        if (starved) {
+          responsePlaybackGapMs +=
+            Math.max(0, startAt - previousEnd) * 1000;
+          // The telemetry bridge intentionally emits one event of each shape per
+          // page load. Presence diagnoses an underrun without turning audio chunk
+          // timing into high-cardinality or flood-prone telemetry.
+          reportClientEvent("voice_playback_rebuffer", {
+            severity: "warning",
+          });
+        }
         if (responseAudioStartTime === null) responseAudioStartTime = startAt;
         responseAudioDurationMs += buffer.duration * 1000;
         node.start(startAt);
@@ -1107,7 +1151,11 @@ export function useVoiceLive(
                 0,
                 Math.min(
                   responseAudioDurationMs,
-                  Math.round(ctx.currentTime * 1000 - responseAudioStartTime * 1000),
+                  Math.round(
+                    ctx.currentTime * 1000 -
+                      responseAudioStartTime * 1000 -
+                      responsePlaybackGapMs,
+                  ),
                 ),
               );
         for (const node of session.scheduled) {
@@ -1303,6 +1351,7 @@ export function useVoiceLive(
             cancellationRequested = false;
             responseAudioStartTime = null;
             responseAudioDurationMs = 0;
+            responsePlaybackGapMs = 0;
             activeAssistantItemId = null;
             activeAssistantContentIndex = null;
             const responseId =
@@ -1330,6 +1379,7 @@ export function useVoiceLive(
             activeAssistantContentIndex = null;
             responseAudioStartTime = null;
             responseAudioDurationMs = 0;
+            responsePlaybackGapMs = 0;
             cancellationRequested = false;
             break;
           }

@@ -78,7 +78,12 @@ def test_accepts_minimal_valid_report(client, monkeypatch):
     )
     resp = client.post(
         "/api/client-events",
-        json={"event": "render_error", "code": "TypeError", "severity": "warning", "hasDigest": True},
+        json={
+            "event": "voice_playback_rebuffer",
+            "code": "TypeError",
+            "severity": "warning",
+            "hasDigest": True,
+        },
         headers={"X-Dev-User": "alice"},
     )
     assert resp.status_code == 202
@@ -87,7 +92,7 @@ def test_accepts_minimal_valid_report(client, monkeypatch):
     assert name == "client_event"
     assert attrs == {
         "source": "browser",
-        "event": "render_error",
+        "event": "voice_playback_rebuffer",
         "code": "TypeError",
         "severity": "warning",
         "hasDigest": True,
