@@ -17,7 +17,7 @@ dependencies = [
     # Starlette is FastAPI's ASGI foundation (otherwise pulled in transitively);
     # pinned directly so its upper bound is enforced independently of FastAPI's
     # loose `>=0.46.0` floor. See the fastapi note above.
-    "starlette>=1.4.1,<1.5",
+    "starlette>=1.4.1,<1.7",
     "uvicorn[standard]>=0.52.1",
     "pydantic>=2.7",
     "pydantic-settings>=2.15.0",
@@ -179,7 +179,7 @@ dev = [
 # jsonschema backs scripts/provision-foundry-toolbox.py's strict manifest-schema validation,
 # which --create requires before constructing any SDK model.
 foundry = [
-    "azure-ai-projects==2.4.0",
+    "azure-ai-projects==2.5.0",
     "azure-identity>=1.17",
     "jsonschema>=4.18",
 ]
