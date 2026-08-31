@@ -70,7 +70,7 @@ jobs:
           version: ${{ env.TRIVY_VERSION }}
 
       - name: Upload dependency SARIF to code scanning
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         # Fork PRs run with a read-only token and cannot write code-scanning
         # results; don't let that fail this report-only job.
         continue-on-error: true
