@@ -164,7 +164,7 @@ def test_optional_memory_context_is_dropped_before_it_can_overflow_model_budget(
         async def recall(self, *_args):
             return []
 
-        def format_context(self, _recalled):
+        def format_context(self, _recalled, *, used_records=None):
             return "UNTRUSTED MEMORY\n" + ("x" * 5000)
 
         async def remember(self, *_args):

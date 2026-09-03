@@ -60,6 +60,7 @@ _DIRECT_MODEL_GATEWAY_HOST_SUFFIXES = (
     "cognitiveservices.azure.com",
     "azure-api.net",
 )
+_DIRECT_FOUNDRY_HOST_SUFFIXES = _DIRECT_MODEL_GATEWAY_HOST_SUFFIXES[:3]
 
 
 def _csv_items(
@@ -1273,6 +1274,62 @@ class Settings(BaseSettings):
                 "bearer (managed identity), or disable both document compute "
                 "features."
             )
+        if (
+            (self.document_compute_enabled or self.inline_document_compute_enabled)
+            and self.env != Environment.local
+        ):
+            code_interpreter_url = urlparse(self.code_interpreter_base_url or "")
+            code_interpreter_host = (
+                code_interpreter_url.hostname or ""
+            ).lower().rstrip(".")
+            direct_foundry_host = any(
+                code_interpreter_host == suffix
+                or code_interpreter_host.endswith(f".{suffix}")
+                for suffix in _DIRECT_FOUNDRY_HOST_SUFFIXES
+            )
+            if (
+                code_interpreter_url.scheme != "https"
+                or not code_interpreter_url.netloc
+                or code_interpreter_url.username is not None
+                or code_interpreter_url.password is not None
+                or code_interpreter_url.path.rstrip("/") != "/code-interpreter"
+                or code_interpreter_url.params
+                or code_interpreter_url.query
+                or code_interpreter_url.fragment
+                or direct_foundry_host
+                or self.code_interpreter_auth_mode != GatewayAuthMode.api_key
+                or not self.code_interpreter_api_key
+            ):
+                raise RuntimeError(
+                    "Deployed Code Interpreter must use the dedicated HTTPS APIM "
+                    "/code-interpreter endpoint with "
+                    "AI4IA_CODE_INTERPRETER_AUTH_MODE=api_key; direct Foundry "
+                    "Responses/Files access is not permitted."
+                )
+            reused_key_names = [
+                name
+                for name, key in (
+                    ("AI4IA_MODEL_GATEWAY_API_KEY", self.model_gateway_api_key),
+                    (
+                        "AI4IA_REALTIME_GATEWAY_API_KEY",
+                        self.realtime_gateway_api_key,
+                    ),
+                    (
+                        "AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY",
+                        self.speech_voice_live_gateway_api_key,
+                    ),
+                    (
+                        "AI4IA_OFFICIAL_MCP_SUBSCRIPTION_KEY",
+                        self.official_mcp_subscription_key,
+                    ),
+                )
+                if key and key == self.code_interpreter_api_key
+            ]
+            if reused_key_names:
+                raise RuntimeError(
+                    "Code Interpreter requires a distinct API-scoped APIM key; "
+                    "do not reuse " + ", ".join(reused_key_names) + "."
+                )
         if (
             self.inline_document_compute_enabled
             and self.env != Environment.local

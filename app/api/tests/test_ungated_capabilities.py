@@ -45,9 +45,9 @@ ALWAYS_GATED: dict[str, str] = {
     "browse_url": "Arbitrary URL fetch. The clearest exfiltration channel here: "
     "a poisoned document can name the destination.",
     "run_code": "Executes model-authored code in an Azure-managed sandbox reached "
-    "directly rather than through the gateway, so the usual APIM-side controls "
-    "do not apply to it either.",
-    "analyze_attachment": "Uploads the attachment to the same direct Foundry "
+    "through a dedicated APIM API; a human still must approve the exact program "
+    "and input because APIM cannot determine user intent.",
+    "analyze_attachment": "Uploads the attachment through the same APIM-fronted "
     "sandbox and executes model-authored analysis over it; closure-bound file "
     "access does not make the external execution itself a safe read.",
 }

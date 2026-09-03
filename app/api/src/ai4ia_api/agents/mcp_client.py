@@ -28,6 +28,12 @@ import httpx
 from .mcp_servers import (
     MAX_TOOL_DESCRIPTION_LEN,
     MAX_TOOLS_PER_SERVER,
+    MAX_RESOURCE_CONTENT_BYTES,
+    MAX_RESOURCE_DESCRIPTION_LEN,
+    MAX_RESOURCE_NAME_LEN,
+    MAX_RESOURCE_URI_LEN,
+    MAX_RESOURCES_PER_SERVER,
+    DiscoveredResource,
     DiscoveredTool,
     McpAuthMode,
     McpConnectionError,
@@ -80,8 +86,26 @@ class McpToolResult:
     is_error: bool = False
 
 
+@dataclass(frozen=True)
+class McpResourceResult:
+    """One bounded textual MCP resource returned by ``resources/read``."""
+
+    uri: str
+    text: str
+    mime_type: str | None = None
+    truncated: bool = False
+
+
 class McpConnector(Protocol):
     async def discover(self, *, endpoint: str, auth: McpAuth) -> list[DiscoveredTool]: ...
+
+    async def list_resources(
+        self, *, endpoint: str, auth: McpAuth
+    ) -> list[DiscoveredResource]: ...
+
+    async def read_resource(
+        self, *, endpoint: str, auth: McpAuth, uri: str
+    ) -> McpResourceResult: ...
 
     async def call_tool(
         self, *, endpoint: str, auth: McpAuth, tool: str, arguments: dict[str, Any]
@@ -210,6 +234,24 @@ class HttpxMcpConnector:
         async with self._new_client(pinned_ip) as client:
             return await self._call_with(client, endpoint, auth, tool, arguments)
 
+    async def list_resources(
+        self, *, endpoint: str, auth: McpAuth
+    ) -> list[DiscoveredResource]:
+        if self._client is not None:
+            return await self._list_resources_with(self._client, endpoint, auth)
+        pinned_ip = await self._pin_or_raise(endpoint, "resources/list")
+        async with self._new_client(pinned_ip) as client:
+            return await self._list_resources_with(client, endpoint, auth)
+
+    async def read_resource(
+        self, *, endpoint: str, auth: McpAuth, uri: str
+    ) -> McpResourceResult:
+        if self._client is not None:
+            return await self._read_resource_with(self._client, endpoint, auth, uri)
+        pinned_ip = await self._pin_or_raise(endpoint, "resources/read")
+        async with self._new_client(pinned_ip) as client:
+            return await self._read_resource_with(client, endpoint, auth, uri)
+
     async def _open_session(
         self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth
     ) -> dict[str, str]:
@@ -274,6 +316,47 @@ class HttpxMcpConnector:
         )
         self._raise_for_rpc_error(called.payload, "tools/call")
         return self._parse_tool_result(called.payload, self._max_bytes)
+
+    async def _list_resources_with(
+        self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth
+    ) -> list[DiscoveredResource]:
+        post_init = await self._open_session(client, endpoint, auth)
+        listed = await self._rpc(
+            client,
+            endpoint,
+            post_init,
+            rpc_id=2,
+            method="resources/list",
+            params={},
+        )
+        self._raise_for_rpc_error(listed.payload, "resources/list")
+        return self._parse_resources(listed.payload)
+
+    async def _read_resource_with(
+        self,
+        client: httpx.AsyncClient,
+        endpoint: str,
+        auth: McpAuth,
+        uri: str,
+    ) -> McpResourceResult:
+        if (
+            not isinstance(uri, str)
+            or not uri
+            or len(uri) > MAX_RESOURCE_URI_LEN
+            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in uri)
+        ):
+            raise McpConnectionError("resources/read: invalid resource URI.")
+        post_init = await self._open_session(client, endpoint, auth)
+        read = await self._rpc(
+            client,
+            endpoint,
+            post_init,
+            rpc_id=2,
+            method="resources/read",
+            params={"uri": uri},
+        )
+        self._raise_for_rpc_error(read.payload, "resources/read")
+        return self._parse_resource_result(read.payload, uri)
 
     # --- transport helpers ----------------------------------------------------
 
@@ -406,6 +489,94 @@ class HttpxMcpConnector:
             )
         return tools
 
+    @staticmethod
+    def _parse_resources(payload: dict[str, Any]) -> list[DiscoveredResource]:
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise McpConnectionError("resources/list: malformed result.")
+        raw_resources = result.get("resources")
+        if not isinstance(raw_resources, list):
+            raise McpConnectionError("resources/list: result has no resources array.")
+        resources: list[DiscoveredResource] = []
+        seen: set[str] = set()
+        for raw in raw_resources:
+            if len(resources) >= MAX_RESOURCES_PER_SERVER:
+                break
+            if not isinstance(raw, dict):
+                continue
+            uri = raw.get("uri")
+            if (
+                not isinstance(uri, str)
+                or not uri
+                or len(uri) > MAX_RESOURCE_URI_LEN
+                or uri in seen
+                or any(
+                    ord(character) < 0x20 or ord(character) == 0x7F
+                    for character in uri
+                )
+            ):
+                continue
+            seen.add(uri)
+            name = raw.get("name")
+            description = raw.get("description")
+            mime_type = raw.get("mimeType")
+            resources.append(
+                DiscoveredResource(
+                    uri=uri,
+                    name=(
+                        name[:MAX_RESOURCE_NAME_LEN]
+                        if isinstance(name, str)
+                        else ""
+                    ),
+                    description=(
+                        description[:MAX_RESOURCE_DESCRIPTION_LEN]
+                        if isinstance(description, str)
+                        else ""
+                    ),
+                    mimeType=(
+                        mime_type[:128] if isinstance(mime_type, str) else None
+                    ),
+                )
+            )
+        return resources
+
+    @staticmethod
+    def _parse_resource_result(
+        payload: dict[str, Any], requested_uri: str
+    ) -> McpResourceResult:
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise McpConnectionError("resources/read: malformed result.")
+        contents = result.get("contents")
+        if not isinstance(contents, list):
+            raise McpConnectionError("resources/read: result has no contents array.")
+        for item in contents:
+            if not isinstance(item, dict):
+                continue
+            uri = item.get("uri")
+            if uri != requested_uri or not isinstance(item.get("text"), str):
+                continue
+            text = item["text"]
+            encoded = text.encode("utf-8")
+            truncated = len(encoded) > MAX_RESOURCE_CONTENT_BYTES
+            if truncated:
+                text = (
+                    encoded[:MAX_RESOURCE_CONTENT_BYTES].decode("utf-8", "ignore")
+                    + "...[truncated]"
+                )
+            mime_type = item.get("mimeType")
+            return McpResourceResult(
+                uri=requested_uri,
+                text=text,
+                mime_type=(
+                    mime_type[:128] if isinstance(mime_type, str) else None
+                ),
+                truncated=truncated,
+            )
+        raise McpConnectionError(
+            "resources/read: requested textual resource was not returned."
+        )
+
     @classmethod
     def _parse_tool_result(
         cls, payload: dict[str, Any], max_bytes: int
@@ -527,6 +698,9 @@ class FakeMcpConnector:
         error: Exception | None = None,
         call_results: dict[str, McpToolResult] | None = None,
         call_error: Exception | None = None,
+        resources: list[DiscoveredResource] | None = None,
+        resource_results: dict[str, McpResourceResult] | None = None,
+        resource_error: Exception | None = None,
     ) -> None:
         self._tools = tools or []
         self._error = error
@@ -534,8 +708,13 @@ class FakeMcpConnector:
         # key yields a benign echo so a test need only set what it asserts on.
         self._call_results = call_results or {}
         self._call_error = call_error
+        self._resources = resources or []
+        self._resource_results = resource_results or {}
+        self._resource_error = resource_error
         self.calls: list[tuple[str, McpAuth]] = []
         self.tool_calls: list[tuple[str, str, dict[str, Any], McpAuth]] = []
+        self.resource_lists: list[tuple[str, McpAuth]] = []
+        self.resource_reads: list[tuple[str, str, McpAuth]] = []
 
     async def discover(self, *, endpoint: str, auth: McpAuth) -> list[DiscoveredTool]:
         self.calls.append((endpoint, auth))
@@ -552,3 +731,21 @@ class FakeMcpConnector:
         if tool in self._call_results:
             return self._call_results[tool]
         return McpToolResult(content=f"ok:{tool}", is_error=False)
+
+    async def list_resources(
+        self, *, endpoint: str, auth: McpAuth
+    ) -> list[DiscoveredResource]:
+        self.resource_lists.append((endpoint, auth))
+        if self._resource_error is not None:
+            raise self._resource_error
+        return list(self._resources)
+
+    async def read_resource(
+        self, *, endpoint: str, auth: McpAuth, uri: str
+    ) -> McpResourceResult:
+        self.resource_reads.append((endpoint, uri, auth))
+        if self._resource_error is not None:
+            raise self._resource_error
+        if uri in self._resource_results:
+            return self._resource_results[uri]
+        raise McpConnectionError("resources/read: resource not found.")

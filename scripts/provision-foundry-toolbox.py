@@ -19,39 +19,55 @@ What it does
    ready-to-paste ``infra/mcp-servers.json`` entry that routes the toolbox through the
    existing official-MCP APIM (managed-identity bearer + the ``Foundry-Features`` header +
    ``api-version=v1`` query the toolbox endpoint requires).
-4. With ``--create``, reads the served default version and calls
-   ``project.toolboxes.create_version(...)`` only when its content differs, via the
-   ``azure-ai-projects`` SDK (install the optional dependency group: ``foundry``).
-   Without it, the script is a dry run (safe, offline, no Azure calls).
-5. With ``--emit-yaml PATH``, writes the equivalent ``azd ai toolbox create --from-file``
+4. Validates each active manifest skill from ``foundry/skills/<name>/SKILL.md``.
+   With ``--create``, it reconciles those immutable Foundry skill versions first,
+   reusing matching versions after interrupted activation instead of creating
+   duplicates.
+5. Reads the served toolbox default and calls ``project.toolboxes.create_version``
+   only when its content differs, via ``azure-ai-projects`` (install the optional
+   dependency group: ``foundry``). Without ``--create`` this remains a safe,
+   offline dry run.
+6. With ``--emit-yaml PATH``, writes the equivalent ``azd ai toolbox create --from-file``
    YAML so operators who prefer the CLI path do not hand-author it.
 
-The bridge, in one line: the toolbox is consumed as a single "official MCP server", so the
-app needs ZERO new runtime code — it reuses the OfficialMcpService + tool picker shipped in
-the official MCP plane. Everything is public preview; do not use in production without validation.
+The bridge, in one line: the toolbox is consumed as a single "official MCP server";
+tools reuse the official MCP execution path and skills use its MCP resources through
+the governed progressive-disclosure loader. Everything is public preview; do not use
+in production without validation.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import ipaddress
 import json
 import re
 import sys
+import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "foundry" / "toolbox.manifest.json"
+DEFAULT_SKILLS_ROOT = REPO_ROOT / "foundry" / "skills"
 
 # The toolbox endpoint's fixed contract (see docs/foundry-toolbox.md). APIM injects these
 # so the app's OfficialMcpService can consume the toolbox like any other official MCP server.
 TOOLBOX_MI_RESOURCE = "https://ai.azure.com"
-TOOLBOX_FEATURES_HEADER = {"Foundry-Features": "Toolboxes=V1Preview"}
+TOOLBOX_FEATURES_HEADER = {
+    "Foundry-Features": "Toolboxes=V1Preview,Skills=V1Preview"
+}
 TOOLBOX_API_VERSION_QUERY = {"api-version": "v1"}
+SKILLS_FEATURES_HEADER = {"Foundry-Features": "Skills=V1Preview"}
 
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,38}[a-z0-9]$")  # matches infra/mcp-servers.schema.json
+_SKILL_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+_SKILL_FRONT_MATTER_RE = re.compile(
+    r"\A---\n(?P<header>.*?)\n---\n(?P<body>.*)\Z",
+    re.DOTALL,
+)
 # Toolbox tool types that can actually be placed in a toolbox via azure-ai-projects, mapped to
 # their discriminated model classes (resolved lazily in the live path so the pure functions stay
 # dependency-free). NOTE: `computer_use` and `bing_custom_search` exist only as AGENT-level tools
@@ -157,6 +173,92 @@ _ARBITRARY_KEYED_MAP_FIELDS = {"toolConfigs"}
 def load_manifest(path: Path) -> dict[str, Any]:
     """Load + parse the toolbox manifest JSON."""
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+class SkillSource(NamedTuple):
+    """Canonical local source for one Foundry skill version."""
+
+    name: str
+    description: str
+    content: str
+    path: Path
+
+
+def _normalize_skill_text(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n").rstrip() + "\n"
+
+
+def parse_skill_source(path: Path) -> SkillSource:
+    """Parse the Agent Skills front matter without adding a YAML dependency."""
+    content = _normalize_skill_text(path.read_text(encoding="utf-8"))
+    match = _SKILL_FRONT_MATTER_RE.fullmatch(content)
+    if match is None:
+        raise ValueError("must start with YAML front matter delimited by `---`")
+
+    fields: dict[str, str] = {}
+    for line in match.group("header").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if ":" not in line:
+            raise ValueError(f"front matter line is not `key: value`: {line!r}")
+        key, value = line.split(":", 1)
+        fields[key.strip()] = value.strip()
+
+    name = fields.get("name", "")
+    description = fields.get("description", "")
+    if not _SKILL_SLUG_RE.fullmatch(name) or "--" in name:
+        raise ValueError(
+            "name must match ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$, contain no "
+            "consecutive hyphens, and be at most 64 characters"
+        )
+    if name[:1] in {'"', "'"} or name[-1:] in {'"', "'"}:
+        raise ValueError("name must be unquoted")
+    if not description or len(description) > 1024:
+        raise ValueError("description must contain 1-1024 characters")
+    if description[:1] in {'"', "'"} or description[-1:] in {'"', "'"}:
+        raise ValueError("description must be unquoted")
+    if not match.group("body").strip():
+        raise ValueError("instruction body must not be empty")
+    return SkillSource(
+        name=name,
+        description=description,
+        content=content,
+        path=path,
+    )
+
+
+def manifest_skill_sources(
+    manifest: dict[str, Any], *, skills_root: Path = DEFAULT_SKILLS_ROOT
+) -> tuple[list[SkillSource], list[str]]:
+    """Load local sources for every unpinned skill in an active manifest."""
+    sources: list[SkillSource] = []
+    errors: list[str] = []
+    if not isinstance(manifest, dict):
+        return sources, errors
+    if manifest.get("lifecycle") != "active":
+        return sources, errors
+    for entry in manifest.get("skills") or []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            continue
+        if entry.get("version"):
+            continue
+        expected_name = entry["name"]
+        path = skills_root / expected_name / "SKILL.md"
+        if not path.is_file():
+            errors.append(f"skill {expected_name!r}: source not found at {path}")
+            continue
+        try:
+            source = parse_skill_source(path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            errors.append(f"skill {expected_name!r}: {exc}")
+            continue
+        if source.name != expected_name:
+            errors.append(
+                f"skill {expected_name!r}: SKILL.md name is {source.name!r}"
+            )
+            continue
+        sources.append(source)
+    return sources, errors
 
 
 def _require_array_or_absent(manifest: dict[str, Any], key: str, errors: list[str]) -> list[Any]:
@@ -453,6 +555,135 @@ def _sdk_models() -> Any:
     return models
 
 
+def _skill_content_from_download(chunks: Any) -> str:
+    """Extract the single SKILL.md from the Skills API's ZIP response."""
+    payload = b"".join(chunks)
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            candidates = [
+                name
+                for name in archive.namelist()
+                if name.rstrip("/").split("/")[-1].casefold() == "skill.md"
+            ]
+            if len(candidates) != 1:
+                raise ValueError(
+                    f"expected exactly one SKILL.md, found {len(candidates)}"
+                )
+            return _normalize_skill_text(
+                archive.read(candidates[0]).decode("utf-8")
+            )
+    except (OSError, UnicodeError, zipfile.BadZipFile, ValueError) as exc:
+        raise SystemExit(
+            "Foundry returned an invalid skill archive; refusing to compare or "
+            f"create another immutable version: {exc}"
+        ) from exc
+
+
+def _download_skill_version(
+    project: Any, name: str, version: str
+) -> str:
+    return _skill_content_from_download(
+        project.beta.skills.download_version(
+            name,
+            version,
+            headers=SKILLS_FEATURES_HEADER,
+        )
+    )
+
+
+def create_skill_version(
+    source: SkillSource, project_endpoint: str, *, project: Any | None = None
+) -> Any:
+    """Create and activate one immutable Foundry skill version."""
+    project = project or _project_client(project_endpoint)
+    models = _sdk_models()
+    result = project.beta.skills.create_from_files(
+        source.name,
+        content=models.CreateSkillVersionFromFilesBody(
+            files=[("SKILL.md", source.content.encode("utf-8"))],
+            default=True,
+        ),
+        headers=SKILLS_FEATURES_HEADER,
+    )
+    version = getattr(result, "version", None)
+    if not version:
+        raise SystemExit(
+            f"skills.create_from_files('{source.name}') returned no usable "
+            "`version`; refusing to skip activation silently."
+        )
+    # Keep activation explicit even though the upload asks for default=True. If
+    # this second call fails, ensure_skill() will find and reuse the immutable
+    # matching version on retry rather than append a duplicate.
+    project.beta.skills.update(
+        source.name,
+        default_version=version,
+        headers=SKILLS_FEATURES_HEADER,
+    )
+    return result
+
+
+def ensure_skill(
+    source: SkillSource, project_endpoint: str, *, project: Any | None = None
+) -> tuple[Any, bool]:
+    """Activate matching skill content, creating one version only if needed."""
+    from azure.core.exceptions import ResourceNotFoundError
+
+    project = project or _project_client(project_endpoint)
+    try:
+        skill = project.beta.skills.get(
+            source.name,
+            headers=SKILLS_FEATURES_HEADER,
+        )
+    except ResourceNotFoundError:
+        return create_skill_version(source, project_endpoint, project=project), True
+
+    default_version = getattr(skill, "default_version", None)
+    if not default_version:
+        raise SystemExit(
+            f"skills.get('{source.name}') returned no default_version; refusing "
+            "to guess which immutable version is active."
+        )
+    current = _download_skill_version(project, source.name, default_version)
+    if current == source.content:
+        return project.beta.skills.get_version(
+            source.name,
+            default_version,
+            headers=SKILLS_FEATURES_HEADER,
+        ), False
+
+    # Reuse a matching version left behind by an interrupted activation.
+    for candidate in project.beta.skills.list_versions(
+        source.name,
+        headers=SKILLS_FEATURES_HEADER,
+    ):
+        version = getattr(candidate, "version", None)
+        if not version:
+            continue
+        if _download_skill_version(project, source.name, version) != source.content:
+            continue
+        project.beta.skills.update(
+            source.name,
+            default_version=version,
+            headers=SKILLS_FEATURES_HEADER,
+        )
+        return candidate, False
+    return create_skill_version(source, project_endpoint, project=project), True
+
+
+def ensure_manifest_skills(
+    sources: list[SkillSource],
+    project_endpoint: str,
+    *,
+    project: Any | None = None,
+) -> list[tuple[Any, bool]]:
+    """Reconcile every locally owned skill before creating the toolbox version."""
+    project = project or _project_client(project_endpoint)
+    return [
+        ensure_skill(source, project_endpoint, project=project)
+        for source in sources
+    ]
+
+
 def _build_toolbox_kwargs(manifest: dict[str, Any], models: Any) -> dict[str, Any]:
     """Build the exact SDK request fields used for creation and live-state comparison."""
     tools: list[Any] = []
@@ -699,6 +930,8 @@ def main(argv: list[str] | None = None) -> int:
     # manifest, etc.) -- applied here, before any SDK construction, not just linted separately in
     # CI.
     errors = validate_manifest(manifest)
+    skill_sources, skill_errors = manifest_skill_sources(manifest)
+    errors.extend(skill_errors)
     if errors:
         print("Manifest is not ready to provision:", file=sys.stderr)
         for e in errors:
@@ -743,7 +976,26 @@ def main(argv: list[str] | None = None) -> int:
         print("\n(dry run) Re-run with --create to ensure the toolbox in Foundry.")
         return 0
 
-    result, changed = ensure_toolbox(manifest, endpoint)
+    project = _project_client(endpoint)
+    skill_results = ensure_manifest_skills(
+        skill_sources,
+        endpoint,
+        project=project,
+    )
+    for source, (skill, created) in zip(
+        skill_sources, skill_results, strict=True
+    ):
+        action = "Created" if created else "Reconciled"
+        print(
+            f"\n{action} skill '{source.name}' version "
+            f"{getattr(skill, 'version', '?')} as the default."
+        )
+
+    result, changed = ensure_toolbox(
+        manifest,
+        endpoint,
+        project=project,
+    )
     if changed:
         version = getattr(result, "version", "?")
         print(f"\nCreated toolbox '{manifest['name']}' version {version} and activated it as the default version.")

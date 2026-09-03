@@ -5,7 +5,8 @@
       "id": "ai4ia-toolbox",
       "displayName": "Foundry toolbox: ai4ia-toolbox",
       "description": "AI4IA shared Foundry toolbox: grounding, code execution, tool search. Fronted through the official-MCP APIM.",
-      "path": "ai4ia-toolbox/mcp"
+      "path": "ai4ia-toolbox/mcp",
+      "resourcesEnabled": true
     }
   ]
 }

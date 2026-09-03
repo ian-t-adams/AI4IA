@@ -134,14 +134,171 @@ export interface SafetySignal {
   // Harm categories carry a severity; detection filters (jailbreak, protected
   // material) carry `detected` instead. Exactly one is set.
   severity?: string | null;
+  // Normalized rank of `severity` on a 0..SAFETY_MAX_SEVERITY_LEVEL scale, so
+  // "medium" can be shown as "medium (level 2 of 3)". Null for detection
+  // filters and for any provider severity outside the known scale — an
+  // unrecognized value is shown as itself, never ranked against a scale it may
+  // not belong to. Mirrors ai4ia_api.safety.severity_level.
+  severityLevel?: number | null;
   detected?: boolean | null;
-  // Whether the platform BLOCKED on this signal. Always false under the
-  // annotate-only policy.
+  // Whether the platform reported filtering. Expected false under the
+  // annotate-only policy; true can indicate provider behavior or policy drift.
   filtered: boolean;
+  // Agent/tool loops may make several model calls in one user turn.
+  modelCall?: number | null;
+  agent?: string | null;
 }
+
+// Whether a platform guardrail assessment exists for a turn at all. "Reported"
+// and "unavailable" are different facts, and collapsing them would let a turn
+// nobody assessed look exactly like a turn that came back clean.
+export type SafetyStatus = "reported" | "partial" | "unavailable";
+
+// Top of the normalized severity scale (safe=0, low=1, medium=2, high=3).
+// Mirrors ai4ia_api.safety.MAX_SEVERITY_LEVEL.
+export const SAFETY_MAX_SEVERITY_LEVEL = 3;
 
 export interface MessageSafety {
   signals: SafetySignal[];
+  // Absent on rows written before assessment coverage was recorded; those rows
+  // carry signals, so treating a missing status as "reported" preserves their
+  // original meaning exactly.
+  status?: SafetyStatus;
+  provider?: string | null;
+  // Enforcement posture ("annotate_only"): nothing was blocked or rewritten.
+  mode?: string;
+  // Halves of the exchange the provider actually assessed.
+  coverage?: string[];
+  signalCount?: number;
+  truncated?: boolean;
+  errors?: string[];
+}
+
+// --- Execution receipt -------------------------------------------------------
+// What was actually supplied to the model for one turn, which tools it was
+// offered, and which it invoked. Mirrors ai4ia_api.receipts.
+//
+// Every payload here has already been through the server's credential redactor
+// and is bounded; `sha256`/`bytes` describe the FULL redacted payload, so a
+// truncated body still proves how large the original was. Nothing in this shape
+// claims to expose model-internal reasoning — there is no field for one.
+export interface ReceiptPayload {
+  text: string;
+  sha256: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+export interface ReceiptPromptMessage {
+  role: string;
+  content: ReceiptPayload;
+  toolCalls?: ReceiptPayload | null;
+  toolCallId?: string | null;
+}
+
+export interface ReceiptContextBlock {
+  // memory | documents | library | summary | notice
+  kind: string;
+  // Whether the block actually reached the model. A built-but-displaced block
+  // never influenced the answer.
+  admitted: boolean;
+  content?: ReceiptPayload | null;
+  sources?: ReceiptContextSource[];
+  sourceCount?: number;
+}
+
+export interface ReceiptContextSource {
+  id: string;
+  version?: string | null;
+  updatedAt?: string | null;
+  kind?: string | null;
+  documentId?: string | null;
+  label?: string | null;
+  contentSha256?: string | null;
+  score?: number | null;
+}
+
+export interface ReceiptToolOffer {
+  name: string;
+  description?: string | null;
+  parametersSha256: string;
+}
+
+export interface ReceiptToolCall {
+  tool: string;
+  // result | delegate | denied | error
+  outcome: string;
+  detail?: string | null;
+  arguments?: ReceiptPayload | null;
+  result?: ReceiptPayload | null;
+}
+
+export interface ReceiptRuntime {
+  modelId?: string | null;
+  deployment?: string | null;
+  region?: string | null;
+  sku?: string | null;
+  dataZone?: string | null;
+  // Processing scope, which is NOT the same claim as `dataZone`.
+  residency?: string | null;
+  api?: string | null;
+  agent?: string | null;
+  instructionSource?: string | null;
+  instructionSha256?: string | null;
+  agentConfigSha256?: string | null;
+}
+
+export interface ReceiptUsage {
+  known: boolean;
+  complete: boolean;
+  calls: number;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  totalTokens?: number | null;
+}
+
+export interface ReceiptSafetySummary {
+  status: SafetyStatus;
+  provider?: string | null;
+  mode?: string | null;
+  coverage: string[];
+  signalCount: number;
+  truncated: boolean;
+}
+
+export interface ReceiptModelRequest {
+  iteration: number;
+  prompt: ReceiptPromptMessage[];
+  promptMessageCount: number;
+  promptBytes: number;
+}
+
+export interface ExecutionReceipt {
+  version: number;
+  correlationId?: string | null;
+  runtime: ReceiptRuntime;
+  prompt: ReceiptPromptMessage[];
+  promptMessageCount: number;
+  promptBytes: number;
+  contextBlocks: ReceiptContextBlock[];
+  droppedHistoryMessages: number;
+  droppedContextBlocks: string[];
+  toolsOffered: ReceiptToolOffer[];
+  toolsOfferedCount: number;
+  toolCalls: ReceiptToolCall[];
+  toolCallCount: number;
+  approvalsRequested: number;
+  approvalsGranted: number;
+  usage?: ReceiptUsage;
+  safety?: ReceiptSafetySummary;
+  delegations?: ExecutionReceipt[];
+  modelRequests?: ReceiptModelRequest[];
+  iterations: number;
+  // complete | incomplete | error | cancelled
+  status: string;
+  partial: boolean;
+  truncated: boolean;
+  notes: string[];
 }
 
 // --- Citation provenance (audit P1-14) --------------------------------------
@@ -155,6 +312,7 @@ export type CitationStatus = "verified" | "unverified";
 export interface RetrievedSource {
   spanId: string;
   documentId: string;
+  documentVersion?: string | null;
   filename: string;
   heading?: string | null;
   charStart?: number | null;
@@ -260,6 +418,11 @@ export interface Message {
   // `app/api/src/ai4ia_api/citations.py`.
   sources?: RetrievedSource[] | null;
   citations?: MessageCitation[] | null;
+  // What was supplied to the model, offered to it, and invoked by it on this
+  // turn. `null`/absent means the turn was never receipted (it predates the
+  // feature), which is distinct from a receipt with empty lists — that one
+  // asserts nothing was offered and nothing ran.
+  executionReceipt?: ExecutionReceipt | null;
 }
 
 // A finalized Voice Live turn the web persists back into the shared session.

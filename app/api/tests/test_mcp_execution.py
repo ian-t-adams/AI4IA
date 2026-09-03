@@ -51,7 +51,7 @@ from ai4ia_api.agents.mcp_service import McpServerService
 from ai4ia_api.agents.mcp_store import InMemoryUserMcpServerStore
 from ai4ia_api.agents.runtime import run_agent_turn
 from ai4ia_api.agents.tool_exec import ToolContext, ToolExecutionError
-from ai4ia_api.agents.tools import DenyReason
+from ai4ia_api.agents.tools import DenyReason, redact
 
 _PUBLIC_RESOLVER = lambda _host: ["93.184.216.34"]  # noqa: E731 - terse test stub
 _REBIND_RESOLVER = lambda _host: ["127.0.0.1"]  # noqa: E731 - host now resolves internal
@@ -1041,7 +1041,8 @@ async def test_tools_call_content_is_redacted_and_truncated_through_runtime():
     step = next(s for s in result.steps if s.kind == "tool_result")
     trace_blob = json.dumps(step.result)
     assert _REDACTABLE_TOKEN not in trace_blob
-    assert "***REDACTED***" in step.result["content"]
+    assert isinstance(step.result, str)
+    assert "***REDACTED***" in step.result
 
     # 8KB truncation applied: the tool message fed back to the model (seen by the
     # gateway on the follow-up completion) is capped and flagged as truncated.
@@ -1049,6 +1050,7 @@ async def test_tools_call_content_is_redacted_and_truncated_through_runtime():
     tool_msg = next(m for m in final_messages if m.get("role") == "tool")
     content = tool_msg["content"]
     assert content.endswith(_TRUNCATE_SUFFIX)
+    assert step.result == redact(content)
     assert len(content.encode("utf-8")) <= _RUNTIME_RESULT_CAP + len(_TRUNCATE_SUFFIX)
     # The original oversized payload was far larger than the cap.
     assert len(oversized) > _RUNTIME_RESULT_CAP

@@ -609,6 +609,59 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Verify legacy API inference roles are revoked
+        run: |
+          set -euo pipefail
+          rg="rg-${AI4IA_WORKLOAD:-ai4ia}-${AZURE_ENV_NAME}"
+          api_principal="$(az identity show \
+            --resource-group "$rg" \
+            --name "id-api-${AZURE_ENV_NAME}" \
+            --query principalId -o tsv)"
+          if [ -z "$api_principal" ]; then
+            echo "::error::The API managed identity has no principalId."
+            exit 1
+          fi
+
+          # Both roles grant direct model inference. They were declared by older
+          # templates and ARM incremental deployments do not delete an assignment
+          # merely because its Bicep loop is now empty.
+          direct_role_ids=(
+            "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd"
+            "a97b65f3-24c7-4388-baec-2e87135dc908"
+          )
+          stale=()
+          if ! account_scopes="$(az cognitiveservices account list \
+            --resource-group "$rg" \
+            --query "[?kind=='AIServices'].id" \
+            -o tsv)"; then
+            echo "::error::Could not enumerate AIServices accounts for the legacy-RBAC gate."
+            exit 1
+          fi
+          while IFS= read -r account_scope; do
+            [ -n "$account_scope" ] || continue
+            for role_id in "${direct_role_ids[@]}"; do
+              if ! assignment_ids="$(az role assignment list \
+                --scope "$account_scope" \
+                --query "[?principalId=='${api_principal}' && ends_with(roleDefinitionId, '/${role_id}')].id" \
+                -o tsv)"; then
+                echo "::error::Could not enumerate role assignments at $account_scope."
+                exit 1
+              fi
+              while IFS= read -r assignment_id; do
+                [ -n "$assignment_id" ] && stale+=("$assignment_id")
+              done <<< "$assignment_ids"
+            done
+          done <<< "$account_scopes"
+
+          if [ "${#stale[@]}" -gt 0 ]; then
+            echo "::error::The FastAPI identity still has legacy direct Foundry inference authority. Code Interpreter is APIM-only now, but ARM incremental mode retained these old role assignments."
+            printf 'Stale assignment ID: %s\n' "${stale[@]}"
+            echo "A human must review the literal IDs and revoke them once with:"
+            printf '  az role assignment delete --ids %q\n' "${stale[@]}"
+            exit 1
+          fi
+          echo "OK: FastAPI has no account-scoped legacy inference role."
+
       # ---------------------------------------------------------------------
       # Build each service image ONCE, push it, and record the digest the
       # registry assigned (audit finding P1-7).

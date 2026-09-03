@@ -46,6 +46,11 @@ MAX_ENDPOINT_LEN = 2048
 MAX_SECRET_LEN = 8192
 MAX_TOOL_NAME_LEN = 128
 MAX_TOOL_DESCRIPTION_LEN = 1024
+MAX_RESOURCES_PER_SERVER = 50
+MAX_RESOURCE_URI_LEN = 2048
+MAX_RESOURCE_NAME_LEN = 128
+MAX_RESOURCE_DESCRIPTION_LEN = 1024
+MAX_RESOURCE_CONTENT_BYTES = 128_000
 
 # The namespaced-tool-name prefix; keeps remote tools from colliding with the
 # built-ins and makes their origin obvious in traces.
@@ -124,6 +129,15 @@ class DiscoveredTool(BaseModel):
         return self.rawName if self.rawName is not None else self.name
 
 
+class DiscoveredResource(BaseModel):
+    """A bounded MCP resource descriptor used for progressive skill discovery."""
+
+    uri: str = Field(min_length=1, max_length=MAX_RESOURCE_URI_LEN)
+    name: str = Field(default="", max_length=MAX_RESOURCE_NAME_LEN)
+    description: str = Field(default="", max_length=MAX_RESOURCE_DESCRIPTION_LEN)
+    mimeType: str | None = Field(default=None, max_length=128)
+
+
 class UserMcpServer(BaseModel):
     """Durable, server-side record of a user-registered MCP server.
 
@@ -150,6 +164,10 @@ class UserMcpServer(BaseModel):
     # the secret store at connect/execute time.
     secretRef: str | None = None
     discoveredTools: list[DiscoveredTool] = Field(default_factory=list)
+    discoveredResources: list[DiscoveredResource] = Field(default_factory=list)
+    # Only repository-curated official endpoints may become instruction sources.
+    # User-created MCP records never expose this field in their create/update APIs.
+    resourcesEnabled: bool = Field(default=False, exclude=True)
     # Per-tool human-approval overrides, keyed by the *bare* discovered tool name
     # (not the namespaced name). Absent/``default`` -> inherit the server posture.
     # Persisted independently of ``discoveredTools`` so it survives re-discovery.
@@ -200,6 +218,9 @@ def health_config_revision(server: UserMcpServer) -> str:
         "enabled": server.enabled,
         "discoveredTools": [
             tool.model_dump(mode="json") for tool in server.discoveredTools
+        ],
+        "discoveredResources": [
+            resource.model_dump(mode="json") for resource in server.discoveredResources
         ],
         "toolApprovals": {
             name: posture.value for name, posture in server.toolApprovals.items()

@@ -47,6 +47,7 @@ The real Microsoft Agent Framework / Foundry toolbox / MCP can later replace the
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import time
@@ -56,6 +57,7 @@ from typing import Any
 
 from ..gateway.client import ModelGatewayClient
 from ..usage.models import TokenUsage
+from ..safety import MessageSafety, merge_safety, parse_safety
 from ..logging_setup import emit_custom_event, emit_security_block
 from .prompt_budget import (
     TOOL_CONTEXT_RESERVE_TOKENS,
@@ -112,6 +114,22 @@ class AgentStep:
 
 
 @dataclass
+class DelegatedRunTrace:
+    """One linked agent's complete observable execution inputs and outcomes."""
+
+    agent: str
+    effective_prompt: list[dict[str, Any]] = field(default_factory=list)
+    model_requests: list[list[dict[str, Any]]] = field(default_factory=list)
+    offered_tools: list[dict[str, Any]] = field(default_factory=list)
+    steps: list[AgentStep] = field(default_factory=list)
+    iterations: int = 0
+    usage: TokenUsage = field(default_factory=TokenUsage.empty)
+    safety: MessageSafety | None = None
+    status: str = "complete"
+    partial: bool = False
+
+
+@dataclass
 class AgentRunResult:
     text: str
     model: str
@@ -127,6 +145,39 @@ class AgentRunResult:
     # that up..."), which the user has already seen. A streaming caller must
     # persist this, so the saved row matches what was actually delivered.
     streamed_text: str = ""
+    # The tool schemas actually advertised to the model on the first iteration.
+    # Reported rather than re-derived by the caller because *offered* and
+    # *invoked* are different facts and only the runtime knows the first one: a
+    # caller can see which tools ran, but "the model could have done X and chose
+    # not to" is invisible from the call list alone (see ai4ia_api.receipts).
+    offered_tools: list[dict[str, Any]] = field(default_factory=list)
+    # Messages the per-iteration context bound displaced from the tool loop's
+    # own conversation, on top of anything the caller already dropped during
+    # prompt assembly.
+    dropped_context_messages: int = 0
+    # Exact messages sent on the first model iteration after the runtime's own
+    # tool-schema reserve and context bound. Later iterations are reconstructable
+    # from this prompt plus the recorded tool calls/results.
+    effective_prompt: list[dict[str, Any]] = field(default_factory=list)
+    # Every provider request after per-iteration context bounding. The receipt
+    # stores bounded snapshots so tool-call ids/grouping and later evictions are
+    # reconstructable rather than inferred from a flat call list.
+    model_requests: list[list[dict[str, Any]]] = field(default_factory=list)
+    safety: MessageSafety | None = None
+    delegations: list[DelegatedRunTrace] = field(default_factory=list)
+
+
+class DelegatedToolResult(dict[str, Any]):
+    """Public tool result plus receipt-only linked-agent provenance."""
+
+    def __init__(
+        self,
+        value: dict[str, Any],
+        *,
+        trace: DelegatedRunTrace,
+    ) -> None:
+        super().__init__(value)
+        self.trace = trace
 
 
 class AgentRunFailed(RuntimeError):
@@ -136,6 +187,20 @@ class AgentRunFailed(RuntimeError):
         super().__init__("agent model round trip failed")
         self.cause: Exception = cause
         self.partial: AgentRunResult = partial
+
+
+class DelegatedAgentRunFailed(AgentRunFailed):
+    """A linked-agent failure carrying its own receipt-only trace."""
+
+    def __init__(
+        self,
+        *,
+        cause: Exception,
+        partial: AgentRunResult,
+        trace: DelegatedRunTrace,
+    ) -> None:
+        super().__init__(cause=cause, partial=partial)
+        self.trace = trace
 
 
 class AgentContextBudgetError(RuntimeError):
@@ -155,6 +220,20 @@ def _truncate(text: str) -> str:
     if len(encoded) <= _MAX_TOOL_RESULT_BYTES:
         return text
     return encoded[:_MAX_TOOL_RESULT_BYTES].decode("utf-8", "ignore") + "...[truncated]"
+
+
+def _model_visible_result(value: Any) -> tuple[str, Any]:
+    """Serialize exactly once for both model context and receipt provenance.
+
+    When the runtime byte cap cuts a JSON value, the model receives a truncated
+    string that is no longer valid JSON. The receipt must record that exact
+    model-visible string, not hash the larger object the model never saw.
+    """
+    serialized = _truncate(json.dumps(value, default=str))
+    try:
+        return serialized, json.loads(serialized)
+    except json.JSONDecodeError:
+        return serialized, serialized
 
 
 async def run_agent_turn(
@@ -227,6 +306,10 @@ async def run_agent_turn(
                 f"extra_handlers collide with executor tool names: {sorted(collisions)}"
             )
     schema = [*real_schema, *(extra_tools or [])]
+    # What the model is offered this turn, captured before the loop can disable
+    # tools (``force_final`` empties ``schema``). The receipt must report what
+    # was advertised, not what remained after a denial loop shut it off.
+    offered_tools = [dict(tool) for tool in schema]
     effective_prompt_budget = prompt_budget_bytes or (
         prompt_byte_budget(
             None, dict(params or {}), default_max_tokens=_DEFAULT_MAX_OUTPUT_TOKENS
@@ -265,7 +348,12 @@ async def run_agent_turn(
     streamed_parts: list[str] = []
     completed_text_parts: list[str] = []
     completed_model_calls = 0
+    dropped_context_messages = 0
+    effective_prompt: list[dict[str, Any]] = []
+    model_requests: list[list[dict[str, Any]]] = []
     current_stream_usage: dict[str, Any] | None = None
+    safety_agg: MessageSafety | None = None
+    delegated_runs: list[DelegatedRunTrace] = []
 
     async def emit_delta(text: str) -> None:
         """Forward one assistant text increment, best-effort.
@@ -294,7 +382,9 @@ async def run_agent_turn(
         governance, budget, trace, taint — has exactly one shape to reason about.
         """
         nonlocal completed_model_calls, current_stream_usage, current_user_index
-        nonlocal usage_agg, convo
+        nonlocal usage_agg, convo, dropped_context_messages, effective_prompt
+        nonlocal model_requests
+        nonlocal safety_agg
         current_stream_usage = None
         offered_schema = request_params.get("tools") or []
         schema_bytes = (
@@ -315,6 +405,7 @@ async def run_agent_turn(
                 if convo[index].get("role") == "user"
             )
             if dropped_messages or dropped_exchanges:
+                dropped_context_messages += dropped_messages
                 emit_custom_event(
                     "agent_context_truncated",
                     {
@@ -327,6 +418,9 @@ async def run_agent_turn(
             raise AgentContextBudgetError(
                 "Fixed agent input and offered tool schemas exceed the model context budget."
             ) from exc
+        if not effective_prompt:
+            effective_prompt = copy.deepcopy(convo)
+        model_requests.append(copy.deepcopy(convo))
         try:
             if stream_tokens:
                 iteration = await stream_iteration(
@@ -339,6 +433,11 @@ async def run_agent_turn(
                     on_usage=observe_stream_usage,
                 )
                 completed_model_calls += 1
+                if iteration.safety is not None:
+                    tagged = iteration.safety.model_copy(deep=True)
+                    for signal in tagged.signals:
+                        signal.modelCall = completed_model_calls
+                    safety_agg = merge_safety(safety_agg, tagged)
                 usage_agg = usage_agg.add(TokenUsage.parse(iteration.usage))
                 return iteration.content, iteration.tool_calls
             result = await gateway.complete(
@@ -348,6 +447,11 @@ async def run_agent_turn(
                 correlation_id=ctx.correlation_id,
             )
             completed_model_calls += 1
+            parsed_safety = parse_safety(result)
+            if parsed_safety is not None:
+                for signal in parsed_safety.signals:
+                    signal.modelCall = completed_model_calls
+                safety_agg = merge_safety(safety_agg, parsed_safety)
             usage_agg = usage_agg.add(TokenUsage.parse(result.get("usage")))
             message = (result.get("choices") or [{}])[0].get("message") or {}
             content = message.get("content") or ""
@@ -374,6 +478,12 @@ async def run_agent_turn(
                 iterations=iterations,
                 usage=usage_agg.add(TokenUsage.parse(current_stream_usage)),
                 streamed_text="".join(streamed_parts),
+                offered_tools=offered_tools,
+                dropped_context_messages=dropped_context_messages,
+                effective_prompt=effective_prompt,
+                model_requests=list(model_requests),
+                safety=safety_agg,
+                delegations=list(delegated_runs),
             )
             raise AgentRunFailed(cause=exc, partial=partial) from exc
 
@@ -385,6 +495,12 @@ async def run_agent_turn(
             iterations=iterations,
             usage=usage_agg,
             streamed_text="".join(streamed_parts),
+            offered_tools=offered_tools,
+            dropped_context_messages=dropped_context_messages,
+            effective_prompt=effective_prompt,
+            model_requests=list(model_requests),
+            safety=safety_agg,
+            delegations=list(delegated_runs),
         )
 
     async def record(step: AgentStep, *, persist: bool = True) -> None:
@@ -628,8 +744,16 @@ async def run_agent_turn(
                 try:
                     raw_result = await handlers[name](parsed, ctx)
                 except AgentRunFailed as exc:
-                    for nested_step in exc.partial.steps:
-                        await record(nested_step)
+                    if isinstance(exc, DelegatedAgentRunFailed):
+                        delegated_runs.append(exc.trace)
+                        if exc.trace.safety is not None:
+                            nested_safety = exc.trace.safety.model_copy(deep=True)
+                            for signal in nested_safety.signals:
+                                signal.agent = exc.trace.agent
+                            safety_agg = merge_safety(safety_agg, nested_safety)
+                    else:
+                        for nested_step in exc.partial.steps:
+                            await record(nested_step)
                     await record(
                         AgentStep(
                             kind="tool_error",
@@ -649,6 +773,12 @@ async def run_agent_turn(
                         iterations=iterations,
                         usage=usage_agg.add(exc.partial.usage),
                         streamed_text="".join(streamed_parts),
+                        offered_tools=offered_tools,
+                        dropped_context_messages=dropped_context_messages,
+                        effective_prompt=effective_prompt,
+                        model_requests=list(model_requests),
+                        safety=safety_agg,
+                        delegations=list(delegated_runs),
                     )
                     raise AgentRunFailed(cause=exc.cause, partial=partial) from exc.cause
                 except Exception as exc:  # noqa: BLE001 - never crash the turn
@@ -668,12 +798,20 @@ async def run_agent_turn(
                     )
                     logger.warning("agent delegate error: tool=%s", safe_name)
                     continue
+                if isinstance(raw_result, DelegatedToolResult):
+                    delegated_runs.append(raw_result.trace)
+                    if raw_result.trace.safety is not None:
+                        nested_safety = raw_result.trace.safety.model_copy(deep=True)
+                        for signal in nested_safety.signals:
+                            signal.agent = raw_result.trace.agent
+                        safety_agg = merge_safety(safety_agg, nested_safety)
                 untrusted_context = True
+                model_result, receipt_result = _model_visible_result(raw_result)
                 convo.append(
                     {
                         "role": "tool",
                         "tool_call_id": call_id,
-                        "content": _truncate(json.dumps(raw_result, default=str)),
+                        "content": model_result,
                     }
                 )
                 await record(
@@ -681,7 +819,7 @@ async def run_agent_turn(
                         kind="delegate",
                         tool=safe_name,
                         arguments=redact_obj(parsed),
-                        result=redact_obj(raw_result),
+                        result=redact_obj(receipt_result),
                     )
                 )
                 logger.info("agent delegated: tool=%s", safe_name)
@@ -793,11 +931,12 @@ async def run_agent_turn(
                 logger.warning("agent tool error: tool=%s", safe_name)
                 continue
 
+            model_result, receipt_result = _model_visible_result(raw_result)
             convo.append(
                 {
                     "role": "tool",
                     "tool_call_id": call_id,
-                    "content": _truncate(json.dumps(raw_result, default=str)),
+                    "content": model_result,
                 }
             )
             # A tool result is remote content the model has now read: from here on
@@ -822,7 +961,7 @@ async def run_agent_turn(
                     kind="tool_result",
                     tool=safe_name,
                     arguments=redact_obj(parsed),
-                    result=redact_obj(raw_result),
+                    result=redact_obj(receipt_result),
                 )
             )
             logger.info("agent tool ran: tool=%s", safe_name)
@@ -835,5 +974,6 @@ async def run_agent_turn(
     # streams too when the turn is streaming — otherwise the last thing the user
     # waits on would be the one round trip that still went silent.
     tail_text, _ = await call_model(dict(base_params))
+    iterations += 1
     await record(AgentStep(kind="final", detail="max_iters"))
     return finish(tail_text, iterations)

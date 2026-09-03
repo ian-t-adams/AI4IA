@@ -211,6 +211,10 @@ def build_workflow_capability(
         return {
             "ok": outcome.ok,
             "workflow": current.name,
+            # Workflows are immutable for the duration of this execution. The
+            # durable updated timestamp is their current version marker and rides
+            # into the parent turn's execution receipt with the raw tool result.
+            "workflowVersion": current.updatedAt.isoformat(),
             "text": outcome.text[:_RESULT_LIMIT],
             "steps": [
                 {"agent": step.agent, "ok": step.ok, "error": step.error}

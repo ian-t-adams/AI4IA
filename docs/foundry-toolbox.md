@@ -23,14 +23,15 @@ An Azure AI Foundry **toolbox is itself an MCP endpoint**:
 {project_endpoint}/toolboxes/{toolbox_name}/mcp?api-version=v1
 ```
 
-It requires an AAD bearer for `https://ai.azure.com` and the header
-`Foundry-Features: Toolboxes=V1Preview`. So instead of rewriting the app onto the Foundry
+It requires an AAD bearer for `https://ai.azure.com` and the combined header
+`Foundry-Features: Toolboxes=V1Preview,Skills=V1Preview`. So instead of rewriting the app onto the Foundry
 managed agent runtime, AI4IA registers that one endpoint as a **single "official MCP server"**
 in `infra/mcp-servers.json`. The MCP APIM front door injects the
 managed-identity bearer, the static feature header, and the `api-version=v1` query; the app
-then consumes the toolbox tools — web/AI search, code interpreter, and tool search —
-through the existing `OfficialMcpService` + agent tool picker with **zero new runtime
-code**.
+then consumes toolbox tools — web/AI search, code interpreter, and tool search —
+through the existing `OfficialMcpService` + agent tool picker. Toolbox skills use
+the same endpoint's MCP resources: AI4IA advertises bounded skill metadata and
+loads the full `SKILL.md` only when the model selects `load_skill`.
 
 This is the maximal "through the proxy + APIM" outcome with minimal surface: one catalog
 entry, one RBAC grant, one feature flag.
@@ -62,6 +63,7 @@ Toolbox's own `web_search`.
 flowchart LR
     subgraph app["AI4IA API (Container App)"]
         picker["Agent tool picker"]
+        skills["Progressive skill loader"]
         mcpsvc["OfficialMcpService"]
     end
     subgraph apim["MCP APIM (Basic v2)"]
@@ -72,10 +74,13 @@ flowchart LR
         t1["web_search / azure_ai_search"]
         t2["code_interpreter"]
         t3["tool search (toolbox_search_preview)"]
+        s1["evidence-review skill"]
     end
-    picker --> mcpsvc -->|"subscription key\nhttps://<mcp-apim>/<name>/mcp"| pol
+    picker --> mcpsvc
+    picker --> skills --> mcpsvc
+    mcpsvc -->|"subscription key\nhttps://<mcp-apim>/<name>/mcp"| pol
     pol -->|"bearer + header + query"| tb
-    tb --- t1 & t2 & t3
+    tb --- t1 & t2 & t3 & s1
 ```
 
 The app never sees the Foundry endpoint, the AAD token, or the preview header — APIM owns all
@@ -128,7 +133,7 @@ valid.
 | `raiPolicyName` | Optional Responsible AI policy already on the project (`foundry.bicep` provisions `ai4ia-annotate-only`). |
 | `connections` | Project connections referenced by name (credentials live in the connection, never here). |
 | `tools` | Built-in and MCP tools (see per-tool table below). At most one tool may be unnamed across the entire toolbox, regardless of `type`. |
-| `skills` | Generic Foundry skill references. Keep empty in AI4IA manifests until the runtime supports MCP resources. |
+| `skills` | Foundry skill references. Unpinned active references must have a repository-owned `foundry/skills/<name>/SKILL.md`; reconciliation creates or reuses an immutable version and advances its default before reconciling the toolbox. |
 
 `camelCase` keys in the manifest (e.g. `serverLabel`, `projectConnectionId`) are translated to
 the API's `snake_case` by `scripts/provision-foundry-toolbox.py`.
@@ -143,7 +148,7 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 | --- | --- | --- | --- |
 | `web_search` | Grounded web search | `name`, `description`, `filters`/`userLocation`/`searchContextSize` (optional), `customSearchConfiguration` (optional) | Connectionless by default. `filters.allowedDomains` scopes results to specific domains; `userLocation` (`country`/`region`/`city`/`timezone`, all optional strings -- the SDK auto-sets its own internal `type` discriminator, so do not set one) biases results toward a locale; `searchContextSize` is one of `low`/`medium`/`high`. `customSearchConfiguration` (SDK 2.4.0's `WebSearchConfiguration`) independently scopes search to a Bing Custom Search instance instead of the general web; its `projectConnectionId` and `instanceName` are **both required together** when present (the SDK model has no default for either). |
 | `azure_ai_search` | RAG over an AI Search index | `azureAiSearch.indexes[]`: either `indexAssetId` alone, or `indexName` + `projectConnectionId` together | Nested shape (SDK 2.4.0's `AzureAISearchToolResource`); do **not** put these fields at the tool root -- the SDK constructor silently ignores them there (no error, fields just deserialize to `None`). Exactly one index per tool. `indexName` + `projectConnectionId` (Microsoft's documented "Configure tool parameters" form) and `indexAssetId` (a direct reference to an already-registered index asset -- also a real SDK 2.4.0 `AISearchIndexResource` field, though no current Microsoft Learn doc for this tool shows it as an alternative) are **mutually exclusive**: the schema rejects an index entry that sets both, or neither. |
-| `code_interpreter` | Sandboxed Python | `container` (optional) | Foundry-managed sandbox (distinct from AI4IA's existing direct Responses-API code interpreter). `container`, if set, is either an **existing container ID** (string; a pre-registered container resource) or a nested `{"type": "auto", ...}` object (SDK 2.4.0's `AutoCodeInterpreterToolParam`) for the managed sandbox with custom `fileIds`/`memoryLimit`/`networkPolicy`. Omit it entirely for the plain default sandbox. `networkPolicy` (SDK 2.4.0's `ContainerNetworkPolicyParam`) restricts sandbox outbound network access: `{"type": "disabled"}` or `{"type": "allowlist", "allowedDomains": [...]}` (non-empty). The SDK's allowlist variant also supports `domainSecrets` (a literal secret **value** injected per allowed domain); AI4IA intentionally does not expose that field here -- this manifest is committed to source control, so a per-domain secret value has no safe home in it (see AGENTS.md's "no secret sprawl" rule). |
+| `code_interpreter` | Sandboxed Python | `container` (optional) | Foundry-managed sandbox (distinct from AI4IA's APIM-fronted Responses-API Code Interpreter). `container`, if set, is either an **existing container ID** (string; a pre-registered container resource) or a nested `{"type": "auto", ...}` object (SDK 2.4.0's `AutoCodeInterpreterToolParam`) for the managed sandbox with custom `fileIds`/`memoryLimit`/`networkPolicy`. Omit it entirely for the plain default sandbox. `networkPolicy` (SDK 2.4.0's `ContainerNetworkPolicyParam`) restricts sandbox outbound network access: `{"type": "disabled"}` or `{"type": "allowlist", "allowedDomains": [...]}` (non-empty). The SDK's allowlist variant also supports `domainSecrets` (a literal secret **value** injected per allowed domain); AI4IA intentionally does not expose that field here -- this manifest is committed to source control, so a per-domain secret value has no safe home in it (see AGENTS.md's "no secret sprawl" rule). |
 | `file_search` | Search uploaded files | `vectorStoreIds`, `maxNumResults`/`rankingOptions`/`filters` (all optional) | Connectionless once files are attached. `vectorStoreIds`, if set, must be non-empty (an empty list is inert). `maxNumResults` is an integer 1-50. `rankingOptions.ranker` is `auto` or `default-2024-11-15`; `.scoreThreshold` is 0-1; `.hybridSearch`, if present, requires both `embeddingWeight` and `textWeight` (0-1 each). `filters` is a comparison (`type`/`key`/`value`, one of `eq`/`ne`/`gt`/`gte`/`lt`/`lte`/`in`/`nin`) or compound (`type`: `and`/`or` plus nested `filters[]`) tree over vector-store file metadata -- a **different shape** from `web_search.filters` above despite the shared name; each type's shape is independently schema-enforced. |
 | `browser_automation_preview` | Drive a hosted browser | `browserAutomationPreview.connection.projectConnectionId` | Nested shape (SDK 2.4.0's `BrowserAutomationToolParameters`). The connection must be a **Playwright Workspace** connection, not a plain API connection. Preview; heavier isolation review recommended. |
 | `openapi` | Call an OpenAPI-described API | `openapi` (nested `name`, `spec`, `auth`) | Wraps a REST API as a tool; `auth.type` is `anonymous` (no other field), `project_connection` (ONLY `auth.securityScheme.projectConnectionId`), or `managed_identity` (ONLY `auth.securityScheme.audience`) -- each is a strictly closed shape (schema `oneOf`, `additionalProperties: false` at every level), so e.g. a stray `securityScheme` on `anonymous` or an extra key alongside `projectConnectionId`/`audience` is rejected, not silently ignored. `spec` is passed through **byte-for-byte unmodified** -- its property names describe someone else's API and are never snake_cased, so a JSON-schema property genuinely named e.g. `topK` is never corrupted into `top_k`. There is no `functions` manifest field: the SDK's `OpenApiFunctionDefinition.functions` is read-only (server-populated, presumably extracted from `spec`) and is stripped from the wire request by the SDK's own `exclude_readonly` JSON encoding regardless of what a caller sets, so exposing it here would be a silently-inert no-op, not a real setting. |
@@ -240,14 +245,33 @@ referenced connections, then run `provision-foundry-toolbox.py`. The script crea
 `project.toolboxes.create_version(name, tools=[...], description=..., skills=[...], policies=...)`,
 then activates that new version (see the idempotency note below).
 
-## Why the canonical toolbox has no skills
+## Progressive skill disclosure
 
-Foundry exposes toolbox skills as MCP resources, not tools. AI4IA's current MCP client
-implements `tools/list` and `tools/call`, but not `resources/list` or `resources/read`, so
-binding a skill would create an asset the runtime cannot consume. A previous draft also
-required Markdown URL citations, conflicting with the server-owned `[[cite:S1]]` contract
-used for verified library citations. Skills remain a Foundry public-preview capability,
-but adding runtime MCP resource support is separate work.
+The canonical toolbox includes `evidence-review`, sourced from
+`foundry/skills/evidence-review/SKILL.md`. Foundry exposes attached skills as MCP
+resources rather than tools. `OfficialMcpService` calls `resources/list` only for
+generated catalog entries explicitly marked `resourcesEnabled`; phase one sets
+that bit only for the repository-curated Foundry Toolbox. Generic official and
+user-added MCP servers cannot become instruction sources.
+
+At turn construction, AI4IA advertises only each validated `skill://` resource's
+name and bounded description through one safe `load_skill` function. A model that
+needs the skill selects its exact enum name; the handler rechecks that the URI was
+advertised by that server, then calls `resources/read`. The result includes the
+source server/URI, resolved version when the URI supplies one (otherwise
+`default`), content SHA-256, truncation status, and the bounded instructions.
+These fields are retained by the execution receipt. Because descriptions are
+remote MCP metadata, merely advertising a skill taints the turn before the first
+model call; loading its full body keeps that taint latched. Any
+injection-sensitive or external/destructive call therefore retains the normal
+exact-argument approval. Skill instructions never override system
+policy, scopes, egress checks, or approvals.
+
+This first implementation supports instruction-only `SKILL.md` resources.
+Supplementary skill scripts/assets and user-authored skill CRUD remain out of
+scope. Foundry Skills and toolbox skill delivery are public preview and the Skills
+API currently does not support private-network-only projects. See Microsoft's
+[Foundry skills guidance](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/skills).
 
 ## Operator runbook (end to end)
 
@@ -288,12 +312,13 @@ but adding runtime MCP resource support is separate work.
    python scripts/provision-foundry-toolbox.py --emit-yaml foundry/toolbox.azd.yaml
    ```
 
-   > **Idempotency note:** `--create` compares the desired source with the currently served
-   > default and creates nothing when they match. A changed toolbox creates exactly one immutable
-   > version and then explicitly advances `default_version`. Read, create, and activation errors
-   > propagate, so reconciliation cannot report success while leaving an old default served. If
-   > creation succeeded but activation failed, the next run scans immutable versions, reuses the
-   > matching version, and retries activation without creating a duplicate.
+   > **Idempotency note:** `--create` first compares every unpinned local
+   > `SKILL.md` with the active Foundry skill version, then compares the desired
+   > toolbox with its served default. Changed content creates exactly one
+   > immutable version and explicitly advances `default_version`. Read, create,
+   > and activation errors propagate. If creation succeeded but activation
+   > failed, the next run scans immutable versions, reuses the matching content,
+   > and retries activation without creating a duplicate.
 
 5. **Automated reconciliation.** Foundry asset and provisioner changes trigger
    `.github/workflows/deploy.yml` first. After that named workflow completes successfully for a
@@ -307,7 +332,7 @@ but adding runtime MCP resource support is separate work.
    before production approval or reconciliation concurrency can wait. Manual
    dispatch requires an explicit `project_endpoint` input. The protected job
    receives the validated endpoint as `AZURE_FOUNDRY_PROJECT_ENDPOINT`, first
-   verifies project-scoped Foundry User, then ensures
+   verifies project-scoped Foundry User, then ensures the manifest's skills and
    `ai4ia-toolbox`. `main.bicep` includes `deploymentPrincipalId` in the primary project's
    assignments; the preflight still fails with remediation if that grant has not reconciled.
    No merged GitHub `vars` endpoint can redirect the automatic path. Unchanged

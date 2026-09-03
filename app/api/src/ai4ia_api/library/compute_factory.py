@@ -13,11 +13,12 @@ compute and exports share one source of IO truth. The Code Interpreter client
 (Responses API) is injectable for tests; in deployments it is constructed from
 settings and closed in the app lifespan.
 
-The entitlement gate and the usage meter are **required** constructor arguments
-(audit P1-2). Compute is a direct-to-Foundry sandbox call, so it is outside the
-gateway's governance; making the two services non-optional means a compute path
-that could spend without a gate or a ledger cannot be constructed at all, rather
-than being a runtime posture someone has to remember to wire.
+The entitlement gate and usage meter are **required** constructor arguments
+(audit P1-2). Compute bypasses SimpleL7Proxy because its stateful sandbox is not a
+routable model deployment, but it still traverses a dedicated, contract-limiting
+APIM API. APIM has no per-user entitlement or usage ledger, so making these two
+services non-optional ensures a compute path that could spend without either
+cannot be constructed.
 """
 from __future__ import annotations
 

@@ -12,10 +12,11 @@ Full design + runbook: [`docs/foundry-toolbox.md`](../docs/foundry-toolbox.md).
 
 A Foundry toolbox *is itself an MCP endpoint*
 (`{project_endpoint}/toolboxes/{name}/mcp?api-version=v1`). We register that endpoint as one
-"official MCP server" in `infra/mcp-servers.json`, so the app consumes the toolbox's tools —
-web/AI search, code interpreter, and tool search — through the APIM front door shipped in
-PR #125, with **zero new runtime code**. APIM injects the managed-identity bearer, the static
-`Foundry-Features: Toolboxes=V1Preview` header, and the `api-version=v1` query.
+"official MCP server" in `infra/mcp-servers.json`, so the app consumes the
+toolbox's tools and progressively disclosed skills through the APIM front door.
+APIM injects the managed-identity bearer, the static
+`Foundry-Features: Toolboxes=V1Preview,Skills=V1Preview` header, and the
+`api-version=v1` query.
 
 ## Files
 
@@ -24,13 +25,15 @@ PR #125, with **zero new runtime code**. APIM injects the managed-identity beare
 | `toolbox.manifest.json` | Canonical definition of the live `ai4ia-toolbox` (a new tenant reproduces it 1:1). |
 | `toolbox.manifest.example.json` | Populated `reference` manifest with one of every tool. It is never reconciled as-is. |
 | `toolbox.manifest.schema.json` | JSON Schema for the manifest; validated in CI (`infra-validate`). |
+| `skills/<name>/SKILL.md` | Repository-owned source for an unpinned active skill. `--create` reconciles immutable skill versions before the toolbox. |
 | `routines/routine.schema.json` + `routines/example.routine.json` | Design/preview routine contract. It is validated against canonical toolbox names but is not created or served. |
 | `a2a/a2a.schema.json` + `a2a/example.a2a.json` | Design/preview A2A contract with an explicit blocker inventory. It does not create a callable integration. |
 
 ## Reconciliation
 
-`.github/workflows/foundry-assets.yml` uses GitHub OIDC to reconcile the **toolbox**
-data-plane asset. Routine and A2A files are validation-only and are never reconciled.
+`.github/workflows/foundry-assets.yml` uses GitHub OIDC to reconcile the
+repository-owned **skills and toolbox** data-plane assets. Routine and A2A files
+are validation-only and are never reconciled.
 The workflow is **not** triggered directly by changes under `foundry/**`:
 it runs on `workflow_run` after the `deploy` workflow completes successfully for a
 push to `main`, and on manual dispatch. That ordering is the point — `deploy` is
@@ -43,8 +46,8 @@ downloads that exact run's artifact before the protected reconciliation job can
 request OIDC, then carries the validated endpoint as a job output while approval or
 concurrency waits. Manual dispatch requires the operator to pass the current azd
 output explicitly. A fail-closed preflight requires the OIDC identity
-to hold the project-scoped Foundry User role before reconciliation. Failures stop
-the workflow; unchanged defaults create no immutable versions.
+to hold the project-scoped Foundry User role before reconciliation. Failures stop the workflow; unchanged skill and toolbox defaults create no
+immutable versions.
 
 For a local/operator run:
 

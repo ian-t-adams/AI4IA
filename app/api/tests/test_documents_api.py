@@ -149,6 +149,8 @@ def test_document_text_injected_as_system_context(client):
     system_turns = [m for m in gw.last_messages if m["role"] == "system"]
     doc_system = "\n".join(m["content"] for m in system_turns)
     assert "BEGIN DOCUMENT" in doc_system
+    assert '""" <documents>' in doc_system
+    assert '</documents> """' in doc_system
     assert "Project Zephyr ships in March." in doc_system
     # The untrusted framing (randomized fence) must be present.
     assert "randomized per message" in doc_system

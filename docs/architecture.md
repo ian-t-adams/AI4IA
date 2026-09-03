@@ -20,25 +20,20 @@ it is generated locally and never through excalidraw.com.
 2. **WebSockets bypass only the HTTP proxy.** Realtime and Voice Live flow
    `Browser -> FastAPI relay -> realtime APIM -> Foundry` because
    SimpleL7Proxy does not support WebSockets. They never bypass APIM.
-3. **The Code Interpreter sandbox is the one model call that bypasses both.**
-   Document compute posts directly to `{Foundry}/openai/v1/responses` with the
-   built-in `code_interpreter` tool, plus the Files API when raw-file compute is
-   on. It is a stateful Azure-managed container, not a chat-completions
-   deployment, so the catalog gateway — which resolves a backend from
-   `x-LLMModel` for completion-shaped traffic — cannot route it. Auth is the
-   Container App's managed identity (or a resource key), never a gateway key.
-   Because it is outside the gateway, the governance the gateway would have
-   applied is re-applied at the call site instead: `store=false` is set
-   server-side, an entitlement check runs before **any** provider IO (including
-   the file upload), and every execution *attempt* — success or failure — is
-   metered under a distinct target identity so sandbox spend cannot hide inside
-   the parent chat charge. Introducing any *other* direct model call is a
-   governance change, not an implementation detail.
-4. **Three credentials protect the core gateway hops.** FastAPI holds a
-   proxy-ingress key and a separately scoped realtime APIM key. SimpleL7Proxy
-   alone holds the model-APIM key. The proxy strips the ingress key before
-   injecting its model key. Optional Speech Voice Live adds a fourth,
-   independently scoped APIM key.
+3. **Code Interpreter bypasses only the compatible HTTP proxy.** Document compute
+   calls a dedicated APIM API for `/openai/v1/responses` and the Files API. The
+   stateful Azure-managed container is not a chat-completions deployment, so
+   SimpleL7Proxy's catalog route cannot carry it. APIM accepts only the configured
+   model, `store=false`, and exactly one `code_interpreter` tool; it strips the
+   API-scoped subscription key and authenticates to the primary Foundry account
+   with managed identity. FastAPI has no direct OpenAI inference role. Call-site
+   entitlement, ownership, approval, file-size, and attempt-metering controls
+   still apply.
+4. **Scoped credentials protect every model hop.** FastAPI holds separate
+   proxy-ingress, realtime, and Code Interpreter APIM keys. SimpleL7Proxy alone
+   holds the normal model-APIM key. Optional Speech Voice Live and official MCP
+   each add another independently scoped key. No one credential can invoke every
+   model/tool API.
 5. **Models are catalog-driven.** `infra/models.json` is authoritative for
    deployments, regions, categories, per-model reasoning effort, capabilities, and
    generated runtime data. Entitlement-gated providers may remain in that complete
@@ -67,7 +62,7 @@ it is generated locally and never through excalidraw.com.
 | Canonical state | Cosmos DB and Blob Storage | User-scoped records and memory text/vectors plus source documents and durable generated artifacts |
 | Derived state | Azure AI Search | Rebuildable document chunks and retrieval indexes |
 | Native Azure planes | Content Understanding, Monitor, Key Vault, Storage, Cosmos, Search | Non-model control/data planes called directly with managed identity or configured service auth |
-| Sandboxed compute | Azure OpenAI Responses API Code Interpreter | Azure-managed Python container for `run_code`, `export_document`, and `analyze_attachment`; called directly (see invariant 3) |
+| Sandboxed compute | Code Interpreter APIM + Azure OpenAI Responses API | API-scoped APIM route to the Azure-managed Python container for `run_code` and `analyze_attachment`; `export_document` writes the resulting owner-scoped artifact |
 | Observability | Application Insights, Log Analytics, Azure Monitor | Correlated logs, traces, usage, resource metrics, and fixed operator queries |
 
 ## Trust boundaries and request paths
@@ -81,6 +76,7 @@ flowchart LR
   G["Model APIM API"]
   R["Azure OpenAI realtime APIM API"]
   V["Speech Voice Live APIM API<br/>(optional)"]
+  I["Code Interpreter APIM API"]
   M["Official MCP APIM product"]
   F["Foundry deployments"]
   S["AIServices Voice Live<br/>(optional)"]
@@ -101,7 +97,8 @@ flowchart LR
   V -->|"strip subscription key;<br/>managed identity"| S
   A -->|"MCP-only APIM key"| M
   M --> T
-  A -. "managed identity<br/>(bypasses proxy AND APIM)" .-> X
+  A -. "Code Interpreter-only APIM key<br/>(bypasses SimpleL7Proxy)" .-> I
+  I -->|"fixed model + store=false;<br/>managed identity"| X
   X --> F
   A --> C
   A --> D
@@ -116,7 +113,7 @@ flowchart LR
 | Realtime APIM subscription key | FastAPI only | FastAPI relay -> `/openai/realtime` | Realtime API only; cannot invoke the normal model API |
 | Speech Voice Live key (optional) | FastAPI only when enabled | FastAPI relay -> `/speech/voice-live/realtime` | Separate default-off API and subscription; distinct from all three core keys |
 | Official MCP subscription key | FastAPI official MCP service | FastAPI -> official MCP APIM product | MCP APIs only; cannot invoke model/realtime APIs |
-| Code Interpreter identity | FastAPI managed identity (or an optional resource key) | FastAPI -> Foundry `/openai/v1/responses` and `/openai/v1/files` | The main API UAMI currently holds `Cognitive Services OpenAI User` on every regional Foundry account. That role permits direct inference against any deployment on each account; absence of a gateway key does not constrain direct Foundry access. See the pending decision below. |
+| Code Interpreter APIM subscription key | FastAPI only when document or inline compute is enabled | FastAPI -> `/code-interpreter/openai/v1/responses` and `/files` | Dedicated API only. APIM requires the configured model, `store=false`, and one Code Interpreter tool, then uses managed identity against the primary Foundry account. |
 
 Each APIM API validates its own scoped subscription at ingress, removes the
 subscription-key header before the backend hop, and uses managed identity for
@@ -124,24 +121,29 @@ Foundry or the approved AIServices backend. User tokens and gateway keys therefo
 do not flow downstream. Browser-supplied internal identity headers are not
 authoritative.
 
-### Pending decision: isolate direct Code Interpreter authority
+### Resolved: Code Interpreter authority is isolated at APIM
 
-`infra/main.bicep` currently places the API UAMI in
-`nativeFoundryPrincipalIds`, and every regional `foundry.bicep` instance grants
-those principals
-[`Cognitive Services OpenAI User`](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/ai-machine-learning#cognitive-services-openai-user).
-Microsoft documents that role as model-inference permission at the resource
-scope; there is no documented deployment-only equivalent. Therefore a compromised API identity can invoke any
-deployment on any regional account directly and bypass SimpleL7Proxy/APIM,
-regardless of the application's gateway-first code paths.
+`infra/main.bicep` passes an empty `nativeFoundryPrincipalIds` array, so a
+greenfield API UAMI receives no direct inference assignment. ARM uses incremental
+mode, so an existing environment may retain assignments created by an older
+template. The deploy workflow now enumerates the literal account-scoped
+assignments by scope and principal and fails before image promotion if either
+`Cognitive Services OpenAI User` or the broader `Cognitive Services User` remains;
+it prints exact assignment IDs for a human-reviewed one-time revocation and never
+deletes RBAC automatically.
 
-This is a verified authorization gap, not evidence that application code is
-currently violating the gateway invariant. The least-privilege direction is a
-dedicated identity/workload for the direct Responses Code Interpreter exception,
-scoped only to the required Foundry account, followed by removal of broad OpenAI
-inference access from the main API identity. That change creates identity, RBAC,
-deployment, and operational consequences and requires explicit owner approval.
-No RBAC is changed by documenting the decision.
+The existing Basic v2 APIM owns an additive `code-interpreter` API with its own subscription. Its
+policy rejects a Responses request unless it names the configured deployment,
+sets `store=false`, and carries exactly one `code_interpreter` tool. Multipart
+Files uploads and deletes pass through without body rewriting; all caller
+credentials/internal headers are removed before APIM obtains a
+`https://ai.azure.com` token.
+
+After that one-time legacy-role revocation, this narrows a compromised FastAPI process from account-wide Foundry inference
+authority to one API whose policy exposes only the sandbox contract. APIM remains
+the model data-plane trust boundary. ACA Sandboxes are being evaluated separately
+as a future customizable execution substrate; preview research does not weaken
+this production boundary.
 
 ### Compatible HTTP/SSE lifecycle
 
@@ -240,22 +242,53 @@ deleted. See [Memory architecture](./memory.md).
 The in-process agent runtime receives only server-approved tool schemas. Per turn:
 
 1. FastAPI composes built-in, official MCP, and optional BYO MCP capabilities.
-2. Remote MCP tools receive deterministic provider-safe aliases while dispatch
+2. Repository-curated Foundry skills are advertised by bounded MCP resource
+   metadata. The full `SKILL.md` is fetched only when the model selects
+   `load_skill`; its URI, content digest, version/default resolution, and
+   truncation state become observable execution metadata.
+3. Remote MCP tools receive deterministic provider-safe aliases while dispatch
    retains the exact remote name. Plane/server identity is part of the alias and
    approval binding; deterministic precedence resolves any remaining collision.
-3. The registry rechecks scopes, approvals, ownership, host policy, and SSRF rules.
-4. Every external or destructive call is additionally held for a **per-invocation
+4. The registry rechecks scopes, approvals, ownership, host policy, and SSRF rules.
+5. Every external or destructive call is additionally held for a **per-invocation
    human approval** bound to that call's exact arguments.
-5. Tool errors and denials become structured outcomes the model can handle; call
+6. Tool errors and denials become structured outcomes the model can handle; call
    budgets and orchestration depth bound fan-out.
-6. The assistant answer, usage, artifacts, and metadata-only activity trace are
+7. The assistant answer, usage, artifacts, and metadata-only activity trace are
    persisted.
 
 BYO MCP servers are untrusted and approval-gated. DNS/public-HTTPS validation is
 performed again when a request runs to resist DNS rebinding. Official MCP servers
 are admin-curated and reached through an MCP-only APIM product. Foundry Toolbox is
-one official MCP upstream; WebIQ search is a separate feature-gated server-side
-capability whose bounded output is treated as untrusted model context.
+one official MCP upstream. Only generated toolbox catalog entries may expose MCP
+resources as skills; BYO resources are never accepted as instructions. A loaded
+skill taints the turn, preserving exact-argument approval for later outbound
+calls. WebIQ search is a separate feature-gated server-side capability whose
+bounded output is treated as untrusted model context.
+
+### Execution receipts, not hidden reasoning
+
+Every persisted model turn carries an additive, bounded execution receipt. It
+records the correlation id; resolved model deployment, region, SKU, data zone,
+residency and API; instruction and agent-configuration hashes; the exact first
+model prompt after the runtime's own context bound; admitted versus displaced
+summary, memory, session-document and library blocks; durable source
+identities/versions and content hashes; tool definitions offered; finalized tool
+calls; approval counts; and redacted-canonical arguments/results.
+Successful linked-agent runs keep a nested receipt with that agent's own prompt,
+tool offers/calls, usage, and safety evidence rather than collapsing to only the
+delegated answer.
+
+Arguments and results are re-redacted at the persistence boundary even though
+the runtime already redacts them. Each payload is capped at 2 KiB and retains the
+SHA-256 and original byte length of the full redacted value; the whole receipt is
+deterministically capped at 32 KiB. Historical snapshots remain immutable when a
+memory or document is later deleted, just as the prior answer itself remains.
+The final assistant response is the message body; later tool-loop prompts are
+reconstructable from the first prompt plus the recorded calls/results.
+
+This is observable execution provenance, not chain-of-thought. Provider APIs do
+not expose raw hidden reasoning, and AI4IA has no field or UI that claims they do.
 
 ### Per-invocation tool approval
 

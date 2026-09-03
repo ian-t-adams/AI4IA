@@ -122,6 +122,21 @@ def sse_chunks(response: dict, *, parts: int = 3) -> list[ChatChunk]:
             out.append(
                 ChatChunk(raw=json.dumps({"choices": [{"delta": {"tool_calls": [fragment]}}]}))
             )
+    source_choice = (response.get("choices") or [{}])[0]
+    content_filters = source_choice.get("content_filter_results")
+    prompt_filters = response.get("prompt_filter_results")
+    if content_filters or prompt_filters:
+        safety_payload: dict = {"choices": []}
+        if content_filters:
+            safety_payload["choices"] = [
+                {
+                    "delta": {},
+                    "content_filter_results": content_filters,
+                }
+            ]
+        if prompt_filters:
+            safety_payload["prompt_filter_results"] = prompt_filters
+        out.append(ChatChunk(raw=json.dumps(safety_payload)))
     if response.get("usage"):
         out.append(
             ChatChunk(

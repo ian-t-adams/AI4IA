@@ -101,6 +101,9 @@ class RetrievedSource(BaseModel):
 
     spanId: str
     documentId: str
+    # Stable source revision where available (the library manifest's raw-content
+    # SHA-256). Optional for older citation rows and non-library sources.
+    documentVersion: str | None = None
     # Display label only. Identity is ``documentId`` -- resolving a citation by
     # filename is what let the first case-insensitive duplicate win.
     filename: str
@@ -179,6 +182,7 @@ class SpanRegistry:
         self,
         *,
         document_id: str,
+        document_version: str | None = None,
         filename: str,
         content: str,
         heading: str | None = None,
@@ -197,6 +201,7 @@ class SpanRegistry:
         source = RetrievedSource(
             spanId=f"S{len(self._sources) + 1}",
             documentId=document_id,
+            documentVersion=document_version,
             filename=filename,
             heading=heading,
             charStart=char_start,

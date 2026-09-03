@@ -17,19 +17,13 @@ a future reader will want when something 401s:
 
 * APIM reaches Foundry with its managed identity -- 37 `auth: MI` entries in the
   generated gateway catalog and zero `api-key`.
-* Content Understanding and the Responses-API Code Interpreter are the only two
-  app paths that touch a Foundry endpoint directly. Both default to
-  `GatewayAuthMode.bearer` (`cu_auth_mode`, `code_interpreter_auth_mode`), and
-  neither `AI4IA_CU_API_KEY` nor `AI4IA_CODE_INTERPRETER_API_KEY` is set in
-  production.
-* Of the 67 environment variables on the production api container app, five carry
-  a credential, and none is a Cognitive Services account key: a SimpleL7Proxy
-  ingress key, three APIM subscription keys (realtime, Voice Live, official MCP)
-  and a third-party Web IQ key. Voice Live in particular reaches APIM, not
-  Foundry, so it is unaffected.
-
-What this does NOT close: the api identity still holds Foundry data-plane roles,
-because Code Interpreter needs them until it runs in its own workload.
+* Content Understanding is the only direct Foundry data plane held by FastAPI,
+  and it uses its narrow contributor role with managed identity.
+* Responses-API Code Interpreter bypasses SimpleL7Proxy because its Files and
+  stateful container surfaces do not fit the compatible catalog route, but it no
+  longer bypasses APIM. FastAPI holds an API-scoped subscription key; APIM strips
+  it and authenticates to Foundry with managed identity.
+* The main API identity has no Cognitive Services OpenAI User assignment.
 """
 from __future__ import annotations
 
@@ -103,31 +97,58 @@ class FoundryLocalAuthStaysDisabled(unittest.TestCase):
 
 
 class TheEvidenceForTheFlipStaysTrue(unittest.TestCase):
-    """The flip was justified by two app-side defaults. Pin them.
+    """Pin the remaining direct data plane and the APIM Code Interpreter route."""
 
-    If either default became `api_key`, the deployment would need a Foundry
-    account key that `disableLocalAuth: true` refuses to honour -- and the symptom
-    would be a 401 from document ingest or code execution, far from this change.
-    """
-
-    def test_direct_foundry_clients_default_to_managed_identity(self) -> None:
+    def test_content_understanding_defaults_to_managed_identity(self) -> None:
         config = (REPO / "app" / "api" / "src" / "ai4ia_api" / "config.py").read_text(
             encoding="utf-8"
         )
-        for field in ("cu_auth_mode", "code_interpreter_auth_mode"):
-            match = re.search(
-                rf"{field}:\s*GatewayAuthMode\s*=\s*GatewayAuthMode\.(\w+)", config
-            )
-            self.assertIsNotNone(match, f"{field} is no longer declared")
-            assert match is not None
-            self.assertEqual(
-                match.group(1),
-                "bearer",
-                f"{field} no longer defaults to bearer (managed identity). These "
-                "two clients call a Foundry endpoint directly, so an api_key "
-                "default would need an account key that local-auth-disabled "
-                "accounts reject.",
-            )
+        match = re.search(
+            r"cu_auth_mode:\s*GatewayAuthMode\s*=\s*GatewayAuthMode\.(\w+)",
+            config,
+        )
+        self.assertIsNotNone(match, "cu_auth_mode is no longer declared")
+        assert match is not None
+        self.assertEqual(match.group(1), "bearer")
+
+    def test_code_interpreter_is_wired_to_a_scoped_apim_key(self) -> None:
+        main = MAIN.read_text(encoding="utf-8")
+        api = (REPO / "infra" / "modules" / "api.bicep").read_text(encoding="utf-8")
+        direct = main.split("var nativeFoundryPrincipalIds =", 1)[1].split("\n", 1)[0]
+        self.assertIn("[]", direct)
+        self.assertIn(
+            "codeInterpreterBaseUrl: gateway.outputs.codeInterpreterGatewayUrl",
+            main,
+        )
+        self.assertIn(
+            "codeInterpreterApiKey: gateway.outputs.codeInterpreterGatewayKey",
+            main,
+        )
+        self.assertIn("codeInterpreterAuthMode: 'api_key'", main)
+        self.assertIn("name: 'AI4IA_CODE_INTERPRETER_API_KEY'", api)
+
+    def test_deploy_fails_closed_on_incrementally_retained_direct_roles(self) -> None:
+        workflow = (
+            REPO / ".github" / "workflows" / "deploy.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Verify legacy API inference roles are revoked", workflow)
+        self.assertIn("id-api-${AZURE_ENV_NAME}", workflow)
+        self.assertIn("5e0bd9bd-7b93-4f28-af87-19fc36ad61bd", workflow)
+        self.assertIn("a97b65f3-24c7-4388-baec-2e87135dc908", workflow)
+        self.assertIn('--scope "$account_scope"', workflow)
+        self.assertIn("Stale assignment ID:", workflow)
+        block = workflow.split(
+            "- name: Verify legacy API inference roles are revoked",
+            1,
+        )[1].split("# ---------------------------------------------------------------------", 1)[0]
+        self.assertNotIn("< <(", block)
+        self.assertIn('if ! account_scopes="$(az cognitiveservices account list', block)
+        self.assertIn('if ! assignment_ids="$(az role assignment list', block)
+        self.assertNotIn(
+            'az role assignment delete --ids "${stale[@]}"',
+            workflow,
+            "deployment must not silently revoke live RBAC without human review",
+        )
 
 
 if __name__ == "__main__":

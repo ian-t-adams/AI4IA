@@ -17,8 +17,6 @@ DEPLOY_WORKFLOW = ROOT / ".github" / "workflows" / "deploy.yml"
 REMOVED_SKILL_REFERENCES = (
     "citation-" + "discipline",
     "provision-foundry-" + "skills.py",
-    "foundry/" + "skills/",
-    "SKILL.md parse/" + "validate",
     "toolbox/" + "skills scripts",
 )
 
@@ -343,7 +341,7 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         self.assertIn("--create", steps[toolbox_index]["run"])
         self.assertNotIn("--manifest", steps[toolbox_index]["run"])
 
-    def test_deleted_skill_has_no_stale_repository_references(self) -> None:
+    def test_deleted_legacy_skill_has_no_stale_repository_references(self) -> None:
         tracked = subprocess.run(
             ["git", "ls-files", "-z"],
             cwd=ROOT,
@@ -362,6 +360,20 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
                 if reference.lower() in text.lower():
                     stale.append(f"{relative_path}: {reference}")
         self.assertEqual([], stale)
+
+    def test_active_skill_is_owned_by_the_toolbox_provisioner(self) -> None:
+        manifest = (ROOT / "foundry" / "toolbox.manifest.json").read_text(
+            encoding="utf-8"
+        )
+        provisioner = (
+            ROOT / "scripts" / "provision-foundry-toolbox.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"name": "evidence-review"', manifest)
+        self.assertTrue(
+            (ROOT / "foundry" / "skills" / "evidence-review" / "SKILL.md").is_file()
+        )
+        self.assertIn("manifest_skill_sources", provisioner)
+        self.assertIn("ensure_manifest_skills", provisioner)
 
 
 if __name__ == "__main__":

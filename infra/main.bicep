@@ -152,9 +152,6 @@ param cuAgenticAnalyzerId string = ''
 @description('Enable compute over the library: intent router + code_interpreter + "adjust & return" export. Layered ON TOP of documentUnderstandingEnabled. Default OFF (the chat hot path is byte-for-byte unchanged).')
 param documentComputeEnabled bool = false
 
-@description('Azure OpenAI resource endpoint (e.g. https://<resource>.openai.azure.com) that serves the Responses API code_interpreter tool. Required when enabling document compute in a deployed env; the api fails closed at startup otherwise. Empty by default (feature off).')
-param codeInterpreterBaseUrl string = ''
-
 @description('Deployment/model name that serves the Responses API code_interpreter tool (for example gpt-5.4-mini). Required when enabling document compute in a deployed env.')
 param codeInterpreterModel string = ''
 
@@ -286,9 +283,9 @@ This is what makes gateway-only routing an IAM boundary rather than a convention
 with account keys live, anything holding one can reach a Foundry deployment
 directly and skip APIM's rate limiting, residency policy, usage metering and
 priority routing. See `infra/modules/foundry.bicep` for the evidence gathered
-before this was turned on. It does *not* close the identity split: the api
-identity still holds direct Foundry data-plane roles because the
-Responses-API Code Interpreter needs them until it moves to its own workload.''')
+before this was turned on. FastAPI now holds no OpenAI inference role:
+Responses-API Code Interpreter uses a dedicated API-scoped APIM route, while
+Content Understanding retains only its narrow data-plane role.''')
 param foundryDisableLocalAuth bool = true
 
 @description('''EXPERIMENTAL direct-Bicep network-isolation foundation. This
@@ -407,11 +404,10 @@ var apiIdentity = filter(identity.outputs.identities, x => x.service == 'api')[0
 var proxyIdentity = filter(identity.outputs.identities, x => x.service == 'proxy')[0]
 // The web identity runs the Next.js frontend container (ACR pull only).
 var webIdentity = filter(identity.outputs.identities, x => x.service == 'web')[0]
-// Native/non-OpenAI control planes remain callable by FastAPI. Normal model
-// traffic reaches Foundry only through APIM, so the proxy gets no Foundry RBAC.
-var nativeFoundryPrincipalIds = [
-  apiIdentity.principalId
-]
+// FastAPI has no direct OpenAI inference grant. Compatible model traffic goes
+// through SimpleL7Proxy -> APIM, realtime goes through its scoped APIM API, and
+// Code Interpreter now goes through its own scoped APIM API.
+var nativeFoundryPrincipalIds = []
 // Content Understanding is configured only on the primary Foundry account.
 // The API needs this role to analyze documents; the deploy identity needs it to
 // PATCH the data-plane defaults after ARM provisioning. Keep this separate from
@@ -665,13 +661,11 @@ module cost 'modules/cost.bicep' = {
 var regionNames = map(regionList, r => r.name)
 var primaryFoundryIndex = filter(range(0, length(regionList)), i => regionNames[i] == location)[0]
 
-// Content Understanding and the code_interpreter Responses API reach the Foundry
-// data plane directly — the api identity already holds
-// "Cognitive Services User" + "Cognitive Services OpenAI User" on every Foundry
-// account (see foundry.bicep). When an explicit endpoint isn't supplied, default
-// both to the primary Foundry account so enabling the document flags "just works"
-// without hand-wiring a URL. The CI model defaults to the primary-region
-// gpt-5.4-mini deployment (naming: {model}-slurmfactory-{region}-glbl).
+// Content Understanding remains a direct non-model data plane with its own narrow
+// role. Code Interpreter uses the primary Foundry account only as the backend of
+// a dedicated API-scoped APIM route; FastAPI never receives direct Foundry RBAC.
+// The CI model defaults to the primary-region gpt-5.4-mini deployment (naming:
+// {model}-slurmfactory-{region}-glbl).
 var primaryFoundryEndpoint = foundry[primaryFoundryIndex].outputs.endpoint
 // Content Understanding consumes these exact deployment records. The plan-time
 // validator proves both records exist in every catalog region allowed as primary.
@@ -692,7 +686,6 @@ var speechVoiceLiveIndex = filter(range(0, length(regionList)), i => regionNames
 var speechVoiceLiveAccountName = foundry[speechVoiceLiveIndex].outputs.accountName
 var speechVoiceLiveAccountEndpoint = foundry[speechVoiceLiveIndex].outputs.endpoint
 var effectiveCuBaseUrl = !empty(cuBaseUrl) ? cuBaseUrl : primaryFoundryEndpoint
-var effectiveCodeInterpreterBaseUrl = !empty(codeInterpreterBaseUrl) ? codeInterpreterBaseUrl : primaryFoundryEndpoint
 var effectiveCodeInterpreterModel = !empty(codeInterpreterModel) ? codeInterpreterModel : 'gpt-5.4-mini-${subscriptionToken}-${location}-glbl'
 
 // --- Realtime (Voice Live) browser Origin allowlist ---
@@ -789,6 +782,8 @@ module gateway 'modules/gateway.bicep' = {
     speechVoiceLiveAccountName: speechVoiceLiveAccountName
     speechVoiceLiveAccountEndpoint: speechVoiceLiveAccountEndpoint
     speechVoiceLiveManagedIdentityAudience: speechVoiceLiveManagedIdentityAudience
+    codeInterpreterEnabled: documentComputeEnabled || inlineDocumentComputeEnabled
+    codeInterpreterModel: effectiveCodeInterpreterModel
   }
 }
 
@@ -973,11 +968,13 @@ module api 'modules/api.bicep' = {
     cuCompletionDeployment: primaryCuCompletionDeployment.deploymentName
     cuEmbeddingModel: 'text-embedding-3-large'
     cuEmbeddingDeployment: primaryCuEmbeddingDeployment.deploymentName
-    // Compute over the library. Default OFF; layered on top of
-    // documentUnderstandingEnabled. Base url + model emitted only when non-empty.
+    // Compute over the library. The stateful Responses/Files surfaces bypass
+    // SimpleL7Proxy but stay behind their own API-scoped APIM subscription.
     documentComputeEnabled: documentComputeEnabled
-    codeInterpreterBaseUrl: effectiveCodeInterpreterBaseUrl
+    codeInterpreterBaseUrl: gateway.outputs.codeInterpreterGatewayUrl
     codeInterpreterModel: effectiveCodeInterpreterModel
+    codeInterpreterAuthMode: 'api_key'
+    codeInterpreterApiKey: gateway.outputs.codeInterpreterGatewayKey
     // Inline-attachment code interpreter (default OFF). Reuses the same code_interpreter
     // endpoint/model above; emits its enable flag + ephemeral container name only when on.
     inlineDocumentComputeEnabled: inlineDocumentComputeEnabled

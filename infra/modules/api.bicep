@@ -185,6 +185,17 @@ param codeInterpreterBaseUrl string = ''
 @description('Deployment/model name that serves the Responses API code_interpreter tool (e.g. gpt-4.1). Required when enabling document compute in a deployed env.')
 param codeInterpreterModel string = ''
 
+@description('Authentication mode for the Code Interpreter endpoint. Deployed AI4IA uses an API-scoped APIM subscription key; local/direct test setups may use bearer.')
+@allowed([
+  'api_key'
+  'bearer'
+])
+param codeInterpreterAuthMode string = 'bearer'
+
+@secure()
+@description('API-scoped Code Interpreter APIM subscription key when codeInterpreterAuthMode is api_key.')
+param codeInterpreterApiKey string = ''
+
 @description('Enable the inline-attachment code interpreter (analyze_attachment): the chat agent can crack/analyze an INLINE composer attachment in the Responses API code_interpreter sandbox, reusing the same endpoint/model as document compute. Default OFF: no original bytes retained, the tool is never advertised, no ephemeral container env is emitted — the chat hot path is byte-for-byte unchanged.')
 param inlineDocumentComputeEnabled bool = false
 
@@ -539,11 +550,18 @@ var documentEnv = documentUnderstandingEnabled ? concat([
   }
 ], documentBlobEnv, documentCuEnv, documentCuPreviewEnv) : []
 
-// Code interpreter endpoint (base url + model) is shared by library
+// Code interpreter endpoint (base url + model + scoped credential) is shared by library
 // compute AND the inline-attachment code interpreter, so it is emitted when EITHER
 // is on (and a base url is supplied). Emitted once here to avoid duplicate env keys
 // when both features are enabled; non-empty gating keeps the default-OFF posture.
-var computeCiEnv = (((documentUnderstandingEnabled && documentComputeEnabled) || inlineDocumentComputeEnabled) && !empty(codeInterpreterBaseUrl)) ? [
+var hasCodeInterpreterKey = codeInterpreterAuthMode == 'api_key' && !empty(codeInterpreterApiKey)
+var codeInterpreterSecrets = hasCodeInterpreterKey ? [
+  {
+    name: 'code-interpreter-api-key'
+    value: codeInterpreterApiKey
+  }
+] : []
+var computeCiEnv = (((documentUnderstandingEnabled && documentComputeEnabled) || inlineDocumentComputeEnabled) && !empty(codeInterpreterBaseUrl)) ? concat([
   {
     name: 'AI4IA_CODE_INTERPRETER_BASE_URL'
     value: codeInterpreterBaseUrl
@@ -552,7 +570,16 @@ var computeCiEnv = (((documentUnderstandingEnabled && documentComputeEnabled) ||
     name: 'AI4IA_CODE_INTERPRETER_MODEL'
     value: codeInterpreterModel
   }
-] : []
+  {
+    name: 'AI4IA_CODE_INTERPRETER_AUTH_MODE'
+    value: codeInterpreterAuthMode
+  }
+], hasCodeInterpreterKey ? [
+  {
+    name: 'AI4IA_CODE_INTERPRETER_API_KEY'
+    secretRef: 'code-interpreter-api-key'
+  }
+] : []) : []
 
 var computeEnv = (documentUnderstandingEnabled && documentComputeEnabled) ? [
   {
@@ -826,7 +853,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
     managedEnvironmentId: containerEnvId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: concat(gatewaySecrets, realtimeGatewaySecrets, speechVoiceLiveGatewaySecrets, adminSecrets, webIqSecrets, officialMcpSecrets)
+      secrets: concat(gatewaySecrets, realtimeGatewaySecrets, speechVoiceLiveGatewaySecrets, codeInterpreterSecrets, adminSecrets, webIqSecrets, officialMcpSecrets)
       ingress: {
         // External for v1 so the api is directly testable before the web app
         // exists. Flip to internal once web is the only public frontend.

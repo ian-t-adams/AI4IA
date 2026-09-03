@@ -225,6 +225,11 @@ def _responses_json_to_chat(obj: dict[str, Any]) -> dict[str, Any]:
     usage = _responses_usage_to_chat(obj.get("usage"))
     if usage is not None:
         result["usage"] = usage
+    if isinstance(obj.get("content_filters"), list):
+        # Foundry's Responses extension uses a top-level content_filters array.
+        # Keep it on the translated body so the shared safety normalizer sees the
+        # same evidence as a direct Responses caller.
+        result["content_filters"] = obj["content_filters"]
     return result
 
 
@@ -284,6 +289,8 @@ class ChatChunk:
     # Azure reports prompt annotations early and completion annotations later in
     # the stream, so callers merge across chunks (``safety.merge_safety``).
     safety: MessageSafety | None = None
+    incomplete: bool = False
+    incompleteReason: str | None = None
 
 
 def _default_chat_path(style: GatewayProviderStyle) -> str:
@@ -1278,8 +1285,19 @@ def _parse_responses_event(payload: str) -> ChatChunk | None:
             raw=json.dumps({"choices": [{"delta": {"content": piece}}]}),
         )
     if etype in ("response.completed", "response.incomplete"):
-        usage = _responses_usage_to_chat((obj.get("response") or {}).get("usage"))
-        return ChatChunk(done=True, usage=usage)
+        response = obj.get("response") or {}
+        usage = _responses_usage_to_chat(response.get("usage"))
+        return ChatChunk(
+            done=True,
+            usage=usage,
+            safety=parse_safety(response),
+            incomplete=etype == "response.incomplete",
+            incompleteReason=(
+                str(response.get("incomplete_details") or "")[:200]
+                if etype == "response.incomplete"
+                else None
+            ),
+        )
     if etype == "response.failed":
         err = (((obj.get("response") or {}).get("error")) or {}).get("message")
         raise ModelGatewayError(502, err or "responses stream failed")

@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { MessageList, type DisplayMessage } from "./MessageList";
-import type { RetrievedSource } from "@/lib/types";
+import type { ExecutionReceipt, RetrievedSource } from "@/lib/types";
 
 // Speech playback owns <audio> + object-URL plumbing and hits the TTS endpoint on
 // toggle. Stub the hook so we can assert the speak button wiring without audio or
@@ -638,7 +638,7 @@ describe("MessageList content-safety panel", () => {
     expect(screen.getByText("Content safety · nothing flagged")).toBeInTheDocument();
   });
 
-  it("states that nothing was blocked or rewritten", async () => {
+  it("distinguishes app enforcement from provider-native behavior", async () => {
     render(
       <MessageList
         messages={[
@@ -648,7 +648,29 @@ describe("MessageList content-safety panel", () => {
     );
     await userEvent.click(screen.getByText("Content safety · 1 flagged"));
     expect(
-      screen.getByText(/Nothing was blocked or rewritten/i),
+      screen.getByText(/AI4IA did not add an application-level block or rewrite/i),
+    ).toBeInTheDocument();
+  });
+
+  it("calls out a provider-reported filtered result without claiming app blocking", async () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "s-filtered",
+            role: "assistant",
+            content: "answer",
+            safety: { signals: [{ ...flagged, filtered: true }] },
+          }),
+        ]}
+      />,
+    );
+    await userEvent.click(screen.getByText("Content safety · 1 flagged"));
+    expect(
+      screen.getByText(/model platform reported filtered content/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/AI4IA did not add a separate application-level block/i),
     ).toBeInTheDocument();
   });
 
@@ -670,16 +692,166 @@ describe("MessageList content-safety panel", () => {
     expect(screen.getByText("the reply")).toBeInTheDocument();
   });
 
-  it("renders nothing when the provider reported no annotations", () => {
+  it("renders nothing for a turn that carries no safety record at all", () => {
+    // A row written before assessments were recorded says nothing about
+    // whether the filters ran, so the panel makes no claim on its behalf.
     render(
       <MessageList
-        messages={[
-          msg({ id: "s5", role: "assistant", content: "answer" }),
-          msg({ id: "s6", role: "assistant", content: "answer", safety: { signals: [] } }),
-        ]}
+        messages={[msg({ id: "s5", role: "assistant", content: "answer" })]}
       />,
     );
     expect(screen.queryByText(/Content safety/)).toBeNull();
+  });
+
+  it("says plainly when no assessment was returned", async () => {
+    // Under an annotate-only policy an omitted panel reads as "nothing was
+    // flagged" — a claim nobody made. An explicit record must say otherwise.
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "s6",
+            role: "assistant",
+            content: "answer",
+            safety: { signals: [], status: "unavailable", provider: "azure_openai" },
+          }),
+        ]}
+      />,
+    );
+    const summary = screen.getByText("Content safety · not assessed");
+    expect(summary).toBeInTheDocument();
+
+    await userEvent.click(summary);
+    expect(
+      screen.getByText(/No platform guardrail assessment was returned/i),
+    ).toBeInTheDocument();
+    // It must not be mistakable for a verdict.
+    expect(screen.getByText(/That is not a verdict/i)).toBeInTheDocument();
+  });
+
+  it("shows the normalized severity level beside the provider's own wording", async () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "s9",
+            role: "assistant",
+            content: "answer",
+            safety: {
+              status: "reported",
+              coverage: ["completion"],
+              signals: [{ ...flagged, severityLevel: 2 }],
+            },
+          }),
+        ]}
+      />,
+    );
+    await userEvent.click(screen.getByText("Content safety · 1 flagged"));
+    // "medium" alone means nothing without the scale.
+    expect(screen.getByText("medium (level 2 of 3)")).toBeInTheDocument();
+  });
+
+  it("leaves an unranked severity as the provider wrote it", async () => {
+    // Control for the test above: without a server-supplied ordinal the panel
+    // must not invent a position on a scale the value may not belong to.
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "s10",
+            role: "assistant",
+            content: "answer",
+            safety: {
+              status: "reported",
+              signals: [
+                {
+                  category: "hate",
+                  scope: "completion",
+                  severity: "catastrophic",
+                  filtered: false,
+                },
+              ],
+            },
+          }),
+        ]}
+      />,
+    );
+    await userEvent.click(screen.getByText("Content safety · 1 flagged"));
+    expect(screen.getByText("catastrophic")).toBeInTheDocument();
+    expect(screen.queryByText(/level .* of 3/)).toBeNull();
+  });
+
+  it("reports which halves of the exchange were assessed", async () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "s11",
+            role: "assistant",
+            content: "answer",
+            safety: {
+              status: "reported",
+              coverage: ["prompt", "completion"],
+              signals: [safe, flagged],
+            },
+          }),
+        ]}
+      />,
+    );
+    await userEvent.click(screen.getByText("Content safety · 1 flagged"));
+    expect(
+      screen.getByText(/Assessed: your message and the reply\./),
+    ).toBeInTheDocument();
+  });
+
+  it("labels multi-call assessments and visible truncation", async () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "s12",
+            role: "assistant",
+            content: "answer",
+            safety: {
+              status: "reported",
+              coverage: ["completion"],
+              signals: [{ ...flagged, modelCall: 2 }],
+              signalCount: 40,
+              truncated: true,
+            },
+          }),
+        ]}
+      />,
+    );
+    await userEvent.click(screen.getByText("Content safety · 1 flagged"));
+    expect(screen.getByText("the reply · model call 2")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Showing 1 of 40 returned assessments/),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a partial content-filter assessment error", async () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "s-partial",
+            role: "assistant",
+            content: "answer",
+            safety: {
+              status: "partial",
+              coverage: ["completion"],
+              signals: [flagged],
+              errors: ["content_filter_timeout"],
+            },
+          }),
+        ]}
+      />,
+    );
+    await userEvent.click(screen.getByText("Content safety · 1 flagged"));
+    expect(
+      screen.getByText(/Assessment coverage was partial \(content_filter_timeout\)/),
+    ).toBeInTheDocument();
   });
 
   it("stays hidden while the turn is still streaming", () => {
@@ -831,5 +1003,361 @@ describe("MessageList content-safety panel", () => {
       block: "end",
     });
     expect(screen.queryByRole("button", { name: "Jump to latest" })).toBeNull();
+  });
+});
+
+// The execution receipt is the answer to "what was supplied to the model, what
+// was it allowed to do, and what did it do with it?" — a question the coarse
+// Activity trace deliberately cannot answer. These pin that the panel reports
+// what the server recorded and claims nothing beyond it.
+describe("MessageList execution receipt", () => {
+  const payload = (text: string) => ({
+    text,
+    sha256: "a".repeat(64),
+    bytes: text.length,
+    truncated: false,
+  });
+
+  const receipt = (over: Partial<ExecutionReceipt> = {}): ExecutionReceipt => ({
+    version: 1,
+    correlationId: "corr-1",
+    runtime: {
+      modelId: "gpt-4o",
+      deployment: "gpt-4o-eastus2",
+      region: "eastus2",
+      sku: "GlobalStandard",
+      dataZone: "us",
+      residency: "global",
+      api: "chat",
+      agent: null,
+    },
+    prompt: [{ role: "user", content: payload("what is the weather?") }],
+    promptMessageCount: 1,
+    promptBytes: 20,
+    contextBlocks: [],
+    droppedHistoryMessages: 0,
+    droppedContextBlocks: [],
+    toolsOffered: [],
+    toolsOfferedCount: 0,
+    toolCalls: [],
+    toolCallCount: 0,
+    approvalsRequested: 0,
+    approvalsGranted: 0,
+    usage: {
+      known: true,
+      complete: true,
+      calls: 1,
+      promptTokens: 12,
+      completionTokens: 8,
+      totalTokens: 20,
+    },
+    safety: {
+      status: "reported",
+      provider: "azure_openai",
+      mode: "annotate_only",
+      coverage: ["prompt", "completion"],
+      signalCount: 8,
+      truncated: false,
+    },
+    iterations: 1,
+    status: "complete",
+    partial: false,
+    truncated: false,
+    notes: [],
+    ...over,
+  });
+
+  function renderReceipt(over: Partial<ExecutionReceipt> = {}) {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "r1",
+            role: "assistant",
+            content: "answer",
+            executionReceipt: receipt(over),
+          }),
+        ]}
+      />,
+    );
+  }
+
+  it("stays collapsed until asked for", async () => {
+    renderReceipt();
+    const summary = screen.getByText(/Execution receipt/);
+    const panel = summary.closest("details");
+    // jsdom keeps collapsed <details> children in the DOM, so the disclosure
+    // state is the `open` attribute, not the presence of the content.
+    expect(panel).not.toBeNull();
+    expect(panel).not.toHaveAttribute("open");
+
+    await userEvent.click(summary);
+    expect(panel).toHaveAttribute("open");
+    expect(screen.getByText("Runtime")).toBeInTheDocument();
+  });
+
+  it("is reachable from the keyboard through a native disclosure", async () => {
+    renderReceipt();
+    const summary = screen.getByText(/Execution receipt/);
+    // The accessibility guarantee is structural: a real <summary> inside a real
+    // <details> is focusable and toggles on Enter/Space in every browser, and
+    // is announced as a disclosure by screen readers, with no re-implemented
+    // ARIA to drift. (jsdom does not implement the Enter toggle itself, so the
+    // structure is what is asserted here.)
+    expect(summary.tagName).toBe("SUMMARY");
+    expect(summary.parentElement?.tagName).toBe("DETAILS");
+    summary.focus();
+    expect(summary).toHaveFocus();
+
+    // Every subsection is the same native disclosure rather than a div.
+    await userEvent.click(summary);
+    for (const label of ["Runtime", "Tools offered · 0", "Tool calls · 0"]) {
+      const section = screen.getByText(label);
+      expect(section.tagName).toBe("SUMMARY");
+      expect(section.parentElement?.tagName).toBe("DETAILS");
+    }
+  });
+
+  it("reports the resolved deployment, region and residency", async () => {
+    renderReceipt();
+    await userEvent.click(screen.getByText(/Execution receipt/));
+    await userEvent.click(screen.getByText("Runtime"));
+
+    expect(screen.getByText("gpt-4o-eastus2")).toBeInTheDocument();
+    expect(screen.getByText("eastus2")).toBeInTheDocument();
+    expect(screen.getByText(/20 tokens across 1 model call/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/reported · azure_openai · prompt \+ completion · 8 assessments/),
+    ).toBeInTheDocument();
+    // Residency is a different claim from the data zone and is labelled as one.
+    expect(screen.getByText("Processing residency")).toBeInTheDocument();
+    expect(screen.getByText("global")).toBeInTheDocument();
+  });
+
+  it("distinguishes a tool that was offered from one that was invoked", async () => {
+    renderReceipt({
+      toolsOffered: [
+        { name: "web_search", description: "search the web", parametersSha256: "x" },
+        { name: "send_mail", description: "send mail", parametersSha256: "y" },
+      ],
+      toolsOfferedCount: 2,
+      toolCalls: [
+        {
+          tool: "web_search",
+          outcome: "result",
+          detail: null,
+          arguments: payload('{"q":"weather"}'),
+          result: payload('{"items":3}'),
+        },
+      ],
+      toolCallCount: 1,
+    });
+    await userEvent.click(screen.getByText(/Execution receipt/));
+    await userEvent.click(screen.getByText("Tools offered · 2"));
+
+    expect(screen.getByText("web_search · invoked")).toBeInTheDocument();
+    // The whole point: "could have sent mail and chose not to" is invisible
+    // from the call list alone.
+    expect(screen.getByText("send_mail · not invoked")).toBeInTheDocument();
+  });
+
+  it("shows a tool call's redacted arguments and result", async () => {
+    renderReceipt({
+      toolCalls: [
+        {
+          tool: "browse_url",
+          outcome: "result",
+          detail: null,
+          arguments: payload('{"api_key":"***REDACTED***","url":"https://example.test"}'),
+          result: payload('{"ok":true}'),
+        },
+      ],
+      toolCallCount: 1,
+    });
+    await userEvent.click(screen.getByText(/Execution receipt/));
+    await userEvent.click(screen.getByText("Tool calls · 1"));
+
+    expect(screen.getByText("browse_url · result")).toBeInTheDocument();
+    expect(
+      screen.getByText(/"api_key":"\*\*\*REDACTED\*\*\*"/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/"ok":true/)).toBeInTheDocument();
+  });
+
+  it("marks a truncated payload and keeps its original size", async () => {
+    renderReceipt({
+      toolCalls: [
+        {
+          tool: "fetch_document",
+          outcome: "result",
+          detail: null,
+          arguments: null,
+          result: { text: "partial…", sha256: "b".repeat(64), bytes: 5_242_880, truncated: true },
+        },
+      ],
+      toolCallCount: 1,
+    });
+    await userEvent.click(screen.getByText(/Execution receipt/));
+    await userEvent.click(screen.getByText("Tool calls · 1"));
+
+    // The fact that a tool returned five megabytes must survive the truncation.
+    expect(screen.getByText(/result · 5\.0 MB · truncated/)).toBeInTheDocument();
+  });
+
+  it("says when a context block was built but never reached the model", async () => {
+    renderReceipt({
+      contextBlocks: [
+        { kind: "memory", admitted: true, content: payload("you prefer Python") },
+        { kind: "library", admitted: false, content: null },
+      ],
+      droppedContextBlocks: ["library"],
+      droppedHistoryMessages: 4,
+    });
+
+    await userEvent.click(screen.getByText(/Execution receipt/));
+    await userEvent.click(screen.getByText(/Prompt and context/));
+
+    expect(screen.getByText("Context: memory")).toBeInTheDocument();
+    expect(screen.getByText("admitted to the prompt")).toBeInTheDocument();
+    expect(screen.getByText("you prefer Python")).toBeInTheDocument();
+    // A displaced block never influenced the answer, and the panel must not
+    // let it look as though it did.
+    expect(
+      screen.getByText("built but displaced — never reached the model"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/4 earlier messages were dropped to fit the context budget/),
+    ).toBeInTheDocument();
+  });
+
+  it("shows memory identity, version, score, and content digest", async () => {
+    renderReceipt({
+      contextBlocks: [
+        {
+          kind: "memory",
+          admitted: true,
+          content: payload("you prefer Python"),
+          sourceCount: 1,
+          sources: [
+            {
+              id: "memory-1",
+              version: "4",
+              kind: "user_message",
+              score: 0.91234,
+              contentSha256: "c".repeat(64),
+            },
+          ],
+        },
+      ],
+    });
+    await userEvent.click(screen.getByText(/Execution receipt/));
+    await userEvent.click(screen.getByText(/Prompt and context/));
+
+    expect(screen.getByText("memory-1")).toBeInTheDocument();
+    expect(
+      screen.getByText(/user_message · version 4 · score 0\.912 · sha256 c{16}/),
+    ).toBeInTheDocument();
+  });
+
+  it("progressively reveals a linked agent's nested receipt", async () => {
+    renderReceipt({
+      delegations: [
+        receipt({
+          runtime: { agent: "helper" },
+          prompt: [
+            { role: "system", content: payload("You are helper.") },
+            { role: "user", content: payload("calculate") },
+          ],
+          promptMessageCount: 2,
+          iterations: 2,
+          toolsOffered: [
+            {
+              name: "calculator",
+              description: "Calculate.",
+              parametersSha256: "d".repeat(64),
+            },
+          ],
+          toolsOfferedCount: 1,
+          toolCalls: [
+            {
+              tool: "calculator",
+              outcome: "result",
+              arguments: payload('{"expression":"6*7"}'),
+              result: payload('{"result":42}'),
+            },
+          ],
+          toolCallCount: 1,
+        }),
+      ],
+    });
+    await userEvent.click(screen.getByText(/Execution receipt/));
+    await userEvent.click(screen.getByText("Delegated runs · 1"));
+    await userEvent.click(screen.getByText("@helper · 2 model iterations · 1 tool call"));
+
+    expect(screen.getByText("You are helper.")).toBeInTheDocument();
+    expect(screen.getByText(/"result":42/)).toBeInTheDocument();
+  });
+
+  it("shows later model requests with tool-call protocol ids", async () => {
+    renderReceipt({
+      modelRequests: [
+        {
+          iteration: 2,
+          promptMessageCount: 2,
+          promptBytes: 64,
+          prompt: [
+            {
+              role: "assistant",
+              content: payload(""),
+              toolCalls: payload('[{"id":"call-1"}]'),
+            },
+            {
+              role: "tool",
+              content: payload('{"result":42}'),
+              toolCallId: "call-1",
+            },
+          ],
+        },
+      ],
+    });
+    await userEvent.click(screen.getByText(/Execution receipt/));
+    await userEvent.click(screen.getByText(/Prompt and context/));
+    await userEvent.click(screen.getByText(/Model request 2/));
+
+    expect(screen.getByText(/^Assistant tool calls/)).toBeInTheDocument();
+    expect(screen.getByText("call-1")).toBeInTheDocument();
+  });
+
+  it("disclaims any access to model-internal reasoning", async () => {
+    renderReceipt();
+    await userEvent.click(screen.getByText(/Execution receipt/));
+    expect(
+      screen.getByText(/does not show model-internal reasoning/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders nothing for a turn that predates receipts", () => {
+    render(
+      <MessageList messages={[msg({ id: "r0", role: "assistant", content: "old" })]} />,
+    );
+    expect(screen.queryByText(/Execution receipt/)).toBeNull();
+  });
+
+  it("stays hidden while the turn is still streaming", () => {
+    // A receipt for a turn still in flight is not the whole record.
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "r2",
+            role: "assistant",
+            content: "partial",
+            pending: true,
+            executionReceipt: receipt(),
+          }),
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/Execution receipt/)).toBeNull();
   });
 });

@@ -103,6 +103,8 @@ async def test_context_block_lists_ready_documents():
     block = await svc.context_block("u1", "how did revenue do?", nonce="abcd")
 
     assert "BEGIN LIBRARY abcd" in block
+    assert '""" <documents>' in block
+    assert '</documents> """' in block
     assert "END LIBRARY abcd" in block
     assert f"id={doc.id}" in block
     assert "report.pdf" in block

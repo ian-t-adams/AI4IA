@@ -4,7 +4,7 @@ This posture exists under an approved Azure guardrails-modification exception:
 content filters stay *enabled* (so annotations are still emitted and logged) but
 never *block*. The approval is evidenced by the deployed policy itself — Azure's
 control plane refuses a RAI policy that disables blocking on the abuse filters
-without one, and `ai4ia-annotate-only` is live with all 11 filters non-blocking
+without one, and `ai4ia-annotate-only` is live with all 12 filters non-blocking
 against a `Microsoft.DefaultV2` base that has only 1. See
 `docs/rai-decision-record.md` for the accountable owner and the verification.
 It is a governance commitment, not a preference, and the failure
@@ -88,6 +88,19 @@ class AnnotateOnlyRaiPolicyTests(unittest.TestCase):
                     any(f"name: '{name}'" in e and f"source: '{source}'" in e for e in entries),
                     f"harm category '{name}' is not overridden on {source}",
                 )
+
+    def test_indirect_attack_detection_is_enabled_but_non_blocking(self):
+        entries = _policy_filters()
+        self.assertTrue(
+            any(
+                "name: 'indirect_attack'" in entry
+                and "source: 'Prompt'" in entry
+                and "enabled: true" in entry
+                and "blocking: false" in entry
+                for entry in entries
+            ),
+            "indirect-attack assessment is not enabled in annotate-only mode",
+        )
 
     def test_base_policy_is_defaultv2(self):
         self.assertIn(

@@ -27,8 +27,8 @@ feature posture.
 | Document library + multimodal understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `DOCUMENT_LIBRARY_ENABLED` | `documentUnderstandingEnabled` | Cosmos session store, blob account URL, CU endpoint outside local |
 | CU synchronous/preview analyzers | `AI4IA_CU_PREVIEW_ENABLED` | analyzer selector | `cuPreviewEnabled` | Document understanding plus successful postprovision GETs for Read, Layout, and the five tax analyzers on `2026-06-01-preview`. Automatic stays GA. |
 | CU Agentic document reasoning | `AI4IA_CU_AGENTIC_ANALYZER_ID` | analyzer selector only when valid | `cuAgenticAnalyzerId` | Preview enabled; existing analyzer resolves to `agentic.*`; primary GPT-5.2 deployment capacity ≥400K TPM. Current live capacity is 50K, so this remains unavailable. |
-| Library compute / export | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | none | `documentComputeEnabled` | Document understanding, Responses API base URL + model outside local |
-| Inline attachment Code Interpreter | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | none | `inlineDocumentComputeEnabled` | Responses API base URL + model outside local |
+| Library compute / export | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | none | `documentComputeEnabled` | Document understanding, dedicated Code Interpreter APIM URL/key + model outside local |
+| Inline attachment Code Interpreter | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | none | `inlineDocumentComputeEnabled` | Dedicated Code Interpreter APIM URL/key + model outside local |
 | Azure AI Search chunk store | `AI4IA_SEARCH_ENDPOINT` set | none | `searchEnabled` + `searchLocation` | Search service + API identity RBAC |
 | Memory / semantic recall | `AI4IA_MEMORY_STORE=cosmos` | inspector create/edit/delete controls | `memoryStore` | Cosmos endpoint/database, vector capability/container, and catalog-resolved embedding/extraction models |
 | Rolling conversation summarization | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | none | `autoSummarizationEnabled` | None beyond the active chat model — once the transcript exceeds the model-derived threshold, older turns fold into a running summary while the full transcript stays in storage/scrollback. Off leaves the manual `/summarize` command working but never auto-injects a summary |
@@ -379,15 +379,16 @@ the library flag:
 inlineDocumentComputeEnabled=true
 ```
 
-Outside local, both fail closed without the Responses API base URL and model.
-The normal azd path derives both from the primary Foundry account and its
-catalogued GPT-5.4 Mini deployment; the corresponding Bicep parameters are
-direct-template overrides.
+Outside local, both fail closed without the dedicated APIM URL, API-scoped key,
+and model. The normal azd path creates the isolated API on the existing Basic v2
+APIM, targets the primary Foundry account, and fixes the catalogued GPT-5.4 Mini
+deployment in policy.
 
 **Both spend an Azure-managed sandbox container per execution, billed per
-session rather than per token.** Neither is routed through APIM (architecture
-invariant 3), so the gateway's governance does not apply to them; the equivalent
-controls run at the call site instead. Per-user cost control is the
+session rather than per token.** They bypass SimpleL7Proxy but not APIM: the
+dedicated policy constrains model/tool/storage posture while equivalent
+ownership, approval, and spend controls still run at the call site. Per-user cost
+control is the
 `computeExecutionsPerDay` entitlement — a rolling 24h cap on sandbox executions,
 its own axis because a token or dollar budget cannot express it:
 

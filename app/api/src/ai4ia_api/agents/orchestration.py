@@ -30,7 +30,14 @@ from typing import Any
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..usage.models import TokenUsage
 from .agent_catalog import AgentCatalog, AgentSpec
-from .runtime import AgentRunFailed, AgentRunResult, run_agent_turn
+from .runtime import (
+    AgentRunFailed,
+    AgentRunResult,
+    DelegatedAgentRunFailed,
+    DelegatedRunTrace,
+    DelegatedToolResult,
+    run_agent_turn,
+)
 from .tool_exec import ToolContext, ToolExecutor
 from .tools import ToolRegistry
 from .user_agents import MAX_LINKS, NAME_RE
@@ -149,6 +156,12 @@ def build_delegate_capability(
             {"role": "system", "content": target.systemPrompt},
             {"role": "user", "content": task},
         ]
+        sub_context = ToolContext(correlation_id=ctx.correlation_id)
+        sub_offered_tools = executor.schema_for(
+            target.tools,
+            registry=registry,
+            ctx=sub_context,
+        )
         # Depth-1: no extra_tools/extra_handlers, so the sub-agent cannot itself
         # delegate. Supervisor deployment + params=None for correct, simple
         # metering and to avoid inheriting the parent's sampling/token budget.
@@ -160,24 +173,65 @@ def build_delegate_capability(
                 gateway=gateway,
                 registry=registry,
                 executor=executor,
-                ctx=ToolContext(correlation_id=ctx.correlation_id),
+                ctx=sub_context,
                 params=None,
                 max_iters=_SUB_AGENT_MAX_ITERS,
             )
+        except AgentRunFailed as exc:
+            raise DelegatedAgentRunFailed(
+                cause=exc.cause,
+                partial=exc.partial,
+                trace=DelegatedRunTrace(
+                    agent=target_name,
+                    effective_prompt=exc.partial.effective_prompt or sub_messages,
+                    model_requests=exc.partial.model_requests,
+                    offered_tools=exc.partial.offered_tools,
+                    steps=exc.partial.steps,
+                    iterations=exc.partial.iterations,
+                    usage=exc.partial.usage,
+                    safety=exc.partial.safety,
+                    status="error",
+                    partial=True,
+                ),
+            ) from exc
         except ModelGatewayError as exc:
-            raise AgentRunFailed(
+            partial = AgentRunResult(
+                text="",
+                model=deployment,
+                iterations=1,
+                usage=TokenUsage.parse(None),
+                effective_prompt=sub_messages,
+                model_requests=[sub_messages],
+                offered_tools=sub_offered_tools,
+            )
+            raise DelegatedAgentRunFailed(
                 cause=exc,
-                partial=AgentRunResult(
-                    text="",
-                    model=deployment,
+                partial=partial,
+                trace=DelegatedRunTrace(
+                    agent=target_name,
+                    effective_prompt=sub_messages,
                     iterations=1,
-                    usage=TokenUsage.parse(None),
+                    usage=partial.usage,
+                    status="error",
+                    partial=True,
                 ),
             ) from exc
         usage_sink.append(run.usage)
         logger.info(
             "delegated to agent=%s iters=%s", target_name, run.iterations
         )
-        return {"agent": target_name, "answer": run.text}
+        return DelegatedToolResult(
+            {"agent": target_name, "answer": run.text},
+            trace=DelegatedRunTrace(
+                agent=target_name,
+                effective_prompt=run.effective_prompt,
+                model_requests=run.model_requests,
+                offered_tools=run.offered_tools,
+                steps=run.steps,
+                iterations=run.iterations,
+                usage=run.usage,
+                safety=run.safety,
+            ),
+        )
 
     return [schema], {DELEGATE_TOOL_NAME: _handler}, usage_sink

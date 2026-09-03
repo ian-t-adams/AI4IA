@@ -10,7 +10,7 @@
       "upstreamAuthMode": "managed_identity",
       "upstreamMiResource": "https://ai.azure.com",
       "upstreamHeaders": {
-        "Foundry-Features": "Toolboxes=V1Preview"
+        "Foundry-Features": "Toolboxes=V1Preview,Skills=V1Preview"
       },
       "upstreamQueryParams": {
         "api-version": "v1"

@@ -449,7 +449,18 @@ def test_nonstreaming_plain_tool_failure_persists_partial_error_without_fallthro
             self.fallback_calls += 1
             return {
                 "choices": [
-                    {"message": {"role": "assistant", "content": "fallback answer"}}
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "fallback answer",
+                        },
+                        "content_filter_results": {
+                            "violence": {
+                                "filtered": False,
+                                "severity": "low",
+                            }
+                        },
+                    }
                 ],
                 "usage": {
                     "prompt_tokens": 99,
@@ -534,7 +545,18 @@ def test_first_nonstreaming_plain_tool_failure_falls_through_to_normal_chat(capl
                 raise ModelGatewayError(502, marker)
             return {
                 "choices": [
-                    {"message": {"role": "assistant", "content": "fallback answer"}}
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "fallback answer",
+                        },
+                        "content_filter_results": {
+                            "violence": {
+                                "filtered": False,
+                                "severity": "low",
+                            }
+                        },
+                    }
                 ],
                 "usage": {
                     "prompt_tokens": 5,
@@ -579,6 +601,9 @@ def test_first_nonstreaming_plain_tool_failure_falls_through_to_normal_chat(capl
         usage.complete,
         metered[-1]["status"],
     ) == (5, 2, 7, 2, False, "complete")
+    assert messages[-1]["executionReceipt"]["iterations"] == 2
+    assert messages[-1]["executionReceipt"]["usage"]["calls"] == 2
+    assert messages[-1]["safety"]["signals"][0]["modelCall"] == 2
     assert marker not in caplog.text
 
 

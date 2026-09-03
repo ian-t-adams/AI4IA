@@ -52,24 +52,43 @@ class FakeCI:
         self.upload_raise: Exception | None = None
 
     async def run(
-        self, *, instructions: str, user_input: str, file_ids=None
+        self,
+        *,
+        instructions: str,
+        user_input: str,
+        file_ids=None,
+        correlation_id=None,
     ) -> CodeInterpreterResult:
         self.calls.append(
-            {"instructions": instructions, "user_input": user_input, "file_ids": file_ids}
+            {
+                "instructions": instructions,
+                "user_input": user_input,
+                "file_ids": file_ids,
+                "correlation_id": correlation_id,
+            }
         )
         if self.raise_exc is not None:
             raise self.raise_exc
         return self.result
 
-    async def upload_file(self, *, filename, content, content_type=None) -> str:
+    async def upload_file(
+        self, *, filename, content, content_type=None, correlation_id=None
+    ) -> str:
         self.uploads.append(
-            {"filename": filename, "content": content, "content_type": content_type}
+            {
+                "filename": filename,
+                "content": content,
+                "content_type": content_type,
+                "correlation_id": correlation_id,
+            }
         )
         if self.upload_raise is not None:
             raise self.upload_raise
         return self.upload_file_id
 
-    async def delete_file(self, file_id: str) -> bool:
+    async def delete_file(
+        self, file_id: str, *, correlation_id=None
+    ) -> bool:
         self.deletes.append(file_id)
         return True
 
@@ -217,6 +236,8 @@ async def test_run_code_happy_path_fences_output_and_passes_fenced_doc():
     assert "END COMPUTE abcd" in res["result"]
     assert "Total is 30" in res["result"]
     assert "computing..." in res["result"]
+    assert res["safety"]["status"] == "unavailable"
+    assert res["safety"]["provider"] == "azure_openai_code_interpreter"
     # And the (untrusted) source document was handed to CI inside its own fence.
     sent = ci.calls[0]["user_input"]
     assert "BEGIN DOCUMENT abcd" in sent
@@ -904,8 +925,8 @@ def test_build_document_compute_none_when_prereqs_missing():
 
 
 def test_build_document_compute_requires_a_gate_and_a_ledger():
-    """The compute path is a DIRECT-to-Foundry spend, outside the gateway's
-    governance. Making the gate and the ledger required constructor arguments is
+    """The compute path is a stateful APIM-routed sandbox spend outside the
+    normal model ledger. Making the gate and ledger required constructor arguments is
     what stops an ungoverned compute path from being constructible at all —
     which is the state audit P1-2 found. A default would make this a posture
     someone has to remember; a TypeError makes it structural."""

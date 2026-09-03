@@ -16,13 +16,11 @@ Entra/managed identity. Default TRUE: gateway-only routing is only a real
 boundary when an account key cannot bypass it.
 
 Verified before flipping (2026-08-06) that nothing reaches a Foundry account with
-a key. APIM authenticates with its managed identity (37 `auth: MI` entries in the
-generated catalog, zero `api-key`); Content Understanding and the Responses-API
-Code Interpreter both default to `bearer` (`cu_auth_mode`,
-`code_interpreter_auth_mode`) and neither `AI4IA_CU_API_KEY` nor
-`AI4IA_CODE_INTERPRETER_API_KEY` is set in production; and every key-bearing env
-var on `ca-api-*` is a SimpleL7Proxy ingress key, an APIM subscription key or a
-third-party key -- none is a Cognitive Services account key.
+an account key. APIM authenticates with managed identity for compatible models,
+realtime, Speech Voice Live, and the dedicated Responses-API Code Interpreter
+API. Content Understanding uses its narrow contributor role directly. Every
+key-bearing env var on `ca-api-*` is a scoped gateway/service credential, never a
+Cognitive Services account key.
 
 Set false only if a live deploy proves an unforeseen key dependency. Doing so
 re-opens the bypass, so record why.''')
@@ -79,7 +77,9 @@ resource project 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-previ
 // only labeled. The four harm categories use the maximum severity threshold with
 // blocking:false; the optional Microsoft.DefaultV2 filters that ship blocking-ON
 // (Jailbreak / Prompt Shield, Protected Material Text/Code) are explicitly
-// overridden to blocking:false or they would still block. Every model deployment
+// overridden to blocking:false or they would still block. Indirect-attack
+// detection is default-off, so it is explicitly enabled in annotate-only mode.
+// Every model deployment
 // in this account references this policy by name (see models.bicep) so the
 // annotate-only posture is uniform across all models.
 resource annotateOnlyRaiPolicy 'Microsoft.CognitiveServices/accounts/raiPolicies@2024-10-01' = {
@@ -97,6 +97,7 @@ resource annotateOnlyRaiPolicy 'Microsoft.CognitiveServices/accounts/raiPolicies
       { name: 'selfharm', blocking: false, enabled: true, severityThreshold: 'High', source: 'Completion' }
       { name: 'violence', blocking: false, enabled: true, severityThreshold: 'High', source: 'Completion' }
       { name: 'jailbreak', blocking: false, enabled: true, source: 'Prompt' }
+      { name: 'indirect_attack', blocking: false, enabled: true, source: 'Prompt' }
       { name: 'protected_material_text', blocking: false, enabled: true, source: 'Completion' }
       { name: 'protected_material_code', blocking: false, enabled: true, source: 'Completion' }
     ]
