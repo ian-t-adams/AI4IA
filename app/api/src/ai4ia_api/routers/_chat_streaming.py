@@ -14,6 +14,7 @@ from ..agents.approvals import (
     PendingToolApproval,
     mint_pending_approval,
 )
+from ..agents.receipt import ReceiptDraft
 from ..agents.runtime import AgentRunFailed, AgentRunResult, AgentStep
 from ..auth.base import AuthenticatedUser
 from ..catalog import DeploymentOption
@@ -21,7 +22,12 @@ from ..chat_timing import current_chat_timing
 from ..citations import RetrievedSource, attest_message
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..memory.service import MemoryServiceProtocol
-from ..safety import MessageSafety, merge_safety
+from ..receipts import ExecutionReceipt
+from ..safety import (
+    MessageSafety,
+    attributed_safety,
+    merge_safety,
+)
 from ..sessions.models import (
     ActivityStep,
     Message,
@@ -133,6 +139,9 @@ async def _persist_nonstream_failure(
     steps: list[ActivityStep] | None = None,
     sources: list[RetrievedSource] | None = None,
     attachments: list[MessageAttachment] | None = None,
+    receipt: ExecutionReceipt | None = None,
+    safety_provider: str | None = None,
+    safety: MessageSafety | None = None,
 ) -> Message:
     """Persist and meter a terminal error for an accepted non-streaming turn."""
     assistant = Message(
@@ -146,6 +155,10 @@ async def _persist_nonstream_failure(
         attachments=attachments or [],
         steps=steps,
         sources=sources,
+        executionReceipt=receipt,
+        # A failed turn never got annotations back, and silently omitting the
+        # panel would read as "nothing was flagged". Say so explicitly instead.
+        safety=attributed_safety(safety, safety_provider),
     )
     attest_message(assistant)
     timing = current_chat_timing()
@@ -243,15 +256,22 @@ async def _agentic_stream(
     content_for_model: str,
     user_message_id: str,
     extra_usage: list[TokenUsage] | None = None,
-    fallback: Callable[[], Awaitable[tuple[str, TokenUsage]]] | None = None,
+    fallback: Callable[
+        [], Awaitable[tuple[str, TokenUsage, MessageSafety | None]]
+    ]
+    | None = None,
     get_attachments: Callable[[], list[MessageAttachment]] | None = None,
     get_approval_drafts: Callable[[], list[ApprovalDraft]] | None = None,
     stream_tokens: bool = False,
+    receipt_draft: ReceiptDraft | None = None,
+    safety_provider: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream an agent run and own its terminal persistence lifecycle."""
     queue: asyncio.Queue[object] = asyncio.Queue(maxsize=AGENT_EVENT_QUEUE_MAXSIZE)
     sentinel = object()
     backpressure_logged = False
+    observed_steps: list[AgentStep] = []
+    runner_result: AgentRunResult | None = None
 
     async def enqueue(item: object) -> None:
         nonlocal backpressure_logged
@@ -268,6 +288,8 @@ async def _agentic_stream(
         await queue.put(item)
 
     async def on_step(step: AgentStep) -> None:
+        if step.kind not in {"tool_start", "final"}:
+            observed_steps.append(step)
         view = serialize_step(step)
         if view is not None:
             await enqueue(("step", view))
@@ -276,14 +298,20 @@ async def _agentic_stream(
         if text:
             await enqueue(("delta", text))
 
-    async def runner() -> None:
+    async def runner() -> tuple[AgentRunResult | None, Exception | None]:
+        nonlocal runner_result
         try:
-            result = await (run(on_step, on_delta) if stream_tokens else run(on_step))
-            await enqueue(("result", result))
+            completed = await (
+                run(on_step, on_delta) if stream_tokens else run(on_step)
+            )
+            runner_result = completed
+            await enqueue(("result", completed))
+            return completed, None
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - surfaced below; never crashes the response
             await enqueue(("error", exc))
+            return None, exc
         finally:
             current = asyncio.current_task()
             if current is None or current.cancelling() == 0:
@@ -297,10 +325,65 @@ async def _agentic_stream(
     persisted: list[ActivityStep] | None = None
     remembered = False
     terminal_persisted = False
+    # Hoisted above the try so every terminal path — including a cancellation
+    # that lands on the very first yield — can build a receipt from whatever the
+    # run had produced. A receipt that only existed on the happy path would be
+    # missing from precisely the turns most worth reviewing.
+    result: AgentRunResult | None = None
+    run_error: Exception | None = None
+    attempted_iterations = 0
+
+    def finalize_provenance(status: str, *, partial: bool) -> None:
+        """Attach the turn's receipt and safety-coverage record before persisting.
+
+        Total over whatever this generator holds: a run that failed contributes
+        its ``AgentRunFailed.partial``, a run that never reported contributes
+        nothing but the draft's own prompt/context/runtime facts. Called
+        immediately before each terminal write so every streaming outcome —
+        complete, error, cancelled, fallback — persists the same shape.
+        """
+        source: AgentRunResult | None = (
+            run_error.partial if isinstance(run_error, AgentRunFailed) else result
+        )
+        # Preserve every annotation the model iterations returned; if none came
+        # back, record that coverage gap explicitly. Re-attribute a fallback
+        # assessment too so streamed and non-streamed provider labels match.
+        assistant.safety = attributed_safety(
+            assistant.safety
+            or (source.safety if source is not None else None),
+            safety_provider,
+        )
+        if receipt_draft is None:
+            return
+        request_history = (
+            list(source.model_requests)
+            if source is not None
+            else [receipt_draft.prompt_messages]
+        )
+        if attempted_iterations > len(request_history):
+            request_history.append(receipt_draft.prompt_messages)
+        assistant.executionReceipt = receipt_draft.build(
+            steps=source.steps if source is not None else observed_steps,
+            iterations=max(
+                attempted_iterations,
+                source.iterations if source is not None else 0,
+            ),
+            status=status,  # pyright: ignore[reportArgumentType]
+            partial=partial,
+            approvals_requested=len(assistant.pendingApprovals or []),
+            dropped_history_messages=(
+                source.dropped_context_messages if source is not None else 0
+            ),
+            offered=source.offered_tools if source is not None else None,
+            prompt_messages=source.effective_prompt if source is not None else None,
+            model_requests=request_history,
+            usage=total_usage,
+            safety=assistant.safety,
+            delegations=source.delegations if source is not None else None,
+        )
+
     try:
         yield _stream_metadata(user_message_id, assistant.id, assistant.sources)
-        result: AgentRunResult | None = None
-        run_error: Exception | None = None
         while True:
             item = await queue.get()
             if item is sentinel:
@@ -321,9 +404,18 @@ async def _agentic_stream(
                     timing.mark_first_content()
                 yield f"data: {json.dumps({'choices': [{'delta': {'content': payload}}]})}\n\n"
             elif kind == "result":
+                assert isinstance(payload, AgentRunResult)
                 result = payload
+                attempted_iterations = max(attempted_iterations, result.iterations)
             elif kind == "error":
                 run_error = payload
+                if isinstance(run_error, AgentRunFailed):
+                    attempted_iterations = max(
+                        attempted_iterations,
+                        run_error.partial.iterations,
+                    )
+                elif isinstance(run_error, ModelGatewayError):
+                    attempted_iterations = max(attempted_iterations, 1)
 
         if isinstance(run_error, ModelGatewayError):
             total_usage = total_usage.add(TokenUsage.parse(None))
@@ -372,13 +464,23 @@ async def _agentic_stream(
                     total_usage = total_usage.add(extra)
                 persisted = persisted_trace(result.steps) or None
             try:
-                fb_text, fb_usage = await fallback()
+                fallback_call_index = attempted_iterations + 1
+                fb_text, fb_usage, fb_safety = await fallback()
             except ModelGatewayError:
                 total_usage = total_usage.add(TokenUsage.parse(None))
                 raise
             pending_delta = f"\n\n{fb_text}" if streamed_text.strip() else fb_text
             content = f"{streamed_text}{pending_delta}" if streamed_text.strip() else fb_text
             total_usage = total_usage.add(fb_usage)
+            attempted_iterations = fallback_call_index
+            if fb_safety is not None:
+                tagged_fallback = fb_safety.model_copy(deep=True)
+                for signal in tagged_fallback.signals:
+                    signal.modelCall = fallback_call_index
+                assistant.safety = merge_safety(
+                    result.safety if result is not None else None,
+                    tagged_fallback,
+                )
         elif streamed_text.strip():
             # Streamed text but no reported final answer and no fallback: keep what
             # the user saw rather than persisting an empty row over it.
@@ -410,6 +512,7 @@ async def _agentic_stream(
             if timing is not None:
                 timing.mark_first_content()
             yield f"data: {json.dumps({'choices': [{'delta': {'content': pending_delta}}]})}\n\n"
+        finalize_provenance("complete", partial=False)
         terminal_persisted = await _persist_terminal_assistant(
             repo, user.internal_user_id, assistant
         )
@@ -426,6 +529,7 @@ async def _agentic_stream(
         assistant.steps = persisted
         if get_attachments is not None:
             assistant.attachments = get_attachments()
+        finalize_provenance("error", partial=True)
         terminal_persisted = await _persist_terminal_assistant(
             repo, user.internal_user_id, assistant
         )
@@ -445,6 +549,7 @@ async def _agentic_stream(
         assistant.steps = persisted
         if get_attachments is not None:
             assistant.attachments = get_attachments()
+        finalize_provenance("error", partial=True)
         terminal_persisted = await _persist_terminal_assistant(
             repo, user.internal_user_id, assistant
         )
@@ -462,16 +567,37 @@ async def _agentic_stream(
     finally:
         if not task.done():
             task.cancel()
+        recovered_result: AgentRunResult | None = None
+        recovered_error: Exception | None = None
         try:
-            await task
+            recovered_result, recovered_error = await task
         except asyncio.CancelledError:
             pass
+        if result is None and (recovered_result is not None or runner_result is not None):
+            result = recovered_result or runner_result
+        if run_error is None and recovered_error is not None:
+            run_error = recovered_error
+        recovered_source = (
+            run_error.partial
+            if isinstance(run_error, AgentRunFailed)
+            else result
+        )
+        if total_usage.calls == 0 and recovered_source is not None:
+            total_usage = recovered_source.usage
+            for extra in extra_usage or []:
+                total_usage = total_usage.add(extra)
+        if persisted is None and recovered_source is not None:
+            persisted = persisted_trace(recovered_source.steps) or None
         if not terminal_persisted:
             assistant.content = content
             assistant.status = final
-            assistant.steps = persisted
+            assistant.steps = persisted or persisted_trace(observed_steps) or None
             if get_attachments is not None:
                 assistant.attachments = get_attachments()
+            finalize_provenance(
+                "cancelled" if final is MessageStatus.cancelled else "error",
+                partial=final is not MessageStatus.complete,
+            )
             await _persist_terminal_assistant(repo, user.internal_user_id, assistant)
         _status_map = {
             MessageStatus.complete: "complete",
@@ -527,6 +653,8 @@ async def _plain_gateway_stream(
     model_id: str,
     agent_name: str | None,
     content_for_model: str,
+    receipt_draft: ReceiptDraft | None = None,
+    safety_provider: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream a plain gateway call and own its terminal lifecycle."""
     parts: list[str] = []
@@ -534,7 +662,30 @@ async def _plain_gateway_stream(
     saw_done = False
     stream_usage: dict | None = None
     stream_safety: MessageSafety | None = None
+    stream_incomplete = False
     terminal_persisted = False
+
+    def finalize_provenance(status: str, *, partial: bool) -> None:
+        """Attach the turn's receipt and safety-coverage record.
+
+        A plain turn offers no tools and makes exactly one model call, so its
+        receipt is the prompt/context snapshot plus the runtime — which is
+        precisely the evidence that was previously unavailable for the most
+        common kind of turn in the app.
+        """
+        assistant.safety = attributed_safety(
+            assistant.safety,
+            safety_provider,
+        )
+        if receipt_draft is not None:
+            assistant.executionReceipt = receipt_draft.build(
+                iterations=1,
+                status=status,  # pyright: ignore[reportArgumentType]
+                partial=partial,
+                usage=TokenUsage.parse(stream_usage),
+                safety=assistant.safety,
+            )
+
     try:
         yield _stream_metadata(user_message_id, assistant.id, assistant.sources)
         async with aclosing(
@@ -559,6 +710,7 @@ async def _plain_gateway_stream(
                     final = MessageStatus.error
                     assistant.content = "".join(parts)
                     assistant.status = final
+                    finalize_provenance("error", partial=True)
                     terminal_persisted = await _persist_terminal_assistant(
                         repo, user.internal_user_id, assistant
                     )
@@ -576,6 +728,7 @@ async def _plain_gateway_stream(
                     if timing is not None:
                         timing.mark_first_content()
                 if chunk.done:
+                    stream_incomplete = chunk.incomplete
                     saw_done = True
                     break
                 if chunk.raw:
@@ -584,6 +737,16 @@ async def _plain_gateway_stream(
             final = MessageStatus.error
         assistant.content = "".join(parts)
         assistant.status = final
+        finalize_provenance(
+            (
+                "incomplete"
+                if stream_incomplete
+                else "complete"
+                if saw_done
+                else "error"
+            ),
+            partial=stream_incomplete or not saw_done,
+        )
         terminal_persisted = await _persist_terminal_assistant(
             repo, user.internal_user_id, assistant
         )
@@ -597,6 +760,7 @@ async def _plain_gateway_stream(
         final = MessageStatus.error
         assistant.content = "".join(parts)
         assistant.status = final
+        finalize_provenance("error", partial=True)
         terminal_persisted = await _persist_terminal_assistant(
             repo, user.internal_user_id, assistant
         )
@@ -613,6 +777,7 @@ async def _plain_gateway_stream(
         final = MessageStatus.error
         assistant.content = "".join(parts)
         assistant.status = final
+        finalize_provenance("error", partial=True)
         terminal_persisted = await _persist_terminal_assistant(
             repo, user.internal_user_id, assistant
         )
@@ -631,6 +796,10 @@ async def _plain_gateway_stream(
         assistant.content = "".join(parts)
         assistant.status = final
         if not terminal_persisted:
+            finalize_provenance(
+                "cancelled" if final is MessageStatus.cancelled else "error",
+                partial=final is not MessageStatus.complete,
+            )
             await _persist_terminal_assistant(repo, user.internal_user_id, assistant)
         # Meter the turn (best-effort, shielded so a client disconnect still
         # records it). Non-complete turns are recorded as non-billable status

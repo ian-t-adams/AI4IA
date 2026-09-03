@@ -1190,6 +1190,12 @@ class GatewayPolicyTests(unittest.TestCase):
             "sharedModelsApi", "sharedModelOperations", "sharedModelsApiPolicy",
             "sharedProxyModelSubscription", "sharedRealtimeApi",
             "sharedRealtimeApiPolicy", "sharedApiRealtimeSubscription",
+            "codeInterpreterFoundryEndpointValue", "codeInterpreterModelValue",
+            "sharedCodeInterpreterApi", "sharedCodeInterpreterResponsesOperation",
+            "sharedCodeInterpreterFilesOperation",
+            "sharedCodeInterpreterFileDeleteOperation",
+            "sharedCodeInterpreterApiPolicy",
+            "sharedCodeInterpreterSubscription",
             "sharedApimOpenAiUsers", "sharedApimCognitiveUsers",
         ):
             self.assertIn(f"resource {shared_child}", gateway)
@@ -1249,6 +1255,85 @@ class GatewayPolicyTests(unittest.TestCase):
         strip_headers = gateway.split("name: 'StripRequestHeaders'", 1)[1].split("]", 1)[0]
         self.assertIn("'S7P-KEY'", strip_headers)
         self.assertNotIn("'Ocp-Apim-Subscription-Key'", strip_headers)
+
+    def test_code_interpreter_uses_an_isolated_apim_api_and_no_fastapi_foundry_role(
+        self,
+    ) -> None:
+        gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
+        main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
+        api = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
+        policy_path = ROOT / "infra/policies/code-interpreter-routing.xml"
+        policy = policy_path.read_text(encoding="utf-8")
+
+        api_block = gateway.split("resource sharedCodeInterpreterApi ", 1)[1].split(
+            "resource sharedCodeInterpreterResponsesOperation", 1
+        )[0]
+        self.assertIn("if (codeInterpreterEnabled)", api_block)
+        self.assertIn("path: 'code-interpreter'", api_block)
+        self.assertIn("subscriptionRequired: true", api_block)
+        self.assertIn("header: 'api-key'", api_block)
+        self.assertIn("query: 'subscription-key'", api_block)
+        for method, template in (
+            ("'POST'", "'/openai/v1/responses'"),
+            ("'POST'", "'/openai/v1/files'"),
+            ("'DELETE'", "'/openai/v1/files/{fileId}'"),
+        ):
+            self.assertIn(f"method: {method}", gateway)
+            self.assertIn(f"urlTemplate: {template}", gateway)
+        self.assertIn("scope: sharedCodeInterpreterApi.id", gateway)
+        self.assertIn(
+            "output codeInterpreterGatewayUrl string = codeInterpreterEnabled ? "
+            "'${sharedApimGatewayUrl}/code-interpreter' : ''",
+            gateway,
+        )
+        self.assertIn(
+            "codeInterpreterBaseUrl: gateway.outputs.codeInterpreterGatewayUrl",
+            main,
+        )
+        self.assertIn(
+            "codeInterpreterApiKey: gateway.outputs.codeInterpreterGatewayKey",
+            main,
+        )
+        self.assertIn("codeInterpreterAuthMode: 'api_key'", main)
+        direct_principals = main.split(
+            "var nativeFoundryPrincipalIds =", 1
+        )[1].split("\n", 1)[0]
+        self.assertIn("[]", direct_principals)
+        self.assertIn("name: 'AI4IA_CODE_INTERPRETER_AUTH_MODE'", api)
+        self.assertIn("name: 'AI4IA_CODE_INTERPRETER_API_KEY'", api)
+        self.assertIn("secretRef: 'code-interpreter-api-key'", api)
+        self.assertIn('name="ai4ia-correlation-id"', policy)
+        self.assertIn('name="x-apim-request-id"', policy)
+
+        gateway_generator.validate_policy_expressions(
+            policy, "code-interpreter-routing.xml"
+        )
+        gateway_generator.validate_code_interpreter_policy(
+            policy, "code-interpreter-routing.xml"
+        )
+
+    def test_code_interpreter_policy_guards_are_non_vacuous(self) -> None:
+        policy = (
+            ROOT / "infra/policies/code-interpreter-routing.xml"
+        ).read_text(encoding="utf-8")
+        mutations = (
+            '&quot;{{code-interpreter-model}}&quot;.Equals',
+            'tools.Count == 1',
+            'container.Properties().Any',
+            'upload.Length &gt; 26300000',
+            'MatchedParameters[&quot;fileId&quot;].StartsWith',
+            '<set-header name="api-key" exists-action="delete" />',
+            '<set-query-parameter name="subscription-key" exists-action="delete" />',
+            '<set-query-parameter name="api-version" exists-action="delete" />',
+            '<authentication-managed-identity resource="https://ai.azure.com" />',
+        )
+        for required in mutations:
+            with self.subTest(required=required):
+                with self.assertRaises(ValueError):
+                    gateway_generator.validate_code_interpreter_policy(
+                        policy.replace(required, "", 1),
+                        "code-interpreter-routing.xml",
+                    )
 
     def test_realtime_shared_api_is_a_websocket_api_with_supported_policy(self) -> None:
         gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")

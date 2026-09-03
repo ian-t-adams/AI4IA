@@ -480,6 +480,7 @@ def build_mcp_turn_tools_multi(
     untrusted_context: bool = False,
     invocation_approvals: Collection[str] = (),
     approval_sink: ApprovalSink | None = None,
+    extra_definitions: Sequence[ToolDefinition] = (),
 ) -> tuple[ToolRegistry, ToolExecutor, ToolContext] | None:
     """Merge multiple MCP planes into one turn's (registry, executor, ctx).
 
@@ -507,7 +508,7 @@ def build_mcp_turn_tools_multi(
     quarantined), so the caller keeps the shared app singletons.
     """
     budget: dict[str, int] = {"used": 0}
-    defs: list[ToolDefinition] = []
+    defs: list[ToolDefinition] = list(extra_definitions)
     aliases: dict[str, str] = {}
     seen_planes: set[str] = set()
     seen_governance: set[str] = set()

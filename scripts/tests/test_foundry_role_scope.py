@@ -6,10 +6,8 @@ bypass APIM. The other half is that an app identity holds *direct* Foundry
 data-plane roles, so code running in the API container can call Foundry without
 the gateway.
 
-The obvious remediation -- move the Responses-API Code Interpreter into its own
-workload and drop `Cognitive Services OpenAI User` from the api identity -- was
-measured and **does not work**, which is why this guard exists rather than a
-second Container App:
+The prerequisite to removing `Cognitive Services OpenAI User` from the API
+identity was narrowing Content Understanding first:
 
 * `Cognitive Services User` (`a97b65f3-24c7-4388-baec-2e87135dc908`) has exactly
   one dataAction: `Microsoft.CognitiveServices/*`.
@@ -21,14 +19,16 @@ second Container App:
   `cognitiveservices.azure.com` token, so the broad role could not simply be
   deleted.
 
-So while `Cognitive Services User` is assigned, removing the OpenAI role
-accomplishes nothing at all -- the identity keeps full inference access through
-the wildcard. Narrowing Content Understanding to
+While `Cognitive Services User` is assigned, removing the OpenAI role accomplishes
+nothing at all -- the identity keeps full inference access through the wildcard.
+Narrowing Content Understanding to
 `Cognitive Services Content Understanding Contributor`
 (`59a2dba3-6303-4fd8-9a2e-8cbb4bdda972`, dataAction
 `Microsoft.CognitiveServices/accounts/MultiModalIntelligence/*`) is the
 *prerequisite* that makes the OpenAI grant the only inference path, and therefore
-makes removing it mean something.
+makes removing it mean something. Code Interpreter now uses an API-scoped APIM
+subscription, and `main.bicep` passes no FastAPI principal into the OpenAI role
+assignment loop.
 
 This test pins that ordering so it cannot be undone by someone reading the
 original, wrong, plan.

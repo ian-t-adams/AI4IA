@@ -10,9 +10,10 @@ client-facing catalog bundled into the package:
 
 The runtime catalog deliberately drops the infra-only wiring (``upstreamUrl``,
 ``upstreamAuthMode``, ``upstreamMiResource``) and keeps only what the backend
-needs to call the server *through APIM*: a stable id, display metadata, and the
-APIM route ``path`` (``<name>/mcp``). Inbound auth to APIM is always the global
-APIM subscription key, so it is not encoded per entry.
+needs to call the server *through APIM*: a stable id, display metadata, the
+APIM route ``path`` (``<name>/mcp``), and whether the curated endpoint may
+expose MCP resources. Inbound auth to APIM is always the global APIM
+subscription key, so it is not encoded per entry.
 
 Run from the repo root:  python scripts/gen-mcp-catalog.py
 Verify-only (CI drift):  python scripts/gen-mcp-catalog.py --check
@@ -63,6 +64,10 @@ def build_catalog(raw: dict) -> dict:
                 # APIM exposes the server at https://<mcp-apim>/<name>/mcp; the
                 # backend composes the absolute URL from the gateway base + path.
                 "path": f"{name}/mcp",
+                # Phase one permits resource discovery only for the repository-
+                # curated Foundry Toolbox. BYO and generic official MCP servers do
+                # not become instruction sources merely by exposing resources.
+                "resourcesEnabled": bool(entry.get("foundryToolbox")),
             }
         )
 

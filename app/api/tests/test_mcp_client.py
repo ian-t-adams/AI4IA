@@ -19,9 +19,12 @@ import pytest
 from ai4ia_api.agents.mcp_client import (
     HttpxMcpConnector,
     McpAuth,
+    McpResourceResult,
     _PinnedHttpsTransport,
 )
 from ai4ia_api.agents.mcp_servers import (
+    MAX_RESOURCE_CONTENT_BYTES,
+    MAX_RESOURCES_PER_SERVER,
     MAX_TOOL_NAME_LEN,
     MAX_TOOLS_PER_SERVER,
     McpAuthMode,
@@ -68,6 +71,20 @@ def _call_result(content: list[dict], *, is_error: bool = False) -> dict:
         "jsonrpc": "2.0",
         "id": 2,
         "result": {"content": content, "isError": is_error},
+    }
+
+
+def _resources_result(resources: list[dict]) -> dict:
+    return {"jsonrpc": "2.0", "id": 2, "result": {"resources": resources}}
+
+
+def _resource_result(uri: str, text: str, mime_type: str = "text/markdown") -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+            "contents": [{"uri": uri, "mimeType": mime_type, "text": text}]
+        },
     }
 
 
@@ -283,6 +300,154 @@ async def test_malformed_tools_result_raises():
 
     with pytest.raises(McpConnectionError):
         await _connector(handler).discover(endpoint=_ENDPOINT, auth=McpAuth())
+
+
+# --- Resources: Foundry Toolbox skills ---------------------------------------
+
+
+async def test_lists_resources_over_the_existing_handshake():
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        method = body.get("method")
+        seen.append(method)
+        if method == "initialize":
+            return _json(_init_result(), headers={"Mcp-Session-Id": "skills"})
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        if method == "resources/list":
+            assert request.headers.get("Mcp-Session-Id") == "skills"
+            return _json(
+                _resources_result(
+                    [
+                        {
+                            "uri": "skill://evidence-review/SKILL.md",
+                            "name": "evidence-review",
+                            "description": "Review evidence carefully.",
+                            "mimeType": "text/markdown",
+                        }
+                    ]
+                )
+            )
+        raise AssertionError(method)
+
+    resources = await _connector(handler).list_resources(
+        endpoint=_ENDPOINT, auth=McpAuth()
+    )
+
+    assert [resource.uri for resource in resources] == [
+        "skill://evidence-review/SKILL.md"
+    ]
+    assert resources[0].description == "Review evidence carefully."
+    assert seen == ["initialize", "notifications/initialized", "resources/list"]
+
+
+def test_parse_resources_caps_and_drops_invalid_or_duplicate_uris():
+    overflow = [
+        {"uri": f"skill://skill-{index}/SKILL.md", "name": f"skill-{index}"}
+        for index in range(MAX_RESOURCES_PER_SERVER + 5)
+    ]
+    payload = _resources_result(
+        [
+            {"uri": "skill://good/SKILL.md", "name": "good"},
+            {"uri": "bad\nuri", "name": "bad"},
+            {"uri": "skill://good/SKILL.md", "name": "duplicate"},
+            *overflow,
+        ]
+    )
+
+    resources = HttpxMcpConnector._parse_resources(payload)
+
+    assert len(resources) == MAX_RESOURCES_PER_SERVER
+    assert resources[0].uri == "skill://good/SKILL.md"
+    assert all(resource.uri != "bad\nuri" for resource in resources)
+
+
+async def test_reads_a_text_resource_and_preserves_uri_and_mime_type():
+    uri = "skill://evidence-review/SKILL.md"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        method = body.get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        if method == "resources/read":
+            assert body["params"] == {"uri": uri}
+            return _json(_resource_result(uri, "# Evidence review"))
+        raise AssertionError(method)
+
+    result = await _connector(handler).read_resource(
+        endpoint=_ENDPOINT, auth=McpAuth(), uri=uri
+    )
+
+    assert result == McpResourceResult(
+        uri=uri,
+        text="# Evidence review",
+        mime_type="text/markdown",
+        truncated=False,
+    )
+
+
+async def test_read_resource_caps_content_and_marks_truncation():
+    uri = "skill://large/SKILL.md"
+    text = "x" * (MAX_RESOURCE_CONTENT_BYTES + 100)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return _json(_resource_result(uri, text))
+
+    result = await _connector(handler).read_resource(
+        endpoint=_ENDPOINT, auth=McpAuth(), uri=uri
+    )
+
+    assert result.truncated is True
+    assert result.text.endswith("...[truncated]")
+    assert len(result.text.encode("utf-8")) <= MAX_RESOURCE_CONTENT_BYTES + 20
+
+
+async def test_read_resource_rejects_invalid_uri_before_network_io():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500)
+
+    with pytest.raises(McpConnectionError, match="invalid resource URI"):
+        await _connector(handler).read_resource(
+            endpoint=_ENDPOINT, auth=McpAuth(), uri="skill://bad\nname"
+        )
+    assert calls == 0
+
+
+async def test_read_resource_requires_the_requested_textual_content():
+    uri = "skill://missing/SKILL.md"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return _json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"contents": [{"uri": uri, "blob": "AAAA"}]},
+            }
+        )
+
+    with pytest.raises(McpConnectionError, match="textual resource"):
+        await _connector(handler).read_resource(
+            endpoint=_ENDPOINT, auth=McpAuth(), uri=uri
+        )
 
 
 # --- Execution: tools/call ----------------------------------------------------

@@ -142,8 +142,10 @@ def test_inline_compute_deployed_requires_cosmos_and_blob_storage():
         env="dev",
         allow_dev_auth=True,
         inline_document_compute_enabled=True,
-        code_interpreter_base_url="https://foundry.example/",
+        code_interpreter_base_url="https://gateway.example/code-interpreter",
         code_interpreter_model="gpt-5.4-mini",
+        code_interpreter_auth_mode="api_key",
+        code_interpreter_api_key="code-interpreter-key",
     )
     with pytest.raises(RuntimeError, match="SESSION_STORE=cosmos"):
         _settings(
@@ -164,6 +166,65 @@ def test_inline_compute_deployed_requires_cosmos_and_blob_storage():
         cosmos_endpoint="https://cosmos.example/",
         document_blob_account_url="https://acct.blob.core.windows.net",
     ).validate_runtime()
+
+
+def test_deployed_code_interpreter_requires_scoped_apim_posture():
+    base = dict(
+        env="dev",
+        allow_dev_auth=True,
+        inline_document_compute_enabled=True,
+        code_interpreter_model="gpt-5.4-mini",
+        session_store="cosmos",
+        cosmos_endpoint="https://cosmos.example/",
+        document_blob_account_url="https://acct.blob.core.windows.net",
+    )
+    with pytest.raises(RuntimeError, match="dedicated HTTPS APIM"):
+        _settings(
+            **base,
+            code_interpreter_base_url="https://foundry.services.ai.azure.com",
+            code_interpreter_auth_mode="bearer",
+        ).validate_runtime()
+    with pytest.raises(RuntimeError, match="dedicated HTTPS APIM"):
+        _settings(
+            **base,
+            code_interpreter_base_url="https://gateway.example/wrong-path",
+            code_interpreter_auth_mode="api_key",
+            code_interpreter_api_key="code-interpreter-key",
+        ).validate_runtime()
+
+    _settings(
+        **base,
+        code_interpreter_base_url="https://gateway.example/code-interpreter",
+        code_interpreter_auth_mode="api_key",
+        code_interpreter_api_key="code-interpreter-key",
+    ).validate_runtime()
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "model_gateway_api_key",
+        "realtime_gateway_api_key",
+        "speech_voice_live_gateway_api_key",
+        "official_mcp_subscription_key",
+    ),
+)
+def test_code_interpreter_apim_key_cannot_be_reused(field: str):
+    overrides = {
+        "env": "dev",
+        "allow_dev_auth": True,
+        "inline_document_compute_enabled": True,
+        "code_interpreter_base_url": "https://gateway.example/code-interpreter",
+        "code_interpreter_model": "gpt-5.4-mini",
+        "code_interpreter_auth_mode": "api_key",
+        "code_interpreter_api_key": "shared-key",
+        "session_store": "cosmos",
+        "cosmos_endpoint": "https://cosmos.example/",
+        "document_blob_account_url": "https://acct.blob.core.windows.net",
+        field: "shared-key",
+    }
+    with pytest.raises(RuntimeError, match="distinct API-scoped APIM key"):
+        _settings(**overrides).validate_runtime()
 
 
 def test_automatic_cu_api_version_cannot_be_changed_to_preview():

@@ -79,19 +79,27 @@ class FakeCI:
         self.upload_file_id = "file-abc"
         self.upload_raise = None
 
-    async def run(self, *, instructions, user_input, file_ids=None):
-        self.calls.append({"file_ids": file_ids})
+    async def run(
+        self, *, instructions, user_input, file_ids=None, correlation_id=None
+    ):
+        self.calls.append(
+            {"file_ids": file_ids, "correlation_id": correlation_id}
+        )
         if self.raise_exc is not None:
             raise self.raise_exc
         return self.result
 
-    async def upload_file(self, *, filename, content, content_type=None):
-        self.uploads.append({"filename": filename})
+    async def upload_file(
+        self, *, filename, content, content_type=None, correlation_id=None
+    ):
+        self.uploads.append(
+            {"filename": filename, "correlation_id": correlation_id}
+        )
         if self.upload_raise is not None:
             raise self.upload_raise
         return self.upload_file_id
 
-    async def delete_file(self, file_id):
+    async def delete_file(self, file_id, *, correlation_id=None):
         self.deletes.append(file_id)
         return True
 

@@ -35,17 +35,17 @@ because SimpleL7Proxy does not support WebSockets.
 
 ## Non-negotiable rules
 
-1. **Gateway-first model traffic.** HTTP/SSE calls (chat, agents, embeddings,
-   images, videos, REST speech, and Claude Messages) go SimpleL7Proxy → APIM →
-   Foundry. FastAPI translates provider schemas but never turns that into direct
-   provider egress. Two explicit exceptions, both documented in
-   `docs/architecture.md`: realtime/Voice Live **WebSockets** take FastAPI relay →
-   APIM → Foundry (SimpleL7Proxy has no WebSocket support), and the
-   **Responses-API Code Interpreter** goes direct to Foundry because a stateful
-   Azure-managed sandbox container is not a routable catalog deployment. Direct
-   calls are otherwise reserved for non-model control/data planes such as Content
-   Understanding, WebIQ grounding, Azure Monitor, Key Vault, Blob, Cosmos, and
-   Azure AI Search.
+1. **Gateway-first model traffic.** Compatible HTTP/SSE calls (chat, agents,
+   embeddings, images, videos, REST speech, and Claude Messages) go
+   SimpleL7Proxy → APIM → Foundry. FastAPI translates provider schemas but never
+   turns that into direct provider egress. Two explicit **SimpleL7Proxy**
+   exceptions, both still pass through separately scoped APIM APIs:
+   realtime/Voice Live WebSockets take FastAPI relay → APIM → Foundry because the
+   proxy has no WebSocket support, and Responses-API Code Interpreter Files +
+   stateful sandbox calls take FastAPI → Code Interpreter APIM → Foundry because
+   they are not compatible catalog deployments. Direct calls are reserved for
+   non-model control/data planes such as Content Understanding, WebIQ grounding,
+   Azure Monitor, Key Vault, Blob, Cosmos, and Azure AI Search.
 2. **Catalog-driven models.** Do not hardcode deployment names or model lists.
    `infra/models.json` is the source of truth; generated runtime catalog data must
    match it.
@@ -60,6 +60,10 @@ because SimpleL7Proxy does not support WebSockets.
    when a tool/server is registered.
 6. **No secret sprawl.** Do not log credentials, commit secrets, or put user MCP
    secrets in Cosmos; durable MCP secrets belong in Key Vault outside local.
+7. **Receipts show execution, never hidden reasoning.** Persist bounded,
+   credential-redacted prompts/context, source versions, offered/invoked tools,
+   arguments/results, approvals, safety coverage and correlation metadata. Never
+   label observable traces as chain-of-thought or invent model-internal decisions.
 
 ## CI build / test / lint commands
 
@@ -475,6 +479,23 @@ Four rules follow:
   seam, declare risk/scopes/egress/approval accurately, redact logs, and re-run
   `ToolRegistry.authorize` plus SSRF host validation at execution time.
 - Add API tests for authorization, validation, failure handling, and redaction.
+
+### Add a Foundry skill
+
+- Author instruction-only skills at `foundry/skills/<name>/SKILL.md` using the
+  Agent Skills front matter (`name`, `description`) and add an unpinned reference
+  to `foundry/toolbox.manifest.json`.
+- Run `python scripts/provision-foundry-toolbox.py` for offline source/manifest
+  validation. The approved `--create` path reconciles immutable skill versions
+  before the toolbox and reuses matching versions after interrupted activation.
+- Skills are discovered only from generated official-catalog entries with
+  `resourcesEnabled`; never accept BYO MCP resources as instructions.
+- Preserve progressive disclosure: advertise bounded name/description metadata,
+  load the full resource only through `load_skill`, and retain URI, version/default
+  resolution, content digest, and truncation provenance in execution receipts.
+- A loaded skill cannot weaken system instructions, scope/ownership checks,
+  egress policy, or per-invocation approval. Supplementary scripts/assets and
+  user-authored skill CRUD require a separate design and threat review.
 
 ### Add a model
 

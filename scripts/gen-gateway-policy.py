@@ -65,6 +65,9 @@ REALTIME_OUTPUT_PATH = ROOT / "infra" / "policies" / "realtime-routing.xml"
 # Generated from infra/voice-providers.json by gen-voice-provider-catalog.py,
 # then independently validated here with the other gateway policies.
 SPEECH_VOICE_LIVE_POLICY_PATH = ROOT / "infra" / "policies" / "speech-voice-live.xml"
+CODE_INTERPRETER_POLICY_PATH = (
+    ROOT / "infra" / "policies" / "code-interpreter-routing.xml"
+)
 CATALOG_MARKER = "__AI4IA_BACKEND_CATALOG_MERGE__"
 ATTEMPTS_MARKER = "__AI4IA_MAX_IMMEDIATE_ATTEMPTS__"
 # APIM rejects a single decoded policy expression at the 32 KiB boundary.
@@ -1048,6 +1051,121 @@ def validate_speech_voice_live_policy(policy: str, source: str) -> None:
         raise ValueError(f"{source}: must not reference {hits} (no fallback path is permitted)")
 
 
+def validate_code_interpreter_policy(policy: str, source: str) -> None:
+    """Pin the dedicated Responses/Files API to one model and one MI backend."""
+    root = ElementTree.fromstring(policy)
+    inbound = root.find("./inbound")
+    if inbound is None:
+        raise ValueError(f"{source}: expected an inbound policy section")
+    inbound_children = list(inbound)
+
+    backends = root.findall(".//set-backend-service")
+    if len(backends) != 1:
+        raise ValueError(f"{source}: expected exactly one set-backend-service")
+    if backends[0] not in inbound_children:
+        raise ValueError(f"{source}: set-backend-service must be a direct inbound policy")
+    if backends[0].attrib.get("base-url") != "{{code-interpreter-foundry-endpoint}}":
+        raise ValueError(
+            f"{source}: backend must use only the Code Interpreter Foundry named value"
+        )
+
+    identities = root.findall(".//authentication-managed-identity")
+    if len(identities) != 1 or identities[0] not in inbound_children:
+        raise ValueError(
+            f"{source}: expected exactly one direct inbound managed-identity policy"
+        )
+    if identities[0].attrib.get("resource") != "https://ai.azure.com":
+        raise ValueError(
+            f"{source}: Code Interpreter must authenticate for https://ai.azure.com"
+        )
+
+    stripped = {
+        header.attrib.get("name")
+        for header in inbound.findall("./set-header")
+        if header.attrib.get("exists-action") == "delete"
+    }
+    required_stripped = {
+        "api-key",
+        "Ocp-Apim-Subscription-Key",
+        "Authorization",
+        "S7P-KEY",
+        "X-AI4IA-App-Id",
+        "X-AI4IA-User-Id",
+        "X-UserProfile",
+    }
+    missing = required_stripped - stripped
+    if missing:
+        raise ValueError(
+            f"{source}: must strip caller/internal headers before the backend: "
+            f"{sorted(missing)}"
+        )
+    identity_index = inbound_children.index(identities[0])
+    strip_elements = [
+        child
+        for child in inbound_children
+        if child.tag == "set-header"
+        and child.attrib.get("name") in required_stripped
+        and child.attrib.get("exists-action") == "delete"
+    ]
+    if any(inbound_children.index(child) > identity_index for child in strip_elements):
+        raise ValueError(
+            f"{source}: caller credentials must be stripped before MI authentication"
+        )
+    query_deletes = [
+        child
+        for child in inbound_children
+        if child.tag == "set-query-parameter"
+        and child.attrib.get("exists-action") == "delete"
+    ]
+    for query_name in ("subscription-key", "api-version"):
+        matching = [
+            child
+            for child in query_deletes
+            if child.attrib.get("name") == query_name
+        ]
+        if len(matching) != 1:
+            raise ValueError(
+                f"{source}: must strip caller query parameter {query_name!r}"
+            )
+        if inbound_children.index(matching[0]) > identity_index:
+            raise ValueError(
+                f"{source}: query parameter {query_name!r} must be stripped before MI authentication"
+            )
+
+    searchable = html.unescape(policy)
+    for required in (
+        'context.Operation.Id == "code-interpreter-responses"',
+        '"{{code-interpreter-model}}".Equals',
+        'body["store"]',
+        "body.Properties().Any",
+        "tools.Count == 1",
+        '"code_interpreter".Equals',
+        '"auto".Equals',
+        "container.Properties().Any",
+        "fileIds.Type != JTokenType.Array",
+        'body["previous_response_id"] != null',
+        "background.Type != JTokenType.Boolean",
+        'body["instructions"]).Length > 60000',
+        'body["input"]).Length > 60000',
+        'context.Operation.Id == "code-interpreter-files-create"',
+        "upload.Length > 26300000",
+        'name=\\"purpose\\"\\r\\n\\r\\nassistants',
+        'context.Operation.Id == "code-interpreter-file-delete"',
+        'MatchedParameters["fileId"].StartsWith',
+    ):
+        if required not in searchable:
+            raise ValueError(
+                f"{source}: missing required Responses constraint {required!r}"
+            )
+    if "context.Request.Body" not in searchable or "preserveContent: true" not in searchable:
+        raise ValueError(
+            f"{source}: Responses validation must preserve the JSON request body"
+        )
+    forward = root.findall("./backend/forward-request")
+    if len(forward) != 1 or forward[0].attrib.get("timeout") != "240":
+        raise ValueError(f"{source}: backend must use one 240-second forward-request")
+
+
 def main() -> int:
     parser = build_parser(__doc__)
     args = parser.parse_args()
@@ -1081,6 +1199,17 @@ def main() -> int:
         )
         validate_speech_voice_live_policy(
             speech_voice_live_policy, str(SPEECH_VOICE_LIVE_POLICY_PATH.relative_to(ROOT))
+        )
+        code_interpreter_policy = CODE_INTERPRETER_POLICY_PATH.read_text(
+            encoding="utf-8"
+        )
+        validate_policy_expressions(
+            code_interpreter_policy,
+            str(CODE_INTERPRETER_POLICY_PATH.relative_to(ROOT)),
+        )
+        validate_code_interpreter_policy(
+            code_interpreter_policy,
+            str(CODE_INTERPRETER_POLICY_PATH.relative_to(ROOT)),
         )
         if len(priority_generated.encode("utf-8")) > APIM_API_POLICY_MAX_BYTES:
             raise ValueError(

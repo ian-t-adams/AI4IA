@@ -58,23 +58,39 @@ class FakeCI:
         self.upload_file_id = "file-xyz"
         self.closed = False
 
-    async def upload_file(self, *, filename, content, content_type=None) -> str:
+    async def upload_file(
+        self, *, filename, content, content_type=None, correlation_id=None
+    ) -> str:
         self.uploads.append(
-            {"filename": filename, "content": content, "content_type": content_type}
+            {
+                "filename": filename,
+                "content": content,
+                "content_type": content_type,
+                "correlation_id": correlation_id,
+            }
         )
         if self.upload_raise is not None:
             raise self.upload_raise
         return self.upload_file_id
 
-    async def run(self, *, instructions, user_input, file_ids=None) -> CodeInterpreterResult:
+    async def run(
+        self, *, instructions, user_input, file_ids=None, correlation_id=None
+    ) -> CodeInterpreterResult:
         self.runs.append(
-            {"instructions": instructions, "user_input": user_input, "file_ids": file_ids}
+            {
+                "instructions": instructions,
+                "user_input": user_input,
+                "file_ids": file_ids,
+                "correlation_id": correlation_id,
+            }
         )
         if self.run_raise is not None:
             raise self.run_raise
         return self.result
 
-    async def delete_file(self, file_id: str) -> bool:
+    async def delete_file(
+        self, file_id: str, *, correlation_id=None
+    ) -> bool:
         self.deletes.append(file_id)
         return True
 
@@ -182,6 +198,8 @@ async def test_happy_path_fences_output_uploads_runs_and_deletes():
     assert "END ANALYSIS abcd" in res["result"]
     assert "Total is 30" in res["result"]
     assert "loading..." in res["result"]
+    assert res["safety"]["status"] == "unavailable"
+    assert res["safety"]["provider"] == "azure_openai_code_interpreter"
     assert "error" not in res
     # The REAL retained bytes were uploaded to the CI Files API, then the run was
     # seeded with that file id, then the uploaded file was best-effort deleted.

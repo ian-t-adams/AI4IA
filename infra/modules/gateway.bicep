@@ -132,6 +132,12 @@ param speechVoiceLiveAccountEndpoint string
 @description('Managed-identity audience (APIM authentication-managed-identity "resource", without the /.default suffix) APIM authenticates to the Speech Voice Live AIServices account with. Defaults to the audience the azure-ai-voicelive SDK requests by default (https://ai.azure.com/.default) for the fixed api-version this module pins. Kept overridable via a named value (never caller-influenced) so a future api-version or account can move it without a code change.')
 param speechVoiceLiveManagedIdentityAudience string = 'https://ai.azure.com'
 
+@description('Provision the dedicated Code Interpreter Responses/Files API and API-scoped FastAPI subscription on the shared APIM. Default OFF.')
+param codeInterpreterEnabled bool = false
+
+@description('Exact primary-region deployment accepted by the Code Interpreter APIM policy.')
+param codeInterpreterModel string
+
 // APIM child entities (products, subscriptions) live in one flat namespace per APIM
 // service. This gateway is a shared plane intended to front more than one workload,
 // so each name is derived from ${workload} rather than hardcoded. For workload
@@ -142,6 +148,7 @@ var proxyIngressProductName = '${workload}-proxy-ingress'
 var proxyIngressSubscriptionName = '${workload}-api-proxy-ingress'
 var realtimeSubscriptionName = '${workload}-api-realtime'
 var speechVoiceLiveSubscriptionName = '${workload}-api-speech-voice-live'
+var codeInterpreterSubscriptionName = '${workload}-api-code-interpreter'
 
 var foundryBase = endsWith(primaryFoundryEndpoint, '/') ? primaryFoundryEndpoint : '${primaryFoundryEndpoint}/'
 var foundryOpenAiUrl = '${foundryBase}openai'
@@ -486,6 +493,116 @@ resource sharedApiRealtimeSubscription 'Microsoft.ApiManagement/service/subscrip
   }
   dependsOn: [
     sharedRealtimeApiPolicy
+  ]
+}
+
+// ---------------- Code Interpreter (additive, isolated) ----------------
+// Responses and Files stay stateful Foundry surfaces, so they bypass
+// SimpleL7Proxy but no longer bypass APIM. FastAPI holds only this API-scoped key;
+// APIM strips it, fixes the backend/model contract, and authenticates with MI.
+resource codeInterpreterFoundryEndpointValue 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = if (codeInterpreterEnabled) {
+  parent: sharedApim
+  name: 'code-interpreter-foundry-endpoint'
+  properties: {
+    displayName: 'code-interpreter-foundry-endpoint'
+    secret: false
+    value: endsWith(primaryFoundryEndpoint, '/') ? substring(primaryFoundryEndpoint, 0, length(primaryFoundryEndpoint) - 1) : primaryFoundryEndpoint
+  }
+}
+
+resource codeInterpreterModelValue 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = if (codeInterpreterEnabled) {
+  parent: sharedApim
+  name: 'code-interpreter-model'
+  properties: {
+    displayName: 'code-interpreter-model'
+    secret: false
+    value: codeInterpreterModel
+  }
+}
+
+resource sharedCodeInterpreterApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = if (codeInterpreterEnabled) {
+  parent: sharedApim
+  name: 'code-interpreter'
+  properties: {
+    displayName: 'FastAPI Code Interpreter backend'
+    path: 'code-interpreter'
+    protocols: [
+      'https'
+    ]
+    serviceUrl: primaryFoundryEndpoint
+    subscriptionRequired: true
+    apiType: 'http'
+    subscriptionKeyParameterNames: {
+      header: 'api-key'
+      query: 'subscription-key'
+    }
+  }
+}
+
+resource sharedCodeInterpreterResponsesOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = if (codeInterpreterEnabled) {
+  parent: sharedCodeInterpreterApi
+  name: 'code-interpreter-responses'
+  properties: {
+    displayName: 'Run Code Interpreter'
+    method: 'POST'
+    urlTemplate: '/openai/v1/responses'
+  }
+}
+
+resource sharedCodeInterpreterFilesOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = if (codeInterpreterEnabled) {
+  parent: sharedCodeInterpreterApi
+  name: 'code-interpreter-files-create'
+  properties: {
+    displayName: 'Upload Code Interpreter file'
+    method: 'POST'
+    urlTemplate: '/openai/v1/files'
+  }
+}
+
+resource sharedCodeInterpreterFileDeleteOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = if (codeInterpreterEnabled) {
+  parent: sharedCodeInterpreterApi
+  name: 'code-interpreter-file-delete'
+  properties: {
+    displayName: 'Delete Code Interpreter file'
+    method: 'DELETE'
+    urlTemplate: '/openai/v1/files/{fileId}'
+    templateParameters: [
+      {
+        name: 'fileId'
+        type: 'string'
+        required: true
+      }
+    ]
+  }
+}
+
+resource sharedCodeInterpreterApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = if (codeInterpreterEnabled) {
+  parent: sharedCodeInterpreterApi
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/code-interpreter-routing.xml')
+  }
+  dependsOn: [
+    codeInterpreterFoundryEndpointValue
+    codeInterpreterModelValue
+    sharedCodeInterpreterResponsesOperation
+    sharedCodeInterpreterFilesOperation
+    sharedCodeInterpreterFileDeleteOperation
+  ]
+}
+
+resource sharedCodeInterpreterSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = if (codeInterpreterEnabled) {
+  parent: sharedApim
+  name: codeInterpreterSubscriptionName
+  properties: {
+    displayName: 'AI4IA FastAPI Code Interpreter'
+    scope: sharedCodeInterpreterApi.id
+    state: 'active'
+    allowTracing: false
+  }
+  dependsOn: [
+    sharedCodeInterpreterApiPolicy
   ]
 }
 
@@ -921,6 +1038,10 @@ output proxyIngressKey string = sharedProxyIngressSubscription.listSecrets().pri
 output realtimeGatewayUrl string = '${sharedApimGatewayUrl}/openai'
 @secure()
 output realtimeGatewayKey string = sharedApiRealtimeSubscription.listSecrets().primaryKey
+output codeInterpreterGatewayUrl string = codeInterpreterEnabled ? '${sharedApimGatewayUrl}/code-interpreter' : ''
+@secure()
+#disable-next-line BCP422
+output codeInterpreterGatewayKey string = codeInterpreterEnabled ? sharedCodeInterpreterSubscription.listSecrets().primaryKey : ''
 // Speech Voice Live base URL intentionally omits /realtime (the relay appends
 // it), matching the realtimeGatewayUrl convention above exactly.
 output speechVoiceLiveGatewayUrl string = speechVoiceLiveEnabled ? '${sharedApimGatewayUrl}/speech/voice-live' : ''

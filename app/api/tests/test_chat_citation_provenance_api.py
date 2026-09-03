@@ -103,6 +103,7 @@ async def _seed_indexed_doc(client: TestClient, user_id: str) -> UserDocument:
     doc = UserDocument(
         userId=user_id,
         filename="falcon.md",
+        contentHash="a" * 64,
         status=DocumentStatus.ready,
         summary="Project Falcon status brief",
     )
@@ -178,6 +179,7 @@ async def test_the_prompt_and_the_registry_agree_on_the_span_id():
         # every honest citation would be reported as fabricated.
         assert f"cite-as: [[cite:{span['spanId']}]]" in library
         assert span["documentId"] == doc.id
+        assert span["documentVersion"] == doc.contentHash
         assert span["filename"] == "falcon.md"
         assert span["excerpt"] == _CHUNK_TEXT
         assert len(span["contentSha256"]) == 64

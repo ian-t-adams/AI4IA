@@ -1,0 +1,165 @@
+<policies>
+  <inbound>
+    <base />
+    <choose>
+      <when condition="@(context.Operation.Id == &quot;code-interpreter-responses&quot;)">
+        <set-variable name="code-interpreter-request" value="@((JObject)context.Request.Body.As&lt;JObject&gt;(preserveContent: true))" />
+        <choose>
+          <when condition="@{
+                var body = (JObject)context.Variables[&quot;code-interpreter-request&quot;];
+                var store = body[&quot;store&quot;];
+                var tools = body[&quot;tools&quot;] as JArray;
+                var tool = tools != null &amp;&amp; tools.Count == 1
+                  ? tools[0] as JObject
+                  : null;
+                var container = tool?[&quot;container&quot;] as JObject;
+                var fileIds = container?[&quot;file_ids&quot;];
+                var background = body[&quot;background&quot;];
+                var allowedFields = new [] {
+                  &quot;model&quot;,
+                  &quot;tools&quot;,
+                  &quot;instructions&quot;,
+                  &quot;input&quot;,
+                  &quot;store&quot;,
+                  &quot;background&quot;,
+                  &quot;previous_response_id&quot;
+                };
+                return !&quot;{{code-interpreter-model}}&quot;.Equals(
+                    (string)body[&quot;model&quot;],
+                    StringComparison.Ordinal
+                  )
+                  || body.Properties().Any(p =&gt; !allowedFields.Contains(p.Name))
+                  || store == null
+                  || store.Type != JTokenType.Boolean
+                  || store.Value&lt;bool&gt;()
+                  || body[&quot;instructions&quot;]?.Type != JTokenType.String
+                  || ((string)body[&quot;instructions&quot;]).Length &gt; 60000
+                  || body[&quot;input&quot;]?.Type != JTokenType.String
+                  || ((string)body[&quot;input&quot;]).Length &gt; 60000
+                  || tool == null
+                  || !&quot;code_interpreter&quot;.Equals(
+                    (string)tool[&quot;type&quot;],
+                    StringComparison.Ordinal
+                  )
+                  || tool.Properties().Any(
+                    p =&gt; p.Name != &quot;type&quot; &amp;&amp; p.Name != &quot;container&quot;
+                  )
+                  || container == null
+                  || !&quot;auto&quot;.Equals(
+                    (string)container[&quot;type&quot;],
+                    StringComparison.Ordinal
+                  )
+                  || container.Properties().Any(
+                    p =&gt; p.Name != &quot;type&quot; &amp;&amp; p.Name != &quot;file_ids&quot;
+                  )
+                  || (fileIds != null &amp;&amp; (
+                    fileIds.Type != JTokenType.Array
+                    || ((JArray)fileIds).Count &gt; 8
+                    || ((JArray)fileIds).Any(id =&gt;
+                      id.Type != JTokenType.String
+                      || ((string)id).Length &gt; 128
+                      || !((string)id).StartsWith(&quot;file-&quot;, StringComparison.Ordinal)
+                    )
+                  ))
+                  || body[&quot;previous_response_id&quot;] != null
+                  || (background != null &amp;&amp; (
+                    background.Type != JTokenType.Boolean
+                    || background.Value&lt;bool&gt;()
+                  ));
+              }">
+            <return-response>
+              <set-status code="400" reason="Invalid Code Interpreter request" />
+              <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+              </set-header>
+              <set-body>{"error":{"code":"invalid_code_interpreter_request","message":"The request must use the configured model, store=false, bounded string instructions/input, and exactly one auto-container code_interpreter tool."}}</set-body>
+            </return-response>
+          </when>
+        </choose>
+      </when>
+      <when condition="@(context.Operation.Id == &quot;code-interpreter-files-create&quot;)">
+        <set-variable name="code-interpreter-upload" value="@(context.Request.Body.As&lt;byte[]&gt;(preserveContent: true))" />
+        <choose>
+          <when condition="@{
+                var contentType = context.Request.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;);
+                var upload = (byte[])context.Variables[&quot;code-interpreter-upload&quot;];
+                var multipart = System.Text.Encoding.UTF8.GetString(upload);
+                return !contentType.StartsWith(&quot;multipart/form-data;&quot;, StringComparison.OrdinalIgnoreCase)
+                  || upload.Length &gt; 26300000
+                  || !multipart.Contains(
+                    &quot;name=\&quot;purpose\&quot;\r\n\r\nassistants&quot;
+                  );
+              }">
+            <return-response>
+              <set-status code="400" reason="Invalid Code Interpreter file upload" />
+              <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+              </set-header>
+              <set-body>{"error":{"code":"invalid_code_interpreter_upload","message":"The upload must be multipart assistants content within the configured size limit."}}</set-body>
+            </return-response>
+          </when>
+        </choose>
+      </when>
+      <when condition="@(context.Operation.Id == &quot;code-interpreter-file-delete&quot; &amp;&amp; (
+            !context.Request.MatchedParameters.ContainsKey(&quot;fileId&quot;)
+            || context.Request.MatchedParameters[&quot;fileId&quot;].Length &gt; 128
+            || !context.Request.MatchedParameters[&quot;fileId&quot;].StartsWith(
+              &quot;file-&quot;,
+              StringComparison.Ordinal
+            )
+          ))">
+        <return-response>
+          <set-status code="400" reason="Invalid Code Interpreter file id" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>{"error":{"code":"invalid_code_interpreter_file_id","message":"The file id is not valid."}}</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <set-backend-service base-url="{{code-interpreter-foundry-endpoint}}" />
+    <set-variable name="ai4ia-correlation-id" value="@{
+      var supplied = context.Request.Headers.GetValueOrDefault(&quot;x-correlation-id&quot;, &quot;&quot;);
+      return !String.IsNullOrWhiteSpace(supplied) &amp;&amp; supplied.Length &lt;= 128
+        ? supplied
+        : context.RequestId.ToString();
+    }" />
+    <set-header name="x-correlation-id" exists-action="override">
+      <value>@((string)context.Variables[&quot;ai4ia-correlation-id&quot;])</value>
+    </set-header>
+    <set-header name="x-apim-request-id" exists-action="override">
+      <value>@(context.RequestId.ToString())</value>
+    </set-header>
+    <set-header name="api-key" exists-action="delete" />
+    <set-query-parameter name="subscription-key" exists-action="delete" />
+    <set-query-parameter name="api-version" exists-action="delete" />
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-header name="Authorization" exists-action="delete" />
+    <set-header name="S7P-KEY" exists-action="delete" />
+    <set-header name="X-AI4IA-App-Id" exists-action="delete" />
+    <set-header name="X-AI4IA-User-Id" exists-action="delete" />
+    <set-header name="X-UserProfile" exists-action="delete" />
+    <authentication-managed-identity resource="https://ai.azure.com" />
+  </inbound>
+  <backend>
+    <forward-request timeout="240" />
+  </backend>
+  <outbound>
+    <base />
+    <set-header name="x-correlation-id" exists-action="override">
+      <value>@((string)context.Variables[&quot;ai4ia-correlation-id&quot;])</value>
+    </set-header>
+    <set-header name="x-apim-request-id" exists-action="override">
+      <value>@(context.RequestId.ToString())</value>
+    </set-header>
+  </outbound>
+  <on-error>
+    <base />
+    <set-header name="x-correlation-id" exists-action="override">
+      <value>@((string)context.Variables.GetValueOrDefault(&quot;ai4ia-correlation-id&quot;, context.RequestId.ToString()))</value>
+    </set-header>
+    <set-header name="x-apim-request-id" exists-action="override">
+      <value>@(context.RequestId.ToString())</value>
+    </set-header>
+  </on-error>
+</policies>

@@ -97,20 +97,19 @@ _RUN_CODE = ToolSpec(
     risk=ToolRisk.external,
     # NOT injection_only_risk, for two reasons that are independent of each other.
     # The model authors the program, so there is no fixed effect to bound; and
-    # this is the one path in the app that reaches Foundry directly rather than
-    # through the gateway (a stateful Azure-managed sandbox is not a routable
-    # deployment -- see AGENTS.md), so the usual APIM-side controls do not apply
-    # to it. Arbitrary execution outside the governed path earns a human.
+    # this stateful Azure-managed sandbox cannot traverse SimpleL7Proxy. It uses
+    # a dedicated APIM API that fixes the model/store/tool contract, but APIM
+    # cannot prove that arbitrary model-authored code is safe. That earns a human.
 )
 
 _ANALYZE_ATTACHMENT = ToolSpec(
     name="analyze_attachment",
     description=(
-        "Upload an attachment to a direct Foundry Code Interpreter sandbox, "
+        "Upload an attachment to the APIM-fronted Foundry Code Interpreter sandbox, "
         "run model-authored analysis over it, and read the result back."
     ),
     risk=ToolRisk.external,
-    # This is the same direct sandbox primitive as run_code. The closure-bound
+    # This is the same stateful sandbox primitive as run_code. The closure-bound
     # user/file access prevents cross-user reads, but it does not bound what code
     # the model asks the remote sandbox to run or remove the provider side effect.
     # Treating it as a safe read let a poisoned attachment trigger the very

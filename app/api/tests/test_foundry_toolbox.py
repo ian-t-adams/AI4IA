@@ -77,13 +77,42 @@ def test_checked_in_manifest_matches_the_live_toolbox():
     assert manifest["name"] == "ai4ia-toolbox"
     tool_types = [t["type"] for t in manifest["tools"]]
     assert tool_types == ["web_search", "code_interpreter", "toolbox_search_preview"]
-    assert manifest["skills"] == []
+    assert manifest["skills"] == [{"name": "evidence-review"}]
     # Every tool is named (the service allows at most one unnamed tool total).
     assert all(t.get("name") for t in manifest["tools"])
 
 
 def test_valid_manifest_has_no_errors():
     assert _tb.validate_manifest(_valid_manifest()) == []
+
+
+def test_checked_in_skill_source_matches_active_manifest():
+    manifest = _tb.load_manifest(_MANIFEST)
+    sources, errors = _tb.manifest_skill_sources(manifest)
+
+    assert errors == []
+    assert [source.name for source in sources] == ["evidence-review"]
+    assert sources[0].description
+    assert "# Evidence review" in sources[0].content
+
+
+def test_skill_source_requires_matching_front_matter_name(tmp_path):
+    root = tmp_path / "skills"
+    path = root / "wanted" / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\nname: different\ndescription: Test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+    manifest = {**_valid_manifest(), "skills": [{"name": "wanted"}]}
+
+    sources, errors = _tb.manifest_skill_sources(
+        manifest,
+        skills_root=root,
+    )
+
+    assert sources == []
+    assert any("SKILL.md name is 'different'" in error for error in errors)
 
 
 def test_manifest_rejects_bad_name_and_too_many_unnamed_tools():
@@ -137,7 +166,9 @@ def test_consumer_url_and_portable_entry_shape():
     assert entry["foundryToolbox"] is True
     assert entry["upstreamAuthMode"] == "managed_identity"
     assert entry["upstreamMiResource"] == "https://ai.azure.com"
-    assert entry["upstreamHeaders"] == {"Foundry-Features": "Toolboxes=V1Preview"}
+    assert entry["upstreamHeaders"] == {
+        "Foundry-Features": "Toolboxes=V1Preview,Skills=V1Preview"
+    }
     assert entry["upstreamQueryParams"] == {"api-version": "v1"}
 
 
@@ -1234,6 +1265,145 @@ def test_retry_after_activation_failure_reuses_matching_immutable_version():
         "ai4ia-toolbox",
         {"default_version": "2", "headers": _tb.TOOLBOX_FEATURES_HEADER},
     )
+
+
+def _skill_zip(content: str) -> bytes:
+    import io
+    import zipfile
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        archive.writestr("SKILL.md", content)
+    return out.getvalue()
+
+
+class _EnsureSkillsOps:
+    def __init__(self, versions: dict[str, str], *, default_version: str = "1"):
+        self.versions = dict(versions)
+        self.default_version = default_version
+        self.create_calls: list[tuple[str, dict]] = []
+        self.update_calls: list[tuple[str, dict]] = []
+
+    def get(self, name, **kwargs):
+        assert kwargs["headers"] == _tb.SKILLS_FEATURES_HEADER
+        return SimpleNamespace(name=name, default_version=self.default_version)
+
+    def get_version(self, name, version, **kwargs):
+        assert kwargs["headers"] == _tb.SKILLS_FEATURES_HEADER
+        return SimpleNamespace(name=name, version=version)
+
+    def list_versions(self, name, **kwargs):
+        assert kwargs["headers"] == _tb.SKILLS_FEATURES_HEADER
+        return iter(
+            SimpleNamespace(name=name, version=version)
+            for version in self.versions
+        )
+
+    def download_version(self, name, version, **kwargs):
+        assert kwargs["headers"] == _tb.SKILLS_FEATURES_HEADER
+        return iter([_skill_zip(self.versions[version])])
+
+    def create_from_files(self, name, **kwargs):
+        import base64
+
+        assert kwargs["headers"] == _tb.SKILLS_FEATURES_HEADER
+        body = kwargs["content"]
+        version = str(len(self.versions) + 1)
+        encoded = body.files[0][1]
+        payload = (
+            base64.b64decode(encoded)
+            if isinstance(encoded, str)
+            else encoded
+        )
+        self.versions[version] = payload.decode("utf-8")
+        self.create_calls.append((name, kwargs))
+        return SimpleNamespace(name=name, version=version)
+
+    def update(self, name, **kwargs):
+        assert kwargs["headers"] == _tb.SKILLS_FEATURES_HEADER
+        self.update_calls.append((name, kwargs))
+        self.default_version = kwargs["default_version"]
+        return SimpleNamespace(name=name, default_version=self.default_version)
+
+
+def _skill_project(ops):
+    return SimpleNamespace(beta=SimpleNamespace(skills=ops))
+
+
+def _skill_source(content: str):
+    return _tb.SkillSource(
+        name="evidence-review",
+        description="Review evidence",
+        content=content,
+        path=Path("SKILL.md"),
+    )
+
+
+def test_ensure_skill_unchanged_default_is_a_true_noop():
+    pytest.importorskip("azure.ai.projects")
+    content = (
+        "---\nname: evidence-review\ndescription: Review evidence\n---\n\n# Evidence\n"
+    )
+    ops = _EnsureSkillsOps({"1": content})
+
+    result, changed = _tb.ensure_skill(
+        _skill_source(content),
+        _ENDPOINT,
+        project=_skill_project(ops),
+    )
+
+    assert changed is False
+    assert result.version == "1"
+    assert ops.create_calls == []
+    assert ops.update_calls == []
+
+
+def test_ensure_skill_changed_content_creates_and_activates_one_version():
+    pytest.importorskip("azure.ai.projects")
+    old = "---\nname: evidence-review\ndescription: Old\n---\n\n# Old\n"
+    desired = (
+        "---\nname: evidence-review\ndescription: Review evidence\n---\n\n# New\n"
+    )
+    ops = _EnsureSkillsOps({"1": old})
+
+    result, changed = _tb.ensure_skill(
+        _skill_source(desired),
+        _ENDPOINT,
+        project=_skill_project(ops),
+    )
+
+    assert changed is True
+    assert result.version == "2"
+    assert len(ops.create_calls) == 1
+    assert ops.update_calls == [
+        (
+            "evidence-review",
+            {
+                "default_version": "2",
+                "headers": _tb.SKILLS_FEATURES_HEADER,
+            },
+        )
+    ]
+
+
+def test_ensure_skill_reuses_matching_immutable_version():
+    pytest.importorskip("azure.ai.projects")
+    old = "---\nname: evidence-review\ndescription: Old\n---\n\n# Old\n"
+    desired = (
+        "---\nname: evidence-review\ndescription: Review evidence\n---\n\n# New\n"
+    )
+    ops = _EnsureSkillsOps({"1": old, "2": desired}, default_version="1")
+
+    result, changed = _tb.ensure_skill(
+        _skill_source(desired),
+        _ENDPOINT,
+        project=_skill_project(ops),
+    )
+
+    assert changed is False
+    assert result.version == "2"
+    assert ops.create_calls == []
+    assert ops.default_version == "2"
 
 
 def test_check_toolbox_access_uses_preview_header():

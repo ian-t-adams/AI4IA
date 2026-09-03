@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Sequence
 from typing import Any, Protocol
@@ -54,6 +55,7 @@ CODE_INTERPRETER_TOOL: dict[str, Any] = {
 # code interpreter. Verified on Microsoft Learn (Responses "Upload PDF and analyze"):
 # ``assistants`` is supported; ``user_data`` is not.
 _FILE_UPLOAD_PURPOSE = "assistants"
+_FILE_ID_RE = re.compile(r"^file-[A-Za-z0-9_-]{1,123}$")
 
 
 def code_interpreter_tool(file_ids: Sequence[str] | None = None) -> dict[str, Any]:
@@ -152,7 +154,12 @@ class CodeInterpreterClient:
             url = f"{url}?api-version={self._api_version}"
         return url
 
-    async def _auth_headers(self, *, json_body: bool = True) -> dict[str, str]:
+    async def _auth_headers(
+        self,
+        *,
+        json_body: bool = True,
+        correlation_id: str | None = None,
+    ) -> dict[str, str]:
         # Only set Content-Type for JSON bodies; a multipart upload lets httpx set
         # the multipart boundary content-type itself.
         headers: dict[str, str] = {"Content-Type": "application/json"} if json_body else {}
@@ -163,6 +170,8 @@ class CodeInterpreterClient:
                 headers["Authorization"] = f"Bearer {self._api_key}"
             else:
                 headers["Authorization"] = f"Bearer {await self._token()}"
+        if correlation_id:
+            headers["x-correlation-id"] = correlation_id[:128]
         return headers
 
     async def _token(self) -> str:
@@ -181,6 +190,7 @@ class CodeInterpreterClient:
         instructions: str,
         user_input: str,
         file_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
     ) -> CodeInterpreterResult:
         """Run one Code Interpreter turn and return the normalized result.
 
@@ -194,18 +204,16 @@ class CodeInterpreterClient:
             "tools": [code_interpreter_tool(file_ids)],
             "instructions": instructions,
             "input": user_input,
-            # Match the Responses gateway's retention posture (see
-            # gateway/client.py::build_responses_request). ``store`` defaults to
-            # TRUE on this surface, so without this every compute turn leaves a
-            # provider-side copy of the user's instructions, input and output
-            # retrievable from ``GET /responses/{id}`` outside the app. This path
-            # is the documented direct-to-Foundry exception, which makes it the
-            # one place the gateway's opt-out would not otherwise apply.
+            # Match the normal Responses retention posture (see gateway/client.py).
+            # ``store`` defaults to TRUE on this surface, so without this every
+            # compute turn leaves a provider-side copy retrievable outside the
+            # app. The dedicated Code Interpreter APIM policy requires this value
+            # as defense in depth.
             "store": False,
         }
         client, owned = self._client()
         try:
-            headers = await self._auth_headers()
+            headers = await self._auth_headers(correlation_id=correlation_id)
             try:
                 resp = await client.post(
                     self.responses_url(), headers=headers, json=payload
@@ -233,7 +241,12 @@ class CodeInterpreterClient:
                 await client.aclose()
 
     async def upload_file(
-        self, *, filename: str, content: bytes, content_type: str | None = None
+        self,
+        *,
+        filename: str,
+        content: bytes,
+        content_type: str | None = None,
+        correlation_id: str | None = None,
     ) -> str:
         """Upload one file to the Responses Files API and return its ``file_id``.
 
@@ -243,7 +256,10 @@ class CodeInterpreterClient:
         """
         client, owned = self._client()
         try:
-            headers = await self._auth_headers(json_body=False)
+            headers = await self._auth_headers(
+                json_body=False,
+                correlation_id=correlation_id,
+            )
             files = {
                 "file": (
                     filename or "file",
@@ -267,21 +283,32 @@ class CodeInterpreterClient:
             except ValueError as exc:
                 raise CodeInterpreterError(resp.status_code, "non-JSON response") from exc
             file_id = body.get("id") if isinstance(body, dict) else None
-            if not isinstance(file_id, str) or not file_id:
-                raise CodeInterpreterError(resp.status_code, "file upload returned no id")
+            if not isinstance(file_id, str) or not _FILE_ID_RE.fullmatch(file_id):
+                raise CodeInterpreterError(
+                    resp.status_code,
+                    "file upload returned an invalid id",
+                )
             return file_id
         finally:
             if owned:
                 await client.aclose()
 
-    async def delete_file(self, file_id: str) -> bool:
+    async def delete_file(
+        self,
+        file_id: str,
+        *,
+        correlation_id: str | None = None,
+    ) -> bool:
         """Best-effort delete of an uploaded file. Never raises; returns success."""
-        if not file_id:
+        if not _FILE_ID_RE.fullmatch(file_id):
             return False
         client, owned = self._client()
         try:
             try:
-                headers = await self._auth_headers(json_body=False)
+                headers = await self._auth_headers(
+                    json_body=False,
+                    correlation_id=correlation_id,
+                )
                 resp = await client.delete(self.files_url(file_id), headers=headers)
             except Exception:  # noqa: BLE001 - cleanup must never break the turn
                 logger.debug("code interpreter file cleanup failed", exc_info=True)

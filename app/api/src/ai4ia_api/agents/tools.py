@@ -184,13 +184,32 @@ _KV_SECRET_RE = re.compile(
 _LONG_TOKEN_RE = re.compile(r"\b[A-Za-z0-9_-]{32,}\b")
 # Key names (e.g. dict keys) that should have their value redacted wholesale.
 _SECRET_KEY_RE = re.compile(
-    r"(?i)(api[_-]?key|secret|token|password|passwd|authorization|credential)"
+    r"(?i)(api[_-]?key|secret|token|password|passwd|authorization|credential|signature|\bsig\b)"
+)
+# Credentials embedded in URLs do not necessarily have long/high-entropy values,
+# and a field named ``downloadUrl`` does not look secret by itself. Mask both URL
+# userinfo and common signed-query/fragment parameters before the generic token
+# pass so SAS/presigned links cannot be persisted in receipts or traces.
+_URL_USERINFO_RE = re.compile(r"(?i)(https?://)([^/\s@]+)@")
+_URL_SECRET_PARAM_RE = re.compile(
+    r"(?i)((?:[?&#]|&amp;)"
+    r"(?:sig|signature|code|token|access_token|client_secret|api[_-]?key"
+    r"|subscription[_-]?key|ocp-apim-subscription-key)"
+    r"=)([^&#\s\"']+)"
 )
 
 
 def redact(text: str) -> str:
     """Mask credential key/value pairs and long opaque tokens in a string."""
-    out = _KV_SECRET_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{_REDACTED}", text)
+    out = _URL_USERINFO_RE.sub(
+        lambda m: f"{m.group(1)}{_REDACTED}@",
+        text,
+    )
+    out = _URL_SECRET_PARAM_RE.sub(
+        lambda m: f"{m.group(1)}{_REDACTED}",
+        out,
+    )
+    out = _KV_SECRET_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{_REDACTED}", out)
     return _LONG_TOKEN_RE.sub(_REDACTED, out)
 
 

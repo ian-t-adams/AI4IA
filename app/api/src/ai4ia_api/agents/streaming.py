@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..gateway.client import ModelGatewayError
+from ..safety import MessageSafety, merge_safety, parse_safety
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,7 @@ class StreamedIteration:
     content: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     usage: dict[str, Any] | None = None
+    safety: MessageSafety | None = None
 
 
 async def stream_iteration(
@@ -220,6 +222,7 @@ async def stream_iteration(
     accumulator = ToolCallAccumulator()
     content: list[str] = []
     usage: dict[str, Any] | None = None
+    safety: MessageSafety | None = None
 
     async for chunk in gateway.stream(
         deployment=deployment,
@@ -245,6 +248,7 @@ async def stream_iteration(
             continue
         if payload.get("error"):
             raise ModelGatewayError(502, _STREAM_FAILED)
+        safety = merge_safety(safety, parse_safety(payload))
         choices = payload.get("choices")
         if not isinstance(choices, list):
             continue
@@ -262,4 +266,5 @@ async def stream_iteration(
         content="".join(content),
         tool_calls=accumulator.finalize(),
         usage=usage,
+        safety=safety,
     )

@@ -127,6 +127,19 @@ def test_redact_leaves_short_words_alone():
     assert redact("hello world 1/2") == "hello world 1/2"
 
 
+def test_redact_masks_signed_url_query_and_userinfo():
+    raw = (
+        "download https://alice:shortpass@blob.example.test/a.csv"
+        "?sv=2026-01-01&sig=ab%2Fcd%2Bef&code=tiny"
+    )
+    redacted = redact(raw)
+
+    assert "alice:shortpass" not in redacted
+    assert "ab%2Fcd%2Bef" not in redacted
+    assert "code=tiny" not in redacted
+    assert "blob.example.test/a.csv" in redacted
+
+
 # The shape a credential actually arrives in when a tool fails: a decoded JSON
 # error body from the API, the gateway, or an MCP server. `\s*[=:]` cannot cross
 # the label's own closing quote, so `"api_key": "..."` was not matched at all.

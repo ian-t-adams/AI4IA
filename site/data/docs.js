@@ -21,7 +21,8 @@ window.AI4IA_DOCS = {
         { path: "docs/configuration-reference.md", title: "Configuration reference", desc: "Every feature/env/parameter mapping across bicep, params, workflow vars and app env." },
         { path: "docs/region-capability-matrix.md", title: "Region & capability map", desc: "Which models and capabilities live in East US 2, Sweden Central and West US." },
         { path: "docs/naming-and-tagging.md", title: "Naming & tagging", desc: "Resource naming tokens and the tag scheme applied across the deployment." },
-        { path: "docs/foundry-toolbox.md", title: "Foundry toolbox", desc: "The official MCP plane: toolbox tools, A2A and the private tool catalog, and why the canonical toolbox ships no skills." },
+        { path: "docs/foundry-toolbox.md", title: "Foundry toolbox", desc: "The official MCP plane: toolbox tools, progressively disclosed Foundry skills, A2A, and the private tool catalog." },
+        { path: "docs/aca-sandboxes-evaluation.md", title: "ACA Sandboxes evaluation", desc: "Decision record and PoC contract for evaluating customizable ACA Sandboxes without replacing the APIM-fronted production Code Interpreter." },
         { path: "docs/document-multimodal-understanding.md", title: "Document & multimodal understanding", desc: "Content Understanding ingest, retrieval, compute and the library." },
         { path: "docs/memory.md", title: "Memory architecture", desc: "Canonical Cosmos memory, owner-scoped CRUD, vector recall, concurrency fences, deletion, privacy, and remaining gaps." },
         { path: "infra/README.md", title: "Infrastructure (Bicep) overview", desc: "How infra/main.bicep and the parameters, model catalog and azd hooks fit together." },
@@ -54,7 +55,7 @@ window.AI4IA_DOCS = {
         { path: "SECURITY.md", title: "Security policy", desc: "How to report a vulnerability and what is in scope." },
         { path: "CODE_OF_CONDUCT.md", title: "Code of conduct", desc: "Contributor Covenant standards and enforcement for participating in the project." },
         { path: "THIRD_PARTY_NOTICES.md", title: "Third-party notices", desc: "License attribution and provenance for vendored and third-party dependencies the app ships \u2014 compliance reference." },
-        { path: "docs/rai-decision-record.md", title: "Responsible AI decision record", desc: "Document-complete annotate-only record with an explicitly incomplete modality-scope approval control and the evidence required to close it." },
+        { path: "docs/rai-decision-record.md", title: "Responsible AI decision record", desc: "Owner-approved non-blocking assessment policy with explicit remaining gaps in modality coverage, disclosure, monitoring, and escalation." },
       ],
     },
     {

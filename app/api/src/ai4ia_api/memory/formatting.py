@@ -23,6 +23,7 @@ def format_memory_context(
     max_injected: int,
     max_chars_per_item: int,
     max_total_chars: int,
+    used_records: list[MemoryRecord] | None = None,
 ) -> str | None:
     """Render recalled records as a capped, untrusted-labelled context block.
 
@@ -34,7 +35,12 @@ def format_memory_context(
     """
     if not records:
         return None
-    lines: list[str] = [UNTRUSTED_HEADER, "", "<memories>"]
+    lines: list[str] = [
+        UNTRUSTED_HEADER,
+        "",
+        '""" <documents>',
+        "<memories>",
+    ]
     total = 0
     used = 0
     for record in records:
@@ -48,9 +54,12 @@ def format_memory_context(
         if not snippet:
             continue
         lines.append(f"- {snippet}")
+        if used_records is not None:
+            used_records.append(record)
         total += len(snippet)
         used += 1
     if used == 0:
         return None
     lines.append("</memories>")
+    lines.append('</documents> """')
     return "\n".join(lines)

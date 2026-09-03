@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from ..agents.approvals import PendingToolApproval
 from ..citations import MessageCitation, RetrievedSource
+from ..receipts import ExecutionReceipt
 from ..safety import MessageSafety
 
 
@@ -190,6 +191,25 @@ class Message(BaseModel):
     # first time a document was re-chunked or deleted.
     sources: list[RetrievedSource] | None = None
     citations: list[MessageCitation] | None = None
+    # The turn's execution receipt: what was supplied to the model, which tools
+    # were offered, which it actually called, and with what. See
+    # :mod:`ai4ia_api.receipts`.
+    #
+    # Additive and optional exactly like ``steps``/``safety``/``sources``:
+    # existing Cosmos documents lack the field and deserialize to None, so no
+    # migration and no reinterpretation of an older row. ``None`` means "this
+    # turn was never receipted" (it predates the feature or was produced by a
+    # path that does not build one), which is deliberately distinct from a
+    # receipt whose lists happen to be empty -- that one asserts that nothing
+    # was offered and nothing ran.
+    #
+    # Like ``sources``, the prompt/context snapshot it carries is an immutable
+    # copy taken at send time. Deleting the memory or document a turn quoted
+    # does NOT rewrite that turn's receipt, for the same reason it does not
+    # rewrite the earlier messages that already quoted it: the receipt records
+    # what was supplied then, and rewriting history to match current state would
+    # destroy the only evidence of what the model was actually given.
+    executionReceipt: ExecutionReceipt | None = None
     createdAt: datetime = Field(default_factory=_now)
 
 

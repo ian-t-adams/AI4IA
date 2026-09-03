@@ -257,7 +257,8 @@ class DocumentRetrievalService:
             f"resolves the document and the timestamp from the id, so never write a "
             f"filename or a timecode inside a citation token. Use the content to "
             f"help answer the user's message that follows.\n\n"
-            f"BEGIN LIBRARY {nonce}\n{body}\nEND LIBRARY {nonce}"
+            f'""" <documents>\nBEGIN LIBRARY {nonce}\n{body}\n'
+            f'END LIBRARY {nonce}\n</documents> """'
         )
         return RetrievalContext(block=block, sources=registry.sources())
 
@@ -285,7 +286,11 @@ class DocumentRetrievalService:
             return []
         if not ready:
             return []
-        names = {d.id: _one_line(d.filename, _LABEL_LIMIT) or "document" for d in ready}
+        documents = {document.id: document for document in ready}
+        names = {
+            document_id: _one_line(document.filename, _LABEL_LIMIT) or "document"
+            for document_id, document in documents.items()
+        }
         # owner userId -> the accessible ready doc ids owned by that user.
         by_owner: dict[str, list[str]] = {}
         for doc in ready:
@@ -335,6 +340,10 @@ class DocumentRetrievalService:
             # it must never reach the model at all.
             source = registry.mint(
                 document_id=rec.document_id,
+                document_version=(
+                    documents[rec.document_id].contentHash
+                    or documents[rec.document_id].updatedAt.isoformat()
+                ),
                 filename=names[rec.document_id],
                 content=content,
                 heading=_one_line(rec.heading, _LABEL_LIMIT) if rec.heading else None,

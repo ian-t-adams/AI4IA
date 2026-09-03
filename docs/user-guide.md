@@ -116,10 +116,16 @@ and tool safety; the web app is the user interface.
 
 Tool-using turns show live activity such as searching, reading, running a tool,
 being blocked, or encountering an error. Completed turns retain a collapsed,
-activity list. The required contract is an execution trace, **not**
-chain-of-thought: it may contain only the step type, validated tool alias/name,
-fixed reason category, and coarse outcome—never hidden reasoning,
-credentials, arguments/results, prompts or queries, audio, or transcripts.
+coarse activity list. Each completed model turn also has a collapsed **Execution
+receipt** for owner diagnosis: resolved model/deployment/region/SKU, correlation
+id, instruction/configuration hashes, the effective redacted prompt, admitted and
+displaced context, durable memory/document source versions, tools offered, and
+tools invoked with bounded credential-redacted arguments/results. A skill load
+records its source URI, version/default resolution, content hash, and truncation.
+
+Neither panel is chain-of-thought. The app does not receive hidden model
+reasoning and does not claim to reconstruct it. Large payloads are shortened
+before persistence and retain their original redacted byte count and SHA-256.
 
 ## Documents and media
 
@@ -317,8 +323,9 @@ the affected item rather than disabling the whole inspector.
 Memories you create or edit are locked against automatic consolidation. `/forget`
 removes this conversation's memories by default; `/forget me` removes all active
 memories for your profile. Document deletion also fences and removes memories
-derived from that document. There is no global consent/toggle or per-answer
-recalled-memory indicator yet.
+derived from that document. A turn's execution receipt shows the identity,
+version, score, hash, and admitted text of each automatic memory supplied to that
+turn. There is no per-user memory capability switch yet.
 
 The Usage section reports known token, image, page, and cost subtotals plus request
 coverage when providers omit a billing dimension. `Unknown` is shown instead of

@@ -30,7 +30,9 @@ _TOOLBOX_ENTRY = {
     "upstreamUrl": "https://acct.services.ai.azure.com/api/projects/proj/toolboxes/tb/mcp",
     "upstreamAuthMode": "managed_identity",
     "upstreamMiResource": "https://ai.azure.com",
-    "upstreamHeaders": {"Foundry-Features": "Toolboxes=V1Preview"},
+    "upstreamHeaders": {
+        "Foundry-Features": "Toolboxes=V1Preview,Skills=V1Preview"
+    },
     "upstreamQueryParams": {"api-version": "v1"},
 }
 
@@ -78,6 +80,7 @@ def test_generator_projects_toolbox_to_runtime_shape_and_drops_infra_fields():
             "displayName": "Foundry Toolbox",
             "description": "Curated Foundry Agent Service toolbox via APIM.",
             "path": "foundry-toolbox/mcp",
+            "resourcesEnabled": False,
         }
     ]
     [item] = out["servers"]
@@ -101,6 +104,7 @@ def test_generator_accepts_portable_foundry_toolbox_without_upstream_url():
             "displayName": "Foundry toolbox: ai4ia-toolbox",
             "description": "AI4IA shared Foundry toolbox via APIM.",
             "path": "ai4ia-toolbox/mcp",
+            "resourcesEnabled": True,
         }
     ]
     [item] = out["servers"]

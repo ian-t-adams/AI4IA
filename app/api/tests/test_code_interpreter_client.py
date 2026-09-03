@@ -142,23 +142,27 @@ async def test_bearer_mode_without_key_uses_aad_token_provider():
 async def test_run_posts_code_interpreter_tool_payload():
     fake = FakeAsyncClient(FakeResponse(200, {"status": "completed", "output_text": "42"}))
     c = _client(_settings(), fake)
-    result = await c.run(instructions="be careful", user_input="sum it")
+    result = await c.run(
+        instructions="be careful",
+        user_input="sum it",
+        correlation_id="corr-run",
+    )
     body = fake.calls[0]["json"]
     assert body["model"] == "gpt-4.1"
     assert body["tools"] == [CODE_INTERPRETER_TOOL]
     assert body["instructions"] == "be careful"
     assert body["input"] == "sum it"
+    assert fake.calls[0]["headers"]["x-correlation-id"] == "corr-run"
     assert result.output_text == "42"
     assert result.succeeded is True
 
 
 async def test_run_opts_out_of_provider_side_storage():
-    """This client is the documented direct-to-Foundry exception, so the
-    Responses gateway's ``store: false`` does not cover it. Without an explicit
-    opt-out here, ``store`` defaults to TRUE on this surface and every compute
-    turn leaves the user's instructions, input and output retrievable from
-    ``GET /responses/{id}`` for 30 days -- a second, ungoverned copy of user
-    content that the rest of the app is careful to avoid.
+    """The stateful sandbox bypasses SimpleL7Proxy, so the normal Responses
+    request builder does not cover it. Without an explicit opt-out here,
+    ``store`` defaults to TRUE and every compute turn leaves the user's
+    instructions, input and output retrievable from ``GET /responses/{id}``.
+    The dedicated APIM policy also requires this value.
     """
     fake = FakeAsyncClient(FakeResponse(200, {"status": "completed", "output_text": "42"}))
     c = _client(_settings(), fake)
@@ -210,13 +214,17 @@ async def test_upload_file_posts_multipart_and_returns_id():
     fake = FakeAsyncClient(FakeResponse(200, {"id": "file-uploaded-1"}))
     c = _client(_settings(), fake)
     file_id = await c.upload_file(
-        filename="report.csv", content=b"a,b\n1,2\n", content_type="text/csv"
+        filename="report.csv",
+        content=b"a,b\n1,2\n",
+        content_type="text/csv",
+        correlation_id="corr-upload",
     )
     assert file_id == "file-uploaded-1"
     call = fake.calls[0]
     assert call["url"] == "https://res.openai.azure.com/openai/v1/files"
     # Multipart upload must NOT carry a JSON content-type (httpx sets the boundary).
     assert "Content-Type" not in call["headers"]
+    assert call["headers"]["x-correlation-id"] == "corr-upload"
     assert call["json"] is None
     assert call["data"] == {"purpose": "assistants"}
     assert call["files"]["file"] == ("report.csv", b"a,b\n1,2\n", "text/csv")
@@ -233,6 +241,13 @@ async def test_upload_file_missing_id_raises():
     fake = FakeAsyncClient(FakeResponse(200, {"object": "file"}))
     c = _client(_settings(), fake)
     with pytest.raises(CodeInterpreterError):
+        await c.upload_file(filename="f.csv", content=b"x")
+
+
+async def test_upload_file_rejects_unsafe_file_id():
+    fake = FakeAsyncClient(FakeResponse(200, {"id": "file-1?api-key=leak"}))
+    c = _client(_settings(), fake)
+    with pytest.raises(CodeInterpreterError, match="invalid id"):
         await c.upload_file(filename="f.csv", content=b"x")
 
 
@@ -255,8 +270,9 @@ async def test_upload_file_transport_error_raises():
 async def test_delete_file_issues_delete():
     fake = FakeAsyncClient(FakeResponse(200, {"deleted": True}))
     c = _client(_settings(), fake)
-    assert await c.delete_file("file-9") is True
+    assert await c.delete_file("file-9", correlation_id="corr-delete") is True
     assert fake.deletes[0]["url"] == "https://res.openai.azure.com/openai/v1/files/file-9"
+    assert fake.deletes[0]["headers"]["x-correlation-id"] == "corr-delete"
 
 
 async def test_delete_file_swallows_errors():
@@ -269,6 +285,13 @@ async def test_delete_file_empty_id_is_noop():
     fake = FakeAsyncClient(FakeResponse(200, {"deleted": True}))
     c = _client(_settings(), fake)
     assert await c.delete_file("") is False
+    assert fake.deletes == []
+
+
+async def test_delete_file_unsafe_id_is_noop():
+    fake = FakeAsyncClient(FakeResponse(200, {"deleted": True}))
+    c = _client(_settings(), fake)
+    assert await c.delete_file("file-1?subscription-key=leak") is False
     assert fake.deletes == []
 
 

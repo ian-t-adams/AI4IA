@@ -20,7 +20,10 @@ run survives a deploy, scale-in, or crash), per-user memory, usage metering and
 entitlements, voice/STT/TTS +
 Voice Live, image/video generation, document and multimodal understanding,
 custom remote MCP tools, admin usage/resource dashboards, and Azure Monitor /
-Application Insights telemetry.
+Application Insights telemetry. Owner-visible execution receipts retain the
+effective redacted prompt/context, memory and document provenance, tools
+offered/invoked, bounded arguments/results, safety coverage, and correlation
+metadata without claiming access to hidden model reasoning.
 
 Advanced capabilities are feature-gated. The checked-in showcase profile keeps
 the current broad capability set as environment-overridable defaults; a new
@@ -32,10 +35,12 @@ defaults and every deployable variable, use the
 observed environment's values into a new tenant.
 
 Some capabilities are deliberately incomplete, and the docs say so where it
-matters: the Responsible AI record is document-complete but not approved for the
-full live modality scope ([decision record](docs/rai-decision-record.md)); memory
-has no global user-facing consent toggle ([memory](docs/memory.md)); and network
-isolation is design scaffolding rather than a served private mode
+matters: the Responsible AI record now carries the owner's non-blocking policy
+decision, but assessment coverage, aggregate monitoring, disclosure, and
+escalation remain incomplete across the full live modality scope
+([decision record](docs/rai-decision-record.md)); memory has no per-user
+capability switch ([memory](docs/memory.md)); and network isolation is design
+scaffolding rather than a served private mode
 ([architecture](docs/architecture.md)).
 
 ## Repository layout
@@ -58,10 +63,11 @@ azure.yaml  Azure Developer CLI service map
 - **IaC:** Bicep + Azure Developer CLI (`azd`).
 - **Stack:** Next.js/TypeScript web, Python FastAPI API, .NET SimpleL7Proxy.
 - **Model gateway:** compatible HTTP/SSE calls go SimpleL7Proxy -> APIM; realtime
-  WebSockets go FastAPI relay -> APIM. The Responses-API Code Interpreter is the
-  explicit direct-Foundry exception because its stateful sandbox is not a routable
-  catalog deployment. Content Understanding, WebIQ grounding, and Azure Monitor
-  are separate non-model control/data planes, not model inference.
+  WebSockets go FastAPI relay -> APIM. Responses-API Code Interpreter Files and
+  stateful sandbox calls bypass SimpleL7Proxy but use their own API-scoped APIM
+  route; the FastAPI identity has no direct OpenAI inference role. Content
+  Understanding, WebIQ grounding, and Azure Monitor are separate non-model
+  control/data planes, not model inference.
 - **Catalog-driven models:** `infra/models.json` is the deployment source of truth
   and generates the packaged API model catalog, including per-model
   `reasoning_effort` values.

@@ -2554,6 +2554,7 @@ export function ChatApp() {
         safety: m.safety,
         sources: m.sources,
         citations: m.citations,
+        executionReceipt: m.executionReceipt,
       }));
     if (streaming && !streamMaterialized) {
       base.push({

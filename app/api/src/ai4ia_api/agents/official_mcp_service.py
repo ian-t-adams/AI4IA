@@ -25,13 +25,13 @@ Design notes:
   invocations still pass through the exact-argument approval policy used by BYO
   tools. No per-server secret is stored — the subscription key is app-global and
   supplied by :meth:`secret_for`.
-* **Lazy, cached discovery.** There is no registration step, so tools are
-  discovered the first time the plane is used and cached on the (in-memory)
-  records for the process lifetime. A server that fails discovery contributes
-  **zero** tools and never breaks a turn; it is retried at most once per
-  ``retry_interval_s`` so a transient APIM blip self-heals without re-discovering
-  healthy servers every turn. Once every server has discovered successfully the
-  hot path is lock-free and network-free.
+* **Lazy, cached discovery.** There is no registration step, so tools and
+  explicitly enabled MCP resources are discovered the first time the plane is
+  used and cached on the in-memory records. A server that fails tool discovery
+  contributes **zero** tools; a resource-only failure leaves its tools available
+  and retries later. Resource-enabled servers refresh periodically so a toolbox
+  reconciled just after an app deploy becomes visible without restarting; calls
+  between refreshes remain lock-free and network-free.
 * **Default-OFF / empty.** With the feature flag off (the default) this service
   is never constructed; with an empty catalog (also the default) ``list_all``
   returns ``[]`` and nothing is wired into a turn.
@@ -44,9 +44,10 @@ import time
 from urllib.parse import urlparse
 
 from . import mcp_health
-from .mcp_client import McpAuth, McpConnector
+from .mcp_health import is_quarantined
+from .mcp_client import McpAuth, McpConnector, McpResourceResult
 from .mcp_servers import McpAuthMode, McpTransport, UserMcpServer, _now
-from .ssrf import Resolver
+from .ssrf import Resolver, async_validate_public_https_url
 from ..official_mcp_catalog import OfficialMcpCatalog
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,7 @@ OFFICIAL_USER_ID = "__official__"
 # yet discovered successfully, so a persistently failing server does not get
 # hammered every turn while a transient failure still self-heals.
 DEFAULT_RETRY_INTERVAL_S = 60.0
+DEFAULT_RESOURCE_REFRESH_INTERVAL_S = 300.0
 
 
 def build_official_servers(
@@ -94,6 +96,7 @@ def build_official_servers(
                 # No per-server secret: the APIM subscription key is app-global
                 # and supplied by ``secret_for`` at call time.
                 secretRef=None,
+                resourcesEnabled=entry.resourcesEnabled,
             )
         )
     return servers
@@ -116,11 +119,13 @@ class OfficialMcpService:
         connector: McpConnector,
         resolver: Resolver | None = None,
         retry_interval_s: float = DEFAULT_RETRY_INTERVAL_S,
+        resource_refresh_interval_s: float = DEFAULT_RESOURCE_REFRESH_INTERVAL_S,
     ) -> None:
         self._connector = connector
         self._resolver = resolver
         self._subscription_key = subscription_key
         self._retry_interval_s = retry_interval_s
+        self._resource_refresh_interval_s = resource_refresh_interval_s
         # The app-global credential presented to APIM on every official call.
         self._auth = McpAuth(
             mode=McpAuthMode.apim_subscription, secret=subscription_key
@@ -130,6 +135,7 @@ class OfficialMcpService:
         self._servers = build_official_servers(catalog, gateway_url=gateway_url)
         self._discovered_ok: set[str] = set()
         self._last_attempt: dict[str, float] = {}
+        self._last_success: dict[str, float] = {}
         self._lock = asyncio.Lock()
 
     async def close(self) -> None:
@@ -183,6 +189,10 @@ class OfficialMcpService:
         """
         self._discovered_ok.clear()
         self._last_attempt.clear()
+        self._last_success.clear()
+        for server in self._servers:
+            server.discoveredTools = []
+            server.discoveredResources = []
 
     async def secret_for(self, server: UserMcpServer) -> str | None:
         """Resolve the credential for an official server — the app-global APIM key.
@@ -192,6 +202,35 @@ class OfficialMcpService:
         door), so the per-server record is irrelevant.
         """
         return self._subscription_key
+
+    async def read_resource(
+        self, server: UserMcpServer, uri: str
+    ) -> McpResourceResult:
+        """Read one resource that this curated server previously advertised.
+
+        Both the catalog opt-in and the discovery membership check are enforced at
+        execution time so a caller cannot turn the official bridge into a generic
+        MCP resource fetch primitive.
+        """
+        if (
+            not any(candidate is server for candidate in self._servers)
+            or not server.resourcesEnabled
+        ):
+            raise ValueError("MCP resources are not enabled for this official server.")
+        if is_quarantined(server):
+            raise ValueError("MCP resource server is quarantined.")
+        if uri not in {resource.uri for resource in server.discoveredResources}:
+            raise ValueError("MCP resource was not advertised by this official server.")
+
+        await async_validate_public_https_url(
+            server.endpoint,
+            resolver=self._resolver,
+        )
+        return await self._connector.read_resource(
+            endpoint=server.endpoint,
+            auth=self._auth,
+            uri=uri,
+        )
 
     async def record_health(
         self, server: UserMcpServer, *, ok: bool, error: object | None = None
@@ -217,7 +256,16 @@ class OfficialMcpService:
         """Servers not yet discovered whose retry window has elapsed."""
         out: list[UserMcpServer] = []
         for server in self._servers:
+            if is_quarantined(server):
+                continue
             if server.name in self._discovered_ok:
+                last_success = self._last_success.get(server.name, 0.0)
+                if (
+                    not server.resourcesEnabled
+                    or now - last_success < self._resource_refresh_interval_s
+                ):
+                    continue
+                out.append(server)
                 continue
             last = self._last_attempt.get(server.name, 0.0)
             if now - last >= self._retry_interval_s:
@@ -227,7 +275,12 @@ class OfficialMcpService:
     async def _discover_many(self, servers: list[UserMcpServer]) -> None:
         for server in servers:
             self._last_attempt[server.name] = time.monotonic()
+            self._discovered_ok.discard(server.name)
             try:
+                await async_validate_public_https_url(
+                    server.endpoint,
+                    resolver=self._resolver,
+                )
                 tools = await self._connector.discover(
                     endpoint=server.endpoint, auth=self._auth
                 )
@@ -238,7 +291,24 @@ class OfficialMcpService:
                 mcp_health.record_failure(server, exc)
                 continue
             server.discoveredTools = tools
+            resources_ok = True
+            if server.resourcesEnabled:
+                try:
+                    server.discoveredResources = await self._connector.list_resources(
+                        endpoint=server.endpoint,
+                        auth=self._auth,
+                    )
+                except Exception:  # noqa: BLE001 - resources are additive to tools
+                    logger.warning(
+                        "official mcp resource discovery failed for %s",
+                        server.name,
+                        exc_info=True,
+                    )
+                    server.discoveredResources = []
+                    resources_ok = False
             server.lastConnectedAt = _now()
             server.lastError = None
             mcp_health.record_success(server)
-            self._discovered_ok.add(server.name)
+            if resources_ok:
+                self._discovered_ok.add(server.name)
+                self._last_success[server.name] = time.monotonic()

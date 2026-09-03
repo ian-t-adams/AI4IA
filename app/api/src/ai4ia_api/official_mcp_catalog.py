@@ -38,6 +38,7 @@ class OfficialMcpServer(BaseModel):
     displayName: str
     description: str = ""
     path: str
+    resourcesEnabled: bool = False
 
 
 class OfficialMcpCatalog(BaseModel):
@@ -58,6 +59,7 @@ def _project_infra_catalog(raw: dict[str, Any]) -> dict[str, Any]:
                 "displayName": entry.get("displayName", name),
                 "description": entry.get("description", ""),
                 "path": f"{name}/mcp",
+                "resourcesEnabled": bool(entry.get("foundryToolbox")),
             }
         )
     return {"servers": servers}

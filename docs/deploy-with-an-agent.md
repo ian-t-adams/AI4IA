@@ -380,11 +380,18 @@ binding.
 truth and generates the packaged runtime catalog. Names carry subscription
 tokens, so a literal that works in one environment is wrong in the next.
 
-**Do not add a direct Foundry call.** HTTP/SSE model traffic goes
-SimpleL7Proxy → APIM → Foundry; realtime WebSockets go FastAPI relay → APIM →
-Foundry because SimpleL7Proxy has no WebSocket support. The only direct-Foundry
-exception is the Responses-API Code Interpreter, whose stateful sandbox is not a
-routable catalog deployment. Anything else is a security architecture change.
+**Do not add a direct Foundry model call.** Compatible HTTP/SSE traffic goes
+SimpleL7Proxy → APIM → Foundry. Realtime WebSockets and Responses-API Code
+Interpreter bypass only SimpleL7Proxy and use separately scoped APIM APIs.
+Content Understanding is a non-model data plane with its own narrow role.
+Anything else is a security architecture change.
+
+The Code Interpreter APIM migration can expose stale direct API-identity roles
+from an older incremental deployment. The deploy workflow fails closed and
+prints their literal assignment IDs. Treat the `az role assignment delete --ids
+...` remediation as a human-owned RBAC change: inspect the account scope,
+principal ID, and role ID before approving it; an agent must not execute it
+automatically.
 
 **A rollback restores container revisions only.** Nothing reverts what
 `azd provision` changed — APIM policy and fragments, named values, model

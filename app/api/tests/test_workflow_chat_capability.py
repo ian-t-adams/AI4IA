@@ -169,6 +169,7 @@ async def test_handler_runs_safe_workflow_and_meters_nested_model_usage():
 
     assert result["ok"] is True
     assert result["text"] == "workflow done"
+    assert result["workflowVersion"] == workflow.updatedAt.isoformat()
     assert gateway.calls == 1
     stored = usage_repo._by_user["u1"]
     assert len(stored) == 1

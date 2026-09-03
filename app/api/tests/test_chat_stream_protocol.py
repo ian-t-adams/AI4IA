@@ -8,7 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.responses import StreamingResponse
 
-from ai4ia_api.agents.runtime import AgentRunResult
+from ai4ia_api.agents.receipt import ReceiptDraft
+from ai4ia_api.agents.runtime import AgentRunResult, AgentStep
 from ai4ia_api.auth.base import AuthenticatedUser
 from ai4ia_api.catalog import DeploymentOption
 from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
@@ -19,6 +20,8 @@ from ai4ia_api.routers._chat_streaming import (
     _agentic_stream,
     _stream_with_placeholder,
 )
+from ai4ia_api.safety import MessageSafety, SafetySignal
+from ai4ia_api.usage.models import TokenUsage
 from ai4ia_api.sessions.models import Message, MessageRole, MessageStatus
 from tests.conftest import make_settings, stream_like_gateway
 
@@ -295,7 +298,15 @@ def test_the_kill_switch_restores_the_single_terminal_delta():
 async def test_a_disconnect_mid_stream_persists_the_text_the_user_received():
     """Cancellation still leaves no half-written row — it leaves an honest one."""
 
-    async def run(_on_step, on_delta):
+    async def run(on_step, on_delta):
+        await on_step(
+            AgentStep(
+                kind="tool_result",
+                tool="calculator",
+                arguments={"expression": "6*7"},
+                result={"result": 42},
+            )
+        )
         await on_delta("half an ")
         await on_delta("answer")
         await asyncio.sleep(60)
@@ -306,14 +317,69 @@ async def test_a_disconnect_mid_stream_persists_the_text_the_user_received():
         run=run,
         repo=repo,
         stream_tokens=True,
+        receipt_draft=ReceiptDraft(correlation_id="correlation"),
     )
     assert "metadata" in await anext(stream)
+    assert "tool_result" in await anext(stream)
     assert "half an " in await anext(stream)
     assert "answer" in await anext(stream)
     await stream.aclose()
 
     assert repo.persisted[-1].status is MessageStatus.cancelled
     assert repo.persisted[-1].content == "half an answer"
+    receipt = repo.persisted[-1].executionReceipt
+    assert receipt is not None
+    assert [call.tool for call in receipt.toolCalls] == ["calculator"]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_recovers_completed_result_queued_after_last_delta():
+    async def run(_on_step, on_delta):
+        await on_delta("complete text")
+        return AgentRunResult(
+            text="complete text",
+            model="deployment",
+            iterations=2,
+            usage=TokenUsage(
+                prompt=5,
+                completion=3,
+                total=8,
+                known=True,
+                complete=True,
+                calls=2,
+            ),
+            safety=MessageSafety(
+                signals=[
+                    SafetySignal(
+                        category="violence",
+                        scope="completion",
+                        severity="safe",
+                        severityLevel=0,
+                        modelCall=2,
+                    )
+                ],
+                signalCount=1,
+            ),
+        )
+
+    repo = _PersistingRepo()
+    stream = _test_agentic_stream(
+        run=run,
+        repo=repo,
+        stream_tokens=True,
+        receipt_draft=ReceiptDraft(correlation_id="correlation"),
+    )
+    assert "metadata" in await anext(stream)
+    assert "complete text" in await anext(stream)
+    await stream.aclose()
+
+    row = repo.persisted[-1]
+    assert row.status is MessageStatus.cancelled
+    assert row.executionReceipt is not None
+    assert row.executionReceipt.iterations == 2
+    assert row.executionReceipt.usage.calls == 2
+    assert row.safety is not None
+    assert row.safety.signals[0].modelCall == 2
 
 
 @pytest.mark.asyncio
@@ -327,7 +393,22 @@ async def test_a_streamed_preamble_is_kept_when_the_fallback_completes_the_turn(
     async def fallback():
         from ai4ia_api.usage.models import TokenUsage
 
-        return "Here is the answer.", TokenUsage.empty()
+        return (
+            "Here is the answer.",
+            TokenUsage.empty(),
+            MessageSafety(
+                provider="azure_openai",
+                coverage=["completion"],
+                signals=[
+                    SafetySignal(
+                        category="violence",
+                        scope="completion",
+                        severity="low",
+                        severityLevel=1,
+                    )
+                ],
+            ),
+        )
 
     repo = _PersistingRepo()
     stream = _test_agentic_stream(
@@ -343,6 +424,8 @@ async def test_a_streamed_preamble_is_kept_when_the_fallback_completes_the_turn(
         if '"choices"' in f
     )
     assert delivered == "Looking that up. \n\nHere is the answer."
+    assert repo.persisted[-1].safety is not None
+    assert repo.persisted[-1].safety.signals[0].severityLevel == 1
     assert repo.persisted[-1].content == delivered
     assert frames[-1] == "data: [DONE]\n\n"
 
@@ -905,7 +988,18 @@ def test_later_plain_tool_gateway_failure_persists_partial_stream_without_fallba
             self.fallback_calls += 1
             return {
                 "choices": [
-                    {"message": {"role": "assistant", "content": "fallback answer"}}
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "fallback answer",
+                        },
+                        "content_filter_results": {
+                            "violence": {
+                                "filtered": False,
+                                "severity": "low",
+                            }
+                        },
+                    }
                 ],
                 "usage": {
                     "prompt_tokens": 99,
@@ -1022,7 +1116,18 @@ def test_first_plain_tool_stream_failure_without_partial_work_falls_back(
             self.fallback_calls += 1
             return {
                 "choices": [
-                    {"message": {"role": "assistant", "content": "fallback answer"}}
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "fallback answer",
+                        },
+                        "content_filter_results": {
+                            "violence": {
+                                "filtered": False,
+                                "severity": "low",
+                            }
+                        },
+                    }
                 ],
                 "usage": {
                     "prompt_tokens": 5,
@@ -1064,6 +1169,10 @@ def test_first_plain_tool_stream_failure_without_partial_work_falls_back(
         usage.complete,
         metered[-1]["status"],
     ) == (5, 2, 7, 2, False, "complete")
+    receipt = messages[-1]["executionReceipt"]
+    assert receipt["iterations"] == 2
+    assert receipt["usage"]["calls"] == 2
+    assert messages[-1]["safety"]["signals"][0]["modelCall"] == 2
     assert marker not in caplog.text
 
 

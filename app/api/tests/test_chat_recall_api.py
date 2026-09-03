@@ -35,7 +35,7 @@ class _FakeMemory:
         self.recalled_for.append((user_id, query))
         return [MemoryRecord(user_id=user_id, text="alice prefers dark mode")]
 
-    def format_context(self, records):
+    def format_context(self, records, *, used_records=None):
         return None
 
     async def remember(self, user_id, session_id, text):

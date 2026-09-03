@@ -17,7 +17,11 @@ from ai4ia_api.agents.orchestration import (
     build_delegate_capability,
     sanitize_links,
 )
-from ai4ia_api.agents.runtime import AgentRunFailed, run_agent_turn
+from ai4ia_api.agents.runtime import (
+    AgentRunFailed,
+    DelegatedToolResult,
+    run_agent_turn,
+)
 from ai4ia_api.agents.tool_exec import ToolContext, build_tools
 from ai4ia_api.gateway.client import ModelGatewayError
 
@@ -130,6 +134,10 @@ async def test_handler_happy_path_runs_subagent_and_records_usage():
     result = await handlers[DELEGATE_TOOL_NAME]({"agent": "helper", "task": "what is 6*7?"}, ctx)
 
     assert result == {"agent": "helper", "answer": "42"}
+    assert isinstance(result, DelegatedToolResult)
+    assert result.trace.agent == "helper"
+    assert result.trace.effective_prompt == gw.last_messages
+    assert result.trace.iterations == 1
     assert gw.calls == 1
     # The sub-agent saw ONLY its own system prompt + the task (no parent history).
     assert gw.last_messages == [
@@ -138,6 +146,94 @@ async def test_handler_happy_path_runs_subagent_and_records_usage():
     ]
     assert len(sink) == 1
     assert sink[0].total == 7
+
+
+@pytest.mark.asyncio
+async def test_parent_run_retains_successful_delegation_trace():
+    class Gateway:
+        def __init__(self):
+            self.calls = 0
+
+        async def complete(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "delegate-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": DELEGATE_TOOL_NAME,
+                                            "arguments": json.dumps(
+                                                {
+                                                    "agent": "helper",
+                                                    "task": "calculate",
+                                                }
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            if self.calls == 2:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "42",
+                            }
+                        }
+                    ]
+                }
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "done",
+                        }
+                    }
+                ]
+            }
+
+    gateway = Gateway()
+    registry, executor = build_tools()
+    tools, handlers, _ = build_delegate_capability(
+        orchestrator=_orchestrator(["helper"]),
+        composed=_catalog(_leaf("helper")),
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        deployment="boss-deployment",
+    )
+
+    result = await run_agent_turn(
+        deployment="boss-deployment",
+        messages=[
+            {"role": "system", "content": "You coordinate."},
+            {"role": "user", "content": "solve this"},
+        ],
+        tool_names=[],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+        extra_tools=tools,
+        extra_handlers=handlers,
+    )
+
+    assert result.text == "done"
+    assert len(result.delegations) == 1
+    assert result.delegations[0].agent == "helper"
+    assert result.delegations[0].effective_prompt[0]["content"] == "You are helper."
 
 
 @pytest.mark.asyncio
@@ -322,8 +418,14 @@ async def test_nested_partial_failure_combines_usage_and_trace_without_usage_sin
         partial.usage.complete,
     ) == (5, 2, 7, 3, False)
     assert [(step.kind, step.tool, step.detail) for step in partial.steps] == [
-        ("tool_result", "calculator", None),
         ("tool_error", DELEGATE_TOOL_NAME, "delegate_failed"),
+    ]
+    assert len(partial.delegations) == 1
+    nested = partial.delegations[0]
+    assert nested.agent == "helper"
+    assert nested.status == "error" and nested.partial is True
+    assert [(step.kind, step.tool) for step in nested.steps] == [
+        ("tool_result", "calculator")
     ]
 
 
@@ -408,5 +510,11 @@ async def test_nested_first_call_failure_is_safe_and_metered():
     ) == (2, 1, 3, 2, False)
     assert [(step.kind, step.tool, step.detail) for step in partial.steps] == [
         ("tool_error", DELEGATE_TOOL_NAME, "delegate_failed")
+    ]
+    assert len(partial.delegations) == 1
+    assert partial.delegations[0].status == "error"
+    assert partial.delegations[0].effective_prompt == [
+        {"role": "system", "content": "You are helper."},
+        {"role": "user", "content": "calculate"},
     ]
     assert marker not in json.dumps(gateway.requests)

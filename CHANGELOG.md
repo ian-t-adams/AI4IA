@@ -11,15 +11,31 @@ repository change, not a claim that it is deployed.
 
 ### Added
 
+- **Per-turn execution receipts** — every persisted model turn now shows the
+  effective redacted prompt/context, instruction and agent-configuration hashes,
+  admitted/displaced memory and document source versions, tools offered versus
+  invoked, bounded redacted arguments/results, approvals, safety coverage,
+  resolved deployment metadata, and correlation id. Receipts explicitly exclude
+  hidden chain-of-thought and retain digests/byte counts when payloads are capped.
+- **Progressively disclosed Foundry skills** — the official Toolbox now
+  discovers curated `skill://` MCP resources and offers a bounded `load_skill`
+  function. Full instructions load only on selection, with source, content hash,
+  version/default resolution, and truncation provenance retained for execution
+  receipts. `evidence-review` is the first repository-owned skill, and the
+  Foundry asset provisioner idempotently reconciles immutable skill versions
+  before the toolbox.
 - **Data residency control** (`AI4IA_DATA_RESIDENCY`) — a `global` / `zonal` /
   `us` / `eu` ladder enforced on `app.state.catalog`, the single point every route
   resolves a deployment through. Residency derives from the deployment **SKU**,
   not endpoint geography: a `GlobalStandard` deployment in Sweden Central is not
   EU-resident. Startup refuses rather than silently disabling an enabled feature
   whose model the policy excludes.
-- **Content-safety annotations** — per-category verdicts returned for text chat
-  completions are normalized, persisted on the message, and shown in a per-turn
-  panel. This does not cover image, video, or Voice Live modalities.
+- **Content-safety annotations** — per-category verdicts returned by chat
+  completions and the Responses API are normalized, persisted, and shown with
+  severity ordinals. Multi-iteration agent turns retain each model-call
+  assessment; missing coverage is explicit. The deployment policy also enables
+  indirect-attack assessment without blocking. This does not yet provide
+  artifact-level coverage for image, video, or Voice Live modalities.
 - **Durable workflow execution** — `POST /api/workflows/{name}/run` accepts an
   opt-in `"durable": true` that runs the workflow on an Azure Durable Task
   Scheduler orchestration, so a run survives a deploy, scale-in, or crash.
@@ -37,6 +53,13 @@ repository change, not a claim that it is deployed.
 
 ### Changed
 
+- **Responses-API Code Interpreter now stays behind APIM.** `run_code` and
+  `analyze_attachment` use a dedicated API-scoped subscription on the existing
+  Basic v2 APIM. Policy fixes the model, requires `store=false` plus exactly one
+  Code Interpreter tool, preserves multipart Files bodies, strips caller
+  credentials, and authenticates to the primary Foundry account with managed
+  identity. The FastAPI UAMI no longer receives account-wide OpenAI inference
+  permission.
 - **APIM child entity names derive from `${workload}`** rather than a literal
   `ai4ia-*` prefix. APIM children share one flat namespace per service, so
   hardcoded product and subscription names meant a second workload on the shared

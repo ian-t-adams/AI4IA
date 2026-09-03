@@ -24,6 +24,7 @@ import pytest
 from ai4ia_api.agents.mcp_client import FakeMcpConnector, McpAuth, McpToolResult
 from ai4ia_api.agents.mcp_execution import McpPlane, build_mcp_turn_tools_multi
 from ai4ia_api.agents.mcp_servers import (
+    DiscoveredResource,
     DiscoveredTool,
     McpAuthMode,
     McpTransport,
@@ -106,6 +107,23 @@ class _FlakyConnector:
         raise AssertionError("call_tool is not exercised by discovery tests")
 
 
+class _FlakyResourceConnector(FakeMcpConnector):
+    def __init__(self) -> None:
+        super().__init__(tools=[_tool("search")])
+        self.resource_attempts = 0
+
+    async def list_resources(self, *, endpoint, auth):
+        self.resource_attempts += 1
+        if self.resource_attempts == 1:
+            raise RuntimeError("resource list unavailable")
+        return [
+            DiscoveredResource(
+                uri="skill://evidence-review/SKILL.md",
+                name="evidence-review",
+            )
+        ]
+
+
 def _settings(**overrides) -> Settings:
     base = dict(
         env="local",
@@ -124,6 +142,7 @@ def _svc(
     *,
     key: str = "APIM-KEY",
     retry_interval_s: float = 60.0,
+    resource_refresh_interval_s: float = 300.0,
 ) -> OfficialMcpService:
     return OfficialMcpService(
         catalog,
@@ -132,6 +151,7 @@ def _svc(
         connector=connector,
         resolver=_PUBLIC_RESOLVER,
         retry_interval_s=retry_interval_s,
+        resource_refresh_interval_s=resource_refresh_interval_s,
     )
 
 
@@ -147,6 +167,7 @@ def test_packaged_catalog_contains_the_activated_toolbox():
     assert "ai4ia-toolbox" in ids
     toolbox = next(s for s in servers if s.id == "ai4ia-toolbox")
     assert toolbox.path == "ai4ia-toolbox/mcp"
+    assert toolbox.resourcesEnabled is True
 
 
 def test_explicit_catalog_loads_and_get(tmp_path):
@@ -197,6 +218,7 @@ def test_build_official_servers_projects_endpoint_host_and_flags():
     assert s.trusted is True
     assert s.enabled is True
     assert s.secretRef is None
+    assert s.resourcesEnabled is False
 
 
 def test_build_official_servers_normalizes_slashes():
@@ -267,6 +289,92 @@ async def test_service_retries_until_success_then_caches():
     assert [t.name for t in discovered] == ["ok"]
     await svc.list_all()  # now cached: no third attempt (would pop an empty script)
     assert conn.attempts == 2
+
+
+async def test_service_keeps_tools_and_retries_transient_resource_discovery():
+    cat = _catalog(
+        {
+            "id": "toolbox",
+            "displayName": "Toolbox",
+            "path": "toolbox/mcp",
+            "resourcesEnabled": True,
+        }
+    )
+    conn = _FlakyResourceConnector()
+    svc = _svc(cat, conn, retry_interval_s=0.0)
+
+    [first] = await svc.list_all()
+    assert [tool.name for tool in first.discoveredTools] == ["search"]
+    assert first.discoveredResources == []
+
+    [second] = await svc.list_all()
+    assert [resource.name for resource in second.discoveredResources] == [
+        "evidence-review"
+    ]
+    await svc.list_all()
+    assert conn.resource_attempts == 2
+
+
+async def test_resource_enabled_server_periodically_refreshes_discovery():
+    cat = _catalog(
+        {
+            "id": "toolbox",
+            "displayName": "Toolbox",
+            "path": "toolbox/mcp",
+            "resourcesEnabled": True,
+        }
+    )
+    conn = FakeMcpConnector(tools=[_tool("search")])
+    svc = _svc(cat, conn, resource_refresh_interval_s=0.0)
+
+    await svc.list_all()
+    await svc.list_all()
+
+    assert len(conn.calls) == 2
+    assert len(conn.resource_lists) == 2
+
+
+async def test_resource_refresh_does_not_clear_tool_quarantine():
+    cat = _catalog(
+        {
+            "id": "toolbox",
+            "displayName": "Toolbox",
+            "path": "toolbox/mcp",
+            "resourcesEnabled": True,
+        }
+    )
+    conn = FakeMcpConnector(tools=[_tool("search")])
+    svc = _svc(cat, conn, resource_refresh_interval_s=0.0)
+    [server] = await svc.list_all()
+    until = datetime.now(timezone.utc) + timedelta(minutes=5)
+    server.consecutiveFailures = 3
+    server.quarantinedUntil = until
+
+    await svc.list_all()
+
+    assert server.consecutiveFailures == 3
+    assert server.quarantinedUntil == until
+
+
+async def test_successful_half_open_rediscovery_clears_expired_quarantine():
+    cat = _catalog(
+        {
+            "id": "toolbox",
+            "displayName": "Toolbox",
+            "path": "toolbox/mcp",
+            "resourcesEnabled": True,
+        }
+    )
+    conn = FakeMcpConnector(tools=[_tool("search")])
+    svc = _svc(cat, conn, resource_refresh_interval_s=0.0)
+    [server] = await svc.list_all()
+    server.consecutiveFailures = 3
+    server.quarantinedUntil = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    await svc.list_all()
+
+    assert server.consecutiveFailures == 0
+    assert server.quarantinedUntil is None
 
 
 async def test_service_refresh_forces_rediscovery():

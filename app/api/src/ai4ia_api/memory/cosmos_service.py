@@ -410,12 +410,18 @@ class CosmosMemoryService:
     async def delete_document_source(self, user_id: str, document_id: str) -> int:
         return await self._store.delete_document_source(user_id, document_id)
 
-    def format_context(self, records: list[MemoryRecord]) -> str | None:
+    def format_context(
+        self,
+        records: list[MemoryRecord],
+        *,
+        used_records: list[MemoryRecord] | None = None,
+    ) -> str | None:
         return format_memory_context(
             records,
             max_injected=self._max_injected,
             max_chars_per_item=self._max_chars_per_item,
             max_total_chars=self._max_total_chars,
+            used_records=used_records,
         )
 
     async def warmup(self) -> None:

@@ -70,7 +70,8 @@ playback, memory save, or sharing.
 - **Tier 2:** top-k RAG chunks, nonce-fenced as untrusted context.
 - **Tier 3:** `fetch_document` for full/partial parsed Markdown.
 - **Compute:** `run_code` and `export_document` use Azure OpenAI Responses API
-  Code Interpreter when `AI4IA_DOCUMENT_COMPUTE_ENABLED=true`. The sandbox
+  Code Interpreter through a dedicated API-scoped APIM route when
+  `AI4IA_DOCUMENT_COMPUTE_ENABLED=true`. The sandbox
   receives the document's **parsed text** unless
   `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED=true`, which uploads the **original
   bytes** instead so the model reads real spreadsheet cells and PDF layout.
@@ -79,9 +80,9 @@ playback, memory save, or sharing.
   it** (`infra/main.parameters.json`), so treat original file bytes — not just
   extracted text — as reaching the sandbox when assessing data handling.
 - **Inline compute:** `analyze_attachment` can hand the original bytes of an
-  inline composer attachment to the same Responses API Code Interpreter endpoint
-  when `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED=true`; it is independent of the
-  durable library flag and uses short-lived attachment storage.
+  inline composer attachment to the same APIM-fronted Responses API Code
+  Interpreter endpoint when `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED=true`; it is
+  independent of the durable library flag and uses short-lived attachment storage.
 - **Processing:** `process_document` produces bounded inline output or a durable
   markdown artifact.
 - **Media:** audio/video timelines and span-id citations (`[[cite:S1]]`) open the

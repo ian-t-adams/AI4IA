@@ -542,6 +542,15 @@ def test_responses_json_to_chat_translation():
             "total_tokens": 19,
             "output_tokens_details": {"reasoning_tokens": 4},
         },
+        "content_filters": [
+            {
+                "blocked": False,
+                "source_type": "completion",
+                "content_filter_results": {
+                    "violence": {"filtered": False, "severity": "low"}
+                },
+            }
+        ],
     }
     chat = _responses_json_to_chat(obj)
     assert chat["choices"][0]["message"]["content"] == "Hello world"
@@ -550,6 +559,7 @@ def test_responses_json_to_chat_translation():
     assert chat["usage"]["completion_tokens"] == 7
     assert chat["usage"]["total_tokens"] == 19
     assert chat["usage"]["completion_tokens_details"]["reasoning_tokens"] == 4
+    assert chat["content_filters"] == obj["content_filters"]
 
 
 def test_responses_json_to_chat_incomplete_keeps_text_and_usage():
@@ -639,7 +649,19 @@ def test_parse_responses_event_completed_is_terminal_with_usage():
             {
                 "type": "response.completed",
                 "response": {
-                    "usage": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7}
+                    "usage": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+                    "content_filters": [
+                        {
+                            "blocked": False,
+                            "source_type": "completion",
+                            "content_filter_results": {
+                                "violence": {
+                                    "filtered": False,
+                                    "severity": "medium",
+                                }
+                            },
+                        }
+                    ],
                 },
             }
         )
@@ -651,6 +673,8 @@ def test_parse_responses_event_completed_is_terminal_with_usage():
         "completion_tokens": 2,
         "total_tokens": 7,
     }
+    assert chunk.safety is not None
+    assert chunk.safety.signals[0].severity == "medium"
 
 
 def test_parse_responses_event_incomplete_is_terminal_not_error():
@@ -667,6 +691,7 @@ def test_parse_responses_event_incomplete_is_terminal_not_error():
     assert chunk is not None
     assert chunk.done is True
     assert chunk.usage["completion_tokens"] == 9
+    assert chunk.incomplete is True
 
 
 def test_parse_responses_event_failed_raises():

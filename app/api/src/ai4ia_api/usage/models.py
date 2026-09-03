@@ -25,20 +25,21 @@ from ..catalog import DeploymentOption
 
 UsageStatus = Literal["complete", "cancelled", "error"]
 
-#: Provider identity for a direct Code Interpreter sandbox execution. Deliberately
+#: Provider identity for an APIM-routed Code Interpreter sandbox execution. Deliberately
 #: distinct from ``azure_openai`` so admin rollups (``aggregate_by_provider``) can
 #: separate sandbox spend from chat spend rather than letting it hide inside the
 #: parent chat charge — and so the rolling ``computeExecutionsPerDay`` window has
 #: an unambiguous predicate to count. Code Interpreter is the documented
-#: direct-to-Foundry exception (a stateful Azure-managed sandbox is not a routable
-#: chat-completions deployment), which is exactly why it needs its own identity.
+#: exception to the SimpleL7Proxy model path (a stateful Azure-managed sandbox is
+#: not a routable chat-completions deployment), which is exactly why it needs its
+#: own identity.
 CODE_INTERPRETER_PROVIDER = "azure_openai_code_interpreter"
 
 
 def cost_bearing_attempt(rec: "UsageRollupSource") -> bool:
     """Whether a row represents provider work whose unknown cost matters.
 
-    Token-priced chat rows historically use ``billable`` for this. Direct Code
+    Token-priced chat rows historically use ``billable`` for this. Code
     Interpreter rows cannot: the provider reports no token usage, so they are
     intentionally ``usageKnown=False`` and therefore ``billable=False`` even
     though each recorded row is a sandbox execution attempt that may incur cost.

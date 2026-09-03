@@ -104,6 +104,13 @@ Other operational properties:
 - Rollback restores Container App revisions, not infrastructure. APIM policies,
   fragments, named values, model deployments, and RBAC changed by provision must
   be fixed forward or explicitly reverted and reprovisioned.
+- Code Interpreter's APIM migration has a one-time RBAC gate. Incremental ARM
+  cannot delete the API identity's legacy `Cognitive Services OpenAI User` or
+  broader `Cognitive Services User` assignments. Before image promotion, the
+  workflow lists assignments at each AIServices account scope and fails if either
+  remains. Review the literal IDs it prints, revoke only those IDs with
+  `az role assignment delete --ids ...`, then rerun the deployment. The workflow
+  deliberately never performs that deletion itself.
 
 That last limit is real, not theoretical. A runtime-only APIM policy failure is not
 covered by rollback, which restores container revisions only. `scripts/tests/test_policy_json_shape.py`

@@ -23,7 +23,7 @@ from ai4ia_api.agents.runtime import (
     run_agent_turn,
 )
 from ai4ia_api.agents.tool_exec import ToolContext, ToolDefinition, ToolExecutor, build_tools
-from ai4ia_api.agents.tools import ToolRegistry, ToolSpec
+from ai4ia_api.agents.tools import ToolRegistry, ToolSpec, redact
 from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
 from tests.conftest import stream_like_gateway
 
@@ -197,6 +197,10 @@ async def test_tool_result_growth_rebounds_every_iteration_without_overflow():
 
     assert result.text == "finished normally"
     assert result.iterations == 3
+    assert result.effective_prompt == gateway.calls[0]["messages"]
+    assert result.model_requests == [
+        call["messages"] for call in gateway.calls
+    ]
     assert "old-u" in gateway.calls[0]["messages"][1]["content"]
     second = gateway.calls[1]
     assert any(message.get("tool_calls") for message in second["messages"])
@@ -221,12 +225,53 @@ async def test_tool_result_growth_rebounds_every_iteration_without_overflow():
         if message.get("role") == "tool"
     }
     assert assistant_ids == tool_ids == {"c1", "c2"}
-    assert any(message.get("role") == "user" and message["content"] == "current" for message in third["messages"])
+    assert any(
+        message.get("role") == "user" and message["content"] == "current"
+        for message in third["messages"]
+    )
     assert (
         sum(message_budget_bytes(message) for message in third["messages"])
         + schema_bytes
         <= budget
     )
+
+
+async def test_receipt_step_matches_the_truncated_result_the_model_received():
+    async def handler(args, ctx):
+        return {"payload": "x" * 20_000}
+
+    definition = ToolDefinition(
+        spec=ToolSpec(name="large_result", description="large"),
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    registry, executor = build_tools([definition])
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "large_result", "{}"),
+            _assistant_text("done"),
+        ]
+    )
+
+    result = await run_agent_turn(
+        deployment="dep",
+        messages=_messages(),
+        tool_names=["large_result"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+        prompt_budget_bytes=40_000,
+    )
+
+    model_visible = next(
+        message["content"]
+        for message in gateway.calls[1]["messages"]
+        if message.get("role") == "tool"
+    )
+    step = next(step for step in result.steps if step.kind == "tool_result")
+    assert model_visible.endswith("...[truncated]")
+    assert step.result == redact(model_visible)
 
 
 async def test_multi_tool_results_stay_with_current_user_and_assistant_call():
@@ -509,9 +554,10 @@ async def test_max_iters_forces_final_call_without_tools():
         ctx=ToolContext(),
         max_iters=2,
     )
-    assert result.iterations == 2
+    assert result.iterations == 3
     assert result.steps[-1].detail == "max_iters"
-    # The final (3rd) call must NOT advertise tools.
+    # The forced final (3rd) model attempt must NOT advertise tools and must be
+    # included in the observable iteration count.
     assert "tools" not in gateway.calls[-1]["params"]
     assert result.text == "forced final"
 
