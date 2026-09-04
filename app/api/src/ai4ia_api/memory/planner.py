@@ -80,9 +80,16 @@ class MemoryPlan(BaseModel):
 class MemoryPlanner:
     """Use the governed model gateway to propose one bounded memory mutation."""
 
-    def __init__(self, gateway: ModelGatewayClient, deployment: str) -> None:
+    def __init__(
+        self,
+        gateway: ModelGatewayClient,
+        deployment: str,
+        *,
+        api: str = "chat",
+    ) -> None:
         self._gateway = gateway
         self._deployment = deployment
+        self._api = api
 
     async def plan(
         self,
@@ -123,7 +130,10 @@ class MemoryPlanner:
                     },
                 },
             },
+            api=self._api,
         )
+        if result.get("_responses_status") == "incomplete":
+            raise MemoryPlanError("memory planner returned an incomplete response")
         content = _first_text(result)
         if not content:
             raise MemoryPlanError("memory planner returned no content")

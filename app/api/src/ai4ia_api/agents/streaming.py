@@ -196,6 +196,9 @@ class StreamedIteration:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     usage: dict[str, Any] | None = None
     safety: MessageSafety | None = None
+    response_output_items: list[dict[str, Any]] = field(default_factory=list)
+    incomplete: bool = False
+    incomplete_reason: str | None = None
 
 
 async def stream_iteration(
@@ -205,6 +208,7 @@ async def stream_iteration(
     messages: Sequence[dict[str, Any]],
     params: dict[str, Any] | None,
     correlation_id: str | None,
+    api: str = "chat",
     on_delta: Callable[[str], Awaitable[None]] | None = None,
     on_usage: Callable[[dict[str, Any]], None] | None = None,
 ) -> StreamedIteration:
@@ -223,22 +227,47 @@ async def stream_iteration(
     content: list[str] = []
     usage: dict[str, Any] | None = None
     safety: MessageSafety | None = None
+    response_output_items: list[dict[str, Any]] = []
+    incomplete = False
+    incomplete_reason: str | None = None
+    saw_done = False
 
-    async for chunk in gateway.stream(
+    stream_kwargs: dict[str, Any] = dict(
         deployment=deployment,
         messages=messages,
         params=params,
         correlation_id=correlation_id,
-    ):
+    )
+    if api != "chat":
+        stream_kwargs["api"] = api
+    async for chunk in gateway.stream(**stream_kwargs):
         if chunk.usage:
             usage = chunk.usage
             if on_usage is not None:
                 on_usage(chunk.usage)
+        if chunk.safety is not None:
+            safety = merge_safety(safety, chunk.safety)
+        if chunk.response_output_items is not None:
+            if chunk.done:
+                # The terminal Responses payload is authoritative for the complete
+                # item order; replace snapshots gathered from output_item.done.
+                response_output_items = [
+                    dict(item) for item in chunk.response_output_items
+                ]
+            else:
+                response_output_items.extend(
+                    dict(item) for item in chunk.response_output_items
+                )
         if chunk.delta:
             content.append(chunk.delta)
             if on_delta is not None:
                 await on_delta(chunk.delta)
-        if chunk.done or not chunk.raw:
+        if chunk.done:
+            saw_done = True
+            incomplete = chunk.incomplete
+            incomplete_reason = chunk.incompleteReason
+            continue
+        if not chunk.raw:
             continue
         try:
             payload = json.loads(chunk.raw)
@@ -248,7 +277,8 @@ async def stream_iteration(
             continue
         if payload.get("error"):
             raise ModelGatewayError(502, _STREAM_FAILED)
-        safety = merge_safety(safety, parse_safety(payload))
+        if chunk.safety is None:
+            safety = merge_safety(safety, parse_safety(payload))
         choices = payload.get("choices")
         if not isinstance(choices, list):
             continue
@@ -262,9 +292,15 @@ async def stream_iteration(
             if fragments is not None:
                 accumulator.add(fragments)
 
+    if not saw_done:
+        raise ModelGatewayError(502, _STREAM_FAILED)
+
     return StreamedIteration(
         content="".join(content),
         tool_calls=accumulator.finalize(),
         usage=usage,
         safety=safety,
+        response_output_items=response_output_items,
+        incomplete=incomplete,
+        incomplete_reason=incomplete_reason,
     )

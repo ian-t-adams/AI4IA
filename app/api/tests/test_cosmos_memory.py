@@ -400,13 +400,17 @@ async def test_explicit_crud_is_idempotent_and_promotes_user_lock() -> None:
 
 
 class FakeGateway:
-    def __init__(self, content: str) -> None:
+    def __init__(self, content: str, *, incomplete: bool = False) -> None:
         self.content = content
+        self.incomplete = incomplete
         self.calls: list[dict[str, Any]] = []
 
     async def complete(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
-        return {"choices": [{"message": {"content": self.content}}]}
+        result = {"choices": [{"message": {"content": self.content}}]}
+        if self.incomplete:
+            result["_responses_status"] = "incomplete"
+        return result
 
 
 async def test_planner_uses_strict_schema_and_rejects_locked_targets() -> None:
@@ -439,6 +443,23 @@ async def test_planner_schema_is_azure_openai_strict_compatible() -> None:
     serialized = json.dumps(schema)
     assert '"default"' not in serialized
     assert '"maxLength"' not in serialized
+
+
+async def test_planner_forwards_responses_api_and_rejects_incomplete_plan() -> None:
+    gateway = FakeGateway(
+        '{"action":"noop","memoryId":null,"text":null}',
+        incomplete=True,
+    )
+    planner = MemoryPlanner(
+        gateway,  # type: ignore[arg-type]
+        "planner-deployment",
+        api="responses",
+    )
+
+    with pytest.raises(MemoryPlanError, match="incomplete"):
+        await planner.plan("remember this", [])
+
+    assert gateway.calls[0]["api"] == "responses"
 
 
 async def test_planner_rejects_malformed_output() -> None:

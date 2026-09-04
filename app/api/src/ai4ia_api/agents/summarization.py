@@ -183,6 +183,8 @@ class SummarizationService:
             correlation_id=correlation_id,
             api=api,
         )
+        if result.get("_responses_status") == "incomplete":
+            raise RuntimeError("summarization returned an incomplete response")
         text = _extract_text(result)
         # Never let an empty model reply silently erase a good prior summary.
         if not text and prior_summary:

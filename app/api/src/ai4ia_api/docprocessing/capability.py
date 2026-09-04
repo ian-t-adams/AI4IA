@@ -79,6 +79,7 @@ def build_document_processing_capability(
     settings: Settings,
     sink: list[MessageAttachment],
     allowed_document_ids: set[str] | None = None,
+    api: str = "chat",
 ) -> tuple[list[dict[str, Any]], dict[str, Handler]]:
     """Build the ``process_document`` tool bound to ``user_id`` + the turn's
     deployment.
@@ -168,6 +169,7 @@ def build_document_processing_capability(
                 model_id=model_id,
                 mode=mode,
                 correlation_id=ctx.correlation_id,
+                api=api,
             )
         except DocumentProcessingError as exc:
             return {"error": _one_line(exc.detail)}
@@ -175,8 +177,9 @@ def build_document_processing_capability(
             logger.warning("process_document unexpected error user=%s", user_id, exc_info=True)
             return {"error": "Document processing failed."}
 
-        # Meter the model round-trip so rolling rate/token windows include
-        # tool-driven processing. Best-effort: record_completion never raises.
+        # Meter the provider-completed round-trip so rolling rate/token windows
+        # include tool-driven processing, including a billable incomplete result.
+        # Best-effort: record_completion never raises.
         await metering.record_completion(
             user_id=user_id,
             session_id=session_id,
@@ -186,12 +189,32 @@ def build_document_processing_capability(
             status="complete",
             correlation_id=ctx.correlation_id,
         )
+        result_status = "incomplete" if result.incomplete else "processed"
+        incomplete_detail = (
+            "The model returned an incomplete document-processing result."
+            if result.incomplete
+            else None
+        )
+        if not result.text:
+            return {
+                "status": result_status if result.incomplete else "error",
+                "document_id": result.document_id,
+                "filename": _one_line(result.filename),
+                "mode": result.mode,
+                "model": _one_line(result.model_id),
+                "source_truncated": result.source_truncated,
+                "result": "",
+                "error": (
+                    incomplete_detail
+                    or "Document processing completed without a result."
+                ),
+            }
 
         # Small result: hand the full text back to the model inline so it can use
         # it directly in its reply.
         if len(result.text) <= inline_cap:
-            return {
-                "status": "processed",
+            response = {
+                "status": result_status,
                 "document_id": result.document_id,
                 "filename": _one_line(result.filename),
                 "mode": result.mode,
@@ -199,6 +222,9 @@ def build_document_processing_capability(
                 "source_truncated": result.source_truncated,
                 "result": result.text,
             }
+            if incomplete_detail is not None:
+                response["error"] = incomplete_detail
+            return response
 
         # Over-cap result: persist it and return a reference + bounded preview. The
         # user sees the full result as a downloadable document attachment.
@@ -221,8 +247,8 @@ def build_document_processing_capability(
                 filename=result.filename,
             )
         )
-        return {
-            "status": "processed",
+        response = {
+            "status": result_status,
             "artifact_id": artifact_id,
             "document_id": result.document_id,
             "filename": _one_line(result.filename),
@@ -235,5 +261,8 @@ def build_document_processing_capability(
                 "downloadable document; only a preview is included here."
             ),
         }
+        if incomplete_detail is not None:
+            response["error"] = incomplete_detail
+        return response
 
     return [schema], {PROCESS_DOCUMENT_TOOL_NAME: _handler}

@@ -235,6 +235,21 @@ async def test_an_error_frame_raises_a_sanitized_gateway_error():
     assert "internal deployment secret" not in str(excinfo.value)
 
 
+async def test_eof_without_terminal_event_is_a_stream_failure():
+    gateway = _ChunkGateway([_text_chunk("partial")])
+
+    with pytest.raises(ModelGatewayError) as excinfo:
+        await stream_iteration(
+            gateway=gateway,
+            deployment="dep",
+            messages=[],
+            params=None,
+            correlation_id=None,
+        )
+
+    assert excinfo.value.detail == "Model stream failed."
+
+
 # --- run_agent_turn over the streamed transport ------------------------------
 
 

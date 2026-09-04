@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 
+import httpx
 import pytest
 
 from ai4ia_api.agents.prompt_budget import (
@@ -24,8 +25,8 @@ from ai4ia_api.agents.runtime import (
 )
 from ai4ia_api.agents.tool_exec import ToolContext, ToolDefinition, ToolExecutor, build_tools
 from ai4ia_api.agents.tools import ToolRegistry, ToolSpec, redact
-from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
-from tests.conftest import stream_like_gateway
+from ai4ia_api.gateway.client import ChatChunk, ModelGatewayClient, ModelGatewayError
+from tests.conftest import make_settings, stream_like_gateway
 
 
 def _assistant_tool_call(call_id: str, name: str, arguments: str) -> dict:
@@ -127,6 +128,260 @@ async def test_first_call_advertises_only_allowlisted_tools():
     names = {t["function"]["name"] for t in tools}
     assert names == {"calculator"}
     assert gateway.calls[0]["params"]["tool_choice"] == "auto"
+
+
+async def test_responses_tool_loop_replays_function_items_without_leaking_reasoning():
+    requests: list[dict] = []
+    reasoning = {
+        "type": "reasoning",
+        "id": "rs_1",
+        "encrypted_content": "opaque-reasoning-secret",
+    }
+    function_call = {
+        "type": "function_call",
+        "id": "fc_1",
+        "call_id": "call_1",
+        "name": "calculator",
+        "arguments": '{"expression":"6*7"}',
+        "status": "completed",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "status": "completed",
+                    "output": [reasoning, function_call],
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "total_tokens": 15,
+                    },
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "It is 42."}],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 20,
+                    "output_tokens": 4,
+                    "total_tokens": 24,
+                },
+            },
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = ModelGatewayClient(
+        make_settings(model_gateway_url="https://gateway.test/openai"),
+        http_client=http,
+    )
+    registry, executor = build_tools()
+    try:
+        result = await run_agent_turn(
+            deployment="gpt-5.6-sol-example",
+            messages=_messages(),
+            tool_names=["calculator"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+            params={"reasoning_effort": "xhigh"},
+            api="responses",
+        )
+    finally:
+        await http.aclose()
+
+    assert result.text == "It is 42."
+    assert result.usage.total == 39
+    assert len(requests) == 2
+    assert requests[0]["tools"][0]["name"] == "calculator"
+    assert "function" not in requests[0]["tools"][0]
+    assert requests[0]["reasoning"] == {"effort": "xhigh"}
+    assert requests[0]["include"] == ["reasoning.encrypted_content"]
+    assert requests[0]["store"] is False
+    assert [item.get("type") or item.get("role") for item in requests[1]["input"]] == [
+        "user",
+        "reasoning",
+        "function_call",
+        "function_call_output",
+    ]
+    assert requests[1]["input"][-1] == {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": '{"expression": "6*7", "result": 42}',
+    }
+    receipt_source = json.dumps(
+        {
+            "effective_prompt": result.effective_prompt,
+            "model_requests": result.model_requests,
+        }
+    )
+    assert "opaque-reasoning-secret" not in receipt_source
+    assert "encrypted_content" not in receipt_source
+
+
+async def test_responses_streaming_tool_loop_reassembles_calls_and_text():
+    requests: list[dict] = []
+    deltas: list[str] = []
+    reasoning = {
+        "type": "reasoning",
+        "id": "rs_1",
+        "encrypted_content": "opaque-stream-reasoning",
+    }
+    function_call = {
+        "type": "function_call",
+        "id": "fc_1",
+        "call_id": "call_1",
+        "name": "calculator",
+        "arguments": '{"expression":"6*7"}',
+        "status": "completed",
+    }
+
+    def sse(*events: dict) -> str:
+        return "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                text=sse(
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": 0,
+                        "item": reasoning,
+                    },
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": 1,
+                        "item": function_call,
+                    },
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "usage": {
+                                "input_tokens": 10,
+                                "output_tokens": 5,
+                                "total_tokens": 15,
+                            },
+                        },
+                    },
+                ),
+                headers={"content-type": "text/event-stream"},
+            )
+        message = {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "It is 42."}],
+        }
+        return httpx.Response(
+            200,
+            text=sse(
+                {"type": "response.output_text.delta", "delta": "It is "},
+                {"type": "response.output_text.delta", "delta": "42."},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [message],
+                        "usage": {
+                            "input_tokens": 20,
+                            "output_tokens": 4,
+                            "total_tokens": 24,
+                        },
+                        "content_filters": [
+                            {
+                                "blocked": False,
+                                "source_type": "completion",
+                                "content_filter_results": {
+                                    "violence": {
+                                        "filtered": False,
+                                        "severity": "low",
+                                    }
+                                },
+                            }
+                        ],
+                    },
+                },
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = ModelGatewayClient(
+        make_settings(model_gateway_url="https://gateway.test/openai"),
+        http_client=http,
+    )
+    registry, executor = build_tools()
+
+    async def on_delta(text: str) -> None:
+        deltas.append(text)
+
+    try:
+        result = await run_agent_turn(
+            deployment="gpt-5.6-sol-example",
+            messages=_messages(),
+            tool_names=["calculator"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+            params={"reasoning_effort": "xhigh"},
+            api="responses",
+            on_delta=on_delta,
+        )
+    finally:
+        await http.aclose()
+
+    assert result.text == "It is 42."
+    assert deltas == ["It is ", "42."]
+    assert len(requests) == 2
+    assert requests[1]["input"][-1]["type"] == "function_call_output"
+    assert "opaque-stream-reasoning" not in json.dumps(result.model_requests)
+    assert result.safety is not None
+    assert result.safety.signals[0].severity == "low"
+
+
+async def test_responses_incomplete_result_is_not_reported_as_complete():
+    gateway = ScriptedGateway(
+        [
+            {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "partial answer"}}
+                ],
+                "_responses_status": "incomplete",
+                "_responses_incomplete_reason": "{'reason': 'max_output_tokens'}",
+            }
+        ]
+    )
+    registry, executor = build_tools()
+
+    result = await run_agent_turn(
+        deployment="gpt-5.6-sol-example",
+        messages=_messages(),
+        tool_names=["calculator"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+        api="responses",
+    )
+
+    assert result.text == "partial answer"
+    assert result.incomplete is True
+    assert "max_output_tokens" in (result.incomplete_reason or "")
+    assert result.steps[-1].detail == "incomplete"
 
 
 async def test_oversized_actual_tool_schema_fails_before_provider_call():
@@ -348,7 +603,7 @@ async def test_accumulated_current_turn_overflow_fails_before_later_provider_cal
         ]
     )
 
-    with pytest.raises(AgentContextBudgetError, match="offered tool schemas"):
+    with pytest.raises(AgentRunFailed) as excinfo:
         await run_agent_turn(
             deployment="dep",
             messages=[
@@ -363,6 +618,9 @@ async def test_accumulated_current_turn_overflow_fails_before_later_provider_cal
             prompt_budget_bytes=10_000,
         )
 
+    assert isinstance(excinfo.value.cause, AgentContextBudgetError)
+    assert excinfo.value.partial.usage.calls == 2
+    assert any(step.kind == "tool_result" for step in excinfo.value.partial.steps)
     assert len(gateway.calls) == 2
     second = gateway.calls[1]["messages"]
     assert any(

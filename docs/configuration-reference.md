@@ -163,9 +163,13 @@ rejects any model gateway host outside that set, even when it otherwise has a
 valid HTTPS `/openai` shape and the proxy-only `S7P-KEY` header.
 
 Per-model `reasoning_effort` is also catalog-driven. The API only exposes and
-forwards values listed in `infra/models.json` `reasoningEffort`; APIM now treats
-unsupported-value 400s as permanent provider errors and returns the upstream
-diagnostic body instead of requeueing or parking healthy backends.
+forwards values listed in `infra/models.json` `reasoningEffort`. Models whose
+catalog `api` is `responses` keep the same governed tool loop: FastAPI flattens
+function schemas, sends `function_call_output` continuation items with
+`store=false`, and requests encrypted reasoning only for the in-memory stateless
+continuation. The route remains SimpleL7Proxy → model APIM → Foundry; Responses
+does not create a direct provider path. APIM treats unsupported-value 400s as
+permanent provider errors instead of requeueing or parking healthy backends.
 
 The generated API policy is a sub-16 KB wrapper over bounded endpoint and
 priority-section fragments. APIM block expressions misparse contiguous `://`

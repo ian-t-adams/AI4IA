@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 
 from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
 from ai4ia_api.main import create_app
-from ai4ia_api.routers.chat import _RESPONSES_NO_TOOLS_NOTICE
+from ai4ia_api.routers.chat import _TOOLS_UNAVAILABLE_NOTICE
 from ai4ia_api.websearch.factory import build_web_search_service
 from tests.conftest import make_settings
 
@@ -78,9 +78,11 @@ class ScriptedWebGateway:
         self.tools_offered_first_call: bool | None = None
         self.first_messages = None
         self.tool_result_messages: list[str] = []
+        self.apis: list[str] = []
 
     async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         self.calls += 1
+        self.apis.append(api)
         if self.first_messages is None:
             self.first_messages = messages
         tools = (params or {}).get("tools")
@@ -282,11 +284,9 @@ def test_research_slash_command_invokes_web_search_capability():
 # --- Responses-API models: capability loss is announced, not silent ---------
 #
 # The plain-chat tool loop is built against the chat-completions wire format, so a
-# Responses-API model (gpt-5-pro & friends) cannot be offered these tools. It used
-# to fall straight through, which meant a turn that should have been web-grounded
-# answered from parametric knowledge with nothing — not the model, not the user,
-# not the logs — indicating the capability had been dropped. Tool-*enabled* agents
-# already got a loud 422 for the same combination; plain turns got silence.
+# Responses models use this same governed loop through the gateway adapter. A
+# genuinely non-tool-capable model still receives an explicit notice instead of
+# silently answering as though it had searched.
 
 
 def _session_with_model(client: TestClient, model: str) -> str:
@@ -295,7 +295,7 @@ def _session_with_model(client: TestClient, model: str) -> str:
     return resp.json()["id"]
 
 
-def test_responses_model_is_told_its_grounding_tools_are_missing():
+def test_responses_model_can_use_grounding_tools():
     client = _make_client()
     try:
         web = FakeWebClient()
@@ -310,21 +310,11 @@ def test_responses_model_is_told_its_grounding_tools_are_missing():
         )
         assert resp.status_code == 200, resp.text
 
-        # The tool loop genuinely cannot run here: no tools offered, no search made.
-        assert gw.tools_offered_first_call is False
-        assert web.calls == []
-
-        # ...but the model is TOLD so, so it can answer honestly instead of
-        # implying it searched. This is the whole point of the branch.
+        assert gw.tools_offered_first_call is True
+        assert [call["tool"] for call in web.calls] == ["web"]
+        assert gw.apis == ["responses", "responses"]
         systems = [m["content"] for m in gw.first_messages if m.get("role") == "system"]
-        assert any(_RESPONSES_NO_TOOLS_NOTICE == s for s in systems)
-        notice = next(s for s in systems if s == _RESPONSES_NO_TOOLS_NOTICE)
-        assert "not available for this turn" in notice.lower()
-        assert "do not fabricate citations" in notice.lower()
-
-        # The notice precedes the user turn, so it is instruction and not content.
-        roles = [m["role"] for m in gw.first_messages]
-        assert roles.index("system") < roles.index("user")
+        assert _TOOLS_UNAVAILABLE_NOTICE not in systems
     finally:
         client.__exit__(None, None, None)
 
@@ -351,7 +341,7 @@ def test_non_tool_chat_model_is_told_its_grounding_tools_are_missing():
             for message in gw.first_messages
             if message.get("role") == "system"
         ]
-        assert _RESPONSES_NO_TOOLS_NOTICE in systems
+        assert _TOOLS_UNAVAILABLE_NOTICE in systems
     finally:
         client.__exit__(None, None, None)
 
@@ -373,7 +363,7 @@ def test_responses_model_gets_no_notice_when_no_capabilities_were_possible():
         )
         assert resp.status_code == 200, resp.text
         systems = [m["content"] for m in gw.first_messages if m.get("role") == "system"]
-        assert all(s != _RESPONSES_NO_TOOLS_NOTICE for s in systems)
+        assert all(s != _TOOLS_UNAVAILABLE_NOTICE for s in systems)
     finally:
         client.__exit__(None, None, None)
 
@@ -397,7 +387,7 @@ def test_chat_completions_model_still_gets_tools_not_a_notice(model):
         assert resp.status_code == 200, resp.text
         assert gw.tools_offered_first_call is True
         systems = [m["content"] for m in gw.first_messages if m.get("role") == "system"]
-        assert all(s != _RESPONSES_NO_TOOLS_NOTICE for s in systems)
+        assert all(s != _TOOLS_UNAVAILABLE_NOTICE for s in systems)
     finally:
         client.__exit__(None, None, None)
 

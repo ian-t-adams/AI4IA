@@ -28,15 +28,17 @@ and tool safety; the web app is the user interface.
 - The model picker labels text-only, non-tool-capable models as **Plain chat
   only**. They remain usable for ordinary conversation, but the API rejects them
   for agents and workflows before persistence or provider I/O.
-- Temperature and Top P currently remain visible even when the selected model does
-  not support them. The UI bounds Temperature to 0-2 and Top P to 0-1; for compatible
-  models, the API forwards those values unchanged. The UI and API cap output tokens
-  to the selected catalog model's published maximum. For GPT-5 and o-series
-  deployments, the gateway strips unsupported sampling fields and translates the
-  output-token field to the model's accepted shape. Reasoning effort is offered
-  only from the `reasoningEffort` list in `infra/models.json`; unsupported values
-  are treated as provider errors, not retried as capacity failures. Control
-  visibility does not grant a model capability or override server policy.
+- Temperature and Top P appear only for models that support sampling. The UI
+  bounds Temperature to 0-2 and Top P to 0-1; for compatible models, the API
+  forwards those values unchanged. The UI and API cap output tokens to the
+  selected catalog model's published maximum. For GPT-5 and o-series deployments,
+  the gateway strips unsupported sampling fields and translates the output-token
+  field to the model's accepted shape. Reasoning effort is offered only from the
+  `reasoningEffort` list in `infra/models.json`. GPT-5.6 uses the Responses API so
+  reasoning effort and governed function tools work together; this still follows
+  the normal SimpleL7Proxy → APIM → Foundry path. Unsupported values are provider
+  errors, not capacity failures. Control visibility does not grant a model
+  capability or override server policy.
 
 ## Agents and workflows
 

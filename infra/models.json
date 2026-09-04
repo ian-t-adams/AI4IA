@@ -47,6 +47,7 @@
       "name": "gpt-5.6-sol",
       "format": "OpenAI",
       "category": "chat",
+      "api": "responses",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
       "reasoningEffort": [
@@ -95,6 +96,7 @@
       "name": "gpt-5.6-terra",
       "format": "OpenAI",
       "category": "chat",
+      "api": "responses",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
       "reasoningEffort": [
@@ -143,6 +145,7 @@
       "name": "gpt-5.6-luna",
       "format": "OpenAI",
       "category": "chat",
+      "api": "responses",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
       "reasoningEffort": [

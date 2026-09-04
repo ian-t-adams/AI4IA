@@ -16,11 +16,15 @@ class _Deployment:
 
 
 class StubCatalog:
-    def __init__(self, deployment: _Deployment | None) -> None:
+    def __init__(self, deployment: _Deployment | None, *, api: str = "chat") -> None:
         self._deployment = deployment
+        self._api = api
 
     def resolve_deployment(self, model_id, **kwargs):
         return self._deployment
+
+    def get(self, model_id):
+        return type("_Entry", (), {"api": self._api})()
 
 
 _GATEWAY = object()  # GatewayEmbedder only stores the ref; never called here.
@@ -72,6 +76,27 @@ def test_cosmos_builds_canonical_service_without_connecting(monkeypatch):
         "expected_dim": 3072,
         "embedding_model": "text-embedding-3-large-dep",
     }
+
+
+def test_cosmos_planner_keeps_extraction_model_api(monkeypatch):
+    monkeypatch.setattr(
+        "ai4ia_api.memory.factory.CosmosMemoryStore",
+        lambda **_kwargs: object(),
+    )
+    service = build_memory_service(
+        _settings(
+            memory_store=MemoryStoreKind.cosmos,
+            cosmos_endpoint="https://cosmos.example",
+        ),
+        gateway=_GATEWAY,
+        catalog=StubCatalog(
+            _Deployment("gpt-5.6-sol-dep"),
+            api="responses",
+        ),
+    )
+
+    assert isinstance(service, CosmosMemoryService)
+    assert service._planner._api == "responses"
 
 
 def test_cosmos_without_endpoint_fails_closed_to_noop():

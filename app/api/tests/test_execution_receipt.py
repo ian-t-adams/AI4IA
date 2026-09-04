@@ -22,6 +22,7 @@ import json
 
 from ai4ia_api.agents.receipt import ReceiptDraft, receipt_tool_calls
 from ai4ia_api.agents.runtime import AgentStep, DelegatedRunTrace
+from ai4ia_api.gateway.client import RESPONSES_OUTPUT_ITEMS_KEY
 from ai4ia_api.receipts import (
     MAX_PAYLOAD_BYTES,
     MAX_RECEIPT_BYTES,
@@ -316,6 +317,12 @@ def test_later_model_request_keeps_tool_call_ids_and_grouping():
         {
             "role": "assistant",
             "content": "",
+            RESPONSES_OUTPUT_ITEMS_KEY: [
+                {
+                    "type": "reasoning",
+                    "encrypted_content": "opaque-reasoning-secret",
+                }
+            ],
             "tool_calls": [
                 {
                     "id": "call-1",
@@ -348,6 +355,9 @@ def test_later_model_request_keeps_tool_call_ids_and_grouping():
     assert assistant.toolCalls is not None
     assert "call-1" in assistant.toolCalls.text
     assert tool.toolCallId == "call-1"
+    serialized = receipt.model_dump_json()
+    assert "opaque-reasoning-secret" not in serialized
+    assert "encrypted_content" not in serialized
 
 
 def test_successful_delegation_keeps_its_own_prompt_tools_and_calls():

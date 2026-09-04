@@ -7,7 +7,11 @@ _USAGE = {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
 class _EchoGateway:
     """Echoes the last user message with a stable usage payload."""
 
+    def __init__(self) -> None:
+        self.apis: list[str] = []
+
     async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
+        self.apis.append(api)
         return {
             "choices": [{"message": {"content": f"echo:{messages[-1]['content']}"}}],
             "usage": _USAGE,
@@ -15,6 +19,22 @@ class _EchoGateway:
 
     async def stream(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):  # pragma: no cover
         raise AssertionError("workflow runs must not stream")
+
+
+class _IncompleteGateway:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self, *, deployment, messages, params=None, correlation_id=None, api="chat"
+    ):
+        self.calls += 1
+        return {
+            "choices": [{"message": {"content": "partial step"}}],
+            "_responses_status": "incomplete",
+            "_responses_incomplete_reason": "{'reason': 'max_output_tokens'}",
+            "usage": _USAGE,
+        }
 
 
 def _mk_agent(client, name, headers=None):
@@ -98,8 +118,9 @@ def test_run_missing_session_404(client):
     assert resp.status_code == 404
 
 
-def test_run_rejects_responses_model_422(client):
-    client.app.state.gateway = _EchoGateway()
+def test_run_supports_responses_model(client):
+    gateway = _EchoGateway()
+    client.app.state.gateway = gateway
     assert _mk_agent(client, "drafter").status_code == 201
     assert _mk_agent(client, "editor").status_code == 201
     assert client.post("/api/workflows", json=_wf_body()).status_code == 201
@@ -108,8 +129,28 @@ def test_run_rejects_responses_model_422(client):
         "/api/workflows/summarize/run",
         json={"sessionId": sid, "input": "hi", "model": "gpt-5-pro"},
     )
-    assert resp.status_code == 422
-    assert "Responses API" in resp.json()["detail"]
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] is True
+    assert gateway.apis == ["responses", "responses"]
+
+
+def test_incomplete_responses_step_stops_workflow(client):
+    gateway = _IncompleteGateway()
+    client.app.state.gateway = gateway
+    assert _mk_agent(client, "drafter").status_code == 201
+    assert _mk_agent(client, "editor").status_code == 201
+    assert client.post("/api/workflows", json=_wf_body()).status_code == 201
+    sid = _session(client)
+
+    response = client.post(
+        "/api/workflows/summarize/run",
+        json={"sessionId": sid, "input": "hi", "model": "gpt-5-pro"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is False
+    assert "incomplete" in response.json()["message"]["content"]
+    assert gateway.calls == 1
 
 
 def test_run_rejects_model_without_tool_calling(client):
@@ -259,7 +300,7 @@ def test_run_unknown_step_agent_persists_failure(client):
 
 
 def test_pre_run_guards_persist_nothing(client):
-    """A 422 (Responses model) refused BEFORE the run must leave no messages and
+    """An unknown model refused BEFORE the run must leave no messages and
     no usage — the user turn is only persisted once the run is actually allowed."""
     client.app.state.gateway = _EchoGateway()
     assert _mk_agent(client, "drafter").status_code == 201
@@ -268,9 +309,9 @@ def test_pre_run_guards_persist_nothing(client):
     sid = _session(client)
     resp = client.post(
         "/api/workflows/summarize/run",
-        json={"sessionId": sid, "input": "hi", "model": "gpt-5-pro"},
+        json={"sessionId": sid, "input": "hi", "model": "missing-model"},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 400
     assert client.get(f"/api/sessions/{sid}/messages").json() == []
     assert client.get("/api/usage").json()["totalRequests"] == 0
 

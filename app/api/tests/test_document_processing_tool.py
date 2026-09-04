@@ -47,10 +47,13 @@ DEPLOY = DeploymentOption(region="eastus", sku="GlobalStandard", deploymentName=
 class FakeProcessingGateway:
     """Stand-in for ModelGatewayClient.complete: canned text/usage, or raises."""
 
-    def __init__(self, text="ANALYSIS RESULT", usage=None, raise_exc=None):
+    def __init__(
+        self, text="ANALYSIS RESULT", usage=None, raise_exc=None, *, incomplete=False
+    ):
         self.text = text
         self.usage = usage
         self.raise_exc = raise_exc
+        self.incomplete = incomplete
         self.calls: list[dict] = []
 
     async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
@@ -58,6 +61,9 @@ class FakeProcessingGateway:
         if self.raise_exc is not None:
             raise self.raise_exc
         result = {"choices": [{"message": {"role": "assistant", "content": self.text}}]}
+        if self.incomplete:
+            result["_responses_status"] = "incomplete"
+            result["_responses_incomplete_reason"] = "{'reason': 'max_output_tokens'}"
         if self.usage is not None:
             result["usage"] = self.usage
         return result
@@ -95,7 +101,16 @@ def _service(library, blob, gateway, settings):
     return DocumentProcessingService(retrieval=retrieval, gateway=gateway, settings=settings)
 
 
-def _capability(service, store, settings, *, entitlements=None, metering=None, user_id="u1"):
+def _capability(
+    service,
+    store,
+    settings,
+    *,
+    entitlements=None,
+    metering=None,
+    user_id="u1",
+    api="chat",
+):
     sink: list[MessageAttachment] = []
     tools, handlers = build_document_processing_capability(
         processing_service=service,
@@ -108,6 +123,7 @@ def _capability(service, store, settings, *, entitlements=None, metering=None, u
         session_id="s-doc",
         settings=settings,
         sink=sink,
+        api=api,
     )
     return tools, handlers, sink
 
@@ -151,15 +167,73 @@ async def test_service_processes_ready_document():
         instruction="What was revenue?",
         deployment=DEPLOY,
         model_id="gpt-test",
+        api="responses",
     )
     assert res.text == "Revenue: $30"
     assert res.mode == "analyze"
     assert res.filename == "report.pdf"
     assert res.document_id == doc.id
     assert res.usage.total == 16
-    # The call ran on the supplied deployment via the chat-completions surface.
+    # The nested model call keeps the outer turn's provider API.
     assert gw.calls[0]["deployment"] == "gpt-test"
-    assert gw.calls[0]["api"] == "chat"
+    assert gw.calls[0]["api"] == "responses"
+
+
+async def test_incomplete_processing_is_explicit_and_still_metered():
+    library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
+    usage = {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}
+    gateway = FakeProcessingGateway(text="", usage=usage, incomplete=True)
+    settings = _settings()
+    service = _service(library, blob, gateway, settings)
+    document = await _seed_doc(library, blob)
+    metering = FakeMetering()
+    store = DocumentArtifactStore(InMemoryBlobStore())
+    _, handlers, _ = _capability(
+        service,
+        store,
+        settings,
+        metering=metering,
+        api="responses",
+    )
+
+    result = await handlers[PROCESS_DOCUMENT_TOOL_NAME](
+        {"document_id": document.id, "instruction": "summarize"},
+        ToolContext(),
+    )
+
+    assert result["status"] == "incomplete"
+    assert "incomplete" in result["error"]
+    assert result["result"] == ""
+    assert gateway.calls[0]["api"] == "responses"
+    assert len(metering.calls) == 1
+    assert metering.calls[0]["usage"].total == 20
+    assert metering.calls[0]["status"] == "complete"
+
+
+async def test_empty_completed_processing_is_error_and_still_metered():
+    library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
+    usage = {"prompt_tokens": 12, "completion_tokens": 1, "total_tokens": 13}
+    gateway = FakeProcessingGateway(text="", usage=usage)
+    settings = _settings()
+    service = _service(library, blob, gateway, settings)
+    document = await _seed_doc(library, blob)
+    metering = FakeMetering()
+    _, handlers, _ = _capability(
+        service,
+        DocumentArtifactStore(InMemoryBlobStore()),
+        settings,
+        metering=metering,
+    )
+
+    result = await handlers[PROCESS_DOCUMENT_TOOL_NAME](
+        {"document_id": document.id, "instruction": "summarize"},
+        ToolContext(),
+    )
+
+    assert result["status"] == "error"
+    assert "without a result" in result["error"]
+    assert len(metering.calls) == 1
+    assert metering.calls[0]["usage"].total == 13
 
 
 async def test_service_rejects_empty_instruction():

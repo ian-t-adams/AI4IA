@@ -55,7 +55,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..gateway.client import ModelGatewayClient
+from ..gateway.client import RESPONSES_OUTPUT_ITEMS_KEY, ModelGatewayClient
 from ..usage.models import TokenUsage
 from ..safety import MessageSafety, merge_safety, parse_safety
 from ..logging_setup import emit_custom_event, emit_security_block
@@ -165,6 +165,8 @@ class AgentRunResult:
     model_requests: list[list[dict[str, Any]]] = field(default_factory=list)
     safety: MessageSafety | None = None
     delegations: list[DelegatedRunTrace] = field(default_factory=list)
+    incomplete: bool = False
+    incomplete_reason: str | None = None
 
 
 class DelegatedToolResult(dict[str, Any]):
@@ -236,6 +238,16 @@ def _model_visible_result(value: Any) -> tuple[str, Any]:
         return serialized, serialized
 
 
+def _observable_messages(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy model-visible messages without opaque provider continuation state."""
+    observable: list[dict[str, Any]] = []
+    for message in messages:
+        copied = dict(message)
+        copied.pop(RESPONSES_OUTPUT_ITEMS_KEY, None)
+        observable.append(copied)
+    return observable
+
+
 async def run_agent_turn(
     *,
     deployment: str,
@@ -250,6 +262,7 @@ async def run_agent_turn(
     extra_tools: Sequence[dict[str, Any]] | None = None,
     extra_handlers: Mapping[str, Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]]
     | None = None,
+    api: str = "chat",
     on_step: Callable[[AgentStep], Awaitable[None]] | None = None,
     on_delta: Callable[[str], Awaitable[None]] | None = None,
     prompt_budget_bytes: int | None = None,
@@ -374,12 +387,47 @@ async def run_agent_turn(
         nonlocal current_stream_usage
         current_stream_usage = usage
 
-    async def call_model(request_params: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    def current_partial_result(
+        *, include_current_attempt: bool = True
+    ) -> AgentRunResult:
+        partial_text = (
+            "".join(streamed_parts)
+            if stream_tokens
+            else "".join(completed_text_parts)
+        )
+        return AgentRunResult(
+            text=partial_text,
+            model=deployment,
+            steps=list(steps),
+            iterations=iterations,
+            usage=(
+                usage_agg.add(TokenUsage.parse(current_stream_usage))
+                if include_current_attempt
+                else usage_agg
+            ),
+            streamed_text="".join(streamed_parts),
+            offered_tools=offered_tools,
+            dropped_context_messages=dropped_context_messages,
+            effective_prompt=effective_prompt,
+            model_requests=list(model_requests),
+            safety=safety_agg,
+            delegations=list(delegated_runs),
+        )
+
+    async def call_model(
+        request_params: dict[str, Any],
+    ) -> tuple[
+        str,
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        bool,
+        str | None,
+    ]:
         """One model round trip, streamed or not, folded into shared usage.
 
-        Returns ``(assistant text, tool calls)``. The two transports are
-        deliberately reduced to the same pair here so everything downstream —
-        governance, budget, trace, taint — has exactly one shape to reason about.
+        Returns assistant text, tool calls, provider continuation items, and the
+        terminal completeness state. Governance still consumes the same
+        chat-shaped tool-call list on both transports.
         """
         nonlocal completed_model_calls, current_stream_usage, current_user_index
         nonlocal usage_agg, convo, dropped_context_messages, effective_prompt
@@ -415,12 +463,23 @@ async def run_agent_turn(
                     },
                 )
         except ValueError as exc:
-            raise AgentContextBudgetError(
+            budget_error = AgentContextBudgetError(
                 "Fixed agent input and offered tool schemas exceed the model context budget."
-            ) from exc
+            )
+            if not (
+                streamed_parts
+                or completed_model_calls
+                or usage_agg.calls
+                or steps
+            ):
+                raise budget_error from exc
+            raise AgentRunFailed(
+                cause=budget_error,
+                partial=current_partial_result(include_current_attempt=False),
+            ) from budget_error
         if not effective_prompt:
-            effective_prompt = copy.deepcopy(convo)
-        model_requests.append(copy.deepcopy(convo))
+            effective_prompt = copy.deepcopy(_observable_messages(convo))
+        model_requests.append(copy.deepcopy(_observable_messages(convo)))
         try:
             if stream_tokens:
                 iteration = await stream_iteration(
@@ -429,6 +488,7 @@ async def run_agent_turn(
                     messages=convo,
                     params=request_params,
                     correlation_id=ctx.correlation_id,
+                    api=api,
                     on_delta=emit_delta,
                     on_usage=observe_stream_usage,
                 )
@@ -439,13 +499,22 @@ async def run_agent_turn(
                         signal.modelCall = completed_model_calls
                     safety_agg = merge_safety(safety_agg, tagged)
                 usage_agg = usage_agg.add(TokenUsage.parse(iteration.usage))
-                return iteration.content, iteration.tool_calls
-            result = await gateway.complete(
+                return (
+                    iteration.content,
+                    iteration.tool_calls,
+                    iteration.response_output_items,
+                    iteration.incomplete,
+                    iteration.incomplete_reason,
+                )
+            complete_kwargs: dict[str, Any] = dict(
                 deployment=deployment,
                 messages=convo,
                 params=request_params,
                 correlation_id=ctx.correlation_id,
             )
+            if api != "chat":
+                complete_kwargs["api"] = api
+            result = await gateway.complete(**complete_kwargs)
             completed_model_calls += 1
             parsed_safety = parse_safety(result)
             if parsed_safety is not None:
@@ -456,7 +525,21 @@ async def run_agent_turn(
             message = (result.get("choices") or [{}])[0].get("message") or {}
             content = message.get("content") or ""
             completed_text_parts.append(content)
-            return content, message.get("tool_calls") or []
+            raw_output_items = result.get(RESPONSES_OUTPUT_ITEMS_KEY)
+            output_items = (
+                [dict(item) for item in raw_output_items if isinstance(item, dict)]
+                if isinstance(raw_output_items, list)
+                else []
+            )
+            incomplete = result.get("_responses_status") == "incomplete"
+            incomplete_reason = result.get("_responses_incomplete_reason")
+            return (
+                content,
+                message.get("tool_calls") or [],
+                output_items,
+                incomplete,
+                str(incomplete_reason) if incomplete_reason is not None else None,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -468,26 +551,18 @@ async def run_agent_turn(
                 or steps
             ):
                 raise
-            partial_text = (
-                "".join(streamed_parts) if stream_tokens else "".join(completed_text_parts)
-            )
-            partial = AgentRunResult(
-                text=partial_text,
-                model=deployment,
-                steps=list(steps),
-                iterations=iterations,
-                usage=usage_agg.add(TokenUsage.parse(current_stream_usage)),
-                streamed_text="".join(streamed_parts),
-                offered_tools=offered_tools,
-                dropped_context_messages=dropped_context_messages,
-                effective_prompt=effective_prompt,
-                model_requests=list(model_requests),
-                safety=safety_agg,
-                delegations=list(delegated_runs),
-            )
-            raise AgentRunFailed(cause=exc, partial=partial) from exc
+            raise AgentRunFailed(
+                cause=exc,
+                partial=current_partial_result(),
+            ) from exc
 
-    def finish(text: str, iterations: int) -> AgentRunResult:
+    def finish(
+        text: str,
+        iterations: int,
+        *,
+        incomplete: bool = False,
+        incomplete_reason: str | None = None,
+    ) -> AgentRunResult:
         return AgentRunResult(
             text=text,
             model=deployment,
@@ -501,6 +576,8 @@ async def run_agent_turn(
             model_requests=list(model_requests),
             safety=safety_agg,
             delegations=list(delegated_runs),
+            incomplete=incomplete,
+            incomplete_reason=incomplete_reason,
         )
 
     async def record(step: AgentStep, *, persist: bool = True) -> None:
@@ -603,7 +680,22 @@ async def run_agent_turn(
         if schema:
             req_params["tools"] = schema
             req_params["tool_choice"] = "auto"
-        content, tool_calls = await call_model(req_params)
+        (
+            content,
+            tool_calls,
+            response_output_items,
+            incomplete,
+            incomplete_reason,
+        ) = await call_model(req_params)
+
+        if incomplete:
+            await record(AgentStep(kind="final", detail="incomplete"))
+            return finish(
+                content,
+                iterations,
+                incomplete=True,
+                incomplete_reason=incomplete_reason,
+            )
 
         if not tool_calls:
             await record(AgentStep(kind="final"))
@@ -611,13 +703,14 @@ async def run_agent_turn(
 
         # Preserve the assistant tool-call message verbatim (content may be null)
         # so the subsequent tool results reference valid call ids.
-        convo.append(
-            {
-                "role": "assistant",
-                "content": content or None,
-                "tool_calls": tool_calls,
-            }
-        )
+        assistant_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": content or None,
+            "tool_calls": tool_calls,
+        }
+        if response_output_items:
+            assistant_message[RESPONSES_OUTPUT_ITEMS_KEY] = response_output_items
+        convo.append(assistant_message)
 
         force_final = False
         for call in tool_calls:
@@ -973,7 +1066,17 @@ async def run_agent_turn(
     # must respond in natural language rather than request yet another tool. This
     # streams too when the turn is streaming — otherwise the last thing the user
     # waits on would be the one round trip that still went silent.
-    tail_text, _ = await call_model(dict(base_params))
+    tail_text, _, _, incomplete, incomplete_reason = await call_model(dict(base_params))
     iterations += 1
-    await record(AgentStep(kind="final", detail="max_iters"))
-    return finish(tail_text, iterations)
+    await record(
+        AgentStep(
+            kind="final",
+            detail="incomplete" if incomplete else "max_iters",
+        )
+    )
+    return finish(
+        tail_text,
+        iterations,
+        incomplete=incomplete,
+        incomplete_reason=incomplete_reason,
+    )

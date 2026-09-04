@@ -86,6 +86,7 @@ def build_delegate_capability(
     registry: ToolRegistry,
     executor: ToolExecutor,
     deployment: str,
+    api: str = "chat",
 ) -> tuple[list[dict[str, Any]], dict[str, DelegateHandler], list[TokenUsage]]:
     """Build the ``delegate_to_agent`` synthetic tool for an orchestrator.
 
@@ -176,6 +177,7 @@ def build_delegate_capability(
                 ctx=sub_context,
                 params=None,
                 max_iters=_SUB_AGENT_MAX_ITERS,
+                api=api,
             )
         except AgentRunFailed as exc:
             raise DelegatedAgentRunFailed(
@@ -220,18 +222,30 @@ def build_delegate_capability(
         logger.info(
             "delegated to agent=%s iters=%s", target_name, run.iterations
         )
+        trace = DelegatedRunTrace(
+            agent=target_name,
+            effective_prompt=run.effective_prompt,
+            model_requests=run.model_requests,
+            offered_tools=run.offered_tools,
+            steps=run.steps,
+            iterations=run.iterations,
+            usage=run.usage,
+            safety=run.safety,
+            status="incomplete" if run.incomplete else "complete",
+            partial=run.incomplete,
+        )
+        if run.incomplete:
+            return DelegatedToolResult(
+                {
+                    "agent": target_name,
+                    "error": "The linked agent returned an incomplete response.",
+                    "partial_answer": run.text,
+                },
+                trace=trace,
+            )
         return DelegatedToolResult(
             {"agent": target_name, "answer": run.text},
-            trace=DelegatedRunTrace(
-                agent=target_name,
-                effective_prompt=run.effective_prompt,
-                model_requests=run.model_requests,
-                offered_tools=run.offered_tools,
-                steps=run.steps,
-                iterations=run.iterations,
-                usage=run.usage,
-                safety=run.safety,
-            ),
+            trace=trace,
         )
 
     return [schema], {DELEGATE_TOOL_NAME: _handler}, usage_sink

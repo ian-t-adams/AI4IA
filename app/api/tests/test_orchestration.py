@@ -33,10 +33,12 @@ class _Gateway:
         self.text = text
         self.calls = 0
         self.last_messages = None
+        self.last_api = None
 
     async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         self.calls += 1
         self.last_messages = messages
+        self.last_api = api
         return {
             "choices": [{"message": {"role": "assistant", "content": self.text}}],
             "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
@@ -69,7 +71,9 @@ def _leaf(name: str, *, enabled: bool = True) -> AgentSpec:
     )
 
 
-def _build(orch: AgentSpec, composed: AgentCatalog, gw: _Gateway):
+def _build(
+    orch: AgentSpec, composed: AgentCatalog, gw: _Gateway, *, api: str = "chat"
+):
     registry, executor = build_tools()
     return build_delegate_capability(
         orchestrator=orch,
@@ -78,6 +82,7 @@ def _build(orch: AgentSpec, composed: AgentCatalog, gw: _Gateway):
         registry=registry,
         executor=executor,
         deployment="boss-deployment",
+        api=api,
     )
 
 
@@ -146,6 +151,24 @@ async def test_handler_happy_path_runs_subagent_and_records_usage():
     ]
     assert len(sink) == 1
     assert sink[0].total == 7
+
+
+@pytest.mark.asyncio
+async def test_handler_uses_supervisor_responses_api_for_subagent():
+    gateway = _Gateway()
+    _, handlers, _ = _build(
+        _orchestrator(["helper"]),
+        _catalog(_leaf("helper")),
+        gateway,
+        api="responses",
+    )
+
+    await handlers[DELEGATE_TOOL_NAME](
+        {"agent": "helper", "task": "answer"},
+        ToolContext(),
+    )
+
+    assert gateway.last_api == "responses"
 
 
 @pytest.mark.asyncio

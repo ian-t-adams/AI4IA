@@ -120,6 +120,7 @@ def build_workflow_capability(
     metering: UsageService,
     user_id: str,
     session_id: str,
+    api: str = "chat",
 ) -> tuple[list[dict[str, Any]], dict[str, Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]]]:
     names = [workflow.name for workflow in workflows]
     descriptions = "; ".join(
@@ -195,6 +196,7 @@ def build_workflow_capability(
             capabilities=safe_capabilities,
             correlation_id=ctx.correlation_id,
             approval_policy=ApprovalPolicy.always,
+            api=api,
         )
         if outcome.usage.calls > 0:
             await metering.record_completion(

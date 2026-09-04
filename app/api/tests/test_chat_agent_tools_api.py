@@ -7,10 +7,11 @@ registry authorization -> execution -> result fed back -> final answer persisted
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
-from ai4ia_api.gateway.client import ModelGatewayError
+from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
 from ai4ia_api.main import create_app
 from tests.conftest import make_settings, stream_like_gateway
 
@@ -64,17 +65,87 @@ class ToolThenAnswerGateway:
             yield chunk
 
 
+class ParamCaptureGateway:
+    def __init__(self) -> None:
+        self.params: list[dict] = []
+        self.apis: list[str] = []
+
+    async def complete(
+        self, *, deployment, messages, params=None, correlation_id=None, api="chat"
+    ):
+        self.params.append(dict(params or {}))
+        self.apis.append(api)
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+
+class IncompleteResponsesGateway:
+    async def complete(
+        self, *, deployment, messages, params=None, correlation_id=None, api="chat"
+    ):
+        assert api == "responses"
+        return {
+            "choices": [
+                {"message": {"role": "assistant", "content": "partial answer"}}
+            ],
+            "_responses_status": "incomplete",
+            "_responses_incomplete_reason": "{'reason': 'max_output_tokens'}",
+        }
+
+    async def stream(
+        self, *, deployment, messages, params=None, correlation_id=None, api="chat"
+    ):
+        assert api == "responses"
+        yield ChatChunk(
+            delta="partial answer",
+            raw=json.dumps(
+                {"choices": [{"delta": {"content": "partial answer"}}]}
+            ),
+        )
+        yield ChatChunk(
+            done=True,
+            incomplete=True,
+            incompleteReason="{'reason': 'max_output_tokens'}",
+        )
+
+
+class EmptyIncompleteResponsesGateway(IncompleteResponsesGateway):
+    async def complete(
+        self, *, deployment, messages, params=None, correlation_id=None, api="chat"
+    ):
+        result = await super().complete(
+            deployment=deployment,
+            messages=messages,
+            params=params,
+            correlation_id=correlation_id,
+            api=api,
+        )
+        result["choices"][0]["message"]["content"] = ""
+        return result
+
+    async def stream(
+        self, *, deployment, messages, params=None, correlation_id=None, api="chat"
+    ):
+        assert api == "responses"
+        yield ChatChunk(
+            done=True,
+            incomplete=True,
+            incompleteReason="{'reason': 'max_output_tokens'}",
+        )
+
+
 class WorkflowThenAnswerGateway:
     """Outer agent calls a saved workflow; nested step runs; outer agent answers."""
 
     def __init__(self) -> None:
         self.calls = 0
         self.outer_tools: list[str] = []
+        self.apis: list[str] = []
 
     async def complete(
         self, *, deployment, messages, params=None, correlation_id=None, api="chat"
     ):
         self.calls += 1
+        self.apis.append(api)
         if self.calls == 1:
             self.outer_tools = [
                 tool["function"]["name"]
@@ -175,7 +246,7 @@ def test_agent_can_invoke_an_eligible_saved_workflow(client):
     assert created_workflow.status_code == 201, created_workflow.text
     gateway = WorkflowThenAnswerGateway()
     client.app.state.gateway = gateway
-    session_id = _create_session(client)["id"]
+    session_id = _create_session(client, model="gpt-5.6-sol")["id"]
 
     response = client.post(
         "/api/chat",
@@ -191,6 +262,7 @@ def test_agent_can_invoke_an_eligible_saved_workflow(client):
         "The workflow returned its result."
     )
     assert gateway.calls == 3
+    assert gateway.apis == ["responses", "responses", "responses"]
     assert "run_workflow" in gateway.outer_tools
     usage = client.get(f"/api/usage/sessions/{session_id}").json()
     assert usage["totalRequests"] >= 2
@@ -215,6 +287,157 @@ def test_tool_enabled_agent_runs_tool_and_persists_answer(client):
     assert messages[0]["content"] == "what is 6*7?"  # mention stripped
     assert messages[1]["content"] == "It is 42."
     assert messages[1]["agent"] == "analyst"
+
+
+def test_gpt56_tool_turn_uses_responses_and_keeps_reasoning_effort(client):
+    gateway = ParamCaptureGateway()
+    client.app.state.gateway = gateway
+    created = client.post(
+        "/api/sessions",
+        json={
+            "title": "Chat",
+            "model": "gpt-5.6-sol",
+            "toolOverrides": {"added": ["get_current_time"], "removed": []},
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "sessionId": created.json()["id"],
+            "content": "hello",
+            "stream": False,
+            "params": {"reasoning_effort": "xhigh"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert gateway.params[0]["tools"]
+    assert gateway.params[0]["reasoning_effort"] == "xhigh"
+    assert gateway.apis == ["responses"]
+
+
+def test_tool_compatible_reasoning_effort_is_preserved(client):
+    gateway = ParamCaptureGateway()
+    client.app.state.gateway = gateway
+    created = client.post(
+        "/api/sessions",
+        json={
+            "title": "Chat",
+            "model": "gpt-5.4",
+            "toolOverrides": {"added": ["get_current_time"], "removed": []},
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "sessionId": created.json()["id"],
+            "content": "hello",
+            "stream": False,
+            "params": {"reasoning_effort": "high"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert gateway.params[0]["tools"]
+    assert gateway.params[0]["reasoning_effort"] == "high"
+    assert gateway.apis == ["chat"]
+
+
+def test_incomplete_responses_agent_receipt_is_marked_partial(client):
+    client.app.state.gateway = IncompleteResponsesGateway()
+    created = client.post(
+        "/api/sessions",
+        json={
+            "title": "Chat",
+            "model": "gpt-5.6-sol",
+            "toolOverrides": {"added": ["get_current_time"], "removed": []},
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "sessionId": created.json()["id"],
+            "content": "hello",
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    message = response.json()["message"]
+    assert message["content"] == "partial answer"
+    assert message["executionReceipt"]["status"] == "incomplete"
+    assert message["executionReceipt"]["partial"] is True
+
+
+def test_streaming_incomplete_responses_agent_receipt_is_marked_partial(client):
+    client.app.state.gateway = IncompleteResponsesGateway()
+    created = client.post(
+        "/api/sessions",
+        json={
+            "title": "Chat",
+            "model": "gpt-5.6-sol",
+            "toolOverrides": {"added": ["get_current_time"], "removed": []},
+        },
+    )
+    assert created.status_code == 201, created.text
+    session_id = created.json()["id"]
+
+    response = client.post(
+        "/api/chat",
+        json={"sessionId": session_id, "content": "hello", "stream": True},
+    )
+
+    assert response.status_code == 200, response.text
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    receipt = messages[-1]["executionReceipt"]
+    assert messages[-1]["content"] == "partial answer"
+    assert receipt["status"] == "incomplete"
+    assert receipt["partial"] is True
+
+
+def test_plain_incomplete_responses_uses_fallback_and_skips_memory(client, monkeypatch):
+    client.app.state.gateway = EmptyIncompleteResponsesGateway()
+    remember = AsyncMock()
+    monkeypatch.setattr(client.app.state.memory, "remember", remember)
+    session_id = _create_session(client, model="gpt-5.6-sol")["id"]
+
+    response = client.post(
+        "/api/chat",
+        json={"sessionId": session_id, "content": "hello", "stream": False},
+    )
+
+    assert response.status_code == 200, response.text
+    message = response.json()["message"]
+    assert "ended before" in message["content"]
+    assert message["executionReceipt"]["status"] == "incomplete"
+    remember.assert_not_awaited()
+
+
+def test_plain_streaming_incomplete_responses_uses_fallback_and_skips_memory(
+    client, monkeypatch
+):
+    client.app.state.gateway = EmptyIncompleteResponsesGateway()
+    remember = AsyncMock()
+    monkeypatch.setattr(client.app.state.memory, "remember", remember)
+    session_id = _create_session(client, model="gpt-5.6-sol")["id"]
+
+    response = client.post(
+        "/api/chat",
+        json={"sessionId": session_id, "content": "hello", "stream": True},
+    )
+
+    assert response.status_code == 200, response.text
+    assert "ended before" in response.text
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    assert "ended before" in messages[-1]["content"]
+    assert messages[-1]["executionReceipt"]["status"] == "incomplete"
+    remember.assert_not_awaited()
 
 
 def test_non_tool_model_is_rejected_before_agent_execution(client):
@@ -288,11 +511,7 @@ def test_toolless_agent_does_not_invoke_tool_loop(client):
     assert gw.calls == 1
 
 
-def test_tool_agent_on_responses_model_is_rejected_before_persist(client):
-    """A tool-enabled agent pinned to a Responses-API model is refused with 422
-    BEFORE any model call or persistence — the chat-completions tool loop has no
-    Responses equivalent yet, so the turn must not run or leave a dangling
-    message / rebind the session to an unusable model."""
+def test_tool_agent_on_responses_model_runs_and_persists(client):
     gw = ToolThenAnswerGateway()
     client.app.state.gateway = gw
     sid = _create_session(client)["id"]
@@ -306,14 +525,13 @@ def test_tool_agent_on_responses_model_is_rejected_before_persist(client):
             "stream": False,
         },
     )
-    assert resp.status_code == 422, resp.text
-    assert gw.calls == 0
-    # No user/assistant message was persisted for the refused turn.
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["message"]["content"] == "It is 42."
+    assert gw.calls == 2
     messages = client.get(f"/api/sessions/{sid}/messages").json()
-    assert messages == []
-    # The session stays on its original model, not the unusable Responses one.
+    assert [message["role"] for message in messages] == ["user", "assistant"]
     session = client.get(f"/api/sessions/{sid}").json()
-    assert session["model"] == "gpt-5.2"
+    assert session["model"] == "gpt-5-pro"
 
 
 def test_nonstreaming_agent_failure_persists_partial_error_and_usage():

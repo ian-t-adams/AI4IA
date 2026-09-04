@@ -24,13 +24,19 @@ from .conftest import make_settings
 class _FakeGateway:
     """Records the summarization prompt and returns a canned summary."""
 
-    def __init__(self, text: str = "SUMMARY") -> None:
+    def __init__(self, text: str = "SUMMARY", *, incomplete: bool = False) -> None:
         self.text = text
+        self.incomplete = incomplete
         self.calls: list[list[dict]] = []
 
     async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         self.calls.append(messages)
-        return {"choices": [{"message": {"role": "assistant", "content": self.text}}]}
+        result = {
+            "choices": [{"message": {"role": "assistant", "content": self.text}}]
+        }
+        if self.incomplete:
+            result["_responses_status"] = "incomplete"
+        return result
 
 
 class _FakeRepo:
@@ -170,6 +176,34 @@ async def test_apply_folds_oldest_when_over_threshold():
     assert live == prior[-2:]
     assert session.summarizedThroughMessageId == prior[-3].id
     assert repo.updates == 1
+
+
+@pytest.mark.asyncio
+async def test_incomplete_summary_does_not_advance_fold_marker():
+    svc = SummarizationService(
+        enabled=True, recent_turns=2, fallback_threshold_chars=10
+    )
+    gateway = _FakeGateway("", incomplete=True)
+    repo = _FakeRepo()
+    session = _session(summary="PRIOR")
+    prior = _long_turns(4)
+
+    with pytest.raises(RuntimeError, match="incomplete"):
+        await svc.apply(
+            gateway=gateway,
+            repo=repo,
+            session=session,
+            user_id="u",
+            deployment="dep",
+            prior=prior,
+            system_prompt=None,
+            context_window=None,
+            api="responses",
+        )
+
+    assert repo.updates == 0
+    assert session.summary == "PRIOR"
+    assert session.summarizedThroughMessageId is None
 
 
 @pytest.mark.asyncio

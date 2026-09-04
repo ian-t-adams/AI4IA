@@ -27,7 +27,7 @@ from ..catalog import ModelCatalog, ModelEntry
 from ..chat_timing import ChatTiming, bind_chat_timing
 from ..citations import RetrievedSource, attest_message
 from ..conversations.policy import resolve_conversation_policy
-from ..gateway.client import CHAT_COMPLETIONS_APIS, ModelGatewayClient, ModelGatewayError
+from ..gateway.client import TOOL_CALLING_APIS, ModelGatewayClient, ModelGatewayError
 from ..logging_setup import emit_custom_event, emit_security_block, get_correlation_id
 from ..sessions.models import (
     Document,
@@ -59,7 +59,13 @@ from ..agents.prompt_budget import (
     message_budget_bytes,
     prompt_byte_budget,
 )
-from ..agents.runtime import AgentRunFailed, AgentRunResult, AgentStep, run_agent_turn
+from ..agents.runtime import (
+    AgentContextBudgetError,
+    AgentRunFailed,
+    AgentRunResult,
+    AgentStep,
+    run_agent_turn,
+)
 from ..agents.activity import persisted_trace
 from ..agents.receipt import ReceiptDraft
 from ..agents.approvals import (
@@ -122,6 +128,7 @@ from ..workflows.capability import (
 )
 from ._chat_streaming import (
     CHAT_COMPLETION_FAILED,
+    INCOMPLETE_RESPONSE_FALLBACK,
     _agentic_stream,
     _mint_approval_events,
     _persist_nonstream_failure,
@@ -202,20 +209,18 @@ class ChatRequest(BaseModel):
     approvals: list[ToolApprovalDecision] = Field(default_factory=list, max_length=8)
 
 
-# Injected as a system block when a plain (agent-less or tool-less-agent) turn
-# WOULD have been offered synthetic capabilities but the model is served through
-# the Responses API, which this app's tool loop does not speak. Without it the
-# capability loss is invisible: the model answers from parametric knowledge with
-# no idea it was supposed to have grounding, and the user cannot tell the
-# difference from a genuinely grounded answer.
-_RESPONSES_NO_TOOLS_NOTICE = (
+# Injected when a plain turn has ambient capabilities but its selected model
+# cannot drive function tools. Without it the model may claim to have searched
+# or read documents even though the server could not offer those capabilities.
+_TOOLS_UNAVAILABLE_NOTICE = (
     "SYSTEM NOTICE: Web search, document retrieval, and code execution are NOT "
-    "available for this turn because the selected model is served through an API "
-    "this deployment cannot yet supply tools over. Answer from your own knowledge, "
-    "and state plainly that you could not search or read documents for this answer "
-    "and that it may be out of date. Do not claim to have searched, browsed, "
-    "retrieved, or run code, and do not fabricate citations or sources."
+    "available for this turn because the selected model cannot use function tools "
+    "in this deployment. Answer from your own knowledge, and state plainly that "
+    "you could not search or read documents for this answer and that it may be out "
+    "of date. Do not claim to have searched, browsed, retrieved, or run code, and "
+    "do not fabricate citations or sources."
 )
+
 
 # Shown when a turn held a call for approval but the model produced no prose to
 # go with it. Fixed server-side text, never model output: this sentence exists
@@ -225,8 +230,6 @@ _APPROVAL_NEEDED_FALLBACK = (
     "I need your approval before I can run one of the tools required to answer "
     "that. Review the request below and approve it if it looks right."
 )
-
-
 def _history(messages: list[Message], system_prompt: str | None) -> list[dict]:
     out: list[dict] = []
     if system_prompt:
@@ -1023,13 +1026,13 @@ async def chat(
     # unchanged, so the turn is byte-for-byte identical to before.
     effective_params = _effective_params(body.params.model_dump(exclude_none=True), entry)
     prompt_budget_bytes = _prompt_byte_budget(entry, effective_params)
-    # This notice is conditionally added later after capability construction.
-    # Reserve it on every path so that late insertion cannot bypass the bound.
+    # The unsupported-tool notice is inserted only after capabilities are built.
+    # Reserve it here so that late insertion cannot bypass the prompt bound.
     bounded_prompt_budget = max(
         1,
         prompt_budget_bytes
         - message_budget_bytes(
-            {"role": "system", "content": _RESPONSES_NO_TOOLS_NOTICE}
+            {"role": "system", "content": _TOOLS_UNAVAILABLE_NOTICE}
         ),
     )
     user_input_bytes = len(content_for_model.encode("utf-8"))
@@ -1072,22 +1075,6 @@ async def chat(
             ),
         )
 
-    # Tool-calling agents (and multi-agent orchestrators, which delegate via a
-    # synthetic tool) run the chat-completions function-calling loop, which has no
-    # Responses-API equivalent here yet. Refuse the unsupported combo with a clear
-    # 422 BEFORE persisting the user message or rebinding session.model, so a
-    # refused turn leaves no dangling message and no session stuck on a model it
-    # can't use for this agent.
-    if agent is not None and (agent.tools or agent.links) and api == "responses":
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(
-                f"Agent @{agent.name} uses tools or agent links, but model "
-                f"'{model_id}' is served through the Responses API, which AI4IA "
-                "does not yet support for tool-calling. Choose a chat-completions "
-                "model for this agent."
-            ),
-        )
     if (
         agent is not None
         and (agent.tools or agent.links)
@@ -1410,10 +1397,9 @@ async def chat(
     # streaming and non-streaming, success and failure, agent and plain chat
     # from each inventing a different receipt.
     #
-    # ``prompt_messages`` holds the live list rather than a copy on purpose: the
-    # Responses-API no-tools notice is inserted into it later, and the receipt
-    # must describe the prompt as actually sent. The runtime works on its own
-    # copy, so a tool loop cannot rewrite this snapshot.
+    # ``prompt_messages`` holds the live list because the unsupported-tool notice
+    # may be inserted later; the receipt must describe the prompt actually sent.
+    # The runtime works on its own copy, so a tool loop cannot rewrite this list.
     safety_provider = provider_for_api(api)
     receipt_draft = ReceiptDraft(
         correlation_id=correlation_id,
@@ -1588,6 +1574,7 @@ async def chat(
             registry=registry,
             executor=executor,
             deployment=deployment.deploymentName,
+            api=api,
         )
         # Tier 3 + Web IQ + memory come from the SHARED builder, so a tool-enabled
         # agent turn, a plain turn, and a workflow step all offer the same
@@ -1648,6 +1635,7 @@ async def chat(
                         composed=agents,
                         deployment=deployment,
                         model_id=model_id,
+                        api=api,
                         gateway=gateway,
                         registry=registry,
                         executor=executor,
@@ -1800,6 +1788,7 @@ async def chat(
                     session_id=body.sessionId,
                     settings=settings,
                     sink=doc_sink,
+                    api=api,
                     allowed_document_ids=(
                         None
                         if session.libraryDocumentIds is None
@@ -1908,6 +1897,7 @@ async def chat(
                     params=effective_params,
                     extra_tools=extra_tools or None,
                     extra_handlers=extra_handlers or None,
+                    api=api,
                     on_step=on_step,
                     on_delta=on_delta,
                     prompt_budget_bytes=prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS,
@@ -1955,10 +1945,36 @@ async def chat(
                 params=effective_params,
                 extra_tools=extra_tools or None,
                 extra_handlers=extra_handlers or None,
+                api=api,
                 prompt_budget_bytes=(
                     prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS
                 ),
             )
+        except AgentContextBudgetError as exc:
+            await _persist_nonstream_failure(
+                repo=repo,
+                metering=metering,
+                user=user,
+                session_id=body.sessionId,
+                model_id=model_id,
+                deployment=deployment,
+                usage=TokenUsage.empty(),
+                agent_name=agent_name,
+                correlation_id=correlation_id,
+                attachments=[*image_sink, *video_sink, *doc_sink],
+                sources=library_sources,
+                receipt=receipt_draft.build(
+                    status="error",
+                    partial=True,
+                    usage=TokenUsage.empty(),
+                    safety=attributed_safety(None, safety_provider),
+                ),
+                safety_provider=safety_provider,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
         except AgentRunFailed as exc:
             partial = exc.partial
             total_usage = partial.usage
@@ -2036,23 +2052,25 @@ async def chat(
             sessionId=body.sessionId,
             userId=user.internal_user_id,
             role=MessageRole.assistant,
-            content=run.text,
+            content=(
+                run.text
+                if run.text.strip() or not run.incomplete
+                else INCOMPLETE_RESPONSE_FALLBACK
+            ),
             status=MessageStatus.complete,
             model=deployment.deploymentName,
             agent=agent_name,
             attachments=[*image_sink, *video_sink, *doc_sink],
             steps=persisted_trace(run.steps) or None,
             sources=library_sources,
-            # An agent turn's answer comes out of the tool loop, which does not
-            # surface provider annotations. Record the gap rather than omitting
-            # the panel, which would read as "nothing was flagged".
             safety=attributed_safety(run.safety, safety_provider),
         )
         approval_events = _mint_approval_events(assistant, approval_sink.drafts())
         assistant.executionReceipt = receipt_draft.build(
             steps=run.steps,
             iterations=run.iterations,
-            status="complete",
+            status="incomplete" if run.incomplete else "complete",
+            partial=run.incomplete,
             offered=run.offered_tools,
             approvals_requested=len(assistant.pendingApprovals or []),
             dropped_history_messages=run.dropped_context_messages,
@@ -2066,7 +2084,10 @@ async def chat(
         await turn_timing.measure_persistence(
             repo.add_message(user.internal_user_id, assistant)
         )
-        await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
+        if not run.incomplete:
+            await memory.remember(
+                user.internal_user_id, body.sessionId, content_for_model
+            )
         await metering.record_completion(
             user_id=user.internal_user_id,
             session_id=body.sessionId,
@@ -2096,21 +2117,19 @@ async def chat(
     # URL). The model decides whether to call any tool; each call is budget-bounded
     # and its untrusted output is nonce-fenced inside the handler.
     #
-    # TRADE-OFF (opt-in, default-OFF): when web search is on, every chat-completions
-    # main-chat turn runs through this tool loop — the same trade-off the compute
-    # path already makes. Since P1-16 that loop token-streams and interleaves tool
-    # activity, so the cost is the extra round trips a tool call needs, not a
-    # blank bubble for the whole turn. This loop is built against the
-    # chat-completions wire format, so Responses-API models cannot use it and
-    # take the ``elif`` below, which tells the
-    # model its grounding tools are missing instead of dropping them in silence.
+    # TRADE-OFF (opt-in, default-OFF): when web search is on, every main-chat turn
+    # runs through this tool loop — the same trade-off the compute path already
+    # makes. Since P1-16 that loop token-streams and interleaves tool activity, so
+    # the cost is the extra round trips a tool call needs, not a blank bubble for
+    # the whole turn. The gateway translates the loop to either Chat Completions
+    # or Responses function-call items while governance stays transport-neutral.
     # ANY failure — or an empty answer — falls through to the normal RAG path
     # below: the tool loop never breaks a turn and is never the forced front door.
     #
     # INERTNESS: when web search is off AND compute is off/not-classified,
     # ``plain_compute_active`` is False and ``web_search`` is None, so
-    # ``plain_capabilities_possible`` is False, BOTH branches are skipped (no tool
-    # loop and no notice), and a no-web/no-compute plain turn takes the streaming
+    # ``plain_capabilities_possible`` is False, the loop is skipped, and a
+    # no-web/no-compute plain turn takes the streaming
     # path below byte-for-byte unchanged.
     plain_fallback_usage = TokenUsage.empty()
     plain_tool_run: AgentRunResult | None = None
@@ -2124,7 +2143,7 @@ async def chat(
     plain_capabilities_possible = plain_compute_active or web_search is not None
     if (
         plain_capabilities_possible
-        and api in CHAT_COMPLETIONS_APIS
+        and api in TOOL_CALLING_APIS
         and (entry is None or entry.supportsTools)
     ):
         try:
@@ -2216,6 +2235,7 @@ async def chat(
                             params=effective_params,
                             extra_tools=plain_tools or None,
                             extra_handlers=plain_handlers or None,
+                            api=api,
                             on_step=on_step,
                             on_delta=on_delta,
                             prompt_budget_bytes=prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS,
@@ -2225,6 +2245,7 @@ async def chat(
                         str,
                         TokenUsage,
                         MessageSafety | None,
+                        bool,
                     ]:
                         res = await gateway.complete(
                             deployment=deployment.deploymentName,
@@ -2240,6 +2261,7 @@ async def chat(
                                 res,
                                 provider=safety_provider,
                             ),
+                            res.get("_responses_status") == "incomplete",
                         )
 
                     return StreamingResponse(
@@ -2282,6 +2304,7 @@ async def chat(
                     params=effective_params,
                     extra_tools=plain_tools or None,
                     extra_handlers=plain_handlers or None,
+                    api=api,
                     prompt_budget_bytes=(
                         prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS
                     ),
@@ -2296,12 +2319,20 @@ async def chat(
                 # get a fluent reply and never learn that a call was held. A
                 # security prompt must fail visible, so a held turn is finished
                 # here either way, with a fixed sentence when the model gave none.
-                if run.text.strip() or plain_drafts:
+                if run.text.strip() or plain_drafts or run.incomplete:
                     assistant = Message(
                         sessionId=body.sessionId,
                         userId=user.internal_user_id,
                         role=MessageRole.assistant,
-                        content=run.text if run.text.strip() else _APPROVAL_NEEDED_FALLBACK,
+                        content=(
+                            run.text
+                            if run.text.strip()
+                            else (
+                                INCOMPLETE_RESPONSE_FALLBACK
+                                if run.incomplete
+                                else _APPROVAL_NEEDED_FALLBACK
+                            )
+                        ),
                         status=MessageStatus.complete,
                         model=deployment.deploymentName,
                         agent=agent_name,
@@ -2313,7 +2344,8 @@ async def chat(
                     assistant.executionReceipt = receipt_draft.build(
                         steps=run.steps,
                         iterations=run.iterations,
-                        status="complete",
+                        status="incomplete" if run.incomplete else "complete",
+                        partial=run.incomplete,
                         offered=run.offered_tools,
                         approvals_requested=len(assistant.pendingApprovals or []),
                         dropped_history_messages=run.dropped_context_messages,
@@ -2326,9 +2358,12 @@ async def chat(
                     await turn_timing.measure_persistence(
                         repo.add_message(user.internal_user_id, assistant)
                     )
-                    await memory.remember(
-                        user.internal_user_id, body.sessionId, content_for_model
-                    )
+                    if not run.incomplete:
+                        await memory.remember(
+                            user.internal_user_id,
+                            body.sessionId,
+                            content_for_model,
+                        )
                     await metering.record_completion(
                         user_id=user.internal_user_id,
                         session_id=body.sessionId,
@@ -2406,21 +2441,12 @@ async def chat(
                 extra={"ai4ia_correlation_id": correlation_id},
             )
     elif plain_capabilities_possible:
-        # Same capabilities were available, but the model is served through the
-        # Responses API and the loop above speaks chat-completions only, so it was
-        # skipped. Tool-*enabled* agents get a loud 422 for this combination much
-        # earlier; a plain turn had no equivalent and simply lost web search,
-        # document retrieval, and compute in silence. That is worst for the curated
-        # tool-less agents (@researcher above all), which always take this path.
-        # Make the loss explicit to the model rather than refusing the turn:
-        # refusing would make these models unusable for ordinary chat whenever web
-        # search is on, while an honest, ungrounded answer is still useful.
         logger.info(
-            "plain-chat capabilities unavailable: model is served via the Responses API",
+            "plain-chat capabilities unavailable for selected model",
             extra={"ai4ia_model": model_id, "ai4ia_correlation_id": correlation_id},
         )
         payload_messages.insert(
-            insert_at, {"role": "system", "content": _RESPONSES_NO_TOOLS_NOTICE}
+            insert_at, {"role": "system", "content": _TOOLS_UNAVAILABLE_NOTICE}
         )
 
     if not body.stream:
@@ -2520,6 +2546,8 @@ async def chat(
             TokenUsage.parse(result.get("usage"))
         )
         response_incomplete = result.get("_responses_status") == "incomplete"
+        if response_incomplete and not text.strip():
+            text = INCOMPLETE_RESPONSE_FALLBACK
         assistant = Message(
             sessionId=body.sessionId,
             userId=user.internal_user_id,
@@ -2574,7 +2602,10 @@ async def chat(
         await turn_timing.measure_persistence(
             repo.add_message(user.internal_user_id, assistant)
         )
-        await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
+        if not response_incomplete:
+            await memory.remember(
+                user.internal_user_id, body.sessionId, content_for_model
+            )
         await metering.record_completion(
             user_id=user.internal_user_id,
             session_id=body.sessionId,

@@ -15,8 +15,8 @@ existing pieces and never re-ingests:
   the document's already-parsed text under the same ownership + ``ready`` gate the
   rest of the library uses; a missing / unowned / not-ready document yields a
   sanitized error, never an existence leak.
-* A **single chat-completions call** on the turn's own deployment runs the user's
-  instruction over that text. The untrusted document body is wrapped in a
+* A **single model call** on the turn's own deployment and provider API runs the
+  user's instruction over that text. The untrusted document body is wrapped in a
   per-call nonce fence (the same anti-injection framing the library context uses)
   so a crafted document can never be read as instructions.
 
@@ -84,7 +84,7 @@ class DocumentProcessingError(Exception):
 
 @dataclass(frozen=True)
 class DocumentProcessingResult:
-    """A successful processing run: the analysis text + provenance."""
+    """A provider-completed processing run: analysis text + provenance."""
 
     model_id: str
     deployment: DeploymentOption
@@ -95,6 +95,8 @@ class DocumentProcessingResult:
     # Whether the source document was longer than the input cap and so truncated.
     source_truncated: bool
     usage: TokenUsage
+    incomplete: bool = False
+    incomplete_reason: str | None = None
 
 
 def _trim(detail: str | None, limit: int = 300) -> str:
@@ -105,7 +107,7 @@ def _trim(detail: str | None, limit: int = 300) -> str:
 
 
 def _first_text(result: dict) -> str:
-    """Extract the assistant message text from a chat-completions response."""
+    """Extract text from the gateway's normalized assistant response."""
     message = (result.get("choices") or [{}])[0].get("message") or {}
     return message.get("content") or ""
 
@@ -115,11 +117,11 @@ class DocumentProcessingService:
     endpoint).
 
     Validates the instruction + mode, reuses the user's ready-library read
-    (ownership + status gate), runs one chat-completions call over the parsed
-    content on the **caller-supplied deployment**, sanitizes upstream errors, and
-    caps the returned text. Does NOT enforce entitlements or meter usage — those
-    stay at the call site, which owns the request-scoped services (mirroring the
-    image/video core).
+    (ownership + status gate), runs one model call over the parsed content on the
+    **caller-supplied deployment and provider API**, sanitizes upstream errors,
+    and caps the returned text. Does NOT enforce entitlements or meter usage —
+    those stay at the call site, which owns the request-scoped services (mirroring
+    the image/video core).
     """
 
     def __init__(
@@ -143,6 +145,7 @@ class DocumentProcessingService:
         model_id: str,
         mode: str | None = None,
         correlation_id: str | None = None,
+        api: str = "chat",
     ) -> DocumentProcessingResult:
         clean_instruction = (instruction or "").strip()
         if not clean_instruction:
@@ -190,14 +193,13 @@ class DocumentProcessingService:
                 deployment=deployment.deploymentName,
                 messages=messages,
                 correlation_id=correlation_id,
-                api="chat",
+                api=api,
             )
         except ModelGatewayError as exc:
             raise self._sanitize(exc, model_id, correlation_id) from exc
 
         text = _first_text(result).strip()
-        if not text:
-            raise DocumentProcessingError(502, "Processing returned no result.")
+        incomplete = result.get("_responses_status") == "incomplete"
         cap = max(1, self._settings.document_processing_max_output_chars)
         if len(text) > cap:
             text = text[:cap]
@@ -211,6 +213,12 @@ class DocumentProcessingService:
             text=text,
             source_truncated=source_truncated,
             usage=TokenUsage.parse(result.get("usage")),
+            incomplete=incomplete,
+            incomplete_reason=(
+                str(result.get("_responses_incomplete_reason"))
+                if result.get("_responses_incomplete_reason") is not None
+                else None
+            ),
         )
 
     def _build_messages(
