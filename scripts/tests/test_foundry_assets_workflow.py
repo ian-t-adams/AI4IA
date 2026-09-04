@@ -205,7 +205,7 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(
             login["uses"],
-            "azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca",
+            "azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c",
         )
         self.assertEqual(login["with"]["client-id"], "${{ vars.AZURE_CLIENT_ID }}")
         self.assertEqual(login["with"]["tenant-id"], "${{ vars.AZURE_TENANT_ID }}")

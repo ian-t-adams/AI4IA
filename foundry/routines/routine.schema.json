@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://ai4ia/foundry/routine.schema.json",
   "title": "AI4IA Foundry routine manifest",
-  "description": "Validation and planning contract for a proposed multi-step routine. scripts/provision-foundry-routine.py validates this design and prints its plan; it does not create or serve a Foundry routine because azure-ai-projects 2.4.0 exposes a trigger-to-existing-agent routine contract, not this steps-based shape. Nothing in this artifact is consumed by the app runtime.",
+  "description": "Validation and planning contract for a proposed multi-step routine. scripts/provision-foundry-routine.py validates this design and prints its plan; it does not create or serve a Foundry routine because azure-ai-projects 2.5.0 exposes a trigger-to-existing-agent routine contract, not this steps-based shape. Nothing in this artifact is consumed by the app runtime.",
   "type": "object",
   "additionalProperties": false,
   "required": ["manifestVersion", "lifecycle", "owner", "sdkContract", "name", "description", "model", "steps"],
@@ -21,7 +21,7 @@
       "required": ["package", "version", "status", "surface"],
       "properties": {
         "package": { "const": "azure-ai-projects" },
-        "version": { "const": "2.4.0" },
+        "version": { "const": "2.5.0" },
         "status": { "const": "not-executable" },
         "surface": { "const": "project.beta.routines.create_or_update" }
       }

@@ -1,12 +1,12 @@
 {
   "$schema": "./toolbox.manifest.schema.json",
-  "_comment": "POPULATED REFERENCE manifest showing every azure-ai-projects 2.4.0 toolbox tool type AI4IA can place in a toolbox (all 13: web_search, azure_ai_search, code_interpreter, browser_automation_preview, file_search, openapi, mcp, toolbox_search, toolbox_search_preview, a2a_preview, fabric_iq_preview, work_iq_preview, reminder_preview), each with at least one populated example. This is an EXAMPLE only (the canonical live toolbox is foundry/toolbox.manifest.json). To provision from it, copy it to an operator-owned manifest, prune and review the tools/connections, and change lifecycle from reference to active; --create and --emit-yaml reject this file as-is. Note: computer_use and bing_custom_search are agent-level tools with no toolbox equivalent in the SDK, so they are not toolbox tools. The service allows at most one unnamed tool total, so every tool here has a `name` (or `serverLabel` for `mcp` tools). Tool types whose name ends in `_preview` (browser_automation_preview, toolbox_search_preview, a2a_preview, fabric_iq_preview, work_iq_preview, reminder_preview) are Azure public preview; the rest are generally available. `toolbox_search` and `toolbox_search_preview` are the GA and preview spellings of the SAME tool search capability and both appear here only because this file must demonstrate every supported type -- a real toolbox should carry just one of them, preferably `toolbox_search`.",
+  "_comment": "POPULATED REFERENCE manifest showing every azure-ai-projects 2.5.0 toolbox tool type AI4IA can place in a toolbox (all 14: web_search, azure_ai_search, code_interpreter, browser_automation_preview, file_search, openapi, mcp, toolbox_search, toolbox_search_preview, a2a, a2a_preview, fabric_iq_preview, work_iq_preview, reminder_preview), each with at least one populated example. This is an EXAMPLE only (the canonical live toolbox is foundry/toolbox.manifest.json). To provision from it, copy it to an operator-owned manifest, prune and review the tools/connections, and change lifecycle from reference to active; --create and --emit-yaml reject this file as-is. Note: computer_use and bing_custom_search are agent-level tools with no toolbox equivalent in the SDK, so they are not toolbox tools. The service allows at most one unnamed tool total, so every tool here has a `name` (or `serverLabel` for `mcp` tools). Tool types whose name ends in `_preview` (browser_automation_preview, toolbox_search_preview, a2a_preview, fabric_iq_preview, work_iq_preview, reminder_preview) are Azure public preview; the rest are generally available. `toolbox_search`/`toolbox_search_preview` and `a2a`/`a2a_preview` are GA/preview spellings of the same capabilities and all appear here only because this file must demonstrate every supported type -- a real toolbox should carry one spelling of each, preferably the GA spelling.",
   "manifestVersion": "1.0",
   "lifecycle": "reference",
   "owner": "repository-owner",
   "sdkContract": {
     "package": "azure-ai-projects",
-    "version": "2.4.0",
+    "version": "2.5.0",
     "status": "validated",
     "surface": "project.toolboxes"
   },
@@ -102,7 +102,8 @@
           "type": "allowlist",
           "allowedDomains": ["pypi.org", "files.pythonhosted.org"]
         }
-      }
+      },
+      "allowedCallers": ["direct", "programmatic"]
     },
     {
       "type": "browser_automation_preview",
@@ -168,11 +169,12 @@
     {
       "type": "mcp",
       "serverLabel": "example-mcp-advanced",
-      "description": "Second mcp example demonstrating serverDescription/allowedTools/deferLoading/toolConfigs and the object form of requireApproval (SDK 2.4.0's MCPToolRequireApproval), as an alternative to the literal 'always'/'never' shown above. requireApproval here allows the read-only 'search_docs' tool without approval while still gating everything else via the toolbox default.",
-      "serverUrl": "https://example-mcp-advanced.contoso.com/mcp",
+      "description": "Second mcp example demonstrating a Secure MCP Tunnel plus serverDescription/allowedTools/allowedCallers/deferLoading/toolConfigs and the object form of requireApproval (SDK 2.5.0's MCPToolRequireApproval), as an alternative to the direct URL and literal 'always'/'never' shown above. requireApproval here allows the read-only 'search_docs' tool without approval while still gating everything else via the toolbox default.",
+      "tunnelId": "secure-mcp-tunnel-1",
       "projectConnectionId": "ai4ia-mcp-upstream",
       "serverDescription": "Internal knowledge-base MCP server exposing search and lookup tools.",
       "allowedTools": ["search_docs", "get_doc", "list_spaces"],
+      "allowedCallers": ["direct"],
       "deferLoading": true,
       "requireApproval": {
         "never": {
@@ -206,6 +208,14 @@
       "description": "Delegate to a remote Agent-to-Agent (A2A) protocol agent (azure-ai-projects 2.4.0's A2APreviewToolboxTool). Requires the 'ai4ia-a2a-agent' project connection, which stores the remote agent's endpoint and auth -- this is Microsoft's documented approach. At least one of projectConnectionId or baseUrl is required (both are accepted together; the SDK does not enforce exclusivity); baseUrl+agentCardPath (with sendCredentialsForAgentCard) is the alternative for a self-contained, connectionless call to an anonymous agent.",
       "projectConnectionId": "ai4ia-a2a-agent",
       "agentCardPath": "/.well-known/agent-card.json"
+    },
+    {
+      "type": "a2a",
+      "name": "a2a-agent-ga",
+      "description": "Delegate to a remote Agent-to-Agent (A2A) protocol agent through azure-ai-projects 2.5.0's GA A2AToolboxTool discriminator. The GA model requires a2aVersion 1.0; target and authentication remain owned by the project connection.",
+      "projectConnectionId": "ai4ia-a2a-agent",
+      "agentCardPath": "/.well-known/agent-card.json",
+      "a2aVersion": "1.0"
     },
     {
       "type": "fabric_iq_preview",

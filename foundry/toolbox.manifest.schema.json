@@ -43,7 +43,7 @@
       "required": ["package", "version", "status", "surface"],
       "properties": {
         "package": { "const": "azure-ai-projects" },
-        "version": { "const": "2.4.0" },
+        "version": { "const": "2.5.0" },
         "status": { "const": "validated" },
         "surface": {
           "const": "project.toolboxes",
@@ -107,6 +107,7 @@
               "toolbox_search_preview",
               "toolbox_search",
               "mcp",
+              "a2a",
               "a2a_preview",
               "fabric_iq_preview",
               "reminder_preview",
@@ -123,7 +124,7 @@
           },
           "toolConfigs": {
             "type": "object",
-            "description": "Optional per-tool visibility/search-tuning overrides (azure-ai-projects 2.4.0's base ToolboxTool.tool_configs dict[str, ToolConfig]). Keyed by the referenced tool's `name` (or `serverLabel` for mcp-family tools), or '*' as a catch-all default. Common to every tool type.",
+            "description": "Optional per-tool visibility/search-tuning overrides (azure-ai-projects 2.5.0's base ToolboxTool.tool_configs dict[str, ToolConfig]). Keyed by the referenced tool's `name` (or `serverLabel` for mcp-family tools), or '*' as a catch-all default. Common to every tool type.",
             "additionalProperties": {
               "type": "object",
               "additionalProperties": false,
@@ -143,11 +144,11 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 50,
-            "description": "file_search only: caps the number of results returned per query (azure-ai-projects 2.4.0's FileSearchToolboxTool.max_num_results; SDK docstring bounds it to 1-50)."
+            "description": "file_search only: caps the number of results returned per query (azure-ai-projects 2.5.0's FileSearchToolboxTool.max_num_results; SDK docstring bounds it to 1-50)."
           },
           "rankingOptions": {
             "type": "object",
-            "description": "file_search only: result ranking tuning (azure-ai-projects 2.4.0's RankingOptions).",
+            "description": "file_search only: result ranking tuning (azure-ai-projects 2.5.0's RankingOptions).",
             "additionalProperties": false,
             "properties": {
               "ranker": {
@@ -166,7 +167,7 @@
               },
               "hybridSearch": {
                 "type": "object",
-                "description": "Blend of vector/keyword search (azure-ai-projects 2.4.0's HybridSearchOptions). Both weights are Required on that SDK model when the object is present.",
+                "description": "Blend of vector/keyword search (azure-ai-projects 2.5.0's HybridSearchOptions). Both weights are Required on that SDK model when the object is present.",
                 "additionalProperties": false,
                 "required": [
                   "embeddingWeight",
@@ -188,12 +189,12 @@
             }
           },
           "filters": {
-            "description": "Shape depends on tool type: file_search uses a comparison/compound filter tree (azure-ai-projects 2.4.0's ComparisonFilter/CompoundFilter over vector-store file metadata); web_search uses a simple allowed-domains object (WebSearchToolFilters). The exact per-type shape is enforced below; this base declaration only requires a JSON object.",
+            "description": "Shape depends on tool type: file_search uses a comparison/compound filter tree (azure-ai-projects 2.5.0's ComparisonFilter/CompoundFilter over vector-store file metadata); web_search uses a simple allowed-domains object (WebSearchToolFilters). The exact per-type shape is enforced below; this base declaration only requires a JSON object.",
             "type": "object"
           },
           "userLocation": {
             "type": "object",
-            "description": "web_search only: approximate caller location used to localize search results (azure-ai-projects 2.4.0's WebSearchApproximateLocation). The SDK always sets `type` to the literal 'approximate' internally; it is not a settable field here.",
+            "description": "web_search only: approximate caller location used to localize search results (azure-ai-projects 2.5.0's WebSearchApproximateLocation). The SDK always sets `type` to the literal 'approximate' internally; it is not a settable field here.",
             "additionalProperties": false,
             "properties": {
               "country": {
@@ -221,15 +222,15 @@
               "medium",
               "high"
             ],
-            "description": "web_search only: how much search context the model is given per call (azure-ai-projects 2.4.0's WebSearchToolboxTool.search_context_size). Defaults to 'medium' when omitted."
+            "description": "web_search only: how much search context the model is given per call (azure-ai-projects 2.5.0's WebSearchToolboxTool.search_context_size). Defaults to 'medium' when omitted."
           },
           "serverDescription": {
             "type": "string",
             "minLength": 1,
-            "description": "mcp only: optional human-readable description of the target MCP server (azure-ai-projects 2.4.0's MCPToolboxTool.server_description)."
+            "description": "mcp only: optional human-readable description of the target MCP server (azure-ai-projects 2.5.0's MCPToolboxTool.server_description)."
           },
           "allowedTools": {
-            "description": "mcp only: restricts which of the server's tools are exposed (azure-ai-projects 2.4.0's MCPToolboxTool.allowed_tools). Either a plain allow-list of tool names, or an MCPToolFilter object.",
+            "description": "mcp only: restricts which of the server's tools are exposed (azure-ai-projects 2.5.0's MCPToolboxTool.allowed_tools). Either a plain allow-list of tool names, or an MCPToolFilter object.",
             "oneOf": [
               {
                 "type": "array",
@@ -246,26 +247,42 @@
           },
           "deferLoading": {
             "type": "boolean",
-            "description": "mcp only: defers loading/listing the server's tools until first referenced, instead of eagerly at toolbox-attach time (azure-ai-projects 2.4.0's MCPToolboxTool.defer_loading)."
+            "description": "mcp only: defers loading/listing the server's tools until first referenced, instead of eagerly at toolbox-attach time (azure-ai-projects 2.5.0's MCPToolboxTool.defer_loading)."
+          },
+          "allowedCallers": {
+            "type": "array",
+            "description": "code_interpreter / mcp only: restrict invocation to direct model calls and/or programmatic calls from other tools. Mirrors azure-ai-projects 2.5.0's CallableToolAllowedCaller enum.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "direct",
+                "programmatic"
+              ]
+            },
+            "uniqueItems": true
           },
           "baseUrl": {
             "type": "string",
             "minLength": 1,
             "pattern": "^https://",
-            "description": "a2a_preview only: the remote agent's public HTTPS base URL (azure-ai-projects 2.4.0's A2APreviewToolboxTool.base_url). Microsoft documents that the endpoint must be publicly reachable with a valid TLS certificate. One of `baseUrl` or `projectConnectionId` is required; prefer projectConnectionId because the project connection owns endpoint and authentication configuration."
+            "description": "a2a / a2a_preview only: the remote agent's public HTTPS base URL. Microsoft documents that the endpoint must be publicly reachable with a valid TLS certificate. One of `baseUrl` or `projectConnectionId` is required; prefer projectConnectionId because the project connection owns endpoint and authentication configuration."
           },
           "agentCardPath": {
             "type": "string",
             "minLength": 1,
-            "description": "a2a_preview only: path to the agent's card document, relative to `baseUrl` (azure-ai-projects 2.4.0's A2APreviewToolboxTool.agent_card_path). Defaults to '/.well-known/agent-card.json' when omitted."
+            "description": "a2a / a2a_preview only: path to the agent's card document, relative to `baseUrl`. Defaults to '/.well-known/agent-card.json' when omitted."
           },
           "sendCredentialsForAgentCard": {
             "type": "boolean",
-            "description": "a2a_preview only: whether to send the connection's credentials when fetching the agent card itself (azure-ai-projects 2.4.0's A2APreviewToolboxTool.send_credentials_for_agent_card). Defaults to false."
+            "description": "a2a / a2a_preview only: whether to send the connection's credentials when fetching the agent card itself. Defaults to false."
+          },
+          "a2aVersion": {
+            "const": "1.0",
+            "description": "a2a only: required A2A protocol version for azure-ai-projects 2.5.0's A2AToolboxTool. The SDK currently accepts only '1.0'; a2a_preview does not expose this field."
           },
           "azureAiSearch": {
             "type": "object",
-            "description": "Required nested config for azure_ai_search tools, mirroring azure-ai-projects 2.4.0's AzureAISearchToolResource. Do NOT put indexName/projectConnectionId at the tool root; the SDK constructor silently drops them there.",
+            "description": "Required nested config for azure_ai_search tools, mirroring azure-ai-projects 2.5.0's AzureAISearchToolResource. Do NOT put indexName/projectConnectionId at the tool root; the SDK constructor silently drops them there.",
             "additionalProperties": false,
             "required": [
               "indexes"
@@ -278,7 +295,7 @@
                 "maxItems": 1,
                 "items": {
                   "type": "object",
-                  "description": "Microsoft's Azure AI Search tool 'Configure tool parameters' guide lists project_connection_id and index_name as BOTH Required, with no documented alternative. The SDK model (azure-ai-projects 2.4.0 AISearchIndexResource) also exposes an index_asset_id field with no corroborating Microsoft Learn example; it is modeled here as a documented, mutually-exclusive alternative to indexName+projectConnectionId per explicit product direction, not because Learn docs demonstrate it -- see docs/foundry-toolbox.md.",
+                  "description": "Microsoft's Azure AI Search tool 'Configure tool parameters' guide lists project_connection_id and index_name as BOTH Required, with no documented alternative. The SDK model (azure-ai-projects 2.5.0 AISearchIndexResource) also exposes an index_asset_id field with no corroborating Microsoft Learn example; it is modeled here as a documented, mutually-exclusive alternative to indexName+projectConnectionId per explicit product direction, not because Learn docs demonstrate it -- see docs/foundry-toolbox.md.",
                   "oneOf": [
                     {
                       "type": "object",
@@ -336,7 +353,7 @@
           },
           "customSearchConfiguration": {
             "type": "object",
-            "description": "Optional grounding-with-Bing-custom-search config for web_search tools, mirroring azure-ai-projects 2.4.0's WebSearchConfiguration. Both fields are Required on that SDK model (no defaults, unlike azure_ai_search's index fields). Omit `customSearchConfiguration` entirely to use the tool's default (non-custom) grounded web search.",
+            "description": "Optional grounding-with-Bing-custom-search config for web_search tools, mirroring azure-ai-projects 2.5.0's WebSearchConfiguration. Both fields are Required on that SDK model (no defaults, unlike azure_ai_search's index fields). Omit `customSearchConfiguration` entirely to use the tool's default (non-custom) grounded web search.",
             "additionalProperties": false,
             "required": [
               "projectConnectionId",
@@ -355,7 +372,7 @@
           },
           "browserAutomationPreview": {
             "type": "object",
-            "description": "Required nested config for browser_automation_preview tools, mirroring azure-ai-projects 2.4.0's BrowserAutomationToolParameters.",
+            "description": "Required nested config for browser_automation_preview tools, mirroring azure-ai-projects 2.5.0's BrowserAutomationToolParameters.",
             "additionalProperties": false,
             "required": [
               "connection"
@@ -378,7 +395,7 @@
             }
           },
           "container": {
-            "description": "Optional code_interpreter execution target, mirroring azure-ai-projects 2.4.0's CodeInterpreterToolboxTool.container: an EXISTING container ID (string -- a pre-registered container resource, NOT an image reference), or the Foundry-managed auto/managed-sandbox object (AutoCodeInterpreterToolParam) with optional resource limits. Omit entirely for the plain managed sandbox. There is no toolbox-level way to run a custom/BYO container image; for genuinely custom execution logic, expose it as your own server and add it as an `mcp` tool instead.",
+            "description": "Optional code_interpreter execution target, mirroring azure-ai-projects 2.5.0's CodeInterpreterToolboxTool.container: an EXISTING container ID (string -- a pre-registered container resource, NOT an image reference), or the Foundry-managed auto/managed-sandbox object (AutoCodeInterpreterToolParam) with optional resource limits. Omit entirely for the plain managed sandbox. There is no toolbox-level way to run a custom/BYO container image; for genuinely custom execution logic, expose it as your own server and add it as an `mcp` tool instead.",
             "oneOf": [
               {
                 "type": "string",
@@ -412,7 +429,7 @@
                   },
                   "networkPolicy": {
                     "type": "object",
-                    "description": "Optional outbound network policy, mirroring azure-ai-projects 2.4.0's ContainerNetworkPolicyParam (disabled | allowlist). The SDK's allowlist variant also supports `domainSecrets` (per-domain literal secret values injected into the sandbox); AI4IA intentionally does NOT expose that field here because this manifest is committed to source control -- see docs/foundry-toolbox.md's secrets policy.",
+                    "description": "Optional outbound network policy, mirroring azure-ai-projects 2.5.0's ContainerNetworkPolicyParam (disabled | allowlist). The SDK's allowlist variant also supports `domainSecrets` (per-domain literal secret values injected into the sandbox); AI4IA intentionally does NOT expose that field here because this manifest is committed to source control -- see docs/foundry-toolbox.md's secrets policy.",
                     "oneOf": [
                       {
                         "type": "object",
@@ -455,7 +472,7 @@
           },
           "vectorStoreIds": {
             "type": "array",
-            "description": "Required-if-present vector store IDs to search (azure-ai-projects 2.4.0's FileSearchToolboxTool.vector_store_ids). The SDK allows omitting it, but a file_search tool with an empty list is inert, so if present it must be non-empty.",
+            "description": "Required-if-present vector store IDs to search (azure-ai-projects 2.5.0's FileSearchToolboxTool.vector_store_ids). The SDK allows omitting it, but a file_search tool with an empty list is inert, so if present it must be non-empty.",
             "items": {
               "type": "string",
               "minLength": 1
@@ -464,7 +481,7 @@
           },
           "openapi": {
             "type": "object",
-            "description": "Required nested function definition for openapi tools, mirroring azure-ai-projects 2.4.0's OpenApiFunctionDefinition. `spec` is an arbitrary, externally-authored OpenAPI document; scripts/provision-foundry-toolbox.py passes its contents through UNMODIFIED (property names inside spec are never rewritten, so e.g. a JSON-schema property genuinely named `topK` survives as `topK`). `additionalProperties: false` here deliberately rejects `functions`: OpenApiFunctionDefinition.functions is declared `rest_field(visibility=[\"read\"])` in the locked SDK -- it is server-populated (extracted from `spec`) and is stripped from every request body by `ToolboxesOperations.create_version()`'s `exclude_readonly=True` JSON encoding, so accepting it as a caller-settable manifest field would be a silently-inert, success-shaped no-op rather than a real configuration knob.",
+            "description": "Required nested function definition for openapi tools, mirroring azure-ai-projects 2.5.0's OpenApiFunctionDefinition. `spec` is an arbitrary, externally-authored OpenAPI document; scripts/provision-foundry-toolbox.py passes its contents through UNMODIFIED (property names inside spec are never rewritten, so e.g. a JSON-schema property genuinely named `topK` survives as `topK`). `additionalProperties: false` here deliberately rejects `functions`: OpenApiFunctionDefinition.functions is declared `rest_field(visibility=[\"read\"])` in the locked SDK -- it is server-populated (extracted from `spec`) and is stripped from every request body by `ToolboxesOperations.create_version()`'s `exclude_readonly=True` JSON encoding, so accepting it as a caller-settable manifest field would be a silently-inert, success-shaped no-op rather than a real configuration knob.",
             "additionalProperties": false,
             "required": [
               "name",
@@ -487,7 +504,7 @@
               },
               "auth": {
                 "type": "object",
-                "description": "OpenApiAuthDetails, matching azure-ai-projects 2.4.0's discriminated auth models exactly (each branch is fully closed -- no extra/credential-like keys of any kind, per type, are accepted): OpenApiAnonymousAuthDetails takes ONLY `type` (the SDK constructor has no other parameter at all, so e.g. a stray `securityScheme` or `token` alongside `anonymous` is rejected, not silently ignored); OpenApiProjectConnectionAuthDetails/OpenApiManagedAuthDetails each require a `securityScheme` object holding exactly the one field their SDK security-scheme class defines (`projectConnectionId` / `audience` respectively) and nothing else.",
+                "description": "OpenApiAuthDetails, matching azure-ai-projects 2.5.0's discriminated auth models exactly (each branch is fully closed -- no extra/credential-like keys of any kind, per type, are accepted): OpenApiAnonymousAuthDetails takes ONLY `type` (the SDK constructor has no other parameter at all, so e.g. a stray `securityScheme` or `token` alongside `anonymous` is rejected, not silently ignored); OpenApiProjectConnectionAuthDetails/OpenApiManagedAuthDetails each require a `securityScheme` object holding exactly the one field their SDK security-scheme class defines (`projectConnectionId` / `audience` respectively) and nothing else.",
                 "oneOf": [
                   {
                     "additionalProperties": false,
@@ -569,7 +586,7 @@
           "serverUrl": {
             "type": "string",
             "minLength": 1,
-            "description": "mcp tool target URL (one of `serverUrl`/`connectorId` required). Also an optional field on fabric_iq_preview (defaults to the connection's own URL when omitted there)."
+            "description": "mcp tool target URL (one of `serverUrl`/`connectorId`/`tunnelId` required). Also an optional field on fabric_iq_preview (defaults to the connection's own URL when omitted there)."
           },
           "connectorId": {
             "type": "string",
@@ -583,15 +600,20 @@
               "connector_outlookemail",
               "connector_sharepoint"
             ],
-            "description": "mcp tool built-in service connector (alternative to `serverUrl`). One of `serverUrl` or `connectorId` is required."
+            "description": "mcp tool built-in service connector. One of `serverUrl`, `connectorId`, or `tunnelId` is required."
+          },
+          "tunnelId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "mcp only: Secure MCP Tunnel ID used instead of a direct server URL or service connector (azure-ai-projects 2.5.0's MCPToolboxTool.tunnel_id)."
           },
           "projectConnectionId": {
             "type": "string",
             "minLength": 1,
-            "description": "Tool-root project connection, genuinely a top-level SDK field (unlike azure_ai_search/browser_automation_preview, which nest it) for: mcp (optional), a2a_preview (one of projectConnectionId/baseUrl required), fabric_iq_preview (required), work_iq_preview (required, and the only field that type accepts)."
+            "description": "Tool-root project connection, genuinely a top-level SDK field (unlike azure_ai_search/browser_automation_preview, which nest it) for: mcp (optional), a2a/a2a_preview (one of projectConnectionId/baseUrl required), fabric_iq_preview (required), work_iq_preview (required, and the only field that type accepts)."
           },
           "requireApproval": {
-            "description": "Tool-call approval policy for mcp / fabric_iq_preview tools: the literal 'always'/'never', or a per-tool-name MCPToolRequireApproval object with independent 'always'/'never' MCPToolFilter buckets (azure-ai-projects 2.4.0). Defaults to 'always' when omitted.",
+            "description": "Tool-call approval policy for mcp / fabric_iq_preview tools: the literal 'always'/'never', or a per-tool-name MCPToolRequireApproval object with independent 'always'/'never' MCPToolFilter buckets (azure-ai-projects 2.5.0). Defaults to 'always' when omitted.",
             "oneOf": [
               {
                 "const": "always"
@@ -726,7 +748,7 @@
                 "filters": {
                   "type": "object",
                   "additionalProperties": false,
-                  "description": "azure-ai-projects 2.4.0's WebSearchToolFilters.",
+                  "description": "azure-ai-projects 2.5.0's WebSearchToolFilters.",
                   "properties": {
                     "allowedDomains": {
                       "type": "array",
@@ -1641,6 +1663,11 @@
                   "required": [
                     "connectorId"
                   ]
+                },
+                {
+                  "required": [
+                    "tunnelId"
+                  ]
                 }
               ],
               "not": {
@@ -1723,7 +1750,10 @@
             "if": {
               "properties": {
                 "type": {
-                  "const": "a2a_preview"
+                  "enum": [
+                    "a2a",
+                    "a2a_preview"
+                  ]
                 }
               },
               "required": [
@@ -2203,6 +2233,89 @@
                 ]
               }
             }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "a2a"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "a2aVersion"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "not": {
+                    "const": "a2a"
+                  }
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "a2aVersion"
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "not": {
+                    "const": "mcp"
+                  }
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "tunnelId"
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "not": {
+                    "enum": [
+                      "code_interpreter",
+                      "mcp"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "allowedCallers"
+                ]
+              }
+            }
           }
         ]
       }
@@ -2232,7 +2345,7 @@
   "definitions": {
     "mcpToolFilter": {
       "type": "object",
-      "description": "azure-ai-projects 2.4.0's MCPToolFilter: an allow-list of tool names and/or a read-only-only restriction.",
+      "description": "azure-ai-projects 2.5.0's MCPToolFilter: an allow-list of tool names and/or a read-only-only restriction.",
       "additionalProperties": false,
       "minProperties": 1,
       "properties": {
@@ -2251,7 +2364,7 @@
     },
     "comparisonFilter": {
       "type": "object",
-      "description": "azure-ai-projects 2.4.0's ComparisonFilter: a single metadata comparison.",
+      "description": "azure-ai-projects 2.5.0's ComparisonFilter: a single metadata comparison.",
       "additionalProperties": false,
       "required": [
         "type",
@@ -2307,7 +2420,7 @@
     },
     "compoundFilter": {
       "type": "object",
-      "description": "azure-ai-projects 2.4.0's CompoundFilter: a boolean combination of nested filters.",
+      "description": "azure-ai-projects 2.5.0's CompoundFilter: a boolean combination of nested filters.",
       "additionalProperties": false,
       "required": [
         "type",

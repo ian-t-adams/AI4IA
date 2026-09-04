@@ -1,12 +1,12 @@
 {
   "$schema": "./routine.schema.json",
-  "_comment": "DESIGN-ONLY routine example. Tool names are cross-validated against the canonical toolbox namespace, but no routine runtime, APIM dispatch, or inherited governance path exists. Run scripts/provision-foundry-routine.py to validate and print the proposal. There is no --create because azure-ai-projects 2.4.0 exposes an incompatible trigger-to-agent routine model.",
+  "_comment": "DESIGN-ONLY routine example. Tool names are cross-validated against the canonical toolbox namespace, but no routine runtime, APIM dispatch, or inherited governance path exists. Run scripts/provision-foundry-routine.py to validate and print the proposal. There is no --create because azure-ai-projects 2.5.0 exposes an incompatible trigger-to-agent routine model.",
   "manifestVersion": "1.0",
   "lifecycle": "design-preview",
   "owner": "repository-owner",
   "sdkContract": {
     "package": "azure-ai-projects",
-    "version": "2.4.0",
+    "version": "2.5.0",
     "status": "not-executable",
     "surface": "project.beta.routines.create_or_update"
   },
