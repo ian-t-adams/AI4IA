@@ -8,8 +8,8 @@ two real Azure quirks that made the first drafts of these scripts wrong:
 * ARM returns resource provider namespaces with inconsistent casing
   (`microsoft.insights` lowercase alongside `Microsoft.OperationalInsights`), so
   an exact-match lookup reports a registered provider as missing.
-* The required provider set is derived from infra/**/*.bicep rather than
-  hand-listed, so adding a resource type cannot silently skip the preflight.
+* The required provider set is derived from infra/**/*.bicep, with explicit
+  evidence-backed additions for operational APIs that have no Bicep resource.
 
 Both scripts are loaded from their paths (they are scripts, not importable
 modules) and no test in this file touches the network.
@@ -66,13 +66,15 @@ class ProviderDerivationTests(unittest.TestCase):
         for namespace in ("Microsoft.Authorization", "Microsoft.Resources"):
             self.assertNotIn(namespace, required)
 
-    def test_implicit_additions_stay_empty_without_justification(self) -> None:
-        """Guard the derive-don't-hardcode property.
+    def test_resource_health_is_an_evidence_backed_operational_provider(self) -> None:
+        required = PROVIDERS.required_namespaces()
 
-        An unjustified entry here fails provisioning on a guess. If one is ever
-        added it must carry evidence, which means updating this test too.
-        """
-        self.assertEqual(PROVIDERS.IMPLICIT, {})
+        self.assertEqual(set(PROVIDERS.IMPLICIT), {"Microsoft.ResourceHealth"})
+        self.assertIn("status snapshot", PROVIDERS.IMPLICIT["Microsoft.ResourceHealth"])
+        self.assertIn("Microsoft.ResourceHealth", required)
+        self.assertTrue(
+            any("implicit:" in source for source in required["Microsoft.ResourceHealth"])
+        )
 
 
 class ProviderStateLookupTests(unittest.TestCase):

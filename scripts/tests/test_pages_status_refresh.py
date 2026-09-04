@@ -77,12 +77,41 @@ class PagesStatusRefreshTests(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
-    def _render_status(self) -> dict[str, str]:
+    def _render_status(
+        self,
+        *,
+        health_source: dict | None = None,
+        resources: list[dict] | None = None,
+    ) -> dict[str, str]:
         app_path = json.dumps(str(APP_JS))
+        health_source_json = json.dumps(
+            health_source
+            or {
+                "status": "available",
+                "providerState": "Registered",
+                "records": 0,
+                "note": "Resource Health query succeeded.",
+            }
+        )
+        resources_json = json.dumps(
+            resources
+            or [
+                {
+                    "name": "st-one",
+                    "label": "Storage",
+                    "group": "Data",
+                    "location": "eastus",
+                    "provisioningState": "Succeeded",
+                    "availability": "Unknown",
+                    "state": "provisioned",
+                }
+            ]
+        )
         harness = f"""
         const nodes = {{
           "status-stats": {{ innerHTML: "" }},
           "status-resource-group": {{ textContent: "" }},
+          "health-source": {{ innerHTML: "" }},
           "resources-body": {{ innerHTML: "" }},
           "endpoints": {{ innerHTML: "" }},
           "updated": {{ innerHTML: "" }}
@@ -92,14 +121,11 @@ class PagesStatusRefreshTests(unittest.TestCase):
             generatedAt: "2026-08-08T11:00:00Z",
             resourceGroup: "rg-test",
             summary: {{ total: 1, endpointsUp: 0, endpointsTot: 0 }},
-            endpoints: []
+            endpoints: [],
+            healthSource: {health_source_json}
           }},
           AI4IA_INVENTORY: {{
-            resources: [{{
-              name: "st-one", label: "Storage", group: "Data",
-              location: "eastus", provisioningState: "Succeeded",
-              availability: "Unknown", state: "provisioned"
-            }}]
+            resources: {resources_json}
           }},
           matchMedia: () => ({{ matches: false }})
         }};
@@ -112,7 +138,8 @@ class PagesStatusRefreshTests(unittest.TestCase):
         require({app_path});
         process.stdout.write(JSON.stringify({{
           resources: nodes["resources-body"].innerHTML,
-          stats: nodes["status-stats"].innerHTML
+          stats: nodes["status-stats"].innerHTML,
+          healthSource: nodes["health-source"].innerHTML
         }}));
         """
         result = subprocess.run(
@@ -129,7 +156,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
         const ids = [
           "features", "stack", "regions", "envfacts",
           "status-stats", "status-resource-group", "resources-body",
-          "endpoints", "updated", "services-root", "services-updated",
+          "health-source", "endpoints", "updated", "services-root", "services-updated",
           "modules", "iac-meta", "rbac", "packages", "prereqs", "docs-root"
         ];
         const nodes = Object.fromEntries(ids.map((id) => [
@@ -259,6 +286,42 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertIn("st-one", rendered["resources"])
         self.assertIn("1", rendered["stats"])
 
+    def test_status_surfaces_a_resource_health_source_outage(self) -> None:
+        rendered = self._render_status(
+            health_source={
+                "status": "unavailable",
+                "providerState": "NotRegistered",
+                "records": 0,
+                "note": "Microsoft.ResourceHealth is not registered.",
+            }
+        )
+
+        self.assertIn('id="health-source"', STATUS_HTML.read_text(encoding="utf-8"))
+        self.assertIn("Resource Health source", rendered["stats"])
+        self.assertIn("Unavailable", rendered["stats"])
+        self.assertIn("health not checked", rendered["stats"])
+        self.assertIn("Resource Health unavailable", rendered["healthSource"])
+        self.assertIn("not registered", rendered["healthSource"])
+        self.assertIn("Not checked", rendered["resources"])
+
+    def test_status_derives_degraded_from_resource_health_availability(self) -> None:
+        rendered = self._render_status(
+            resources=[
+                {
+                    "name": "st-one",
+                    "label": "Storage",
+                    "group": "Data",
+                    "location": "eastus",
+                    "provisioningState": "Succeeded",
+                    "availability": "Degraded",
+                    "state": "provisioned",
+                }
+            ]
+        )
+
+        self.assertIn("degraded", rendered["resources"])
+        self.assertIn("Degraded", rendered["resources"])
+
     def test_missing_portal_data_renders_recovery_instead_of_staying_blank(self) -> None:
         rendered = self._render_without_data()
 
@@ -268,6 +331,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
             "regions",
             "envfacts",
             "status-stats",
+            "health-source",
             "resources-body",
             "endpoints",
             "updated",

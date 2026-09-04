@@ -19,6 +19,13 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _load_assignment(path: Path, variable: str) -> dict:
+    text = path.read_text(encoding="utf-8-sig")
+    prefix = f"window.{variable} = "
+    payload = text.split(prefix, 1)[1].rsplit(";", 1)[0]
+    return json.loads(payload)
+
+
 class StatusSnapshotLabelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -27,6 +34,10 @@ class StatusSnapshotLabelTests(unittest.TestCase):
             raise RuntimeError("pwsh is required to exercise status-snapshot.ps1")
 
     def _run_snapshot(self, mode: str, out_dir: Path) -> subprocess.CompletedProcess[str]:
+        resource_id = (
+            "/subscriptions/sub-test/resourceGroups/rg-test/providers/"
+            "Microsoft.Storage/storageAccounts/sttest"
+        )
         payloads = {
             "malformed": "{not-json",
             "missing-data": json.dumps({"count": 0}),
@@ -47,10 +58,7 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                 {
                     "data": [
                         {
-                            "id": (
-                                "/subscriptions/sub-test/resourceGroups/rg-test/providers/"
-                                "Microsoft.Storage/storageAccounts/sttest"
-                            ),
+                            "id": resource_id,
                             "name": "sttest",
                             "type": "microsoft.storage/storageaccounts",
                             "location": "eastus",
@@ -61,10 +69,32 @@ class StatusSnapshotLabelTests(unittest.TestCase):
             ),
         }
         inventory_json = payloads.get(mode, payloads["valid"])
+        health_json = json.dumps(
+            {
+                "data": (
+                    [
+                        {
+                            "rid": resource_id.lower(),
+                            "state": (
+                                "Degraded" if mode == "health-degraded" else "Available"
+                            ),
+                        }
+                    ]
+                    if mode in {"health-available", "health-degraded"}
+                    else []
+                )
+            }
+        )
         wrapper = textwrap.dedent(
             f"""
             $mode = {_ps_quote(mode)}
             $inventoryJson = {_ps_quote(inventory_json)}
+            $healthJson = {_ps_quote(health_json)}
+            $providerState = if ($mode -eq 'provider-unregistered') {{
+                'NotRegistered'
+            }} else {{
+                'Registered'
+            }}
             $global:graphQueries = @()
             function global:az {{
                 $joined = $args -join ' '
@@ -77,11 +107,16 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                     $global:LASTEXITCODE = 0
                     return
                 }}
+                if ($joined -like 'provider show*') {{
+                    Write-Output $providerState
+                    $global:LASTEXITCODE = 0
+                    return
+                }}
                 if ($joined -like 'graph query*') {{
                     $global:graphQueries += $joined
                     if ($joined -like '*healthresources*') {{
-                        Write-Output '{{"data":[]}}'
-                        $global:LASTEXITCODE = 0
+                        Write-Output $healthJson
+                        $global:LASTEXITCODE = if ($mode -eq 'health-query-failure') {{ 19 }} else {{ 0 }}
                         return
                     }}
                     if ($mode -eq 'nonzero') {{
@@ -109,6 +144,13 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                 if ($unscoped.Count -gt 0) {{
                     throw "Resource Graph query was not scoped to sub-test: $($unscoped -join '; ')"
                 }}
+                $healthQuery = @($global:graphQueries | Where-Object {{ $_ -like '*healthresources*' }})
+                if ($healthQuery.Count -ne 1 -or $healthQuery[0] -notlike '*/resourcegroups/rg-test/*') {{
+                    throw "Resource Health query was not filtered to rg-test."
+                }}
+            }}
+            if ($mode -eq 'provider-unregistered' -and $global:graphQueries.Count -ne 1) {{
+                throw "Resource Health should not be queried when its provider is not registered."
             }}
             """
         )
@@ -154,6 +196,74 @@ class StatusSnapshotLabelTests(unittest.TestCase):
             self.assertIn("window.AI4IA_STATUS", status)
             self.assertIn('"total": 1', status)
             self.assertNotIn('"name": "sttest"', status)
+
+    def test_available_health_signal_is_distinct_from_missing_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            result = self._run_snapshot("health-available", out_dir)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            inventory = _load_assignment(out_dir / "inventory.js", "AI4IA_INVENTORY")
+            status = _load_assignment(out_dir / "status.js", "AI4IA_STATUS")
+            resource = inventory["resources"][0]
+            self.assertEqual(resource["availability"], "Available")
+            self.assertTrue(resource["healthReported"])
+            self.assertEqual(resource["state"], "healthy")
+            self.assertEqual(status["summary"]["healthy"], 1)
+            self.assertEqual(status["summary"]["provisioned"], 0)
+            self.assertEqual(status["healthSource"]["status"], "available")
+            self.assertEqual(status["healthSource"]["records"], 1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            result = self._run_snapshot("valid", out_dir)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            inventory = _load_assignment(out_dir / "inventory.js", "AI4IA_INVENTORY")
+            status = _load_assignment(out_dir / "status.js", "AI4IA_STATUS")
+            resource = inventory["resources"][0]
+            self.assertEqual(resource["availability"], "Unknown")
+            self.assertFalse(resource["healthReported"])
+            self.assertEqual(resource["state"], "provisioned")
+            self.assertEqual(status["summary"]["healthy"], 0)
+            self.assertEqual(status["summary"]["provisioned"], 1)
+            self.assertEqual(status["healthSource"]["status"], "available")
+            self.assertEqual(status["healthSource"]["records"], 0)
+
+    def test_unregistered_provider_is_reported_as_a_source_outage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            result = self._run_snapshot("provider-unregistered", out_dir)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            inventory = _load_assignment(out_dir / "inventory.js", "AI4IA_INVENTORY")
+            status = _load_assignment(out_dir / "status.js", "AI4IA_STATUS")
+            self.assertEqual(status["healthSource"]["status"], "unavailable")
+            self.assertEqual(status["healthSource"]["providerState"], "NotRegistered")
+            self.assertIn("not registered", status["healthSource"]["note"].lower())
+            self.assertFalse(inventory["resources"][0]["healthReported"])
+
+    def test_health_query_failure_is_not_published_as_no_resource_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            result = self._run_snapshot("health-query-failure", out_dir)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            status = _load_assignment(out_dir / "status.js", "AI4IA_STATUS")
+            self.assertEqual(status["healthSource"]["status"], "unavailable")
+            self.assertIn("could not be queried", status["healthSource"]["note"].lower())
+
+    def test_resource_health_degraded_state_is_counted_as_degraded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            result = self._run_snapshot("health-degraded", out_dir)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            inventory = _load_assignment(out_dir / "inventory.js", "AI4IA_INVENTORY")
+            status = _load_assignment(out_dir / "status.js", "AI4IA_STATUS")
+            self.assertEqual(inventory["resources"][0]["state"], "degraded")
+            self.assertEqual(status["summary"]["degraded"], 1)
+            self.assertEqual(status["summary"]["provisioned"], 0)
 
 
 class StatusSnapshotCatalogTests(unittest.TestCase):

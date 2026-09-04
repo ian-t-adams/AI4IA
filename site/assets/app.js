@@ -174,6 +174,7 @@
           "<span>The deployment snapshot file did not load.</span>";
       }
       renderUnavailable(host, "The deployment summary did not load.");
+      renderUnavailable(el("health-source"), "The Resource Health source status did not load.");
       renderUnavailable(el("endpoints"), "Endpoint probe results did not load.");
       renderUnavailableRow(el("resources-body"), 5, "The Azure resource inventory did not load.");
       return;
@@ -186,6 +187,20 @@
     var resources = Array.isArray(inventory.resources)
       ? inventory.resources
       : (Array.isArray(s.resources) ? s.resources : []);
+    var healthSource = s.healthSource || {};
+    var healthSourceState = String(healthSource.status || "unknown").toLowerCase();
+    var healthSourceAvailable = healthSourceState === "available";
+    var healthSourceHost = el("health-source");
+    if (healthSourceHost) {
+      if (healthSourceAvailable) {
+        healthSourceHost.innerHTML = "";
+      } else {
+        healthSourceHost.innerHTML =
+          '<div class="notice data-unavailable" role="status"><strong>Resource Health unavailable.</strong> ' +
+          esc(healthSource.note || "This snapshot does not report whether Azure Resource Health was queried.") +
+          "</div>";
+      }
+    }
 
     // Derive the displayed state from the availability signal rather than
     // trusting the stored `state`. Two reasons:
@@ -197,9 +212,20 @@
     // Failure states still win -- those are real signals.
     function effectiveState(r) {
       if (r.state === "unavailable" || r.state === "degraded") return r.state;
-      return String(r.availability || "").toLowerCase() === "available"
-        ? "healthy"
-        : "provisioned";
+      var availability = String(r.availability || "").toLowerCase();
+      if (availability === "unavailable") return "unavailable";
+      if (availability === "degraded") return "degraded";
+      return availability === "available" ? "healthy" : "provisioned";
+    }
+
+    function displayAvailability(r) {
+      var availability = String(r.availability || "Unknown");
+      if (!healthSourceAvailable &&
+          availability.toLowerCase() === "unknown" &&
+          !r.healthReported) {
+        return "Not checked";
+      }
+      return availability;
     }
 
     var counts = { healthy: 0, provisioned: 0, degraded: 0, unavailable: 0 };
@@ -210,10 +236,19 @@
       // "Health reported" is deliberately separate from "Provisioned": most Azure
       // resource types publish no Resource Health availability state at all, and
       // counting those as healthy turned an absent signal into a green number.
+      var healthSourceValue = healthSourceAvailable
+        ? counts.healthy
+        : (healthSourceState === "unavailable" ? "Unavailable" : "Unknown");
+      var healthSourceLabel = healthSourceAvailable
+        ? "Health reported available"
+        : "Resource Health source";
+      var provisionedLabel = healthSourceAvailable
+        ? "Provisioned, no health signal"
+        : "Provisioned, health not checked";
       stats.innerHTML =
         stat(resources.length || sum.total, "Azure resources") +
-        stat(counts.healthy, "Health reported available") +
-        stat(counts.provisioned, "Provisioned, no health signal") +
+        stat(healthSourceValue, healthSourceLabel) +
+        stat(counts.provisioned, provisionedLabel) +
         stat(sum.endpointsUp + "/" + sum.endpointsTot, "Public endpoints up") +
         stat(counts.degraded + counts.unavailable, "Degraded / unavailable");
     }
@@ -240,7 +275,8 @@
         groups[g].forEach(function (r) {
           html += "<tr><td>" + stateBadge(effectiveState(r)) + "</td><td><strong>" + esc(r.label) +
             '</strong><br><span class="mono">' + esc(r.name) + "</span></td><td>" + esc(r.location) +
-            '</td><td class="mono">' + esc(r.provisioningState) + "</td><td>" + esc(r.availability) + "</td></tr>";
+            '</td><td class="mono">' + esc(r.provisioningState) + "</td><td>" +
+            esc(displayAvailability(r)) + "</td></tr>";
         });
       });
       body.innerHTML = html;

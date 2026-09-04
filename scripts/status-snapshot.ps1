@@ -182,22 +182,75 @@ if ($invalidResources.Count -gt 0) {
 # --- 2) Resource health via Resource Graph healthresources table (one call) ---
 Write-Host 'Querying Resource Health availability states' -ForegroundColor Cyan
 $health = @{}
-try {
-    $hKql = "healthresources | where type =~ 'microsoft.resourcehealth/availabilitystatuses' | project rid=tolower(tostring(properties.targetResourceId)), state=tostring(properties.availabilityState)"
-    $hOutput = @(az graph query -q $hKql --subscriptions $Subscription --first 500 -o json --only-show-errors 2>&1)
-    $hExitCode = $LASTEXITCODE
-    if ($hExitCode -ne 0) { throw "az exited $hExitCode" }
-    $hRaw = ($hOutput -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop
-    if ($hRaw.data -isnot [System.Array]) { throw 'response data is not an array' }
-    foreach ($h in $hRaw.data) { if ($h.rid) { $health[$h.rid] = $h.state } }
-} catch {
-    Write-Warning "Resource Health query failed (continuing without it): $($_.Exception.Message)"
+$healthSource = [ordered]@{
+    status        = 'unavailable'
+    provider      = 'Microsoft.ResourceHealth'
+    providerState = 'Unknown'
+    records       = 0
+    note          = 'Azure Resource Health availability was not checked.'
+}
+
+$providerOutput = @(
+    az provider show --subscription $Subscription --namespace Microsoft.ResourceHealth `
+        --query registrationState -o tsv --only-show-errors 2>&1
+)
+$providerExitCode = $LASTEXITCODE
+if ($providerExitCode -ne 0) {
+    Write-Warning "Could not verify Microsoft.ResourceHealth registration (az exit $providerExitCode)."
+    $healthSource.note = 'Microsoft.ResourceHealth registration could not be verified; availability was not checked.'
+} else {
+    $providerState = ($providerOutput -join [Environment]::NewLine).Trim()
+    if ([string]::IsNullOrWhiteSpace($providerState)) {
+        Write-Warning 'Microsoft.ResourceHealth registration query returned no state.'
+        $healthSource.note = 'Microsoft.ResourceHealth registration returned no state; availability was not checked.'
+    } else {
+        $healthSource.providerState = $providerState
+        if ($providerState -ine 'Registered') {
+            $providerDescription = if ($providerState -ieq 'NotRegistered') {
+                'not registered'
+            } elseif ($providerState -ieq 'Registering') {
+                'still registering'
+            } else {
+                "in state '$providerState'"
+            }
+            Write-Warning "Microsoft.ResourceHealth is $providerDescription; availability was not checked."
+            $healthSource.note = "Microsoft.ResourceHealth is $providerDescription; availability was not checked."
+        } else {
+            try {
+                # Filter before --first so a busy subscription cannot push this
+                # resource group's health rows beyond the 500-row result window.
+                $healthResourceGroup = $ResourceGroup.ToLowerInvariant().Replace("'", "''")
+                $hKql = "healthresources | where type =~ 'microsoft.resourcehealth/availabilitystatuses' | extend rid=tolower(tostring(properties.targetResourceId)) | where rid contains '/resourcegroups/$healthResourceGroup/' | project rid, state=tostring(properties.availabilityState)"
+                $hOutput = @(
+                    az graph query -q $hKql --subscriptions $Subscription --first 500 `
+                        -o json --only-show-errors 2>&1
+                )
+                $hExitCode = $LASTEXITCODE
+                if ($hExitCode -ne 0) { throw "az exited $hExitCode" }
+                $hRaw = ($hOutput -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop
+                if ($hRaw.data -isnot [System.Array]) { throw 'response data is not an array' }
+                foreach ($h in $hRaw.data) {
+                    if ($h.rid) { $health[$h.rid] = $h.state }
+                }
+                $healthSource.status = 'available'
+                $healthSource.records = $health.Count
+                $healthSource.note = if ($health.Count -eq 0) {
+                    'Resource Health query succeeded; no resource published an availability state.'
+                } else {
+                    "Resource Health query returned $($health.Count) availability state(s)."
+                }
+            } catch {
+                Write-Warning "Resource Health query failed (continuing without it): $($_.Exception.Message)"
+                $healthSource.note = 'Azure Resource Health could not be queried; availability was not checked.'
+            }
+        }
+    }
 }
 
 # --- 3) Shape the resource list ---
 # state classification (drives the status colours on the site):
 #   unavailable -> Resource Health reports Unavailable
-#   degraded    -> provisioning Failed/Canceled
+#   degraded    -> Resource Health reports Degraded, or provisioning Failed/Canceled
 #   healthy     -> Resource Health positively reports Available
 #   provisioned -> present in Resource Graph and not failed/unavailable, but
 #                  Resource Health has no opinion (most resource types never
@@ -207,25 +260,30 @@ try {
 # collapsed both into 'healthy', so the portal could report "33 Healthy" while
 # every single row displayed "Availability: Unknown" -- existence was being
 # presented as health. Absence of a signal is not a positive signal.
-$resources = foreach ($r in ($invRaw.data | Sort-Object type, name)) {
-    $meta  = Resolve-Type $r.type
-    $rid   = ($r.id).ToLower()
-    $avail = if ($health.ContainsKey($rid)) { $health[$rid] } else { 'Unknown' }
-    $prov  = if ([string]::IsNullOrWhiteSpace($r.prov)) { 'n/a' } else { $r.prov }
-    $state = if ($avail -eq 'Available') { 'healthy' } else { 'provisioned' }
-    if ($avail -eq 'Unavailable') { $state = 'unavailable' }
-    elseif ($prov -in 'Failed','Canceled') { $state = 'degraded' }
-    [pscustomobject]@{
-        name              = $r.name
-        type              = $r.type
-        label             = $meta.label
-        group             = $meta.group
-        location          = $r.location
-        provisioningState = $prov
-        availability      = $avail
-        state             = $state
+$resources = @(
+    foreach ($r in ($invRaw.data | Sort-Object type, name)) {
+        $meta  = Resolve-Type $r.type
+        $rid   = ($r.id).ToLower()
+        $healthReported = $health.ContainsKey($rid)
+        $avail = if ($healthReported) { $health[$rid] } else { 'Unknown' }
+        $prov  = if ([string]::IsNullOrWhiteSpace($r.prov)) { 'n/a' } else { $r.prov }
+        $state = if ($avail -eq 'Available') { 'healthy' } else { 'provisioned' }
+        if ($avail -eq 'Unavailable') { $state = 'unavailable' }
+        elseif ($avail -eq 'Degraded') { $state = 'degraded' }
+        elseif ($prov -in 'Failed','Canceled') { $state = 'degraded' }
+        [pscustomobject]@{
+            name              = $r.name
+            type              = $r.type
+            label             = $meta.label
+            group             = $meta.group
+            location          = $r.location
+            provisioningState = $prov
+            availability      = $avail
+            healthReported    = $healthReported
+            state             = $state
+        }
     }
-}
+)
 
 # --- 4) Probe public endpoints for reachability ---
 function Test-Endpoint([string]$name, [string]$url) {
@@ -284,6 +342,7 @@ $status = [ordered]@{
     generatedAt   = $nowIso
     subscription  = $Subscription
     resourceGroup = $ResourceGroup
+    healthSource  = $healthSource
     summary       = $summary
     endpoints     = $endpoints
 }
@@ -296,5 +355,6 @@ Set-Content -Path (Join-Path $OutDir 'inventory.js') -Encoding utf8 -Value "$hea
 Set-Content -Path (Join-Path $OutDir 'status.js')    -Encoding utf8 -Value "$header`nwindow.AI4IA_STATUS = $stsJson;"
 
 Write-Host "Wrote inventory.js + status.js to $OutDir" -ForegroundColor Green
-Write-Host ("Resources: {0}  Healthy: {1}  Endpoints up: {2}/{3}" -f `
-    $summary.total, $summary.healthy, $summary.endpointsUp, $summary.endpointsTot) -ForegroundColor Green
+Write-Host ("Resources: {0}  Healthy: {1}  Resource Health: {2}  Endpoints up: {3}/{4}" -f `
+    $summary.total, $summary.healthy, $healthSource.status, `
+    $summary.endpointsUp, $summary.endpointsTot) -ForegroundColor Green
