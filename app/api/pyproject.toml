@@ -17,8 +17,8 @@ dependencies = [
     # Starlette is FastAPI's ASGI foundation (otherwise pulled in transitively);
     # pinned directly so its upper bound is enforced independently of FastAPI's
     # loose `>=0.46.0` floor. See the fastapi note above.
-    "starlette>=1.4.1,<1.5",
-    "uvicorn[standard]>=0.52.1",
+    "starlette>=1.4.1,<1.7",
+    "uvicorn[standard]>=0.52.3",
     "pydantic>=2.7",
     "pydantic-settings>=2.15.0",
     "httpx>=0.27",
@@ -161,14 +161,15 @@ dev = [
 # pytest.importorskip; NOT installed in the runtime container (the app never imports these
 # SDKs at runtime -- only the operator-invoked provisioning scripts do). Operators installing
 # it standalone at provisioning time: uv pip install -e "app/api[foundry]"
-# azure-ai-projects is pinned EXACTLY to 2.4.0, not just floored at it: this whole extra's
+# azure-ai-projects is pinned EXACTLY to 2.5.0, not just floored at it: this whole extra's
 # provisioner (scripts/provision-foundry-toolbox.py) and its test suite
-# (tests/test_foundry_toolbox.py) are reflection-verified, field-by-field, against 2.4.0's actual
+# (tests/test_foundry_toolbox.py) are reflection-verified, field-by-field, against 2.5.0's actual
 # *ToolboxTool model classes and constructor signatures (CodeInterpreterToolboxTool,
 # OpenApiToolboxTool, MCPToolboxTool, AzureAISearchToolboxTool, ...). Those shapes have already
 # changed twice now (the toolbox model classes plainly do not exist in 2.2.0, and 2.4.0 added a
-# thirteenth type, ToolSearchToolboxTool/`toolbox_search`, which the parity test caught), so
-# a floating `>=2.4.0` floor would let a bare `pip install .[foundry]` -- which is exactly what
+# thirteenth type, ToolSearchToolboxTool/`toolbox_search`, while 2.5.0 added the GA
+# A2AToolboxTool/`a2a` discriminator, both caught by the parity test), so a floating floor would
+# let a bare `pip install .[foundry]` -- which is exactly what
 # both CI (.github/workflows/app-ci.yml) and operators (see docs/foundry-toolbox.md) run -- silently
 # resolve a newer, unreviewed release whose shapes may again differ, ignoring uv.lock's own
 # resolution entirely (`pip install` does not consult uv.lock). An exact pin makes every install
@@ -179,7 +180,7 @@ dev = [
 # jsonschema backs scripts/provision-foundry-toolbox.py's strict manifest-schema validation,
 # which --create requires before constructing any SDK model.
 foundry = [
-    "azure-ai-projects==2.4.0",
+    "azure-ai-projects==2.5.0",
     "azure-identity>=1.17",
     "jsonschema>=4.18",
 ]

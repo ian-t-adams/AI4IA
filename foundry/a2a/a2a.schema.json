@@ -21,7 +21,7 @@
       "required": ["package", "version", "status", "surface"],
       "properties": {
         "package": { "const": "azure-ai-projects" },
-        "version": { "const": "2.4.0" },
+        "version": { "const": "2.5.0" },
         "status": { "const": "not-executable" },
         "surface": { "const": "no-validated-inbound-a2a-surface" }
       }

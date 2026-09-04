@@ -57,7 +57,7 @@ class FoundryManifestContractTests(unittest.TestCase):
                 self.assertEqual("1.0", manifest["manifestVersion"])
                 self.assertTrue(manifest["owner"])
                 self.assertEqual("azure-ai-projects", manifest["sdkContract"]["package"])
-                self.assertEqual("2.4.0", manifest["sdkContract"]["version"])
+                self.assertEqual("2.5.0", manifest["sdkContract"]["version"])
 
     def test_only_the_toolbox_is_executable(self) -> None:
         """Routine and A2A are design artifacts; nothing may reconcile them."""

@@ -91,7 +91,7 @@
   ],
   "files": {
     "Shared-parser/Shared-parser.csproj": {
-      "localCanonicalSha256": "6b2d9a834ab37c068f40b3e43e0b073c5fd18195dc0d25625f33bd0208d52673",
+      "localCanonicalSha256": "fcf5dc2cce07b62a96b2d950960420a45d819773ddcca50bc6092a1dbcac8e2a",
       "upstreamRawSha256": "8d81dc6920f493e0d5a425b7f73b5808d7c24f4103cd5b443832d710d88b6591",
       "upstreamCanonicalSha256": "8d81dc6920f493e0d5a425b7f73b5808d7c24f4103cd5b443832d710d88b6591",
       "disposition": "ai4ia-patched"
@@ -157,7 +157,7 @@
       "disposition": "upstream-equivalent"
     },
     "Shared-parser/packages.lock.json": {
-      "localCanonicalSha256": "5e7c4f83e51e663786d32713cfc14fe448e092c5bd74b922f63a75e9c6417f7b",
+      "localCanonicalSha256": "12ce62f4a80c0d1552ea42221453352712761a72ece837eb7590d7597e71b345",
       "disposition": "ai4ia-added"
     },
     "Shared/HealthProbe/HealthStatusEnum.cs": {
@@ -1039,7 +1039,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/SimpleL7Proxy.csproj": {
-      "localCanonicalSha256": "031c59b69d15bc27e67a5be7d1d20b13e4204adc0605ac0807ecfc24ce31d1f8",
+      "localCanonicalSha256": "4213258f4e4a4427236ab97d4501c580ccf685ee1de0cc9b5adc0358d59947a3",
       "upstreamRawSha256": "1c488f90e1c719e91427e54aabfae0be42f990ec12d3067ad28c3c37d06de571",
       "upstreamCanonicalSha256": "1c488f90e1c719e91427e54aabfae0be42f990ec12d3067ad28c3c37d06de571",
       "disposition": "ai4ia-patched"
@@ -1105,7 +1105,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/packages.lock.json": {
-      "localCanonicalSha256": "b8de0eb7194cae8e1fd2b6072f41a071c4f04a3380592a7bbff16ad6a0d59a2e",
+      "localCanonicalSha256": "336aef51c65265ce3f04623765efeef90ba1789dc1166984ac157b5b76da07b5",
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/sample-deployment.yaml": {

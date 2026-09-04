@@ -81,6 +81,9 @@ _SKILL_FRONT_MATTER_RE = re.compile(
 # two carry an identical field set (only the common name/description/toolConfigs), so the GA branch
 # in toolbox.manifest.schema.json mirrors the preview branch exactly. Prefer `toolbox_search` in new
 # manifests.
+# azure-ai-projects 2.5.0 similarly adds the GA `a2a` discriminator alongside `a2a_preview`.
+# The GA model requires `a2a_version="1.0"`; the schema keeps that requirement isolated from the
+# preview model while preserving both spellings for existing manifests.
 _TYPE_TO_MODEL = {
     "web_search": "WebSearchToolboxTool",
     "azure_ai_search": "AzureAISearchToolboxTool",
@@ -91,6 +94,7 @@ _TYPE_TO_MODEL = {
     "toolbox_search_preview": "ToolboxSearchPreviewToolboxTool",
     "toolbox_search": "ToolSearchToolboxTool",
     "mcp": "MCPToolboxTool",
+    "a2a": "A2AToolboxTool",
     "a2a_preview": "A2APreviewToolboxTool",
     "fabric_iq_preview": "FabricIQPreviewToolboxTool",
     "reminder_preview": "ReminderPreviewToolboxTool",
@@ -117,6 +121,7 @@ _CAMEL_TO_SNAKE = {
     "memoryLimit": "memory_limit",
     "networkPolicy": "network_policy",
     "allowedDomains": "allowed_domains",
+    "allowedCallers": "allowed_callers",
     "securityScheme": "security_scheme",
     "defaultParams": "default_params",
     # round 7: common ToolConfig + newly-modeled per-type fields.
@@ -133,11 +138,13 @@ _CAMEL_TO_SNAKE = {
     "serverDescription": "server_description",
     "allowedTools": "allowed_tools",
     "deferLoading": "defer_loading",
+    "tunnelId": "tunnel_id",
     "toolNames": "tool_names",
     "readOnly": "read_only",
     "baseUrl": "base_url",
     "agentCardPath": "agent_card_path",
     "sendCredentialsForAgentCard": "send_credentials_for_agent_card",
+    "a2aVersion": "a2a_version",
 }
 # `indexAssetId` -> `index_asset_id` (azure-ai-projects 2.4.0 AISearchIndexResource.index_asset_id)
 # IS mapped above as a documented, schema-enforced mutually-exclusive alternative to
@@ -348,7 +355,7 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
         if ttype not in _ALLOWED_TOOL_TYPES:
             errors.append(f"tools[{i}].type '{ttype}' is not one of {sorted(_ALLOWED_TOOL_TYPES)}.")
             continue
-        if ttype == "a2a_preview" and "baseUrl" in tool:
+        if ttype in {"a2a", "a2a_preview"} and "baseUrl" in tool:
             base_url = tool["baseUrl"]
             if not isinstance(base_url, str):
                 errors.append(f"tools[{i}].baseUrl must be a string.")
@@ -539,7 +546,7 @@ def _project_client(project_endpoint: str) -> Any:
     except ImportError as exc:  # pragma: no cover - exercised only on live provisioning
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.4.0 azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.5.0 azure-identity'
         ) from exc
     return AIProjectClient(endpoint=project_endpoint, credential=DefaultAzureCredential())
 
@@ -550,7 +557,7 @@ def _sdk_models() -> Any:
     except ImportError as exc:  # pragma: no cover - exercised only without provisioning extra
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.4.0 azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.5.0 azure-identity'
         ) from exc
     return models
 

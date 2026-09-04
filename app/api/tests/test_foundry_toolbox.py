@@ -44,7 +44,7 @@ def _valid_manifest() -> dict:
         "owner": "repository-owner",
         "sdkContract": {
             "package": "azure-ai-projects",
-            "version": "2.4.0",
+            "version": "2.5.0",
             "status": "validated",
             "surface": "project.toolboxes",
         },
@@ -140,6 +140,7 @@ def test_every_allowed_type_maps_to_a_model_class():
     assert all(name.endswith("ToolboxTool") for name in _tb._TYPE_TO_MODEL.values())
     assert "computer_use" not in _tb._ALLOWED_TOOL_TYPES
     assert "browser_automation_preview" in _tb._ALLOWED_TOOL_TYPES
+    assert _tb._TYPE_TO_MODEL["a2a"] == "A2AToolboxTool"
 
 
 # ----------------------------- tool projection ----------------------------------------
@@ -1820,6 +1821,102 @@ def test_schema_and_sdk_accept_a2a_preview_via_project_connection_id_or_base_url
     assert built.base_url == "https://agent.example.com"
 
 
+def test_schema_and_sdk_accept_a2a_ga_with_required_protocol_version():
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    good = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "a2a",
+                "name": "a2a",
+                "projectConnectionId": "a2a-conn",
+                "a2aVersion": "1.0",
+            }
+        ],
+    }
+    jsonschema.validate(good, schema)
+    fields = {k: v for k, v in _tb._convert_keys(good["tools"][0]).items() if k != "type"}
+    built = m.A2AToolboxTool(**fields)
+    assert built.project_connection_id == "a2a-conn"
+    assert built.a2a_version == "1.0"
+
+    missing_version = {
+        **_valid_manifest(),
+        "tools": [{"type": "a2a", "name": "a2a", "projectConnectionId": "a2a-conn"}],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_version, schema)
+
+    preview_with_ga_version = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "a2a_preview",
+                "name": "a2a",
+                "projectConnectionId": "a2a-conn",
+                "a2aVersion": "1.0",
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(preview_with_ga_version, schema)
+
+
+def test_schema_and_sdk_accept_2_5_callable_fields_and_mcp_tunnel():
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    code_interpreter_manifest = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "code_interpreter",
+                "name": "code",
+                "allowedCallers": ["direct", "programmatic"],
+            }
+        ],
+    }
+    jsonschema.validate(code_interpreter_manifest, schema)
+    code_fields = {
+        k: v
+        for k, v in _tb._convert_keys(code_interpreter_manifest["tools"][0]).items()
+        if k != "type"
+    }
+    code_tool = m.CodeInterpreterToolboxTool(**code_fields)
+    assert code_tool.allowed_callers == ["direct", "programmatic"]
+
+    mcp_manifest = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "mcp",
+                "serverLabel": "secure",
+                "tunnelId": "secure-mcp-tunnel-1",
+                "allowedCallers": ["programmatic"],
+            }
+        ],
+    }
+    jsonschema.validate(mcp_manifest, schema)
+    mcp_fields = {
+        k: v for k, v in _tb._convert_keys(mcp_manifest["tools"][0]).items() if k != "type"
+    }
+    mcp_tool = m.MCPToolboxTool(**mcp_fields)
+    assert mcp_tool.tunnel_id == "secure-mcp-tunnel-1"
+    assert mcp_tool.allowed_callers == ["programmatic"]
+
+    for bad_tool in (
+        {"type": "web_search", "name": "web", "allowedCallers": ["direct"]},
+        {"type": "code_interpreter", "name": "code", "tunnelId": "wrong-type"},
+    ):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({**_valid_manifest(), "tools": [bad_tool]}, schema)
+
+
+@pytest.mark.parametrize("tool_type", ["a2a", "a2a_preview"])
 @pytest.mark.parametrize(
     "base_url",
     [
@@ -1832,12 +1929,12 @@ def test_schema_and_sdk_accept_a2a_preview_via_project_connection_id_or_base_url
         "https://agent.example.com?target=other",
     ],
 )
-def test_a2a_base_url_must_be_public_https(base_url: str):
+def test_a2a_base_url_must_be_public_https(tool_type: str, base_url: str):
     manifest = {
         **_valid_manifest(),
         "tools": [
             {
-                "type": "a2a_preview",
+                "type": tool_type,
                 "name": "a2a",
                 "baseUrl": base_url,
             }
@@ -2353,8 +2450,8 @@ def test_reflection_driven_parity_covers_every_sdk_toolbox_type_and_field():
         obj = getattr(m, class_name)
         if isinstance(obj, type):
             sdk_toolbox_classes[class_name] = obj
-    assert len(sdk_toolbox_classes) >= 13, (
-        f"expected at least the 13 known toolbox types via reflection, found: {sorted(sdk_toolbox_classes)}"
+    assert len(sdk_toolbox_classes) >= 14, (
+        f"expected at least the 14 known toolbox types via reflection, found: {sorted(sdk_toolbox_classes)}"
     )
 
     modeled_classes = set(_tb._TYPE_TO_MODEL.values())
@@ -2542,7 +2639,7 @@ def _simulate_azure_ai_projects_missing(monkeypatch):
 
 
 def test_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch):
-    # Round 8 pinned `azure-ai-projects==2.4.0` exactly in pyproject.toml/uv.lock so every
+    # `azure-ai-projects==2.5.0` is pinned exactly in pyproject.toml/uv.lock so every
     # install path lands on the one version this whole audit reflection-verified field-by-field
     # -- but both create_toolbox()'s and _project_client()'s ImportError fallback still told an
     # operator without `uv` to run a bare, unpinned `pip install azure-ai-projects
@@ -2554,5 +2651,5 @@ def test_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch
     with pytest.raises(SystemExit) as exc_info:
         _tb.create_toolbox({"tools": []}, _ENDPOINT)
     message = str(exc_info.value)
-    assert "pip install azure-ai-projects==2.4.0 azure-identity" in message
+    assert "pip install azure-ai-projects==2.5.0 azure-identity" in message
     assert "pip install azure-ai-projects azure-identity" not in message

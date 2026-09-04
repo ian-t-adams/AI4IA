@@ -6,7 +6,7 @@
   "owner": "repository-owner",
   "sdkContract": {
     "package": "azure-ai-projects",
-    "version": "2.4.0",
+    "version": "2.5.0",
     "status": "validated",
     "surface": "project.toolboxes"
   },
