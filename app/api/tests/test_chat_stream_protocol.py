@@ -408,6 +408,7 @@ async def test_a_streamed_preamble_is_kept_when_the_fallback_completes_the_turn(
                     )
                 ],
             ),
+            False,
         )
 
     repo = _PersistingRepo()
@@ -428,6 +429,75 @@ async def test_a_streamed_preamble_is_kept_when_the_fallback_completes_the_turn(
     assert repo.persisted[-1].safety.signals[0].severityLevel == 1
     assert repo.persisted[-1].content == delivered
     assert frames[-1] == "data: [DONE]\n\n"
+
+
+@pytest.mark.asyncio
+async def test_incomplete_streaming_fallback_uses_visible_fallback_and_partial_receipt():
+    async def run(_on_step, _on_delta):
+        return AgentRunResult(text="", model="deployment")
+
+    async def fallback():
+        from ai4ia_api.usage.models import TokenUsage
+
+        return "", TokenUsage.empty(), None, True
+
+    repo = _PersistingRepo()
+    frames = [
+        frame
+        async for frame in _test_agentic_stream(
+            run=run,
+            repo=repo,
+            fallback=fallback,
+            stream_tokens=True,
+            receipt_draft=ReceiptDraft(correlation_id="correlation"),
+        )
+    ]
+
+    delivered = "".join(
+        json.loads(frame.removeprefix("data: "))["choices"][0]["delta"]["content"]
+        for frame in frames
+        if '"choices"' in frame
+    )
+    assert "ended before" in delivered
+    receipt = repo.persisted[-1].executionReceipt
+    assert receipt is not None
+    assert receipt.status == "incomplete"
+    assert receipt.partial is True
+
+
+@pytest.mark.asyncio
+async def test_incomplete_final_iteration_appends_fallback_after_streamed_preamble():
+    async def run(_on_step, on_delta):
+        await on_delta("Looking that up. ")
+        return AgentRunResult(
+            text="",
+            model="deployment",
+            incomplete=True,
+            incomplete_reason="max_output_tokens",
+        )
+
+    repo = _PersistingRepo()
+    frames = [
+        frame
+        async for frame in _test_agentic_stream(
+            run=run,
+            repo=repo,
+            stream_tokens=True,
+            receipt_draft=ReceiptDraft(correlation_id="correlation"),
+        )
+    ]
+
+    delivered = "".join(
+        json.loads(frame.removeprefix("data: "))["choices"][0]["delta"]["content"]
+        for frame in frames
+        if '"choices"' in frame
+    )
+    assert delivered.startswith("Looking that up. ")
+    assert "ended before" in delivered
+    assert repo.persisted[-1].content == delivered
+    receipt = repo.persisted[-1].executionReceipt
+    assert receipt is not None
+    assert receipt.status == "incomplete"
 
 
 def test_plain_stream_persists_terminal_row_before_done(client, monkeypatch):

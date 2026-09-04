@@ -194,6 +194,7 @@ def test_gpt56_rejects_minimal_but_earlier_gpt5_accepts_it():
             "high",
             "xhigh",
         ], model_id
+        assert entry.api == "responses", model_id
 
     for model_id in ("gpt-5", "gpt-5.1", "gpt-5.2", "gpt-5.4"):
         entry = catalog.get(model_id)
@@ -413,6 +414,7 @@ def test_request_shape_traits_are_serialized():
         "high",
         "xhigh",
     ]
+    assert dumped["api"] == "responses"
 
 
 def test_catalog_traits_agree_with_the_gateway_normalizer():

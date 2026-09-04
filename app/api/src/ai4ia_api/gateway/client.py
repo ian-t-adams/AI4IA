@@ -71,6 +71,8 @@ _SERVER_OWNED_BODY_KEYS = (
     "model",
     "input",
     "instructions",
+    "include",
+    "previous_response_id",
     "store",
     "stream",
     "stream_options",
@@ -114,6 +116,7 @@ def _normalize_params_for_deployment(body: dict[str, Any], deployment: str) -> N
 # gateway translates both directions to keep the rest of the app speaking the
 # single chat-completions shape.
 _RESPONSES_PATH = "/responses"
+RESPONSES_OUTPUT_ITEMS_KEY = "_responses_output_items"
 
 # Reasoning models spend hidden "reasoning tokens" out of the same output budget
 # as the visible answer, so a small ``max_output_tokens`` yields an EMPTY message
@@ -126,13 +129,18 @@ _RESPONSES_MIN_OUTPUT_TOKENS = 16384
 def _messages_to_responses_input(
     messages: Sequence[dict[str, Any]],
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    """Split chat-style messages into ``(instructions, input items)``.
+    """Translate the internal chat/tool transcript to Responses input items.
 
     Every ``system`` message is concatenated (order-preserving) into the single
-    Responses ``instructions`` field; user/assistant turns become ``input``
-    items. AI4IA injects memory and uploaded-document context as ordered system
-    blocks, so preserving order keeps the primary prompt's authority ahead of
-    those untrusted blocks.
+    Responses ``instructions`` field. Plain user/assistant turns remain messages;
+    chat-style assistant ``tool_calls`` become flat ``function_call`` items and
+    ``role:tool`` results become ``function_call_output`` items.
+
+    During a live Responses tool loop, the runtime also carries the provider's
+    original output items under :data:`RESPONSES_OUTPUT_ITEMS_KEY`. Replaying that
+    array verbatim preserves item ordering and encrypted reasoning while
+    ``store=false``; the chat-shaped fields exist only for the shared governance
+    loop and are not duplicated into the provider request.
     """
     system_parts: list[str] = []
     items: list[dict[str, Any]] = []
@@ -142,10 +150,80 @@ def _messages_to_responses_input(
         if role == "system":
             if content:
                 system_parts.append(content)
-        else:
+            continue
+
+        provider_items = m.get(RESPONSES_OUTPUT_ITEMS_KEY)
+        if isinstance(provider_items, list):
+            items.extend(dict(item) for item in provider_items if isinstance(item, dict))
+            continue
+
+        if role == "tool":
+            call_id = m.get("tool_call_id")
+            if not isinstance(call_id, str) or not call_id:
+                continue
+            output = content if isinstance(content, str) else json.dumps(content, default=str)
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": output,
+                }
+            )
+            continue
+
+        tool_calls = m.get("tool_calls")
+        if role == "assistant" and isinstance(tool_calls, list):
+            if content:
+                items.append({"role": "assistant", "content": content})
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                function = call.get("function")
+                call_id = call.get("id")
+                if (
+                    not isinstance(function, dict)
+                    or not isinstance(call_id, str)
+                    or not call_id
+                ):
+                    continue
+                name = function.get("name")
+                arguments = function.get("arguments")
+                if not isinstance(name, str) or not name:
+                    continue
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": call_id,
+                        "name": name,
+                        "arguments": arguments if isinstance(arguments, str) else "{}",
+                    }
+                )
+            continue
+
+        if role in {"user", "assistant"}:
             items.append({"role": role, "content": content})
     instructions = "\n\n".join(system_parts) if system_parts else None
     return instructions, items
+
+
+def _flatten_responses_tools(tools: Any) -> Any:
+    """Convert nested Chat Completions function tools to Responses' flat shape."""
+    if not isinstance(tools, list):
+        return tools
+    flattened: list[Any] = []
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            flattened.append(tool)
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict):
+            flattened_function = dict(function)
+            flattened_function["type"] = "function"
+            flattened.append(flattened_function)
+        else:
+            # Already-flat Responses tools pass through unchanged.
+            flattened.append(dict(tool))
+    return flattened
 
 
 def _normalize_params_for_responses(params: dict[str, Any] | None) -> dict[str, Any]:
@@ -174,6 +252,21 @@ def _normalize_params_for_responses(params: dict[str, Any] | None) -> dict[str, 
     if effort:
         out["reasoning"] = {"effort": effort}
 
+    response_format = out.pop("response_format", None)
+    if isinstance(response_format, dict):
+        if (
+            response_format.get("type") == "json_schema"
+            and isinstance(response_format.get("json_schema"), dict)
+        ):
+            response_schema = dict(response_format["json_schema"])
+            response_schema["type"] = "json_schema"
+            out["text"] = {"format": response_schema}
+        else:
+            out["text"] = {"format": dict(response_format)}
+
+    if "tools" in out:
+        out["tools"] = _flatten_responses_tools(out["tools"])
+
     for key in _REASONING_UNSUPPORTED_PARAMS:
         out.pop(key, None)
     out.pop("stream", None)
@@ -182,7 +275,7 @@ def _normalize_params_for_responses(params: dict[str, Any] | None) -> dict[str, 
 
 
 def _responses_text(obj: dict[str, Any]) -> str:
-    """Concatenate all ``output_text`` fragments from a Responses ``output``."""
+    """Concatenate visible output text and refusal fragments."""
     parts: list[str] = []
     for item in obj.get("output") or []:
         if item.get("type") != "message":
@@ -190,6 +283,8 @@ def _responses_text(obj: dict[str, Any]) -> str:
         for block in item.get("content") or []:
             if block.get("type") == "output_text" and block.get("text"):
                 parts.append(block["text"])
+            elif block.get("type") == "refusal" and block.get("refusal"):
+                parts.append(block["refusal"])
     return "".join(parts)
 
 
@@ -216,12 +311,47 @@ def _responses_json_to_chat(obj: dict[str, Any]) -> dict[str, Any]:
     """Translate a non-streamed Responses body into a chat-completions shape the
     router/metering already understand. ``status`` is preserved (``incomplete``
     means the answer was truncated but the tokens were still spent + billable)."""
+    output_items = [
+        dict(item) for item in obj.get("output") or [] if isinstance(item, dict)
+    ]
+    tool_calls: list[dict[str, Any]] = []
+    for item in output_items:
+        if item.get("type") != "function_call":
+            continue
+        call_id = item.get("call_id")
+        name = item.get("name")
+        if not isinstance(call_id, str) or not call_id or not isinstance(name, str) or not name:
+            continue
+        arguments = item.get("arguments")
+        tool_calls.append(
+            {
+                # The shared runtime keys tool results by Chat Completions' ``id``.
+                # Responses requires that same value as ``function_call_output.call_id``.
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": arguments if isinstance(arguments, str) else "{}",
+                },
+            }
+        )
+
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": _responses_text(obj) or None,
+    }
+    if tool_calls:
+        message["tool_calls"] = tool_calls
     result: dict[str, Any] = {
-        "choices": [
-            {"message": {"role": "assistant", "content": _responses_text(obj)}}
-        ],
+        "choices": [{"message": message}],
         "_responses_status": obj.get("status"),
     }
+    if obj.get("status") == "incomplete" and obj.get("incomplete_details") is not None:
+        result["_responses_incomplete_reason"] = str(obj["incomplete_details"])[:200]
+    if tool_calls:
+        # Turn-local continuation state. The runtime replays it to Responses but
+        # strips it from receipts and never persists it in the assistant message.
+        result[RESPONSES_OUTPUT_ITEMS_KEY] = output_items
     usage = _responses_usage_to_chat(obj.get("usage"))
     if usage is not None:
         result["usage"] = usage
@@ -238,7 +368,8 @@ _STREAM_FAILED = "Model stream failed."
 MAI_API = "mai"
 BFL_API = "bfl"
 CHAT_COMPLETIONS_APIS = frozenset({"chat", MAI_API})
-_KNOWN_APIS = CHAT_COMPLETIONS_APIS | frozenset({"responses", ANTHROPIC_API})
+TOOL_CALLING_APIS = CHAT_COMPLETIONS_APIS | frozenset({"responses"})
+_KNOWN_APIS = TOOL_CALLING_APIS | frozenset({ANTHROPIC_API})
 
 
 def _resolved_api(api: str, deployment: str) -> str:
@@ -291,6 +422,8 @@ class ChatChunk:
     safety: MessageSafety | None = None
     incomplete: bool = False
     incompleteReason: str | None = None
+    # Turn-local Responses continuation state. Never emitted to the browser.
+    response_output_items: list[dict[str, Any]] | None = None
 
 
 def _default_chat_path(style: GatewayProviderStyle) -> str:
@@ -496,6 +629,10 @@ class ModelGatewayClient:
         }
         if instructions:
             body["instructions"] = instructions
+        if body.get("tools"):
+            # Provider storage remains off. Encrypted reasoning is the documented
+            # stateless continuation mechanism for reasoning-model tool loops.
+            body["include"] = ["reasoning.encrypted_content"]
         if stream:
             body["stream"] = True
         if self._style == GatewayProviderStyle.azure_openai_native:
@@ -1261,6 +1398,8 @@ def _parse_responses_event(payload: str) -> ChatChunk | None:
       * ``response.output_text.delta`` -> a text increment, mirrored into a
         chat-shaped ``raw`` so the existing frontend (which reads
         ``choices[].delta.content``) renders it unchanged.
+      * ``response.output_item.done`` -> capture the provider output item and, for
+        a function call, mirror one complete chat-shaped tool-call fragment.
       * ``response.completed`` / ``response.incomplete`` -> terminal; carry the
         mapped usage. ``incomplete`` (reasoning ran out the output budget) is NOT
         an error — the tokens were spent, so it must still meter + persist the
@@ -1276,7 +1415,7 @@ def _parse_responses_event(payload: str) -> ChatChunk | None:
     except json.JSONDecodeError:
         return None
     etype = obj.get("type")
-    if etype == "response.output_text.delta":
+    if etype in {"response.output_text.delta", "response.refusal.delta"}:
         piece = obj.get("delta") or ""
         if not piece:
             return None
@@ -1284,9 +1423,57 @@ def _parse_responses_event(payload: str) -> ChatChunk | None:
             delta=piece,
             raw=json.dumps({"choices": [{"delta": {"content": piece}}]}),
         )
+    if etype == "response.output_item.done":
+        item = obj.get("item")
+        if not isinstance(item, dict):
+            return None
+        raw = ""
+        if item.get("type") == "function_call":
+            call_id = item.get("call_id")
+            name = item.get("name")
+            if isinstance(call_id, str) and call_id and isinstance(name, str) and name:
+                arguments = item.get("arguments")
+                output_index = obj.get("output_index")
+                index = (
+                    output_index
+                    if isinstance(output_index, int) and not isinstance(output_index, bool)
+                    else 0
+                )
+                raw = json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": index,
+                                            "id": call_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": name,
+                                                "arguments": (
+                                                    arguments
+                                                    if isinstance(arguments, str)
+                                                    else "{}"
+                                                ),
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                )
+        return ChatChunk(raw=raw, response_output_items=[dict(item)])
     if etype in ("response.completed", "response.incomplete"):
         response = obj.get("response") or {}
         usage = _responses_usage_to_chat(response.get("usage"))
+        raw_output = response.get("output")
+        output_items = (
+            [dict(item) for item in raw_output if isinstance(item, dict)]
+            if isinstance(raw_output, list)
+            else None
+        )
         return ChatChunk(
             done=True,
             usage=usage,
@@ -1297,8 +1484,13 @@ def _parse_responses_event(payload: str) -> ChatChunk | None:
                 if etype == "response.incomplete"
                 else None
             ),
+            # The terminal response is authoritative for ordering and replaces any
+            # per-item snapshots collected while the stream was in progress.
+            response_output_items=output_items,
         )
-    if etype == "response.failed":
+    if etype in {"response.failed", "error"}:
         err = (((obj.get("response") or {}).get("error")) or {}).get("message")
+        if not err and isinstance(obj.get("error"), dict):
+            err = obj["error"].get("message")
         raise ModelGatewayError(502, err or "responses stream failed")
     return None

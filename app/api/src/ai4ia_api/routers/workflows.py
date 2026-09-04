@@ -13,11 +13,9 @@ The run path mirrors the chat endpoint's hard invariants, in order:
 3. Resolve the model — request override, else the session's standing model — and
    its single deployment (400 if none/unavailable). All steps share this one
    deployment so the whole run meters to a single model.
-4. Refuse Responses-API models (422): workflow steps use the chat-completions
-   tool loop, which has no Responses equivalent here yet.
-5. Enforce entitlements BEFORE persisting anything (429 + Retry-After / 403), so a
+4. Enforce entitlements BEFORE persisting anything (429 + Retry-After / 403), so a
    refused run leaves no dangling user message.
-6. Persist the user message (attributed ``workflow:<name>``), run the pipeline
+5. Persist the user message (attributed ``workflow:<name>``), run the pipeline
    (total — never raises), persist the assistant result, and meter the
    accumulated usage as ``status="complete"`` so consumed tokens always count
    against quota even when a late step failed.
@@ -410,15 +408,6 @@ async def run_workflow_endpoint(
             detail=f"Unknown or unavailable model: {model_id}",
         )
     entry = catalog.get(model_id)
-    if entry is not None and entry.api == "responses":
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(
-                f"Model '{model_id}' is served through the Responses API, which "
-                "AI4IA does not yet support for workflow steps (they use the "
-                "chat-completions tool loop). Choose a chat-completions model."
-            ),
-        )
     if entry is not None and not entry.supportsTools:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -493,6 +482,7 @@ async def run_workflow_endpoint(
             ),
             run_id=run_id,
             assistant_message_id=assistant_message_id,
+            api=entry.api if entry is not None else "chat",
         )
         run_fingerprint = durable_run_fingerprint(payload)
         payload["context"]["runFingerprint"] = run_fingerprint
@@ -671,6 +661,7 @@ async def run_workflow_endpoint(
             ),
         ),
         correlation_id=correlation_id,
+        api=entry.api if entry is not None else "chat",
     )
 
     assistant = Message(

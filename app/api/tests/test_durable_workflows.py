@@ -1426,7 +1426,9 @@ async def test_accepted_execution_failure_is_persisted_as_run_failed() -> None:
     assert message.workflowRunFingerprint == "f" * 64
 
 
-def _context_from_payload(deployment: DeploymentOption) -> dict[str, Any]:
+def _context_from_payload(
+    deployment: DeploymentOption, *, api: str = "chat"
+) -> dict[str, Any]:
     from ai4ia_api.workflows.models import WorkflowStep
 
     return build_orchestration_payload(
@@ -1437,7 +1439,23 @@ def _context_from_payload(deployment: DeploymentOption) -> dict[str, Any]:
         model_id="m",
         deployment=deployment,
         correlation_id=None,
+        api=api,
     )["context"]
+
+
+def test_orchestration_payload_freezes_provider_api() -> None:
+    context = _context_from_payload(
+        _deployment("gpt-5.6-sol-example", "eastus2", "US"),
+        api="responses",
+    )
+    assert context["api"] == "responses"
+
+
+def test_orchestration_payload_omits_default_api_for_legacy_fingerprint() -> None:
+    context = _context_from_payload(
+        _deployment("gpt-5.4-example", "eastus2", "US")
+    )
+    assert "api" not in context
 
 
 async def test_metering_uses_the_deployment_frozen_at_schedule_time() -> None:

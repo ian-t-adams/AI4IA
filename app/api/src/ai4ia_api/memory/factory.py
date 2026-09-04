@@ -50,6 +50,7 @@ def build_memory_service(
                 settings.memory_extraction_model,
             )
             return NoopMemoryService()
+        extraction_entry = catalog.get(settings.memory_extraction_model)
         embedder = GatewayEmbedder(gateway, deployment.deploymentName)
         store = CosmosMemoryStore(
             endpoint=settings.cosmos_endpoint,
@@ -60,7 +61,11 @@ def build_memory_service(
         return CosmosMemoryService(
             store=store,
             embedder=embedder,
-            planner=MemoryPlanner(gateway, extraction.deploymentName),
+            planner=MemoryPlanner(
+                gateway,
+                extraction.deploymentName,
+                api=extraction_entry.api if extraction_entry is not None else "chat",
+            ),
             embedding_model=deployment.deploymentName,
             top_k=settings.memory_top_k,
             min_score=settings.memory_min_score,

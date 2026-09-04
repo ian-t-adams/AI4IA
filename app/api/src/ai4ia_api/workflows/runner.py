@@ -1,8 +1,8 @@
 """Workflow **runner**: executes a saved pipeline of agent steps.
 
-Steps run strictly in order on a **single** model deployment (resolved once by the
-caller, already past the Responses-API guard) so the whole run meters to one
-model. Each step is an independent, depth-1 agent turn: a fresh two-message
+Steps run strictly in order on a **single** model deployment and provider API
+(resolved once by the caller) so the whole run meters to one model. Each step is
+an independent, depth-1 agent turn: a fresh two-message
 conversation (the step agent's system prompt + the rendered instruction) with
 **no** delegation capability injected — workflows are flat by construction, so a
 step can never trigger another agent-as-tool sub-turn or recurse.
@@ -132,6 +132,7 @@ async def run_workflow_step(
     capabilities: CapabilityBuilder | None = None,
     correlation_id: str | None = None,
     approval_policy: ApprovalPolicy = ApprovalPolicy.off,
+    api: str = "chat",
 ) -> StepOutcome:
     """Execute a single workflow step. Total: never raises.
 
@@ -241,6 +242,7 @@ async def run_workflow_step(
             max_iters=_STEP_MAX_ITERS,
             extra_tools=extra_tools,
             extra_handlers=extra_handlers,
+            api=api,
         )
     except ModelGatewayError as exc:
         logger.warning(
@@ -289,6 +291,20 @@ async def run_workflow_step(
             fatal=True,
         )
 
+    if run.incomplete:
+        err = f"Step {index + 1}: agent '{step.agent}' returned an incomplete response."
+        return StepOutcome(
+            result=WorkflowStepResult(
+                agent=step.agent,
+                ok=False,
+                text=run.text,
+                error=err,
+                iterations=run.iterations,
+            ),
+            usage=run.usage,
+            fatal=True,
+        )
+
     return StepOutcome(
         result=WorkflowStepResult(
             agent=step.agent, ok=True, text=run.text, iterations=run.iterations
@@ -309,6 +325,7 @@ async def run_workflow(
     capabilities: CapabilityBuilder | None = None,
     correlation_id: str | None = None,
     approval_policy: ApprovalPolicy = ApprovalPolicy.off,
+    api: str = "chat",
 ) -> WorkflowRunResult:
     """Run ``workflow`` end-to-end and return a total, never-raising result.
 
@@ -336,6 +353,7 @@ async def run_workflow(
             capabilities=capabilities,
             correlation_id=correlation_id,
             approval_policy=approval_policy,
+            api=api,
         )
         usage = usage.add(outcome.usage)
         trace.append(outcome.result)

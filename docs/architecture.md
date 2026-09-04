@@ -73,7 +73,7 @@ flowchart LR
   W["Next.js web"]
   A["FastAPI API<br/>application boundary"]
   P["SimpleL7Proxy<br/>HTTP/SSE only"]
-  G["Model APIM API"]
+  G["Model APIM API<br/>Chat / Responses / providers"]
   R["Azure OpenAI realtime APIM API"]
   V["Speech Voice Live APIM API<br/>(optional)"]
   I["Code Interpreter APIM API"]
@@ -152,17 +152,21 @@ this production boundary.
 2. FastAPI normalizes the internal user id, loads the owned session, checks feature
    and entitlement posture, composes memory/document context, and authorizes tools.
 3. FastAPI sends the catalog-shaped request to SimpleL7Proxy with the
-   proxy-ingress key. OpenAI-compatible models retain the internal chat shape;
-   Claude is translated to Anthropic Messages, including tool-use and SSE events.
+   proxy-ingress key. Chat Completions is the internal agent-loop shape. The
+   gateway adapter translates it to Responses input/function items or Anthropic
+   Messages when the catalog selects those provider APIs.
 4. SimpleL7Proxy strips caller auth/internal headers, injects its own model-APIM
-   key, derives `x-LLMModel` from the deployment path, and forwards the request.
+   key, derives `x-LLMModel` from the deployment path or the Responses `model`
+   body field, and forwards the request.
 5. APIM validates the model catalog, performs bounded immediate attempts across
    eligible regions, and calls Foundry with managed identity. For Claude it
    switches the audience to `https://ai.azure.com`, rewrites the upstream path to
    `/anthropic/v1/messages`, fixes `anthropic-version`, and drops OpenAI query
    parameters; callers cannot select those values.
-   Responses-API requests explicitly set `store=false`; AI4IA resends Cosmos
-   history instead of chaining provider-stored turns with `previous_response_id`.
+   Responses requests explicitly set `store=false`; AI4IA resends Cosmos history
+   instead of chaining provider-stored turns with `previous_response_id`. During
+   one tool loop, opaque encrypted reasoning items remain in memory long enough
+   to continue statelessly and are excluded from persisted receipts and messages.
 6. If every eligible backend is throttled, APIM returns the
    `429` + `S7PREQUEUE` + `retry-after-ms` contract; SimpleL7Proxy owns delayed
    requeue. `MaxAttempts=1` prevents retry multiplication.

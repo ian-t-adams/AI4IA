@@ -634,6 +634,7 @@ class DurableWorkflowService:
                 ),
             ),
             correlation_id=context.get("correlationId"),
+            api=context.get("api") or "chat",
         )
         return {
             "result": {
@@ -714,6 +715,7 @@ def build_orchestration_payload(
     library_document_ids: list[str] | None = None,
     run_id: str | None = None,
     assistant_message_id: str | None = None,
+    api: str = "chat",
 ) -> dict[str, Any]:
     """Freeze everything a run needs into its orchestration input.
 
@@ -733,6 +735,32 @@ def build_orchestration_payload(
     the first option — so a run the user pinned to Sweden metered as East US,
     and a model id that stopped resolving mid-run metered as nothing at all.
     """
+    context: dict[str, Any] = {
+        "userId": user_id,
+        "sessionId": session_id,
+        "workflowName": workflow.name,
+        "runInput": run_input,
+        "modelId": model_id,
+        "deployment": deployment.deploymentName,
+        # Frozen usage descriptor. Flat scalars rather than a nested object so
+        # the orchestration history stays plain JSON.
+        "usageTarget": {
+            "provider": "azure_openai",
+            "deployment": deployment.deploymentName,
+            "target": deployment.deploymentName,
+            "region": deployment.region,
+            "dataZone": deployment.dataZone,
+        },
+        "correlationId": correlation_id,
+        "email": email,
+        "libraryDocumentIds": library_document_ids,
+        "runId": run_id,
+        "assistantMessageId": assistant_message_id,
+    }
+    # Preserve the legacy chat payload byte-for-byte so an idempotent retry
+    # created before this field existed keeps the same fingerprint.
+    if api != "chat":
+        context["api"] = api
     return {
         # Serialized by the model itself, not a hand-listed subset: a field added
         # to WorkflowStep later must survive the durable boundary automatically.
@@ -741,28 +769,7 @@ def build_orchestration_payload(
         # because a step with no tools still answers 200 and the model narrates
         # what it would have done.
         "steps": [s.model_dump(mode="json") for s in workflow.steps],
-        "context": {
-            "userId": user_id,
-            "sessionId": session_id,
-            "workflowName": workflow.name,
-            "runInput": run_input,
-            "modelId": model_id,
-            "deployment": deployment.deploymentName,
-            # Frozen usage descriptor. Flat scalars rather than a nested object so
-            # the orchestration history stays plain JSON.
-            "usageTarget": {
-                "provider": "azure_openai",
-                "deployment": deployment.deploymentName,
-                "target": deployment.deploymentName,
-                "region": deployment.region,
-                "dataZone": deployment.dataZone,
-            },
-            "correlationId": correlation_id,
-            "email": email,
-            "libraryDocumentIds": library_document_ids,
-            "runId": run_id,
-            "assistantMessageId": assistant_message_id,
-        },
+        "context": context,
     }
 
 

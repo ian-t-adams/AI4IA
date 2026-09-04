@@ -13,9 +13,9 @@ pointer here.
 AI4IA is a governed, multi-model, multi-region agentic chat app on Azure Container
 Apps. The browser uses the Next.js web app; FastAPI owns auth, sessions, tools,
 memory, document/library access, usage, and model routing. HTTP/SSE model traffic
-— including the Anthropic Messages adapter — flows SimpleL7Proxy → APIM →
-Foundry; realtime/Voice Live WebSockets stay on the FastAPI relay → APIM path
-because SimpleL7Proxy does not support WebSockets.
+— including Responses function calls and the Anthropic Messages adapter — flows
+SimpleL7Proxy → APIM → Foundry; realtime/Voice Live WebSockets stay on the
+FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
 
 ## Monorepo map
 
@@ -35,8 +35,8 @@ because SimpleL7Proxy does not support WebSockets.
 
 ## Non-negotiable rules
 
-1. **Gateway-first model traffic.** Compatible HTTP/SSE calls (chat, agents,
-   embeddings, images, videos, REST speech, and Claude Messages) go
+1. **Gateway-first model traffic.** Compatible HTTP/SSE calls (Chat Completions,
+   Responses, agents, embeddings, images, videos, REST speech, and Claude Messages) go
    SimpleL7Proxy → APIM → Foundry. FastAPI translates provider schemas but never
    turns that into direct provider egress. Two explicit **SimpleL7Proxy**
    exceptions, both still pass through separately scoped APIM APIs:

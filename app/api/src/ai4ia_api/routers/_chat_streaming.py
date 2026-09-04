@@ -42,6 +42,9 @@ from ..usage.service import UsageService
 logger = logging.getLogger(__name__)
 
 CHAT_COMPLETION_FAILED = "Chat completion failed."
+INCOMPLETE_RESPONSE_FALLBACK = (
+    "The model response ended before it produced a complete answer."
+)
 AGENT_EVENT_QUEUE_MAXSIZE = 32
 
 
@@ -257,7 +260,7 @@ async def _agentic_stream(
     user_message_id: str,
     extra_usage: list[TokenUsage] | None = None,
     fallback: Callable[
-        [], Awaitable[tuple[str, TokenUsage, MessageSafety | None]]
+        [], Awaitable[tuple[str, TokenUsage, MessageSafety | None, bool]]
     ]
     | None = None,
     get_attachments: Callable[[], list[MessageAttachment]] | None = None,
@@ -325,6 +328,7 @@ async def _agentic_stream(
     persisted: list[ActivityStep] | None = None
     remembered = False
     terminal_persisted = False
+    response_incomplete = False
     # Hoisted above the try so every terminal path — including a cancellation
     # that lands on the very first yield — can build a receipt from whatever the
     # run had produced. A receipt that only existed on the happy path would be
@@ -433,9 +437,18 @@ async def _agentic_stream(
         # that is normally nothing (it already went out increment by increment);
         # without streaming it is the whole answer, exactly as before.
         pending_delta = ""
-        if result is not None and (result.text or "").strip():
-            content = streamed_text if streamed_text.strip() else result.text
-            pending_delta = "" if streamed_text.strip() else content
+        if result is not None and ((result.text or "").strip() or result.incomplete):
+            response_incomplete = result.incomplete
+            if result.incomplete and not (result.text or "").strip():
+                pending_delta = (
+                    f"\n\n{INCOMPLETE_RESPONSE_FALLBACK}"
+                    if streamed_text.strip()
+                    else INCOMPLETE_RESPONSE_FALLBACK
+                )
+                content = f"{streamed_text}{pending_delta}"
+            else:
+                content = streamed_text if streamed_text.strip() else result.text
+                pending_delta = "" if streamed_text.strip() else content
             total_usage = result.usage
             for extra in extra_usage or []:
                 total_usage = total_usage.add(extra)
@@ -465,10 +478,13 @@ async def _agentic_stream(
                 persisted = persisted_trace(result.steps) or None
             try:
                 fallback_call_index = attempted_iterations + 1
-                fb_text, fb_usage, fb_safety = await fallback()
+                fb_text, fb_usage, fb_safety, fb_incomplete = await fallback()
             except ModelGatewayError:
                 total_usage = total_usage.add(TokenUsage.parse(None))
                 raise
+            response_incomplete = fb_incomplete
+            if fb_incomplete and not fb_text.strip():
+                fb_text = INCOMPLETE_RESPONSE_FALLBACK
             pending_delta = f"\n\n{fb_text}" if streamed_text.strip() else fb_text
             content = f"{streamed_text}{pending_delta}" if streamed_text.strip() else fb_text
             total_usage = total_usage.add(fb_usage)
@@ -512,7 +528,10 @@ async def _agentic_stream(
             if timing is not None:
                 timing.mark_first_content()
             yield f"data: {json.dumps({'choices': [{'delta': {'content': pending_delta}}]})}\n\n"
-        finalize_provenance("complete", partial=False)
+        finalize_provenance(
+            "incomplete" if response_incomplete else "complete",
+            partial=response_incomplete,
+        )
         terminal_persisted = await _persist_terminal_assistant(
             repo, user.internal_user_id, assistant
         )
@@ -627,6 +646,7 @@ async def _agentic_stream(
             final == MessageStatus.complete
             and terminal_persisted
             and content.strip()
+            and not response_incomplete
             and not remembered
         ):
             remembered = True
@@ -735,6 +755,9 @@ async def _plain_gateway_stream(
                     yield f"data: {chunk.raw}\n\n"
         if not saw_done:
             final = MessageStatus.error
+        if stream_incomplete and not "".join(parts).strip():
+            parts.append(INCOMPLETE_RESPONSE_FALLBACK)
+            yield f"data: {json.dumps({'choices': [{'delta': {'content': INCOMPLETE_RESPONSE_FALLBACK}}]})}\n\n"
         assistant.content = "".join(parts)
         assistant.status = final
         finalize_provenance(
@@ -828,7 +851,12 @@ async def _plain_gateway_stream(
             )
         except Exception:  # noqa: BLE001 - metering must never break a turn
             logger.warning("usage metering failed for %s", assistant.id, exc_info=True)
-        if final == MessageStatus.complete and saw_done and terminal_persisted:
+        if (
+            final == MessageStatus.complete
+            and saw_done
+            and not stream_incomplete
+            and terminal_persisted
+        ):
             # Remember the user's turn only when the model stream completed
             # cleanly (a clean end-of-stream marker), so a truncated or errored
             # turn doesn't seed memory. Best-effort: remember() swallows its own
