@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify every Azure resource provider this stack deploys is registered.
+"""Verify every Azure resource provider this stack deploys or queries is registered.
 
 A subscription that has never hosted a given resource type has that provider in
 `NotRegistered`, and ARM rejects the deployment referencing it. Because
@@ -7,18 +7,18 @@ A subscription that has never hosted a given resource type has that provider in
 provider, a new-subscription standup does not fail cleanly -- it fails partway,
 leaving a half-built resource group that the next attempt has to reconcile.
 Checking up front is the difference between a five-second error and a partial
-deploy.
+deploy. An unregistered operational provider instead makes its evidence plane
+unavailable; the same preflight handles both cases.
 
-The required set is **derived from infra/**/*.bicep**, not hand-maintained. A
-hardcoded list is exactly the kind of thing that silently rots when someone adds
-a resource type, and the failure mode of that rot is the partial deploy above.
-docs/runbooks/deployment.md previously carried a hand-written list; it had 5 of
-the 18 namespaces an empty subscription actually needs.
+The deployed-resource set is derived from infra/**/*.bicep, not hand-maintained.
+Operational APIs with no Bicep resource declaration are explicit, evidence-backed
+additions. A broad hardcoded list is exactly the kind of thing that silently rots
+when someone adds a resource type.
 
 Usage:
     python scripts/check-resource-providers.py            # check, exit 1 if any unregistered
     python scripts/check-resource-providers.py --register # register missing ones, then wait
-    python scripts/check-resource-providers.py --list     # print the derived set and exit
+    python scripts/check-resource-providers.py --list     # print the required set and exit
 """
 
 from __future__ import annotations
@@ -51,17 +51,17 @@ ALWAYS_REGISTERED = frozenset(
     }
 )
 
-# Namespaces a deployment reaches that no `resource` declaration names directly.
-# Deliberately empty. Deriving the set from the templates is the whole point of
-# this script -- a hand-added namespace that turns out not to be required makes
-# provisioning fail on a guess, which is worse than the gap it was meant to
-# close. Add an entry here only with evidence from an actual failed deployment,
-# and cite it.
-IMPLICIT: dict[str, str] = {}
+# Namespaces the deployed app's operational workflows query even though no Bicep
+# `resource` declaration names them. Keep this evidence-backed and minimal.
+IMPLICIT: dict[str, str] = {
+    "Microsoft.ResourceHealth": (
+        "the status snapshot queries Resource Health availability statuses"
+    ),
+}
 
 
 def required_namespaces() -> dict[str, list[str]]:
-    """Map each required namespace to the bicep files that declare it."""
+    """Map each required namespace to the sources that require it."""
     found: dict[str, list[str]] = {}
     for path in sorted(INFRA.rglob("*.bicep")):
         text = path.read_text(encoding="utf-8")
@@ -169,7 +169,7 @@ def main() -> int:
     parser.add_argument(
         "--list",
         action="store_true",
-        help="print the namespaces derived from infra/**/*.bicep and exit (no Azure calls)",
+        help="print required deployment and operational namespaces, then exit",
     )
     args = parser.parse_args()
 
@@ -200,13 +200,13 @@ def main() -> int:
     if registering:
         print(
             "ERROR: these providers are still registering; wait for them to finish "
-            "before provisioning:\n  " + "\n  ".join(sorted(registering)),
+            "before continuing:\n  " + "\n  ".join(sorted(registering)),
             file=sys.stderr,
         )
     if missing:
         print(
             "ERROR: these resource providers are not registered in the selected "
-            "subscription, and provisioning will fail partway through:\n  "
+            "subscription; required deployment or operational behavior will fail:\n  "
             + "\n  ".join(f"{ns}  ({', '.join(required[ns])})" for ns in sorted(missing)),
             file=sys.stderr,
         )

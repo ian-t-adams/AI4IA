@@ -45,8 +45,11 @@ site/
   `az resource list` omits several provider types AI4IA actually uses) plus Azure
   Resource Health, and probes the public endpoints. The required inventory query
   must return a non-empty, well-shaped `data` array; CLI, JSON, or shape failures
-  stop before either generated file is replaced. Run it with an `az login` that
-  can read the subscription:
+  stop before either generated file is replaced. Resource Health provider or
+  query failures are published explicitly as a source outage rather than as zero
+  healthy resources. `Microsoft.ResourceHealth` is an operational dependency in
+  `scripts/check-resource-providers.py`, so the deploy preflight registers it.
+  Run the snapshot with an `az login` that can read the subscription:
 
   ```powershell
   ./scripts/status-snapshot.ps1

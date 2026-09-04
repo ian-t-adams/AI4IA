@@ -389,6 +389,12 @@ python3 -m unittest scripts.tests.test_immutable_image_promotion
 `PyYAML` (pinned in the workflow); `test_immutable_image_promotion` also needs
 `bash` and skips without it. The rest are stdlib-only.
 
+The provider preflight derives deployed namespaces from Bicep and also carries the
+evidence-backed `Microsoft.ResourceHealth` operational dependency used by the
+status snapshot. The snapshot must publish provider/query failure as a source
+outage; it must never flatten that failure into zero healthy resources or a
+per-resource "no signal" result.
+
 `security-scan` runs Trivy filesystem/config scans and gitleaks over the full
 proxy tree. `.trivyignore.yaml` suppresses only the untouched upstream Dockerfile
 and Kubernetes sample by exact path, and `.gitleaksignore` suppresses one
