@@ -202,7 +202,10 @@ param searchLocation string = ''
 @description('Enable custom tools / bring-your-own MCP servers. Default OFF: the per-user MCP registry is never built and /api/agents/mcp-servers refuses (404), so app behavior is unchanged. When on, the api managed identity is granted Key Vault Secrets Officer (to persist per-user MCP connection secrets) and the flag + vault URI are emitted to the api.')
 param customToolsEnabled bool = false
 
-@description('Enable the agent-callable Web IQ search tools (web/news/videos/images/browse). Default OFF: no SDK client is constructed and no web tool is advertised, so the chat path is byte-for-byte unchanged. When on, supply webIqApiKey (or rely on the api managed identity for EntraID auth).')
+@description('Allow users to explicitly auto-approve enabled tools for one session or workflow run. Default OFF. Consent does not grant tools, scopes, destinations, or budget; execution checks and activity/receipts remain enforced. Uses existing per-user Cosmos state; creates no resources.')
+param toolAutoApproveEnabled bool = false
+
+@description('Enable WebIQ web/news/video/image search, classic structured answers, finance, places, sports, Sonic, autosuggest and browsing. Default OFF: no client or tools. Uses an API key or entitled managed identity; endpoint-specific access still applies.')
 param webSearchEnabled bool = false
 
 @description('Web IQ API key (only used when webSearchEnabled). Supplied externally like adminApiSecret; flows to the api as a Container App secret. Empty falls back to EntraID (managed identity).')
@@ -211,6 +214,16 @@ param webIqApiKey string = ''
 
 @description('Optional Web IQ base URL override. Emitted to the api only when webSearchEnabled and set; empty uses the SDK default endpoint.')
 param webIqBaseUrl string = ''
+
+@description('Maximum WebIQ results per collection. Individual endpoints may have a lower provider limit; the shared call/output budgets also apply.')
+@minValue(1)
+@maxValue(50)
+param webSearchMaxResults int = 5
+
+@description('Maximum characters per WebIQ content field for search and browsing. The complete WebIQ response remains bounded to 8192 bytes including JSON/fences, plus the shared turn budget.')
+@minValue(1)
+@maxValue(500000)
+param webSearchMaxContentChars int = 6000
 
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
@@ -1019,12 +1032,15 @@ module api 'modules/api.bicep' = {
     // api MI holds Secrets Officer on it); only a secret reference lands in Cosmos.
     customToolsEnabled: customToolsEnabled
     customToolsKeyVaultUri: customToolsEnabled ? keyvault.outputs.keyVaultUri : ''
+    toolAutoApproveEnabled: toolAutoApproveEnabled
     // Web IQ search tools (default OFF). The key is supplied externally (mirrors
     // adminApiSecret) and only flows to the api as a Container App secret when the
     // feature is on; otherwise nothing is emitted and the path is byte-for-byte inert.
     webSearchEnabled: webSearchEnabled
     webIqApiKey: webIqApiKey
     webIqBaseUrl: webIqBaseUrl
+    webSearchMaxResults: webSearchMaxResults
+    webSearchMaxContentChars: webSearchMaxContentChars
     // Official MCP plane (default OFF). Wires the shared active APIM's
     // base URL + subscription key into the
     // api so OfficialMcpService can reach curated servers gated on the APIM key.

@@ -27,18 +27,25 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from math import ceil
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..agents.agent_catalog import AgentCatalog
+from ..agents.approvals import ApprovalPolicy
+from ..agents.consent import ToolConsentState, ToolConsentSummary, mint_consent
+from ..agents.consent_service import (
+    execution_tools_for_state, run_consent_checker, tool_auto_approve_available,
+    workflow_snapshot,
+)
 from ..agents.capabilities import capability_builder_for_state
 from ..catalog import ModelCatalog
 from ..entitlements.service import EntitlementService
 from ..gateway.client import ModelGatewayClient
 from ..logging_setup import get_correlation_id
+from ..receipts import ExecutionReceipt, ReceiptRuntime
 from ..sessions.models import Message, MessageRole, MessageStatus
 from ..sessions.repository import SessionRepository
 from ..usage.service import UsageService
@@ -46,6 +53,7 @@ from ..workflows.durable import (
     DurableScheduleAcceptanceUnknownError,
     DurableScheduleRejectedError,
     DurableWorkflowsUnavailableError,
+    WorkflowPayloadTooLargeError,
     build_orchestration_payload,
     durable_message_ids,
     durable_run_fingerprint,
@@ -61,6 +69,8 @@ from ..workflows.models import (
     WorkflowValidationError,
 )
 from ..workflows.runner import run_workflow
+from ..workflows.persistence import persist_run_message
+from ..workflows.receipts import workflow_activity, workflow_receipt, workflow_safety
 from ..workflows.service import WorkflowService
 
 router = APIRouter(prefix="/api", tags=["workflows"])
@@ -73,6 +83,22 @@ def _utc_now() -> datetime:
 
 def _new_lease_token() -> str:
     return uuid.uuid4().hex
+
+
+def _direct_run_id(user_id: str, session_id: str, name: str, key: str | None) -> str:
+    return durable_run_id(
+        user_id, key, scope=f"direct\0{session_id}\0{name.strip().lower()}",
+    )
+
+
+def _build_run_payload(*args, **kwargs) -> dict:
+    try:
+        return build_orchestration_payload(*args, **kwargs)
+    except WorkflowPayloadTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="The frozen workflow input is too large; reduce agent prompts or run input.",
+        ) from exc
 
 
 def _scheduling_retry(
@@ -101,9 +127,12 @@ class WorkflowListResponse(BaseModel):
     # cannot disagree with what the request will actually do -- a separately-plumbed
     # web-side flag could, and would leave the runner offering an option that 422s.
     durableAvailable: bool = False
+    toolAutoApproveAvailable: bool = False
 
 
 class WorkflowRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     sessionId: str
     input: str
     model: str | None = None
@@ -115,12 +144,17 @@ class WorkflowRunRequest(BaseModel):
     # silently downgraded when the feature is off, so a caller that needs
     # durability is never told "done" by a run that cannot survive a restart.
     durable: bool = False
+    # Also required for direct auto-approved runs: the caller retains this
+    # handle for cancellation before the synchronous response reveals runId.
     idempotencyKey: str | None = Field(default=None, min_length=8, max_length=128)
+    autoApproveTools: bool = Field(default=False, strict=True)
 
     @model_validator(mode="after")
-    def require_durable_idempotency_key(self) -> WorkflowRunRequest:
+    def require_run_idempotency_key(self) -> WorkflowRunRequest:
         if self.durable and self.idempotencyKey is None:
             raise ValueError("idempotencyKey is required when durable is true")
+        if self.autoApproveTools and self.idempotencyKey is None:
+            raise ValueError("idempotencyKey is required for revocable run-scoped tool approval")
         return self
 
 
@@ -133,6 +167,8 @@ class WorkflowRunAcceptedResponse(BaseModel):
     idempotencyKey: str
     retryAfterSeconds: int | None = None
     leaseExpiresAt: datetime | None = None
+    autoApproveTools: bool = False
+    toolConsent: ToolConsentSummary | None = None
 
 
 class WorkflowRunStatusResponse(BaseModel):
@@ -147,6 +183,7 @@ class WorkflowRunResponse(BaseModel):
     sessionId: str
     ok: bool
     message: Message
+    autoApproveTools: bool = False
 
 
 async def _claim_durable_run(
@@ -289,6 +326,7 @@ async def list_workflows(
         workflows=workflows,
         durableAvailable=getattr(request.app.state, "durable_workflows", None)
         is not None,
+        toolAutoApproveAvailable=tool_auto_approve_available(request.app.state),
     )
 
 
@@ -375,6 +413,11 @@ async def run_workflow_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Workflow '{workflow.name}' is disabled.",
         )
+    if body.autoApproveTools and not tool_auto_approve_available(request.app.state):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Tool auto-approval is disabled by the operator.",
+        )
 
     run_input = (body.input or "").strip()
     if not run_input:
@@ -430,6 +473,42 @@ async def run_workflow_endpoint(
 
     agent_attr = f"workflow:{workflow.name}"
     correlation_id = get_correlation_id()
+    approval_policy = getattr(
+        request.app.state.settings, "tool_approval_mode", ApprovalPolicy.always
+    )
+    composed: AgentCatalog = await request.app.state.agent_service.catalog_for(
+        uid, request.app.state.agents
+    )
+    snapshot_agents = AgentCatalog(agents=[
+        agent for agent_name in dict.fromkeys(step.agent for step in workflow.steps)
+        if (agent := composed.get(agent_name)) is not None
+    ])
+
+    async def consent_for(
+        run_id: str, existing: Message | None = None,
+    ) -> ToolConsentState | None:
+        if existing is not None:
+            if body.autoApproveTools != (existing.workflowToolConsentState is not None):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="An idempotent retry cannot change the run's tool approval.",
+                )
+            return existing.workflowToolConsentState
+        if not body.autoApproveTools:
+            return None
+        try:
+            snapshot = await workflow_snapshot(
+                request.app.state, user_id=uid, session=session,
+                workflow=workflow, composed=composed, email=user.email,
+            )
+            return mint_consent(
+                snapshot, user_id=uid, session_id=session.id, run_id=run_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="The run has too many or oversized tool contracts for auto-approval.",
+            ) from exc
 
     # Bind the service only on the durable path so the branch below tests exactly
     # one fact. Testing `body.durable` in one place and `durable is not None` in
@@ -466,7 +545,12 @@ async def run_workflow_endpoint(
             scope=f"{body.sessionId}\0{workflow.name}",
         )
         user_message_id, assistant_message_id = durable_message_ids(run_id)
-        payload = build_orchestration_payload(
+        existing_messages = await repo.list_messages(uid, body.sessionId)
+        existing_assistant = next(
+            (item for item in existing_messages if item.id == assistant_message_id), None
+        )
+        consent = await consent_for(run_id, existing_assistant)
+        payload = _build_run_payload(
             workflow,
             user_id=uid,
             session_id=body.sessionId,
@@ -483,6 +567,9 @@ async def run_workflow_endpoint(
             run_id=run_id,
             assistant_message_id=assistant_message_id,
             api=entry.api if entry is not None else "chat",
+            tool_consent=consent,
+            approval_policy=approval_policy,
+            agent_snapshot=snapshot_agents,
         )
         run_fingerprint = durable_run_fingerprint(payload)
         payload["context"]["runFingerprint"] = run_fingerprint
@@ -497,6 +584,7 @@ async def run_workflow_endpoint(
             workflowRunId=run_id,
             workflowRunStatus="accepted",
             workflowRunFingerprint=run_fingerprint,
+            workflowToolConsent=consent.grant if consent else None,
         )
         pending_assistant = Message(
             id=assistant_message_id,
@@ -510,6 +598,8 @@ async def run_workflow_endpoint(
             workflowRunId=run_id,
             workflowRunStatus="pending",
             workflowRunFingerprint=run_fingerprint,
+            workflowToolConsent=consent.grant if consent else None,
+            workflowToolConsentState=consent,
         )
         owns_schedule, pending_assistant = await _claim_durable_run(
             repo,
@@ -517,6 +607,7 @@ async def run_workflow_endpoint(
             user_message=user_message,
             pending_assistant=pending_assistant,
         )
+        consent = pending_assistant.workflowToolConsentState
         if not owns_schedule:
             if pending_assistant.workflowRunStatus == "schedule_failed":
                 raise HTTPException(
@@ -524,6 +615,7 @@ async def run_workflow_endpoint(
                     detail="Durable workflow scheduling previously failed.",
                 )
             replay_status = (
+                "cancelled" if pending_assistant.workflowConsentRevoked else
                 "accepted"
                 if pending_assistant.workflowRunStatus
                 in {"accepted", "completed", "run_failed"}
@@ -543,6 +635,8 @@ async def run_workflow_endpoint(
                     status=replay_status,
                     retryAfterSeconds=retry_after,
                     leaseExpiresAt=lease_expires_at,
+                    autoApproveTools=consent is not None,
+                    toolConsent=consent.grant if consent else None,
                 ).model_dump(mode="json"),
                 headers=(
                     {"Retry-After": str(retry_after)}
@@ -597,6 +691,8 @@ async def run_workflow_endpoint(
                     status="acceptance_unknown",
                     retryAfterSeconds=1,
                     leaseExpiresAt=unknown.workflowScheduleLeaseExpiresAt,
+                    autoApproveTools=consent is not None,
+                    toolConsent=consent.grant if consent else None,
                 ).model_dump(mode="json"),
                 headers={"Retry-After": "1"},
             )
@@ -620,27 +716,54 @@ async def run_workflow_endpoint(
                 sessionId=body.sessionId,
                 runId=run_id,
                 idempotencyKey=idempotency_key,
-            ).model_dump(),
+                autoApproveTools=consent is not None,
+                toolConsent=consent.grant if consent else None,
+            ).model_dump(mode="json"),
         )
 
-    await repo.add_message(
+    run_id = _direct_run_id(uid, body.sessionId, workflow.name, body.idempotencyKey)
+    user_message_id, assistant_message_id = durable_message_ids(run_id)
+    consent = await consent_for(run_id)
+    run_fingerprint = durable_run_fingerprint(_build_run_payload(
+        workflow, user_id=uid, session_id=body.sessionId, run_input=run_input,
+        model_id=model_id, deployment=deployment, correlation_id=correlation_id,
+        tool_consent=consent, approval_policy=approval_policy,
+        agent_snapshot=snapshot_agents,
+    ))
+    pending_assistant = Message(
+        id=assistant_message_id, sessionId=body.sessionId, userId=uid,
+        role=MessageRole.assistant, status=MessageStatus.streaming,
+        model=deployment.deploymentName, agent=agent_attr,
+        workflowRunId=run_id, workflowRunStatus="running",
+        workflowRunFingerprint=run_fingerprint,
+        workflowToolConsent=consent.grant if consent else None,
+        workflowToolConsentState=consent,
+    )
+    claimed = await repo.claim_workflow_run_if_absent(
         uid,
         Message(
+            id=user_message_id,
+            createdAt=pending_assistant.createdAt - timedelta(microseconds=1),
             sessionId=body.sessionId,
             userId=uid,
             role=MessageRole.user,
             content=run_input,
             status=MessageStatus.complete,
             agent=agent_attr,
+            workflowRunId=run_id, workflowRunStatus="accepted",
+            workflowRunFingerprint=run_fingerprint,
+            workflowToolConsent=consent.grant if consent else None,
         ),
+        pending_assistant,
     )
+    if not claimed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Workflow run already exists.",
+        )
 
     # Compose the caller's user agents over the curated catalog so a step can
     # reference either. The runner is total: it never raises, returning ok=False
     # with the failure text and the usage consumed so far.
-    composed: AgentCatalog = await request.app.state.agent_service.catalog_for(
-        uid, request.app.state.agents
-    )
     result = await run_workflow(
         workflow,
         run_input=run_input,
@@ -661,19 +784,52 @@ async def run_workflow_endpoint(
             ),
         ),
         correlation_id=correlation_id,
+        approval_policy=approval_policy,
+        tool_consent=consent.grant if consent else None,
+        consent_checker=run_consent_checker(
+            request.app.state, consent=consent, workflow=workflow, user_id=uid,
+            run_id=run_id, session=session, assistant_message_id=assistant_message_id,
+            email=user.email,
+        ),
+        tool_builder=lambda names, ctx: execution_tools_for_state(
+            request.app.state, user_id=uid, tool_names=names, ctx=ctx,
+        ),
         api=entry.api if entry is not None else "chat",
     )
 
     assistant = Message(
+        id=assistant_message_id,
         sessionId=body.sessionId,
         userId=uid,
         role=MessageRole.assistant,
         content=result.text,
-        status=MessageStatus.complete,
+        status=(
+            MessageStatus.cancelled if result.cancelled else
+            (MessageStatus.complete if result.ok else MessageStatus.error)
+        ),
         model=deployment.deploymentName,
         agent=agent_attr,
+        workflowRunId=run_id,
+        workflowRunStatus=(
+            "cancelled" if result.cancelled else ("completed" if result.ok else "run_failed")
+        ),
+        workflowConsentRevoked=result.cancelled,
+        workflowRunFingerprint=run_fingerprint,
+        workflowToolConsent=consent.grant if consent else None,
+        workflowToolConsentState=consent,
+        workflowStepReceipts=[step.receipt for step in result.steps if step.receipt is not None],
+        steps=workflow_activity(result.steps),
+        safety=workflow_safety(result.steps),
+        executionReceipt=workflow_receipt(
+            result, runtime=ReceiptRuntime(
+                modelId=model_id, deployment=deployment.deploymentName,
+                region=deployment.region, dataZone=deployment.dataZone,
+                api=entry.api if entry is not None else "chat", agent=agent_attr,
+            ),
+            correlation_id=correlation_id, consent=consent.grant if consent else None,
+        ),
     )
-    await repo.add_message(uid, assistant)
+    assistant = await persist_run_message(repo, uid, assistant)
 
     # Meter accumulated usage as complete so consumed tokens count against quota
     # even when a late step failed (no fail-late-to-dodge-billing hole). Skip
@@ -693,13 +849,105 @@ async def run_workflow_endpoint(
         )
 
     await repo.touch_session(uid, session.id)
-    return WorkflowRunResponse(sessionId=body.sessionId, ok=result.ok, message=assistant)
+    return WorkflowRunResponse(
+        sessionId=body.sessionId, ok=result.ok and not assistant.workflowConsentRevoked,
+        message=assistant, autoApproveTools=consent is not None,
+    )
+
+
+class CancelWorkflowRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sessionId: str
+
+
+class CancelWorkflowByKeyRequest(CancelWorkflowRunRequest):
+    idempotencyKey: str = Field(min_length=8, max_length=128)
+
+
+@router.post("/workflows/runs/{run_id}/cancel", response_model=WorkflowRunStatusResponse)
+async def cancel_workflow_run(
+    run_id: str,
+    body: CancelWorkflowRunRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> WorkflowRunStatusResponse:
+    repo: SessionRepository = request.app.state.session_repo
+    uid = user.internal_user_id
+    await repo.get_session(uid, body.sessionId)
+    if run_id.partition(":")[0] != uid:
+        raise HTTPException(status_code=404, detail="Unknown run.")
+    _, assistant_id = durable_message_ids(run_id)
+    for _attempt in range(3):
+        messages = await repo.list_messages(uid, body.sessionId)
+        current = next(
+            (item for item in messages if item.id == assistant_id and item.workflowRunId == run_id),
+            None,
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail="Unknown run.")
+        current = current.model_copy(deep=True)
+        if current.workflowConsentRevoked:
+            return WorkflowRunStatusResponse(runId=run_id, status="TERMINATED", ok=False)
+        if current.status is not MessageStatus.streaming:
+            return WorkflowRunStatusResponse(
+                runId=run_id,
+                status="COMPLETED" if current.status is MessageStatus.complete else "FAILED",
+                ok=current.status is MessageStatus.complete, text=current.content,
+            )
+        cancelled = current.model_copy(deep=True)
+        cancelled.workflowConsentRevoked = True
+        cancelled.workflowRunStatus = "cancelled"
+        cancelled.status = MessageStatus.cancelled
+        cancelled.workflowScheduleLeaseToken = None
+        cancelled.workflowScheduleLeaseExpiresAt = None
+        if not cancelled.content:
+            cancelled.content = "Workflow cancelled. Already in-flight work may complete."
+        if cancelled.executionReceipt is None:
+            cancelled.executionReceipt = ExecutionReceipt(
+                runtime=ReceiptRuntime(agent=cancelled.agent, deployment=cancelled.model),
+                toolConsent=cancelled.workflowToolConsent,
+            )
+        cancelled.executionReceipt.status = "cancelled"
+        cancelled.executionReceipt.partial = True
+        if await repo.replace_message_if_workflow_status(
+            uid, cancelled, expected_status=current.workflowRunStatus or "pending",
+            expected_lease_token=current.workflowScheduleLeaseToken,
+            expected_message=current,
+        ):
+            await repo.touch_session(uid, body.sessionId)
+            return WorkflowRunStatusResponse(
+                runId=run_id, status="TERMINATED", ok=False,
+                text=cancelled.content,
+            )
+    raise HTTPException(
+        status_code=409, detail="Run changed concurrently; reload and retry cancellation.",
+    )
+
+
+@router.post("/workflows/{name}/cancel", response_model=WorkflowRunStatusResponse)
+async def cancel_direct_workflow_by_key(
+    name: str,
+    body: CancelWorkflowByKeyRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> WorkflowRunStatusResponse:
+    """Address an active direct run before its synchronous response is available.
+
+    The key must be supplied on the original run request. A 404 before the run
+    has persisted its pending row is not a cancellation acknowledgement.
+    """
+    return await cancel_workflow_run(
+        run_id=_direct_run_id(user.internal_user_id, body.sessionId, name, body.idempotencyKey),
+        body=CancelWorkflowRunRequest(sessionId=body.sessionId),
+        request=request, user=user,
+    )
 
 
 @router.get("/workflows/runs/{run_id}", response_model=WorkflowRunStatusResponse)
 async def get_workflow_run(
     request: Request,
     run_id: str,
+    session_id: str | None = Query(default=None, alias="sessionId"),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> WorkflowRunStatusResponse:
     """Poll a durable run started with ``durable: true``.
@@ -708,6 +956,21 @@ async def get_workflow_run(
     completes; this endpoint exists so a caller can tell "still running" apart
     from "finished and failed" without diffing the transcript.
     """
+    if session_id is not None:
+        messages = await request.app.state.session_repo.list_messages(
+            user.internal_user_id, session_id,
+        )
+        _, assistant_id = durable_message_ids(run_id)
+        message = next(
+            (item for item in messages if item.id == assistant_id and item.workflowRunId == run_id),
+            None,
+        )
+        if message is None:
+            raise HTTPException(status_code=404, detail="Unknown run.")
+        if message.workflowConsentRevoked:
+            return WorkflowRunStatusResponse(
+                runId=run_id, status="TERMINATED", ok=False, text=message.content,
+            )
     durable = getattr(request.app.state, "durable_workflows", None)
     if durable is None:
         raise HTTPException(

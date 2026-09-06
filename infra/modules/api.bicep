@@ -256,7 +256,10 @@ param customToolsEnabled bool = false
 @description('Key Vault URI backing durable MCP connection secrets. Set only when custom tools is enabled; the api managed identity holds Key Vault Secrets Officer on this vault. Empty leaves the api on its in-memory secret store.')
 param customToolsKeyVaultUri string = ''
 
-@description('Enable the agent-callable Web IQ search tools (web/news/videos/images/browse). Default OFF: no SDK client is constructed and no web tool is advertised. When on, supply webIqApiKey (stored as a Container App secret) or rely on managed-identity EntraID.')
+@description('Allow explicit user consent to auto-approve enabled tools for a session or workflow run. Default OFF; emitted as AI4IA_TOOL_AUTO_APPROVE_ENABLED. Ownership, scope, destination and budget checks plus activity/receipts remain mandatory.')
+param toolAutoApproveEnabled bool = false
+
+@description('Enable WebIQ web/news/video/image search, classic structured answers, finance, places, sports, Sonic, autosuggest and browsing. Default OFF. Uses a secret-backed API key or entitled managed identity, subject to endpoint-specific access.')
 param webSearchEnabled bool = false
 
 @description('Web IQ API key (only used when webSearchEnabled). Stored as a Container App secret and surfaced as AI4IA_WEBIQ_API_KEY. Empty falls back to EntraID (DefaultAzureCredential).')
@@ -265,6 +268,16 @@ param webIqApiKey string = ''
 
 @description('Optional Web IQ base URL override. Emitted as AI4IA_WEBIQ_BASE_URL only when webSearchEnabled and set; empty uses the SDK default endpoint.')
 param webIqBaseUrl string = ''
+
+@description('Maximum returned results per WebIQ collection, further bounded by the endpoint limit and shared output budget.')
+@minValue(1)
+@maxValue(50)
+param webSearchMaxResults int = 5
+
+@description('Maximum characters per WebIQ content field; overall call/turn output limits remain enforced.')
+@minValue(1)
+@maxValue(500000)
+param webSearchMaxContentChars int = 6000
 
 @description('Enable the curated "official" MCP plane reached through the shared active APIM front door. Default OFF: the OfficialMcpService is not constructed and no official tool is advertised. When on, supply officialMcpGatewayUrl + officialMcpSubscriptionKey (config.validate_runtime fails closed without them).')
 param officialMcpEnabled bool = false
@@ -322,6 +335,14 @@ var webSearchEnv = concat(
     {
       name: 'AI4IA_WEB_SEARCH_ENABLED'
       value: 'true'
+    }
+    {
+      name: 'AI4IA_WEB_SEARCH_MAX_RESULTS'
+      value: string(webSearchMaxResults)
+    }
+    {
+      name: 'AI4IA_WEB_SEARCH_MAX_CONTENT_CHARS'
+      value: string(webSearchMaxContentChars)
     }
   ] : [],
   hasWebIqKey ? [
@@ -786,6 +807,13 @@ var claudeEnv = claudeEnabled ? [
   }
 ] : []
 
+var toolApprovalEnv = [
+  {
+    name: 'AI4IA_TOOL_AUTO_APPROVE_ENABLED'
+    value: string(toolAutoApproveEnabled)
+  }
+]
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -835,7 +863,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], openapiEnv, claudeEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], openapiEnv, claudeEnv, toolApprovalEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

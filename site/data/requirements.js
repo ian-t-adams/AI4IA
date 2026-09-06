@@ -71,7 +71,7 @@ window.AI4IA_REQUIREMENTS = {
         ["azure-monitor-opentelemetry + opentelemetry-instrumentation-httpx", "App Insights traces/metrics/events"],
         ["durabletask + durabletask-azuremanaged", "Opt-in durable workflow orchestration and Azure-managed scheduler transport"],
         ["pypdf / python-multipart", "PDF extraction + multipart uploads"],
-        ["webiq", "Web IQ search SDK (Bicep default off; checked-in showcase profile default on)"],
+        ["webiq", "Official WebIQ auth/transport for eleven fixed v3 search/retrieval routes (Bicep default off; showcase profile on; endpoint entitlements still required)"],
       ],
       dev: ["pytest / pytest-asyncio / anyio", "ruff (lint)", "pyright (type gate, basic mode)"],
       extra: "foundry extra (azure-ai-projects==2.4.0, azure-identity, jsonschema) — provisioning-only; installed by app-ci and foundry-assets, never by the runtime image",

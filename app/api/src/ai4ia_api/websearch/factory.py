@@ -48,7 +48,7 @@ class WebSearchService:
     def build_capability(
         self, *, user_id: str, session_id: str, nonce: str
     ) -> tuple[list[dict], dict[str, Handler]]:
-        """Build the five Web IQ search tools for this turn."""
+        """Build all Web IQ retrieval tools for this turn."""
         return build_web_search_capability(
             client=self._client,
             entitlements=self._entitlements,

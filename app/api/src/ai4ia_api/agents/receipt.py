@@ -23,6 +23,7 @@ indicator, not an outcome, and a receipt records what happened.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any, Literal
 
 from ..receipts import (
@@ -37,6 +38,8 @@ from ..receipts import (
 from ..safety import MessageSafety, attributed_safety
 from ..usage.models import TokenUsage
 from .runtime import AgentStep, DelegatedRunTrace
+from .consent import ToolConsentSummary
+from .tools import redact
 
 # Runtime step kind -> receipt outcome. ``tool_start`` and ``final`` are absent
 # on purpose: neither is a finalized tool call.
@@ -73,6 +76,14 @@ def receipt_tool_calls(steps: list[AgentStep] | None) -> list[ReceiptToolCall]:
                 result=(
                     json_payload(step.result) if step.result is not None else None
                 ),
+                approval=step.approval,
+                consentId=(
+                    step.consent_id
+                    if isinstance(step.consent_id, str)
+                    and re.fullmatch(r"[0-9a-f]{32}", step.consent_id)
+                    else None
+                ),
+                callId=redact(step.call_id)[:128] if step.call_id else None,
             )
         )
     return calls
@@ -121,6 +132,7 @@ class ReceiptDraft:
     dropped_context_blocks: list[str] = field(default_factory=list)
     offered: list[dict[str, Any]] = field(default_factory=list)
     approvals_granted: int = 0
+    tool_consent: ToolConsentSummary | None = None
 
     def build(
         self,
@@ -170,6 +182,7 @@ class ReceiptDraft:
                 calls=receipt_tool_calls(steps),
                 approvals_requested=approvals_requested,
                 approvals_granted=self.approvals_granted,
+                tool_consent=self.tool_consent,
                 usage=usage,
                 safety=safety,
                 delegations=delegation_receipts(

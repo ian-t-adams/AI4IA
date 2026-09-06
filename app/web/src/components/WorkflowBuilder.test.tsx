@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import type { AgentSummary, Workflow } from "@/lib/types";
+import type { AgentSummary, ExecutionReceipt, Message, Workflow, WorkflowRunOutcome } from "@/lib/types";
 import { WorkflowBuilder } from "./WorkflowBuilder";
 
 // The factory returns ONLY what is listed here, so every api.* the component
@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
   runWorkflow: vi.fn(),
   newWorkflowRunIdempotencyKey: vi.fn(),
   getWorkflowRun: vi.fn(),
+  listMessages: vi.fn(),
+  cancelWorkflowRun: vi.fn(),
+  cancelWorkflowRunByKey: vi.fn(),
   getToolCatalog: vi.fn(),
   listLibraryDocuments: vi.fn(),
   createWorkflow: vi.fn(),
@@ -28,6 +31,9 @@ vi.mock("@/lib/api", () => ({
   runWorkflow: mocks.runWorkflow,
   newWorkflowRunIdempotencyKey: mocks.newWorkflowRunIdempotencyKey,
   getWorkflowRun: mocks.getWorkflowRun,
+  listMessages: mocks.listMessages,
+  cancelWorkflowRun: mocks.cancelWorkflowRun,
+  cancelWorkflowRunByKey: mocks.cancelWorkflowRunByKey,
   getToolCatalog: mocks.getToolCatalog,
   listLibraryDocuments: mocks.listLibraryDocuments,
   createWorkflow: mocks.createWorkflow,
@@ -94,6 +100,7 @@ beforeEach(() => {
   // not.
   mocks.getToolCatalog.mockResolvedValue({ tools: [], inheritedTools: [] });
   mocks.listLibraryDocuments.mockResolvedValue([]);
+  mocks.listMessages.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -400,7 +407,7 @@ describe("WorkflowBuilder", () => {
     await user.click(screen.getByRole("button", { name: "Run" }));
     await waitFor(() => expect(mocks.runWorkflow).toHaveBeenCalled());
     expect(mocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty("durable");
-    expect(mocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty("idempotencyKey");
+    expect(mocks.runWorkflow.mock.calls[0][1]).toHaveProperty("idempotencyKey", "durable-intent-key");
   });
 
   it("leaves the synchronous path untouched when durable is available but not chosen", async () => {
@@ -419,8 +426,8 @@ describe("WorkflowBuilder", () => {
 
     await user.click(screen.getByRole("button", { name: "Run" }));
     expect(await screen.findByText("the summary")).toBeInTheDocument();
-    // Default OFF must mean byte-identical behaviour to before the feature
-    // existed -- no flag, and no polling round-trip.
+    // Durability defaults off: the synchronous response path is preserved,
+    // without scheduler polling. The invocation key still enables cancellation.
     expect(mocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty("durable");
     expect(mocks.getWorkflowRun).not.toHaveBeenCalled();
   });
@@ -541,5 +548,236 @@ describe("WorkflowBuilder", () => {
     const items = within(trace).getAllByRole("listitem");
     expect(items).toHaveLength(2);
     expect(items[1]).toHaveTextContent("Research Assistant");
+  });
+});
+
+
+describe("per-invocation workflow auto-approval", () => {
+  it("hides the opt-in when unavailable and sends no true consent", async () => {
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user);
+    expect(screen.queryByRole("checkbox", { name: "Auto-approve enabled tools for this run" })).toBeNull();
+    await user.type(screen.getByRole("textbox", { name: /^Input/ }), "hello");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(mocks.runWorkflow).toHaveBeenCalled());
+    expect(mocks.runWorkflow.mock.calls[0][1].autoApproveTools).toBe(false);
+  });
+
+  it("starts unchecked, scopes a direct run to its own key, and resets Run again", async () => {
+    mocks.listWorkflows.mockResolvedValue({ workflows: WORKFLOWS, durableAvailable: false, toolAutoApproveAvailable: true });
+    mocks.newWorkflowRunIdempotencyKey.mockReturnValueOnce("first-run-key").mockReturnValueOnce("second-run-key");
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user);
+    const checkbox = screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this run" });
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+    await user.type(screen.getByRole("textbox", { name: /^Input/ }), "hello");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    await screen.findByText("the summary");
+    expect(mocks.runWorkflow.mock.calls[0][1]).toMatchObject({ autoApproveTools: true, idempotencyKey: "first-run-key" });
+    expect(checkbox).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Run again" }));
+    await waitFor(() => expect(mocks.runWorkflow).toHaveBeenCalledTimes(2));
+    expect(mocks.runWorkflow.mock.calls[1][1].autoApproveTools).toBe(false);
+    expect(mocks.runWorkflow.mock.calls[1][1]).toHaveProperty("idempotencyKey", "second-run-key");
+  });
+
+  it("clears opt-in when selecting a different workflow and when returning", async () => {
+    mocks.listWorkflows.mockResolvedValue({ workflows: WORKFLOWS, durableAvailable: true, toolAutoApproveAvailable: true });
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user);
+    await user.click(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this run" }));
+    await user.click(screen.getByRole("button", { name: "Research then write" }));
+    expect(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this run" })).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Summarize" }));
+    expect(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this run" })).not.toBeChecked();
+  });
+
+  it("keeps a post-dispatch error as an unconfirmed run, never an empty idle panel", async () => {
+    mocks.listWorkflows.mockResolvedValue({ workflows: WORKFLOWS, durableAvailable: false, toolAutoApproveAvailable: true });
+    mocks.runWorkflow.mockRejectedValue(new Error("Connection lost"));
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user);
+    await user.click(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this run" }));
+    await user.type(screen.getByRole("textbox", { name: /^Input/ }), "hello");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    expect(await screen.findByText("outcome unknown")).toBeVisible();
+    expect(screen.getByRole("list", { name: "Step results" })).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("The run may still be executing");
+    expect(screen.getByRole("button", { name: "Open in chat" })).toBeEnabled();
+    expect(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this run" })).not.toBeChecked();
+  });
+
+  it("does not dispatch a run when session creation completes after unmount", async () => {
+    let finish!: (session: { id: string }) => void;
+    mocks.createSession.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const user = userEvent.setup();
+    const { unmount } = render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user);
+    await user.type(screen.getByRole("textbox", { name: /^Input/ }), "hello");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    unmount();
+    finish({ id: "late-session" });
+    await Promise.resolve();
+    expect(mocks.runWorkflow).not.toHaveBeenCalled();
+  });
+  it("surfaces an operator preflight rejection without leaving a phantom active consent", async () => {
+    mocks.listWorkflows.mockResolvedValue({ workflows: WORKFLOWS, durableAvailable: false, toolAutoApproveAvailable: true });
+    mocks.runWorkflow.mockRejectedValue(Object.assign(new Error("Tool auto-approval is disabled by the operator."), { status: 409 }));
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user);
+    await user.click(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this run" }));
+    await user.type(screen.getByRole("textbox", { name: /^Input/ }), "hello");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("disabled by the operator");
+    expect(screen.queryByRole("complementary", { name: "Run auto-approval: Summarize" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Run" })).toBeEnabled();
+    expect(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this run" })).not.toBeChecked();
+  });
+
+  it("does not get stuck busy if creating the invocation key fails", async () => {
+    mocks.listWorkflows.mockResolvedValue({ workflows: WORKFLOWS, durableAvailable: false, toolAutoApproveAvailable: true });
+    mocks.newWorkflowRunIdempotencyKey.mockImplementation(() => { throw new Error("Unavailable"); });
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user);
+    await user.click(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this run" }));
+    await user.type(screen.getByRole("textbox", { name: /^Input/ }), "hello");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("secure run identity");
+    expect(mocks.createSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Run" })).toBeEnabled();
+  });
+
+});
+
+
+describe("durable cancellation evidence continuation", () => {
+  it.each(["streaming", "cancelled"] as const)(
+    "retains durable cancellation evidence monitoring after a %s acknowledgement record",
+    async (acknowledgedMessageStatus) => {
+      const consent = { id: "late-consent", scope: "run" as const, toolCount: 11,
+        grantedAt: "2026-09-06T00:00:00Z", expiresAt: "2099-09-06T08:00:00Z" };
+      const firstReceipt: ExecutionReceipt = {
+        version: 1, runtime: { agent: "research" }, prompt: [], promptMessageCount: 0, promptBytes: 0,
+        contextBlocks: [], droppedHistoryMessages: 0, droppedContextBlocks: [], toolsOffered: [], toolsOfferedCount: 0,
+        toolCalls: [{ tool: "web_search", outcome: "result", approval: "run", consentId: consent.id,
+          result: { text: "Initial completed tool result", sha256: "a".repeat(64), bytes: 29, truncated: false } }],
+        toolCallCount: 1, approvalsRequested: 0, approvalsGranted: 0, autoApprovedToolCalls: 1,
+        iterations: 1, status: "complete", partial: false, truncated: false, notes: [],
+      };
+      const lateReceipt: ExecutionReceipt = {
+        ...firstReceipt, runtime: { agent: "helper" }, status: "cancelled", partial: true,
+        toolCalls: [{ tool: "finance_search", outcome: "result", approval: "run", consentId: consent.id,
+          result: { text: "Late completed tool result", sha256: "b".repeat(64), bytes: 26, truncated: false } }],
+      };
+      let record: Message = {
+        id: "late-message", sessionId: "s1", userId: "u1", role: "assistant", status: "streaming",
+        content: "", model: "gpt-4", agent: "workflow:research-then-write", createdAt: "2026-09-06T00:00:00Z",
+        workflowRunId: "u1:late-run", workflowToolConsent: consent,
+        executionReceipt: { ...firstReceipt, status: "incomplete", partial: true },
+        workflowStepReceipts: [firstReceipt],
+        steps: [{ kind: "workflow_step", label: "Step 1: research", detail: "completed" }],
+      };
+      let cancellationAcknowledged = false;
+      mocks.listWorkflows.mockResolvedValue({ workflows: WORKFLOWS, durableAvailable: true, toolAutoApproveAvailable: true });
+      mocks.runWorkflow.mockResolvedValue({ scheduled: true, run: { sessionId: "s1", runId: "u1:late-run",
+        status: "accepted", idempotencyKey: "durable-intent-key", autoApproveTools: true, toolConsent: consent } });
+      mocks.listMessages.mockImplementation(async () => [record]);
+      mocks.getWorkflowRun.mockImplementation(async () => ({ runId: "u1:late-run",
+        status: cancellationAcknowledged ? "TERMINATED" : "RUNNING", ok: cancellationAcknowledged ? false : null }));
+      mocks.cancelWorkflowRun.mockImplementation(async () => {
+        cancellationAcknowledged = true;
+        record = { ...record, status: acknowledgedMessageStatus, workflowConsentRevoked: true,
+          content: "Cancellation acknowledged; a tool is still in flight." };
+        return { runId: "u1:late-run", status: "TERMINATED", ok: false, text: record.content };
+      });
+      const user = userEvent.setup();
+      render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+      await openRunTab(user, "Research then write");
+      await user.type(screen.getByLabelText("Input"), "Research current markets");
+      await user.click(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this run" }));
+      await user.click(screen.getByRole("checkbox", { name: "Keep running if the app restarts" }));
+      await user.click(screen.getByRole("button", { name: "Run" }));
+      await user.click(await screen.findByRole("button", { name: "Revoke auto-approval & stop run" }));
+      await screen.findByText("cancelled", { selector: ".workflow-result-verdict" }, { timeout: 10000 });
+      expect(mocks.getWorkflowRun).toHaveBeenCalledWith("u1:late-run", "s1");
+      expect(screen.queryByRole("complementary", { name: "Run auto-approval: Research then write" })).not.toBeNull();
+      expect(screen.getByText("Step execution receipts · 1")).toBeVisible();
+      const readsAtAcknowledgement = mocks.listMessages.mock.calls.length;
+
+      // The tool finishes after cancellation was acknowledged. Cancellation is
+      // still final as an authorization decision, but receipt data is not frozen.
+      record = { ...record, status: "cancelled", workflowConsentRevoked: true,
+        content: "Cancelled; the in-flight tool completed and its result was retained.",
+        workflowStepReceipts: [firstReceipt, lateReceipt],
+        executionReceipt: { ...firstReceipt, status: "cancelled", partial: true, toolCallCount: 2,
+          autoApprovedToolCalls: 2, toolCalls: [...firstReceipt.toolCalls, ...lateReceipt.toolCalls] },
+        steps: [...record.steps!, { kind: "tool_result", tool: "finance_search", label: "Late tool completed" },
+          { kind: "workflow_error", label: "Step 2: helper", detail: "cancelled" }],
+      };
+      await screen.findByText("Step execution receipts · 2", {}, { timeout: 10000 });
+      expect(mocks.listMessages.mock.calls.length).toBeGreaterThan(readsAtAcknowledgement);
+      const report = screen.getByRole("region", { name: "Result" });
+      expect(within(report).getByText("cancelled", { selector: ".workflow-result-verdict" })).toBeVisible();
+      expect(within(report).queryByText(/succeeded in/)).toBeNull();
+      expect(within(report).getAllByText("Initial completed tool result").length).toBeGreaterThan(0);
+      expect(within(report).getAllByText("Late completed tool result").length).toBeGreaterThan(0);
+      const aggregateSummary = within(report).getByText(/^Execution receipt ·/);
+      await user.click(aggregateSummary);
+      const aggregate = aggregateSummary.closest("details")!;
+      await user.click(within(aggregate).getByText("Runtime"));
+      expect(within(aggregate).getByText("2 reported by the server")).toBeVisible();
+      expect(screen.getByText("Monitoring execution evidence after cancellation…")).toBeVisible();
+
+      // An ongoing watch must not resurrect the old report after the user
+      // selects another workflow while that evidence is still being refreshed.
+      if (acknowledgedMessageStatus === "streaming") {
+        await user.click(screen.getByRole("button", { name: "Summarize" }));
+        const readsAtSwitch = mocks.listMessages.mock.calls.length;
+        await waitFor(() => expect(mocks.listMessages.mock.calls.length).toBeGreaterThan(readsAtSwitch), { timeout: 10000 });
+        expect(screen.queryByRole("region", { name: "Result" })).toBeNull();
+      }
+    }, 15000,
+  );
+});
+
+
+describe("direct cancellation handle", () => {
+  it.each([false, true])("can cancel a pending direct invocation before its run id is discoverable (auto-approve=%s)", async (autoApproveTools) => {
+    mocks.listWorkflows.mockResolvedValue({ workflows: WORKFLOWS, durableAvailable: false, toolAutoApproveAvailable: true });
+    mocks.newWorkflowRunIdempotencyKey.mockReturnValue("direct-invocation-key");
+    mocks.listMessages.mockResolvedValue([]);
+    let finish!: (result: WorkflowRunOutcome) => void;
+    mocks.runWorkflow.mockImplementation(() => new Promise<WorkflowRunOutcome>((resolve) => { finish = resolve; }));
+    mocks.cancelWorkflowRunByKey.mockResolvedValue({ runId: "u1:direct", status: "TERMINATED", ok: false });
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user);
+    await user.type(screen.getByLabelText("Input"), "hello");
+    if (autoApproveTools) await user.click(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this run" }));
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(mocks.runWorkflow).toHaveBeenCalled());
+    expect(mocks.runWorkflow.mock.calls[0][1]).toMatchObject({ idempotencyKey: "direct-invocation-key", autoApproveTools });
+    expect(mocks.newWorkflowRunIdempotencyKey.mock.invocationCallOrder[0]).toBeLessThan(mocks.createSession.mock.invocationCallOrder[0]);
+    const stop = screen.queryByRole("button", { name: autoApproveTools ? "Revoke auto-approval & stop run" : "Stop run" });
+    expect(stop).not.toBeNull();
+    expect(stop).toBeEnabled();
+    await user.click(stop!);
+    await waitFor(() => expect(mocks.cancelWorkflowRunByKey).toHaveBeenCalledWith("summarize", "s1", "direct-invocation-key"));
+    expect(mocks.cancelWorkflowRun).not.toHaveBeenCalled();
+    expect(mocks.runWorkflow).toHaveBeenCalledTimes(1);
+    await screen.findByText(/Run cancellation acknowledged/);
+    await act(async () => finish({ scheduled: false, result: {
+      sessionId: "s1", ok: false, message: { id: "direct-result", sessionId: "s1", userId: "u1", role: "assistant",
+        status: "cancelled", content: "Cancelled before tool dispatch", model: "gpt-4", agent: "workflow:summarize",
+        createdAt: "2026-09-06T00:00:00Z", workflowRunId: "u1:direct", workflowConsentRevoked: true },
+    } }));
+    expect(screen.getByText("cancelled", { selector: ".workflow-result-verdict" })).toBeVisible();
   });
 });

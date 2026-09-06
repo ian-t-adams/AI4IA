@@ -1925,3 +1925,76 @@ select {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+/* Explicit, server-scoped consent stays visible without hiding activity. */
+.tool-consent-controls {
+  margin-block: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+.tool-consent-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.tool-consent-option input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: auto;
+  margin-top: 4px;
+  accent-color: var(--accent);
+}
+.tool-consent-option label { margin: 0; }
+.tool-consent-warning {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--warn);
+}
+.tool-consent-state { margin: 0; font-weight: 600; }
+.tool-consent-details {
+  margin-block: 6px;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+.tool-consent-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px max(16px, 6%);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--fg);
+}
+.tool-consent-banner > div { flex: 1 1 240px; }
+.tool-consent-banner > p[role="alert"] {
+  flex-basis: 100%;
+  color: var(--danger);
+}
+.tool-consent-controls button,
+.tool-consent-banner button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.tool-consent-controls button:disabled,
+.tool-consent-banner button:disabled { cursor: wait; }
+
+.workflow-active-consents {
+  max-height: 220px;
+  overflow-y: auto;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+.workflow-active-consents .tool-consent-controls { margin-block: 0 8px; }
+
+.tool-consent-controls > button {
+  min-height: 36px;
+  max-width: 100%;
+  margin: 4px 6px 4px 0;
+}

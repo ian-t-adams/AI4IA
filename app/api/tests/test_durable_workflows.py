@@ -1193,9 +1193,11 @@ def _drive_orchestrator(payload, outcomes):
     generator = svc._build_orchestrator()(ctx, payload)
     pending = list(outcomes)
     try:
-        generator.send(None)
+        task = generator.send(None)
         while True:
-            generator.send(pending.pop(0) if pending else None)
+            task = generator.send(
+                pending.pop(0) if pending and task[1] == "ai4ia_workflow_step" else None
+            )
     except StopIteration as stop:
         return stop.value, ctx
 
@@ -1245,10 +1247,58 @@ def test_the_trace_budget_leaves_headroom_under_the_one_megabyte_ceiling() -> No
     assert _TRACE_BUDGET_BYTES < 1_000_000
 
 
+def test_new_workflows_checkpoint_completed_step_receipts_and_bound_escaped_json() -> None:
+    from ai4ia_api.receipts import ReceiptToolCall, build_receipt, json_payload
+
+    receipt = build_receipt(calls=[
+        ReceiptToolCall(
+            tool="calculator", outcome="result",
+            arguments=json_payload({"value": "汉字\"\n" * 1000}),
+            result=json_payload({"value": "汉字\"\n" * 1000}),
+        )
+        for _ in range(8)
+    ])
+    payload = _payload(MAX_STEPS)
+    payload["context"]["governanceVersion"] = 2
+    outcomes = [{
+        "result": {
+            "ok": True, "text": "汉字\"\\\n" * 100_000,
+            "receipt": receipt.model_dump(mode="json"),
+        },
+        "usage": {},
+    } for _ in range(MAX_STEPS)]
+    result, context = _drive_orchestrator(payload, outcomes)
+    persisted = [
+        value for name, value in context.calls if name == "ai4ia_workflow_persist"
+    ]
+    assert len(persisted) == MAX_STEPS
+    assert len(persisted[0]["steps"]) == 1
+    assert persisted[0]["checkpoint"] is True
+    assert persisted[0]["steps"][0]["receipt"]["toolCallCount"] == 8
+    assert all(len(json.dumps(value).encode("ascii")) < 1_000_000 for value in persisted)
+    assert len(json.dumps(result).encode("ascii")) < 1_000_000
+
+
+def test_durable_display_bound_does_not_change_next_steps_unicode_context():
+    from ai4ia_api.workflows.runner import MAX_CARRY_LEN
+
+    original = "\U0001f600" * (MAX_CARRY_LEN + 5000)
+    payload = _payload(2)
+    payload["context"]["governanceVersion"] = 2
+    result, context = _drive_orchestrator(payload, [
+        {"result": {"ok": True, "text": original}, "usage": {}},
+        {"result": {"ok": True, "text": "final output"}, "usage": {}},
+    ])
+    steps = [value for name, value in context.calls if name == "ai4ia_workflow_step"]
+    assert steps[1]["previous"] == original[:MAX_CARRY_LEN]
+    assert result["text"] == "final output"
+    assert result["steps"][0]["text"].endswith(_TRUNCATION_MARKER)
+
+
 def test_text_within_the_budget_is_returned_unchanged() -> None:
     assert _truncate_for_payload("hello") == "hello"
     assert _truncate_for_payload("") == ""
-    edge = "y" * _MAX_STEP_TEXT_BYTES
+    edge = "y" * (_MAX_STEP_TEXT_BYTES - 2)  # JSON string's surrounding quotes
     assert _truncate_for_payload(edge) == edge
 
 

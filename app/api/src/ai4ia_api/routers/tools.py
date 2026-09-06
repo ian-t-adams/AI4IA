@@ -7,11 +7,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from ..agents.tool_exec import SELECTABLE_SYNTHETIC_TOOL_NAMES
+from ..agents.consent_service import tool_auto_approve_available
+from ..agents.synthetic_governance import synthetic_spec
+from ..agents.approvals import ApprovalPolicy, requires_invocation_approval
 from ..agents.mcp_servers import namespaced_tool_name
 from ..agents.tools import ToolRisk
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..conversations.policy import resolve_conversation_policy
+from ..websearch.contracts import MAX_CONTENT_CHARS, MAX_RESULTS, WEBIQ_TOOL_NAMES, tool_schema
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,7 @@ class ToolCatalogItem(BaseModel):
 class ToolCatalogResponse(BaseModel):
     tools: list[ToolCatalogItem]
     inheritedTools: list[str] = []
+    toolAutoApproveAvailable: bool = False
 
 
 @router.get("", response_model=ToolCatalogResponse)
@@ -61,6 +66,8 @@ async def list_tools(
             detail="Choose either a session or an agent preview, not both.",
         )
     registry = request.app.state.tool_registry
+    settings = request.app.state.settings
+    approval_policy = getattr(settings, "tool_approval_mode", ApprovalPolicy.always)
     selectable = request.app.state.agent_service.attachable_tools
     items = [
         ToolCatalogItem(
@@ -79,6 +86,7 @@ async def list_tools(
         for spec in registry.list()
     ]
     for name in sorted(SELECTABLE_SYNTHETIC_TOOL_NAMES):
+        spec = synthetic_spec(name)
         available = True
         detail = None
         if name == "recall_memory":
@@ -101,7 +109,14 @@ async def list_tools(
                 label=name.replace("_", " ").title(),
                 description=_SYNTHETIC_DESCRIPTIONS[name],
                 source="capability",
-                risk=ToolRisk.safe,
+                risk=spec.risk if spec is not None else None,
+                requiresApproval=(
+                    requires_invocation_approval(
+                        spec, policy=approval_policy,
+                        untrusted_context=True,
+                    )
+                    if spec is not None else None
+                ),
                 available=available,
                 selectable=name in selectable,
                 detail=detail,
@@ -109,6 +124,34 @@ async def list_tools(
                 voice=False,
             )
         )
+    web_available = bool(
+        settings.web_search_enabled
+        and getattr(request.app.state, "web_search", None) is not None
+    )
+    for name in sorted(WEBIQ_TOOL_NAMES):
+        spec = synthetic_spec(name)
+        schema = tool_schema(
+            name,
+            results_cap=max(1, min(settings.web_search_max_results, MAX_RESULTS)),
+            content_cap=max(1, min(settings.web_search_max_content_chars, MAX_CONTENT_CHARS)),
+        )
+        available = web_available and spec is not None and spec.enabled
+        items.append(ToolCatalogItem(
+            name=name, label=name.replace("_", " ").title(),
+            description=schema["function"]["description"], source="WebIQ",
+            risk=spec.risk if spec is not None else None,
+            requiresApproval=(
+                requires_invocation_approval(
+                    spec, policy=approval_policy, untrusted_context=True,
+                ) if spec is not None else None
+            ),
+            scopes=sorted(spec.scopes) if spec is not None else None,
+            available=available, selectable=False, typed=True, voice=False,
+            detail=(
+                "Automatically available on WebIQ-enabled turns."
+                if available else "WebIQ is disabled or unavailable on this server."
+            ),
+        ))
     mcp_service = getattr(request.app.state, "mcp_service", None)
     if mcp_service is not None:
         try:
@@ -126,7 +169,7 @@ async def list_tools(
                             risk=spec.risk,
                             requiresApproval=spec.needs_approval,
                             scopes=sorted(spec.scopes),
-                            available=not bool(server.lastError),
+                            available=spec.enabled and not bool(server.lastError),
                             selectable=True,
                             detail=server.lastError,
                             ownership="user",
@@ -170,7 +213,7 @@ async def list_tools(
                             risk=spec.risk,
                             requiresApproval=spec.needs_approval,
                             scopes=sorted(spec.scopes),
-                            available=not bool(server.lastError),
+                            available=spec.enabled and not bool(server.lastError),
                             selectable=True,
                             detail=server.lastError,
                             ownership="application",
@@ -245,4 +288,5 @@ async def list_tools(
     return ToolCatalogResponse(
         tools=sorted(items, key=lambda item: (item.source, item.label)),
         inheritedTools=list(inherited_tools),
+        toolAutoApproveAvailable=tool_auto_approve_available(request.app.state),
     )

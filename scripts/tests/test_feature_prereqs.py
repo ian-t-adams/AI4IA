@@ -520,6 +520,29 @@ class FeaturePrerequisiteTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("verified identity-aware application header", output)
 
+    def test_tool_auto_approval_requires_entra_only_when_enabled(self) -> None:
+        parameters: dict[str, object] = {
+            "owner": "operator",
+            "apimPublisherEmail": "ops@contoso.test",
+            "appEnvironment": "dev",
+            "apiAuthProvider": "dev",
+            "toolAutoApproveEnabled": False,
+        }
+        code, output = self.run_validator(parameters)
+        self.assertEqual(code, 0, output)
+        parameters["toolAutoApproveEnabled"] = True
+        code, output = self.run_validator(parameters)
+        self.assertEqual(code, 1, output)
+        self.assertIn("toolAutoApproveEnabled=true requires apiAuthProvider=entra", output)
+        parameters.update(
+            apiAuthProvider="entra",
+            entraTenantId="tenant",
+            entraAudience="api-client",
+            entraWebClientId="web-client",
+        )
+        code, output = self.run_validator(parameters)
+        self.assertEqual(code, 0, output)
+
     def test_priorities_require_worker_reservations(self) -> None:
         result, output = self.run_validator(
             {

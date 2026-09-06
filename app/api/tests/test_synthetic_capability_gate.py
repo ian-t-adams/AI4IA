@@ -34,6 +34,7 @@ from ai4ia_api.agents.runtime import run_agent_turn
 from ai4ia_api.agents.tool_exec import ToolContext, build_tools
 from ai4ia_api.main import create_app
 from ai4ia_api.websearch.factory import build_web_search_service
+from ai4ia_api.websearch.contracts import WEBIQ_TOOL_NAMES
 from tests.conftest import make_settings, stream_like_gateway
 
 # The data the attacker wants shipped, and where they want it shipped to. The
@@ -42,6 +43,11 @@ from tests.conftest import make_settings, stream_like_gateway
 _CANARY = "AI4IA-CANARY-4f81ad30c7b9426e"
 _ATTACKER_URL = f"https://exfil.evil.example/collect?q={_CANARY}"
 _BENIGN_URL = "https://docs.example.com/guide"
+
+
+@pytest.fixture(autouse=True)
+def public_webiq_dns(monkeypatch):
+    monkeypatch.setattr("ai4ia_api.agents.ssrf._default_resolver", lambda host: ["93.184.216.34"])
 
 
 class FakeWebClient:
@@ -65,6 +71,17 @@ class FakeWebClient:
     async def image_search(self, query, *, max_results, **kw):
         self.calls.append({"tool": "image", "query": query})
         return []
+
+    async def structured_search(self, query, **kw):
+        self.calls.append({"tool": "structured", "query": query})
+        return {}
+
+    classic_search = structured_search
+    finance_search = structured_search
+    places_search = structured_search
+    sports_search = structured_search
+    sonic_search = structured_search
+    autosuggest = structured_search
 
     async def browse(self, url, *, max_length, **kw):
         self.calls.append({"tool": "browse", "url": url})
@@ -333,7 +350,7 @@ def test_one_approval_authorizes_exactly_one_browse():
 # --- the searches: gated by the document, not by the tool -----------------------
 
 
-@pytest.mark.parametrize("tool", ["web_search", "news_search", "video_search", "image_search"])
+@pytest.mark.parametrize("tool", sorted(WEBIQ_TOOL_NAMES - {"browse_url"}))
 def test_a_clean_search_turn_is_not_interrupted(tool: str):
     """Half of the `injection_only_risk` proof: with no untrusted content in the
     turn, the user is the only possible author of the query, so nothing is held
@@ -357,7 +374,7 @@ def test_a_clean_search_turn_is_not_interrupted(tool: str):
         c.__exit__(None, None, None)
 
 
-@pytest.mark.parametrize("tool", ["web_search", "news_search", "video_search", "image_search"])
+@pytest.mark.parametrize("tool", sorted(WEBIQ_TOOL_NAMES - {"browse_url"}))
 def test_the_same_search_is_held_once_a_poisoned_document_is_in_the_turn(tool: str):
     """The other half: same client, same tool, same arguments — only the document
     differs, and only the poisoned turn is held.

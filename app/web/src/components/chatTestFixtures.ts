@@ -89,6 +89,10 @@ export function makeInspectorSnapshot(
   } = {},
 ): InspectorSnapshot {
   return {
+    toolAutoApproveAvailable: false,
+    toolConsent: null,
+    toolConsentActive: false,
+    toolConsentStatus: "off",
     generatedAt: new Date().toISOString(),
     sessionId: id,
     title,

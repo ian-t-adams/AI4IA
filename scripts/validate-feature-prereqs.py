@@ -182,6 +182,14 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     if app_environment == "prod" and auth_provider != "entra":
         errors.append("appEnvironment=prod requires apiAuthProvider=entra.")
 
+    if truthy(parameter_value(parameters, "toolAutoApproveEnabled", False)) and (
+        auth_provider != "entra"
+    ):
+        errors.append(
+            "toolAutoApproveEnabled=true requires apiAuthProvider=entra so durable "
+            "user consent cannot be granted through spoofable development identity."
+        )
+
     if auth_provider == "entra":
         for name in ("entraTenantId", "entraAudience", "entraWebClientId"):
             if not text(parameter_value(parameters, name)):

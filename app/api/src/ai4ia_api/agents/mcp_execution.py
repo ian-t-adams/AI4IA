@@ -44,13 +44,14 @@ is secure, so a future call site that forgets the argument gets the safe behavio
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol
 
 from . import mcp_observability as obs
 from .approvals import ApprovalPolicy, ApprovalSink
+from .consent import ConsentChecker, ConsentRejected, contract_hash, tool_contract_hash
 from .mcp_client import McpAuth, McpConnector
 from .mcp_health import is_quarantined, quarantine_reason
 from .mcp_servers import (
@@ -133,6 +134,19 @@ class McpPlane:
     plane_id: str = "default"
     resolver: Resolver | None = None
     health: HealthReporter | None = None
+    current_server: Callable[[str], Awaitable[UserMcpServer | None]] | None = None
+
+
+def mcp_contract_metadata(server: UserMcpServer, tool: DiscoveredTool) -> dict:
+    """No credentials: only execution-affecting identity and configuration."""
+    return {
+        "server": server.name, "owner": server.userId, "endpoint": server.endpoint,
+        "host": server.host, "transport": server.transport.value,
+        "authMode": server.authMode.value, "revision": server.configurationRevision,
+        "credentialRefHash": contract_hash(server.secretRef),
+        "rawName": tool.raw_name, "trusted": server.trusted, "enabled": server.enabled,
+        "approval": server.toolApprovals.get(tool.name),
+    }
 
 
 async def _safe_report(
@@ -162,6 +176,7 @@ def _make_handler(
     budget: dict[str, int],
     max_calls: int,
     health: HealthReporter | None = None,
+    current_server: Callable[[str], Awaitable[UserMcpServer | None]] | None = None,
 ):
     """Build the async handler for one (server, tool), closure-bound to one endpoint.
 
@@ -174,8 +189,26 @@ def _make_handler(
     """
     endpoint = server.endpoint
     raw_tool_name = tool.raw_name
+    metadata = mcp_contract_metadata(server, tool)
+    spec = replace(discovered_tool_to_spec(server, tool), name=alias)
+    implemented_contract = tool_contract_hash(
+        spec, tool.inputSchema or dict(_EMPTY_OBJECT_SCHEMA), metadata=metadata
+    )
 
     async def handler(args: dict, ctx: ToolContext) -> dict:
+        if current_server is not None:
+            current = await current_server(server.name)
+            live_tool = next(
+                (item for item in current.discoveredTools if item.name == tool.name), None
+            ) if current is not None else None
+            if (
+                current is None or not current.enabled or is_quarantined(current)
+                or live_tool is None
+                or contract_hash(mcp_contract_metadata(current, live_tool)) != contract_hash(metadata)
+                or live_tool.inputSchema != tool.inputSchema
+                or live_tool.description != tool.description
+            ):
+                raise ToolExecutionError("MCP configuration changed; refresh and renew approval.")
         if budget["used"] >= max_calls:
             raise ToolExecutionError("MCP tool-call budget exhausted for this turn.")
         budget["used"] += 1
@@ -194,12 +227,18 @@ def _make_handler(
 
             secret = await secrets.secret_for(server)
             auth = McpAuth(mode=server.authMode, secret=secret)
+            if ctx.consent_checker is not None:
+                decision = await ctx.consent_checker(alias, implemented_contract)
+                if decision.reason is not None and decision.reason != "consent_not_granted":
+                    raise ConsentRejected(decision.reason)
             result = await connector.call_tool(
                 endpoint=endpoint,
                 auth=auth,
                 tool=raw_tool_name,
                 arguments=args or {},
             )
+        except ConsentRejected:
+            raise
         except DnsCapacityError as exc:
             obs.emit(
                 event=obs.EVENT_TOOL_CALL,
@@ -281,6 +320,7 @@ def _build_mcp_tool_bindings(
     health: HealthReporter | None = None,
     now: datetime | None = None,
     plane_id: str = "default",
+    current_server: Callable[[str], Awaitable[UserMcpServer | None]] | None = None,
 ) -> list[McpToolBinding]:
     """Build exact bindings for attached, owned MCP tools in one plane.
 
@@ -352,7 +392,9 @@ def _build_mcp_tool_bindings(
                     budget=budget,
                     max_calls=max_calls,
                     health=health,
+                    current_server=current_server,
                 ),
+                consent_metadata=mcp_contract_metadata(server, tool),
             )
             bindings.append(
                 McpToolBinding(
@@ -379,6 +421,7 @@ def build_mcp_tool_definitions(
     health: HealthReporter | None = None,
     now: datetime | None = None,
     plane_id: str = "default",
+    current_server: Callable[[str], Awaitable[UserMcpServer | None]] | None = None,
 ) -> list[ToolDefinition]:
     """Governed definitions for one plane; identity mapping stays internal."""
     return [
@@ -394,6 +437,7 @@ def build_mcp_tool_definitions(
             health=health,
             now=now,
             plane_id=plane_id,
+            current_server=current_server,
         )
     ]
 
@@ -414,6 +458,7 @@ def build_mcp_turn_tools(
     untrusted_context: bool = False,
     invocation_approvals: Collection[str] = (),
     approval_sink: ApprovalSink | None = None,
+    consent_checker: ConsentChecker | None = None,
 ) -> tuple[ToolRegistry, ToolExecutor, ToolContext] | None:
     """Build a merged (registry, executor, ctx) for a turn that attaches MCP tools.
 
@@ -465,6 +510,7 @@ def build_mcp_turn_tools(
         untrusted_context=untrusted_context,
         invocation_approvals=invocation_approvals,
         approval_sink=approval_sink,
+        consent_checker=consent_checker,
     )
 
 
@@ -480,6 +526,7 @@ def build_mcp_turn_tools_multi(
     untrusted_context: bool = False,
     invocation_approvals: Collection[str] = (),
     approval_sink: ApprovalSink | None = None,
+    consent_checker: ConsentChecker | None = None,
     extra_definitions: Sequence[ToolDefinition] = (),
 ) -> tuple[ToolRegistry, ToolExecutor, ToolContext] | None:
     """Merge multiple MCP planes into one turn's (registry, executor, ctx).
@@ -539,6 +586,7 @@ def build_mcp_turn_tools_multi(
             health=plane.health,
             now=now,
             plane_id=plane.plane_id,
+            current_server=plane.current_server,
         )
         for binding in plane_bindings:
             # Earlier accepted plane wins a governance-name collision. A
@@ -574,5 +622,6 @@ def build_mcp_turn_tools_multi(
         untrusted_context=untrusted_context,
         invocation_approvals=frozenset(invocation_approvals),
         approval_sink=approval_sink,
+        consent_checker=consent_checker,
     )
     return registry, executor, ctx

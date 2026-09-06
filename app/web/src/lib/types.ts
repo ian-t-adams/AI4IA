@@ -58,6 +58,32 @@ export interface ModelCatalog {
   residencyPolicy: string;
 }
 
+// Public, server-owned summary. Never accepted by generic session PATCH or
+// workflow definitions; consent is explicitly granted for a session or one run.
+export interface ToolConsentSummary {
+  id: string;
+  scope: "session" | "run";
+  grantedAt: string;
+  expiresAt: string;
+  toolCount: number;
+}
+
+export type ToolConsentStatus =
+  | "off"
+  | "active"
+  | "expired"
+  | "revoked"
+  | "changed"
+  | "disabled"
+  | "unavailable";
+
+export type ToolApprovalSource =
+  | "session"
+  | "run"
+  | "invocation"
+  | "not_required"
+  | "operator";
+
 export interface Session {
   id: string;
   userId: string;
@@ -67,6 +93,7 @@ export interface Session {
   systemPrompt: string | null;
   agentName: string | null;
   toolOverrides: { added: string[]; removed: string[] };
+  toolConsent?: ToolConsentSummary | null;
   libraryDocumentIds: string[] | null;
   imagePreferences?: ImageGenerationPreferences;
   summaryVersion?: number;
@@ -119,7 +146,7 @@ export interface MessageAttachment {
 // pre-execution "tool_start" marker) and persisted on the assistant message.
 // Mirrors ai4ia_api.sessions.models.ActivityStep.
 export interface ActivityStep {
-  kind: "tool_start" | "tool_result" | "tool_denied" | "tool_error" | "delegate" | "final";
+  kind: "tool_start" | "tool_result" | "tool_denied" | "tool_error" | "delegate" | "final" | "workflow_step" | "workflow_error";
   label: string;
   tool?: string | null;
   detail?: string | null;
@@ -226,6 +253,10 @@ export interface ReceiptToolOffer {
 
 export interface ReceiptToolCall {
   tool: string;
+  // Missing on older receipts means unknown, NOT automatically approved.
+  approval?: ToolApprovalSource | null;
+  consentId?: string | null;
+  callId?: string | null;
   // result | delegate | denied | error
   outcome: string;
   detail?: string | null;
@@ -289,6 +320,9 @@ export interface ExecutionReceipt {
   toolCallCount: number;
   approvalsRequested: number;
   approvalsGranted: number;
+  // Absent on old receipts is unknown; do not infer a count from a bounded list.
+  autoApprovedToolCalls?: number;
+  toolConsent?: ToolConsentSummary | null;
   usage?: ReceiptUsage;
   safety?: ReceiptSafetySummary;
   delegations?: ExecutionReceipt[];
@@ -392,6 +426,11 @@ export interface ToolApprovalDecision {
 }
 
 export interface Message {
+  workflowRunId?: string | null;
+  workflowRunStatus?: string | null;
+  workflowToolConsent?: ToolConsentSummary | null;
+  workflowConsentRevoked?: boolean;
+  workflowStepReceipts?: ExecutionReceipt[] | null;
   id: string;
   sessionId: string;
   userId: string;
@@ -520,7 +559,18 @@ export interface WorkflowUpdate {
   enabled: boolean;
 }
 
+export interface WorkflowRunRequest {
+  sessionId: string;
+  input: string;
+  model?: string | null;
+  durable?: boolean;
+  idempotencyKey?: string;
+  // Per invocation only. Not a workflow setting or a remembered preference.
+  autoApproveTools?: boolean;
+}
+
 export interface WorkflowRunResult {
+  autoApproveTools?: boolean;
   sessionId: string;
   ok: boolean;
   message: Message;
@@ -532,12 +582,15 @@ export interface WorkflowListResult {
   // live orchestration client, so it never claims a capability the run endpoint
   // would reject.
   durableAvailable: boolean;
+  toolAutoApproveAvailable: boolean;
 }
 
 // 202 body: `accepted` means the run was scheduled; `pending`/
 // `acceptance_unknown` carries authoritative retry timing and must be recovered
 // before polling DTS, where the deterministic instance may not exist yet.
 export interface WorkflowRunAccepted {
+  autoApproveTools?: boolean;
+  toolConsent?: ToolConsentSummary | null;
   sessionId: string;
   runId: string;
   status: string;

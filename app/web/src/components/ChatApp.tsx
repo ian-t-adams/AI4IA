@@ -15,6 +15,7 @@ import {
   useState,
 } from "react";
 import * as api from "@/lib/api";
+import { inspectedSessionConsent, unverifiedSessionConsent, type SessionConsentView, type ToolConsentInspection } from "@/lib/toolConsent";
 import type {
   ActivityStep,
   AgentSummary,
@@ -58,6 +59,7 @@ import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import type { CitationTarget } from "./Markdown";
 import { Composer, type UploadItem } from "./Composer";
+import { SessionToolConsentBanner } from "./ToolConsentControls";
 import { ToolApprovalPanel } from "./ToolApprovalPanel";
 import {
   InlineVoiceLiveStatus,
@@ -196,6 +198,11 @@ export function ChatApp() {
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [toolConsentInspection, setToolConsentInspection] = useState<{
+    sessionId: string;
+    view: SessionConsentView;
+  } | null>(null);
+  const consentInspectionRequestRef = useRef<symbol | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
@@ -485,6 +492,54 @@ export function ChatApp() {
   useEffect(() => {
     sessionIdRef.current = activeId;
   }, [activeId]);
+
+  const storedToolConsent = sessions.find((session) => session.id === activeId)?.toolConsent;
+  const currentConsentView = toolConsentInspection?.sessionId === activeId
+    ? toolConsentInspection.view : unverifiedSessionConsent();
+  const activeToolConsent = currentConsentView.consent !== undefined ? currentConsentView.consent : storedToolConsent;
+
+  const invalidateConsentVerification = useCallback(() => {
+    // Reject any inspection already in flight, including a response that arrives
+    // before the refresh effect has started after a consent mutation.
+    consentInspectionRequestRef.current = null;
+    setToolConsentInspection(null);
+  }, []);
+  const refreshConsentVerification = useCallback(() => {
+    invalidateConsentVerification();
+    setInspectorVersion((value) => value + 1);
+  }, [invalidateConsentVerification]);
+
+  const onToolConsentUpdated = useCallback((updated: Session) => {
+    if (!mountedRef.current || updated.id !== sessionIdRef.current) return;
+    invalidateConsentVerification();
+    sessionListGenerationRef.current += 1;
+    setSessions((current) => current.map((session) => session.id === updated.id
+      ? { ...session, toolConsent: updated.toolConsent ?? null }
+      : session));
+    setInspectorVersion((value) => value + 1);
+  }, [invalidateConsentVerification]);
+
+  const onToolConsentSnapshot = useCallback((sessionId: string, inspection: ToolConsentInspection) => {
+    if (!mountedRef.current || sessionId !== sessionIdRef.current) return;
+    if (inspection.phase === "loading") {
+      consentInspectionRequestRef.current = inspection.requestId;
+      setToolConsentInspection({ sessionId, view: unverifiedSessionConsent() });
+      return;
+    }
+    if (inspection.requestId !== consentInspectionRequestRef.current) return;
+    if (inspection.phase === "error") {
+      setToolConsentInspection({ sessionId, view: unverifiedSessionConsent("unavailable") });
+      return;
+    }
+    const view = inspectedSessionConsent(inspection.value);
+    setToolConsentInspection({ sessionId, view });
+    if (view.consent !== undefined) {
+      sessionListGenerationRef.current += 1;
+      setSessions((current) => current.map((session) => session.id === sessionId
+        ? { ...session, toolConsent: view.consent ?? null }
+        : session));
+    }
+  }, []);
 
   const clearReconciliationTimers = useCallback(() => {
     for (const timer of reconciliationTimersRef.current) {
@@ -927,7 +982,7 @@ export function ChatApp() {
     const updated = await api.updateSession(id, { title });
     sessionListGenerationRef.current += 1;
     setSessions((current) =>
-      current.map((session) => (session.id === updated.id ? updated : session)),
+      current.map((session) => (session.id === updated.id ? { ...updated, toolConsent: session.toolConsent } : session)),
     );
   }, []);
 
@@ -985,7 +1040,7 @@ export function ChatApp() {
             sessionListGenerationRef.current += 1;
             setSessions((current) =>
               current.map((session) =>
-                session.id === updated.id ? updated : session,
+                session.id === updated.id ? { ...updated, toolConsent: session.toolConsent } : session,
               ),
             );
             setSelectedModel(updated.model ?? modelId);
@@ -2028,7 +2083,7 @@ export function ChatApp() {
         ) return;
         sessionListGenerationRef.current += 1;
         setSessions((current) =>
-          current.map((item) => (item.id === updated.id ? updated : item)),
+          current.map((item) => (item.id === updated.id ? { ...updated, toolConsent: item.toolConsent } : item)),
         );
       } catch (e) {
         if (
@@ -2555,6 +2610,7 @@ export function ChatApp() {
         sources: m.sources,
         citations: m.citations,
         executionReceipt: m.executionReceipt,
+        workflowStepReceipts: m.workflowStepReceipts,
       }));
     if (streaming && !streamMaterialized) {
       base.push({
@@ -2755,6 +2811,19 @@ export function ChatApp() {
           </div>
         )}
 
+        {activeId && activeToolConsent ? (
+          <SessionToolConsentBanner
+            key={activeId}
+            sessionId={activeId}
+            consent={activeToolConsent}
+            available={currentConsentView.available}
+            active={currentConsentView.active}
+            status={currentConsentView.status}
+            onUpdated={onToolConsentUpdated}
+            onVerificationInvalidated={invalidateConsentVerification}
+            onRefresh={refreshConsentVerification}
+          />
+        ) : null}
         <MessageList
           messages={displayMessages}
           conversationId={activeId}
@@ -2835,6 +2904,10 @@ export function ChatApp() {
         <ConversationInspector
           key={activeId ?? "new-conversation"}
           sessionId={activeId}
+          sessionToolConsent={activeToolConsent}
+          consentVerification={currentConsentView}
+          onToolConsentUpdated={onToolConsentUpdated}
+          onToolConsentSnapshot={onToolConsentSnapshot}
           refreshKey={inspectorVersion}
           models={models}
           agents={agents}
@@ -2854,9 +2927,12 @@ export function ChatApp() {
           onDraftDefaultsChange={setDraftDefaults}
           onSessionUpdated={(updated) => {
             if (updated.id !== sessionIdRef.current) return;
+            invalidateConsentVerification();
+            // Generic settings responses cannot write consent. In particular,
+            // an older PATCH must not restore a grant revoked while it ran.
             sessionListGenerationRef.current += 1;
             setSessions((current) =>
-              current.map((session) => (session.id === updated.id ? updated : session)),
+              current.map((session) => (session.id === updated.id ? { ...updated, toolConsent: session.toolConsent } : session)),
             );
             if (updated.model && updated.model !== selectedModel) {
               modelMutationGenerationsRef.current.set(

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Protocol, Sequence
 from urllib.parse import parse_qs, urlparse
 
+from .consent import contract_hash
 from .mcp_client import McpResourceResult
 from .mcp_health import is_quarantined
 from .mcp_servers import UserMcpServer
@@ -48,6 +49,7 @@ class DiscoveredSkill:
     uri: str
     server: UserMcpServer
     version: str | None = None
+    mime_type: str | None = None
 
 
 def _skill_name_from_uri(uri: str) -> tuple[str | None, str | None]:
@@ -78,7 +80,7 @@ def discover_skills(
     skills: list[DiscoveredSkill] = []
     seen: set[str] = set()
     for server in servers:
-        if not server.resourcesEnabled or is_quarantined(server):
+        if not server.enabled or not server.resourcesEnabled or is_quarantined(server):
             continue
         for resource in server.discoveredResources:
             if resource.mimeType not in _ALLOWED_MIME_TYPES:
@@ -94,6 +96,7 @@ def discover_skills(
                     uri=resource.uri,
                     server=server,
                     version=version,
+                    mime_type=resource.mimeType,
                 )
             )
             if len(skills) >= MAX_ADVERTISED_SKILLS:
@@ -165,4 +168,24 @@ def build_load_skill_definition(
             "additionalProperties": False,
         },
         handler=handler,
+        consent_metadata={
+            "skills": [
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "uri": skill.uri,
+                    "version": skill.version,
+                    "mimeType": skill.mime_type,
+                    "server": skill.server.model_dump(
+                        mode="json",
+                        include={
+                            "name", "userId", "endpoint", "host", "transport", "authMode",
+                            "configurationRevision", "trusted", "enabled", "resourcesEnabled",
+                        },
+                    ),
+                    "credentialRefHash": contract_hash(skill.server.secretRef),
+                }
+                for skill in skills
+            ],
+        },
     )

@@ -54,6 +54,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from .agents.tools import is_safe_tool_name, redact, redact_obj
+from .agents.consent import ApprovalSource, ToolConsentSummary
 from .safety import MessageSafety
 from .usage.models import TokenUsage
 
@@ -265,6 +266,9 @@ class ReceiptToolCall(BaseModel):
     detail: str | None = None
     arguments: ReceiptPayload | None = None
     result: ReceiptPayload | None = None
+    approval: ApprovalSource | None = None
+    consentId: str | None = Field(default=None, max_length=64)
+    callId: str | None = Field(default=None, max_length=128)
 
 
 class ReceiptRuntime(BaseModel):
@@ -353,6 +357,8 @@ class ExecutionReceipt(BaseModel):
     # it. Recorded where available; both stay 0 on a turn with no gated call.
     approvalsRequested: int = 0
     approvalsGranted: int = 0
+    autoApprovedToolCalls: int = 0
+    toolConsent: ToolConsentSummary | None = None
     usage: ReceiptUsage = Field(default_factory=ReceiptUsage)
     safety: ReceiptSafetySummary = Field(default_factory=ReceiptSafetySummary)
     delegations: list[ExecutionReceipt] = Field(default_factory=list)
@@ -389,7 +395,9 @@ def enforce_receipt_budget(receipt: ExecutionReceipt) -> ExecutionReceipt:
     """
 
     def size() -> int:
-        return len(receipt.model_dump_json().encode("utf-8"))
+        # Durable activities may use ASCII-escaped JSON with spaces rather than
+        # Pydantic's compact UTF-8 encoding. Bound the larger wire representation.
+        return len(json.dumps(receipt.model_dump(mode="json"), ensure_ascii=True).encode("ascii"))
 
     if size() <= MAX_RECEIPT_BYTES:
         return receipt
@@ -609,6 +617,7 @@ def build_receipt(
     calls: list[ReceiptToolCall] | None = None,
     approvals_requested: int = 0,
     approvals_granted: int = 0,
+    tool_consent: ToolConsentSummary | None = None,
     usage: TokenUsage | None = None,
     safety: MessageSafety | None = None,
     delegations: list[ExecutionReceipt] | None = None,
@@ -647,6 +656,11 @@ def build_receipt(
         toolCallCount=len(all_calls),
         approvalsRequested=max(0, int(approvals_requested or 0)),
         approvalsGranted=max(0, int(approvals_granted or 0)),
+        autoApprovedToolCalls=sum(
+            call.approval in {"session", "run"} and call.outcome != "denied"
+            for call in all_calls
+        ),
+        toolConsent=tool_consent,
         usage=ReceiptUsage(
             known=effective_usage.known,
             complete=effective_usage.complete,

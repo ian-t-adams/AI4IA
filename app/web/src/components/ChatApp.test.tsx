@@ -4,9 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatApp } from "./ChatApp";
-import type { Session, ToolCatalogItem } from "@/lib/types";
+import type { Session, ToolCatalogItem, ToolConsentStatus } from "@/lib/types";
 import {
   makeChatSession,
+  makeInspectorSnapshot,
   resetChatAppMocks,
 } from "./chatTestFixtures";
 
@@ -29,6 +30,8 @@ const mocks = vi.hoisted(() => ({
   toolCatalog: [] as ToolCatalogItem[],
   getToolCatalog: vi.fn(),
   updateSession: vi.fn(),
+  setSessionToolConsent: vi.fn(),
+  getImageOptions: vi.fn(),
   getInspector: vi.fn(),
   listMemories: vi.fn(),
   getLibrarySummary: vi.fn(),
@@ -219,6 +222,7 @@ const libraryDocument = (id: string, filename: string) => ({
 
 beforeEach(() => {
   resetChatAppMocks(mocks);
+  mocks.getImageOptions.mockResolvedValue({ maxSelectedModels: 3, currency: "USD", priceVersion: "test", models: [] });
   mocks.getLibraryDocument.mockRejectedValue(new Error("not configured"));
   mocks.associateLibraryDocument.mockImplementation(
     async (sessionId: string, documentId: string) => ({
@@ -3552,4 +3556,168 @@ describe("ChatApp uploads", () => {
     await user.click(screen.getByRole("button", { name: "Model" }));
     expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-new");
   });
+});
+
+
+function liveConsentSnapshot(
+  id: string,
+  consent: Session["toolConsent"],
+  status: ToolConsentStatus,
+): ReturnType<typeof makeInspectorSnapshot> {
+  return { ...makeInspectorSnapshot(id), toolAutoApproveAvailable: true,
+    toolConsent: consent ?? null, toolConsentActive: status === "active", toolConsentStatus: status };
+}
+
+it("keeps session auto-approval visible and revocable while a chat stream is active", async () => {
+  const consent = {
+    id: "chat-consent", scope: "session" as const, grantedAt: "2026-09-06T00:00:00Z",
+    expiresAt: "2099-09-06T08:00:00Z", toolCount: 11,
+  };
+  mocks.listSessions.mockResolvedValue([{ ...makeChatSession("A"), toolConsent: consent }, makeChatSession("B")]);
+  let serverConsent: Session["toolConsent"] = consent;
+  mocks.getInspector.mockImplementation(async (id: string) => liveConsentSnapshot(
+    id, id === "A" ? serverConsent : null, id === "A" && serverConsent ? "active" : "off",
+  ));
+  mocks.setSessionToolConsent.mockImplementation(async () => {
+    serverConsent = null;
+    return { ...makeChatSession("A"), toolConsent: null };
+  });
+  render(<ChatApp />);
+  await userEvent.click(await screen.findByRole("button", { name: "Session A" }));
+  expect(await screen.findByText("Auto-approval on for this session")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Collapse conversation inspector" }));
+  expect(screen.getByRole("button", { name: "Open conversation inspector" })).toBeInTheDocument();
+  expect(screen.getAllByRole("complementary", { name: "Session tool auto-approval" })).toHaveLength(1);
+  expect(screen.getByText("Auto-approval on for this session")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Send draft message" }));
+  await waitFor(() => expect(mocks.streamChat).toHaveBeenCalled());
+  expect(screen.getByRole("button", { name: "Revoke auto-approval" })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: "Revoke auto-approval" }));
+  expect(mocks.setSessionToolConsent).toHaveBeenCalledWith("A", false);
+  await waitFor(() => expect(screen.queryByRole("complementary", { name: "Session tool auto-approval" })).toBeNull());
+  // Revocation is independent of the stream and never sends a new chat turn.
+  expect(mocks.streamChat).toHaveBeenCalledTimes(1);
+  // Restore the persisted layout preference for subsequent chat tests.
+  await userEvent.click(screen.getByRole("button", { name: "Open conversation inspector" }));
+});
+
+
+it("does not restore revoked consent from a stale generic settings response", async () => {
+  const consent = {
+    id: "old-consent", scope: "session" as const, grantedAt: "2026-09-06T00:00:00Z",
+    expiresAt: "2099-09-06T08:00:00Z", toolCount: 11,
+  };
+  mocks.listSessions.mockResolvedValue([{ ...makeChatSession("A"), toolConsent: consent }]);
+  let serverConsent: Session["toolConsent"] = consent;
+  mocks.getInspector.mockImplementation(async (id: string) => liveConsentSnapshot(
+    id, id === "A" ? serverConsent : null, id === "A" && serverConsent ? "active" : "off",
+  ));
+  mocks.setSessionToolConsent.mockImplementation(async () => {
+    serverConsent = null;
+    return { ...makeChatSession("A"), toolConsent: null };
+  });
+  let finish!: (session: Session) => void;
+  mocks.updateSession.mockImplementation(() => new Promise<Session>((resolve) => { finish = resolve; }));
+  render(<ChatApp />);
+  await userEvent.click(await screen.findByRole("button", { name: "Session A" }));
+  await screen.findByText("Auto-approval on for this session");
+  await userEvent.click(screen.getByRole("button", { name: "Instructions" }));
+  await userEvent.type(screen.getByRole("textbox", { name: "System prompt" }), "New instructions");
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(mocks.updateSession).toHaveBeenCalled());
+  await userEvent.click(screen.getByRole("button", { name: "Revoke auto-approval" }));
+  await waitFor(() => expect(screen.queryByText("Auto-approval on for this session")).toBeNull());
+  await act(async () => finish({ ...makeChatSession("A"), systemPrompt: "New instructions", toolConsent: consent }));
+  expect(screen.queryByRole("complementary", { name: "Session tool auto-approval" })).toBeNull();
+});
+
+
+it("keeps changed consent inactive through renewal until the new grant is inspected", async () => {
+  const oldGrant: NonNullable<Session["toolConsent"]> = {
+    id: "old-grant", scope: "session", grantedAt: "2026-09-06T00:00:00Z",
+    expiresAt: "2099-09-06T08:00:00Z", toolCount: 7,
+  };
+  const newGrant = { ...oldGrant, id: "renewed-grant", expiresAt: "2099-09-07T08:00:00Z", toolCount: 12 };
+  let renewed = false;
+  let verified = false;
+  const pendingInspections: Array<(snapshot: ReturnType<typeof makeInspectorSnapshot>) => void> = [];
+  mocks.listSessions.mockResolvedValue([{ ...makeChatSession("A"), toolConsent: oldGrant }]);
+  mocks.getInspector.mockImplementation((id: string) => {
+    if (renewed && !verified) return new Promise((resolve) => { pendingInspections.push(resolve); });
+    return Promise.resolve(liveConsentSnapshot(id, renewed ? newGrant : oldGrant, renewed ? "active" : "changed"));
+  });
+  mocks.setSessionToolConsent.mockImplementation(async () => {
+    renewed = true;
+    return { ...makeChatSession("A"), toolConsent: newGrant };
+  });
+  render(<ChatApp />);
+  await userEvent.click(await screen.findByRole("button", { name: "Session A" }));
+  const banner = await screen.findByRole("complementary", { name: "Session tool auto-approval" });
+  await waitFor(() => expect(within(banner).getByText(/needs renewal/)).toBeVisible());
+  expect(screen.queryByText("Auto-approval on for this session")).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Agent & tools" }));
+  expect(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this session" })).not.toBeChecked();
+  await userEvent.click(screen.getByRole("button", { name: "Renew consent for current enabled tools" }));
+  await waitFor(() => expect(pendingInspections.length).toBeGreaterThan(0));
+  expect(mocks.setSessionToolConsent).toHaveBeenCalledWith("A", true);
+  expect(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this session" })).not.toBeChecked();
+  expect(screen.queryByText("Auto-approval on for this session")).toBeNull();
+  verified = true;
+  await act(async () => {
+    for (const resolve of pendingInspections) resolve(liveConsentSnapshot("A", newGrant, "active"));
+  });
+  await screen.findByText("Auto-approval on for this session");
+  expect(screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this session" })).toBeChecked();
+  expect(within(screen.getByRole("complementary", { name: "Session tool auto-approval" })).getByText(/12 enabled tool contracts/)).toBeVisible();
+});
+
+it("removes verified-active claims after an Inspector fetch failure, but keeps the grant revocable", async () => {
+  const consent: NonNullable<Session["toolConsent"]> = {
+    id: "checked-grant", scope: "session", grantedAt: "2026-09-06T00:00:00Z",
+    expiresAt: "2099-09-06T08:00:00Z", toolCount: 11,
+  };
+  mocks.listSessions.mockResolvedValue([{ ...makeChatSession("A"), toolConsent: consent }]);
+  mocks.getInspector.mockResolvedValue(liveConsentSnapshot("A", consent, "active"));
+  render(<ChatApp />);
+  await userEvent.click(await screen.findByRole("button", { name: "Session A" }));
+  await screen.findByText("Auto-approval on for this session");
+  mocks.getInspector.mockRejectedValue(new Error("Inspector connection lost"));
+  await userEvent.click(screen.getByRole("button", { name: "Instructions" }));
+  await userEvent.type(screen.getByRole("textbox", { name: "System prompt" }), "Updated instructions");
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  const banner = screen.getByRole("complementary", { name: "Session tool auto-approval" });
+  await waitFor(() => expect(within(banner).getByText(/unverified/)).toBeVisible());
+  expect(screen.queryByText("Auto-approval on for this session")).toBeNull();
+  expect(within(banner).getByText(/11 enabled tool contracts/)).toBeVisible();
+  expect(within(banner).getByRole("button", { name: "Revoke auto-approval" })).toBeEnabled();
+  expect(within(banner).getByRole("button", { name: "Refresh consent status" })).toBeEnabled();
+});
+
+it("does not restore an old active Inspector result after a successful revocation", async () => {
+  const consent: NonNullable<Session["toolConsent"]> = {
+    id: "stale-inspection-grant", scope: "session", grantedAt: "2026-09-06T00:00:00Z",
+    expiresAt: "2099-09-06T08:00:00Z", toolCount: 11,
+  };
+  let serverConsent: Session["toolConsent"] = consent;
+  let reads = 0;
+  let finishOld!: (snapshot: ReturnType<typeof makeInspectorSnapshot>) => void;
+  mocks.listSessions.mockResolvedValue([{ ...makeChatSession("A"), toolConsent: consent }]);
+  mocks.getInspector.mockImplementation((id: string) => {
+    if (++reads === 2) return new Promise((resolve) => { finishOld = resolve; });
+    return Promise.resolve(liveConsentSnapshot(id, serverConsent, serverConsent ? "changed" : "off"));
+  });
+  mocks.setSessionToolConsent.mockImplementation(async () => {
+    serverConsent = null;
+    return { ...makeChatSession("A"), toolConsent: null };
+  });
+  render(<ChatApp />);
+  await userEvent.click(await screen.findByRole("button", { name: "Session A" }));
+  const banner = await screen.findByRole("complementary", { name: "Session tool auto-approval" });
+  await waitFor(() => expect(within(banner).getByText(/needs renewal/)).toBeVisible());
+  await userEvent.click(within(banner).getByRole("button", { name: "Refresh consent status" }));
+  await waitFor(() => expect(reads).toBe(2));
+  await userEvent.click(within(banner).getByRole("button", { name: "Revoke auto-approval" }));
+  await waitFor(() => expect(screen.queryByRole("complementary", { name: "Session tool auto-approval" })).toBeNull());
+  await act(async () => finishOld(liveConsentSnapshot("A", consent, "active")));
+  expect(screen.queryByRole("complementary", { name: "Session tool auto-approval" })).toBeNull();
 });

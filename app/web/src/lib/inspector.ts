@@ -4,6 +4,8 @@ import type {
   ImageGenerationPreferences,
   Session,
   ToolCatalogItem,
+  ToolConsentStatus,
+  ToolConsentSummary,
 } from "./types";
 import type { LibraryDocument } from "./library";
 import { apiFetch } from "./auth";
@@ -59,6 +61,12 @@ export interface UsageSummaryView {
 }
 
 export interface InspectorSnapshot {
+  // Optional only for older servers; missing availability is always off.
+  toolAutoApproveAvailable?: boolean;
+  // Rolling-upgrade reads may omit these fields. Absence never proves activity.
+  toolConsent?: ToolConsentSummary | null;
+  toolConsentActive?: boolean;
+  toolConsentStatus?: ToolConsentStatus;
   generatedAt: string;
   sessionId: string;
   title: string;

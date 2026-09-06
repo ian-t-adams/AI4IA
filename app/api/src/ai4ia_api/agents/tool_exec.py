@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .approvals import ApprovalPolicy, ApprovalSink
+from .consent import ConsentChecker
 from .tools import ToolRegistry, ToolRisk, ToolSpec
 
 # A handler maps validated arguments + context to a JSON-serializable result. It
@@ -85,6 +86,7 @@ class ToolContext:
     # Collector the runtime records denied-pending-approval calls into, so the
     # surface owning the turn can mint, persist and stream them.
     approval_sink: ApprovalSink | None = None
+    consent_checker: ConsentChecker | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,7 @@ class ToolDefinition:
     spec: ToolSpec
     parameters: dict[str, Any]
     handler: ToolHandler
+    consent_metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 # --- Minimal JSON-Schema argument validation -----------------------------------
@@ -280,11 +283,13 @@ class ToolExecutor:
         *,
         registry: ToolRegistry,
         ctx: ToolContext,
+        consented_names: Iterable[str] = (),
     ) -> list[dict[str, Any]]:
         """OpenAI ``tools`` array for ``names`` that are executable AND currently
         authorized for ``ctx`` — so the model never sees a tool it cannot use
         (which would otherwise waste iterations and widen the attack surface)."""
         out: list[dict[str, Any]] = []
+        consented = set(consented_names)
         for name in names:
             definition = self._defs.get(name)
             if definition is None:
@@ -293,7 +298,7 @@ class ToolExecutor:
                 name,
                 granted_scopes=ctx.granted_scopes,
                 target_hosts=ctx.target_hosts,
-                approved=name in ctx.approvals,
+                approved=name in ctx.approvals or name in consented,
             )
             if not decision.allowed:
                 continue

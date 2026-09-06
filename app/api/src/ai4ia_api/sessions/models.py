@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from ..agents.approvals import PendingToolApproval
+from ..agents.consent import ToolConsentState, ToolConsentSummary
 from ..citations import MessageCitation, RetrievedSource
 from ..receipts import ExecutionReceipt
 from ..safety import MessageSafety
@@ -130,6 +131,10 @@ class Message(BaseModel):
     workflowRunId: str | None = None
     workflowRunStatus: str | None = None
     workflowRunFingerprint: str | None = None
+    workflowToolConsent: ToolConsentSummary | None = None
+    workflowToolConsentState: ToolConsentState | None = Field(default=None, exclude=True)
+    workflowConsentRevoked: bool = False
+    workflowStepReceipts: list[ExecutionReceipt] | None = Field(default=None, max_length=6)
     workflowScheduleLeaseToken: str | None = None
     workflowScheduleLeaseExpiresAt: datetime | None = None
     # True for the local transcript of a slash command (the echoed command and
@@ -290,6 +295,8 @@ def normalize_session_title(value: object) -> str:
 def normalize_session_patch_changes(
     changes: Mapping[str, object],
 ) -> dict[str, object]:
+    if {"toolConsent", "toolConsentState", "toolConsentVersion"} & changes.keys():
+        raise ValueError("Tool consent must be changed through the consent endpoint.")
     normalized = dict(changes)
     if "toolOverrides" in normalized:
         value = normalized["toolOverrides"]
@@ -327,6 +334,9 @@ class Session(BaseModel):
     # records remain valid without a migration.
     agentName: str | None = None
     toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
+    toolConsent: ToolConsentSummary | None = None
+    toolConsentState: ToolConsentState | None = Field(default=None, exclude=True)
+    toolConsentVersion: int = Field(default=0, exclude=True)
     imagePreferences: ImageGenerationPreferences = Field(
         default_factory=ImageGenerationPreferences
     )

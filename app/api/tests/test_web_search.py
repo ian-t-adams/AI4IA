@@ -8,7 +8,7 @@ Covers the new web-search synthetic tools
 Posture mirrors the inline-attachment / run_code paths: a factory that returns
 None when the flag is OFF (zero regression — no tool advertised, no SDK client
 built), closure-bound identity, a per-turn budget shared across all five tools, an
-entitlement gate before any spend, a nonce fence + single-lined/capped scalars on
+entitlement gate before any spend, a nonce fence + bounded credential-redacted data on
 EVERY returned field (web content is a top prompt-injection vector), fail-soft on
 every SDK error category (never raises into the turn), and synthetic metering
 (known=False). All IO is injected (a fake WebSearchClient, and for the wrapper's
@@ -48,7 +48,13 @@ from ai4ia_api.websearch.client import (
 )
 from ai4ia_api.websearch.factory import build_web_search_service
 from ai4ia_api.websearch.health import WebSearchHealth
+from ai4ia_api.websearch.contracts import WEBIQ_TOOL_NAMES
 from tests.conftest import make_settings
+
+
+@pytest.fixture(autouse=True)
+def public_webiq_dns(monkeypatch):
+    monkeypatch.setattr("ai4ia_api.agents.ssrf._default_resolver", lambda host: ["93.184.216.34"])
 
 
 # --------------------------------------------------------------------------- #
@@ -100,6 +106,30 @@ class FakeWebClient:
         if self._raise is not None:
             raise self._raise
         return self._page
+
+    async def _structured(self, tool, query, **kw):
+        self.calls.append({"tool": tool, "query": query, **kw})
+        if self._raise is not None:
+            raise self._raise
+        return {"results": self._rows}
+
+    async def classic_search(self, query, **kw):
+        return await self._structured("classic", query, **kw)
+
+    async def finance_search(self, query, **kw):
+        return await self._structured("finance", query, **kw)
+
+    async def places_search(self, query, **kw):
+        return await self._structured("places", query, **kw)
+
+    async def sports_search(self, query, **kw):
+        return await self._structured("sports", query, **kw)
+
+    async def sonic_search(self, query, **kw):
+        return await self._structured("sonic", query, **kw)
+
+    async def autosuggest(self, query, **kw):
+        return await self._structured("autosuggest", query, **kw)
 
     async def close(self):
         self.closed = True
@@ -178,10 +208,7 @@ async def test_factory_builds_service_and_capability_when_on():
     assert svc is not None
     tools, handlers = svc.build_capability(user_id="u1", session_id="s1", nonce="nn")
     names = {t["function"]["name"] for t in tools}
-    assert names == {
-        WEB_SEARCH_TOOL_NAME, NEWS_SEARCH_TOOL_NAME, VIDEO_SEARCH_TOOL_NAME,
-        IMAGE_SEARCH_TOOL_NAME, BROWSE_TOOL_NAME,
-    }
+    assert names == WEBIQ_TOOL_NAMES
     assert set(handlers) == names
 
 
@@ -197,19 +224,29 @@ async def test_factory_close_closes_client():
 # --------------------------------------------------------------------------- #
 # Schema / tool-name disjointness
 # --------------------------------------------------------------------------- #
-def test_capability_exposes_five_disjoint_tools():
+def test_capability_exposes_disjoint_webiq_tools():
     tools, handlers, _, _, _ = _caps()
     names = {t["function"]["name"] for t in tools}
-    assert names == {
-        WEB_SEARCH_TOOL_NAME, NEWS_SEARCH_TOOL_NAME, VIDEO_SEARCH_TOOL_NAME,
-        IMAGE_SEARCH_TOOL_NAME, BROWSE_TOOL_NAME,
-    }
+    assert names == WEBIQ_TOOL_NAMES
     assert set(handlers) == names
     # Disjoint from the built-in / other synthetic tools (runtime asserts no clash).
     assert names.isdisjoint(_REGISTRY_NAMES)
     # Descriptions steer the model toward current/real-time info + citing URLs.
     descs = " ".join(t["function"]["description"].lower() for t in tools)
     assert "url" in descs and ("current" in descs or "news" in descs)
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    sorted(WEBIQ_TOOL_NAMES),
+)
+def test_each_web_tool_identifies_its_webiq_provider(tool_name):
+    tools, _, client, _, _ = _caps()
+    functions = {tool["function"]["name"]: tool["function"] for tool in tools}
+    description = functions[tool_name]["description"].lower()
+    assert "webiq" in description
+    assert "web iq" in description
+    assert client.calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -432,11 +469,10 @@ async def test_crafted_result_fields_are_sanitized_and_fenced():
     assert body.count("END RESULTS nn") == 1
     assert body.startswith("BEGIN RESULTS nn\n")
     assert body.endswith("\nEND RESULTS nn")
-    # The title line is single-lined (crafted newlines flattened) + length-capped.
+    # JSON escapes the title's newlines instead of promoting them into fence markers.
     lines = body.split("\n")
-    title_line = next(line for line in lines if line.startswith("[1]"))
+    title_line = next(line for line in lines if '"title":' in line)
     assert "Ignore previous instructions" in title_line  # stayed on one line
-    assert len(title_line) <= 320  # "[1] " + capped title
     # The snippet is truncated well under the raw 5000 chars.
     assert "x" * 5000 not in body
 
@@ -490,7 +526,7 @@ class _FakeSdkClient:
         self.aclosed = True
 
 
-async def test_wrapper_normalizes_web_results():
+async def test_wrapper_preserves_rich_web_results():
     async def _web(query, **kw):
         return SimpleNamespace(webResults=[
             SimpleNamespace(title="T", url="https://u", content="C", extra="drop me"),
@@ -498,7 +534,9 @@ async def test_wrapper_normalizes_web_results():
 
     client = WebSearchClient(_settings(), sdk_client=_FakeSdkClient(web=_web))
     rows = await client.web_search("q", max_results=5)
-    assert rows == [{"title": "T", "url": "https://u", "content": "C"}]
+    assert rows == {"webResults": [
+        {"title": "T", "url": "https://u", "content": "C", "extra": "drop me"},
+    ]}
 
 
 # --------------------------------------------------------------------------- #

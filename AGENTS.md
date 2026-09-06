@@ -57,13 +57,21 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    rebuildable.
 5. **Tools re-check at execution time.** Tool execution must re-validate scopes,
    approvals, target hosts, and SSRF/public-HTTPS rules when a call runs, not only
-   when a tool/server is registered.
+   when a tool/server is registered. User opt-in auto-approval is a bounded
+   session/run consent, not `ApprovalPolicy.off`: re-read its validity and tool
+   contract scope before dispatch, and never grant new tools or permissions.
+   Include automatically injected registry tools such as `load_skill` and their
+   meaningful resource metadata in those snapshots.
 6. **No secret sprawl.** Do not log credentials, commit secrets, or put user MCP
    secrets in Cosmos; durable MCP secrets belong in Key Vault outside local.
 7. **Receipts show execution, never hidden reasoning.** Persist bounded,
    credential-redacted prompts/context, source versions, offered/invoked tools,
    arguments/results, approvals, safety coverage and correlation metadata. Never
    label observable traces as chain-of-thought or invent model-internal decisions.
+   Auto-approved calls keep the same activity and receipt evidence, including
+   their approval provenance; skipping a prompt never means skipping a trace.
+   Cancellation/checkpoint CAS writes must bind the caller's message snapshot,
+   not just a status/lease shared by successive checkpoints.
 
 ## CI build / test / lint commands
 
@@ -485,6 +493,24 @@ Four rules follow:
   seam, declare risk/scopes/egress/approval accurately, redact logs, and re-run
   `ToolRegistry.authorize` plus SSRF host validation at execution time.
 - Add API tests for authorization, validation, failure handling, and redaction.
+
+### Extend WebIQ
+
+- `websearch/contracts.py` is the fixed WebIQ v3 endpoint/parameter contract.
+  Verify changes against official SDK/OpenAPI/MCP documentation, not guessed
+  routes or only the locally installed SDK's generated methods. The adapter uses
+  the SDK's public auth/transport APIs because generated resource methods differ
+  across SDK versions.
+- Preserve structured answers, source URLs/timestamps, and nested metadata under
+  `websearch/rendering.py`'s depth, fan-out, node and output bounds. All eleven
+  tools share one per-turn call/output budget; safe search remains strict and
+  endpoint/auth/retry controls remain server-owned.
+- Add new names to synthetic governance and activity mappings. Exercise the
+  actual model-delivery seam as well as handler unit tests: truncating a larger
+  WebIQ result at the generic tool limit can cut its JSON and closing nonce fence.
+- The normal chat, agent, workflow, `/research`, inspector and consent snapshots
+  must describe the same enabled tool surface. Optional endpoint access, including
+  beta autosuggest, is an upstream entitlement, not a successful local-test claim.
 
 ### Add a Foundry skill
 

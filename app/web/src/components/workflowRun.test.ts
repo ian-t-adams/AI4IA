@@ -65,3 +65,26 @@ describe("deriveSteps", () => {
     expect(rows.map((r) => r.state)).toEqual(["unknown", "unknown"]);
   });
 });
+
+
+describe("structured workflow activity", () => {
+  it("preserves later steps after an earlier error rather than guessing they were skipped", () => {
+    const steps = deriveSteps([{ label: "a" }, { label: "b" }, { label: "c" }], false, "Step 2: unavailable", [
+      { kind: "workflow_step", label: "Step 1: a", detail: "completed" },
+      { kind: "workflow_error", label: "Step 2: b", detail: "failed" },
+      { kind: "workflow_step", label: "Step 3: c", detail: "completed" },
+    ]);
+    expect(steps.map((step) => step.state)).toEqual(["succeeded", "failed", "succeeded"]);
+    expect(steps[1].error).toBe("Step 2: unavailable");
+  });
+
+  it("does not turn a bounded trace's missing steps into claimed successes or skips", () => {
+    const steps = deriveSteps(TWO, false, "Step 2: stop", [{ kind: "workflow_error", label: "Step 2: b", detail: "cancelled" }]);
+    expect(steps.map((step) => step.state)).toEqual(["unknown", "cancelled"]);
+  });
+
+  it("never treats text from a tool as workflow execution metadata", () => {
+    const steps = deriveSteps(TWO, false, "Connection interrupted", [{ kind: "tool_result", label: "Step 2: helper", detail: "completed" }]);
+    expect(steps.map((step) => step.state)).toEqual(["unknown", "unknown"]);
+  });
+});

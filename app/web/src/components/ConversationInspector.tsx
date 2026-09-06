@@ -23,8 +23,12 @@ import type {
   ModelEntry,
   Session,
   ToolCatalogItem,
+  ToolConsentSummary,
   ToolOverrides,
 } from "@/lib/types";
+import { inspectedSessionConsent, unverifiedSessionConsent, type SessionConsentView, type ToolConsentInspection } from "@/lib/toolConsent";
+import { SessionToolConsentControls } from "./ToolConsentControls";
+import { useSessionToolConsentMutation } from "./useSessionToolConsent";
 import { HelpTooltip } from "./HelpTooltip";
 import { ImageGenerationControls } from "./ImageGenerationControls";
 import { SectionDisclosure, SectionTitle, type Section } from "./InspectorAccordion";
@@ -139,6 +143,10 @@ export function ConversationInspector({
   draftDefaults,
   onDraftDefaultsChange,
   onSessionUpdated,
+  sessionToolConsent,
+  consentVerification,
+  onToolConsentUpdated,
+  onToolConsentSnapshot,
   onStartImagePrompt,
   onOpenLibrary,
   libraryEnabled,
@@ -162,6 +170,10 @@ export function ConversationInspector({
   draftDefaults: ConversationDraftDefaults;
   onDraftDefaultsChange: (value: ConversationDraftDefaults) => void;
   onSessionUpdated: (session: Session) => void;
+  sessionToolConsent?: ToolConsentSummary | null;
+  consentVerification?: SessionConsentView;
+  onToolConsentUpdated?: (session: Session) => void;
+  onToolConsentSnapshot?: (sessionId: string, inspection: ToolConsentInspection) => void;
   onStartImagePrompt?: () => void;
   onOpenLibrary?: () => void;
   // Required, not defaulted: `/api/library/summary` 404s when the feature is
@@ -228,13 +240,15 @@ export function ConversationInspector({
   const onDrawerKeyDown = useModalKeyDown<HTMLElement>(onToggle, drawer);
 
   useEffect(() => setPromptDraft(systemPrompt), [systemPrompt]);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mountedRef.current = true;
+    const sectionGenerations = sectionGenerationRef.current;
+    return () => {
       mountedRef.current = false;
       mutationGenerationRef.current += 1;
-    },
-    [],
-  );
+      sectionGenerations.snapshot += 1;
+    };
+  }, []);
   useEffect(
     () => () => {
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
@@ -262,9 +276,11 @@ export function ConversationInspector({
   }, []);
 
   const loadSnapshot = useCallback(async () => {
+    if (!mountedRef.current) return;
     const capturedSession = sessionId;
+    const requestId = Symbol("consent-inspection");
     const generation = ++sectionGenerationRef.current.snapshot;
-    setSnapshot(null);
+    setSnapshot((current) => current?.sessionId === capturedSession ? current : null);
     setSectionErrors((current) => {
       const next = { ...current };
       delete next.snapshot;
@@ -275,18 +291,21 @@ export function ConversationInspector({
       return;
     }
     setPhases((current) => ({ ...current, snapshot: "loading" }));
+    onToolConsentSnapshot?.(capturedSession, { phase: "loading", requestId });
     try {
       const value = await getInspector(capturedSession);
       if (
-        generation !== sectionGenerationRef.current.snapshot ||
+        !mountedRef.current || generation !== sectionGenerationRef.current.snapshot ||
         activeSessionRef.current !== capturedSession
       ) return;
+      if (value.sessionId !== capturedSession) throw new Error("Inspector response did not match this conversation.");
       setSnapshot(value);
+      onToolConsentSnapshot?.(capturedSession, { phase: "ready", requestId, value });
       if (value.instructions.editable) setPromptDraft(value.instructions.value ?? "");
       setPhases((current) => ({ ...current, snapshot: "ready" }));
     } catch (reason) {
       if (
-        generation !== sectionGenerationRef.current.snapshot ||
+        !mountedRef.current || generation !== sectionGenerationRef.current.snapshot ||
         activeSessionRef.current !== capturedSession
       ) return;
       setSectionErrors((current) => ({
@@ -294,8 +313,9 @@ export function ConversationInspector({
         snapshot: (reason as Error).message || "Conversation settings unavailable",
       }));
       setPhases((current) => ({ ...current, snapshot: "error" }));
+      onToolConsentSnapshot?.(capturedSession, { phase: "error", requestId });
     }
-  }, [sessionId]);
+  }, [sessionId, onToolConsentSnapshot]);
 
   const loadTools = useCallback(async () => {
     const capturedSession = sessionId;
@@ -452,6 +472,27 @@ export function ConversationInspector({
     snapshot?.sessionId === sessionId &&
     phases.snapshot === "ready" &&
     !saving;
+  const consentMutation = useSessionToolConsentMutation(sessionId, (updated) => {
+    // A successful mutation supplies a summary, not live activation proof.
+    (onToolConsentUpdated ?? onSessionUpdated)(updated);
+  }, {
+    onStart: () => {
+      sectionGenerationRef.current.snapshot += 1;
+      setPhases((current) => ({ ...current, snapshot: "loading" }));
+      if (sessionId) onToolConsentSnapshot?.(sessionId, { phase: "loading", requestId: Symbol("consent-mutation") });
+    },
+    // Reconcile even an ambiguous transport failure, with the hook's existing
+    // session-generation guard preventing callbacks into a switched session.
+    onSettled: () => { void loadSnapshot(); },
+  });
+  const localConsentView = snapshot?.sessionId === sessionId && phases.snapshot === "ready"
+    ? inspectedSessionConsent(snapshot)
+    : unverifiedSessionConsent(phases.snapshot === "error" ? "unavailable" : null);
+  const consentView = consentVerification ?? localConsentView;
+  const consentSummary = consentView.consent !== undefined ? consentView.consent
+    : sessionToolConsent !== undefined ? sessionToolConsent
+      : snapshot?.sessionId === sessionId ? snapshot.toolConsent : undefined;
+
   const updateDraft = useCallback(
     (value: Partial<ConversationDraftDefaults>) => {
       onDraftDefaultsChange({ ...draftDefaults, ...value });
@@ -833,6 +874,18 @@ export function ConversationInspector({
                   </select>
                 </label>
                 {agentDescription ? <p className="inspector-note">{agentDescription}</p> : null}
+                <SessionToolConsentControls
+                  sessionId={sessionId}
+                  consent={consentSummary}
+                  available={consentView.available}
+                  active={consentView.active}
+                  status={consentView.status}
+                  canEnable={canMutate}
+                  pending={consentMutation.pending}
+                  error={consentMutation.error}
+                  onChange={consentMutation.change}
+                  onRefresh={() => void loadSnapshot()}
+                />
                 {sessionId ? (
                   <ImageGenerationControls
                     preferences={snapshot?.imagePreferences ?? null}
@@ -882,9 +935,9 @@ export function ConversationInspector({
                       <strong>effective</strong> right now. Then its{" "}
                       <strong>source</strong> and <strong>ownership</strong>; its{" "}
                       <strong>risk</strong> tier (safe, external, or destructive); whether
-                      it <strong>needs approval</strong> — chat has no live approval
-                      prompt, so this means the tool is unavailable, not merely
-                      slower; its <strong>scopes</strong> (specific permissions it can
+                      it <strong>needs approval</strong> — a per-call grant or valid,
+                      explicitly enabled session consent satisfies that gate;
+                      authorization is still checked for each call; its <strong>scopes</strong> (specific permissions it can
                       exercise); and
                       whether it&apos;s <strong>typed</strong> (schema-validated inputs) or{" "}
                       <strong>voice</strong>-capable (works during a Voice Live call).

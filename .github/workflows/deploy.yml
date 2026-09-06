@@ -236,7 +236,12 @@ jobs:
       AI4IA_VOICE_LIVE_TOOLS_ENABLED: ${{ vars.AI4IA_VOICE_LIVE_TOOLS_ENABLED }}
       AI4IA_AUTO_SUMMARIZATION_ENABLED: ${{ vars.AI4IA_AUTO_SUMMARIZATION_ENABLED }}
       AI4IA_CUSTOM_TOOLS_ENABLED: ${{ vars.AI4IA_CUSTOM_TOOLS_ENABLED }}
+      # Allows explicit per-session/run consent; does not auto-approve by itself.
+      AI4IA_TOOL_AUTO_APPROVE_ENABLED: ${{ vars.AI4IA_TOOL_AUTO_APPROVE_ENABLED }}
       AI4IA_WEB_SEARCH_ENABLED: ${{ vars.AI4IA_WEB_SEARCH_ENABLED }}
+      AI4IA_WEBIQ_BASE_URL: ${{ vars.AI4IA_WEBIQ_BASE_URL }}
+      AI4IA_WEB_SEARCH_MAX_RESULTS: ${{ vars.AI4IA_WEB_SEARCH_MAX_RESULTS }}
+      AI4IA_WEB_SEARCH_MAX_CONTENT_CHARS: ${{ vars.AI4IA_WEB_SEARCH_MAX_CONTENT_CHARS }}
       # Custom-domain + managed-cert binding. Empty -> bicep leaves the ingress
       # with no custom domain (azd would otherwise wipe an imperatively-bound
       # hostname on every deploy). Set as repo variables; see header.

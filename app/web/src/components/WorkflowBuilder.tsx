@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
-import type { AgentSummary, ToolCatalogItem, Workflow, WorkflowRunStatus } from "@/lib/types";
+import type { AgentSummary, Message, ToolCatalogItem, Workflow, WorkflowRunStatus } from "@/lib/types";
 import {
   formatBytes,
   LIBRARY_STATUS_LABELS,
@@ -20,8 +20,10 @@ import {
 import { HelpTooltip } from "./HelpTooltip";
 import { TOOL_LABELS } from "@/lib/toolHelp";
 import { WorkflowDisclosure } from "./WorkflowDisclosure";
+import { TOOL_CONSENT_WARNING } from "./ToolConsentControls";
+import { WorkflowRunConsentNotice, findWorkflowRunMessage, type WorkflowRunWatch } from "./WorkflowRunConsentNotice";
 import { WorkflowRunReport } from "./WorkflowRunReport";
-import { deriveSteps, pendingSteps, type RunState } from "./workflowRun";
+import { deriveSteps, evidenceFromMessage, pendingSteps, resultFromMessage, type RunState } from "./workflowRun";
 import { useLibraryConfig } from "./LibraryProvider";
 import {
   stepCapabilities,
@@ -108,11 +110,12 @@ async function pollRun(
   runId: string,
   onStatus: (status: string) => void,
   isCancelled: () => boolean = () => false,
+  sessionId?: string,
 ): Promise<WorkflowRunStatus | null> {
   for (let attempt = 0; attempt < RUN_POLL_MAX_ATTEMPTS; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, RUN_POLL_INTERVAL_MS));
     if (isCancelled()) return null;
-    const status = await api.getWorkflowRun(runId);
+    const status = await api.getWorkflowRun(runId, sessionId);
     if (isCancelled()) return null;
     onStatus(status.status);
     if (api.isTerminalRunStatus(status.status)) return status;
@@ -144,10 +147,34 @@ export function WorkflowBuilder({
   // offers an option whose only possible outcome is a 422.
   const [durableAvailable, setDurableAvailable] = useState(false);
   const [runDurable, setRunDurable] = useState(false);
+  const [toolAutoApproveAvailable, setToolAutoApproveAvailable] = useState(false);
+  const [runAutoApproveTools, setRunAutoApproveTools] = useState(false);
+  const [runAutoApprovalRequested, setRunAutoApprovalRequested] = useState(false);
+  const [runWatches, setRunWatches] = useState<WorkflowRunWatch[]>([]);
+  const observedRunMessages = useRef(new Map<string, Message>());
   // Surfaced while polling a scheduled run so the button is not silently busy
   // for what may be minutes.
   const [runStatus, setRunStatus] = useState<string | null>(null);
   const [runState, setRunState] = useState<RunState>({ phase: "idle" });
+  const onRunMessage = useCallback((message: Message) => {
+    observedRunMessages.current.set(message.sessionId, message);
+    setRunState((current) => {
+      if (current.phase !== "cancelled" || current.sessionId !== message.sessionId ||
+        (current.runId != null && current.runId !== message.workflowRunId)) return current;
+      // Cancellation is monotonic, but its evidence is not frozen. A late tool
+      // result updates only this run's report, never a replacement run/workflow.
+      return {
+        ...current,
+        executionReceipt: message.executionReceipt ?? current.executionReceipt,
+        workflowStepReceipts: message.workflowStepReceipts ?? current.workflowStepReceipts,
+        activity: message.steps ?? current.activity,
+        steps: message.steps?.length ? deriveSteps(
+          current.steps.map((step) => ({ label: step.agentLabel })), false, message.content, message.steps,
+        ) : current.steps,
+        evidenceError: null,
+      };
+    });
+  }, []);
   const [openSections, setOpenSections] = useState<Set<string>>(new Set());
 
   const library = useLibraryConfig();
@@ -175,6 +202,7 @@ export function WorkflowBuilder({
   // previous mount can never resume against a new one.
   const mountedRef = useRef(true);
   const runAbortRef = useRef<AbortController | null>(null);
+  const saveAndRunRef = useRef(false);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -196,6 +224,7 @@ export function WorkflowBuilder({
       const listed = await api.listWorkflows();
       setMine(listed.workflows);
       setDurableAvailable(listed.durableAvailable);
+      setToolAutoApproveAvailable(listed.toolAutoApproveAvailable === true);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -251,6 +280,9 @@ export function WorkflowBuilder({
   }, [stepAgentKey]);
 
   const startNew = useCallback(() => {
+    if (runAbortRef.current) return;
+    setRunAutoApproveTools(false);
+    setRunDurable(false);
     setEditing(null);
     setForm(blankForm(firstAgentName));
     setError(null);
@@ -262,6 +294,9 @@ export function WorkflowBuilder({
   // does not save: the user reviews and edits first, and the name stays
   // editable so a second copy does not collide with the first.
   const startFromTemplate = useCallback((templateId: string) => {
+    if (runAbortRef.current) return;
+    setRunAutoApproveTools(false);
+    setRunDurable(false);
     const template = templateById(templateId);
     if (!template) return;
     const { workflow } = template;
@@ -284,6 +319,9 @@ export function WorkflowBuilder({
   }, []);
 
   const startEdit = useCallback((w: Workflow) => {
+    if (runAbortRef.current) return;
+    setRunAutoApproveTools(false);
+    setRunDurable(false);
     setEditing(w.name);
     setForm(formFrom(w));
     setError(null);
@@ -292,7 +330,10 @@ export function WorkflowBuilder({
 
   // --- step array ops (all immutable, keyed by client id) ---
   const setSteps = useCallback(
-    (fn: (s: StepRow[]) => StepRow[]) => setForm((f) => ({ ...f, steps: fn(f.steps) })),
+    (fn: (s: StepRow[]) => StepRow[]) => {
+      setRunAutoApproveTools(false);
+      setForm((f) => ({ ...f, steps: fn(f.steps) }));
+    },
     [],
   );
   const addStep = useCallback(
@@ -439,13 +480,9 @@ export function WorkflowBuilder({
 
   const doRun = useCallback(
     async (targetName: string, justSaved?: Workflow) => {
-      // Prefer the definition handed in by save-and-run: `mine` is whatever this
-      // closure captured, which for an edit-then-run is the PRE-save version.
-      const target = justSaved ?? mine.find((w) => w.name === targetName);
-      if (!target || !runInput.trim()) return;
+      const target = justSaved ?? mine.find((workflow) => workflow.name === targetName);
+      if (!mountedRef.current || !target || !runInput.trim() || runAbortRef.current) return;
       setError(null);
-      // Validate before creating a session so a rejected run never leaves an
-      // empty "Run: …" session behind.
       if (!runModel) {
         setError("Pick a model in the chat header before running.");
         return;
@@ -454,110 +491,200 @@ export function WorkflowBuilder({
         setError(`Input must be ≤ ${MAX_RUN_INPUT_LEN} characters.`);
         return;
       }
-      const stepAgents = target.steps.map((s) => ({ label: agentLabel(s.agent) }));
+      const durableRequested = durableAvailable && runDurable;
+      const autoApproveTools = toolAutoApproveAvailable && runAutoApproveTools;
+      let idempotencyKey: string;
+      try {
+        // Every invocation gets a fresh identity before any session/start I/O.
+        // Direct cancellation can use it without waiting for a run-id response.
+        idempotencyKey = api.newWorkflowRunIdempotencyKey();
+      } catch {
+        setError("Could not create a secure run identity. Retry in a secure browser context.");
+        return;
+      }
+      const stepAgents = target.steps.map((step) => ({ label: agentLabel(step.agent) }));
+      const runController = new AbortController();
+      runAbortRef.current = runController;
+      const isCurrent = () => mountedRef.current && runAbortRef.current === runController && !runController.signal.aborted;
       setRunning(true);
       setRunState({ phase: "running", steps: pendingSteps(stepAgents, "pending") });
+      // A choice is consumed by this invocation, never a default for Run again.
+      // API scheduling retries retain the captured choice and byte-identical key.
+      setRunAutoApproveTools(false);
+      setRunAutoApprovalRequested(autoApproveTools);
       const startedAt = Date.now();
-      const durableRequested = durableAvailable && runDurable;
-      const idempotencyKey = durableRequested
-        ? api.newWorkflowRunIdempotencyKey()
-        : undefined;
-      const runController = new AbortController();
-      runAbortRef.current?.abort();
-      runAbortRef.current = runController;
+      let watch: WorkflowRunWatch | null = null;
+      let evidenceError: string | null = null;
+      const readEvidence = async (): Promise<Message | null> => {
+        if (!watch) return null;
+        const retained = observedRunMessages.current.get(watch.sessionId);
+        let observed = retained ? findWorkflowRunMessage([retained], watch) : null;
+        try {
+          const messages = await api.listMessages(watch.sessionId, runController.signal);
+          if (!isCurrent()) return null;
+          observed = findWorkflowRunMessage(messages, watch) ?? observed;
+        } catch (reason) {
+          if (!isCurrent()) return null;
+          evidenceError = `Could not refresh execution evidence: ${reason instanceof Error ? reason.message : "request failed"}. Open the run in chat to reconcile.`;
+        }
+        return observed;
+      };
+      const markStartSettled = () => {
+        if (!watch) return;
+        watch = { ...watch, startPending: false };
+        if (isCurrent()) {
+          const sessionId = watch.sessionId;
+          setRunWatches((current) => current.map((item) => item.sessionId === sessionId && item.idempotencyKey === idempotencyKey
+            ? { ...item, startPending: false } : item));
+        }
+      };
+      const recordCancellation = (message: Message | null, text: string) => {
+        if (!watch) return;
+        const cancelledWatch: WorkflowRunWatch = {
+          ...watch, runId: message?.workflowRunId ?? watch.runId, cancellationAcknowledged: true,
+        };
+        watch = cancelledWatch;
+        setRunState({ phase: "cancelled", sessionId: cancelledWatch.sessionId,
+          runId: cancelledWatch.runId ?? undefined,
+          steps: deriveSteps(stepAgents, false, message?.content || text, message?.steps),
+          ...evidenceFromMessage(message), evidenceError });
+        // A TERMINATED acknowledgement can precede the last persisted receipt,
+        // even when the cancellation endpoint already marked the row cancelled.
+        setRunWatches((current) => [...current.filter((item) => item.sessionId !== cancelledWatch.sessionId), cancelledWatch]);
+      };
+      const finishWatch = () => {
+        if (watch) {
+          const sessionId = watch.sessionId;
+          setRunWatches((current) => current.filter((item) => item.sessionId !== sessionId));
+          observedRunMessages.current.delete(sessionId);
+        }
+      };
       try {
-        const session = await api.createSession(
-          {
-            title: `Run: ${target.displayName || target.name} · ${new Date().toLocaleTimeString()}`,
-            model: runModel,
-            // Send the key ONLY when non-empty. `[]` is not "no preference" — the
-            // API reads `allowed_document_ids is None or bool(...)`, so an empty
-            // array switches document reading OFF for the whole run. Omitting it
-            // leaves the scope unset, which means every ready document.
-            ...(selectedDocIds.length ? { libraryDocumentIds: selectedDocIds } : {}),
-          },
-          runController.signal,
-        );
-        const outcome = await api.runWorkflow(target.name, {
-          sessionId: session.id,
-          input: runInput,
+        const session = await api.createSession({
+          title: `Run: ${target.displayName || target.name} · ${new Date().toLocaleTimeString()}`,
           model: runModel,
-          // Only ever sent when the server said it can honour it, so the request
-          // cannot be rejected for asking.
-          ...(durableRequested
-            ? { durable: true, idempotencyKey }
-            : {}),
+          // [] explicitly disables retrieval; omission leaves the scope unset.
+          ...(selectedDocIds.length ? { libraryDocumentIds: selectedDocIds } : {}),
         }, runController.signal);
+        if (!isCurrent()) return;
+        watch = {
+          sessionId: session.id, workflowName: target.name, label: target.displayName || target.name,
+          mode: durableRequested ? "durable" : "direct", idempotencyKey, startPending: true,
+          autoApproveRequested: autoApproveTools,
+        };
+        const capturedWatch = watch;
+        setRunWatches((current) => [...current.filter((item) => item.sessionId !== session.id), capturedWatch]);
+        const outcome = await api.runWorkflow(target.name, {
+          sessionId: session.id, input: runInput, model: runModel, autoApproveTools,
+          idempotencyKey,
+          ...(durableRequested ? { durable: true } : {}),
+        }, runController.signal);
+        markStartSettled();
+        if (!isCurrent()) return;
 
-        if (outcome.scheduled) {
-          // A durable run answers before the assistant turn exists, so poll here
-          // rather than handing off: the chat view loads a session's messages
-          // once and does not watch for later arrivals.
-          const status = await pollRun(outcome.run.runId, setRunStatus, () => !mountedRef.current);
-          // Unmounted mid-poll: the orchestration is still running server-side
-          // and will write its turn to the session, so there is nothing to
-          // report and no state worth setting.
-          if (!mountedRef.current) return;
-          setRunStatus(null);
-          if (status === null) {
-            setRunState({
-              phase: "timedOut",
-              sessionId: session.id,
-              steps: pendingSteps(stepAgents, "unknown"),
-            });
-            return;
-          }
-          const text = status.error ?? status.text ?? "";
-          if (status.error || status.ok === false) {
-            setRunState({
-              phase: "failed",
-              sessionId: session.id,
-              steps: deriveSteps(stepAgents, false, text || "The workflow reported a failure."),
-            });
-            return;
-          }
-          setRunState({
-            phase: "succeeded",
-            sessionId: session.id,
-            steps: deriveSteps(stepAgents, true, text),
-            elapsedMs: Date.now() - startedAt,
-          });
+        if (!outcome.scheduled) {
+          // Message is the exact server-owned record; do not discard step
+          // receipts, activity or cancellations just because ok is false.
+          setRunState(resultFromMessage(stepAgents, {
+            ...outcome.result.message,
+            sessionId: outcome.result.sessionId,
+          }, outcome.result.ok, Date.now() - startedAt));
+          finishWatch();
           return;
         }
-
-        const text = outcome.result.message.content;
-        setRunState(
-          outcome.result.ok
-            ? {
-                phase: "succeeded",
-                sessionId: outcome.result.sessionId,
-                steps: deriveSteps(stepAgents, true, text),
-                elapsedMs: Date.now() - startedAt,
-              }
-            : {
-                phase: "failed",
-                sessionId: outcome.result.sessionId,
-                steps: deriveSteps(stepAgents, false, text || "The workflow reported a failure."),
-              },
-        );
-      } catch (e) {
-        if (runController.signal.aborted) return;
-        // A pre-flight or transport failure is not a run. Keep it in the alert
-        // rather than rendering a result card implying steps executed.
-        setError((e as Error).message);
-        setRunState({ phase: "idle" });
+        watch = { ...watch, runId: outcome.run.runId, consent: outcome.run.toolConsent };
+        const acceptedWatch = watch;
+        setRunWatches((current) => current.map((item) => item.sessionId === session.id ? acceptedWatch : item));
+        const status = await pollRun(outcome.run.runId, (value) => {
+          if (isCurrent()) setRunStatus(value);
+        }, () => !isCurrent(), session.id);
+        if (!isCurrent()) return;
+        const message = await readEvidence();
+        if (!isCurrent()) return;
+        const evidence = { ...evidenceFromMessage(message), evidenceError };
+        if (status?.status.toUpperCase() === "TERMINATED" || message?.workflowConsentRevoked || message?.status === "cancelled") {
+          recordCancellation(message, status?.text ?? "Cancellation acknowledged.");
+          return;
+        }
+        if (message && message.status !== "streaming") {
+          setRunState({ ...resultFromMessage(stepAgents, message, message.status === "complete" && status?.ok !== false, Date.now() - startedAt), evidenceError });
+          finishWatch();
+          return;
+        }
+        if (status === null) {
+          setRunState({ phase: "timedOut", sessionId: session.id,
+            steps: deriveSteps(stepAgents, false, "", message?.steps), ...evidence });
+          return;
+        }
+        const text = status.error ?? status.text ?? "";
+        const failed = Boolean(status.error) || status.ok === false || status.status.toUpperCase() === "FAILED";
+        if (failed) {
+          setRunState({ phase: "failed", sessionId: session.id,
+            steps: deriveSteps(stepAgents, false, text || "The workflow reported a failure.", message?.steps), ...evidence });
+          finishWatch();
+          return;
+        }
+        if (status.ok !== true) {
+          setRunState({ phase: "unknown", sessionId: session.id,
+            steps: deriveSteps(stepAgents, false, "", message?.steps),
+            error: "The scheduler did not report a workflow result.", ...evidence });
+          return;
+        }
+        setRunState({ phase: "succeeded", sessionId: session.id,
+          steps: deriveSteps(stepAgents, true, text, message?.steps),
+          elapsedMs: Date.now() - startedAt, ...evidence });
+        finishWatch();
+      } catch (reason) {
+        if (!isCurrent()) return;
+        markStartSettled();
+        const detail = reason instanceof Error ? reason.message : "The run request failed.";
+        if (watch) {
+          const message = await readEvidence();
+          if (!isCurrent()) return;
+          if (message?.workflowConsentRevoked || message?.status === "cancelled") {
+            recordCancellation(message, detail);
+          } else if (message && message.status !== "streaming") {
+            setRunState({ ...resultFromMessage(stepAgents, message, message.status === "complete", Date.now() - startedAt), evidenceError });
+            finishWatch();
+          } else if (!message && reason instanceof Error && "status" in reason &&
+            typeof reason.status === "number" && reason.status >= 400 && reason.status < 500) {
+            // An authoritative preflight rejection is different from a lost
+            // reply. Do not leave a phantom live-consent notice behind a 409.
+            setError(detail);
+            setRunState({ phase: "idle" });
+            finishWatch();
+          } else {
+            // A lost response is not proof execution stopped; retain observed
+            // steps and the live revoke notice, including on polling errors.
+            setRunState({ phase: "unknown", sessionId: watch.sessionId,
+              steps: deriveSteps(stepAgents, false, "", message?.steps), error: detail,
+              ...evidenceFromMessage(message), evidenceError });
+          }
+        } else {
+          setError(detail);
+          setRunState({ phase: "idle" });
+        }
       } finally {
-        if (runAbortRef.current === runController) runAbortRef.current = null;
-        setRunning(false);
-        setRunStatus(null);
+        if (isCurrent()) {
+          runAbortRef.current = null;
+          setRunning(false);
+          setRunStatus(null);
+          setRunAutoApprovalRequested(false);
+        }
       }
     },
-    [mine, runInput, runModel, durableAvailable, runDurable, selectedDocIds, agentLabel],
+    [mine, runInput, runModel, durableAvailable, runDurable, toolAutoApproveAvailable, runAutoApproveTools, selectedDocIds, agentLabel],
   );
 
   const saveAndRun = useCallback(async () => {
-    const saved = await submit();
-    if (saved) await doRun(saved.name, saved);
+    if (saveAndRunRef.current || runAbortRef.current) return;
+    saveAndRunRef.current = true;
+    try {
+      const saved = await submit();
+      if (mountedRef.current && saved) await doRun(saved.name, saved);
+    } finally {
+      saveAndRunRef.current = false;
+    }
   }, [submit, doRun]);
 
   const toggleSection = useCallback((id: string) => {
@@ -670,7 +797,7 @@ export function WorkflowBuilder({
   return (
     <div className="studio-pane">
       <div className="studio-list">
-        <button onClick={startNew} disabled={busy} style={primaryBtn}>
+        <button onClick={startNew} disabled={busy || running} style={primaryBtn}>
           + New workflow
         </button>
         <ul className="studio-list-scroll">
@@ -683,6 +810,7 @@ export function WorkflowBuilder({
             <li key={w.id} className="studio-list-row">
               <button
                 onClick={() => startEdit(w)}
+                disabled={busy || running}
                 aria-current={editing === w.name ? "true" : undefined}
                 className="studio-list-select"
               >
@@ -691,7 +819,7 @@ export function WorkflowBuilder({
               </button>
               <button
                 onClick={() => remove(w.name)}
-                disabled={busy}
+                disabled={busy || running}
                 aria-label={`Delete ${w.name}`}
                 title="Delete"
                 className="studio-list-delete"
@@ -704,6 +832,14 @@ export function WorkflowBuilder({
       </div>
 
       <div className="studio-work">
+        {runWatches.length > 0 ? <div className="workflow-active-consents" aria-label="Active run consents">
+        {runWatches.map((target) => <WorkflowRunConsentNotice
+          key={`${target.sessionId}:${target.idempotencyKey ?? target.runId ?? ""}`}
+          target={target}
+          onMessage={onRunMessage}
+          onDismiss={() => setRunWatches((current) => current.filter((item) => item.sessionId !== target.sessionId))}
+        />)}
+        </div> : null}
         {/* Roving tabindex, and both tabs point at ONE always-present panel that
             swaps its contents — so aria-controls can never reference an id that
             is not in the DOM. */}
@@ -1097,6 +1233,32 @@ export function WorkflowBuilder({
                   </HelpTooltip>
                 </div>
               )}
+
+              {toolAutoApproveAvailable && (
+                <div className="tool-consent-controls">
+                  <div className="tool-consent-option">
+                    <input
+                      type="checkbox"
+                      id="workflow-auto-approve-tools"
+                      checked={runAutoApproveTools}
+                      disabled={running || busy}
+                      aria-describedby="workflow-consent-warning workflow-consent-scope"
+                      onChange={(event) => setRunAutoApproveTools(event.target.checked)}
+                    />
+                    <label htmlFor="workflow-auto-approve-tools">Auto-approve enabled tools for this run</label>
+                  </div>
+                  <p id="workflow-consent-warning" className="tool-consent-warning">{TOOL_CONSENT_WARNING}</p>
+                  <p id="workflow-consent-scope" className="workflow-run-hint">
+                    Covers only the current tool contracts for this invocation, for at most 8 hours.
+                    Each new run needs its own opt-in; session consent does not carry over.
+                    Without consent, approval-gated calls fail with an actionable result.
+                    The /run_workflow chat command remains safe-only and cannot enable auto-approval.
+                  </p>
+                </div>
+              )}
+              {running && runAutoApprovalRequested ? (
+                <p role="status" className="tool-consent-state">Auto-approval requested for this run only.</p>
+              ) : null}
 
               <div className="workflow-run-actions">
                 <button
