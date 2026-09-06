@@ -64,7 +64,10 @@ default chat model are unchanged.
 
 Astra uses the Responses API for both plain chat and tool turns. It accepts text
 and image input, with a 1,050,000-token context window and 128,000-token maximum
-output. Sampling controls stay disabled. See Microsoft's
+output. The advertised `none`, `low`, `medium`, `high`, and `xhigh` effort values
+were confirmed through the governed application/gateway on 2026-09-06, along with
+streaming and a tool call followed by the model's answer. Sampling controls stay
+disabled. See Microsoft's
 [reasoning model documentation](https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning)
 for its provider capabilities; app tool execution still uses the existing
 authorization and approval checks.
