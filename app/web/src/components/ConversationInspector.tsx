@@ -551,6 +551,9 @@ export function ConversationInspector({
       )
       .sort((left, right) => left.label.localeCompare(right.label));
   }, [toolQuery, tools]);
+  const selectedModelEntry =
+    models.find((model) => model.id === selectedModel) ?? null;
+  const modelToolsUnavailable = selectedModelEntry?.supportsTools === false;
   // What the currently-selected agent does, regardless of whether it came from
   // a live session snapshot or a not-yet-started conversation's draft default.
   const agentDescription = useMemo(() => {
@@ -907,6 +910,7 @@ export function ConversationInspector({
                       ? snapshot?.tools.removed.includes(tool.name) ?? false
                       : draftDefaults.toolOverrides.removed.includes(tool.name);
                     const lockedOut = tool.available && !tool.selectable && !inherited;
+                    const modelLockedOut = modelToolsUnavailable;
                     // Index-based, not name-based: aria-describedby (like all
                     // IDREFS attributes) is a whitespace-separated token list, so
                     // an id built from a raw tool name containing a space (e.g. a
@@ -916,6 +920,14 @@ export function ConversationInspector({
                     const toolInputId = `tool-input-${index}`;
                     const toolStatusId = `tool-status-${index}`;
                     const toolLockedId = `tool-locked-${index}`;
+                    const toolModelLockedId = `tool-model-locked-${index}`;
+                    const describedBy = [
+                      toolStatusId,
+                      lockedOut ? toolLockedId : null,
+                      modelLockedOut ? toolModelLockedId : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" ");
                     return (
                       // A <label> can only own one interactive control; nesting the
                       // HelpTooltip's own button inside it (as before) folded "Help:
@@ -928,10 +940,11 @@ export function ConversationInspector({
                         <input
                           type="checkbox"
                           id={toolInputId}
-                          aria-describedby={lockedOut ? `${toolStatusId} ${toolLockedId}` : toolStatusId}
+                          aria-describedby={describedBy}
                           checked={effective}
                           disabled={
                             (sessionId ? !canMutate : false) ||
+                            modelLockedOut ||
                             !tool.available ||
                             (!tool.selectable && !inherited)
                           }
@@ -1001,6 +1014,12 @@ export function ConversationInspector({
                               Can&apos;t enable from here — it needs approval, scopes, or
                               restricted access that only a pre-built agent can grant, not
                               an ad-hoc conversation toggle.
+                            </small>
+                          ) : null}
+                          {modelLockedOut ? (
+                            <small id={toolModelLockedId}>
+                              Can&apos;t enable for {selectedModelEntry?.displayName ?? "this model"} —
+                              the selected model does not support tool calling.
                             </small>
                           ) : null}
                         </span>

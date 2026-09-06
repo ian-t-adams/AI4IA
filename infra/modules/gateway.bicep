@@ -330,6 +330,18 @@ resource sharedFoundryEndpointValues 'Microsoft.ApiManagement/service/namedValue
   }
 }]
 
+// Foundry Models sold directly by Azure use the account's services.ai host
+// rather than its Azure OpenAI-compatible cognitiveservices endpoint.
+resource sharedFoundryServicesEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = [for backend in foundryBackends: {
+  parent: sharedApim
+  name: 'foundry-${backend.region}-services-endpoint'
+  properties: {
+    displayName: 'foundry-${backend.region}-services-endpoint'
+    secret: false
+    value: 'https://${toLower(backend.accountName)}.services.ai.azure.com'
+  }
+}]
+
 // WebSocket APIs require a WSS backend. The catalog policy references only these
 // named values, so account endpoints stay catalog-derived and never hard-coded.
 resource sharedRealtimeWssEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = [for backend in foundryBackends: {
@@ -352,6 +364,7 @@ resource sharedModelPolicyFragments 'Microsoft.ApiManagement/service/policyFragm
   }
   dependsOn: [
     sharedFoundryEndpointValues
+    sharedFoundryServicesEndpointValues
   ]
 }]
 

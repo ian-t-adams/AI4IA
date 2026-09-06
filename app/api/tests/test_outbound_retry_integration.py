@@ -40,7 +40,7 @@ async def test_get_video_job_retries_transient_then_succeeds():
         return httpx.Response(200, json={"id": "job-1", "status": "succeeded"})
 
     client = _gateway(handler)
-    job = await client.get_video_job(job_id="job-1")
+    job = await client.get_video_job(deployment="sora-2-dep", job_id="job-1")
     assert job["status"] == "succeeded"
     assert calls["n"] == 2
 
@@ -55,7 +55,7 @@ async def test_get_video_job_does_not_retry_404():
 
     client = _gateway(handler)
     with pytest.raises(ModelGatewayError) as excinfo:
-        await client.get_video_job(job_id="nope")
+        await client.get_video_job(deployment="sora-2-dep", job_id="nope")
     assert excinfo.value.status_code == 404
     assert calls["n"] == 1
 
@@ -71,7 +71,9 @@ async def test_get_video_content_retries_transient_then_succeeds():
         return httpx.Response(200, content=b"MP4BYTES")
 
     client = _gateway(handler)
-    content = await client.get_video_content(generation_id="gen-1")
+    content = await client.get_video_content(
+        deployment="sora-2-dep", video_id="video-1"
+    )
     assert content == b"MP4BYTES"
     assert calls["n"] == 2
 

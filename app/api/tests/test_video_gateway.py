@@ -47,34 +47,34 @@ def _client(responses, **overrides) -> tuple[ModelGatewayClient, FakeHttp]:
 async def test_create_video_job_url_and_body():
     c, http = _client([_Resp(json_body={"id": "job1", "status": "queued"})])
     out = await c.create_video_job(
-        deployment="sora-2-dep", prompt="a cat", width=1280, height=720, n_seconds=5
+        deployment="sora-2-dep", prompt="a cat", width=1280, height=720, n_seconds=4
     )
     assert out == {"id": "job1", "status": "queued"}
     call = http.calls[0]
     assert call["url"] == (
-        "http://gateway.test/v1/video/generations/jobs?api-version=preview"
+        "http://gateway.test/deployments/sora-2-dep/videos?api-version=preview"
     )
     assert call["json"]["model"] == "sora-2-dep"
-    assert call["json"]["width"] == 1280
-    assert call["json"]["height"] == 720
-    assert call["json"]["n_seconds"] == 5
+    assert call["json"]["size"] == "1280x720"
+    assert call["json"]["seconds"] == "4"
 
 
 async def test_get_video_job_url():
-    c, http = _client([_Resp(json_body={"status": "succeeded"})])
-    out = await c.get_video_job(job_id="job1")
-    assert out["status"] == "succeeded"
+    c, http = _client([_Resp(json_body={"status": "completed"})])
+    out = await c.get_video_job(deployment="sora-2-dep", job_id="job1")
+    assert out["status"] == "completed"
     assert http.calls[0]["url"] == (
-        "http://gateway.test/v1/video/generations/jobs/job1?api-version=preview"
+        "http://gateway.test/deployments/sora-2-dep/videos/job1?api-version=preview"
     )
 
 
 async def test_get_video_content_returns_bytes():
     c, http = _client([_Resp(content=b"MP4BYTES")])
-    out = await c.get_video_content(generation_id="gen1")
+    out = await c.get_video_content(deployment="sora-2-dep", video_id="video1")
     assert out == b"MP4BYTES"
     assert http.calls[0]["url"] == (
-        "http://gateway.test/v1/video/generations/gen1/content/video?api-version=preview"
+        "http://gateway.test/deployments/sora-2-dep/videos/video1/content"
+        "?api-version=preview"
     )
 
 
@@ -83,7 +83,7 @@ async def test_video_uses_video_api_version():
         [_Resp(json_body={"id": "j"})], gateway_video_api_version="2099-preview"
     )
     await c.create_video_job(
-        deployment="d", prompt="x", width=720, height=1280, n_seconds=3
+        deployment="d", prompt="x", width=720, height=1280, n_seconds=4
     )
     assert "api-version=2099-preview" in http.calls[0]["url"]
 
@@ -94,8 +94,9 @@ async def test_openai_compatible_video_omits_api_version():
         gateway_provider_style=GatewayProviderStyle.openai_compatible,
     )
     await c.create_video_job(
-        deployment="d", prompt="x", width=720, height=1280, n_seconds=3
+        deployment="d", prompt="x", width=720, height=1280, n_seconds=4
     )
+    assert http.calls[0]["url"] == "http://gateway.test/videos"
     assert "api-version" not in http.calls[0]["url"]
 
 
@@ -103,6 +104,6 @@ async def test_create_video_job_raises_on_error_status():
     c, _ = _client([_Resp(status_code=400, text="bad prompt")])
     with pytest.raises(ModelGatewayError) as ei:
         await c.create_video_job(
-            deployment="d", prompt="x", width=720, height=1280, n_seconds=3
+            deployment="d", prompt="x", width=720, height=1280, n_seconds=4
         )
     assert ei.value.status_code == 400

@@ -217,8 +217,14 @@ def test_astra_metadata_and_residency():
     assert all(option.residency == "global" for option in entry.options)
 
 
-def test_mai_26_images_use_native_api_and_single_region():
-    for model_id in ("MAI-Image-2.6", "MAI-Image-2.6-Flash"):
+def test_mai_images_use_native_api_and_single_region():
+    for model_id in (
+        "MAI-Image-2.5",
+        "MAI-Image-2.5-Pro",
+        "MAI-Image-2.5-Flash",
+        "MAI-Image-2.6",
+        "MAI-Image-2.6-Flash",
+    ):
         entry = load_catalog().get(model_id)
         assert entry is not None, model_id
         assert entry.category == "image"
@@ -341,11 +347,14 @@ def test_flux_models_are_image_only_and_provider_constrained():
 def test_provider_capabilities_distinguish_chat_from_agent_models():
     catalog = load_catalog()
     deepseek = catalog.get("DeepSeek-V3.2")
+    deep_research = catalog.get("o3-deep-research")
     mistral = catalog.get("Mistral-Large-3")
-    assert deepseek is not None and mistral is not None
+    assert deepseek is not None and deep_research is not None and mistral is not None
     assert deepseek.conversational is True
     assert deepseek.supportsTools is False
     assert deepseek.inputModalities == ["text"]
+    assert deep_research.conversational is True
+    assert deep_research.supportsTools is False
     assert mistral.supportsTools is True
     assert mistral.inputModalities == ["text", "image"]
 

@@ -89,9 +89,18 @@ def test_bfl_image_request_uses_server_owned_native_shape():
     }
 
 
+@pytest.mark.parametrize(
+    "deployment",
+    [
+        "MAI-Image-2.5-example-westus-glbl",
+        "MAI-Image-2.6-example-westus-glbl",
+    ],
+)
 @pytest.mark.parametrize("style", list(GatewayProviderStyle))
 @pytest.mark.parametrize("size", [None, "1024x1024"])
-def test_mai_image_request_uses_native_shape_and_disables_grounding(style, size):
+def test_mai_image_request_uses_native_shape_and_disables_grounding(
+    deployment, style, size
+):
     c = _client(
         gateway_provider_style=style,
         model_gateway_auth_mode=GatewayAuthMode.api_key,
@@ -99,7 +108,7 @@ def test_mai_image_request_uses_native_shape_and_disables_grounding(style, size)
         model_gateway_api_key_header="S7P-KEY",
     )
     req = c.build_image_request(
-        deployment="MAI-Image-2.6-example-westus-glbl",
+        deployment=deployment,
         prompt="an orange square",
         size=size,
         api="mai",
@@ -114,20 +123,22 @@ def test_mai_image_request_uses_native_shape_and_disables_grounding(style, size)
     assert req.url.startswith("http://gateway.test/")
     assert req.headers["S7P-KEY"] == "test-only"
     assert "Ocp-Apim-Subscription-Key" not in req.headers
-    assert req.json == {
-        "model": "MAI-Image-2.6-example-westus-glbl",
+    expected = {
+        "model": deployment,
         "prompt": "an orange square",
         "width": 1024,
         "height": 1024,
-        "auto_aspect_ratio": False,
-        "web_grounding": False,
     }
+    if "2.6" in deployment:
+        expected["auto_aspect_ratio"] = False
+        expected["web_grounding"] = False
+    assert req.json == expected
 
 
 def test_mai_image_request_rejects_multiple_images():
     with pytest.raises(ValueError, match="one image"):
         _client().build_image_request(
-            deployment="MAI-Image-2.6-example-westus-glbl",
+            deployment="MAI-Image-2.5-example-westus-glbl",
             prompt="an orange square",
             api="mai",
             n=2,

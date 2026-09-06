@@ -27,18 +27,28 @@ logger = logging.getLogger(__name__)
 
 # Closed allowlists (cost + payload protection). Sizes are "WIDTHxHEIGHT" and map
 # directly to the Sora job's width/height. Duration is a bounded integer.
-ALLOWED_SIZES = {"1280x720", "720x1280", "1024x1024", "1920x1080", "1080x1920"}
+ALLOWED_SIZES = {
+    "480x480",
+    "480x854",
+    "854x480",
+    "720x720",
+    "720x1280",
+    "1280x720",
+    "1080x1080",
+    "1080x1920",
+    "1920x1080",
+}
 DEFAULT_SIZE = "1280x720"
-MIN_SECONDS = 1
-MAX_SECONDS = 20
-DEFAULT_SECONDS = 5
+ALLOWED_SECONDS = {4, 8, 12}
+DEFAULT_SECONDS = 4
 MAX_PROMPT_CHARS = 4000
 # Reject an upstream MP4 larger than this (defense against an oversized provider
 # response exhausting memory / the serve path). A few-second clip is a few MB.
 MAX_VIDEO_BYTES = 200_000_000  # ~200 MB
 
-# Terminal job statuses.
-_SUCCEEDED = "succeeded"
+# Terminal job statuses. ``succeeded`` remains accepted for compatibility with
+# rows and fakes written against the retired job API.
+_SUCCESS_STATUSES = {"completed", "succeeded"}
 _FAILURE_STATUSES = {"failed", "cancelled"}
 
 
@@ -152,10 +162,10 @@ class VideoGenerationService:
         width, height = _parse_size(resolved_size)
 
         resolved_seconds = DEFAULT_SECONDS if seconds is None else int(seconds)
-        if resolved_seconds < MIN_SECONDS or resolved_seconds > MAX_SECONDS:
+        if resolved_seconds not in ALLOWED_SECONDS:
             raise VideoGenerationError(
                 422,
-                f"seconds must be between {MIN_SECONDS} and {MAX_SECONDS}.",
+                f"seconds must be one of {', '.join(str(value) for value in sorted(ALLOWED_SECONDS))}.",
             )
 
         model_id = model
@@ -190,7 +200,9 @@ class VideoGenerationService:
             if not job_id:
                 raise VideoGenerationError(502, "Video provider did not return a job.")
 
-            status = await self._poll(job_id, job, correlation_id)
+            await self._poll(
+                deployment.deploymentName, job_id, job, correlation_id
+            )
         except ModelGatewayError as exc:
             raise self._sanitize(exc, model_id, correlation_id) from exc
 
@@ -200,9 +212,10 @@ class VideoGenerationService:
             usage=TokenUsage(known=False, complete=False, calls=1),
         )
         try:
-            generation_id = self._extract_generation_id(status)
             video_bytes = await self._gateway.get_video_content(
-                generation_id=generation_id, correlation_id=correlation_id
+                deployment=deployment.deploymentName,
+                video_id=job_id,
+                correlation_id=correlation_id,
             )
         except asyncio.CancelledError as exc:
             raise VideoProviderCompletedCancellation(completion) from exc
@@ -247,7 +260,11 @@ class VideoGenerationService:
         )
 
     async def _poll(
-        self, job_id: str, initial: dict, correlation_id: str | None
+        self,
+        deployment: str,
+        job_id: str,
+        initial: dict,
+        correlation_id: str | None,
     ) -> dict:
         """Poll a submitted job to a terminal status within the wall-clock budget."""
         status_obj = initial
@@ -255,7 +272,7 @@ class VideoGenerationService:
         step = self._poll_interval if self._poll_interval > 0 else 0.001
         while True:
             status = (status_obj.get("status") or "").lower()
-            if status == _SUCCEEDED:
+            if status in _SUCCESS_STATUSES:
                 return status_obj
             if status in _FAILURE_STATUSES:
                 raise VideoGenerationError(
@@ -268,16 +285,10 @@ class VideoGenerationService:
             await self._sleep(self._poll_interval)
             waited += step
             status_obj = await self._gateway.get_video_job(
-                job_id=job_id, correlation_id=correlation_id
+                deployment=deployment,
+                job_id=job_id,
+                correlation_id=correlation_id,
             )
-
-    def _extract_generation_id(self, status_obj: dict) -> str:
-        generations = status_obj.get("generations") or []
-        if generations and isinstance(generations[0], dict):
-            gen_id = generations[0].get("id")
-            if gen_id:
-                return str(gen_id)
-        raise VideoGenerationError(502, "Video generation returned no content.")
 
     def _sanitize(
         self, exc: ModelGatewayError, model_id: str, correlation_id: str | None
