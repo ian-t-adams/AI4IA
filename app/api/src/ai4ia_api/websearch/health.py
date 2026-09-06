@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
+from ..agents.tools import redact
+
 # Stable display order for the categories emitted by ``websearch.client``, roughly
 # by remediation urgency/ownership: config/credential (fix the deployment) ->
 # auth/permission (entitle the principal) -> rate_limit/timeout/connection
@@ -134,7 +136,7 @@ class WebSearchHealth:
         try:
             cat = str(category or "unknown")
             clean = (
-                str(detail or "").replace("\n", " ").replace("\r", " ").strip()[:DETAIL_MAX]
+                redact(str(detail or "")).replace("\n", " ").replace("\r", " ").strip()[:DETAIL_MAX]
                 or None
             )
             now = _now()

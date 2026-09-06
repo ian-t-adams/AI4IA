@@ -39,6 +39,7 @@ feature posture.
 | Foundry toolbox (bridge) | consumed via the official MCP plane (no dedicated flag) | none | `enableFoundryToolbox` (+ `enableOfficialMcp`) | Provisioned toolbox in the default Foundry project + a `foundry-toolbox` entry in `infra/mcp-servers.json`; grants APIM MI the project "Foundry User" role. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
 | Private tool catalog (API Center) | admin/IaC only (no app-runtime env) | none | `enablePrivateToolCatalog` | Requires `enableOfficialMcp`; IaC registers each official MCP server with an APIM-fronted deployment. Preview. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
 | Web IQ search tools | `AI4IA_WEB_SEARCH_ENABLED` | none | `webSearchEnabled` | Web IQ API key or Entra managed identity outside local |
+| Session/run tool auto-approval | `AI4IA_TOOL_AUTO_APPROVE_ENABLED` | availability read from API | `toolAutoApproveEnabled` | Default `false`; explicit user consent plus Entra auth and Cosmos outside local. No new Azure resources. |
 | Admin resource panels | `AI4IA_RESOURCE_METRICS_ENABLED` + resource ids | admin dashboard | resource-id env from modules | Monitoring Reader and ARM resource ids |
 | Proxy application profiles | proxy runtime only | none | `proxyProfilesEnabled` | Secret-mounted minimal projection **and verified identity-aware app header**; validator blocks enablement with shared-key ingress |
 | Proxy priority reservations | `AI4IA_PROXY_PRIORITIES_ENABLED` | none | `proxyPrioritiesEnabled`, `proxyPriorityWorkers` | Valid `priority:count` reservations; per-replica fairness only. The API and proxy read the **same** switch — see the note below the table |
@@ -53,10 +54,11 @@ feature posture.
 
 **Per-invocation tool approval** is the inverse of every
 other row here: leaving it alone is the secure choice, and changing it is what
-needs justifying. Every external/destructive tool call is held until the user
-approves *that call with those exact arguments*. That covers every MCP tool on
+needs justifying. Gated external/destructive tool calls are held until the user
+approves *that call with those exact arguments*, unless an explicit, valid
+session/run consent covers the enabled tool. That covers every MCP tool on
 both the BYO and official planes, **and** the first-party synthetic capabilities
-(`browse_url`, the four web searches, `run_code`, image/video generation,
+(`browse_url`, WebIQ searches/suggestions, `run_code`, image/video generation,
 `remember_memory`, `export_document`). Marking a server `trusted` or a tool
 `requireApproval: never` still decides whether the model is offered the tool; it
 no longer decides what leaves the network, because standing trust is precisely
@@ -75,18 +77,63 @@ web result or a previous tool response chooses an outbound call's arguments.
 every use: `browse_url`, `run_code`, and `analyze_attachment`. The model chooses
 the destination or program for the first two; the third sends attachment bytes
 to the external Responses sandbox. Everything else first-party whose destination is fixed by server
-configuration — the four searches, image/video generation, `remember_memory`,
+configuration — WebIQ searches/suggestions, image/video generation, `remember_memory`,
 `export_document` — prompts *only* on a turn that carried untrusted content, so an
 ordinary "search the web for X" or "remember that I prefer Y" is not interrupted.
 That relaxation is declared per tool (`ToolSpec.injection_only_risk`), not
 operator-configurable, and never weakens a call below `tainted` strength.
 
-**Workflow runs are exempt, deliberately.** A scheduled or durable workflow step
-has no open request to hand a grant back on and nobody watching to click it, so
-holding a call there would mean denying it silently and permanently.
-`workflows/runner.py` therefore passes an explicit `ApprovalPolicy.off`, pinned by
-a test. If you rely on workflows to browse or search, that traffic is **not**
-behind this control.
+**Workflow runs require explicit authority, too.** Direct and durable runs no
+longer silently opt out through `ApprovalPolicy.off`. A gated call without
+run consent fails visibly; the operator can enable the default-off
+`AI4IA_TOOL_AUTO_APPROVE_ENABLED` gate so the owner can opt one run in.
+The chat `/run_workflow` bridge remains safe-only and never inherits an
+unattended run's consent.
+
+**Session/run auto-approval is not an environment-wide bypass.** Setting
+`AI4IA_TOOL_AUTO_APPROVE_ENABLED=true` as an azd/repository variable permits the
+UI/API opt-in; it does not consent on behalf of any user. Bicep emits the gate to
+the API, which validates Entra auth and Cosmos outside local. No resource or RBAC
+change is needed. Consent is server-owned, limited to the currently enabled tool
+contracts, expiring and revocable. New tools or changed contracts require renewed
+consent. Every dispatch still checks ownership, scopes, destinations and budgets,
+and keeps activity/receipts with approval provenance. Turning the operator gate
+off prevents subsequent auto-approved dispatch, including previously scheduled
+runs; it cannot undo an already-running external request.
+
+**Upgrade note:** workflows that previously relied on the blanket unattended
+exemption must now explicitly opt in for gated calls. Review the workflow and its
+enabled tools before doing so: hostile retrieved content can influence later
+calls when per-call prompts are skipped.
+
+The API contracts are owner-scoped:
+
+- `POST /api/sessions/{id}/tool-consent` with `{"enabled": true}` grants consent
+  for an existing session; `false` revokes it. It returns the updated session with
+  a server-owned `toolConsent` summary (id, scope, grant/expiry timestamps and tool
+  count). Generic session PATCH cannot write consent. The lifetime is at most
+  eight hours.
+- `POST /api/workflows/{name}/run` accepts `autoApproveTools: true` for one run.
+  It is not a saved workflow default. Opted-in direct runs and all durable runs
+  require an `idempotencyKey`, which gives the caller a run handle before the
+  synchronous response is returned. The consent choice is bound to that
+  invocation; reusing a direct-run key returns `409` without reexecuting it.
+  Durable scheduling retries preserve the original fingerprint.
+- `POST /api/workflows/runs/{runId}/cancel` with `{"sessionId": "..."}` revokes
+  remaining run authority and requests a stop. It does not undo in-flight
+  provider calls; completed and partial receipts remain in the run's messages.
+  Poll the status with `?sessionId=...` to include persisted cancellation state.
+  A direct run can also be cancelled before its response using
+  `POST /api/workflows/{name}/cancel` with `sessionId` and the original
+  `idempotencyKey`. A `404` before the run has persisted its claim is not a
+  cancellation acknowledgement.
+
+Availability comes from the existing Inspector/tool-catalog and workflow-list
+responses as `toolAutoApproveAvailable`. Do not infer it from a frontend env
+variable. Receipts distinguish `session`, `run`, `invocation`, `not_required`, and
+`operator` approval provenance; `autoApprovedToolCalls` is not the number of
+per-call user clicks. Workflows preserve each bounded step receipt separately
+from the bounded aggregate (`workflowStepReceipts` on the assistant message).
 
 Approvals are short-lived (10 minutes), single-use, and bound to user, session,
 tool and argument digest. "Single-use" is enforced in two independent places,
@@ -113,6 +160,7 @@ The template and last observed live posture are deliberately separate:
 | --- | --- | --- |
 | Image/video, document understanding/compute, raw/inline compute, Search, Voice Live + tools, custom tools, Web IQ, summarization, official MCP, Foundry toolbox, private tool catalog | `true`, each through its own `AI4IA_*` binding | Enabled |
 | Durable workflows | `${AI4IA_ENABLE_DURABLE_WORKFLOWS=true}` | Enabled |
+| Session/run tool auto-approval | `${AI4IA_TOOL_AUTO_APPROVE_ENABLED=false}` | Not changed by this implementation; inspect the deployed API gate |
 | Proxy priority reservations | `${AI4IA_PROXY_PRIORITIES_ENABLED=false}` | Enabled with `1:2` workers |
 | Azure Monitor alerts | `${AI4IA_ENABLE_ALERTS=false}` | Enabled with a recipient |
 | Speech Voice Live | `${AI4IA_SPEECH_VOICE_LIVE_ENABLED=false}` | Enabled; allowlist includes `speech_voice_live`, while Azure OpenAI remains the default |
@@ -495,7 +543,9 @@ fails closed if the plane is enabled without both. Official servers are
 admin-curated and marked trusted for discovery/attachment; that standing trust is
 **not invocation approval**. Interactive external/destructive calls on both
 official and BYO planes still use the exact-argument approval policy described
-above. Unattended workflows are the explicit `ApprovalPolicy.off` exception.
+above unless explicit, current session/run consent covers the enabled contract.
+Direct/durable workflows also require authority for gated calls; they do not
+inherit an unattended approval bypass.
 
 ### Foundry Agent Service toolbox (bridge)
 
@@ -563,10 +613,40 @@ webIqApiKey=<key>
 # or AI4IA_WEBIQ_USE_ENTRA=true
 ```
 
-The API exposes five tools to tool-enabled turns: `web_search`, `news_search`,
-`video_search`, `image_search`, and `browse_url`. It sanitizes and nonce-fences
-returned content and caps per-turn search fan-out. Outside local it fails closed
-unless an API key or Entra managed identity is configured.
+The API exposes eleven tools to tool-enabled chat and workflow turns:
+`web_search`, `news_search`, `video_search`, `image_search`, `browse_url`,
+`classic_search`, `finance_search`, `places_search`, `sports_search`,
+`sonic_search`, and `web_autosuggest`. Classic covers all 30 documented answer
+types, including weather, rather than scraping ordinary web snippets for every
+structured answer. Autosuggest is internal beta; all verticals remain subject to
+the credential's upstream entitlements.
+
+The client uses fixed v3 REST routes through the official SDK's public
+authentication and transport APIs. This preserves documented features that are
+not present in every generated SDK resource method, including classic search.
+Supported request/response contracts are sourced from the
+[SDK reference](https://pypi.org/project/webiq/0.1.6/) and
+[WebIQ OpenAPI](https://webiq.microsoft.ai/documentation/openapi.json).
+No model traffic or existing gateway routing changes.
+
+Optional azd/repository variables `AI4IA_WEBIQ_BASE_URL`,
+`AI4IA_WEB_SEARCH_MAX_RESULTS` (default 5, range 1-50), and
+`AI4IA_WEB_SEARCH_MAX_CONTENT_CHARS` (default 6000, range 1-500000) now reach
+the API through Bicep. Empty base URL selects `https://api.microsoft.ai/v3`.
+The result cap applies to each collection and is additionally clamped by the
+provider's endpoint limit; the content cap applies to each content field. All
+eleven tools share five calls per turn. Every complete serialized response fits
+WebIQ's 8192-byte response limit, including JSON escaping and the nonce fence; the
+additional 100000-character turn ceiling never widens this limit. Metadata is
+retained before verbose content, and depth/node/list limits bound structured
+responses. Truncation is explicit and preserves the outer nonce fence. Strict safe search, credentials,
+endpoint choice and retry policy are not model-settable. Automatic retries and
+crawl polling remain off, so a single tool invocation cannot silently multiply
+outbound calls. `browse_url` rechecks public HTTPS/DNS before each fetch and
+requires approval unless valid scoped consent covers it.
+
+Outside local, enabling WebIQ fails closed unless an API key or Entra managed
+identity is configured. Configuration does not prove endpoint entitlement.
 
 In CI, `webIqApiKey` is supplied by the `AI4IA_WEBIQ_API_KEY` **`production`
 environment secret** (mapped into `.github/workflows/deploy.yml`). If that secret is

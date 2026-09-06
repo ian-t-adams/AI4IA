@@ -39,10 +39,14 @@ entry, one RBAC grant, one feature flag.
 ### Foundry web search is not WebIQ
 
 The Toolbox `web_search` tool and AI4IA's WebIQ integration are independent
-capabilities. WebIQ is built directly into the FastAPI agent runtime as five
-feature-gated tools (`web_search`, `news_search`, `video_search`, `image_search`,
-and `browse_url`) using `AI4IA_WEB_SEARCH_ENABLED` plus API-key or managed-identity
-auth. Its bounded results are fenced as untrusted model context. Enabling the
+capabilities. WebIQ is built directly into the FastAPI agent runtime as eleven
+feature-gated tools: web/news/video/image search, classic structured answers,
+finance, places, sports, Sonic blended search, autosuggest, and browsing.
+It uses `AI4IA_WEB_SEARCH_ENABLED` plus API-key or managed-identity auth and the
+official SDK's public auth/transport for fixed v3 REST contracts. Its bounded
+results retain nested source/timestamp metadata and are fenced as untrusted model
+context. See the [complete tool inventory](user-guide.md#custom-tools-and-web-search).
+Enabling the
 Foundry Toolbox does not enable WebIQ, and disabling WebIQ does not remove the
 Toolbox's own `web_search`.
 

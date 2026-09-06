@@ -62,6 +62,12 @@ GATED_WHEN_TAINTED: dict[str, str] = {
     "news_search": "Query text reaches the provider; same shape as web_search.",
     "video_search": "Query text reaches the provider; same shape as web_search.",
     "image_search": "Query text reaches the provider; same shape as web_search.",
+    "classic_search": "Multi-answer query text reaches the fixed WebIQ provider.",
+    "finance_search": "Financial query text reaches the fixed WebIQ provider.",
+    "places_search": "Places query and location reach the fixed WebIQ provider.",
+    "sports_search": "Sports query text reaches the fixed WebIQ provider.",
+    "sonic_search": "Blended search query text reaches the fixed WebIQ provider.",
+    "web_autosuggest": "Partial query text reaches the fixed WebIQ provider.",
     "generate_image": "Bills a model deployment on a model-written prompt; the "
     "result is attached to the caller's own message, so nothing is exfiltrated.",
     "generate_video": "As generate_image, and materially more expensive.",

@@ -19,7 +19,10 @@ SimpleL7Proxy.
   conversation tool/document selections, inspector snapshots, and slash commands.
 - Agents/tools: curated agents, user-defined agents, workflows, governed built-in
   tools, generated image/video/document artifacts, Web IQ search tools when
-  enabled, and user-registered remote MCP servers.
+  enabled, and user-registered remote MCP servers. The default-off
+  `AI4IA_TOOL_AUTO_APPROVE_ENABLED` gate permits explicit session/run consent for
+  enabled tools without bypassing execution authorization or losing activity and
+  receipt evidence.
 - Memory: disabled/in-memory/Cosmos backends; catalog-driven planning and
   embeddings; automatic recall; owner-scoped create/edit/delete; concurrency-safe
   forget; and atomic document memory replacement.

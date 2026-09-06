@@ -106,11 +106,18 @@ and tool safety; the web app is the user interface.
 - Attach only the tools an agent needs. Tool output is metered, logged, bounded,
   and redacted where applicable.
 - A selected agent is the standing conversation persona. An explicit `@agent`
-  mention remains a one-turn override. The inspector shows the resolved
-  instruction stack read-only, including whether an inherited agent prompt came
-  from the curated catalog or from one of your user agents; conversation-level
-  instructions remain the editable layer. It also shows inherited and
+  mention **at the start of a message** is a one-turn override, for example
+  `@coder explain this function`. Type `@` at the start to open the agent menu,
+  or send `/agents` to list available names; an `@` later in the message is just
+  text. Change the standing agent in the inspector's **Setup > Agent & tools**
+  section. The inspector shows the resolved instruction stack read-only,
+  including whether an inherited agent prompt came from the curated catalog or
+  from one of your user agents; conversation-level instructions remain the
+  editable layer. It also shows inherited and
   conversation-level tool changes; the API authorizes every call again at execution.
+- The `@conversation` badge is an internal label for a turn using
+  conversation-attached tools without a selected agent. It is not a built-in
+  agent you can mention, nor a model or search provider.
 - Tool rows state whether a capability is available in typed chat, Voice Live, or
   both. Typed-only tools are never silently advertised to Voice Live.
 
@@ -128,6 +135,9 @@ records its source URI, version/default resolution, content hash, and truncation
 Neither panel is chain-of-thought. The app does not receive hidden model
 reasoning and does not claim to reconstruct it. Large payloads are shortened
 before persistence and retain their original redacted byte count and SHA-256.
+Auto-approval never hides this evidence: tool activity, arguments/results, usage,
+and safety coverage remain available, with approval provenance distinguishing
+session/run consent from an individual approval.
 
 ## Documents and media
 
@@ -341,18 +351,53 @@ Custom MCP servers and Web IQ search tools are feature-gated. When enabled:
 
 - MCP server credentials are stored in Key Vault outside local development.
 - Remote MCP endpoints pass an SSRF guard before discovery and each use.
-- Web IQ contributes five server-side tools — `web_search`, `news_search`,
-  `video_search`, `image_search`, and `browse_url` — and their output is bounded
-  and treated as untrusted model context.
+- WebIQ contributes eleven server-side tools. Their output is bounded,
+  credential-redacted, and treated as untrusted model context.
 
-Some tool calls are held until you approve them. You will see a card naming the
+These tools identify their provider to the model as **Microsoft WebIQ (Web IQ)**;
+the generic function names do not represent a different search service. Ask for
+WebIQ in ordinary chat, or use `/research <query>` to request live research
+explicitly, for example `/research current weather in Chicago`. WebIQ is a tool
+provider, not a built-in `@webiq` agent. It still requires an enabled deployment
+and a tool-capable model; `/research` does not bypass approval requirements.
+
+| Tool | Available capabilities |
+| --- | --- |
+| `web_search` | Web results, source metadata, passage/text/HTML/Markdown content, language/region/location, custom-search configuration and domain include/exclude filters |
+| `news_search` | News, publisher/source URLs, timestamps, thumbnails and content formats; use classic search for date filtering |
+| `video_search` | Videos and playlists, summaries, timestamped moments, embedding metadata, freshness, duration and resolution filters |
+| `image_search` | Existing images, host-page links, captions, thumbnails, dimensions, aspect/size/color/watermark and pixel-bound filters |
+| `browse_url` | Public HTTPS page content, returned web/image links, cache/fallback/forced live crawl, and dynamic-page rendering |
+| `classic_search` | All 30 supported answer categories, including structured weather, finance, sports, places, maps/directions, facts, events, jobs, recipes, travel and time zones |
+| `finance_search` | Instrument prices, volume, currencies and available as-of/source metadata |
+| `places_search` | Local places/businesses and available location, hours, ratings and contact data |
+| `sports_search` | Schedules and available scores/event data, with relative/date-range filtering |
+| `sonic_search` | Fast or advanced blended web/news/finance search with answer filters |
+| `web_autosuggest` | Query completions; internal beta and subject to upstream entitlement, not a factual answer source |
+
+Use ordinary instructions to select these capabilities, for example
+`/research current Chicago weather and the forecast, using structured weather results`,
+or ask for videos with timestamped moments. The names above are model tools, not
+eleven new slash commands. Language, region, location and other filters are
+accepted only on endpoints that support them. Classic search may select from all
+30 categories but returns at most six answer types per call. An omitted answer
+type is not proof that no such information exists.
+
+The server keeps safe search strict and limits results, nested metadata and total
+output. Returned links are not automatically followed. A page crawl can return
+`pending` with retry timing instead of page content; that is not an empty page
+and does not trigger background polling. Additional endpoint access is controlled
+by WebIQ, so a configured credential does not prove every beta/vertical endpoint
+is entitled. Failures appear in tool results and admin Web search health.
+
+By default, some tool calls are held until you approve them. You will see a card naming the
 tool, where the call is going, and the arguments it would send; the reply arrives
 normally and the call runs only after you approve *that* card. Approving one call
 does not approve the next one, and the approval expires in ten minutes.
 
 `browse_url` (fetching a web page) and `run_code` (running code over one of your
 documents) ask every time, because the model picks the address or the program.
-Web searches, image and video generation, and saving to memory ask only when the
+WebIQ searches/suggestions, image and video generation, and saving to memory ask only when the
 turn also contained something the assistant read on your behalf — a document you
 uploaded, a saved memory, or an earlier tool result — since that is the case where
 the request may not have come from you. An ordinary search or "remember that I
@@ -363,6 +408,39 @@ contain text written to make the assistant act on the author's behalf rather tha
 yours, and the card is where that becomes visible.
 
 If the controls are hidden, the feature is disabled for that environment.
+
+### Auto-approving enabled tools
+
+If the operator enables this feature, you can explicitly opt in for the current
+session or for one workflow run. The option starts off. It does **not** enable
+every tool in the catalog: it authorizes calls only within the enabled-tool
+scope the server records when you consent.
+
+For a saved conversation, use the consent control in **Setup > Agent & tools**.
+The active state, covered tool count, and expiry (at most eight hours) remain
+visible outside the inspector. **Revoke auto-approval** works without
+waiting for the current reply to finish. New tools or changed tool contracts
+require renewed consent; expired or revoked consent no longer skips prompts.
+
+For a workflow, opt in in **Run & test** before starting that invocation. The
+choice applies to that run, including durable execution, not to every future run
+of the saved workflow; the checkbox resets for the next run. A requested opt-in
+is not displayed as active until the server confirms consent. Use
+**Revoke auto-approval & stop run** to stop subsequent calls/steps. Session
+consent does not automatically approve workflow
+runs. Without run consent, a step that needs a gated call fails visibly rather
+than executing without authority; `/run_workflow` in chat remains restricted to
+safe, read-only workflows.
+
+**Understand the tradeoff:** a malicious webpage or document can influence the
+model's later tool calls. Auto-approval removes your opportunity to inspect each
+call before it runs. Ownership, permission, destination and usage limits still
+apply, and activity and execution receipts are still retained. Revocation stops
+subsequent dispatch; it cannot undo an external request already in flight.
+Workflow results expose independently bounded **Step execution receipts** as well
+as the aggregate receipt, so a long run does not hide later steps when the
+aggregate detail limit is reached. Historical receipts without approval
+provenance are shown as unrecorded, not assumed auto-approved.
 
 ## Admin views
 

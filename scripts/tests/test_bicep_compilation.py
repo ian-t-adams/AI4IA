@@ -83,6 +83,61 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             json.dumps(self.template["variables"]["deployableCatalog"]),
         )
 
+    def test_tool_auto_approval_is_an_explicit_default_off_api_gate(self) -> None:
+        self.assertFalse(
+            self.template["parameters"]["toolAutoApproveEnabled"]["defaultValue"]
+        )
+        module = self.template["resources"]["api"]["properties"]
+        self.assertEqual(
+            module["parameters"]["toolAutoApproveEnabled"]["value"],
+            "[parameters('toolAutoApproveEnabled')]",
+        )
+        api = module["template"]
+        self.assertFalse(api["parameters"]["toolAutoApproveEnabled"]["defaultValue"])
+        self.assertEqual(
+            api["variables"]["toolApprovalEnv"],
+            [
+                {
+                    "name": "AI4IA_TOOL_AUTO_APPROVE_ENABLED",
+                    "value": "[string(parameters('toolAutoApproveEnabled'))]",
+                }
+            ],
+        )
+        self.assertIn(
+            "variables('toolApprovalEnv')",
+            json.dumps(api["variables"]["apiEnv"]),
+        )
+
+    def test_webiq_limits_and_endpoint_reach_the_api_without_exposing_credentials(self) -> None:
+        module = self.template["resources"]["api"]["properties"]
+        api = module["template"]
+        for name, default, maximum in (
+            ("webSearchMaxResults", 5, 50),
+            ("webSearchMaxContentChars", 6000, 500000),
+        ):
+            with self.subTest(parameter=name):
+                self.assertEqual(self.template["parameters"][name]["defaultValue"], default)
+                self.assertEqual(self.template["parameters"][name]["minValue"], 1)
+                self.assertEqual(self.template["parameters"][name]["maxValue"], maximum)
+                self.assertEqual(
+                    module["parameters"][name]["value"], f"[parameters('{name}')]"
+                )
+                self.assertEqual(api["parameters"][name]["defaultValue"], default)
+                self.assertEqual(api["parameters"][name]["maxValue"], maximum)
+                self.assertIn(
+                    f"string(parameters('{name}'))",
+                    json.dumps(api["variables"]["webSearchEnv"]),
+                )
+        self.assertEqual(
+            module["parameters"]["webIqBaseUrl"]["value"], "[parameters('webIqBaseUrl')]"
+        )
+        self.assertEqual(api["parameters"]["webIqApiKey"]["type"].lower(), "securestring")
+        emitted = json.dumps(api["variables"]["webSearchEnv"])
+        self.assertIn("AI4IA_WEB_SEARCH_MAX_RESULTS", emitted)
+        self.assertIn("AI4IA_WEB_SEARCH_MAX_CONTENT_CHARS", emitted)
+        self.assertIn("AI4IA_WEBIQ_BASE_URL", emitted)
+        self.assertNotIn("value', parameters('webIqApiKey')", emitted)
+
     def test_null_forgiving_access_preserves_conditional_durable_outputs(self) -> None:
         parameters = self.template["resources"]["api"]["properties"]["parameters"]
         self.assertEqual(

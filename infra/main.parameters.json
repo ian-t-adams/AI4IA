@@ -218,11 +218,23 @@
     "customToolsEnabled": {
       "value": "${AI4IA_CUSTOM_TOOLS_ENABLED=true}"
     },
+    "toolAutoApproveEnabled": {
+      "value": "${AI4IA_TOOL_AUTO_APPROVE_ENABLED=false}"
+    },
     "webSearchEnabled": {
       "value": "${AI4IA_WEB_SEARCH_ENABLED=true}"
     },
     "webIqApiKey": {
       "value": "${AI4IA_WEBIQ_API_KEY=}"
+    },
+    "webIqBaseUrl": {
+      "value": "${AI4IA_WEBIQ_BASE_URL=}"
+    },
+    "webSearchMaxResults": {
+      "value": "${AI4IA_WEB_SEARCH_MAX_RESULTS=5}"
+    },
+    "webSearchMaxContentChars": {
+      "value": "${AI4IA_WEB_SEARCH_MAX_CONTENT_CHARS=6000}"
     }
   }
 }

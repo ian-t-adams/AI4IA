@@ -852,7 +852,7 @@ async def test_untrusted_server_tool_denied_without_approval():
     )
     result = await _run_turn(servers, ["mcp:weather/forecast"], connector, gateway)
     denied = [s for s in result.steps if s.kind == "tool_denied"]
-    assert denied and denied[0].detail == DenyReason.approval_required.value
+    assert denied and denied[0].detail == "not_offered"
     # The remote tool was never actually invoked.
     assert connector.tool_calls == []
 

@@ -22,10 +22,10 @@ def read(relative: str) -> str:
 
 class ToolGovernanceTests(unittest.TestCase):
     def test_attachment_analysis_is_always_held_for_approval(self) -> None:
-        """`analyze_attachment` must stay external-risk, so it is never auto-approved.
+        """`analyze_attachment` needs approval even without tainted context.
 
-        Downgrading it to an injection-only risk would let an attachment be
-        analyzed without a per-turn prompt, which is the whole control.
+        Scoped user consent can supply that approval; risk classification must
+        not be weakened to avoid the per-call prompt.
         """
         governance = read("app/api/src/ai4ia_api/agents/synthetic_governance.py")
         block = re.search(
@@ -37,6 +37,17 @@ class ToolGovernanceTests(unittest.TestCase):
         assert block is not None
         self.assertIn("risk=ToolRisk.external", block.group(1))
         self.assertNotIn("injection_only_risk", block.group(1))
+
+    def test_tool_auto_approval_operator_switch_is_reachable_and_defaults_off(self) -> None:
+        parameters = json.loads(read("infra/main.parameters.json"))["parameters"]
+        self.assertEqual(
+            parameters["toolAutoApproveEnabled"]["value"],
+            "${AI4IA_TOOL_AUTO_APPROVE_ENABLED=false}",
+        )
+        self.assertIn(
+            "AI4IA_TOOL_AUTO_APPROVE_ENABLED: ${{ vars.AI4IA_TOOL_AUTO_APPROVE_ENABLED }}",
+            read(".github/workflows/deploy.yml"),
+        )
 
 
 class FoundryManifestContractTests(unittest.TestCase):

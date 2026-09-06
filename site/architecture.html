@@ -170,8 +170,12 @@ flowchart LR
         <p class="section-sub">Remote MCP tools reach the model through two independent planes that share one governed
           per-turn executor. On a tool-name collision the official tool wins; a single per-turn budget caps total MCP
           calls across both planes. Curated discovery is not invocation approval: under the default interactive policy,
-          external/destructive calls on both planes require exact-argument, single-use approval. Unattended workflows explicitly use
-          <span class="mono">ApprovalPolicy.off</span> because no durable approval channel exists.</p>
+          gated external/destructive calls require exact-argument, single-use approval unless explicit session/run consent
+          covers the enabled tool contract. The default-off <span class="mono">AI4IA_TOOL_AUTO_APPROVE_ENABLED</span>
+          gate permits that user choice; it does not approve anything by itself. Consent is expiring, revocable,
+          and checked again at dispatch. Direct and durable workflows require explicit authority rather than a blanket
+          unattended exemption. Scope, destination, ownership, and budget checks remain in force, and auto-approved
+          calls retain their activity and execution receipts.</p>
         <figure class="diagram">
           <pre class="mermaid">
 flowchart TB

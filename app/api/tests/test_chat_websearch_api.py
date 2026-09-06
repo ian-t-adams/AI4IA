@@ -24,19 +24,24 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
+from ai4ia_api.gateway.client import ModelGatewayError
 from ai4ia_api.main import create_app
 from ai4ia_api.routers.chat import _TOOLS_UNAVAILABLE_NOTICE
 from ai4ia_api.websearch.factory import build_web_search_service
-from tests.conftest import make_settings
+from ai4ia_api.websearch.contracts import WEBIQ_TOOL_NAMES
+from tests.conftest import make_settings, sse_chunks
 
 
 class FakeWebClient:
     """Stand-in for WebSearchClient: records calls and returns canned rows/page."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, structured=None) -> None:
         self.calls: list[dict] = []
         self.closed = False
+        self.structured = structured if structured is not None else {
+            "weatherResults": {"temperature": 24, "unit": "C", "sourceUrl": "https://example.com/weather",
+                               "timestamp": "2026-09-06T12:00:00Z"},
+        }
 
     async def web_search(self, query, *, max_results, **kw):
         self.calls.append({"tool": "web", "query": query, "max_results": max_results})
@@ -61,6 +66,17 @@ class FakeWebClient:
         self.calls.append({"tool": "browse", "url": url, "max_length": max_length})
         return {"url": url, "title": "Page", "content": "body"}
 
+    async def structured_search(self, query, **kw):
+        self.calls.append({"tool": "structured", "query": query, **kw})
+        return self.structured
+
+    classic_search = structured_search
+    finance_search = structured_search
+    places_search = structured_search
+    sports_search = structured_search
+    sonic_search = structured_search
+    autosuggest = structured_search
+
     async def close(self):
         self.closed = True
 
@@ -71,11 +87,13 @@ class ScriptedWebGateway:
     tool-result messages seen on the follow-up call are captured so a test can assert
     the nonce fence reached the model."""
 
-    def __init__(self, *, call_tool: bool = True) -> None:
+    def __init__(self, *, call_tool: bool = True, tool_name: str = "web_search") -> None:
         self.call_tool = call_tool
+        self.tool_name = tool_name
         self.calls = 0
         self.tool_calls_seen = 0
         self.tools_offered_first_call: bool | None = None
+        self.first_tools: list[dict] | None = None
         self.first_messages = None
         self.tool_result_messages: list[str] = []
         self.apis: list[str] = []
@@ -88,6 +106,7 @@ class ScriptedWebGateway:
         tools = (params or {}).get("tools")
         if self.tools_offered_first_call is None:
             self.tools_offered_first_call = bool(tools)
+            self.first_tools = tools or []
         # Capture any tool-result messages so the test can inspect the fenced payload.
         for m in messages:
             if isinstance(m, dict) and m.get("role") == "tool":
@@ -105,7 +124,7 @@ class ScriptedWebGateway:
                                     "id": "call-1",
                                     "type": "function",
                                     "function": {
-                                        "name": "web_search",
+                                        "name": self.tool_name,
                                         "arguments": json.dumps({"query": "today headlines"}),
                                     },
                                 }
@@ -117,8 +136,15 @@ class ScriptedWebGateway:
         return {"choices": [{"message": {"role": "assistant", "content": "Here is the answer."}}]}
 
     async def stream(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
-        yield ChatChunk(delta="hi", raw=json.dumps({"choices": [{"delta": {"content": "hi"}}]}))
-        yield ChatChunk(done=True, raw="[DONE]")
+        response = await self.complete(
+            deployment=deployment,
+            messages=messages,
+            params=params,
+            correlation_id=correlation_id,
+            api=api,
+        )
+        for chunk in sse_chunks(response):
+            yield chunk
 
 
 def _make_client(**overrides) -> TestClient:
@@ -143,6 +169,122 @@ def _inject_web(client: TestClient, web_client: FakeWebClient) -> None:
         metering=client.app.state.usage,
         client=web_client,
     )
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["complete", "stream"])
+@pytest.mark.parametrize("tool", [
+    "classic_search", "finance_search", "places_search", "sports_search",
+    "sonic_search", "web_autosuggest",
+])
+def test_main_chat_invokes_structured_webiq_capabilities(tool, stream):
+    client = _make_client()
+    try:
+        web = FakeWebClient()
+        _inject_web(client, web)
+        gateway = ScriptedWebGateway(tool_name=tool)
+        client.app.state.gateway = gateway
+        sid = _new_session(client)
+        response = client.post("/api/chat", json={
+            "sessionId": sid, "content": "Use WebIQ to find the current weather.", "stream": stream,
+        })
+        assert response.status_code == 200, response.text
+        assert len(web.calls) == 1 and web.calls[0]["tool"] == "structured"
+        result = json.loads(gateway.tool_result_messages[0])
+        assert "weatherResults" in result["results"]
+        assert "2026-09-06T12:00:00Z" in result["results"]
+        assert "https://example.com/weather" in result["results"]
+        assert result["results"].splitlines()[-1].startswith("END RESULTS ")
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["complete", "stream"])
+@pytest.mark.parametrize("repetitions", [1, 100], ids=["within-budget", "over-budget"])
+def test_rich_webiq_output_reaches_the_model_without_cutting_its_nonce_fence(stream, repetitions):
+    client = _make_client()
+    try:
+        web = FakeWebClient(structured={
+            "webResults": [{"url": f"https://example.com/{index}",
+                            "content": "source passage with ordinary prose " * repetitions}
+                           for index in range(4)],
+        })
+        _inject_web(client, web)
+        gateway = ScriptedWebGateway(tool_name="classic_search")
+        client.app.state.gateway = gateway
+        response = client.post("/api/chat", json={
+            "sessionId": _new_session(client), "content": "Read the sources with WebIQ.", "stream": stream,
+        })
+        assert response.status_code == 200, response.text
+        assert len(web.calls) == 1
+        delivered = gateway.tool_result_messages[0]
+        assert len(delivered.encode("utf-8")) <= 8192
+        result = json.loads(delivered)
+        assert result["truncated"] is (repetitions == 100)
+        assert result["results"].splitlines()[-1].startswith("END RESULTS ")
+        body = result["results"].split("\n", 1)[1].rsplit("\n", 1)[0]
+        rows = json.loads(body)["webResults"]
+        assert [row["url"] for row in rows] == [f"https://example.com/{index}" for index in range(4)]
+        assert all(row["content"].startswith("source passage") for row in rows)
+        if repetitions == 1:
+            assert all(row["content"] == "source passage with ordinary prose " for row in rows)
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["complete", "stream"])
+@pytest.mark.parametrize("web_enabled", [False, True], ids=["disabled", "enabled"])
+@pytest.mark.parametrize("route", ["main", "conversation-tools", "mentioned-agent"])
+def test_chat_advertises_webiq_only_when_available(route, web_enabled, stream):
+    client = _make_client()
+    try:
+        web = FakeWebClient()
+        if web_enabled:
+            _inject_web(client, web)
+        gateway = ScriptedWebGateway(call_tool=web_enabled)
+        client.app.state.gateway = gateway
+
+        session_body = {"model": "gpt-5.2"}
+        if route == "conversation-tools":
+            session_body["toolOverrides"] = {"added": ["get_current_time"], "removed": []}
+        created = client.post("/api/sessions", json=session_body)
+        assert created.status_code == 201, created.text
+        sid = created.json()["id"]
+        content = "What's the weather in Chicago? Can you use WebIQ?"
+        if route == "mentioned-agent":
+            content = f"@general {content}"
+
+        response = client.post(
+            "/api/chat",
+            json={"sessionId": sid, "content": content, "stream": stream},
+        )
+        assert response.status_code == 200, response.text
+        messages = client.get(f"/api/sessions/{sid}/messages").json()
+        assert messages[-1]["content"] == "Here is the answer."
+        assert messages[-1]["agent"] == {
+            "main": None,
+            "conversation-tools": "conversation",
+            "mentioned-agent": "general",
+        }[route]
+        assert client.get(f"/api/sessions/{sid}").json()["agentName"] is None
+
+        assert gateway.first_tools is not None
+        functions = {tool["function"]["name"]: tool["function"] for tool in gateway.first_tools}
+        web_names = WEBIQ_TOOL_NAMES
+        if web_enabled:
+            assert web_names <= functions.keys()
+            for name in web_names:
+                description = functions[name]["description"].lower()
+                assert "webiq" in description
+                assert "web iq" in description
+            assert [call["tool"] for call in web.calls] == ["web"]
+            assert gateway.tool_result_messages
+            assert "BEGIN RESULTS" in gateway.tool_result_messages[0]
+        else:
+            assert web_names.isdisjoint(functions)
+            assert all("webiq" not in tool["description"].lower() for tool in functions.values())
+            assert web.calls == []
+    finally:
+        client.__exit__(None, None, None)
 
 
 # --- enabled: main chat (agent None) routes a web turn through web_search ---

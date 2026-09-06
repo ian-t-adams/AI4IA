@@ -80,9 +80,11 @@ synthetic capability with no entry in that table is **refused**
 (``DenyReason.ungoverned``) rather than run: acquiring an execution route without
 also acquiring a risk classification is the failure mode this closes.
 
-The residual gap is unattended execution. A workflow run has no human in the loop,
-so "hold for approval" would degrade to "deny"; ``workflows/runner.py`` therefore
-opts out with an explicit, documented ``ApprovalPolicy.off``. See that call site.
+Unattended workflows use the same approval policy. A gated call stops the step
+with an actionable failure unless the user explicitly opted into a bounded
+workflow-invocation consent snapshot. Session consent follows the same rules:
+``agents/consent.py`` checks the server-owned grant and current tool contract at
+each call without bypassing scopes, destinations or execution-time validation.
 
 Likewise, ``untrusted_context`` is a **turn-level** taint bit, not per-argument
 provenance: it says "this turn had untrusted content in it", not "this specific
@@ -161,8 +163,8 @@ class ApprovalPolicy(str, Enum):
     ``off`` skips fresh invocation approval. Standing discovery/attachment posture
     (``trusted`` server / ``requireApproval: never``) still determines whether a
     tool is offered to the model, but must not be described as invocation approval.
-    This policy exists for the explicit unattended-workflow exception and deliberate
-    operator opt-out, not because it is a reasonable interactive default.
+    This policy exists only for deliberate operator opt-out. A user's session
+    or workflow-run consent never changes the policy to ``off``.
 
     ``tainted`` raises a prompt only when the turn actually carried untrusted
     content (documents, recalled memory, library excerpts, or an earlier tool

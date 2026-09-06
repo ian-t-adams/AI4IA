@@ -26,6 +26,7 @@ import type {
   WorkflowRunAccepted,
   WorkflowRunOutcome,
   WorkflowRunResult,
+  WorkflowRunRequest,
   WorkflowRunStatus,
   WorkflowUpdate,
 } from "./types";
@@ -157,6 +158,7 @@ export async function listWorkflows(): Promise<WorkflowListResult> {
   const data = await jsonOrThrow<{
     workflows: Workflow[];
     durableAvailable?: boolean;
+    toolAutoApproveAvailable?: boolean;
   }>(await apiFetch("/api/workflows", { cache: "no-store" }));
   // Default false, not true: an older API that does not send the field cannot
   // honour a durable request either, and offering the control anyway would turn
@@ -164,6 +166,7 @@ export async function listWorkflows(): Promise<WorkflowListResult> {
   return {
     workflows: data.workflows,
     durableAvailable: data.durableAvailable === true,
+    toolAutoApproveAvailable: data.toolAutoApproveAvailable === true,
   };
 }
 
@@ -251,16 +254,11 @@ function waitForDurableRetry(ms: number, signal?: AbortSignal): Promise<void> {
 
 export async function runWorkflow(
   name: string,
-  input: {
-    sessionId: string;
-    input: string;
-    model?: string | null;
-    durable?: boolean;
-    idempotencyKey?: string;
-  },
+  input: WorkflowRunRequest,
   signal?: AbortSignal,
 ): Promise<WorkflowRunOutcome> {
-  const body = JSON.stringify(input);
+  // Capture the opt-in with the invocation key once, before any recovery retry.
+  const body = JSON.stringify({ ...input, autoApproveTools: input.autoApproveTools === true });
   const request = () =>
     apiFetch(`/api/workflows/${encodeURIComponent(name)}/run`, {
       method: "POST",
@@ -306,10 +304,40 @@ export function isTerminalRunStatus(status: string): boolean {
 
 // Polls a durable run started with `durable: true`. Distinguishes "still running"
 // from "finished and failed" without diffing the transcript.
-export async function getWorkflowRun(runId: string): Promise<WorkflowRunStatus> {
+export async function getWorkflowRun(runId: string, sessionId?: string): Promise<WorkflowRunStatus> {
+  const query = sessionId ? `?${new URLSearchParams({ sessionId })}` : "";
   return jsonOrThrow(
-    await apiFetch(`/api/workflows/runs/${encodeURIComponent(runId)}`, {
+    await apiFetch(`/api/workflows/runs/${encodeURIComponent(runId)}${query}`, {
       cache: "no-store",
+    }),
+  );
+}
+
+// Cancellation revokes the run's consent and stops future steps. It does not
+// roll back already in-flight calls; keep reading their result/receipt response.
+export async function cancelWorkflowRun(runId: string, sessionId: string): Promise<WorkflowRunStatus> {
+  return jsonOrThrow(
+    await apiFetch(`/api/workflows/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+    }),
+  );
+}
+
+// Direct runs have this handle before their response/run id is available.
+// A 404 means cancellation is NOT confirmed; the caller may retry only while
+// its matching start request is still pending.
+export async function cancelWorkflowRunByKey(
+  name: string,
+  sessionId: string,
+  idempotencyKey: string,
+): Promise<WorkflowRunStatus> {
+  return jsonOrThrow(
+    await apiFetch(`/api/workflows/${encodeURIComponent(name)}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, idempotencyKey }),
     }),
   );
 }
@@ -533,6 +561,20 @@ export async function updateSession(
   );
 }
 
+// Dedicated consent mutation: generic PATCH must never write server-owned grants.
+export async function setSessionToolConsent(
+  sessionId: string,
+  enabled: boolean,
+): Promise<Session> {
+  return jsonOrThrow(
+    await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/tool-consent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
+  );
+}
+
 export async function getToolCatalog(
   sessionId?: string | null,
   agentName?: string | null,
@@ -580,9 +622,12 @@ export function deleteSession(id: string): Promise<void> {
   return deleteOrThrow(`/api/sessions/${id}`, "session");
 }
 
-export async function listMessages(sessionId: string): Promise<Message[]> {
+export async function listMessages(sessionId: string, signal?: AbortSignal): Promise<Message[]> {
   return jsonOrThrow(
-    await apiFetch(`/api/sessions/${sessionId}/messages`, { cache: "no-store" }),
+    await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      cache: "no-store",
+      ...(signal ? { signal } : {}),
+    }),
   );
 }
 

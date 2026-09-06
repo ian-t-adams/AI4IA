@@ -50,11 +50,20 @@ from typing import Any
 from uuid import uuid4
 
 from ..agents.capabilities import capability_builder_for_state
+from ..agents.agent_catalog import AgentCatalog
+from ..agents.approvals import ApprovalPolicy
+from ..agents.consent import ToolConsentState
+from ..agents.consent_service import execution_tools_for_state, run_consent_checker
 from ..catalog import DeploymentOption
-from ..sessions.models import Message, MessageRole, MessageStatus
+from ..receipts import ReceiptRuntime
+from ..sessions.models import Message, MessageRole, MessageStatus, Session
 from ..usage.models import TokenUsage, UsageTarget
 from .models import MAX_STEPS, Workflow
-from .runner import run_workflow_step
+from .runner import MAX_CARRY_LEN, WorkflowRunResult, run_workflow_step
+from .persistence import persist_run_message
+from .receipts import (
+    step_from_dict, step_to_dict, workflow_activity, workflow_receipt, workflow_safety,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +100,9 @@ _TERMINAL_RUN_STATUSES = frozenset({"COMPLETED", "FAILED", "TERMINATED"})
 # so that raising the step cap tightens the per-step allowance automatically. A
 # hardcoded budget would keep passing its own test while quietly making the
 # payload illegal again.
-_TRACE_BUDGET_BYTES = 720_000
+_TRACE_BUDGET_BYTES = 360_000
 _MAX_STEP_TEXT_BYTES = _TRACE_BUDGET_BYTES // MAX_STEPS
+MAX_ORCHESTRATION_INPUT_BYTES = 192 * 1024
 _TRUNCATION_MARKER = "\n\n[truncated: durable run payload limit]"
 
 
@@ -117,6 +127,10 @@ class DurableScheduleAcceptanceUnknownError(RuntimeError):
 
 class DurableScheduleRejectedError(RuntimeError):
     """The scheduler definitively rejected the run before acceptance."""
+
+
+class WorkflowPayloadTooLargeError(ValueError):
+    """Frozen execution input cannot fit alongside bounded step receipts."""
 
 
 _DEFINITE_SCHEDULE_CODES = frozenset(
@@ -189,6 +203,16 @@ def durable_run_fingerprint(payload: dict[str, Any]) -> str:
         "runId",
     ):
         context.pop(key, None)
+    if context.get("toolConsent") is not None:
+        consent = dict(context["toolConsent"])
+        grant = dict(consent["grant"])
+        # Concurrent first requests mint different audit ids/times. The create
+        # winner owns the grant; retry authorization is bound to its exact
+        # persisted state, while the fingerprint compares approval semantics.
+        for key in ("id", "grantedAt", "expiresAt"):
+            grant.pop(key, None)
+        consent["grant"] = grant
+        context["toolConsent"] = consent
     canonical = {"steps": payload.get("steps") or [], "context": context}
     encoded = json.dumps(
         canonical,
@@ -491,6 +515,7 @@ class DurableWorkflowService:
                 # string math on the activity's own output, so it stays
                 # replay-deterministic.
                 result = outcome["result"]
+                carried = (result.get("text") or "")[:MAX_CARRY_LEN]
                 result["text"] = _truncate_for_payload(result.get("text") or "")
                 if result.get("error"):
                     result["error"] = _truncate_for_payload(result["error"])
@@ -500,8 +525,19 @@ class DurableWorkflowService:
                     ok = False
                     text = result.get("error") or "Workflow step failed."
                     break
-                previous = result.get("text") or ""
-                text = previous
+                previous = carried
+                text = result.get("text") or ""
+                # Versioned so histories scheduled before this feature replay
+                # the same activity sequence. Completed steps survive a later
+                # cancellation/worker loss rather than waiting for the whole run.
+                if payload["context"].get("governanceVersion") == 2 and index < len(steps) - 1:
+                    yield ctx.call_activity(
+                        _PERSIST_ACTIVITY,
+                        input={
+                            "context": payload["context"], "ok": True, "text": text,
+                            "usage": usage_total, "steps": list(trace), "checkpoint": True,
+                        },
+                    )
 
             # Persist inside the orchestration, not at the caller: a durable run
             # outlives the request that started it, so nothing on the caller's
@@ -513,6 +549,8 @@ class DurableWorkflowService:
                     "ok": ok,
                     "text": text,
                     "usage": usage_total,
+                    "steps": trace,
+                    "cancelled": any(item.get("cancelled") for item in trace),
                 },
             )
             return {"ok": ok, "text": text, "steps": trace, "usage": usage_total}
@@ -610,7 +648,34 @@ class DurableWorkflowService:
         state = self._state
         uid = context["userId"]
         composed = await state.agent_service.catalog_for(uid, state.agents)
+        if context.get("agentSnapshot") is not None:
+            composed = AgentCatalog.model_validate(context["agentSnapshot"])
         library_ids = context.get("libraryDocumentIds")
+        consent = (
+            ToolConsentState.model_validate(context["toolConsent"])
+            if context.get("toolConsent") is not None else None
+        )
+        checker = None
+        if context.get("governanceVersion") == 2:
+            checker = run_consent_checker(
+                state, consent=consent,
+                workflow=Workflow.model_validate(context["workflowSnapshot"]),
+                user_id=uid, run_id=context["runId"],
+                session=Session(
+                    id=context["sessionId"], userId=uid,
+                    libraryDocumentIds=library_ids,
+                ),
+                assistant_message_id=context["assistantMessageId"],
+                email=context.get("email"),
+            )
+        frozen_policy = ApprovalPolicy(context.get("approvalPolicy") or "always")
+        current_policy = getattr(
+            getattr(state, "settings", None), "tool_approval_mode", ApprovalPolicy.always,
+        )
+        policy_order = [ApprovalPolicy.off, ApprovalPolicy.tainted, ApprovalPolicy.always]
+        effective_policy = max(
+            (frozen_policy, current_policy), key=policy_order.index,
+        )
         outcome = await run_workflow_step(
             step,
             index=index,
@@ -634,16 +699,15 @@ class DurableWorkflowService:
                 ),
             ),
             correlation_id=context.get("correlationId"),
+            approval_policy=effective_policy,
+            consent_checker=checker, tool_consent=consent.grant if consent else None,
+            tool_builder=lambda names, ctx: execution_tools_for_state(
+                state, user_id=uid, tool_names=names, ctx=ctx,
+            ),
             api=context.get("api") or "chat",
         )
         return {
-            "result": {
-                "agent": outcome.result.agent,
-                "ok": outcome.result.ok,
-                "text": outcome.result.text,
-                "error": outcome.result.error,
-                "iterations": outcome.result.iterations,
-            },
+            "result": step_to_dict(outcome.result),
             "usage": _usage_to_dict(outcome.usage),
             "fatal": outcome.fatal,
         }
@@ -656,6 +720,16 @@ class DurableWorkflowService:
         uid = context["userId"]
         session_id = context["sessionId"]
         agent_attr = f"workflow:{context['workflowName']}"
+        consent = (
+            ToolConsentState.model_validate(context["toolConsent"])
+            if context.get("toolConsent") is not None else None
+        )
+        result = WorkflowRunResult(
+            ok=payload.get("ok", False), text=payload.get("text") or "",
+            usage=_usage_from_dict(payload.get("usage") or {}),
+            steps=[step_from_dict(item) for item in payload.get("steps") or []],
+            cancelled=payload.get("cancelled", False),
+        )
 
         assistant = Message(
             id=context.get("assistantMessageId") or uuid4().hex,
@@ -664,21 +738,49 @@ class DurableWorkflowService:
             role=MessageRole.assistant,
             content=payload.get("text") or "",
             status=(
-                MessageStatus.complete
-                if payload.get("ok")
-                else MessageStatus.error
+                MessageStatus.cancelled if result.cancelled else
+                (MessageStatus.complete if result.ok else MessageStatus.error)
             ),
             model=context["deployment"],
             agent=agent_attr,
             workflowRunId=context.get("runId"),
             workflowRunStatus=(
-                "completed" if payload.get("ok") else "run_failed"
+                "cancelled" if result.cancelled else
+                ("completed" if payload.get("ok") else "run_failed")
             )
             if context.get("runId")
             else None,
             workflowRunFingerprint=context.get("runFingerprint"),
+            workflowConsentRevoked=result.cancelled,
+            workflowToolConsent=consent.grant if consent else None,
+            workflowToolConsentState=consent,
+            workflowStepReceipts=[
+                step.receipt for step in result.steps if step.receipt is not None
+            ],
+            steps=workflow_activity(result.steps),
+            safety=workflow_safety(result.steps),
+            executionReceipt=workflow_receipt(
+                result, runtime=ReceiptRuntime(
+                    modelId=context["modelId"], deployment=context["deployment"],
+                    api=context.get("api") or "chat", agent=agent_attr,
+                ),
+                correlation_id=context.get("correlationId"),
+                consent=consent.grant if consent else None,
+            ),
         )
-        await state.session_repo.upsert_message(uid, assistant)
+        if payload.get("checkpoint"):
+            assistant.status = MessageStatus.streaming
+            assistant.workflowRunStatus = "running"
+            if assistant.executionReceipt is not None:
+                assistant.executionReceipt.status = "incomplete"
+                assistant.executionReceipt.partial = True
+        if context.get("governanceVersion") == 2:
+            await persist_run_message(state.session_repo, uid, assistant)
+        else:
+            await state.session_repo.upsert_message(uid, assistant)
+        if payload.get("checkpoint"):
+            await state.session_repo.touch_session(uid, session_id)
+            return {"persisted": True, "checkpoint": True}
 
         usage = _usage_from_dict(payload.get("usage") or {})
         # Same rule as the in-request path: meter only when a model call actually
@@ -716,6 +818,9 @@ def build_orchestration_payload(
     run_id: str | None = None,
     assistant_message_id: str | None = None,
     api: str = "chat",
+    tool_consent: ToolConsentState | None = None,
+    approval_policy: ApprovalPolicy = ApprovalPolicy.always,
+    agent_snapshot: AgentCatalog | None = None,
 ) -> dict[str, Any]:
     """Freeze everything a run needs into its orchestration input.
 
@@ -761,7 +866,15 @@ def build_orchestration_payload(
     # created before this field existed keeps the same fingerprint.
     if api != "chat":
         context["api"] = api
-    return {
+    if approval_policy is not ApprovalPolicy.always:
+        context["approvalPolicy"] = approval_policy.value
+    if tool_consent is not None:
+        context["toolConsent"] = tool_consent.model_dump(mode="json")
+    if agent_snapshot is not None:
+        context["governanceVersion"] = 2
+        context["agentSnapshot"] = agent_snapshot.model_dump(mode="json")
+        context["workflowSnapshot"] = workflow.model_dump(mode="json")
+    payload = {
         # Serialized by the model itself, not a hand-listed subset: a field added
         # to WorkflowStep later must survive the durable boundary automatically.
         # `extraTools` was dropped here when it was added, so a durable run
@@ -771,6 +884,9 @@ def build_orchestration_payload(
         "steps": [s.model_dump(mode="json") for s in workflow.steps],
         "context": context,
     }
+    if len(json.dumps(payload, ensure_ascii=True).encode("ascii")) > MAX_ORCHESTRATION_INPUT_BYTES:
+        raise WorkflowPayloadTooLargeError("Frozen workflow input is too large.")
+    return payload
 
 
 def _step_from_dict(raw: dict[str, Any]):
@@ -869,9 +985,8 @@ def _merge_usage(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
 def _truncate_for_payload(text: str, limit: int = _MAX_STEP_TEXT_BYTES) -> str:
     """Bound one step's text so the orchestration payload stays under 1 MB.
 
-    Measured in UTF-8 BYTES, not characters, because that is what the scheduler
-    counts. The cut can land mid-character, so the tail is decoded with
-    ``errors="ignore"`` to drop the partial sequence rather than raise.
+    Measured as ASCII-escaped JSON, including quotes/backslashes and Unicode
+    escapes, so every serializer used by the scheduler stays inside the bound.
 
     Truncation is visible on purpose. Silently dropping the tail would make a
     short answer look like the model's own, which is the "configured but inert"
@@ -880,11 +995,17 @@ def _truncate_for_payload(text: str, limit: int = _MAX_STEP_TEXT_BYTES) -> str:
     """
     if not text:
         return text
-    encoded = text.encode("utf-8")
-    if len(encoded) <= limit:
+    if len(json.dumps(text, ensure_ascii=True)) <= limit:
         return text
-    keep = max(limit - len(_TRUNCATION_MARKER.encode("utf-8")), 0)
-    return encoded[:keep].decode("utf-8", errors="ignore") + _TRUNCATION_MARKER
+    low, high = 0, min(len(text), limit)
+    while low < high:
+        middle = (low + high + 1) // 2
+        size = len(json.dumps(text[:middle] + _TRUNCATION_MARKER, ensure_ascii=True))
+        if size <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low] + _TRUNCATION_MARKER
 
 
 def _loads(raw: str) -> Any:

@@ -19,6 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from ..agents.consent import ToolConsentState
 from .models import (
     Document,
     Message,
@@ -53,7 +54,19 @@ class CosmosSessionRepository:
 
     @staticmethod
     def _to_doc(model: Session | Message | Document) -> dict[str, Any]:
-        return model.model_dump(mode="json")
+        doc = model.model_dump(mode="json")
+        if isinstance(model, Session):
+            doc["toolConsentState"] = (
+                model.toolConsentState.model_dump(mode="json")
+                if model.toolConsentState is not None else None
+            )
+            doc["toolConsentVersion"] = model.toolConsentVersion
+        elif isinstance(model, Message):
+            doc["workflowToolConsentState"] = (
+                model.workflowToolConsentState.model_dump(mode="json")
+                if model.workflowToolConsentState is not None else None
+            )
+        return doc
 
     async def _owned_session(self, user_id: str, session_id: str) -> Session:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
@@ -143,6 +156,58 @@ class CosmosSessionRepository:
         )
         await self._patch_session_item(user_id, session_id, operations)
         return await self._owned_session(user_id, session_id)
+
+    async def set_tool_consent(
+        self, user_id: str, session_id: str, consent: ToolConsentState | None,
+        *, expected_version: int | None = None,
+    ) -> Session:
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosResourceNotFoundError,
+        )
+
+        if consent is not None and (
+            consent.userId != user_id or consent.sessionId != session_id
+            or consent.grant.scope != "session" or consent.runId is not None
+        ):
+            raise ValueError("Consent must belong to this session.")
+        for _attempt in range(3):
+            try:
+                raw = await self._sessions.read_item(
+                    item=session_id, partition_key=user_id
+                )
+            except CosmosResourceNotFoundError as exc:
+                raise SessionNotFoundError(session_id) from exc
+            if raw.get("userId") != user_id:
+                raise SessionNotFoundError(session_id)
+            version = raw.get("toolConsentVersion", 0)
+            if expected_version is not None and version != expected_version:
+                raise SessionConflictError(session_id)
+            # A missing ETag cannot safely fall back to an unconditional write.
+            etag = raw.get("_etag")
+            if not etag:
+                raise SessionConflictError(session_id)
+            try:
+                await self._patch_session_item(
+                    user_id, session_id,
+                    [
+                        {"op": "set", "path": "/toolConsent", "value": (
+                            consent.grant.model_dump(mode="json") if consent else None
+                        )},
+                        {"op": "set", "path": "/toolConsentState", "value": (
+                            consent.model_dump(mode="json") if consent else None
+                        )},
+                        {"op": "set", "path": "/toolConsentVersion", "value": version + 1},
+                        {"op": "set", "path": "/updatedAt", "value": (
+                            datetime.now(timezone.utc).isoformat()
+                        )},
+                    ],
+                    etag=etag,
+                )
+                return await self._owned_session(user_id, session_id)
+            except CosmosAccessConditionFailedError:
+                continue
+        raise SessionConflictError(session_id)
 
     async def set_generated_title_if_eligible(
         self, user_id: str, session_id: str, title: str
@@ -493,6 +558,7 @@ class CosmosSessionRepository:
         *,
         expected_status: str,
         expected_lease_token: str | None,
+        expected_message: Message | None = None,
     ) -> bool:
         from azure.core import MatchConditions
         from azure.cosmos.exceptions import (
@@ -514,6 +580,10 @@ class CosmosSessionRepository:
             != message.workflowRunFingerprint
             or current.get("workflowScheduleLeaseToken")
             != expected_lease_token
+            or (
+                expected_message is not None
+                and Message.model_validate(current) != expected_message
+            )
         ):
             return False
         message.userId = user_id

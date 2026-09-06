@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
+from ..agents.consent import ToolConsentState
 from .models import (
     Document,
     Message,
@@ -15,7 +16,7 @@ from .models import (
     normalize_session_patch_changes,
     normalize_session_title,
 )
-from .repository import SessionNotFoundError
+from .repository import SessionConflictError, SessionNotFoundError
 
 
 class InMemorySessionRepository:
@@ -59,6 +60,25 @@ class InMemorySessionRepository:
             session = await self._owned_session(user_id, session_id)
             for field_name, value in normalized.items():
                 setattr(session, field_name, value)
+            session.updatedAt = datetime.now(timezone.utc)
+            return session.model_copy(deep=True)
+
+    async def set_tool_consent(
+        self, user_id: str, session_id: str, consent: ToolConsentState | None,
+        *, expected_version: int | None = None,
+    ) -> Session:
+        if consent is not None and (
+            consent.userId != user_id or consent.sessionId != session_id
+            or consent.grant.scope != "session" or consent.runId is not None
+        ):
+            raise ValueError("Consent must belong to this session.")
+        async with self._lock:
+            session = await self._owned_session(user_id, session_id)
+            if expected_version is not None and session.toolConsentVersion != expected_version:
+                raise SessionConflictError(session_id)
+            session.toolConsentState = consent.model_copy(deep=True) if consent else None
+            session.toolConsent = consent.grant if consent else None
+            session.toolConsentVersion += 1
             session.updatedAt = datetime.now(timezone.utc)
             return session.model_copy(deep=True)
 
@@ -205,6 +225,7 @@ class InMemorySessionRepository:
         *,
         expected_status: str,
         expected_lease_token: str | None,
+        expected_message: Message | None = None,
     ) -> bool:
         async with self._lock:
             await self._owned_session(user_id, message.sessionId)
@@ -218,6 +239,7 @@ class InMemorySessionRepository:
                     != message.workflowRunFingerprint
                     or existing.workflowScheduleLeaseToken
                     != expected_lease_token
+                    or (expected_message is not None and existing != expected_message)
                 ):
                     return False
                 message.userId = user_id

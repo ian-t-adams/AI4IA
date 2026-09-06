@@ -1,65 +1,51 @@
-"""Thin async wrapper over the official ``webiq`` SDK's :class:`WebIQAsyncClient`.
+"""Lazy WebIQ v3 client using the official SDK's public auth and transport APIs.
 
-Adds the app-side governance shape the synthetic capability relies on:
+The SDK's generated resource methods are narrower than the service: 0.1.6
+documents domain/custom-search filters that its web method cannot accept, and
+0.1.7 removes classic entirely. A fixed, verified REST contract on the SDK's
+public AsyncHttpTransport preserves those capabilities without private client
+attributes, invented routes, CLI credentials, or a second authentication stack.
 
-* The ``webiq`` SDK is **lazy-imported** (inside :meth:`_ensure_client`), so importing
-  this module — and booting the app — never requires the SDK unless the feature is
-  enabled and a search actually runs. The underlying client is constructed on first
-  use from settings: an ``api_key`` when configured, else an EntraID
-  ``DefaultAzureCredential`` when ``webiq_use_entra`` is set.
-* Every resource method returns **normalized** ``list[dict]`` / ``dict`` of simple
-  scalar fields (never SDK model objects), so the capability layer only ever
-  sanitizes plain strings.
-* Every ``webiq`` ``WebIQError`` subclass — plus an EntraID token-acquisition
-  failure and a missing-credential misconfiguration — is mapped to a local
-  :class:`WebSearchError` carrying a coarse, remediation-oriented ``category``
-  (``config`` / ``credential`` / ``auth`` / ``permission`` / ``rate_limit`` /
-  ``timeout`` / ``connection`` / ``bad_request`` / ``not_found`` / ``server_error``
-  / ``status`` / ``unknown``); the capability maps those to clean, user-safe error
-  strings and the admin panel counts them. The wrapper itself never raises a raw SDK
-  exception into the turn.
-
-  The categories are deliberately finer than the SDK's exception classes so the
-  admin diagnostics can point at the *fix*: ``credential`` (the managed identity
-  could not get a token at all) reads differently from ``auth`` (a token was
-  acquired but Web IQ rejected it, i.e. the identity is not entitled); a 5xx
-  ``server_error`` (an upstream Web IQ incident) reads differently from a 4xx
-  ``bad_request`` (the request the app sent was wrong); and a ``timeout`` (the
-  service is slow/overloaded) reads differently from a ``connection`` failure (no
-  network path at all).
-
-For unit tests a fake SDK client may be injected via ``sdk_client`` so the error
-mapping + normalization can be exercised without the network or a real key.
+Endpoint, credentials, strict safe search, timeout and retries are server-owned.
+No automatic retries or crawl polling can multiply a metered tool invocation.
+Responses remain plain JSON, including dynamic/nested provider fields; the
+capability bounds, redacts and nonce-fences them before returning to the model.
 """
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from ..config import Settings
 from ..http_retry import parse_retry_after
+from .contracts import (
+    MAX_CONTENT_CHARS,
+    MAX_RESULTS,
+    STRICT_SEARCH_TOOLS,
+    TOOL_PATHS,
+    prepare_arguments,
+    wire_payload,
+)
 
 logger = logging.getLogger(__name__)
 
-# Coarse, remediation-oriented error categories the capability maps to user-safe
-# strings and the admin panel counts. Ordered here loosely by "what an operator
-# does about it"; the display order lives in ``health.CATEGORY_ORDER``.
-ERROR_CONFIG = "config"  # feature on but no api key and no entra fallback configured
-ERROR_CREDENTIAL = "credential"  # entra token could not be acquired (identity/IMDS/scope)
-ERROR_AUTH = "auth"  # 401: authenticated principal rejected (e.g. not entitled)
-ERROR_PERMISSION = "permission"  # 403: credentials valid, operation not permitted
-ERROR_RATE_LIMIT = "rate_limit"  # 429/430: rate / concurrency limit
-ERROR_TIMEOUT = "timeout"  # client-side timeout (service reachable but slow/overloaded)
-ERROR_CONNECTION = "connection"  # could not reach the service at all
-ERROR_BAD_REQUEST = "bad_request"  # other 4xx: the request the app sent was wrong
-ERROR_NOT_FOUND = "not_found"  # 404: page/route missing (common + expected for browse)
-ERROR_SERVER = "server_error"  # 5xx: upstream Web IQ incident
-ERROR_STATUS = "status"  # any other non-2xx status
-ERROR_UNKNOWN = "unknown"  # uncategorized
+ERROR_CONFIG = "config"
+ERROR_CREDENTIAL = "credential"
+ERROR_AUTH = "auth"
+ERROR_PERMISSION = "permission"
+ERROR_RATE_LIMIT = "rate_limit"
+ERROR_TIMEOUT = "timeout"
+ERROR_CONNECTION = "connection"
+ERROR_BAD_REQUEST = "bad_request"
+ERROR_NOT_FOUND = "not_found"
+ERROR_SERVER = "server_error"
+ERROR_STATUS = "status"
+ERROR_UNKNOWN = "unknown"
 
 
 class WebSearchError(Exception):
-    """A normalized Web IQ failure with a coarse, user-safe ``category``."""
+    """A normalized Web IQ failure with a coarse, user-safe category."""
 
     def __init__(self, category: str, detail: str = "") -> None:
         super().__init__(f"web search error [{category}]: {detail}")
@@ -68,113 +54,52 @@ class WebSearchError(Exception):
 
 
 class WebSearchClient:
-    """Async wrapper that constructs + drives a ``WebIQAsyncClient`` lazily."""
+    """One lazy, owned SDK transport; injected SDK clients/transports remain caller-owned."""
 
-    def __init__(self, settings: Settings, *, sdk_client: Any | None = None) -> None:
+    def __init__(
+        self, settings: Settings, *, sdk_client: Any | None = None, transport: Any | None = None,
+    ) -> None:
         self._settings = settings
-        # When injected (tests), use the fake directly and never construct a real
-        # client (so no SDK import / network / credential acquisition occurs).
-        self._client: Any | None = sdk_client
-        self._injected = sdk_client is not None
-        self._types: Any | None = None
+        self._client = sdk_client
+        self._transport = transport
+        self._injected_transport = transport is not None
         self._credential: Any | None = None
 
-    # --- construction / lifecycle -------------------------------------------------
+    def _ensure_transport(self) -> Any:
+        if self._transport is not None:
+            return self._transport
+        from webiq import RetryPolicy
+        from webiq.auth import create_auth
+        from webiq.transports.http import AsyncHttpTransport
 
-    def _ensure_client(self) -> Any:
-        """Return the underlying client, constructing the real one on first use.
-
-        The ``webiq`` SDK is imported here (not at module load) so the app boots
-        and the tests run without it unless the feature is on and a search runs.
-        Auth: an ``api_key`` when configured, else an EntraID credential when
-        ``webiq_use_entra`` is set. A misconfiguration (no key, no entra) surfaces
-        as a sanitized per-call error rather than a startup/import failure.
-        """
-        if self._client is not None:
-            return self._client
-        from webiq import WebIQAsyncClient  # lazy: only when a search actually runs
-
-        kwargs: dict[str, Any] = {}
-        if self._settings.webiq_base_url:
-            kwargs["base_url"] = self._settings.webiq_base_url
         if self._settings.webiq_api_key:
-            kwargs["api_key"] = self._settings.webiq_api_key
+            auth = create_auth(api_key=self._settings.webiq_api_key)
         elif self._settings.webiq_use_entra:
             from azure.identity.aio import DefaultAzureCredential
 
-            self._credential = DefaultAzureCredential()
-            kwargs["credential"] = self._credential
+            if self._credential is None:
+                self._credential = DefaultAzureCredential()
+            auth = create_auth(credential=self._credential)
         else:
-            raise WebSearchError(
-                ERROR_CONFIG,
-                "web search is not configured (no api key or entra credential).",
-            )
-        self._client = WebIQAsyncClient(**kwargs)
-        return self._client
-
-    def _load_types(self) -> Any:
-        """Lazily import + cache the SDK enum classes used to shape requests."""
-        if self._types is None:
-            from webiq.types import (
-                BrowseContentFormat,
-                ContentFormat,
-                ImageAspectRatio,
-                ImageSize,
-                SafeSearch,
-            )
-
-            self._types = {
-                "ContentFormat": ContentFormat,
-                "BrowseContentFormat": BrowseContentFormat,
-                "ImageAspectRatio": ImageAspectRatio,
-                "ImageSize": ImageSize,
-                "SafeSearch": SafeSearch,
-            }
-        return self._types
-
-    @staticmethod
-    def _to_enum(enum_cls: Any, value: Any) -> Any | None:
-        """Coerce a caller-supplied string to an enum member, else ``None``."""
-        if value is None:
-            return None
-        try:
-            return enum_cls(value)
-        except (ValueError, KeyError, TypeError):
-            for member in enum_cls:
-                if str(getattr(member, "value", member)).lower() == str(value).lower():
-                    return member
-                if member.name.lower() == str(value).lower():
-                    return member
-        return None
+            raise WebSearchError(ERROR_CONFIG, "No WebIQ credential configured.")
+        self._transport = AsyncHttpTransport(
+            base_url=self._settings.webiq_base_url or "https://api.microsoft.ai/v3",
+            auth=auth,
+            retry=RetryPolicy(max_retries=0),
+        )
+        return self._transport
 
     def _map_error(self, exc: Exception) -> WebSearchError:
-        """Map a transport / SDK / credential exception to a categorized error.
-
-        Ordering matters. An EntraID *token-acquisition* failure reaches us straight
-        from the SDK's auth provider (``credential.get_token``) as an
-        ``azure-core`` ``ClientAuthenticationError`` — never wrapped as a ``webiq``
-        error — so it is checked first and surfaced as ``credential`` (distinct from
-        a Web IQ ``auth`` 401, where a token *was* acquired but rejected). Then the
-        specific ``webiq`` status subclasses (401/403/429) are matched before the
-        generic :class:`APIStatusError`, whose ``status_code`` is bucketed into
-        ``server_error`` (5xx) / ``not_found`` (404) / ``bad_request`` (other 4xx).
-        A client-side ``timeout`` is teased out of ``APIConnectionError`` (the SDK
-        folds httpx timeouts into it). All imports are lazy + guarded so mapping can
-        never itself raise; anything unrecognized is ``unknown``.
-        """
-        # 1) Managed-identity token could not be acquired at all (no identity
-        #    assigned, IMDS unreachable, wrong scope). azure-identity's
-        #    CredentialUnavailableError subclasses ClientAuthenticationError, so the
-        #    one check covers both. webiq errors do not derive from this, so testing
-        #    it first is safe.
+        # Keep raw exception text (which can contain URLs, queries or credentials)
+        # out of health diagnostics and logs, not merely out of model results.
+        detail = type(exc).__name__
         try:
             from azure.core.exceptions import ClientAuthenticationError
 
             if isinstance(exc, ClientAuthenticationError):
-                return WebSearchError(ERROR_CREDENTIAL, str(exc))
-        except Exception:  # noqa: BLE001 - azure-identity may be absent; fall through
+                return WebSearchError(ERROR_CREDENTIAL, detail)
+        except ImportError:
             pass
-
         try:
             from webiq import (
                 APIConnectionError,
@@ -183,239 +108,149 @@ class WebSearchClient:
                 PermissionDeniedError,
                 RateLimitError,
             )
-        except Exception:  # noqa: BLE001 - never let mapping itself raise
-            return WebSearchError(ERROR_UNKNOWN, str(exc))
-        # 2) Specific status subclasses (each derives from APIStatusError).
+        except ImportError:
+            return WebSearchError(ERROR_UNKNOWN, detail)
         if isinstance(exc, AuthenticationError):
-            return WebSearchError(ERROR_AUTH, str(exc))
+            return WebSearchError(ERROR_AUTH, detail)
         if isinstance(exc, PermissionDeniedError):
-            return WebSearchError(ERROR_PERMISSION, str(exc))
+            return WebSearchError(ERROR_PERMISSION, detail)
         if isinstance(exc, RateLimitError):
-            return WebSearchError(ERROR_RATE_LIMIT, str(exc))
-        # 3) Generic non-2xx: bucket by HTTP status so an operator can tell an
-        #    upstream incident (5xx) from a request the app got wrong (other 4xx)
-        #    or a missing page/route (404 — common + expected for browse_url).
+            return WebSearchError(ERROR_RATE_LIMIT, detail)
         if isinstance(exc, APIStatusError):
             code = getattr(exc, "status_code", None)
             if isinstance(code, int):
                 if code >= 500:
-                    return WebSearchError(ERROR_SERVER, str(exc))
+                    return WebSearchError(ERROR_SERVER, detail)
                 if code == 404:
-                    return WebSearchError(ERROR_NOT_FOUND, str(exc))
+                    return WebSearchError(ERROR_NOT_FOUND, detail)
                 if code >= 400:
-                    return WebSearchError(ERROR_BAD_REQUEST, str(exc))
-            return WebSearchError(ERROR_STATUS, str(exc))
-        # 4) Connection-level: the SDK folds client-side httpx timeouts into
-        #    APIConnectionError ("Request timed out after Ns"). Separate them so
-        #    "slow/overloaded" reads differently from "no network path"; fall back
-        #    to connection if the SDK's message ever changes.
+                    return WebSearchError(ERROR_BAD_REQUEST, detail)
+            return WebSearchError(ERROR_STATUS, detail)
         if isinstance(exc, APIConnectionError):
-            if "timed out" in str(exc).lower() or "timeout" in str(exc).lower():
-                return WebSearchError(ERROR_TIMEOUT, str(exc))
-            return WebSearchError(ERROR_CONNECTION, str(exc))
-        return WebSearchError(ERROR_UNKNOWN, str(exc))
+            category = ERROR_TIMEOUT if (
+                "timed out" in str(exc).lower() or "timeout" in str(exc).lower()
+            ) else ERROR_CONNECTION
+            return WebSearchError(category, detail)
+        return WebSearchError(ERROR_UNKNOWN, detail)
 
-    # --- resource methods (return normalized plain dicts) -------------------------
+    @staticmethod
+    def _plain(value: Any) -> Any:
+        if hasattr(value, "model_dump"):
+            return value.model_dump(mode="json", exclude_none=True)
+        if isinstance(value, Mapping):
+            return {key: WebSearchClient._plain(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [WebSearchClient._plain(item) for item in value]
+        if hasattr(value, "__dict__"):
+            return WebSearchClient._plain(vars(value))
+        return value
 
-    async def web_search(
-        self,
-        query: str,
-        *,
-        max_results: int,
-        language: str | None = None,
-        region: str | None = None,
-        max_length: int | None = None,
-    ) -> list[dict[str, Any]]:
-        """Web search -> ``[{title, url, content}, ...]`` (compact ``text`` format)."""
-        types = self._load_types()
-        client = self._ensure_client()
-        try:
-            resp = await client.web.search(
-                query,
-                max_results=max_results,
-                language=language,
-                region=region,
-                content_format=types["ContentFormat"].text,
-                max_length=max_length,
-            )
-        except WebSearchError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - normalize every SDK/transport error
-            raise self._map_error(exc) from exc
-        items = getattr(resp, "webResults", None) or []
-        return [
-            {
-                "title": getattr(r, "title", None),
-                "url": getattr(r, "url", None),
-                "content": getattr(r, "content", None),
-            }
-            for r in items
-        ]
+    @staticmethod
+    def _validate_sdk_payload(name: str, payload: dict[str, Any]) -> None:
+        """Exercise the actual generated SDK request contract where one exists."""
+        from webiq import types
 
-    async def news_search(
-        self,
-        query: str,
-        *,
-        max_results: int,
-        language: str | None = None,
-        region: str | None = None,
-        max_length: int | None = None,
-    ) -> list[dict[str, Any]]:
-        """News search -> ``[{title, url, source, content}, ...]``."""
-        types = self._load_types()
-        client = self._ensure_client()
-        try:
-            resp = await client.news.search(
-                query,
-                max_results=max_results,
-                language=language,
-                region=region,
-                content_format=types["ContentFormat"].text,
-                max_length=max_length,
-            )
-        except WebSearchError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise self._map_error(exc) from exc
-        items = getattr(resp, "newsResults", None) or []
-        return [
-            {
-                "title": getattr(r, "title", None),
-                "url": getattr(r, "url", None),
-                "source": getattr(r, "source", None),
-                "content": getattr(r, "content", None) or getattr(r, "snippet", None),
-            }
-            for r in items
-        ]
-
-    async def video_search(
-        self,
-        query: str,
-        *,
-        max_results: int,
-        language: str | None = None,
-        region: str | None = None,
-        freshness: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Video search -> ``[{title, url, source, length, views}, ...]``."""
-        self._load_types()
-        client = self._ensure_client()
-        try:
-            resp = await client.videos.search(
-                query,
-                max_results=max_results,
-                language=language,
-                region=region,
-                freshness=freshness,
-            )
-        except WebSearchError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise self._map_error(exc) from exc
-        items = getattr(resp, "videoResults", None) or []
-        return [
-            {
-                "title": getattr(r, "title", None),
-                "url": getattr(r, "url", None),
-                "source": getattr(r, "publishedBy", None),
-                "length": getattr(r, "length", None),
-                "views": getattr(r, "viewCount", None),
-            }
-            for r in items
-        ]
-
-    async def image_search(
-        self,
-        query: str,
-        *,
-        max_results: int,
-        language: str | None = None,
-        region: str | None = None,
-        aspect_ratio: str | None = None,
-        image_size: str | None = None,
-        safe_search: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Image search -> ``[{title, url, source, width, height}, ...]``."""
-        types = self._load_types()
-        client = self._ensure_client()
-        try:
-            resp = await client.images.search(
-                query,
-                max_results=max_results,
-                language=language,
-                region=region,
-                aspect_ratio=self._to_enum(types["ImageAspectRatio"], aspect_ratio),
-                image_size=self._to_enum(types["ImageSize"], image_size),
-                safe_search=self._to_enum(types["SafeSearch"], safe_search),
-            )
-        except WebSearchError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise self._map_error(exc) from exc
-        items = getattr(resp, "imageResults", None) or []
-        return [
-            {
-                "title": getattr(r, "title", None),
-                "url": getattr(r, "url", None),
-                "source": getattr(r, "hostPageUrl", None),
-                "caption": getattr(r, "caption", None),
-                "width": getattr(r, "width", None),
-                "height": getattr(r, "height", None),
-            }
-            for r in items
-        ]
-
-    async def browse(
-        self,
-        url: str,
-        *,
-        max_length: int | None = None,
-        live_crawl: str = "none",
-    ) -> dict[str, Any]:
-        """Fetch one URL -> ``{url, title, content, retry_after}`` (markdown content).
-
-        ``retry_after`` (seconds, or ``None``) mirrors the SDK's
-        ``BrowseResponse.retryAfter``: it is only set when a ``live_crawl`` of
-        ``"fallback"``/``"always"`` triggered an on-demand crawl that has not
-        finished yet, in which case ``title``/``content`` are **not** populated.
-        Callers must treat a non-``None`` ``retry_after`` as "not fetched yet" —
-        never as a genuinely empty page — and must not report it as success.
-        """
-        types = self._load_types()
-        client = self._ensure_client()
-        try:
-            resp = await client.browse.fetch(
-                url,
-                max_length=max_length,
-                live_crawl=live_crawl,
-                content_format=types["BrowseContentFormat"].markdown,
-            )
-        except WebSearchError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise self._map_error(exc) from exc
-        raw_retry_after = getattr(resp, "retryAfter", None)
-        return {
-            "url": getattr(resp, "url", None) or url,
-            "title": getattr(resp, "title", None),
-            "content": getattr(resp, "content", None),
-            "retry_after": parse_retry_after(raw_retry_after) if raw_retry_after else None,
+        models = {
+            "web_search": "WebRequest", "news_search": "NewsRequest",
+            "video_search": "VideosRequest", "image_search": "ImagesRequest",
+            "browse_url": "BrowseRequest", "classic_search": "SearchClassicRequest",
         }
+        model = getattr(types, models.get(name, ""), None)
+        if model is not None:
+            # These fields are explicitly documented in SDK 0.1.6's API reference,
+            # but missing from its generated WebRequest/resource method.
+            extension_fields = {"customSearchConfigId", "includeDomains", "excludeDomains"}
+            core = {key: value for key, value in payload.items() if key not in extension_fields}
+            model.model_validate(core)
+
+    async def _call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if not self._settings.web_search_enabled:
+            raise WebSearchError(ERROR_CONFIG, "Web search is disabled.")
+        try:
+            arguments = prepare_arguments(
+                name, args,
+                results_cap=max(1, min(self._settings.web_search_max_results, MAX_RESULTS)),
+                content_cap=max(1, min(self._settings.web_search_max_content_chars, MAX_CONTENT_CHARS)),
+            )
+            payload = wire_payload(name, arguments)
+            self._validate_sdk_payload(name, payload)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise WebSearchError(ERROR_BAD_REQUEST, "Invalid WebIQ request.") from exc
+        try:
+            if self._client is not None:
+                resource = {
+                    "web_search": "web", "news_search": "news", "video_search": "videos",
+                    "image_search": "images", "browse_url": "browse", "classic_search": "classic",
+                    "finance_search": "finance", "places_search": "places", "sports_search": "sports",
+                    "sonic_search": "sonic", "web_autosuggest": "autosuggest",
+                }[name]
+                argument = arguments.pop("url" if name == "browse_url" else "query")
+                if name in STRICT_SEARCH_TOOLS:
+                    arguments["safe_search"] = "strict"
+                method = "fetch" if name == "browse_url" else "search"
+                response = await getattr(getattr(self._client, resource), method)(argument, **arguments)
+                data = self._plain(response)
+            else:
+                data = await self._ensure_transport().request(
+                    method="POST", path=TOOL_PATHS[name], json=payload,
+                )
+        except WebSearchError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - normalize transport and credential failures
+            raise self._map_error(exc) from exc
+        if data is None:
+            return {}
+        if isinstance(data, list):
+            return {"results": data}
+        if not isinstance(data, dict):
+            raise WebSearchError(ERROR_SERVER, "Invalid WebIQ response.")
+        return data
+
+    async def web_search(self, query: str, *, max_results: int, **options: Any) -> dict[str, Any]:
+        return await self._call("web_search", {"query": query, "max_results": max_results, **options})
+
+    async def news_search(self, query: str, *, max_results: int, **options: Any) -> dict[str, Any]:
+        return await self._call("news_search", {"query": query, "max_results": max_results, **options})
+
+    async def video_search(self, query: str, *, max_results: int, **options: Any) -> dict[str, Any]:
+        return await self._call("video_search", {"query": query, "max_results": max_results, **options})
+
+    async def image_search(self, query: str, *, max_results: int, **options: Any) -> dict[str, Any]:
+        return await self._call("image_search", {"query": query, "max_results": max_results, **options})
+
+    async def classic_search(self, query: str, **options: Any) -> dict[str, Any]:
+        return await self._call("classic_search", {"query": query, **options})
+
+    async def finance_search(self, query: str, **options: Any) -> dict[str, Any]:
+        return await self._call("finance_search", {"query": query, **options})
+
+    async def places_search(self, query: str, **options: Any) -> dict[str, Any]:
+        return await self._call("places_search", {"query": query, **options})
+
+    async def sports_search(self, query: str, **options: Any) -> dict[str, Any]:
+        return await self._call("sports_search", {"query": query, **options})
+
+    async def sonic_search(self, query: str, **options: Any) -> dict[str, Any]:
+        return await self._call("sonic_search", {"query": query, **options})
+
+    async def autosuggest(self, query: str, **options: Any) -> dict[str, Any]:
+        return await self._call("web_autosuggest", {"query": query, **options})
+
+    async def browse(self, url: str, **options: Any) -> dict[str, Any]:
+        page = await self._call("browse_url", {"url": url, **options})
+        page["url"] = page.get("url") or url
+        raw_retry = page.get("retryAfter")
+        page["retry_after"] = parse_retry_after(raw_retry) if raw_retry is not None else None
+        return page
 
     async def close(self) -> None:
-        """Best-effort cleanup of the underlying SDK client + any owned credential."""
-        # Never close a caller/test-injected client; only one we constructed.
-        if self._client is not None and not self._injected:
-            aclose = getattr(self._client, "aclose", None)
-            if aclose is not None:
-                try:
-                    await aclose()
-                except Exception:  # noqa: BLE001 - cleanup must never raise
-                    logger.debug("web search client close failed", exc_info=True)
+        if self._transport is not None and not self._injected_transport:
+            try:
+                await self._transport.aclose()
+            except Exception:  # noqa: BLE001 - best-effort lifecycle cleanup
+                logger.debug("web search transport close failed")
         if self._credential is not None:
-            close = getattr(self._credential, "close", None)
-            if close is not None:
-                try:
-                    await close()
-                except Exception:  # noqa: BLE001
-                    logger.debug("web search credential close failed", exc_info=True)
+            try:
+                await self._credential.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("web search credential close failed")

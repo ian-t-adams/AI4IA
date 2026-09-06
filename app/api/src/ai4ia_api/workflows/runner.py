@@ -35,17 +35,25 @@ remain the cost backstop (the app ships unlimited-by-default per user).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from ..agents.agent_catalog import AgentCatalog
-from ..agents.approvals import ApprovalPolicy
+from ..agents.approvals import ApprovalPolicy, ApprovalSink
+from ..agents.activity import persisted_trace
 from ..agents.capabilities import CapabilityBuilder, Handler
-from ..agents.runtime import AgentRunFailed, run_agent_turn
+from ..agents.consent import ConsentChecker, ToolConsentSummary
+from ..agents.receipt import ReceiptDraft
+from ..agents.runtime import AgentRunCancelled, AgentRunFailed, AgentRunResult, run_agent_turn
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
+from ..receipts import ExecutionReceipt, ReceiptRuntime, json_payload
+from ..safety import MessageSafety, attributed_safety, provider_for_api
+from ..sessions.models import ActivityStep
 from ..usage.models import TokenUsage
 from .models import INPUT_TOKEN, PREVIOUS_TOKEN, Workflow, WorkflowStep
 
@@ -65,6 +73,10 @@ MAX_CARRY_LEN = 8000
 # placeholder many times in one instruction to multiply a bounded input into a
 # multi-MB request — which the per-field caps alone do not prevent.
 MAX_RENDERED_PROMPT_LEN = 32000
+ToolTurnBuilder = Callable[
+    [Sequence[str], ToolContext],
+    Awaitable[tuple[ToolRegistry, ToolExecutor, ToolContext]],
+]
 
 
 @dataclass
@@ -76,6 +88,10 @@ class WorkflowStepResult:
     text: str = ""
     error: str | None = None
     iterations: int = 0
+    receipt: ExecutionReceipt | None = None
+    activity: list[ActivityStep] = field(default_factory=list)
+    safety: MessageSafety | None = None
+    cancelled: bool = False
 
 
 @dataclass
@@ -92,6 +108,7 @@ class WorkflowRunResult:
     text: str
     usage: TokenUsage = field(default_factory=TokenUsage.empty)
     steps: list[WorkflowStepResult] = field(default_factory=list)
+    cancelled: bool = False
 
 
 def _render(instruction: str, *, run_input: str, previous: str) -> str:
@@ -131,7 +148,10 @@ async def run_workflow_step(
     executor: ToolExecutor,
     capabilities: CapabilityBuilder | None = None,
     correlation_id: str | None = None,
-    approval_policy: ApprovalPolicy = ApprovalPolicy.off,
+    approval_policy: ApprovalPolicy = ApprovalPolicy.always,
+    consent_checker: ConsentChecker | None = None,
+    tool_consent: ToolConsentSummary | None = None,
+    tool_builder: ToolTurnBuilder | None = None,
     api: str = "chat",
 ) -> StepOutcome:
     """Execute a single workflow step. Total: never raises.
@@ -154,13 +174,47 @@ async def run_workflow_step(
 
     ``index`` is 0-based; user-facing messages report ``index + 1``.
     """
+    def rejected(error: str, *, cancelled: bool = False) -> StepOutcome:
+        return StepOutcome(
+            result=WorkflowStepResult(
+                agent=step.agent, ok=False, error=error, cancelled=cancelled,
+                receipt=ExecutionReceipt(
+                    runtime=ReceiptRuntime(
+                        deployment=deployment, api=api, agent=step.agent,
+                    ),
+                    toolConsent=tool_consent,
+                    status="cancelled" if cancelled else "error",
+                    partial=True, notes=["workflow_step_not_started"],
+                ),
+            ),
+            fatal=True,
+        )
+
     target = composed.get(step.agent)
     if target is None or not target.enabled:
         err = f"Step {index + 1}: agent '{step.agent}' is unavailable."
-        return StepOutcome(
-            result=WorkflowStepResult(agent=step.agent, ok=False, error=err),
-            fatal=True,
-        )
+        return rejected(err)
+    if consent_checker is not None:
+        try:
+            check = await consent_checker("", "")
+        except asyncio.CancelledError:
+            return rejected(f"Step {index + 1}: workflow cancelled.", cancelled=True)
+        except Exception:
+            logger.warning("workflow step approval could not be checked")
+            return rejected(
+                f"Step {index + 1}: tool approval could not be checked. Retry the run."
+            )
+        if check.reason not in {None, "consent_not_granted"}:
+            if check.reason == "entitlement_denied":
+                return rejected(
+                    f"Step {index + 1}: an account or usage limit blocked the run. "
+                    "Retry later or ask an administrator to review your limits."
+                )
+            err = (
+                f"Step {index + 1}: tool approval was revoked, expired, disabled or changed. "
+                "Review the enabled tools and start a new run with explicit approval."
+            )
+            return rejected(err, cancelled=check.reason == "consent_revoked")
 
     # Reject orchestrator agents as steps: their delegation capability is only
     # wired in the chat path, so running one here would silently lose it. This
@@ -171,10 +225,7 @@ async def run_workflow_step(
             "to other agents) and can't be used as a workflow step. Use a "
             "leaf agent here, or run the orchestrator via @mention in chat."
         )
-        return StepOutcome(
-            result=WorkflowStepResult(agent=step.agent, ok=False, error=err),
-            fatal=True,
-        )
+        return rejected(err)
 
     prompt = _render(step.instruction, run_input=run_input, previous=previous)
     # Block placeholder amplification: a step that repeats {input}/{previous}
@@ -186,10 +237,7 @@ async def run_workflow_step(
             "characters. Reduce the instruction or avoid repeating the "
             "{input}/{previous} placeholders."
         )
-        return StepOutcome(
-            result=WorkflowStepResult(agent=step.agent, ok=False, error=err),
-            fatal=True,
-        )
+        return rejected(err)
 
     messages = [
         {"role": "system", "content": target.systemPrompt},
@@ -208,10 +256,6 @@ async def run_workflow_step(
         try:
             extra_tools, extra_handlers = capabilities(effective_tools)
         except Exception:  # noqa: BLE001 — a capability must never break a step.
-            # Degrade to registry-only rather than failing the run: the step may
-            # not need the synthetic tools at all. Logged so a systematically
-            # broken builder is visible instead of showing up as a model that
-            # mysteriously says it cannot do its job.
             logger.warning(
                 "workflow '%s' step %d (agent=%s): capability build failed",
                 workflow_name,
@@ -219,6 +263,54 @@ async def run_workflow_step(
                 step.agent,
                 exc_info=True,
             )
+            return rejected(
+                f"Step {index + 1}: enabled tools could not be prepared. Retry the run."
+            )
+    sink = ApprovalSink()
+    ctx = ToolContext(
+        correlation_id=correlation_id, approval_policy=approval_policy,
+        # Previous step output and agent-authored input are untrusted to a new
+        # step. A clean original user input can retain injection-only ergonomics.
+        untrusted_context=bool(previous),
+        approval_sink=sink, consent_checker=consent_checker,
+    )
+    if tool_builder is not None:
+        try:
+            registry, executor, ctx = await tool_builder(effective_tools, ctx)
+        except asyncio.CancelledError:
+            return rejected(f"Step {index + 1}: workflow cancelled.", cancelled=True)
+        except Exception:
+            logger.warning("workflow step tool contracts could not be prepared")
+            return rejected(f"Step {index + 1}: tool contracts are unavailable. Retry the run.")
+
+    def finished(
+        run: AgentRunResult, *, error: str | None = None,
+        state: Literal["complete", "incomplete", "error", "cancelled"] = "complete",
+    ) -> WorkflowStepResult:
+        safety = attributed_safety(run.safety, provider_for_api(api))
+        draft = ReceiptDraft(
+            correlation_id=correlation_id,
+            runtime=ReceiptRuntime(
+                deployment=deployment, api=api, agent=target.name,
+                instructionSource="agent",
+                agentConfigSha256=json_payload(target.model_dump(mode="json")).sha256,
+            ),
+            prompt_messages=messages,
+            tool_consent=tool_consent,
+        )
+        return WorkflowStepResult(
+            agent=step.agent, ok=error is None, text=run.text, error=error,
+            iterations=run.iterations, activity=persisted_trace(run.steps),
+            safety=safety, cancelled=state == "cancelled",
+            receipt=draft.build(
+                steps=run.steps, iterations=run.iterations, status=state,
+                partial=error is not None, approvals_requested=len(sink),
+                offered=run.offered_tools, prompt_messages=run.effective_prompt or messages,
+                model_requests=run.model_requests, usage=run.usage, safety=safety,
+                delegations=run.delegations,
+            ),
+        )
+
     try:
         run = await run_agent_turn(
             deployment=deployment,
@@ -227,23 +319,23 @@ async def run_workflow_step(
             gateway=gateway,
             registry=registry,
             executor=executor,
-            # Direct/durable workflow runs default to the explicit unattended
-            # approval exemption: there is no open request in which to return a
-            # grant, so holding a call would deny it silently forever. The chat
-            # `run_workflow` capability passes `always` instead and separately
-            # restricts nested tools to safe reads. Keeping the policy an explicit
-            # caller input prevents the unattended exception from leaking into
-            # that interactive bridge.
-            ctx=ToolContext(
-                correlation_id=correlation_id,
-                approval_policy=approval_policy,
-            ),
+            ctx=ctx,
             params=None,
             max_iters=_STEP_MAX_ITERS,
             extra_tools=extra_tools,
             extra_handlers=extra_handlers,
             api=api,
+            retain_failed_request=True,
         )
+    except AgentRunCancelled as exc:
+        return StepOutcome(
+            result=finished(
+                exc.partial, error=f"Step {index + 1}: workflow cancelled.", state="cancelled",
+            ),
+            usage=exc.partial.usage, fatal=True,
+        )
+    except asyncio.CancelledError:
+        return rejected(f"Step {index + 1}: workflow cancelled.", cancelled=True)
     except ModelGatewayError as exc:
         logger.warning(
             "workflow '%s' step %d (agent=%s) gateway failed status=%d",
@@ -253,64 +345,61 @@ async def run_workflow_step(
             exc.status_code,
         )
         err = f"Step {index + 1}: agent '{step.agent}' failed while running."
-        return StepOutcome(
-            result=WorkflowStepResult(agent=step.agent, ok=False, error=err),
-            usage=TokenUsage.parse(None),
-            fatal=True,
-        )
+        outcome = rejected(err)
+        outcome.usage = TokenUsage.parse(None)
+        return outcome
     except AgentRunFailed as exc:
-        logger.warning(
-            "workflow '%s' step %d (agent=%s) failed after partial execution",
-            workflow_name,
-            index + 1,
-            step.agent,
-        )
+        if isinstance(exc.cause, ModelGatewayError):
+            logger.warning(
+                "workflow '%s' step %d (agent=%s) gateway failed status=%d",
+                workflow_name, index + 1, step.agent, exc.cause.status_code,
+            )
+        else:
+            logger.warning(
+                "workflow '%s' step %d (agent=%s) failed after partial execution",
+                workflow_name, index + 1, step.agent,
+            )
         err = f"Step {index + 1}: agent '{step.agent}' failed while running."
         return StepOutcome(
-            result=WorkflowStepResult(
-                agent=step.agent,
-                ok=False,
-                text=exc.partial.text,
-                error=err,
-                iterations=exc.partial.iterations,
-            ),
+            result=finished(exc.partial, error=err, state="error"),
             usage=exc.partial.usage,
             fatal=True,
         )
-    except Exception as exc:  # noqa: BLE001 — total runner: never propagate.
+    except Exception:  # noqa: BLE001 — total runner: never propagate.
         logger.warning(
-            "workflow '%s' step %d (agent=%s) failed: %s",
+            "workflow '%s' step %d (agent=%s) failed",
             workflow_name,
             index + 1,
             step.agent,
-            exc,
         )
         err = f"Step {index + 1}: agent '{step.agent}' failed while running."
-        return StepOutcome(
-            result=WorkflowStepResult(agent=step.agent, ok=False, error=err),
-            fatal=True,
-        )
+        return rejected(err)
 
     if run.incomplete:
         err = f"Step {index + 1}: agent '{step.agent}' returned an incomplete response."
         return StepOutcome(
-            result=WorkflowStepResult(
-                agent=step.agent,
-                ok=False,
-                text=run.text,
-                error=err,
-                iterations=run.iterations,
-            ),
+            result=finished(run, error=err, state="incomplete"),
             usage=run.usage,
             fatal=True,
         )
 
-    return StepOutcome(
-        result=WorkflowStepResult(
-            agent=step.agent, ok=True, text=run.text, iterations=run.iterations
-        ),
-        usage=run.usage,
+    blocked = next(
+        (item for item in run.steps if item.kind in {"tool_denied", "tool_error"}), None
     )
+    if blocked is not None:
+        err = (
+            f"Step {index + 1}: a tool call was blocked ({blocked.detail or 'denied'}). "
+            "Review the enabled tools and run again with explicit tool approval; "
+            "unattended runs cannot wait for an approval prompt."
+        )
+        return StepOutcome(
+            result=finished(
+                run, error=err,
+                state="cancelled" if blocked.detail == "consent_revoked" else "error",
+            ),
+            usage=run.usage, fatal=True,
+        )
+    return StepOutcome(result=finished(run), usage=run.usage)
 
 
 async def run_workflow(
@@ -324,7 +413,10 @@ async def run_workflow(
     executor: ToolExecutor,
     capabilities: CapabilityBuilder | None = None,
     correlation_id: str | None = None,
-    approval_policy: ApprovalPolicy = ApprovalPolicy.off,
+    approval_policy: ApprovalPolicy = ApprovalPolicy.always,
+    consent_checker: ConsentChecker | None = None,
+    tool_consent: ToolConsentSummary | None = None,
+    tool_builder: ToolTurnBuilder | None = None,
     api: str = "chat",
 ) -> WorkflowRunResult:
     """Run ``workflow`` end-to-end and return a total, never-raising result.
@@ -353,6 +445,9 @@ async def run_workflow(
             capabilities=capabilities,
             correlation_id=correlation_id,
             approval_policy=approval_policy,
+            consent_checker=consent_checker,
+            tool_consent=tool_consent,
+            tool_builder=tool_builder,
             api=api,
         )
         usage = usage.add(outcome.usage)
@@ -363,6 +458,7 @@ async def run_workflow(
                 text=outcome.result.error or "Workflow step failed.",
                 usage=usage,
                 steps=trace,
+                cancelled=outcome.result.cancelled,
             )
         previous = outcome.result.text
 

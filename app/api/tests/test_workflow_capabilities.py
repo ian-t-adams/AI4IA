@@ -159,16 +159,16 @@ async def test_without_a_builder_a_step_gets_only_registry_tools():
     assert "web_search" not in offered
 
 
-async def test_a_failing_capability_builder_degrades_instead_of_failing_the_run():
+async def test_a_failing_capability_builder_fails_visibly_before_model_work():
     def _boom(_tools):
         raise RuntimeError("builder exploded")
 
     agent = _agent("a1", tools=[])
     outcome, gw = await _run_step(agent=agent, capabilities=_boom)
 
-    assert outcome.result.ok, "a capability failure must never fail the step"
-    assert outcome.fatal is False
-    assert gw.tool_names[0] == []
+    assert outcome.result.ok is False
+    assert outcome.fatal is True
+    assert gw.tool_names == []
 
 
 # --- Per-step extra tools ------------------------------------------------------
@@ -486,7 +486,7 @@ def test_chat_only_reporting_does_not_disturb_tools_that_do_build() -> None:
     assert set(built.unavailable) == {"generate_image"}
 
 
-# --- Unattended runs opt out of per-invocation approval, on purpose -------------
+# --- Unattended runs require approval for sensitive tools ---------------------
 
 
 class _BrowsingGateway:
@@ -543,19 +543,8 @@ class _BrowsingWebSearch:
         return [schema], {"browse_url": _handler}
 
 
-async def test_a_workflow_step_is_exempt_from_per_invocation_approval() -> None:
-    """The one place the P1-13 seam stays open, pinned so it stays a decision.
-
-    ``browse_url`` is the capability that is held on *every* chat turn, tainted or
-    not. A workflow step runs it, because ``run_workflow_step`` passes an explicit
-    ``ApprovalPolicy.off``: an unattended run has no open request to return a
-    grant on and nobody watching to click it, so "hold for approval" there does
-    not mean "ask" — it means "deny, silently, forever".
-
-    If someone removes that explicit policy, the default (``always``) takes over
-    and this fails, which is the point: reverting the exemption must break a test
-    rather than quietly break every workflow that reads or searches.
-    """
+async def test_a_workflow_step_requires_explicit_consent_for_sensitive_tools() -> None:
+    """Unattended execution is not approval, and a held tool is not success."""
     web = _BrowsingWebSearch()
     state = type("S", (), {"document_retrieval": None, "web_search": web, "memory": None})()
     builder = capability_builder_for_state(state, user_id="u1", session_id="s1")
@@ -577,5 +566,8 @@ async def test_a_workflow_step_is_exempt_from_per_invocation_approval() -> None:
         correlation_id="cid",
     )
 
-    assert outcome.result.ok
-    assert web.calls == [{"url": "https://example.com/"}]
+    assert outcome.result.ok is False
+    assert web.calls == []
+    assert outcome.result.receipt is not None
+    assert outcome.result.receipt.approvalsRequested == 1
+    assert "approval" in (outcome.result.error or "")

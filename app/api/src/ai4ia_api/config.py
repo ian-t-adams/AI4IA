@@ -338,6 +338,9 @@ class Settings(BaseSettings):
     #                 that lets users register their own MCP servers.
     # See docs/runbooks/feature-enablement.md and agents/approvals.py.
     tool_approval_mode: ToolApprovalMode = ToolApprovalMode.always
+    # Operator availability, not consent: each user must opt in to a bounded,
+    # revocable session or workflow-run tool-contract snapshot.
+    tool_auto_approve_enabled: bool = False
 
     # --- Official MCP plane (curated servers behind the shared active APIM) ---
     # Distinct from BYO custom tools above. These are admin-curated MCP servers
@@ -570,7 +573,8 @@ class Settings(BaseSettings):
     # required (enforced fail-closed in validate_runtime), since every search is a
     # billed Web IQ network call. ``webiq_base_url`` overrides the API endpoint.
     # The two caps bound the synthetic tools' fan-out (results per search) and the
-    # browse-content length returned to the model.
+    # content length for every WebIQ surface, including browse and structured
+    # answers. Independent hard ceilings bound aggregate per-call/turn output.
     web_search_enabled: bool = False
     webiq_api_key: str | None = None
     webiq_base_url: str | None = None
@@ -1001,6 +1005,15 @@ class Settings(BaseSettings):
             if not self.entra_tenant_id or not self.entra_audience:
                 raise RuntimeError(
                     "Entra auth requires AI4IA_ENTRA_TENANT_ID and AI4IA_ENTRA_AUDIENCE."
+                )
+        if self.tool_auto_approve_enabled and self.env != Environment.local:
+            if self.auth_provider != AuthProviderKind.entra:
+                raise RuntimeError(
+                    "AI4IA_TOOL_AUTO_APPROVE_ENABLED requires Entra authentication outside local."
+                )
+            if self.session_store != SessionStoreKind.cosmos:
+                raise RuntimeError(
+                    "AI4IA_TOOL_AUTO_APPROVE_ENABLED requires durable Cosmos session state outside local."
                 )
         self._validate_library_sharing_is_tenant_walled()
         if (

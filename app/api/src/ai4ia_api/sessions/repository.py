@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from ..agents.consent import ToolConsentState
 from .models import Document, Message, Session
 
 
@@ -33,6 +34,11 @@ class SessionRepository(Protocol):
 
     async def patch_session(
         self, user_id: str, session_id: str, changes: dict[str, object]
+    ) -> Session: ...
+
+    async def set_tool_consent(
+        self, user_id: str, session_id: str, consent: ToolConsentState | None,
+        *, expected_version: int | None = None,
     ) -> Session: ...
 
     async def set_generated_title_if_eligible(
@@ -93,8 +99,13 @@ class SessionRepository(Protocol):
         *,
         expected_status: str,
         expected_lease_token: str | None,
+        expected_message: Message | None = None,
     ) -> bool:
-        """Replace a workflow message only while its status and lease match."""
+        """Replace only while status, lease and any caller snapshot still match.
+
+        A snapshot binds receipt-bearing writes to the content the caller read,
+        not merely a status shared by successive checkpoints.
+        """
         ...
 
     async def upsert_message(self, user_id: str, message: Message) -> Message: ...

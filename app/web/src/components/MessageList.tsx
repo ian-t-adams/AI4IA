@@ -5,7 +5,7 @@
 // chips that deep-link into library sources. Artifact bytes are fetched lazily
 // through the same-origin API proxy, never directly from storage.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type {
   ActivityStep,
   ExecutionReceipt,
@@ -21,6 +21,7 @@ import type {
 import { SAFETY_MAX_SEVERITY_LEVEL } from "@/lib/types";
 import { fetchImageArtifact, fetchVideoArtifact, fetchDocumentArtifact } from "@/lib/api";
 import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
+import { ToolApprovalProvenance } from "./ToolApprovalProvenance";
 import { Markdown, type CitationTarget } from "@/components/Markdown";
 import { msToTimecode } from "@/lib/citations";
 import { DOCS_INDEX_URL, STATUS_URL, USER_GUIDE_URL } from "@/lib/docs";
@@ -45,6 +46,7 @@ interface DisplayMessage {
   // What was supplied to the model and what it was allowed to do (see
   // ai4ia_api.receipts). Absent on turns that predate the feature.
   executionReceipt?: ExecutionReceipt | null;
+  workflowStepReceipts?: ExecutionReceipt[] | null;
 }
 
 // Human-readable names for the categories Foundry reports. Unknown categories
@@ -339,7 +341,16 @@ function PromptMessageView({
 // "thinking" section: the platform does not hand this app a model's internal
 // deliberation, so a panel claiming to show one would be asserting something
 // the system cannot support.
-function ExecutionReceiptPanel({ receipt }: { receipt: ExecutionReceipt }) {
+function ReceiptFrame({ embedded, summary, children }: { embedded: boolean; summary: ReactNode; children: ReactNode }) {
+  return embedded ? <div className="activity-receipt-nested">{children}</div> : (
+    <details className="activity activity-trace">
+      <summary>{summary}</summary>
+      {children}
+    </details>
+  );
+}
+
+export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: ExecutionReceipt; embedded?: boolean }) {
   const runtime = receipt.runtime ?? {};
   const offered = receipt.toolsOffered ?? [];
   const calls = receipt.toolCalls ?? [];
@@ -374,7 +385,7 @@ function ExecutionReceiptPanel({ receipt }: { receipt: ExecutionReceipt }) {
       "Usage",
       receipt.usage
         ? receipt.usage.known
-          ? `${receipt.usage.totalTokens ?? 0} tokens across ${receipt.usage.calls} model call${
+          ? `${receipt.usage.totalTokens ?? "Unknown"} tokens across ${receipt.usage.calls} model call${
               receipt.usage.calls === 1 ? "" : "s"
             }${receipt.usage.complete ? "" : " · partial reporting"}`
           : `unavailable across ${receipt.usage.calls} model call${
@@ -400,15 +411,14 @@ function ExecutionReceiptPanel({ receipt }: { receipt: ExecutionReceipt }) {
   ];
 
   return (
-    <details className="activity activity-trace">
-      <summary>
+    <ReceiptFrame embedded={embedded} summary={<>
         {`Execution receipt · ${receipt.promptMessageCount} prompt message${
           receipt.promptMessageCount === 1 ? "" : "s"
-        }, ${offered.length} tool${offered.length === 1 ? "" : "s"} offered, ${
+        }, ${receipt.toolsOfferedCount} tool${receipt.toolsOfferedCount === 1 ? "" : "s"} offered, ${
           receipt.toolCallCount
         } invoked`}
         {receipt.partial ? " · partial" : ""}
-      </summary>
+      </>}>
       <div className="activity-rows">
         <p className="safety-note">
           Exactly what this turn sent, was offered, and ran. Secrets are removed
@@ -439,12 +449,36 @@ function ExecutionReceiptPanel({ receipt }: { receipt: ExecutionReceipt }) {
             </div>
             {(receipt.approvalsRequested > 0 || receipt.approvalsGranted > 0) && (
               <div className="activity-row">
-                <span className="activity-label">Approvals</span>
+                <span className="activity-label">Per-call approvals</span>
                 <span className="activity-detail">
                   {`${receipt.approvalsRequested} requested · ${receipt.approvalsGranted} granted`}
                 </span>
               </div>
             )}
+            <div className="activity-row">
+              <span className="activity-label">Auto-approved calls</span>
+              <span className="activity-detail">
+                {typeof receipt.autoApprovedToolCalls === "number"
+                  ? `${receipt.autoApprovedToolCalls} reported by the server`
+                  : "Not recorded — unknown"}
+              </span>
+            </div>
+            {calls.some((call) => call.approval == null) ? (
+              <p className="safety-note">
+                Some tool-call approval provenance was not recorded. Historical approval
+                for those calls is unknown, even if a server counter is zero.
+              </p>
+            ) : null}
+            {receipt.toolConsent ? (
+              <div className="activity-row">
+                <span className="activity-label">Consent at execution</span>
+                <span className="activity-detail">
+                  {receipt.toolConsent.scope} · <code>{receipt.toolConsent.id}</code>
+                  {` · ${receipt.toolConsent.toolCount} tool contracts · expires `}
+                  <time dateTime={receipt.toolConsent.expiresAt}>{new Date(receipt.toolConsent.expiresAt).toLocaleString()}</time>
+                </span>
+              </div>
+            ) : null}
             {notes.length > 0 && (
               <div className="activity-row">
                 <span className="activity-label">Bounds applied</span>
@@ -469,42 +503,7 @@ function ExecutionReceiptPanel({ receipt }: { receipt: ExecutionReceipt }) {
                       nested.toolCallCount === 1 ? "" : "s"
                     }`}
                   </summary>
-                  <div className="activity-rows">
-                    {(nested.prompt ?? []).map((message, promptIndex) => (
-                      <PromptMessageView
-                        key={promptIndex}
-                        message={message}
-                        label={`Prompt ${promptIndex + 1}: ${message.role}`}
-                      />
-                    ))}
-                    {(nested.toolsOffered ?? []).map((offer) => (
-                      <div
-                        key={offer.name}
-                        className="activity-row"
-                      >
-                        <span className="activity-label">{offer.name}</span>
-                        <span className="activity-detail">offered</span>
-                      </div>
-                    ))}
-                    {(nested.toolCalls ?? []).map((call, callIndex) => (
-                      <div key={callIndex}>
-                        <div className="activity-row">
-                          <span className="activity-label">
-                            {`${call.tool} · ${call.outcome}`}
-                          </span>
-                        </div>
-                        {call.arguments ? (
-                          <PayloadView
-                            payload={call.arguments}
-                            label="Arguments"
-                          />
-                        ) : null}
-                        {call.result ? (
-                          <PayloadView payload={call.result} label="Result" />
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
+                  <ExecutionReceiptPanel receipt={nested} embedded />
                 </details>
               ))}
             </div>
@@ -605,7 +604,7 @@ function ExecutionReceiptPanel({ receipt }: { receipt: ExecutionReceipt }) {
 
         <details>
           <summary className="activity-label">
-            {`Tools offered · ${offered.length}`}
+            {`Tools offered · ${receipt.toolsOfferedCount}`}
           </summary>
           <div className="activity-rows">
             <p className="safety-note">
@@ -615,14 +614,14 @@ function ExecutionReceiptPanel({ receipt }: { receipt: ExecutionReceipt }) {
             </p>
             {offered.length === 0 ? (
               <div className="activity-row">
-                <span className="activity-label">No tools were offered</span>
+                <span className="activity-label">{receipt.toolsOfferedCount === 0 ? "No tools were offered" : "Offered-tool details were not retained"}</span>
               </div>
             ) : (
-              offered.map((offer) => (
-                <div key={offer.name} className="activity-row">
+              offered.map((offer, index) => (
+                <div key={`${offer.name}-${index}`} className="activity-row">
                   {/* One text node, so the whole label reads as written. */}
                   <span className="activity-label">
-                    {`${offer.name} · ${invoked.has(offer.name) ? "invoked" : "not invoked"}`}
+                    {`${offer.name} · ${invoked.has(offer.name) ? "invoked" : receipt.toolCallCount > calls.length ? "not shown among retained calls" : "not invoked"}`}
                   </span>
                   {offer.description ? (
                     <span className="activity-detail">{offer.description}</span>
@@ -645,7 +644,9 @@ function ExecutionReceiptPanel({ receipt }: { receipt: ExecutionReceipt }) {
           <div className="activity-rows">
             {calls.length === 0 ? (
               <div className="activity-row">
-                <span className="activity-label">No tools were invoked</span>
+                <span className="activity-label">
+                  {receipt.toolCallCount === 0 ? "No tools were invoked" : "Tool-call details were not retained"}
+                </span>
               </div>
             ) : (
               calls.map((call, i) => (
@@ -658,6 +659,7 @@ function ExecutionReceiptPanel({ receipt }: { receipt: ExecutionReceipt }) {
                       <span className="activity-detail">{call.detail}</span>
                     ) : null}
                   </div>
+                  <ToolApprovalProvenance approval={call.approval} consentId={call.consentId} />
                   {call.arguments ? (
                     <PayloadView payload={call.arguments} label="arguments" />
                   ) : null}
@@ -675,22 +677,44 @@ function ExecutionReceiptPanel({ receipt }: { receipt: ExecutionReceipt }) {
           </div>
         </details>
       </div>
+    </ReceiptFrame>
+  );
+}
+
+// Workflow step receipts are independent bounded records, not delegations or
+// synthetic tool calls. Their list order is recorded execution order; a missing
+// receipt must never shift an inferred workflow step index onto another agent.
+export function WorkflowStepReceiptPanels({ receipts }: { receipts: ExecutionReceipt[] }) {
+  return (
+    <details className="activity activity-trace">
+      <summary>Step execution receipts · {receipts.length}</summary>
+      <div className="activity-rows">
+        {receipts.map((receipt, index) => (
+          <details key={`${receipt.correlationId ?? "step"}-${index}`}>
+            <summary>
+              Recorded execution {index + 1}{receipt.runtime.agent ? ` · @${receipt.runtime.agent}` : ""}
+              {receipt.partial ? " · partial" : ""}
+            </summary>
+            <ExecutionReceiptPanel receipt={receipt} embedded />
+          </details>
+        ))}
+      </div>
     </details>
   );
 }
 
 // A small glyph for a finalized step's outcome (running steps show a spinner).
 function stepGlyph(kind: string): string {
-  if (kind === "tool_result" || kind === "delegate") return "✓";
+  if (kind === "tool_result" || kind === "delegate" || kind === "workflow_step") return "✓";
   if (kind === "tool_denied") return "⊘";
-  if (kind === "tool_error") return "!";
+  if (kind === "tool_error" || kind === "workflow_error") return "!";
   return "•";
 }
 
 // Renders the agent's activity: a live, animated view while the turn runs (the
 // current tool spins, finished ones tick off), and a collapsed "Activity" trace
 // once complete. Replaces the bare blinking cursor for tool-using turns.
-function ActivityPanel({ steps, live }: { steps: ActivityStep[]; live: boolean }) {
+export function ActivityPanel({ steps, live }: { steps: ActivityStep[]; live: boolean }) {
   const lastRunning =
     live && steps.length > 0 && steps[steps.length - 1].kind === "tool_start";
   const rows = steps.map((s, i) => {
@@ -1149,6 +1173,9 @@ function Bubble({
         ) : null}
         {/* The turn's execution receipt, shown once settled so a receipt for a
             turn still in flight is never presented as the whole record. */}
+        {!msg.pending && msg.workflowStepReceipts?.length ? (
+          <WorkflowStepReceiptPanels receipts={msg.workflowStepReceipts} />
+        ) : null}
         {!msg.pending && msg.executionReceipt ? (
           <ExecutionReceiptPanel receipt={msg.executionReceipt} />
         ) : null}

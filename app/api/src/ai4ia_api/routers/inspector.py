@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
+from ..agents.consent import ConsentStatus, ToolConsentSummary
+from ..agents.consent_service import inspect_session_consent, tool_auto_approve_available
 from ..conversations.policy import resolve_conversation_policy
 from ..library.access import get_accessible_document, list_accessible_documents
 from ..library.repository import DocumentNotFoundError
@@ -86,6 +88,10 @@ class InspectorSnapshot(BaseModel):
     sessionUsage: SessionUsageSummary
     monthlyUsage: UsageSummary
     voice: InspectorVoice
+    toolAutoApproveAvailable: bool = False
+    toolConsent: ToolConsentSummary | None = None
+    toolConsentActive: bool = False
+    toolConsentStatus: ConsentStatus = "off"
 
 
 @router.get("/{session_id}/inspector", response_model=InspectorSnapshot)
@@ -154,7 +160,15 @@ async def get_inspector(
 
     voice_catalog = request.app.state.voice_provider_catalog
     enabled = request.app.state.settings.voice_provider_allowlist_list
+    consent = await inspect_session_consent(
+        request.app.state, user_id=user.internal_user_id,
+        session_id=session_id, email=user.email,
+    )
     return InspectorSnapshot(
+        toolAutoApproveAvailable=tool_auto_approve_available(request.app.state),
+        toolConsent=consent.consent,
+        toolConsentActive=consent.active,
+        toolConsentStatus=consent.status,
         generatedAt=datetime.now(timezone.utc),
         sessionId=session.id,
         title=session.title,

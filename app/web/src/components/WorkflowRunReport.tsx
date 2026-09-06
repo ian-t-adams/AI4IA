@@ -7,6 +7,7 @@
 // workflow used to appear to produce nothing at all. Hand-off is now an explicit
 // button, so the user chooses when to leave.
 
+import { ActivityPanel, ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./MessageList";
 import { Markdown } from "./Markdown";
 import type { SettledRunState } from "./workflowRun";
 
@@ -30,7 +31,8 @@ export function WorkflowRunReport({
       ? `succeeded in ${Math.round(result.elapsedMs / 1000)}s`
       : result.phase === "failed"
         ? "failed"
-        : "still running";
+        : result.phase === "cancelled" ? "cancelled"
+          : result.phase === "unknown" ? "outcome unknown" : "still running";
 
   return (
     <section className="workflow-result" aria-labelledby="workflow-result-heading">
@@ -45,6 +47,16 @@ export function WorkflowRunReport({
         <p className="workflow-result-note">
           This page stopped waiting after {pollBudgetSeconds}s. The run has not been cancelled — it
           is still going, and its reply will appear in the run&apos;s chat when it finishes.
+        </p>
+      )}
+
+      {result.phase === "cancelled" && (
+        <p className="workflow-result-note">Cancellation was acknowledged. Already in-flight calls may have completed or may still finish; their activity and receipts can continue to update.</p>
+      )}
+      {result.phase === "unknown" && (
+        <p role="alert" className="studio-alert">
+          {result.error} The request ended without a confirmed outcome. The run may still be executing;
+          check its chat before starting another run. Retained evidence is shown below.
         </p>
       )}
 
@@ -75,6 +87,13 @@ export function WorkflowRunReport({
           </li>
         ))}
       </ol>
+
+      {result.evidenceError ? <p role="alert" className="studio-alert">{result.evidenceError}</p> : null}
+      {result.workflowStepReceipts?.length ? <WorkflowStepReceiptPanels receipts={result.workflowStepReceipts} /> : null}
+      {result.activity?.length ? <ActivityPanel steps={result.activity} live={false} /> : null}
+      {result.executionReceipt ? <ExecutionReceiptPanel receipt={result.executionReceipt} /> : (
+        <p className="workflow-result-note">Execution receipt not available for this run. Missing evidence is not proof that no tools ran.</p>
+      )}
 
       <div className="workflow-result-actions">
         {onOpenChat && <button onClick={onOpenChat}>Open in chat</button>}

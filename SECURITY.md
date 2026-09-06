@@ -30,4 +30,9 @@ Maintainers should acknowledge the report in GitHub, assess severity, prepare a 
   enforcement, `store=false`, attempt metering, and managed-identity/resource-key
   isolation. Any other direct model call is a security architecture change.
 - Preserve Entra/dev-auth boundaries, admin gates, per-user ownership checks, entitlement checks, and SSRF protections.
+- Session/run tool auto-approval requires explicit owner consent and the
+  default-off operator gate. Revalidate the consent and its enabled-tool scope
+  at execution; new tools, changed contracts, expiry, or revocation cannot reuse
+  an old grant. It must never bypass authorization, destination or usage limits,
+  or suppress activity and execution receipts.
 - Treat feature enablement as a security and cost change; wire server-side validation before surfacing UI.

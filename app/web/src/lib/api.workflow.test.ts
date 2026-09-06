@@ -53,6 +53,7 @@ describe("runWorkflow durable idempotency", () => {
       input: "otters",
       durable: true,
       idempotencyKey: "durable-intent-key",
+      autoApproveTools: true,
     });
 
     await vi.advanceTimersByTimeAsync(0);
@@ -69,6 +70,7 @@ describe("runWorkflow durable idempotency", () => {
     );
     expect(new Set(bodies)).toEqual(new Set([bodies[0]]));
     expect(JSON.parse(bodies[0]).idempotencyKey).toBe("durable-intent-key");
+    expect(JSON.parse(bodies[0]).autoApproveTools).toBe(true);
   });
 
   it("returns an accepted durable run immediately without creating a timer", async () => {

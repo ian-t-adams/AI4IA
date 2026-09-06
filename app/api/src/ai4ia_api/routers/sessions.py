@@ -8,11 +8,13 @@ from collections.abc import Mapping
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..agents.mcp_servers import namespaced_tool_name
+from ..agents.consent import mint_consent
+from ..agents.consent_service import session_snapshot, tool_auto_approve_available
 from ..library.access import get_accessible_document, list_accessible_documents
 from ..library.repository import DocumentNotFoundError
 from ..images.service import (
@@ -50,6 +52,7 @@ MAX_SESSION_SYSTEM_PROMPT_CHARS = 8000
 
 
 class CreateSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     title: str | None = None
     model: str | None = None
     systemPrompt: str | None = Field(
@@ -71,6 +74,7 @@ class CreateSessionRequest(BaseModel):
 
 
 class UpdateSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     title: str | None = None
     model: str | None = None
     systemPrompt: str | None = Field(
@@ -93,6 +97,53 @@ class UpdateSessionRequest(BaseModel):
 
 def _repo(request: Request) -> SessionRepository:
     return request.app.state.session_repo
+
+
+class SessionToolConsentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(strict=True)
+
+
+@router.post("/{session_id}/tool-consent", response_model=Session)
+async def set_session_tool_consent(
+    session_id: str,
+    body: SessionToolConsentRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Session:
+    repo = _repo(request)
+    session = await repo.get_session(user.internal_user_id, session_id)
+    if body.enabled and not tool_auto_approve_available(request.app.state):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Tool auto-approval is disabled by the operator.",
+        )
+    consent = None
+    if body.enabled:
+        try:
+            snapshot = await session_snapshot(
+                request.app.state, user_id=user.internal_user_id,
+                session=session, email=user.email,
+            )
+            consent = mint_consent(
+                snapshot, user_id=user.internal_user_id, session_id=session_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="The enabled tool contracts cannot be consented to; reduce the selected tools.",
+            ) from exc
+    try:
+        return await repo.set_tool_consent(
+            user.internal_user_id, session_id, consent,
+            expected_version=session.toolConsentVersion if body.enabled else None,
+        )
+    except SessionConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Tool consent changed concurrently; reload and try again.",
+        ) from exc
 
 
 def _validate_image_preferences(

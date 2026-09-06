@@ -87,6 +87,13 @@ def test_discover_skills_omits_quarantined_server():
     assert discover_skills([server]) == []
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_discover_skills_respects_server_enablement(enabled):
+    server = _server(_resource())
+    server.enabled = enabled
+    assert len(discover_skills([server])) == int(enabled)
+
+
 async def test_load_skill_reads_exact_advertised_resource_and_returns_provenance():
     catalog = OfficialMcpCatalog(
         servers=[

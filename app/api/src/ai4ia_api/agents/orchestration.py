@@ -157,7 +157,13 @@ def build_delegate_capability(
             {"role": "system", "content": target.systemPrompt},
             {"role": "user", "content": task},
         ]
-        sub_context = ToolContext(correlation_id=ctx.correlation_id)
+        sub_context = ToolContext(
+            correlation_id=ctx.correlation_id,
+            approval_policy=ctx.approval_policy,
+            untrusted_context=True,
+            approval_sink=ctx.approval_sink,
+            consent_checker=ctx.consent_checker,
+        )
         sub_offered_tools = executor.schema_for(
             target.tools,
             registry=registry,

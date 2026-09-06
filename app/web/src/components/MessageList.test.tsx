@@ -1360,4 +1360,55 @@ describe("MessageList execution receipt", () => {
     );
     expect(screen.queryByText(/Execution receipt/)).toBeNull();
   });
+  it("keeps tool activity and payloads visible when approval was automatic", async () => {
+    render(<MessageList messages={[msg({
+      id: "auto-session", role: "assistant", content: "Done",
+      steps: [{ kind: "tool_result", tool: "finance_search", label: "Financial information retrieved" }],
+      executionReceipt: receipt({
+        toolCallCount: 1,
+        toolCalls: [{ tool: "finance_search", outcome: "result", approval: "session", consentId: "consent-123",
+          arguments: payload('{"query":"MSFT"}'), result: payload('{"currency":"USD"}') }],
+      }),
+    })]} />);
+    await userEvent.click(screen.getByText("Activity · 1 step"));
+    expect(screen.getByText("Financial information retrieved")).toBeVisible();
+    await userEvent.click(screen.getByText(/Execution receipt/));
+    await userEvent.click(screen.getByText("Tool calls · 1"));
+    expect(screen.getByText(/Auto-approved for this session/)).toBeVisible();
+    expect(screen.getByText("consent-123")).toBeVisible();
+    expect(screen.getByText('{"query":"MSFT"}')).toBeInTheDocument();
+    expect(screen.getByText('{"currency":"USD"}')).toBeInTheDocument();
+    expect(screen.queryByText(/1 requested|1 granted/)).toBeNull();
+  });
+
+  it("distinguishes run, per-invocation, not-required, operator and legacy approval provenance", async () => {
+    renderReceipt({
+      toolCallCount: 5,
+      approvalsRequested: 1, approvalsGranted: 1,
+      toolCalls: [
+        { tool: "run-tool", outcome: "result", approval: "run", consentId: "run-consent" },
+        { tool: "one-call", outcome: "result", approval: "invocation" },
+        { tool: "safe-call", outcome: "result", approval: "not_required" },
+        { tool: "operator-call", outcome: "result", approval: "operator" },
+        { tool: "old-call", outcome: "result" },
+      ],
+    });
+    await userEvent.click(screen.getByText(/Execution receipt/));
+    await userEvent.click(screen.getByText("Runtime"));
+    expect(screen.getByText("Per-call approvals")).toBeVisible();
+    expect(screen.getByText("1 requested · 1 granted")).toBeVisible();
+    await userEvent.click(screen.getByText("Tool calls · 5"));
+    for (const text of ["Auto-approved for this run", "Approved for this invocation", "Approval not required", "Approved by operator policy", "Approval provenance not recorded"]) {
+      expect(screen.getByText(new RegExp(text))).toBeVisible();
+    }
+  });
+
+  it("does not turn a bounded, empty tool list into a false zero-call receipt", async () => {
+    renderReceipt({ toolCallCount: 9, toolsOfferedCount: 12, toolCalls: [], toolsOffered: [], truncated: true });
+    await userEvent.click(screen.getByText(/12 tools offered, 9 invoked/));
+    await userEvent.click(screen.getByText("Tool calls · 9"));
+    expect(screen.getByText("Tool-call details were not retained")).toBeVisible();
+    expect(screen.queryByText("No tools were invoked")).toBeNull();
+  });
+
 });

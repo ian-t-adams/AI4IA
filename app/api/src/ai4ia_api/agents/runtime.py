@@ -66,15 +66,19 @@ from .prompt_budget import (
     serialized_budget_bytes,
 )
 from .approvals import (
+    ApprovalPolicy,
     arguments_digest,
     approval_key,
     draft_for_call,
     requires_invocation_approval,
 )
+from .consent import ApprovalSource, ConsentDecision, ConsentRejected, tool_contract_hash
 from .streaming import stream_iteration
 from .synthetic_governance import synthetic_spec
 from .tool_exec import ToolContext, ToolExecutor, ToolValidationError
-from .tools import DenyReason, ToolRegistry, ToolSpec, is_safe_tool_name, redact, redact_obj
+from .tools import (
+    DenyReason, ToolRegistry, ToolRisk, ToolSpec, is_safe_tool_name, redact, redact_obj,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +97,7 @@ _DEFAULT_MAX_OUTPUT_TOKENS = 1024
 # carries no hint about how to get around the gate.
 _APPROVAL_HELD_MESSAGE = (
     "This call was not executed. It requires the user's explicit approval for "
-    "these exact arguments, and the user has been shown an approval prompt. Do "
+    "these exact arguments, and the blocked call has been recorded for review. Do "
     "not retry it in this turn and do not attempt a different tool to achieve "
     "the same effect. Tell the user plainly what you need approved and why."
 )
@@ -111,6 +115,9 @@ class AgentStep:
     arguments: Any = None
     result: Any = None
     detail: str | None = None
+    approval: ApprovalSource | None = None
+    consent_id: str | None = None
+    call_id: str | None = None
 
 
 @dataclass
@@ -191,6 +198,14 @@ class AgentRunFailed(RuntimeError):
         self.partial: AgentRunResult = partial
 
 
+class AgentRunCancelled(asyncio.CancelledError):
+    """Cancellation with observable work retained for durable surfaces."""
+
+    def __init__(self, partial: AgentRunResult) -> None:
+        super().__init__("agent execution cancelled")
+        self.partial = partial
+
+
 class DelegatedAgentRunFailed(AgentRunFailed):
     """A linked-agent failure carrying its own receipt-only trace."""
 
@@ -266,6 +281,7 @@ async def run_agent_turn(
     on_step: Callable[[AgentStep], Awaitable[None]] | None = None,
     on_delta: Callable[[str], Awaitable[None]] | None = None,
     prompt_budget_bytes: int | None = None,
+    retain_failed_request: bool = False,
 ) -> AgentRunResult:
     """Run a single agent turn with tool calling and return the final answer.
 
@@ -303,7 +319,34 @@ async def run_agent_turn(
     if current_user_index < 0:
         raise AgentContextBudgetError("Agent input has no current user message.")
     resolved_tool_names = [ctx.tool_aliases.get(name, name) for name in tool_names]
-    real_schema = executor.schema_for(resolved_tool_names, registry=registry, ctx=ctx)
+    consented_names: set[str] = set()
+    if ctx.consent_checker is not None:
+        for name in resolved_tool_names:
+            definition = executor.get(name)
+            if definition is None:
+                continue
+            structural = registry.authorize(
+                name, granted_scopes=ctx.granted_scopes,
+                target_hosts=ctx.target_hosts, approved=True,
+            )
+            if not structural.allowed:
+                continue
+            discovery_spec = registry.get(name)
+            if discovery_spec is None:
+                continue
+            check = await ctx.consent_checker(
+                name,
+                tool_contract_hash(
+                    discovery_spec, definition.parameters,
+                    description=definition.spec.description,
+                    metadata=definition.consent_metadata,
+                ),
+            )
+            if check.approved:
+                consented_names.add(name)
+    real_schema = executor.schema_for(
+        resolved_tool_names, registry=registry, ctx=ctx, consented_names=consented_names,
+    )
     # Runtime dispatch alias -> durable governance name, for the human-readable
     # label on an approval prompt. Built here because ``tool_aliases`` maps the
     # other way and the runtime only ever sees the alias.
@@ -312,17 +355,38 @@ async def run_agent_turn(
         dict(extra_handlers) if extra_handlers else {}
     )
     if handlers:
-        real_names = {t.get("function", {}).get("name") for t in real_schema}
+        real_names = set(executor.names())
         collisions = real_names & set(handlers)
         if collisions:
             raise ValueError(
                 f"extra_handlers collide with executor tool names: {sorted(collisions)}"
             )
-    schema = [*real_schema, *(extra_tools or [])]
+    schema = copy.deepcopy([*real_schema, *(extra_tools or [])])
+    contracts: dict[str, str] = {}
+    for offered in schema:
+        fn = offered.get("function") or {}
+        offered_name = fn.get("name")
+        if not isinstance(offered_name, str):
+            continue
+        definition = executor.get(offered_name)
+        offered_spec = (
+            synthetic_spec(offered_name) if offered_name in handlers
+            else registry.get(offered_name)
+        )
+        if offered_spec is not None:
+            contracts[offered_name] = tool_contract_hash(
+                offered_spec, fn.get("parameters") or {},
+                description=fn.get("description"),
+                metadata=definition.consent_metadata if definition is not None else None,
+            )
     # What the model is offered this turn, captured before the loop can disable
     # tools (``force_final`` empties ``schema``). The receipt must report what
     # was advertised, not what remained after a denial loop shut it off.
-    offered_tools = [dict(tool) for tool in schema]
+    offered_tools = copy.deepcopy(schema)
+    offered_functions = {
+        tool["function"]["name"]: tool["function"] for tool in offered_tools
+        if isinstance(tool.get("function"), dict) and isinstance(tool["function"].get("name"), str)
+    }
     effective_prompt_budget = prompt_budget_bytes or (
         prompt_byte_budget(
             None, dict(params or {}), default_max_tokens=_DEFAULT_MAX_OUTPUT_TOKENS
@@ -367,6 +431,20 @@ async def run_agent_turn(
     current_stream_usage: dict[str, Any] | None = None
     safety_agg: MessageSafety | None = None
     delegated_runs: list[DelegatedRunTrace] = []
+    call_arguments: Any = None
+    current_approval: ApprovalSource | None = None
+    current_consent_id: str | None = None
+    current_call_id: str | None = None
+
+    def current_registry_contract(name: str) -> str | None:
+        definition = executor.get(name)
+        current_spec = registry.get(name)
+        if definition is None or current_spec is None:
+            return None
+        return tool_contract_hash(
+            current_spec, definition.parameters,
+            description=definition.spec.description, metadata=definition.consent_metadata,
+        )
 
     async def emit_delta(text: str) -> None:
         """Forward one assistant text increment, best-effort.
@@ -540,10 +618,10 @@ async def run_agent_turn(
                 incomplete,
                 str(incomplete_reason) if incomplete_reason is not None else None,
             )
-        except asyncio.CancelledError:
-            raise
+        except asyncio.CancelledError as exc:
+            raise AgentRunCancelled(current_partial_result()) from exc
         except Exception as exc:
-            if not (
+            if not retain_failed_request and not (
                 streamed_parts
                 or current_stream_usage is not None
                 or completed_model_calls
@@ -588,6 +666,15 @@ async def run_agent_turn(
         trace (which records only what actually happened). The callback is
         best-effort so a UI/stream error can never break the turn.
         """
+        if persist and step.kind in {"tool_result", "delegate", "tool_denied", "tool_error"}:
+            if step.arguments is None:
+                step.arguments = redact_obj(call_arguments)
+            if step.approval is None:
+                step.approval = current_approval
+            if step.consent_id is None:
+                step.consent_id = current_consent_id
+            if step.call_id is None:
+                step.call_id = current_call_id
         if persist:
             steps.append(step)
         if on_step is not None:
@@ -715,9 +802,14 @@ async def run_agent_turn(
         force_final = False
         for call in tool_calls:
             call_id = call.get("id")
+            current_call_id = call_id
+            current_approval = None
+            current_consent_id = None
+            call_arguments = None
             fn = call.get("function") or {}
             name = fn.get("name") or ""
             raw_args = fn.get("arguments") or "{}"
+            call_arguments = raw_args
             # `name` is model-supplied and unvalidated at this point -- it must
             # never reach logs, telemetry, or the persisted/live activity trace
             # verbatim (an attacker-influenced completion could otherwise smuggle
@@ -757,6 +849,7 @@ async def run_agent_turn(
                 )
                 await record(AgentStep(kind="tool_error", tool=safe_name, detail="invalid_arguments"))
                 continue
+            call_arguments = parsed
 
             # Emit a pre-execution marker so the UI can show "running X" live. It
             # is NOT persisted (only the finalized result/denied/error step is).
@@ -784,6 +877,57 @@ async def run_agent_turn(
             # synthetic capability has no classification it is REFUSED, not run.
             is_synthetic = name in handlers
             spec = synthetic_spec(name) if is_synthetic else registry.get(name)
+            if spec is not None:
+                if is_synthetic:
+                    governance = ToolRegistry()
+                    governance.register(spec)
+                else:
+                    governance = registry
+                structural = governance.authorize(
+                    name, granted_scopes=ctx.granted_scopes,
+                    target_hosts=ctx.target_hosts, approved=True,
+                )
+                if not structural.allowed:
+                    if await deny(
+                        name=name, safe_name=safe_name, call_id=call_id,
+                        reason=structural.reason.value if structural.reason else "denied",
+                    ):
+                        force_final = True
+                    continue
+                if name not in {item.get("function", {}).get("name") for item in schema}:
+                    if await deny(
+                        name=name, safe_name=safe_name, call_id=call_id, reason="not_offered",
+                    ):
+                        force_final = True
+                    continue
+            consent_decision = ConsentDecision()
+            if spec is not None and ctx.consent_checker is not None:
+                try:
+                    consent_decision = await ctx.consent_checker(name, contracts[name])
+                except asyncio.CancelledError as exc:
+                    await record(AgentStep(
+                        kind="tool_error", tool=safe_name, detail="cancelled",
+                    ))
+                    raise AgentRunCancelled(
+                        current_partial_result(include_current_attempt=False)
+                    ) from exc
+                except Exception as exc:  # fail closed and preserve completed work
+                    await record(AgentStep(
+                        kind="tool_error", tool=safe_name, detail="consent_unavailable",
+                    ))
+                    raise AgentRunFailed(
+                        cause=exc, partial=current_partial_result(include_current_attempt=False),
+                    ) from exc
+                current_consent_id = consent_decision.consent_id
+                consent_reason = consent_decision.reason
+                if consent_reason is not None and consent_reason != "consent_not_granted":
+                    if await deny(
+                        name=name, safe_name=safe_name, call_id=call_id,
+                        reason=consent_reason,
+                    ):
+                        force_final = True
+                    continue
+            scoped_approved = consent_decision.approved
             needs_invocation_approval = spec is not None and requires_invocation_approval(
                 spec,
                 policy=ctx.approval_policy,
@@ -794,6 +938,19 @@ async def run_agent_turn(
             invocation_approved = (
                 needs_invocation_approval and approval_token in unspent_approvals
             )
+            approved_call = invocation_approved or scoped_approved
+            if ctx.approval_policy is ApprovalPolicy.off and spec is not None and (
+                spec.risk is not ToolRisk.safe or spec.needs_approval
+            ):
+                current_approval = "operator"
+            elif scoped_approved and spec is not None and (
+                spec.risk is not ToolRisk.safe or spec.needs_approval
+            ):
+                current_approval = consent_decision.scope
+            elif invocation_approved:
+                current_approval = "invocation"
+            elif not needs_invocation_approval:
+                current_approval = "not_required"
 
             # Synthetic capabilities (web search, browse_url, memory,
             # delegate_to_agent, ...) are dispatched here, before the registry
@@ -818,7 +975,7 @@ async def run_agent_turn(
                     ):
                         force_final = True
                     continue
-                if needs_invocation_approval and not invocation_approved:
+                if needs_invocation_approval and not approved_call:
                     if await hold_for_approval(
                         spec=spec,
                         name=name,
@@ -832,10 +989,29 @@ async def run_agent_turn(
                 # Spend before dispatch, for the reason spelled out on the
                 # registry path below: entering the handler may already have
                 # caused the side effect.
+                latest_spec = synthetic_spec(name)
+                offered_function = offered_functions[name]
+                if latest_spec is None or tool_contract_hash(
+                    latest_spec, offered_function.get("parameters") or {},
+                    description=offered_function.get("description"),
+                ) != contracts.get(name):
+                    if await deny(
+                        name=name, safe_name=safe_name, call_id=call_id,
+                        reason="tool_contract_changed",
+                    ):
+                        force_final = True
+                    continue
                 if invocation_approved:
                     unspent_approvals.discard(approval_token)
                 try:
                     raw_result = await handlers[name](parsed, ctx)
+                except asyncio.CancelledError as exc:
+                    await record(AgentStep(
+                        kind="tool_error", tool=safe_name, detail="cancelled",
+                    ))
+                    raise AgentRunCancelled(
+                        current_partial_result(include_current_attempt=False)
+                    ) from exc
                 except AgentRunFailed as exc:
                     if isinstance(exc, DelegatedAgentRunFailed):
                         delegated_runs.append(exc.trace)
@@ -928,10 +1104,10 @@ async def run_agent_turn(
                 name,
                 granted_scopes=ctx.granted_scopes,
                 target_hosts=ctx.target_hosts,
-                approved=(name in ctx.approvals) or invocation_approved,
+                approved=(name in ctx.approvals) or approved_call,
             )
             held_for_approval = (
-                decision.allowed and needs_invocation_approval and not invocation_approved
+                decision.allowed and needs_invocation_approval and not approved_call
             ) or (
                 not decision.allowed
                 and decision.reason is DenyReason.approval_required
@@ -966,12 +1142,32 @@ async def run_agent_turn(
             # failed call cannot be silently retried against the same click. The
             # cost is that a genuinely failed call needs re-approval, which is
             # the correct direction to err for an egress control.
+            if current_registry_contract(name) != contracts.get(name):
+                if await deny(
+                    name=name, safe_name=safe_name, call_id=call_id,
+                    reason="tool_contract_changed",
+                ):
+                    force_final = True
+                continue
             if invocation_approved:
                 unspent_approvals.discard(approval_token)
 
             started = time.monotonic()
             try:
                 raw_result = await executor.execute(name, parsed, ctx)
+            except ConsentRejected as exc:
+                if await deny(
+                    name=name, safe_name=safe_name, call_id=call_id, reason=exc.reason,
+                ):
+                    force_final = True
+                continue
+            except asyncio.CancelledError as exc:
+                await record(AgentStep(
+                    kind="tool_error", tool=safe_name, detail="cancelled",
+                ))
+                raise AgentRunCancelled(
+                    current_partial_result(include_current_attempt=False)
+                ) from exc
             except ToolValidationError as exc:
                 emit_custom_event(
                     "tool_authorization",
@@ -1043,7 +1239,7 @@ async def run_agent_turn(
                     "source": "agent_runtime",
                     "outcome": (
                         "approved"
-                        if invocation_approved or name in ctx.approvals
+                        if approved_call or name in ctx.approvals
                         else "ok"
                     ),
                     "latencyMs": int((time.monotonic() - started) * 1000),

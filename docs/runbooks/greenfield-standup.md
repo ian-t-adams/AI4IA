@@ -258,6 +258,14 @@ Center, custom tools, Web IQ, and summarization). Use the complete table in the
 [configuration reference](../configuration-reference.md#feature-flags-and-prerequisites)
 to define a lower-cost or narrower environment before the first run.
 
+Session/run auto-approval is separately default-off:
+`AI4IA_TOOL_AUTO_APPROVE_ENABLED=true` permits users to consent to enabled tools
+for one session/run, but does not approve anything by itself. It requires Entra
+auth and Cosmos, retains execution traces and authorization checks, and creates
+no additional Azure resource. Keep it off until the operator has reviewed the
+prompt-injection tradeoff in
+[feature enablement](feature-enablement.md#flag-inventory).
+
 `AI4IA_ALLOW_DEV_AUTH` must remain false. A production posture ignores it, but
 keeping the value false also prevents a non-production deployment from trusting
 caller-supplied `X-Dev-User` identity.

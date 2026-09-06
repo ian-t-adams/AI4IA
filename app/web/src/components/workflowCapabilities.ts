@@ -140,16 +140,30 @@ export function stepCapabilities(input: StepCapabilityInput): CapabilityChip[] {
     });
   }
 
-  // Web IQ is genuinely unreported. The five tools are synthetic extras, are not
-  // in SELECTABLE_SYNTHETIC_TOOL_NAMES, and can never enter `effective_tools`
-  // (which derives only from an agent's declared tools), so /api/tools does not
-  // list them at all. Saying "on" here would be a fabrication.
-  chips.push({
-    key: "web_search",
-    label: "Web search · if configured",
-    state: "conditional",
-    help: "Every step is offered web search, news, video, image search and page browsing whenever this deployment has Web IQ set up — no attaching needed. This page cannot confirm whether it is configured, because that is not reported to the browser.",
-  });
+  // Render the server's complete WebIQ surface, not a fixed list of five
+  // search tools. New structured-answer capabilities need no checkbox or slash
+  // command registration here. The description prefix is part of WebIQ's
+  // shared tool contract; older catalogs may not advertise any of these rows.
+  const webTools = catalog.filter((tool) =>
+    tool.source.toLowerCase() === "webiq" || tool.description.startsWith("Microsoft WebIQ (Web IQ):"),
+  );
+  if (webTools.length) {
+    for (const tool of webTools) {
+      chips.push({
+        key: tool.name,
+        label: `${tool.label} · ${tool.available ? "available" : "unavailable"}`,
+        state: tool.available ? "ambient" : "off",
+        help: `${tool.description}${tool.detail ? ` ${tool.detail}` : ""} These are model tools, not necessarily slash commands. Authorization, approval and shared call/output limits still apply.`,
+      });
+    }
+  } else {
+    chips.push({
+      key: "web_search",
+      label: "Web search · if configured",
+      state: "conditional",
+      help: "WebIQ supports web, news, video and image search; page browsing; classic structured answers (including weather); finance, places and sports; Sonic blended retrieval; and query autosuggestions (subject to upstream entitlement). Steps can use configured capabilities without attaching them. This catalog does not report their availability, so no enabled state or tool count can be confirmed here. Type / to see the supported command catalog; internal tool names are not automatically slash commands.",
+    });
+  }
 
   const memoryService =
     availability(catalog, "remember_memory")?.available ??

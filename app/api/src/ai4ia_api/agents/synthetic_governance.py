@@ -71,7 +71,7 @@ _BROWSE_URL = ToolSpec(
 
 # --- Egress: the destination is fixed, the query text is not --------------------
 #
-# Four verticals of one Web IQ call. The host is server configuration the model
+# Search and structured-answer Web IQ calls. The host is server configuration the model
 # cannot influence, and a search provider is a poor exfiltration endpoint (the
 # attacker would have to read the provider's logs). What remains is real though:
 # injected text choosing the query, which both leaks the query and steers which
@@ -84,6 +84,12 @@ _SEARCH_DESCRIPTIONS = {
     "news_search": "Send a news search query to the configured web search provider.",
     "video_search": "Send a video search query to the configured web search provider.",
     "image_search": "Send an image search query to the configured web search provider.",
+    "classic_search": "Send a multi-answer search query to the configured WebIQ provider.",
+    "finance_search": "Send a financial data query to the configured WebIQ provider.",
+    "places_search": "Send a places query to the configured WebIQ provider.",
+    "sports_search": "Send a sports query to the configured WebIQ provider.",
+    "sonic_search": "Send a blended search query to the configured WebIQ provider.",
+    "web_autosuggest": "Send a partial query to the configured WebIQ provider for suggestions.",
 }
 
 # --- Execution ------------------------------------------------------------------

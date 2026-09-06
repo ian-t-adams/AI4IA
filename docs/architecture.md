@@ -254,8 +254,9 @@ The in-process agent runtime receives only server-approved tool schemas. Per tur
    retains the exact remote name. Plane/server identity is part of the alias and
    approval binding; deterministic precedence resolves any remaining collision.
 4. The registry rechecks scopes, approvals, ownership, host policy, and SSRF rules.
-5. Every external or destructive call is additionally held for a **per-invocation
-   human approval** bound to that call's exact arguments.
+5. The invocation policy holds gated external/destructive calls for exact-argument
+   approval unless an explicit, valid session/run consent covers the enabled tool
+   contract. Consent does not bypass the registry or handler's authorization.
 6. Tool errors and denials become structured outcomes the model can handle; call
    budgets and orchestration depth bound fan-out.
 7. The assistant answer, usage, artifacts, and metadata-only activity trace are
@@ -278,7 +279,7 @@ residency and API; instruction and agent-configuration hashes; the exact first
 model prompt after the runtime's own context bound; admitted versus displaced
 summary, memory, session-document and library blocks; durable source
 identities/versions and content hashes; tool definitions offered; finalized tool
-calls; approval counts; and redacted-canonical arguments/results.
+calls; approval counts and provenance; and redacted-canonical arguments/results.
 Successful linked-agent runs keep a nested receipt with that agent's own prompt,
 tool offers/calls, usage, and safety evidence rather than collapsing to only the
 delegated answer.
@@ -304,7 +305,7 @@ MCP server, or a per-tool `requireApproval: never` — used to be enough to exec
 an outbound call with model-chosen arguments, so injected content could pick a
 destination and a payload with no human in the loop.
 
-Approval is therefore a property of one call, not of a tool. The runtime hashes
+By default, approval is therefore a property of one call, not of a tool. The runtime hashes
 the arguments the model actually emitted and refuses a gated call unless a
 server-minted approval exists for that exact `(tool, argument-digest)` pair. A
 held call ends the turn normally with a prompt showing the tool, the destination
@@ -344,7 +345,7 @@ do with each capability:
 | posture | capabilities | why |
 | --- | --- | --- |
 | held on every turn | `browse_url`, `run_code`, `analyze_attachment` | the model chooses the destination/program, or sends attachment bytes to the external Responses sandbox; none is a read confined to an existing local store |
-| held only on a turn carrying untrusted content | the four `*_search` tools, `generate_image`, `generate_video`, `remember_memory`, `export_document` | the destination is fixed by server config and the effect is confined to the caller's own data, so injected text choosing the payload is the whole of the risk — on a clean turn the user is the only possible author |
+| held only on a turn carrying untrusted content | WebIQ searches/suggestions, `generate_image`, `generate_video`, `remember_memory`, `export_document` | the destination is fixed by server config and the effect is confined to the caller's own data, so injected text choosing the payload is the whole of the risk — on a clean turn the user is the only possible author |
 | never held | `recall_memory`, `fetch_document`, `process_document`, `delegate_to_agent`, `run_workflow` | reads over the caller's own data, or a router onto an already-governed sub-turn: no egress, no durable write. `run_workflow` advertises only workflows whose resolved tools are safe and applies an additional safe-only nested capability filter. |
 
 The middle posture is declared per tool (`ToolSpec.injection_only_risk`), not by
@@ -352,17 +353,40 @@ the operator, and it only ever relaxes a call to `tainted` strength — never to
 `off`. It exists so a capability whose risk really is injection-borne can say so
 instead of being mislabelled `safe` to dodge a prompt it does not warrant.
 
-Two limits remain, both deliberate. **Unattended runs are exempt**: a workflow
-step has no open request to return a grant on and nobody watching to click it, so
-holding a call there would mean denying it silently and forever;
-`workflows/runner.py` therefore passes an explicit `ApprovalPolicy.off`, and
-closing that properly needs an out-of-band approval channel for unattended runs.
-The chat `run_workflow` capability does **not** inherit that exception: it rejects
+**Session/run consent is an explicit alternative, not standing server trust.**
+`AI4IA_TOOL_AUTO_APPROVE_ENABLED` defaults off in Settings, Bicep, and the
+checked-in azd profile. When enabled, the authenticated owner can consent to
+auto-approve the currently enabled tool contracts for one session or one workflow
+run. The server owns the snapshot and checks its scope, expiry, revocation, and
+current tool configuration again at dispatch. It does not trust a client-supplied
+approved-tool list. New tools or changed contracts need renewed consent.
+This includes automatically injected `load_skill` contracts: advertised skill
+names, descriptions, resource URIs, versions, MIME types and server configuration
+are bound without fetching the full instructions during consent discovery.
+
+This choice deliberately accepts the risk that retrieved documents or web content
+can steer subsequent calls. It removes repeated prompts, not ownership,
+entitlement, scope, host, SSRF, or call-budget checks. Activity and receipts still
+record each attempted call and its bounded arguments/results, including whether
+session/run consent authorized it. Revocation stops subsequent dispatch, not a
+call already in flight. Consent cannot silently propagate to another session or
+workflow invocation.
+
+Direct and durable workflows no longer assume unconditional
+`ApprovalPolicy.off`. A run that needs a gated call must have appropriate
+explicit consent; without it, the failed step is visible rather than an
+unattended call being treated as approved. Durable scheduling fingerprints include
+the consent choice so a retry cannot change the authority of the same run.
+The chat `run_workflow` capability does **not** inherit run consent: it rejects
 workflows containing external/destructive, chat-only, disabled, recursive, or
 unclassified tools, re-checks the saved workflow at invocation time, filters the
 nested synthetic surface to safe reads, and passes `ApprovalPolicy.always` as a
 second fail-closed guard.
-And provenance is tracked as a **turn-level** taint bit ("untrusted content
+Cancellation and receipt checkpoint updates also compare the caller's message
+snapshot before the storage ETag-conditional write. Two checkpoints can share the
+same `running` status and lease; checking only those fields would let a stale
+cancellation replace newer completed-step evidence.
+Provenance is still tracked as a **turn-level** taint bit ("untrusted content
 entered this turn", latched on again by any tool result), not as per-argument
 dataflow. Posture is selectable via `AI4IA_TOOL_APPROVAL_MODE`; see
 [Feature enablement](./runbooks/feature-enablement.md).
