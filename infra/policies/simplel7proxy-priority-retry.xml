@@ -489,6 +489,10 @@ REFACTOR:
 							return &quot;/v1/messages&quot;;
 						}
 						if (string.Equals(protocol, &quot;mai&quot;, StringComparison.OrdinalIgnoreCase)) {
+							string operation = context.Variables.GetValueOrDefault&lt;string>(&quot;backendOperationPath&quot;, &quot;&quot;);
+							if (string.Equals(operation, &quot;/v1/images/generations&quot;, StringComparison.OrdinalIgnoreCase)) {
+								return &quot;/v1/images/generations&quot;;
+							}
 							return &quot;/v1/chat/completions&quot;;
 						}
 						if (string.Equals(protocol, &quot;providers/blackforestlabs/v1&quot;, StringComparison.OrdinalIgnoreCase)) {
@@ -523,6 +527,16 @@ REFACTOR:
 							<set-body>@{
 								JObject body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
 								body["model"] = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", body["model"]?.ToString() ?? "");
+								return body.ToString(Newtonsoft.Json.Formatting.None);
+							}</set-body>
+						</when>
+						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;), &quot;mai&quot;, StringComparison.OrdinalIgnoreCase) &amp;&amp; string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;backendOperationPath&quot;, &quot;&quot;), &quot;/v1/images/generations&quot;, StringComparison.OrdinalIgnoreCase))">
+							<rewrite-uri template="/v1/images/generations" copy-unmatched-params="false" />
+							<set-body>@{
+								JObject body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+								body["model"] = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", "");
+								body["web_grounding"] = false;
+								body["auto_aspect_ratio"] = false;
 								return body.ToString(Newtonsoft.Json.Formatting.None);
 							}</set-body>
 						</when>

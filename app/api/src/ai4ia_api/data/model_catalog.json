@@ -33,6 +33,43 @@
   },
   "models": [
     {
+      "id": "gpt-6-astra",
+      "displayName": "GPT-6 Astra",
+      "category": "chat",
+      "format": "OpenAI",
+      "api": "responses",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-6-astra-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-6-astra-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
       "id": "gpt-5.6-sol",
       "displayName": "gpt-5.6-sol",
       "category": "chat",
@@ -1043,6 +1080,62 @@
           "dataZone": "US",
           "sku": "GlobalStandard",
           "deploymentName": "MAI-Image-2.5-Flash-slurmfactory-westus-glbl"
+        }
+      ]
+    },
+    {
+      "id": "MAI-Image-2.6",
+      "displayName": "MAI-Image-2.6",
+      "category": "image",
+      "format": "Microsoft",
+      "api": "mai",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": [
+        "1024x1024"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "westus",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "MAI-Image-2.6-slurmfactory-westus-glbl"
+        }
+      ]
+    },
+    {
+      "id": "MAI-Image-2.6-Flash",
+      "displayName": "MAI-Image-2.6-Flash",
+      "category": "image",
+      "format": "Microsoft",
+      "api": "mai",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": [
+        "1024x1024"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "westus",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "MAI-Image-2.6-Flash-slurmfactory-westus-glbl"
         }
       ]
     },

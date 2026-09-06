@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
@@ -289,14 +290,15 @@ def test_tool_enabled_agent_runs_tool_and_persists_answer(client):
     assert messages[1]["agent"] == "analyst"
 
 
-def test_gpt56_tool_turn_uses_responses_and_keeps_reasoning_effort(client):
+@pytest.mark.parametrize("model_id", ["gpt-5.6-sol", "gpt-6-astra"])
+def test_new_gpt_tool_turn_uses_responses_and_keeps_reasoning_effort(client, model_id):
     gateway = ParamCaptureGateway()
     client.app.state.gateway = gateway
     created = client.post(
         "/api/sessions",
         json={
             "title": "Chat",
-            "model": "gpt-5.6-sol",
+            "model": model_id,
             "toolOverrides": {"added": ["get_current_time"], "removed": []},
         },
     )

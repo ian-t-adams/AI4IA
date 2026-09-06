@@ -134,6 +134,35 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("<value>preview</value>", priority)
         self.assertIn("selected.ToLowerInvariant()", priority)
 
+    def test_mai_images_have_catalog_owned_generation_operation(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        blocks, _ = gateway_generator.render_catalog(models)
+        images = [block for block in blocks if 'new JProperty("mai-image-2.6' in block]
+        self.assertEqual(len(images), 2)
+        for block in images:
+            self.assertIn('new JProperty("path", "mai")', block)
+            self.assertIn('new JProperty("operation", "/v1/images/generations")', block)
+            self.assertNotIn('new JProperty("path", "openai")', block)
+
+        root = ElementTree.parse(gateway_generator.PRIORITY_POLICY_PATH).getroot()
+        image_branch = next(
+            node
+            for node in root.iter("when")
+            if "backendOperationPath" in node.attrib.get("condition", "")
+            and "/v1/images/generations" in node.attrib["condition"]
+        )
+        self.assertIn('"mai"', image_branch.attrib["condition"])
+        rewrite = image_branch.find("rewrite-uri")
+        self.assertIsNotNone(rewrite)
+        assert rewrite is not None
+        self.assertEqual(rewrite.attrib["template"], "/v1/images/generations")
+        self.assertEqual(rewrite.attrib["copy-unmatched-params"], "false")
+        body = image_branch.findtext("set-body") or ""
+        self.assertIn('"selectedDeployment"', body)
+        self.assertIn('body["model"]', body)
+        self.assertIn('body["web_grounding"] = false', body)
+        self.assertIn('body["auto_aspect_ratio"] = false', body)
+
     def test_mistral_document_models_share_governed_ocr_route(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
         blocks, _ = gateway_generator.render_catalog(models)

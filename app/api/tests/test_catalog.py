@@ -150,6 +150,7 @@ def test_conversational_is_serialized():
 def test_reasoning_models_do_not_advertise_sampling():
     catalog = load_catalog()
     for model_id in (
+        "gpt-6-astra",
         "gpt-5.6-sol",
         "gpt-5.4",
         "gpt-5",
@@ -174,7 +175,7 @@ def test_non_reasoning_models_still_advertise_sampling():
         assert entry.supportsSampling is True, model_id
 
 
-def test_gpt56_rejects_minimal_but_earlier_gpt5_accepts_it():
+def test_new_gpt_models_use_responses_and_reject_minimal():
     """The load-bearing case for reading these from the catalog, not the name.
 
     A name-based rule put "minimal" in front of every ``gpt-5*`` model. Probing
@@ -183,7 +184,7 @@ def test_gpt56_rejects_minimal_but_earlier_gpt5_accepts_it():
     and no naming convention that predicts it.
     """
     catalog = load_catalog()
-    for model_id in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+    for model_id in ("gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
         entry = catalog.get(model_id)
         assert entry is not None, model_id
         assert "minimal" not in entry.reasoningEffortOptions, model_id
@@ -200,6 +201,34 @@ def test_gpt56_rejects_minimal_but_earlier_gpt5_accepts_it():
         entry = catalog.get(model_id)
         assert entry is not None, model_id
         assert "minimal" in entry.reasoningEffortOptions, model_id
+
+
+def test_astra_metadata_and_residency():
+    entry = load_catalog().get("gpt-6-astra")
+    assert entry is not None
+    assert entry.contextWindow == 1_050_000
+    assert entry.maxOutputTokens == 128_000
+    assert entry.inputModalities == ["text", "image"]
+    assert entry.toolCalling is True
+    assert {(option.region, option.sku) for option in entry.options} == {
+        ("eastus2", "GlobalStandard"),
+        ("swedencentral", "GlobalStandard"),
+    }
+    assert all(option.residency == "global" for option in entry.options)
+
+
+def test_mai_26_images_use_native_api_and_single_region():
+    for model_id in ("MAI-Image-2.6", "MAI-Image-2.6-Flash"):
+        entry = load_catalog().get(model_id)
+        assert entry is not None, model_id
+        assert entry.category == "image"
+        assert entry.api == "mai"
+        assert entry.imageSizes == ["1024x1024"]
+        assert entry.imageQualities == ["auto"]
+        assert [(option.region, option.sku) for option in entry.options] == [
+            ("westus", "GlobalStandard"),
+        ]
+        assert entry.conversational is False
 
 
 def test_o_series_excludes_minimal_reasoning_effort():

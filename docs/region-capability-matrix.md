@@ -31,7 +31,8 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
   one Global Standard unit each. It *offers* the `MAI-Image-2.5` family but does
   not deploy it — see West US below.
 - **Targeted — West US:** sole home of `o3-deep-research` and of the `MAI-Image-2.5` /
-  `-Pro` / `-Flash` family. That **image family** is pinned to West US alone, which is
+  `-Pro` / `-Flash` family, plus `MAI-Image-2.6` and `MAI-Image-2.6-Flash`.
+  These **image models** are pinned to West US alone, which is
   a quota constraint rather than a design preference:
 
   > MAI-Image quota is **subscription-wide**, not per-region, and the default limit is 2
@@ -49,6 +50,47 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
 
   Note this leaves image generation without regional redundancy, unlike the OpenAI image
   models (`gpt-image-*`), which are enforced per region and so do carry two regions each.
+
+### GPT-6 Astra and MAI Image 2.6
+
+`gpt-6-astra` version `2026-09-03` targets East US 2 and Sweden Central under
+`GlobalStandard`: 50K TPM each in the portable baseline, or 500K TPM each with
+the production `maximum` capacity profile. The maximum allocations were generated
+from live quota and platform capacity on 2026-09-06 and share a single 1000K pool.
+Initial 50K deployment probes encountered throttling, so production uses the
+maximum profile rather than leaving Astra at baseline. These are globally routed
+deployments, not US- or EU-resident options. Existing model allocations and the
+default chat model are unchanged.
+
+Astra uses the Responses API for both plain chat and tool turns. It accepts text
+and image input, with a 1,050,000-token context window and 128,000-token maximum
+output. The advertised `none`, `low`, `medium`, `high`, and `xhigh` effort values
+were confirmed through the governed application/gateway on 2026-09-06, along with
+streaming and a tool call followed by the model's answer. Sampling controls stay
+disabled. See Microsoft's
+[reasoning model documentation](https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning)
+for its provider capabilities; app tool execution still uses the existing
+authorization and approval checks.
+
+The usage book estimates Astra at $10 input / $50 output per million tokens,
+from [Microsoft's Global Standard short-context launch pricing](https://azure.microsoft.com/en-us/blog/gpt-6-astra-frontier-intelligence-for-work-now-generally-available-in-microsoft-foundry/).
+This is not authoritative billing: the published long-context rates are $20/$75,
+and caching or other service tiers can differ. The MAI 2.6 image models remain
+cost-unknown until an unambiguous Azure meter is available.
+
+`MAI-Image-2.6` and `MAI-Image-2.6-Flash` version `2026-07-31` each target West US
+at 2 RPM, consuming a separate subscription-wide model pool. They are additive
+preview options, not replacements for the 2.5 family. The catalog exposes square
+1024 output and provider-default quality. Requests use the native
+`/mai/v1/images/generations` endpoint with `width` and `height`, behind the same
+SimpleL7Proxy -> APIM -> Foundry path. Provider-side web grounding and automatic
+aspect-ratio selection remain disabled in both the API adapter and APIM.
+Image editing is not exposed by this addition.
+
+The 2.6 SKU metadata reports a deprecation timestamp of
+`2026-11-01T00:00:00Z` (October 31 in US time zones). Recheck the live catalog
+before relying on these previews beyond that date; version upgrades remain
+explicit. See [MAI image model documentation](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-mai-image).
 
 ### MAI capacity and version review (2026-08-12)
 

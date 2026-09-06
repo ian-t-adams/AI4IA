@@ -1,6 +1,6 @@
 {
   "$schema": "./models.schema.json",
-  "_comment": "Generated from live az cognitiveservices model list, reconciled to live catalog + quota (gen_catalog_v2). Each deployment pins an explicit model version. `reasoningEffort` is the set of reasoning_effort values the model actually accepts, established on 2026-07-31 by sending each value to the live deployment and recording the status - NOT from documentation, which is wrong for this field, and not from the provider's own 'Supported values are: ...' error, which over-reports for gpt-5.4-pro and under-reports for gpt-5.4. Re-probe with a direct Foundry call (proxy/APIM retries hide the 400) when adding a reasoning model.",
+  "_comment": "Reconciled to live az cognitiveservices model list and subscription quota. Every deployment pins an explicit version. `reasoningEffort` lists the values the app advertises after live probes, not an exhaustive provider capability claim. Legacy values were established on 2026-07-31; GPT-6 Astra's none/low/medium/high/xhigh values were confirmed on 2026-09-06 through the governed API and proxy. Documentation and provider 'Supported values' errors are not sufficient evidence: they over-report for gpt-5.4-pro and under-report for gpt-5.4. Probe new values through SimpleL7Proxy -> APIM -> Foundry and retain the outcomes; do not introduce direct provider egress.",
   "naming": {
     "_comment": "Naming tokens for the whole stack (single source of truth). `subscriptionToken` is stamped into every model deployment name; `foundryToken` names the Foundry accounts/projects (mf-<foundryToken>-<env>-<region>). main.bicep, scripts/gen-model-catalog.py, scripts/validate-catalog.py, and app/api catalog.py all read these, so changing them here (plus AZURE_ENV_NAME) is what makes a subscription/tenant move 1:1. After changing, run scripts/gen-model-catalog.py to regenerate the runtime catalog. See docs/runbooks/greenfield-standup.md#5-select-environment-posture-and-names.",
     "subscriptionToken": "slurmfactory",
@@ -43,6 +43,45 @@
     }
   },
   "catalog": [
+    {
+      "name": "gpt-6-astra",
+      "displayName": "GPT-6 Astra",
+      "format": "OpenAI",
+      "category": "chat",
+      "api": "responses",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-09-03",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-09-03",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
+        }
+      ]
+    },
     {
       "name": "gpt-5.6-sol",
       "format": "OpenAI",
@@ -987,6 +1026,46 @@
           "version": "2026-06-02",
           "maxCapacity": 2,
           "maxCapacityPool": "global"
+        }
+      ]
+    },
+    {
+      "name": "MAI-Image-2.6",
+      "format": "Microsoft",
+      "category": "image",
+      "api": "mai",
+      "imageSizes": [
+        "1024x1024"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
+      "deployments": [
+        {
+          "region": "westus",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-07-31"
+        }
+      ]
+    },
+    {
+      "name": "MAI-Image-2.6-Flash",
+      "format": "Microsoft",
+      "category": "image",
+      "api": "mai",
+      "imageSizes": [
+        "1024x1024"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
+      "deployments": [
+        {
+          "region": "westus",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-07-31"
         }
       ]
     },
