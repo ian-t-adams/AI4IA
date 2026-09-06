@@ -53,11 +53,14 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
 
 ### GPT-6 Astra and MAI Image 2.6
 
-`gpt-6-astra` version `2026-09-03` targets East US 2 and Sweden Central at
-50K TPM each under `GlobalStandard`. These are globally routed deployments,
-not US- or EU-resident options. Existing model allocations and the default chat
-model are unchanged. The new allocations stay at baseline even when the existing
-environment uses the `maximum` capacity profile.
+`gpt-6-astra` version `2026-09-03` targets East US 2 and Sweden Central under
+`GlobalStandard`: 50K TPM each in the portable baseline, or 500K TPM each with
+the production `maximum` capacity profile. The maximum allocations were generated
+from live quota and platform capacity on 2026-09-06 and share a single 1000K pool.
+Initial 50K deployment probes encountered throttling, so production uses the
+maximum profile rather than leaving Astra at baseline. These are globally routed
+deployments, not US- or EU-resident options. Existing model allocations and the
+default chat model are unchanged.
 
 Astra uses the Responses API for both plain chat and tool turns. It accepts text
 and image input, with a 1,050,000-token context window and 128,000-token maximum

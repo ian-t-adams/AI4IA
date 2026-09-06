@@ -68,13 +68,17 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-09-03"
+          "version": "2026-09-03",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
-          "version": "2026-09-03"
+          "version": "2026-09-03",
+          "maxCapacity": 500,
+          "maxCapacityPool": "global"
         }
       ]
     },
