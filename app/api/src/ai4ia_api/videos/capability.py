@@ -122,9 +122,13 @@ def build_video_capability(
                     "size": {
                         "type": "string",
                         "enum": [
+                            "480x480",
+                            "480x854",
+                            "854x480",
+                            "720x720",
                             "1280x720",
                             "720x1280",
-                            "1024x1024",
+                            "1080x1080",
                             "1920x1080",
                             "1080x1920",
                         ],
@@ -135,11 +139,10 @@ def build_video_capability(
                     },
                     "seconds": {
                         "type": "integer",
-                        "minimum": 1,
-                        "maximum": 20,
+                        "enum": [4, 8, 12],
                         "description": (
-                            "Optional clip length in seconds (1-20). Longer clips take "
-                            "longer to generate; defaults to 5."
+                            "Optional clip length in seconds (4, 8, or 12). Longer "
+                            "clips take longer to generate; defaults to 4."
                         ),
                     },
                 },

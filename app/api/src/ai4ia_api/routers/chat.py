@@ -948,6 +948,7 @@ async def chat(
                 assistant_persisted=bool(command_assistants),
             )
 
+    synthetic_conversation_agent = False
     policy = await resolve_conversation_policy(
         request.app.state,
         user.internal_user_id,
@@ -957,6 +958,7 @@ async def chat(
     if tool_agent is None and policy.agent is not None:
         agent = policy.agent.model_copy(update={"tools": list(policy.effective_tools)})
     elif tool_agent is None and policy.effective_tools:
+        synthetic_conversation_agent = True
         agent = AgentSpec(
             name="conversation",
             displayName="Conversation",
@@ -1075,20 +1077,28 @@ async def chat(
             ),
         )
 
+    conversation_tools_unavailable = False
     if (
         agent is not None
         and (agent.tools or agent.links)
         and entry is not None
         and not entry.supportsTools
     ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(
-                f"Agent @{agent.name} uses tools or agent links, but model "
-                f"'{model_id}' does not support tool calling. Choose a "
-                "tool-capable model for this agent."
-            ),
-        )
+        if synthetic_conversation_agent:
+            conversation_tools_unavailable = True
+            agent = None
+            agent_name = None
+            system_prompt = session.systemPrompt
+            content_for_model = body.content
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Agent @{agent.name} uses tools or agent links, but model "
+                    f"'{model_id}' does not support tool calling. Choose a "
+                    "tool-capable model for this agent."
+                ),
+            )
 
     # Entitlement enforcement. Placed here so it gates only true
     # model-consuming turns: /commands and @mention errors already returned
@@ -2140,7 +2150,11 @@ async def chat(
         and compute_decision.offers_compute
         and library_tools_enabled
     )
-    plain_capabilities_possible = plain_compute_active or web_search is not None
+    plain_capabilities_possible = (
+        conversation_tools_unavailable
+        or plain_compute_active
+        or web_search is not None
+    )
     if (
         plain_capabilities_possible
         and api in TOOL_CALLING_APIS

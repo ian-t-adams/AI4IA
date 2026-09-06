@@ -702,10 +702,11 @@ class ModelGatewayClient:
                 "prompt": prompt,
                 "width": int(width),
                 "height": int(height),
-                # Provider-side search is not an approved image tool capability.
-                "web_grounding": False,
-                "auto_aspect_ratio": False,
             }
+            if deployment.lower().startswith("mai-image-2.6"):
+                # Provider-side search is not an approved image tool capability.
+                body["web_grounding"] = False
+                body["auto_aspect_ratio"] = False
         else:
             body = {"prompt": prompt, "n": n, **(extra or {})}
             if size:
@@ -853,11 +854,17 @@ class ModelGatewayClient:
     # download orchestration (timeout, backoff, status interpretation) lives in
     # :class:`~ai4ia_api.videos.service.VideoGenerationService` so the gateway
     # stays a pure transport, mirroring the image gateway/service split.
-    def _video_url(self, suffix: str) -> str:
-        """Build a Sora video URL. ``suffix`` is the path under ``/v1/video``
-        (e.g. ``/generations/jobs``). Appends the video api-version for the
-        Azure-native style (the only style that serves the Sora job API)."""
-        url = f"{self._base}/v1/video{suffix}"
+    def _video_url(self, deployment: str, suffix: str = "") -> str:
+        """Build the proxy-facing Sora URL.
+
+        The deployment stays in the path so SimpleL7Proxy can stamp its trusted
+        model header on bodyless status/content GETs. APIM then rewrites the
+        path to the provider's current ``/openai/v1/videos`` surface.
+        """
+        if self._style == GatewayProviderStyle.azure_openai_native:
+            url = f"{self._base}/deployments/{deployment}/videos{suffix}"
+        else:
+            url = f"{self._base}/videos{suffix}"
         if self._style == GatewayProviderStyle.azure_openai_native:
             sep = "&" if "?" in url else "?"
             url = f"{url}{sep}api-version={self._video_api_version}"
@@ -876,13 +883,12 @@ class ModelGatewayClient:
         """Submit a Sora video-generation job; returns the parsed job JSON
         (``{id, status, ...}``). The deployment is carried in the ``model`` body
         field (Sora's create API keys off the body, not the path)."""
-        url = self._video_url("/generations/jobs")
+        url = self._video_url(deployment)
         body: dict[str, Any] = {
             "model": deployment,
             "prompt": prompt,
-            "width": width,
-            "height": height,
-            "n_seconds": n_seconds,
+            "size": f"{width}x{height}",
+            "seconds": str(n_seconds),
         }
         if self._http is not None:
             client, owned = self._http, False
@@ -903,11 +909,10 @@ class ModelGatewayClient:
                 await client.aclose()
 
     async def get_video_job(
-        self, *, job_id: str, correlation_id: str | None = None
+        self, *, deployment: str, job_id: str, correlation_id: str | None = None
     ) -> dict[str, Any]:
-        """Poll a Sora job's status; returns the parsed job JSON. On success the
-        job carries ``generations[].id`` referencing the downloadable content."""
-        url = self._video_url(f"/generations/jobs/{job_id}")
+        """Poll a Sora video's status; returns the parsed video JSON."""
+        url = self._video_url(deployment, f"/{job_id}")
         if self._http is not None:
             client, owned = self._http, False
         else:
@@ -930,10 +935,14 @@ class ModelGatewayClient:
                 await client.aclose()
 
     async def get_video_content(
-        self, *, generation_id: str, correlation_id: str | None = None
+        self,
+        *,
+        deployment: str,
+        video_id: str,
+        correlation_id: str | None = None,
     ) -> bytes:
         """Download a completed generation's MP4 bytes."""
-        url = self._video_url(f"/generations/{generation_id}/content/video")
+        url = self._video_url(deployment, f"/{video_id}/content")
         if self._http is not None:
             client, owned = self._http, False
         else:

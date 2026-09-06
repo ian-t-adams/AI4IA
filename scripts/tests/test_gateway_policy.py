@@ -92,6 +92,7 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertEqual(len(mai), 2)
         for block in mai:
             self.assertIn('new JProperty("path", "mai")', block)
+            self.assertIn("-services-endpoint}}", block)
             self.assertNotIn('new JProperty("path", "openai")', block)
 
         priority = gateway_generator.PRIORITY_POLICY_PATH.read_text(encoding="utf-8")
@@ -137,11 +138,15 @@ class GatewayPolicyTests(unittest.TestCase):
     def test_mai_images_have_catalog_owned_generation_operation(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
         blocks, _ = gateway_generator.render_catalog(models)
-        images = [block for block in blocks if 'new JProperty("mai-image-2.6' in block]
-        self.assertEqual(len(images), 2)
+        images = [block for block in blocks if 'new JProperty("mai-image-' in block]
+        self.assertEqual(len(images), 5)
         for block in images:
             self.assertIn('new JProperty("path", "mai")', block)
             self.assertIn('new JProperty("operation", "/v1/images/generations")', block)
+            self.assertIn(
+                'new JProperty("url", "{{foundry-westus-services-endpoint}}")',
+                block,
+            )
             self.assertNotIn('new JProperty("path", "openai")', block)
 
         root = ElementTree.parse(gateway_generator.PRIORITY_POLICY_PATH).getroot()
@@ -160,8 +165,43 @@ class GatewayPolicyTests(unittest.TestCase):
         body = image_branch.findtext("set-body") or ""
         self.assertIn('"selectedDeployment"', body)
         self.assertIn('body["model"]', body)
+        self.assertIn('selected.StartsWith("MAI-Image-2.6"', body)
         self.assertIn('body["web_grounding"] = false', body)
         self.assertIn('body["auto_aspect_ratio"] = false', body)
+        self.assertIn('body.Remove("web_grounding")', body)
+        self.assertIn('body.Remove("auto_aspect_ratio")', body)
+
+    def test_sora_uses_catalog_owned_v1_video_operation(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        blocks, _ = gateway_generator.render_catalog(models)
+        sora = [
+            block
+            for block in blocks
+            if 'new JProperty("sora-2-' in block
+        ]
+        self.assertEqual(len(sora), 2)
+        for block in sora:
+            self.assertIn('new JProperty("path", "openai")', block)
+            self.assertIn('new JProperty("operation", "/v1/videos")', block)
+
+        priority = gateway_generator.PRIORITY_POLICY_PATH.read_text(encoding="utf-8")
+        self.assertIn(
+            'configuredOperation, &quot;/v1/videos&quot;',
+            priority,
+        )
+        self.assertIn('&quot;/videos&quot;', priority)
+
+    def test_retry_loop_preserves_request_local_throttle_state(self) -> None:
+        root = ElementTree.parse(gateway_generator.PRIORITY_POLICY_PATH).getroot()
+        backend = root.find("backend")
+        self.assertIsNotNone(backend)
+        assert backend is not None
+        self.assertEqual(
+            list(backend.iter("cache-lookup-value")),
+            [],
+            "retry cycles must not replace request-local throttle state with an "
+            "eventually-consistent cache read",
+        )
 
     def test_mistral_document_models_share_governed_ocr_route(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
@@ -1215,7 +1255,8 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertNotIn("name: 'BasicV2'", gateway)
         self.assertNotIn("resource sharedApimDiagnostics", gateway)
         for shared_child in (
-            "sharedFoundryEndpointValues", "sharedModelPolicyFragments",
+            "sharedFoundryEndpointValues", "sharedFoundryServicesEndpointValues",
+            "sharedModelPolicyFragments",
             "sharedModelsApi", "sharedModelOperations", "sharedModelsApiPolicy",
             "sharedProxyModelSubscription", "sharedRealtimeApi",
             "sharedRealtimeApiPolicy", "sharedApiRealtimeSubscription",

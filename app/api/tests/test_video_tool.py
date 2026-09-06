@@ -38,9 +38,7 @@ class FakeVideoGateway:
         self.cancel_poll = False
         self.cancel_download = False
         # By default the first poll already reports success.
-        self.poll_statuses: list[dict] = [
-            {"status": "succeeded", "generations": [{"id": "gen1"}]}
-        ]
+        self.poll_statuses: list[dict] = [{"id": "job1", "status": "completed"}]
         self.content: bytes = FAKE_MP4
         self.calls: list[dict] = []
 
@@ -60,14 +58,18 @@ class FakeVideoGateway:
             raise self.error
         return {"id": "job1", "status": "queued"}
 
-    async def get_video_job(self, *, job_id, correlation_id=None):
+    async def get_video_job(self, *, deployment, job_id, correlation_id=None):
+        self.calls.append({"deployment": deployment, "job_id": job_id})
         if self.cancel_poll:
             raise asyncio.CancelledError
         if len(self.poll_statuses) > 1:
             return self.poll_statuses.pop(0)
         return self.poll_statuses[0]
 
-    async def get_video_content(self, *, generation_id, correlation_id=None):
+    async def get_video_content(
+        self, *, deployment, video_id, correlation_id=None
+    ):
+        self.calls.append({"deployment": deployment, "video_id": video_id})
         if self.cancel_download:
             raise asyncio.CancelledError
         return self.content
@@ -136,14 +138,14 @@ def test_handler_generates_persists_sinks_and_meters(client):
 
     out = asyncio.run(
         handler(
-            {"prompt": "a kite over the sea", "model": "sora-2", "seconds": 5},
+            {"prompt": "a kite over the sea", "model": "sora-2", "seconds": 4},
             ToolContext(),
         )
     )
     assert out["status"] == "generated"
     artifact_id = out["artifact_id"]
     assert out["model"] == "sora-2"
-    assert out["seconds"] == 5
+    assert out["seconds"] == 4
     # The raw MP4 bytes never come back through the tool result.
     assert "ftyp" not in str(out)
 
@@ -154,7 +156,7 @@ def test_handler_generates_persists_sinks_and_meters(client):
     assert att.kind == "video"
     assert att.mimeType == "video/mp4"
     assert att.prompt == "a kite over the sea"
-    assert att.durationSeconds == 5
+    assert att.durationSeconds == 4
 
     # The bytes are durably stored, owner-scoped, and match the canned MP4.
     stored = asyncio.run(client.app.state.video_artifacts.get(uid, artifact_id))
@@ -353,12 +355,12 @@ def test_handler_defaults_size_and_seconds(client):
     )
     assert out["status"] == "generated"
     assert out["size"] == "1280x720"
-    assert out["seconds"] == 5
+    assert out["seconds"] == 4
     # Defaults flow to the gateway job submission.
     job = client.app.state.gateway.calls[0]
     assert job["width"] == 1280
     assert job["height"] == 720
-    assert job["n_seconds"] == 5
+    assert job["n_seconds"] == 4
 
 
 def test_handler_blocks_disabled_user(client):
@@ -443,6 +445,21 @@ def test_service_rejects_bad_size(client):
     with pytest.raises(VideoGenerationError) as ei:
         asyncio.run(service.generate(prompt="x", model="sora-2", size="999x999"))
     assert ei.value.status_code == 422
+
+
+def test_service_rejects_unsupported_duration(client):
+    service = _service(client)
+    with pytest.raises(VideoGenerationError) as ei:
+        asyncio.run(
+            service.generate(
+                prompt="x",
+                model="sora-2",
+                size="1280x720",
+                seconds=5,
+            )
+        )
+    assert ei.value.status_code == 422
+    assert "4, 8, 12" in ei.value.detail
 
 
 # ---- serve endpoint ownership ----
