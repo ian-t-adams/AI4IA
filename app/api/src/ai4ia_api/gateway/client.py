@@ -693,6 +693,19 @@ class ModelGatewayClient:
                 width, height = size.split("x", maxsplit=1)
                 body["width"] = int(width)
                 body["height"] = int(height)
+        elif api == "mai":
+            if n != 1:
+                raise ValueError("MAI generation supports exactly one image per request.")
+            width, height = (size or "1024x1024").split("x", maxsplit=1)
+            body = {
+                "model": deployment,
+                "prompt": prompt,
+                "width": int(width),
+                "height": int(height),
+                # Provider-side search is not an approved image tool capability.
+                "web_grounding": False,
+                "auto_aspect_ratio": False,
+            }
         else:
             body = {"prompt": prompt, "n": n, **(extra or {})}
             if size:

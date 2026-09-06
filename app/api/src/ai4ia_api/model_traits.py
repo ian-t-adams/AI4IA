@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-# Azure/OpenAI-compatible reasoning models (the GPT-5 family, o-series, and
+# Azure/OpenAI-compatible reasoning models (the GPT-5/6 families, o-series, and
 # MAI-Thinking-1) reject the classic Chat Completions sampling/limit parameters:
 # they require
 # ``max_completion_tokens`` instead of ``max_tokens`` and 400 on non-default
@@ -22,7 +22,7 @@ import re
 # parameter set and drops the unsupported ones itself when it routes to an
 # o-series model (per Microsoft Learn), so we must not pre-transform it.
 REASONING_DEPLOYMENT = re.compile(
-    r"^(gpt-5|o1|o3|o4|mai-thinking-1)\b", re.IGNORECASE
+    r"^(gpt-[56]|o1|o3|o4|mai-thinking-1)\b", re.IGNORECASE
 )
 # Claude in Foundry uses the Anthropic Messages API rather than Azure OpenAI
 # Chat Completions. The deployment name begins with the catalog model id, so
@@ -32,7 +32,7 @@ ANTHROPIC_MESSAGES_DEPLOYMENT = re.compile(r"^claude-", re.IGNORECASE)
 # Omitting both selects that default, so the generic sampling sliders must stay
 # hidden and the transport must strip stale values carried from another model.
 NO_SAMPLING_DEPLOYMENT = re.compile(
-    r"^(gpt-5|o1|o3|o4|mai-thinking-1|claude-opus-4-8)\b",
+    r"^(gpt-[56]|o1|o3|o4|mai-thinking-1|claude-opus-4-8)\b",
     re.IGNORECASE,
 )
 

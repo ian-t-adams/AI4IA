@@ -338,16 +338,32 @@ def test_model_router_is_not_pre_transformed():
     assert "max_completion_tokens" not in body
 
 
-def test_reasoning_prefix_does_not_overmatch():
+@pytest.mark.parametrize("prefix", ["gpt-50x", "gpt-60x"])
+def test_reasoning_prefix_does_not_overmatch(prefix):
     # A hypothetical "gpt-50" style id must not be treated as gpt-5.
     client = _client()
     body = client.build_request(
-        deployment="gpt-50x-slurmfactory-eastus2-glbl",
+        deployment=f"{prefix}-slurmfactory-eastus2-glbl",
         messages=[],
         params={"max_tokens": 10, "temperature": 0.3},
     ).json
     assert body["max_tokens"] == 10
     assert body["temperature"] == 0.3
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_astra_normalizes_reasoning_parameters(stream):
+    body = _client().build_request(
+        deployment="gpt-6-astra-example-eastus2-glbl",
+        messages=[{"role": "user", "content": "hello"}],
+        params={"max_tokens": 2048, "temperature": 0.7, "top_p": 0.9},
+        stream=stream,
+    ).json
+    assert body["max_completion_tokens"] == 2048
+    assert "max_tokens" not in body
+    assert "temperature" not in body
+    assert "top_p" not in body
+    assert bool(body.get("stream")) is stream
 
 
 # --- Responses API path -----------------------------------------------------

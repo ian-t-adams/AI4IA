@@ -89,12 +89,20 @@ def test_openai_and_mai_image_models_remain_unknown_without_azure_meter():
     openai = book.estimate_image(
         "gpt-image-1.5", size="1024x1536", quality="high"
     )
-    mai = book.estimate_image(
-        "MAI-Image-2.5", size="1024x1024", quality="auto"
-    )
-
     assert openai.known is False and openai.micro_usd is None
-    assert mai.known is False and mai.micro_usd is None
+    for model in ("MAI-Image-2.5", "MAI-Image-2.6", "MAI-Image-2.6-Flash"):
+        mai = book.estimate_image(model, size="1024x1024", quality="auto")
+        assert mai.known is False and mai.micro_usd is None, model
+
+
+def test_astra_uses_published_azure_short_context_estimate():
+    estimate = load_pricing().estimate(
+        "gpt-6-astra", prompt_tokens=1_000_000, completion_tokens=1_000_000
+    )
+    assert estimate.known is True
+    assert estimate.input_per_1m == 10.0
+    assert estimate.output_per_1m == 50.0
+    assert estimate.micro_usd == 60_000_000
 
 
 def test_quality_size_basis_is_supported_without_inventing_packaged_rates():

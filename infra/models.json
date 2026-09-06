@@ -44,6 +44,41 @@
   },
   "catalog": [
     {
+      "name": "gpt-6-astra",
+      "displayName": "GPT-6 Astra",
+      "format": "OpenAI",
+      "category": "chat",
+      "api": "responses",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-09-03"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-09-03"
+        }
+      ]
+    },
+    {
       "name": "gpt-5.6-sol",
       "format": "OpenAI",
       "category": "chat",
@@ -987,6 +1022,46 @@
           "version": "2026-06-02",
           "maxCapacity": 2,
           "maxCapacityPool": "global"
+        }
+      ]
+    },
+    {
+      "name": "MAI-Image-2.6",
+      "format": "Microsoft",
+      "category": "image",
+      "api": "mai",
+      "imageSizes": [
+        "1024x1024"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
+      "deployments": [
+        {
+          "region": "westus",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-07-31"
+        }
+      ]
+    },
+    {
+      "name": "MAI-Image-2.6-Flash",
+      "format": "Microsoft",
+      "category": "image",
+      "api": "mai",
+      "imageSizes": [
+        "1024x1024"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
+      "deployments": [
+        {
+          "region": "westus",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-07-31"
         }
       ]
     },

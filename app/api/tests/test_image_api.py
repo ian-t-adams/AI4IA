@@ -188,6 +188,33 @@ def test_flux_uses_bfl_protocol_and_server_owned_controls(client):
     assert call["extra"] is None
 
 
+@pytest.mark.parametrize("model", ["MAI-Image-2.6", "MAI-Image-2.6-Flash"])
+def test_mai_26_generation_and_controls(client, model):
+    headers = {"X-Dev-User": "ian"}
+    body = {"prompt": "an orange square", "model": model}
+    options = client.get("/api/images/options", headers=headers).json()
+    option = next(item for item in options["models"] if item["id"] == model)
+    assert option["sizes"] == ["1024x1024"]
+    assert option["qualities"] == ["auto"]
+
+    response = client.post("/api/images/generations", json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["provider"] == "microsoft"
+    assert response.json()["region"] == "westus"
+    assert response.json()["residency"] == "global"
+    assert response.json()["images"][0]["b64"] == TINY_PNG_B64
+    assert client.app.state.gateway.calls[-1]["api"] == "mai"
+    assert client.app.state.gateway.calls[-1]["size"] == "1024x1024"
+
+    calls = len(client.app.state.gateway.calls)
+    for overrides in ({"size": "1536x1024"}, {"quality": "high"}, {"n": 2}):
+        rejected = client.post(
+            "/api/images/generations", json={**body, **overrides}, headers=headers
+        )
+        assert rejected.status_code == 422, rejected.text
+        assert len(client.app.state.gateway.calls) == calls
+
+
 def test_flux_kontext_rejects_over_one_megapixel_size(client):
     r = client.post(
         "/api/images/generations",

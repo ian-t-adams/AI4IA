@@ -6,6 +6,8 @@ and the param/auth shaping.
 """
 from __future__ import annotations
 
+import pytest
+
 from ai4ia_api.config import GatewayAuthMode, GatewayProviderStyle
 from ai4ia_api.gateway.client import ModelGatewayClient
 from tests.conftest import make_settings
@@ -85,6 +87,51 @@ def test_bfl_image_request_uses_server_owned_native_shape():
         "width": 1536,
         "height": 1024,
     }
+
+
+@pytest.mark.parametrize("style", list(GatewayProviderStyle))
+@pytest.mark.parametrize("size", [None, "1024x1024"])
+def test_mai_image_request_uses_native_shape_and_disables_grounding(style, size):
+    c = _client(
+        gateway_provider_style=style,
+        model_gateway_auth_mode=GatewayAuthMode.api_key,
+        model_gateway_api_key="test-only",
+        model_gateway_api_key_header="S7P-KEY",
+    )
+    req = c.build_image_request(
+        deployment="MAI-Image-2.6-example-westus-glbl",
+        prompt="an orange square",
+        size=size,
+        api="mai",
+        extra={
+            "model": "attacker",
+            "quality": "high",
+            "web_grounding": True,
+            "auto_aspect_ratio": True,
+            "width": 2048,
+        },
+    )
+    assert req.url.startswith("http://gateway.test/")
+    assert req.headers["S7P-KEY"] == "test-only"
+    assert "Ocp-Apim-Subscription-Key" not in req.headers
+    assert req.json == {
+        "model": "MAI-Image-2.6-example-westus-glbl",
+        "prompt": "an orange square",
+        "width": 1024,
+        "height": 1024,
+        "auto_aspect_ratio": False,
+        "web_grounding": False,
+    }
+
+
+def test_mai_image_request_rejects_multiple_images():
+    with pytest.raises(ValueError, match="one image"):
+        _client().build_image_request(
+            deployment="MAI-Image-2.6-example-westus-glbl",
+            prompt="an orange square",
+            api="mai",
+            n=2,
+        )
 
 
 def test_api_key_auth_header_present():

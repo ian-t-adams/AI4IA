@@ -207,6 +207,8 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                 )
         elif api == "mistral_ocr":
             operation_path = "ocr"
+        elif api == "mai" and category == "image":
+            operation_path = "v1/images/generations"
         resolved = [
             {
                 "region": deployment["region"],

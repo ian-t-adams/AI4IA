@@ -520,6 +520,9 @@ Four rules follow:
 3. Update docs if the model changes a user-visible capability, provider protocol,
    legal prerequisite, safety posture, or region posture. Never type deployment
    names into app code.
+   Token-billed models also require sourced per-million-token estimates in
+   `app/api/src/ai4ia_api/data/pricing.json`; `test_usage_pricing.py` blocks an
+   unpriced addition. Keep unverified image meters explicitly cost-unknown.
 4. A new provider protocol needs a tested adapter in
    `app/api/src/ai4ia_api/gateway`, generated APIM routing/auth changes,
    non-streaming plus SSE tool-call controls, and an end-to-end agent-loop test. A

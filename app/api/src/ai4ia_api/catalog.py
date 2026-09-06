@@ -111,8 +111,8 @@ class ModelEntry(BaseModel):
     format: str
     # Which provider surface serves this model: "chat" (Chat Completions, the
     # default), "responses" (required by gpt-5-pro/gpt-5-codex/o3-pro),
-    # "anthropic" (Claude Messages), "mai" (MAI's OpenAI-compatible chat
-    # surface on /mai/v1), or "bfl" (Black Forest Labs image generation).
+    # "anthropic" (Claude Messages), "mai" (MAI chat/image surfaces on /mai/v1),
+    # or "bfl" (Black Forest Labs image generation).
     # The gateway routes by this flag; the field is informational to the UI.
     api: str = "chat"
     # Per-model context window (total prompt+completion tokens the deployment
