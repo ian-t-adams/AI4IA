@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import type { ConversationDraftDefaults, Session, ToolCatalogItem, ToolConsentSummary } from "@/lib/types";
+import type {
+  ConversationDraftDefaults,
+  ModelEntry,
+  Session,
+  ToolCatalogItem,
+  ToolConsentSummary,
+} from "@/lib/types";
 import { ConversationInspector } from "./ConversationInspector";
 import { makeChatSession, makeInspectorSnapshot } from "./chatTestFixtures";
 
@@ -88,6 +94,23 @@ function props(sessionId: string | null = "s1") {
     voiceLocked: false,
     collapsed: false,
     onToggle: vi.fn(),
+  };
+}
+
+function model(overrides: Partial<ModelEntry> = {}): ModelEntry {
+  return {
+    id: "gpt-5.2",
+    displayName: "gpt-5.2",
+    category: "chat",
+    format: "OpenAI",
+    conversational: true,
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    supportsTools: true,
+    supportsSampling: false,
+    reasoningEffortOptions: [],
+    options: [],
+    ...overrides,
   };
 }
 
@@ -660,6 +683,47 @@ describe("ConversationInspector", () => {
       screen.getByRole("button", { name: "Help: How to read the tool list" }),
     );
     expect(screen.getByRole("tooltip")).toHaveTextContent(/schema-validated/);
+  });
+
+  it("disables conversation tools when the selected model cannot call them", async () => {
+    mockToolCatalog([
+      {
+        name: "calculator",
+        label: "Calculator",
+        description: "Calculate",
+        source: "built-in",
+        risk: "safe",
+        requiresApproval: false,
+        scopes: [],
+        available: true,
+        selectable: true,
+        detail: null,
+        ownership: "application",
+        typed: true,
+        voice: true,
+      },
+    ]);
+    const user = userEvent.setup();
+    render(
+      <ConversationInspector
+        {...props(null)}
+        models={[
+          model({
+            id: "DeepSeek-V3.2",
+            displayName: "DeepSeek-V3.2",
+            supportsTools: false,
+          }),
+        ]}
+        selectedModel="DeepSeek-V3.2"
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
+    const calculator = await screen.findByRole("checkbox", { name: "Calculator" });
+    expect(calculator).toBeDisabled();
+    expect(calculator).toHaveAccessibleDescription(
+      /selected model does not support tool calling/i,
+    );
   });
 
   it("shows the selected agent's description for both live sessions and new-conversation drafts", async () => {

@@ -44,6 +44,7 @@
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
+                    new JProperty(&quot;operation&quot;, &quot;/v1/videos&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;sora-2-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -54,6 +55,7 @@
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
+                    new JProperty(&quot;operation&quot;, &quot;/v1/videos&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;sora-2-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -67,6 +69,7 @@
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
+                    new JProperty(&quot;operation&quot;, &quot;/v1/videos&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;sora-2-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -77,6 +80,7 @@
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
+                    new JProperty(&quot;operation&quot;, &quot;/v1/videos&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;sora-2-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -101,7 +105,7 @@
 
             new JProperty(&quot;mai-thinking-1-slurmfactory-eastus2-glbl&quot;, new JObject(
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
-                    new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
+                    new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-services-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;mai&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;MAI-Thinking-1-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
@@ -111,7 +115,7 @@
                     new JProperty(&quot;auth&quot;, &quot;MI&quot;)
                 )),
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
-                    new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
+                    new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-services-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;mai&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;MAI-Thinking-1-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
@@ -124,7 +128,7 @@
 
             new JProperty(&quot;mai-thinking-1-slurmfactory-swedencentral-glbl&quot;, new JObject(
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
-                    new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
+                    new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-services-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;mai&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;MAI-Thinking-1-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
@@ -134,7 +138,7 @@
                     new JProperty(&quot;auth&quot;, &quot;MI&quot;)
                 )),
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
-                    new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
+                    new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-services-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;mai&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;MAI-Thinking-1-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),

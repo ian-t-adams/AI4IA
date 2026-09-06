@@ -324,6 +324,15 @@ provider, deployment region/data zone, size, quality, and best-effort cost. A
 published estimate is labelled as such; **Cost estimate unavailable** means no
 unambiguous Azure retail meter is mapped and never means free.
 
+`/generate_video` uses the configured Sora 2 deployment. The supported clip
+lengths are 4, 8, or 12 seconds; the default is 4 seconds. Video generation is
+asynchronous and can take materially longer than a text or image response.
+
+When the selected chat model cannot call tools, the inspector disables the
+conversation tool toggles and the server ignores stale conversation-level tool
+overrides. Pre-built agents and workflows that require tools still reject an
+incompatible model instead of silently skipping their configured capabilities.
+
 ## Memory
 
 When memory is enabled, AI4IA can recall prior user context and can save ready

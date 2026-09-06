@@ -162,7 +162,12 @@ this production boundary.
    eligible regions, and calls Foundry with managed identity. For Claude it
    switches the audience to `https://ai.azure.com`, rewrites the upstream path to
    `/anthropic/v1/messages`, fixes `anthropic-version`, and drops OpenAI query
-   parameters; callers cannot select those values.
+   parameters; callers cannot select those values. MAI chat and image deployments
+   use the account's `.services.ai.azure.com/mai/v1/*` surface, while Sora 2 uses
+   the Azure OpenAI v1 `/videos` create/status/content operations. FastAPI keeps
+   the deployment in the proxy-facing path so SimpleL7Proxy can stamp the trusted
+   model header even on bodyless status and content reads; APIM owns the final
+   provider path and regional deployment binding.
    Responses requests explicitly set `store=false`; AI4IA resends Cosmos history
    instead of chaining provider-stored turns with `previous_response_id`. During
    one tool loop, opaque encrypted reasoning items remain in memory long enough

@@ -131,7 +131,8 @@ class Settings(BaseSettings):
     gateway_image_api_version: str = "2024-10-21"
     gateway_image_timeout_seconds: float = 180.0
     # Video generation (Sora 2) is an async job: create -> poll ->
-    # download. The Sora REST surface tracks the ``preview`` api-version. Each
+    # download. The Sora v1 REST surface accepts the optional ``preview``
+    # api-version. Each
     # individual HTTP call uses ``gateway_video_timeout_seconds``; the service
     # polls every ``gateway_video_poll_interval_seconds`` up to a hard
     # ``gateway_video_max_wait_seconds`` ceiling so a turn can never hang.

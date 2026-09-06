@@ -1016,15 +1016,19 @@
       "displayName": "MAI-Image-2.5",
       "category": "image",
       "format": "Microsoft",
-      "api": "chat",
+      "api": "mai",
       "contextWindow": null,
       "maxOutputTokens": null,
       "toolCalling": null,
       "inputModalities": [
         "text"
       ],
-      "imageSizes": null,
-      "imageQualities": null,
+      "imageSizes": [
+        "1024x1024"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
       "reasoningEffort": null,
       "options": [
         {
@@ -1040,15 +1044,19 @@
       "displayName": "MAI-Image-2.5-Pro",
       "category": "image",
       "format": "Microsoft",
-      "api": "chat",
+      "api": "mai",
       "contextWindow": null,
       "maxOutputTokens": null,
       "toolCalling": null,
       "inputModalities": [
         "text"
       ],
-      "imageSizes": null,
-      "imageQualities": null,
+      "imageSizes": [
+        "1024x1024"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
       "reasoningEffort": null,
       "options": [
         {
@@ -1064,15 +1072,19 @@
       "displayName": "MAI-Image-2.5-Flash",
       "category": "image",
       "format": "Microsoft",
-      "api": "chat",
+      "api": "mai",
       "contextWindow": null,
       "maxOutputTokens": null,
       "toolCalling": null,
       "inputModalities": [
         "text"
       ],
-      "imageSizes": null,
-      "imageQualities": null,
+      "imageSizes": [
+        "1024x1024"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
       "reasoningEffort": null,
       "options": [
         {
@@ -1679,7 +1691,7 @@
       "api": "chat",
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
-      "toolCalling": null,
+      "toolCalling": false,
       "inputModalities": [
         "text"
       ],

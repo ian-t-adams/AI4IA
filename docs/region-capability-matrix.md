@@ -78,13 +78,15 @@ This is not authoritative billing: the published long-context rates are $20/$75,
 and caching or other service tiers can differ. The MAI 2.6 image models remain
 cost-unknown until an unambiguous Azure meter is available.
 
-`MAI-Image-2.6` and `MAI-Image-2.6-Flash` version `2026-07-31` each target West US
-at 2 RPM, consuming a separate subscription-wide model pool. They are additive
+The `MAI-Image-2.5`, `MAI-Image-2.5-Pro`, `MAI-Image-2.5-Flash`,
+`MAI-Image-2.6`, and `MAI-Image-2.6-Flash` deployments target West US at 2 RPM,
+consuming separate subscription-wide model pools. The 2.6 models are additive
 preview options, not replacements for the 2.5 family. The catalog exposes square
-1024 output and provider-default quality. Requests use the native
+1024 output and provider-default quality for all five. Requests use the native
 `/mai/v1/images/generations` endpoint with `width` and `height`, behind the same
 SimpleL7Proxy -> APIM -> Foundry path. Provider-side web grounding and automatic
-aspect-ratio selection remain disabled in both the API adapter and APIM.
+aspect-ratio selection remain disabled for 2.6 in both the API adapter and APIM;
+the 2.5 request shape omits those 2.6-only fields.
 Image editing is not exposed by this addition.
 
 The 2.6 SKU metadata reports a deprecation timestamp of

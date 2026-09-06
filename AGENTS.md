@@ -559,7 +559,14 @@ Four rules follow:
    plausible-looking OpenAI route that can only 404. Generation now fails instead
    of inventing a route; adding a category to the allowlist without giving it a real
    provider path just moves the failure later.
-6. Anthropic deployments additionally require explicit `modelProviderData` and the
+6. Provider-native media routes are catalog-owned. MAI image models use the
+   `.services.ai.azure.com/mai/v1/images/generations` surface with `width` and
+   `height`; Sora 2 uses the Azure OpenAI v1 `/videos` create/status/content
+   surface. Keep the deployment in the proxy-facing path so SimpleL7Proxy can
+   stamp the trusted model header, then let APIM rewrite to the fixed provider
+   operation. Do not reuse the Azure OpenAI image route or the retired
+   `/v1/video/generations/jobs` contract.
+7. Anthropic deployments additionally require explicit `modelProviderData` and the
    default-off `AI4IA_CLAUDE_ENABLED` gate. Never infer the legal entity, country,
    or industry from tags; `validate-feature-prereqs.py` must fail before provision
    when Claude is enabled and the attestation is missing or placeholder-shaped.

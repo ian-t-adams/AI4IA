@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
 from ai4ia_api.main import create_app
+from ai4ia_api.routers.chat import _TOOLS_UNAVAILABLE_NOTICE
 from tests.conftest import make_settings, stream_like_gateway
 
 
@@ -70,12 +71,14 @@ class ParamCaptureGateway:
     def __init__(self) -> None:
         self.params: list[dict] = []
         self.apis: list[str] = []
+        self.messages: list[list[dict]] = []
 
     async def complete(
         self, *, deployment, messages, params=None, correlation_id=None, api="chat"
     ):
         self.params.append(dict(params or {}))
         self.apis.append(api)
+        self.messages.append([dict(message) for message in messages])
         return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
 
 
@@ -456,6 +459,70 @@ def test_non_tool_model_is_rejected_before_agent_execution(client):
     assert "does not support tool calling" in resp.json()["detail"]
     assert gw.calls == 0
     assert client.get(f"/api/sessions/{sid}/messages").json() == []
+
+
+def test_non_tool_model_ignores_conversation_tool_overrides_with_notice(client):
+    gateway = ParamCaptureGateway()
+    client.app.state.gateway = gateway
+    created = client.post(
+        "/api/sessions",
+        json={
+            "title": "Chat",
+            "model": "DeepSeek-V3.2",
+            "toolOverrides": {"added": ["calculator"], "removed": []},
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "sessionId": created.json()["id"],
+            "content": "What is 6*7?",
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(gateway.params) == 1
+    assert "tools" not in gateway.params[0]
+    systems = [
+        message["content"]
+        for message in gateway.messages[0]
+        if message.get("role") == "system"
+    ]
+    assert _TOOLS_UNAVAILABLE_NOTICE in systems
+
+
+def test_user_agent_named_conversation_still_rejects_incompatible_model(client):
+    gateway = ParamCaptureGateway()
+    client.app.state.gateway = gateway
+    created_agent = client.post(
+        "/api/agents",
+        json={
+            "name": "conversation",
+            "displayName": "Conversation Agent",
+            "description": "User-owned agent whose name matches the synthetic helper.",
+            "systemPrompt": "Use the calculator.",
+            "tools": ["calculator"],
+            "enabled": True,
+        },
+    )
+    assert created_agent.status_code == 201, created_agent.text
+    session = _create_session(client, model="DeepSeek-V3.2")
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "sessionId": session["id"],
+            "content": "@conversation What is 6*7?",
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "does not support tool calling" in response.json()["detail"]
+    assert gateway.params == []
 
 
 def test_tool_enabled_agent_streaming_emits_steps_then_answer(client):

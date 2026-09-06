@@ -988,6 +988,13 @@
       "name": "MAI-Image-2.5",
       "format": "Microsoft",
       "category": "image",
+      "api": "mai",
+      "imageSizes": [
+        "1024x1024"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
       "deployments": [
         {
           "region": "westus",
@@ -1003,6 +1010,13 @@
       "name": "MAI-Image-2.5-Pro",
       "format": "Microsoft",
       "category": "image",
+      "api": "mai",
+      "imageSizes": [
+        "1024x1024"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
       "deployments": [
         {
           "region": "westus",
@@ -1018,6 +1032,13 @@
       "name": "MAI-Image-2.5-Flash",
       "format": "Microsoft",
       "category": "image",
+      "api": "mai",
+      "imageSizes": [
+        "1024x1024"
+      ],
+      "imageQualities": [
+        "auto"
+      ],
       "deployments": [
         {
           "region": "westus",
@@ -1508,6 +1529,7 @@
       "name": "o3-deep-research",
       "format": "OpenAI",
       "category": "research",
+      "toolCalling": false,
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
       "reasoningEffort": [

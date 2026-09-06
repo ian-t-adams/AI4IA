@@ -151,7 +151,8 @@ def backend_row(
     priority: int,
     timeout: int,
 ) -> str:
-    named_value = f"{{{{foundry-{region}-endpoint}}}}"
+    endpoint_kind = "services-endpoint" if provider_path == "mai" else "endpoint"
+    named_value = f"{{{{foundry-{region}-{endpoint_kind}}}}}"
     operation_row = (
         f'                    new JProperty("operation", "/{operation_path}"),\n'
         if operation_path
@@ -209,6 +210,8 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
             operation_path = "ocr"
         elif api == "mai" and category == "image":
             operation_path = "v1/images/generations"
+        elif category == "video":
+            operation_path = "v1/videos"
         resolved = [
             {
                 "region": deployment["region"],
