@@ -856,6 +856,7 @@ def generate_realtime_policy(models: dict[str, Any]) -> str:
         "      <value>@(context.RequestId.ToString())</value>\n"
         "    </set-header>\n"
         "    <set-header name=\"Ocp-Apim-Subscription-Key\" exists-action=\"delete\" />\n"
+        "    <set-query-parameter name=\"subscription-key\" exists-action=\"delete\" />\n"
         "    <set-header name=\"Authorization\" exists-action=\"delete\" />\n"
         "    <authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" />\n"
         "  </inbound>\n"
@@ -872,7 +873,7 @@ def validate_realtime_policy(policy: str, source: str) -> None:
     allowed = {
         "policies", "inbound", "backend", "outbound", "on-error", "base",
         "choose", "when", "otherwise", "set-backend-service", "return-response",
-        "set-status", "set-header", "value", "authentication-managed-identity",
+        "set-status", "set-header", "set-query-parameter", "value", "authentication-managed-identity",
     }
     unsupported = {element.tag for element in root.iter() if element.tag not in allowed}
     if unsupported:
@@ -883,6 +884,35 @@ def validate_realtime_policy(policy: str, source: str) -> None:
         url = backend.attrib.get("base-url", "")
         if "-realtime-wss-endpoint}}/openai/realtime" not in url:
             raise ValueError(f"{source}: realtime backend must use the WSS named value and exact /openai/realtime path")
+
+    # Match the existing Speech/Code Interpreter trust boundary: remove the
+    # caller's subscription credentials and bearer before establishing MI auth.
+    # Requiring direct inbound deletes also rejects conditional/late no-op guards.
+    inbound = root.find("inbound")
+    if inbound is None:
+        raise ValueError(f"{source}: must strip caller credentials in inbound")
+    inbound_children = list(inbound)
+    identities = root.findall(".//authentication-managed-identity")
+    if len(identities) != 1 or identities[0] not in inbound_children:
+        raise ValueError(f"{source}: expected exactly one direct inbound managed identity")
+    identity_index = inbound_children.index(identities[0])
+    required_strips = (
+        ("set-header", "Ocp-Apim-Subscription-Key"),
+        ("set-query-parameter", "subscription-key"),
+        ("set-header", "Authorization"),
+    )
+    for tag, name in required_strips:
+        strips = inbound.findall(f"./{tag}[@name='{name}']")
+        if (
+            len(strips) != 1
+            or strips[0].attrib.get("exists-action") != "delete"
+            or list(strips[0])
+            or inbound_children.index(strips[0]) >= identity_index
+        ):
+            raise ValueError(
+                f"{source}: must strip caller {name} unconditionally before "
+                "managed-identity authentication"
+            )
 
 
 def validate_speech_voice_live_policy(policy: str, source: str) -> None:

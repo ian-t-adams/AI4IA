@@ -12,9 +12,9 @@ Composable modules consumed by [`../main.bicep`](../main.bicep). Each module:
 Gateway-specific modules:
 
 - `apimcore.bicep` owns the unconditional shared `apim-mcp-*` Basic v2 service,
-  its system identity, and diagnostic setting.
+  its system identity, diagnostic setting, and MCP product/subscription.
 - `mcpgateway.bicep` references that service as existing and owns the feature-gated
-  official MCP backends/APIs/policies/product/key.
+  official MCP backends, APIs, policies, and associations with that product.
 - `gateway.bicep` references that service as existing and owns the public
   SimpleL7Proxy app plus model/realtime API children, scoped subscriptions, generated
   fragments, and Foundry role assignments. It creates no APIM service of its own.

@@ -3,9 +3,11 @@
   Snapshot the existing AI4IA Azure footprint before teardown.
 
 .DESCRIPTION
-  Captures Foundry (Cognitive Services) accounts, model deployments, projects,
-  connections, Bing grounding, Key Vaults, and quota/usage into timestamped JSON
-  files so the rebuild is reversible and auditable. Read-only.
+  Captures resource-list metadata, Foundry accounts and model deployments,
+  vault metadata, and soft-deleted account/vault inventories into timestamped
+  JSON files. Read-only; not a data backup or a complete provider inventory.
+  Use status-snapshot.ps1 for the Resource Graph footprint and
+  capture-data-recovery-state.ps1 for recovery coordinates.
 
 .EXAMPLE
   ./scripts/inventory.ps1 -Subscription <id> -ResourceGroup rg-ai4ia-<env>
@@ -93,4 +95,4 @@ if ($failedSections.Count -gt 0) {
 }
 
 Write-Host "Inventory complete: $dir" -ForegroundColor Green
-Write-Host "Commit a copy of this folder (or its summary) before running teardown." -ForegroundColor Yellow
+Write-Host "Archive this folder outside the target resource group before teardown; it is not a data backup." -ForegroundColor Yellow

@@ -15,7 +15,10 @@
 <set-header name="x-ai4ia-gateway-caller" exists-action="override">
 			<value>@(context.Subscription?.Id ?? "unknown")</value>
 		</set-header>
+<!-- APIM has validated the scoped subscription. OpenAI/Responses/media
+		     rewrites keep other query parameters, never this credential. -->
 <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+<set-query-parameter name="subscription-key" exists-action="delete" />
 <set-header name="Authorization" exists-action="delete" />
 <set-header name="anthropic-version" exists-action="delete" />
 <!-- set the request ID in case we need to debug -->

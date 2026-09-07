@@ -16,7 +16,7 @@ feature resources.
 - `voice-providers.json` / `voice-providers.schema.json` — realtime provider catalog.
 - `proxy-container-config.json` — reviewed SimpleL7Proxy logging posture.
 - `policies/` — hand-authored APIM policy sources plus generated catalog shards.
-- `abbreviations.json` — azd resource-name abbreviations.
+- `abbreviations.json` — reference shorthand; actual names come from Bicep expressions.
 - `modules/` — Bicep modules consumed by `main.bicep`.
 
 ## Modules
@@ -91,8 +91,8 @@ module map. A deployer needs:
   (or Owner), because the template creates the resource group and role assignments;
 - registered resource providers and approved model/Marketplace access with quota
   in East US 2, Sweden Central, and the targeted West US catalog region;
-- a 3-20 character lowercase `AZURE_ENV_NAME` containing only letters, digits,
-  and internal hyphens;
+- lowercase 3-20 character workload/environment tokens, at most 22 characters
+  combined, plus a Foundry token that preserves the complete account-name suffix;
 - deployment-owned Entra/OIDC, owner, cost-center, publisher, budget date, and
   alert-recipient values.
 
@@ -120,3 +120,43 @@ Validate in a separate subscription for full catalog fidelity, or use the
 runbook's explicitly reduced validation profile when subscription-wide model
 quota prevents a duplicate catalog; see
 [`../docs/runbooks/teardown.md`](../docs/runbooks/teardown.md).
+
+## Checking a deployed environment
+
+Compare **resolved intent**, not raw defaults, with dated read-only evidence:
+
+1. Record the source commit, target subscription/environment, and effective
+   deployment overrides. A `maximum` capacity profile and an enabled Speech
+   provider can legitimately differ from the portable defaults.
+2. Use a subscription/resource-group-scoped Resource Graph inventory, checking
+   pagination and total counts. Query child resources and important settings
+   through their native ARM contracts; a successful top-level list is not proof
+   that every child was returned.
+3. Compare catalog-derived deployment names, `deployments[].version`, SKU,
+   effective capacity, region, and upgrade policy. Exclude providers disabled
+   by the resolved posture, not models that happen to be missing live.
+4. Compare Container App runtime gates, image digests, scaling/ingress, storage
+   schemas, authentication posture, and literal role-assignment scopes. Inspect
+   secret references and credential scopes, never secret values.
+5. Classify differences: approved override, release-owned image, provider-created
+   supporting resource, retained legacy resource, or genuine drift. Do not
+   automatically copy a live deviation into Bicep or delete it.
+
+**APIM inventory trap:** the older Azure CLI API-list contract can omit native
+MCP APIs. Use the module's `2024-06-01-preview` contract and the catalog-derived
+`<server>-mcp` resource name, and verify product membership. An omitted row from
+the older list is not evidence that the MCP route is absent.
+
+A read-only observation on **2026-09-06**, against the deployment of commit
+`95701acf`, found 34 Resource Graph rows and exact parity for 115 model deployments
+from 48 enabled catalog entries (`maximum`, Claude off). The three Container Apps
+ran registry digests; the shared Basic v2 APIM, optional Speech/MCP APIs, Cosmos
+backup/vector posture, and Search configuration matched the resolved showcase.
+See [feature posture](../docs/runbooks/feature-enablement.md#last-observed-deployment-posture).
+This is configuration evidence, not a new deployment, a fresh exercise of every
+data-plane feature, or a guarantee of future parity.
+
+Later review corrections add explicit media gates, resource-region metrics
+routing, credential stripping, and explicit OpenAPI false. Those contracts
+require a normal approved provision/deploy; the dated observation is not a
+claim that uncommitted or unreleased changes are already running.

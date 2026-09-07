@@ -1708,6 +1708,45 @@ class GatewayPolicyTests(unittest.TestCase):
                 collected.extend(GatewayPolicyTests._collect_resources(nested))
         return collected
 
+    def test_compiled_mcp_subscription_scrubs_precede_provider_policies(self) -> None:
+        template = self._build_bicep_template(ROOT / "infra/modules/mcpgateway.bicep")
+        resources = self._collect_resources(template)
+        apis = [
+            r for r in resources if r["type"] == "Microsoft.ApiManagement/service/apis"
+        ]
+        policies = [
+            r
+            for r in resources
+            if r["type"] == "Microsoft.ApiManagement/service/apis/policies"
+        ]
+        self.assertEqual(len(apis), 1)
+        self.assertEqual(len(policies), 1)
+        names = apis[0]["properties"]["subscriptionKeyParameterNames"]
+        expression = policies[0]["properties"]["value"]
+        match = re.fullmatch(
+            r"\[format\('(<policies>.*</policies>)', variables\('serverInboundPolicies'\)\[copyIndex\(\)\]\)\]",
+            expression,
+        )
+        self.assertIsNotNone(
+            match, "inspect the policy expression ARM actually receives"
+        )
+        xml = match.group(1)
+        self.assertEqual(xml.count("{0}"), 1)
+        inbound = ElementTree.fromstring(
+            xml.replace("{0}", "<provider-policies />")
+        ).find("inbound")
+        children = list(inbound)
+        boundary_index = children.index(inbound.find("provider-policies"))
+        for tag, name in (
+            ("set-header", names["header"]),
+            ("set-query-parameter", names["query"]),
+        ):
+            strips = inbound.findall(f"{tag}[@name='{name}']")
+            self.assertEqual(len(strips), 1, f"compiled MCP policy must strip {name}")
+            self.assertEqual(strips[0].get("exists-action"), "delete")
+            self.assertLess(children.index(strips[0]), boundary_index)
+        self.assertEqual(inbound.findall("set-header[@name='Authorization']"), [])
+
     def test_compiled_arm_creates_exactly_one_apim_service(self) -> None:
         template = self._build_bicep_template(ROOT / "infra/main.bicep")
         all_resources = self._collect_resources(template)
@@ -2090,6 +2129,346 @@ class GatewayPolicyTests(unittest.TestCase):
         docs_generator.check_meta_posture(errors)
         self.assertEqual([], errors)
 
+
+class SubscriptionCredentialPolicyTests(unittest.TestCase):
+    """Literal policy boundary contracts, not an emulator for APIM/C# routing."""
+
+    HEADER = "Ocp-Apim-Subscription-Key"
+    QUERY = "subscription-key"
+
+    def _model_parts(self):
+        source = ElementTree.parse(gateway_generator.PRIORITY_POLICY_PATH).getroot()
+        wrapper, fragments = gateway_generator.generate_priority_policies()
+        self.assertLess(
+            wrapper.index('fragment-id="simplel7proxy_inbound_pre_32"'),
+            wrapper.index('fragment-id="simplel7proxy_inbound_post_32"'),
+        )
+        generated_inbound = ElementTree.Element("inbound")
+        for fragment in fragments[:2]:
+            generated_inbound.extend(ElementTree.fromstring(fragment))
+        inbound, backend = source.find("inbound"), source.find("backend")
+        assert inbound is not None and backend is not None
+        return (
+            ("source", inbound, backend),
+            ("generated", generated_inbound, ElementTree.fromstring(fragments[2])),
+        )
+
+    def _mcp_inbound(self):
+        source = (ROOT / "infra/modules/mcpgateway.bicep").read_text(encoding="utf-8")
+        templates = re.findall(
+            r"^\s*value: '(<policies>.*</policies>)'\s*$", source, re.MULTILINE
+        )
+        self.assertEqual(len(templates), 1, "inspect the actual MCP resource policy")
+        marker = "${serverInboundPolicies[i]}"
+        self.assertEqual(templates[0].count(marker), 1)
+        # Provider policies remain opaque here: the actual Bicep template must
+        # run the unconditional boundary before this MI/header/query/backend block.
+        root = ElementTree.fromstring(
+            templates[0].replace(marker, "<provider-policies />")
+        )
+        inbound = root.find("inbound")
+        assert inbound is not None
+        names = re.search(
+            r"subscriptionKeyParameterNames:\s*\{\s*header: '([^']+)'\s*query: '([^']+)'",
+            source,
+        )
+        self.assertIsNotNone(names)
+        assert names is not None
+        return inbound, names.group(1), names.group(2), source
+
+    def _assert_boundary(self, inbound, header=HEADER, query=QUERY):
+        children = list(inbound)
+        boundaries = [
+            node
+            for node in children
+            if node.tag in {"authentication-managed-identity", "provider-policies"}
+        ]
+        self.assertEqual(
+            len(boundaries), 1, "exactly one upstream auth/provider boundary"
+        )
+        boundary_index = children.index(boundaries[0])
+        for tag, name in (("set-header", header), ("set-query-parameter", query)):
+            matches = inbound.findall(f"./{tag}[@name='{name}']")
+            self.assertEqual(
+                len(matches), 1, f"missing unconditional {tag} strip: {name}"
+            )
+            self.assertEqual(matches[0].get("exists-action"), "delete")
+            self.assertEqual(
+                list(matches[0]), [], "a delete must not carry a replacement value"
+            )
+            self.assertLess(children.index(matches[0]), boundary_index)
+        for node in children[boundary_index + 1 :]:
+            for header_policy in node.iter("set-header"):
+                self.assertFalse(
+                    header_policy.get("name", "").lower() == "authorization"
+                    and header_policy.get("exists-action") == "delete",
+                    "never strip the newly established managed-identity Authorization",
+                )
+
+    @staticmethod
+    def _delete_projection(inbound, headers, query):
+        """Apply direct literal deletes only; retain all values of unrelated keys."""
+        headers = {name.lower(): list(values) for name, values in headers.items()}
+        query = {name: list(values) for name, values in query.items()}
+        for node in inbound:
+            if node.get("exists-action") != "delete":
+                continue
+            if node.tag == "set-header":
+                headers.pop(node.attrib["name"].lower(), None)
+            elif node.tag == "set-query-parameter":
+                query.pop(node.attrib["name"], None)
+        return headers, query
+
+    @staticmethod
+    def _branch_query(branch, query):
+        rewrite = branch.find("rewrite-uri")
+        assert rewrite is not None
+        result = dict(query) if rewrite.get("copy-unmatched-params") == "true" else {}
+        for node in branch.findall("set-query-parameter"):
+            assert node.get("exists-action") == "override"
+            result[node.attrib["name"]] = [node.findtext("value")]
+        return result
+
+    def test_model_source_and_generated_boundary_preserve_managed_identity(
+        self,
+    ) -> None:
+        for label, inbound, backend in self._model_parts():
+            with self.subTest(policy=label):
+                self._assert_boundary(inbound)
+                identity = inbound.find("authentication-managed-identity")
+                self.assertEqual(
+                    identity.get("output-token-variable-name"),
+                    "managed-id-access-token",
+                )
+                mi_branches = [
+                    node
+                    for node in backend.iter("when")
+                    if '"MI"' in node.get("condition", "")
+                ]
+                self.assertEqual(len(mi_branches), 1)
+                auth = mi_branches[0].find("set-header[@name='Authorization']")
+                self.assertIsNotNone(auth)
+                self.assertEqual(auth.get("exists-action"), "override")
+                self.assertIn('"Bearer "', auth.findtext("value"))
+                self.assertIn('"managed-id-access-token"', auth.findtext("value"))
+                self.assertEqual(
+                    backend.findall(
+                        ".//set-header[@name='Authorization'][@exists-action='delete']"
+                    ),
+                    [],
+                    "backend retries must preserve the newly established MI bearer",
+                )
+
+    def test_every_model_rewrite_branch_keeps_its_provider_query_contract(self) -> None:
+        request_query = {
+            self.QUERY: ["synthetic-subscription-key", "second-value"],
+            "api-version": ["2024-10-21"],
+            "tracking": ["preserve-on-openai"],
+        }
+        expected = (
+            ("anthropic", "false", {}),
+            ("mai-image", "false", {}),
+            ("mai-chat", "false", {}),
+            ("bfl", "false", {"api-version": ["preview"]}),
+            ("mistral-ocr", "false", {"api-version": ["2024-05-01-preview"]}),
+            # This one shared branch serves Chat/Responses, embeddings, audio,
+            # images and Sora video create/status/content paths. Keep its query
+            # passthrough; credential deletion must happen before every branch.
+            (
+                "openai",
+                "true",
+                {"api-version": ["2024-10-21"], "tracking": ["preserve-on-openai"]},
+            ),
+        )
+        for label, inbound, backend in self._model_parts():
+            self._assert_boundary(inbound)
+            _, query = self._delete_projection(inbound, {}, request_query)
+            branches = [
+                node for node in backend.iter() if node.find("rewrite-uri") is not None
+            ]
+            self.assertEqual(
+                len(branches), len(expected), "every real provider rewrite is covered"
+            )
+            for branch, (provider, copy_query, wanted) in zip(
+                branches, expected, strict=True
+            ):
+                with self.subTest(policy=label, provider=provider):
+                    self.assertEqual(
+                        branch.find("rewrite-uri").get("copy-unmatched-params"),
+                        copy_query,
+                    )
+                    self.assertEqual(self._branch_query(branch, query), wanted)
+
+    def test_realtime_preserves_deployment_and_api_version(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        for policy in (
+            gateway_generator.generate_realtime_policy(models),
+            gateway_generator.REALTIME_OUTPUT_PATH.read_text(encoding="utf-8"),
+        ):
+            inbound = ElementTree.fromstring(policy).find("inbound")
+            self._assert_boundary(inbound)
+            selector = next(
+                name
+                for name in re.findall(r"&quot;([^&]+)&quot;\.Equals", policy)
+                if "-glbl" in name
+            )
+            _, query = self._delete_projection(
+                inbound,
+                {},
+                {
+                    self.QUERY: ["synthetic-subscription-key"],
+                    "deployment": [selector],
+                    "api-version": ["2025-04-01-preview"],
+                },
+            )
+            self.assertEqual(
+                query, {"deployment": [selector], "api-version": ["2025-04-01-preview"]}
+            )
+            self.assertEqual(
+                inbound.find("authentication-managed-identity").get("resource"),
+                "https://cognitiveservices.azure.com",
+            )
+            gateway_generator.validate_realtime_policy(policy, "realtime fixture")
+
+    def test_mcp_strips_configured_credentials_before_provider_policies(self) -> None:
+        inbound, header, query_name, source = self._mcp_inbound()
+        self._assert_boundary(inbound, header, query_name)
+        headers, query = self._delete_projection(
+            inbound,
+            {
+                header.swapcase(): ["synthetic-subscription-key", "second-value"],
+                "Authorization": ["Bearer synthetic-upstream-token"],
+                "Mcp-Session-Id": ["synthetic-session"],
+            },
+            {
+                query_name: ["synthetic-subscription-key", "second-value"],
+                "api-version": ["v1"],
+                "toolbox-option": ["keep"],
+            },
+        )
+        self.assertEqual(
+            headers,
+            {
+                "authorization": ["Bearer synthetic-upstream-token"],
+                "mcp-session-id": ["synthetic-session"],
+            },
+        )
+        self.assertEqual(query, {"api-version": ["v1"], "toolbox-option": ["keep"]})
+        self.assertIn("s.upstreamAuthMode == 'managed_identity'", source)
+        self.assertIn(
+            'output-token-variable-name="msi-access-token" ignore-error="false"', source
+        )
+        self.assertIn(
+            '<set-header name="Authorization" exists-action="override">', source
+        )
+        self.assertIn("map(items(s.?upstreamQueryParams ?? {}), q =>", source)
+        self.assertIn(
+            'name="${q.key}" exists-action="override"><value>${q.value}</value>', source
+        )
+        self.assertIn('<set-backend-service backend-id="${s.name}-backend" />', source)
+
+    def test_boundary_guards_reject_old_conditional_and_late_policies_in_memory(
+        self,
+    ) -> None:
+        variants = [
+            (label, inbound, self.HEADER, self.QUERY)
+            for label, inbound, _ in self._model_parts()
+        ]
+        realtime = gateway_generator.REALTIME_OUTPUT_PATH.read_text(encoding="utf-8")
+        variants.append(
+            (
+                "realtime",
+                ElementTree.fromstring(realtime).find("inbound"),
+                self.HEADER,
+                self.QUERY,
+            )
+        )
+        mcp, header, query_name, _ = self._mcp_inbound()
+        variants.append(("mcp", mcp, header, query_name))
+        for label, inbound, header, query_name in variants:
+            self._assert_boundary(
+                inbound, header, query_name
+            )  # same fixture passes before mutation
+            for tag, name in (
+                ("set-header", header),
+                ("set-query-parameter", query_name),
+            ):
+                for mutation in ("remove", "conditional", "after-auth"):
+                    with self.subTest(policy=label, credential=name, mutation=mutation):
+                        altered = ElementTree.fromstring(ElementTree.tostring(inbound))
+                        strip = altered.find(f"{tag}[@name='{name}']")
+                        altered.remove(strip)
+                        if mutation == "conditional":
+                            choose = ElementTree.SubElement(altered, "choose")
+                            ElementTree.SubElement(
+                                choose, "when", condition="@(false)"
+                            ).append(strip)
+                        elif mutation == "after-auth":
+                            altered.append(strip)
+                        with self.assertRaises(AssertionError):
+                            self._assert_boundary(altered, header, query_name)
+                        if mutation == "remove":
+                            # A positive leakage control: the old policy actually
+                            # retains this credential, not just a failed regex.
+                            headers, query = self._delete_projection(
+                                altered,
+                                {header: ["synthetic-key"]},
+                                {query_name: ["synthetic-key"]},
+                            )
+                            if tag == "set-header":
+                                self.assertEqual(
+                                    headers[header.lower()], ["synthetic-key"]
+                                )
+                            else:
+                                self.assertEqual(query[query_name], ["synthetic-key"])
+
+    def test_realtime_validator_rejects_missing_and_post_identity_strips(self) -> None:
+        policy = gateway_generator.REALTIME_OUTPUT_PATH.read_text(encoding="utf-8")
+        gateway_generator.validate_realtime_policy(policy, "valid realtime")
+        for tag, name in (
+            ("set-header", self.HEADER),
+            ("set-query-parameter", self.QUERY),
+            ("set-header", "Authorization"),
+        ):
+            for mutation in ("remove", "skip", "after-auth"):
+                with self.subTest(credential=name, mutation=mutation):
+                    root = ElementTree.fromstring(policy)
+                    inbound = root.find("inbound")
+                    strip = inbound.find(f"{tag}[@name='{name}']")
+                    self.assertIsNotNone(strip, f"missing strip: {name}")
+                    if mutation == "skip":
+                        strip.set("exists-action", "skip")
+                    else:
+                        inbound.remove(strip)
+                        if mutation == "after-auth":
+                            inbound.append(strip)
+                    with self.assertRaisesRegex(ValueError, "must strip caller"):
+                        gateway_generator.validate_realtime_policy(
+                            ElementTree.tostring(root, encoding="unicode"),
+                            "mutated realtime",
+                        )
+
+    def test_existing_speech_and_code_interpreter_boundaries_stay_valid(self) -> None:
+        for filename, header, validator in (
+            (
+                "speech-voice-live.xml",
+                self.HEADER,
+                gateway_generator.validate_speech_voice_live_policy,
+            ),
+            (
+                "code-interpreter-routing.xml",
+                "api-key",
+                gateway_generator.validate_code_interpreter_policy,
+            ),
+        ):
+            with self.subTest(policy=filename):
+                policy = (ROOT / "infra/policies" / filename).read_text(
+                    encoding="utf-8"
+                )
+                self._assert_boundary(
+                    ElementTree.fromstring(policy).find("inbound"), header
+                )
+                validator(policy, filename)
 
 if __name__ == "__main__":
     unittest.main()

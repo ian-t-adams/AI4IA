@@ -6,6 +6,12 @@ import type { ExecutionReceipt, Message } from "@/lib/types";
 import { WorkflowRunReport } from "./WorkflowRunReport";
 import { deriveSteps, resultFromMessage } from "./workflowRun";
 
+// Exercise the real evidence renderers without importing the transcript's
+// speech playback and artifact-fetch lifecycle. Fail if that coupling returns.
+vi.mock("./MessageList", () => {
+  throw new Error("Workflow reports must not import the chat transcript.");
+});
+
 afterEach(cleanup);
 const payload = (text: string) => ({ text, sha256: "a".repeat(64), bytes: text.length, truncated: false });
 function receipt(overrides: Partial<ExecutionReceipt> = {}): ExecutionReceipt {

@@ -85,6 +85,8 @@ def build_video_capability(
     size/duration allowlists, payload cap — is shared with any HTTP caller via
     :class:`VideoGenerationService` and the per-turn entitlement check here.
     """
+    if not video_service.enabled:
+        return [], {}
     budget = {"used": 0}
     video_ids = _video_model_ids(catalog)
     models_hint = (
@@ -153,6 +155,8 @@ def build_video_capability(
     }
 
     async def _handler(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        if not video_service.enabled:
+            return {"error": "Video generation is disabled."}
         if budget["used"] >= MAX_VIDEOS_PER_TURN:
             return {"error": "video generation budget exhausted for this turn."}
         prompt = str(args.get("prompt") or "").strip()

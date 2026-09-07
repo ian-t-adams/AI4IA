@@ -12,7 +12,7 @@ import type {
   ToolConsentSummary,
 } from "@/lib/types";
 import { ConversationInspector } from "./ConversationInspector";
-import { makeChatSession, makeInspectorSnapshot } from "./chatTestFixtures";
+import { emptyLibrarySummary, makeChatSession, makeInspectorSnapshot } from "./chatTestFixtures";
 
 const mocks = vi.hoisted(() => ({
   getInspector: vi.fn(),
@@ -505,6 +505,49 @@ describe("ConversationInspector", () => {
     expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled();
   });
 
+  it("keeps image drafts on same-session refreshes but not across conversations", async () => {
+    mocks.getImageOptions.mockResolvedValue({
+      maxSelectedModels: 3,
+      currency: "USD",
+      priceVersion: "test",
+      models: ["image-a", "image-b"].map((id) => ({
+        id,
+        displayName: id,
+        provider: "test",
+        sizes: ["1024x1024"],
+        qualities: ["auto"],
+        dataZones: [],
+        residencies: [],
+        prices: [],
+      })),
+    });
+    mocks.getInspector.mockImplementation(async (id: string) => ({
+      ...snapshot(id),
+      imagePreferences: {
+        models: id === "B" ? ["image-b"] : [],
+        size: "1024x1024",
+        quality: "auto",
+      },
+    }));
+    const user = userEvent.setup();
+    const { rerender } = render(<ConversationInspector {...props("A")} />);
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
+    await user.click(await screen.findByRole("checkbox", { name: /image-a/ }));
+    expect(screen.getByRole("checkbox", { name: /image-a/ })).toBeChecked();
+
+    rerender(<ConversationInspector {...props("A")} refreshKey={1} />);
+    await waitFor(() => expect(mocks.getInspector).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /image-a/ })).toBeEnabled());
+    expect(screen.getByRole("checkbox", { name: /image-a/ })).toBeChecked();
+
+    rerender(<ConversationInspector {...props("B")} />);
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /image-b/ })).toBeEnabled());
+    expect(screen.getByRole("checkbox", { name: /image-a/ })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /image-b/ })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Save image setup" })).toBeDisabled();
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+  });
+
   it("discards a late tool override after switching conversations", async () => {
     const value = snapshot("A");
     value.tools.effective = [];
@@ -856,6 +899,55 @@ describe("ConversationInspector", () => {
     expect(onSessionUpdated).not.toHaveBeenCalled();
   });
 
+  it.each(["success", "failure"] as const)(
+    "keeps a newer mutation locked when an old A → B → A mutation settles with %s",
+    async (outcome) => {
+      let finishFirst!: () => void;
+      let finishSecond!: () => void;
+      const updated = makeChatSession("A");
+      mocks.updateSession
+        .mockImplementationOnce(() => new Promise<Session>((resolve, reject) => {
+          finishFirst = () => outcome === "success"
+            ? resolve(updated)
+            : reject(new Error("Late mutation failed"));
+        }))
+        .mockImplementationOnce(() => new Promise<Session>((resolve) => {
+          finishSecond = () => resolve(updated);
+        }));
+      const onSessionUpdated = vi.fn();
+      const user = userEvent.setup();
+      const { rerender } = render(
+        <ConversationInspector {...props("A")} onSessionUpdated={onSessionUpdated} />,
+      );
+      await user.click(screen.getByRole("button", { name: "Instructions" }));
+      await screen.findByDisplayValue("Prompt A");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(mocks.updateSession).toHaveBeenCalledTimes(1);
+
+      rerender(<ConversationInspector {...props("B")} onSessionUpdated={onSessionUpdated} />);
+      await screen.findByDisplayValue("Prompt B");
+      rerender(<ConversationInspector {...props("A")} onSessionUpdated={onSessionUpdated} />);
+      await screen.findByDisplayValue("Prompt A");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(mocks.updateSession).toHaveBeenCalledTimes(2);
+      const saving = screen.getByRole("button", { name: "Saving…" });
+      expect(saving).toBeDisabled();
+
+      await act(async () => finishFirst());
+      // The old request must not publish data/error OR release the newer lock.
+      expect(onSessionUpdated).not.toHaveBeenCalled();
+      expect(screen.queryByText("Late mutation failed")).not.toBeInTheDocument();
+      expect(saving).toBeDisabled();
+      expect(saving).toHaveTextContent("Saving…");
+
+      // Control: the current request can publish and unlock normally.
+      await act(async () => finishSecond());
+      await waitFor(() => expect(saving).toBeEnabled());
+      expect(saving).toHaveTextContent("Save");
+      expect(onSessionUpdated).toHaveBeenCalledExactlyOnceWith(updated);
+    },
+  );
+
   it("confirms item-specific memory deletion and exposes a pending-safe label", async () => {
     mocks.listMemories.mockResolvedValue({
       status: "ok",
@@ -1075,6 +1167,44 @@ describe("ConversationInspector", () => {
     expect(alert).toHaveTextContent(/snapshot-down/);
     expect(alert).toHaveTextContent(/library-down/);
   });
+
+  it.each(["library", "snapshot"] as const)(
+    "resource retry clears only the recovered %s error and preserves the failed sibling",
+    async (resource) => {
+      mocks.getInspector.mockRejectedValueOnce(new Error("snapshot-down"));
+      mocks.getLibrarySummary.mockRejectedValueOnce(new Error("library-down"));
+      const user = userEvent.setup();
+      render(<ConversationInspector {...props()} libraryEnabled />);
+      await user.click(screen.getByRole("tab", { name: "Context" }));
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("snapshot-down");
+      expect(alert).toHaveTextContent("library-down");
+
+      const recoveredFetch = resource === "library" ? mocks.getLibrarySummary : mocks.getInspector;
+      const failedFetch = resource === "library" ? mocks.getInspector : mocks.getLibrarySummary;
+      const retry = resource === "library" ? "Retry library insight" : "Retry conversation context";
+      const siblingRetry = resource === "library" ? "Retry conversation context" : "Retry library insight";
+      const sibling = resource === "library" ? "snapshot" : "library";
+      let finish!: () => void;
+      recoveredFetch.mockImplementationOnce(() => new Promise((resolve) => {
+        finish = () => resolve(resource === "library" ? emptyLibrarySummary() : snapshot("s1"));
+      }));
+      await user.click(screen.getByRole("button", { name: retry }));
+      expect(recoveredFetch).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("alert")).toHaveTextContent(`${sibling}-down`);
+
+      await act(async () => finish());
+      expect(screen.queryByRole("button", { name: retry })).not.toBeInTheDocument();
+      expect(screen.getByRole("alert")).not.toHaveTextContent(`${resource}-down`);
+      expect(screen.getByRole("alert")).toHaveTextContent(`${sibling}-down`);
+      expect(failedFetch).toHaveBeenCalledTimes(1);
+
+      // The sibling really failed; retrying it successfully clears the last alert.
+      await user.click(screen.getByRole("button", { name: siblingRetry }));
+      await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+      expect(failedFetch).toHaveBeenCalledTimes(2);
+    },
+  );
 });
 
 

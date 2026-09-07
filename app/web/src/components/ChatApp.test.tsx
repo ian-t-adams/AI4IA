@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatApp } from "./ChatApp";
+import type { CitationTarget } from "./Markdown";
+import type { LibraryDocument } from "@/lib/library";
 import type { Session, ToolCatalogItem, ToolConsentStatus } from "@/lib/types";
 import {
   makeChatSession,
@@ -151,30 +153,25 @@ vi.mock("./MessageList", () => ({
   }: {
     messages: { id: string; content: string }[];
     conversationId?: string | null;
-    onCitation?: (target: {
-      documentId: string;
-      filename: string;
-      ms: number;
-    }) => void;
+    onCitation?: (target: CitationTarget) => void;
   }) => (
     <div aria-label="Conversation" data-conversation-id={conversationId ?? "draft"}>
       {messages.map((message) => (
         <div key={message.id}>{message.content}</div>
       ))}
-      {onCitation && (
+      {onCitation && [
+        { label: "Open shared citation", documentId: "shared-media", filename: "shared.mp4", ms: 42_000 },
+        { label: "Open newer citation", documentId: "newer-media", filename: "newer.mp4", ms: 84_000 },
+        { label: "Open legacy citation", documentId: null, filename: "legacy.mp4", ms: 21_000 },
+      ].map(({ label, ...target }) => (
         <button
+          key={label}
           type="button"
-          onClick={() =>
-            onCitation({
-              documentId: "shared-media",
-              filename: "shared.mp4",
-              ms: 42_000,
-            })
-          }
+          onClick={() => onCitation(target)}
         >
-          Open shared citation
+          {label}
         </button>
-      )}
+      ))}
     </div>
   ),
 }));
@@ -182,10 +179,17 @@ vi.mock("./MediaPlayer", () => ({
   MediaPlayer: ({
     doc,
     seekToMs,
+    onClose,
   }: {
     doc: { id: string };
     seekToMs?: number;
-  }) => <div>{`Playing ${doc.id} at ${seekToMs}`}</div>,
+    onClose: () => void;
+  }) => (
+    <div>
+      {`Playing ${doc.id} at ${seekToMs}`}
+      <button type="button" onClick={onClose}>Close citation player</button>
+    </div>
+  ),
 }));
 vi.mock("./InlineVoiceLive", () => ({
   InlineVoiceLiveStatus: () => null,
@@ -647,6 +651,35 @@ describe("ChatApp session state reliability", () => {
 
 });
 describe("ChatApp citations", () => {
+  function mediaDocument(id: string, filename: string): LibraryDocument {
+    return {
+      ...libraryDocument(id, filename),
+      status: "ready",
+      contentType: "video/mp4",
+      modality: "video",
+      analyzerId: null,
+      summary: "",
+      visibility: "shared",
+    };
+  }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+    return { promise, resolve, reject };
+  }
+
+  async function selectLoadedSession(user: ReturnType<typeof userEvent.setup>, id: "A" | "B") {
+    const libraryReads = mocks.listLibraryDocuments.mock.calls.length;
+    await user.click(await screen.findByRole("button", { name: `Session ${id}` }));
+    await waitFor(() => expect(screen.getByLabelText("Conversation"))
+      .toHaveAttribute("data-conversation-id", id));
+    // Navigation also lists the library. Consume that read before queueing a
+    // deferred legacy-citation lookup, so the test exercises the intended call.
+    await waitFor(() => expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(libraryReads + 1));
+  }
+
   it("opens shared media directly by the attested document id", async () => {
     mocks.getLibraryDocument.mockResolvedValue({
       ...libraryDocument("shared-media", "shared.mp4"),
@@ -666,6 +699,120 @@ describe("ChatApp citations", () => {
 
     expect(mocks.getLibraryDocument).toHaveBeenCalledWith("shared-media");
     expect(await screen.findByText("Playing shared-media at 42000")).toBeInTheDocument();
+  });
+
+  describe.each(["attested", "legacy"] as const)("pending %s citation", (kind) => {
+    it.each([
+      { destination: "B", outcome: "success" },
+      { destination: "B", outcome: "failure" },
+      { destination: "A", outcome: "success" },
+      { destination: "A", outcome: "failure" },
+    ] as const)("ignores late $outcome after leaving A for B (ending in $destination)", async ({ destination, outcome }) => {
+      const user = userEvent.setup();
+      render(<ChatApp />);
+      await selectLoadedSession(user, "A");
+      const pending = deferred<LibraryDocument>();
+      const document = kind === "attested"
+        ? mediaDocument("shared-media", "shared.mp4")
+        : mediaDocument("legacy-media", "legacy.mp4");
+      const trigger = kind === "attested" ? "Open shared citation" : "Open legacy citation";
+      const lookup = kind === "attested" ? mocks.getLibraryDocument : mocks.listLibraryDocuments;
+      const previousReads = lookup.mock.calls.length;
+      lookup.mockReturnValueOnce(kind === "attested" ? pending.promise : pending.promise.then((value) => [value]));
+      await user.click(screen.getByRole("button", { name: trigger }));
+      expect(lookup).toHaveBeenCalledTimes(previousReads + 1);
+
+      await selectLoadedSession(user, "B");
+      if (destination === "A") await selectLoadedSession(user, "A");
+      await act(async () => {
+        if (outcome === "success") pending.resolve(document);
+        else pending.reject(new Error("old citation lookup failed"));
+      });
+      expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", destination);
+      expect(screen.queryByText(/^Playing /)).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      // The same result remains actionable for a fresh request in this selection.
+      lookup.mockImplementationOnce(async () => {
+        if (outcome === "failure") throw new Error("current citation lookup failed");
+        return kind === "attested" ? document : [document];
+      });
+      await user.click(screen.getByRole("button", { name: trigger }));
+      if (outcome === "success") {
+        expect(await screen.findByText(`Playing ${document.id} at ${kind === "attested" ? 42000 : 21000}`))
+          .toBeInTheDocument();
+      } else {
+        expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't open the cited media.");
+      }
+    });
+  });
+
+  it.each([
+    { kind: "attested", older: "success", newer: "success" },
+    { kind: "attested", older: "failure", newer: "success" },
+    { kind: "attested", older: "unplayable", newer: "success" },
+    { kind: "attested", older: "success", newer: "failure" },
+    { kind: "legacy", older: "success", newer: "success" },
+    { kind: "legacy", older: "failure", newer: "success" },
+  ] as const)("keeps the newer citation $newer after an older $kind $older resolves", async ({ kind, older, newer }) => {
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await selectLoadedSession(user, "A");
+    const first = deferred<LibraryDocument>();
+    const latest = deferred<LibraryDocument>();
+    const oldDocument = kind === "attested"
+      ? mediaDocument("shared-media", "shared.mp4")
+      : mediaDocument("legacy-media", "legacy.mp4");
+    const lookup = kind === "attested" ? mocks.getLibraryDocument : mocks.listLibraryDocuments;
+    lookup.mockReturnValueOnce(kind === "attested" ? first.promise : first.promise.then((value) => [value]));
+    mocks.getLibraryDocument.mockReturnValueOnce(latest.promise);
+    await user.click(screen.getByRole("button", {
+      name: kind === "attested" ? "Open shared citation" : "Open legacy citation",
+    }));
+    await user.click(screen.getByRole("button", { name: "Open newer citation" }));
+    expect(mocks.getLibraryDocument).toHaveBeenLastCalledWith("newer-media");
+    await act(async () => {
+      if (newer === "success") latest.resolve(mediaDocument("newer-media", "newer.mp4"));
+      else latest.reject(new Error("newer citation lookup failed"));
+    });
+    if (newer === "success") {
+      expect(screen.getByText("Playing newer-media at 84000")).toBeInTheDocument();
+    } else {
+      expect(screen.getByRole("alert")).toHaveTextContent("Couldn't open the cited media.");
+    }
+
+    await act(async () => {
+      if (older === "failure") first.reject(new Error("older citation lookup failed"));
+      else first.resolve(older === "unplayable" ? { ...oldDocument, modality: "document" } : oldDocument);
+    });
+    if (newer === "success") {
+      expect(screen.getByText("Playing newer-media at 84000")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    } else {
+      expect(screen.getByRole("alert")).toHaveTextContent("Couldn't open the cited media.");
+      expect(screen.queryByText(/^Playing /)).not.toBeInTheDocument();
+    }
+  });
+
+  it("lets a newer cached citation supersede an older pending lookup", async () => {
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await selectLoadedSession(user, "A");
+    mocks.getLibraryDocument.mockResolvedValueOnce(mediaDocument("newer-media", "newer.mp4"));
+    await user.click(screen.getByRole("button", { name: "Open newer citation" }));
+    expect(await screen.findByText("Playing newer-media at 84000")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close citation player" }));
+
+    const pending = deferred<LibraryDocument>();
+    mocks.getLibraryDocument.mockReturnValueOnce(pending.promise);
+    await user.click(screen.getByRole("button", { name: "Open shared citation" }));
+    await user.click(screen.getByRole("button", { name: "Open newer citation" }));
+    expect(screen.getByText("Playing newer-media at 84000")).toBeInTheDocument();
+    expect(mocks.getLibraryDocument).toHaveBeenCalledTimes(2);
+
+    await act(async () => pending.resolve(mediaDocument("shared-media", "shared.mp4")));
+    expect(screen.getByText("Playing newer-media at 84000")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
 

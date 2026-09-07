@@ -35,16 +35,20 @@ Azure.
 > **Check first; act only if present.** Run the discovery step below before
 > removing anything. An environment first provisioned after the Lean Azure
 > migration will show empty results, meaning there is nothing to clean up.
-> Treat a lookup that returns nothing as confirmation the resource is already gone.
+> Only a **successful** inventory query can establish absence. Authentication,
+> permission, network, or parsing failures are not evidence that a resource is gone.
 
-Resolve and inspect the three exact IDs first — an empty result means there is
-nothing to clean up for that resource, not that the lookup failed:
+Resolve and inspect the three exact IDs from the target environment's inventory
+or Azure resource metadata. Do not infer the API Center sample's existence merely
+by appending its name to the service id. The helper requires **all three targets**
+and checks them before deleting anything; it is not a partial-cleanup tool.
+If only some remain, have the owner review those exact resources separately
+rather than inventing missing target ids.
 
 ```powershell
-$eventHubsId = az eventhubs namespace show --subscription $sub --resource-group $rg --name <exact-event-hubs-name> --query id -o tsv
-$monitorWorkspaceId = az resource show --subscription $sub --resource-group $rg --resource-type Microsoft.Monitor/accounts --name <exact-monitor-workspace-name> --query id -o tsv
-$apiCenterId = az resource show --subscription $sub --resource-group $rg --resource-type Microsoft.ApiCenter/services --name <exact-api-center-name> --query id -o tsv
-$sampleApiId = "$apiCenterId/workspaces/default/apis/swagger-petstore"
+$eventHubsId = '<verified exact Event Hubs namespace resource id>'
+$monitorWorkspaceId = '<verified exact Monitor workspace resource id>'
+$sampleApiId = '<verified exact API Center swagger-petstore resource id>'
 ```
 
 Preview the exact-resource migration; this mode makes no Azure CLI calls:
@@ -69,8 +73,10 @@ After verifying every printed ID, execute explicitly:
 The script requires all targets to share one subscription/resource group,
 verifies all three before deleting anything, removes only direct role assignments
 at the exact Event Hubs namespace scope, then deletes those three resources.
-Re-run `azd provision` and `scripts/status-snapshot.ps1` afterward to confirm they
-remain absent and refresh the published inventory.
+Confirm absence with successful read-only inventory queries and refresh
+`scripts/status-snapshot.ps1`. Use the normal release workflow if infrastructure
+reconciliation is needed; a standalone provision can restore placeholder
+application images.
 
 ## 0. Pre-flight (read-only)
 
@@ -154,6 +160,12 @@ $vaultNames = @('<exact-key-vault-name>')
 **infrastructure**, which this repo can rebuild; `-AcknowledgeDataLoss`
 acknowledges the part it cannot. Keeping them separate stops the irreversible
 acknowledgement from riding along with the routine one.
+
+Without `-Force`, teardown never deletes, even with `-Confirm:$false`.
+`-WhatIf` still suppresses deletion and nested purges when `-Force` is present;
+`-Force` suppresses confirmation prompts, not preview mode. Any protected group
+in the target list rejects the whole operation before Azure access, including
+every `DefaultResourceGroup-*` name.
 
 This deletes the resource group and purges only the exact, type-specific
 soft-deleted Cognitive/Key Vault names supplied. The purge lists are

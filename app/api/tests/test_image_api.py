@@ -55,6 +55,7 @@ class FakeImageGateway:
 
 
 def _client(**settings_overrides) -> TestClient:
+    settings_overrides.setdefault("image_generation_enabled", True)
     app = create_app(make_settings(admin_subjects="alice", **settings_overrides))
     c = TestClient(app)
     c.__enter__()

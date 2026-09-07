@@ -387,129 +387,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
-            # Close each resource independently so one failure can't skip others.
+            # Stop background consumers before their shared stores and gateway:
+            # workflow activities and cancelled enrichment still persist receipts
+            # and usage. Each cleanup remains independent and best-effort.
+            for attribute, method, label in (
+                ("durable_workflows", "stop", "durable workflows"),
+                ("document_ingestor", "close", "document ingestor"),
+                ("inline_attachment_analysis", "close", "inline attachment analysis"),
+                ("document_compute", "close", "document compute"),
+                ("web_search", "close", "web search service"),
+                ("memory", "close", "memory"),
+                ("entitlements", "close", "entitlement store"),
+                ("user_directory", "close", "user directory"),
+                ("agent_service", "close", "agent service"),
+                ("workflow_service", "close", "workflow service"),
+                ("mcp_service", "close", "mcp service"),
+                ("official_mcp_service", "close", "official mcp service"),
+                ("resource_metrics", "close", "resource metrics"),
+                ("operations_metrics", "close", "operations metrics"),
+                ("usage", "close", "usage service"),
+                ("session_repo", "close", "session repo"),
+                ("document_library", "close", "document library"),
+                ("image_artifacts", "close", "image artifact store"),
+                ("video_artifacts", "close", "video artifact store"),
+                ("document_artifacts", "close", "document artifact store"),
+                ("inline_attachment_store", "close", "inline attachment store"),
+            ):
+                resource = getattr(app.state, attribute, None)
+                close = getattr(resource, method, None)
+                if close is None:
+                    continue
+                try:
+                    await close()
+                except Exception:  # noqa: BLE001 - a failed close must not skip siblings
+                    logger.warning("%s %s failed", label, method, exc_info=True)
             try:
                 await http.aclose()
             except Exception:  # noqa: BLE001
                 logger.warning("shared httpx client close failed", exc_info=True)
-            try:
-                await app.state.memory.close()
-            except Exception:  # noqa: BLE001
-                logger.warning("memory close failed", exc_info=True)
-            try:
-                await app.state.usage.close()
-            except Exception:  # noqa: BLE001
-                logger.warning("usage service close failed", exc_info=True)
-            try:
-                await app.state.resource_metrics.close()
-            except Exception:  # noqa: BLE001
-                logger.warning("resource metrics close failed", exc_info=True)
-            try:
-                await app.state.operations_metrics.close()
-            except Exception:  # noqa: BLE001
-                logger.warning("operations metrics close failed", exc_info=True)
-            try:
-                await app.state.entitlements.close()
-            except Exception:  # noqa: BLE001
-                logger.warning("entitlement store close failed", exc_info=True)
-            try:
-                await app.state.user_directory.close()
-            except Exception:  # noqa: BLE001
-                logger.warning("user directory close failed", exc_info=True)
-            try:
-                await app.state.agent_service.close()
-            except Exception:  # noqa: BLE001
-                logger.warning("agent service close failed", exc_info=True)
-            try:
-                await app.state.workflow_service.close()
-            except Exception:  # noqa: BLE001
-                logger.warning("workflow service close failed", exc_info=True)
-            durable_workflows = getattr(app.state, "durable_workflows", None)
-            if durable_workflows is not None:
-                try:
-                    await durable_workflows.stop()
-                except Exception:  # noqa: BLE001
-                    logger.warning("durable workflows stop failed", exc_info=True)
-            mcp_service = getattr(app.state, "mcp_service", None)
-            if mcp_service is not None:
-                try:
-                    await mcp_service.close()
-                except Exception:  # noqa: BLE001
-                    logger.warning("mcp service close failed", exc_info=True)
-            official_mcp_service = getattr(app.state, "official_mcp_service", None)
-            if official_mcp_service is not None:
-                try:
-                    await official_mcp_service.close()
-                except Exception:  # noqa: BLE001
-                    logger.warning("official mcp service close failed", exc_info=True)
-            repo = getattr(app.state, "session_repo", None)
-            close = getattr(repo, "close", None) if repo is not None else None
-            if close is not None:
-                try:
-                    await close()
-                except Exception:  # noqa: BLE001
-                    logger.warning("session repo close failed", exc_info=True)
-            library = getattr(app.state, "document_library", None)
-            lib_close = getattr(library, "close", None) if library else None
-            if lib_close is not None:
-                try:
-                    await lib_close()
-                except Exception:  # noqa: BLE001
-                    logger.warning("document library close failed", exc_info=True)
-            ingestor = getattr(app.state, "document_ingestor", None)
-            if ingestor is not None:
-                try:
-                    await ingestor.close()
-                except Exception:  # noqa: BLE001
-                    logger.warning("document ingestor close failed", exc_info=True)
-            compute = getattr(app.state, "document_compute", None)
-            if compute is not None:
-                try:
-                    await compute.close()
-                except Exception:  # noqa: BLE001
-                    logger.warning("document compute close failed", exc_info=True)
-            image_artifacts = getattr(app.state, "image_artifacts", None)
-            if image_artifacts is not None:
-                try:
-                    await image_artifacts.close()
-                except Exception:  # noqa: BLE001
-                    logger.warning("image artifact store close failed", exc_info=True)
-            video_artifacts = getattr(app.state, "video_artifacts", None)
-            if video_artifacts is not None:
-                try:
-                    await video_artifacts.close()
-                except Exception:  # noqa: BLE001
-                    logger.warning("video artifact store close failed", exc_info=True)
-            document_artifacts = getattr(app.state, "document_artifacts", None)
-            if document_artifacts is not None:
-                try:
-                    await document_artifacts.close()
-                except Exception:  # noqa: BLE001
-                    logger.warning("document artifact store close failed", exc_info=True)
-            inline_attachment_analysis = getattr(
-                app.state, "inline_attachment_analysis", None
-            )
-            if inline_attachment_analysis is not None:
-                try:
-                    await inline_attachment_analysis.close()
-                except Exception:  # noqa: BLE001
-                    logger.warning(
-                        "inline attachment analysis close failed", exc_info=True
-                    )
-            inline_attachment_store = getattr(app.state, "inline_attachment_store", None)
-            if inline_attachment_store is not None:
-                try:
-                    await inline_attachment_store.close()
-                except Exception:  # noqa: BLE001
-                    logger.warning(
-                        "inline attachment store close failed", exc_info=True
-                    )
-            web_search = getattr(app.state, "web_search", None)
-            if web_search is not None:
-                try:
-                    await web_search.close()
-                except Exception:  # noqa: BLE001
-                    logger.warning("web search service close failed", exc_info=True)
 
     openapi_enabled = (
         settings.openapi_enabled

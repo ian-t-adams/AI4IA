@@ -49,8 +49,8 @@ HELP_TEXT = (
     "/forget [session|me] — erase stored memories for this chat (default) or "
     "all of yours\n"
     "/research <query> — search the live web and cite sources when Web IQ is enabled\n"
-    "/<tool> [args] — run a tool directly (e.g. /calculator (2+3)*4, "
-    "/generate_image a red bicycle). Type / in the composer to see the tools.\n"
+    "/<tool> [args] — run an enabled tool (e.g. /calculator (2+3)*4). "
+    "Type / in the composer to see available tools.\n"
     "Mention @agent at the start of a turn to route it to that agent "
     "(e.g. @coder review this function). Use /agents to see who's available."
 )

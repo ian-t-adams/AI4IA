@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pytest
+
 from ai4ia_api.metrics.models import MetricPoint, MetricRequest
 from ai4ia_api.metrics.service import (
     DEFAULT_GRANULARITY_MINUTES,
@@ -191,3 +193,132 @@ async def test_panel_reports_unavailable_when_every_metric_errors():
     cosmos_panel = next(p for p in report.panels if p.key == "cosmos")
     assert cosmos_panel.status == "unavailable"
     assert cosmos_panel.detail
+
+
+_DEFAULT_ENDPOINT = "https://eastus2.metrics.monitor.azure.com"
+_SEARCH_ENDPOINT = "https://eastus.metrics.monitor.azure.com"
+
+
+class _ManagedQuerier(_RecordingQuerier):
+    closed = 0
+    fail_close = False
+
+    async def close(self):
+        self.closed += 1
+        if self.fail_close:
+            raise RuntimeError("close failed")
+
+
+def test_search_metrics_endpoint_reads_explicit_env(monkeypatch):
+    monkeypatch.setenv("AI4IA_METRICS_SEARCH_ENDPOINT", _SEARCH_ENDPOINT)
+    assert make_settings().metrics_search_endpoint == _SEARCH_ENDPOINT
+
+
+@pytest.mark.parametrize(
+    "search_endpoint",
+    [None, "", " ", _DEFAULT_ENDPOINT, _DEFAULT_ENDPOINT + "/", _SEARCH_ENDPOINT],
+)
+async def test_clients_are_cached_by_resolved_resource_endpoint(monkeypatch, search_endpoint):
+    settings = _settings_with_all_resource_ids()
+    settings.metrics_endpoint = _DEFAULT_ENDPOINT
+    settings.metrics_search_endpoint = search_endpoint
+    created: dict[str, _ManagedQuerier] = {}
+
+    def factory(endpoint):
+        assert endpoint not in created
+        created[endpoint] = _ManagedQuerier()
+        return created[endpoint]
+
+    monkeypatch.setattr("ai4ia_api.metrics.azure_monitor.AzureMonitorQuerier", factory)
+    service = ResourceMetricsService(settings)
+    for _ in range(2):
+        assert all(panel.status == "ok" for panel in (await service.resources()).panels)
+    expected_search = (search_endpoint or "").strip().rstrip("/") or _DEFAULT_ENDPOINT
+    assert set(created) == {expected_search, _DEFAULT_ENDPOINT}
+    for endpoint, querier in created.items():
+        for resource_id, _, _ in querier.calls:
+            expected = expected_search if "/Microsoft.Search/" in resource_id else _DEFAULT_ENDPOINT
+            assert endpoint == expected
+    assert sum(len(querier.calls) for querier in created.values()) == 6
+    await service.close()
+    assert all(querier.closed == 1 for querier in created.values())
+
+
+@pytest.mark.parametrize("failed_endpoint", [_SEARCH_ENDPOINT, _DEFAULT_ENDPOINT])
+async def test_client_construction_failure_is_scoped_to_endpoint(monkeypatch, failed_endpoint):
+    settings = _settings_with_all_resource_ids()
+    settings.metrics_endpoint = _DEFAULT_ENDPOINT
+    settings.metrics_search_endpoint = _SEARCH_ENDPOINT
+    attempts: list[str] = []
+
+    def factory(endpoint):
+        attempts.append(endpoint)
+        if endpoint == failed_endpoint:
+            raise RuntimeError("client unavailable")
+        return _ManagedQuerier()
+
+    monkeypatch.setattr("ai4ia_api.metrics.azure_monitor.AzureMonitorQuerier", factory)
+    service = ResourceMetricsService(settings)
+    for _ in range(2):
+        report = await service.resources()
+        for panel in report.panels:
+            endpoint = _SEARCH_ENDPOINT if panel.key == "search" else _DEFAULT_ENDPOINT
+            assert panel.status == ("unavailable" if endpoint == failed_endpoint else "ok")
+    assert sorted(attempts) == sorted([_SEARCH_ENDPOINT, _DEFAULT_ENDPOINT])
+    await service.close()
+
+
+async def test_search_override_works_without_a_default_endpoint(monkeypatch):
+    settings = _settings_with_all_resource_ids()
+    settings.metrics_search_endpoint = _SEARCH_ENDPOINT
+    endpoints = []
+
+    def factory(endpoint):
+        endpoints.append(endpoint)
+        return _ManagedQuerier()
+
+    monkeypatch.setattr("ai4ia_api.metrics.azure_monitor.AzureMonitorQuerier", factory)
+    service = ResourceMetricsService(settings)
+    for _ in range(2):
+        panels = {panel.key: panel for panel in (await service.resources()).panels}
+        assert panels["search"].status == "ok"
+        assert panels["cosmos"].status == panels["containerApp"].status == "unavailable"
+    assert endpoints == [_SEARCH_ENDPOINT]
+    await service.close()
+
+
+async def test_close_attempts_every_regional_client_after_failure(monkeypatch):
+    settings = _settings_with_all_resource_ids()
+    settings.metrics_endpoint = _DEFAULT_ENDPOINT
+    settings.metrics_search_endpoint = _SEARCH_ENDPOINT
+    created = []
+
+    def factory(endpoint):
+        querier = _ManagedQuerier()
+        querier.fail_close = endpoint == _SEARCH_ENDPOINT
+        created.append(querier)
+        return querier
+
+    monkeypatch.setattr("ai4ia_api.metrics.azure_monitor.AzureMonitorQuerier", factory)
+    service = ResourceMetricsService(settings)
+    await service.resources()
+    await service.close()
+    assert len(created) == 2
+    assert all(querier.closed == 1 for querier in created)
+
+
+async def test_injected_querier_serves_all_regions_and_closes_once(monkeypatch):
+    settings = _settings_with_all_resource_ids()
+    settings.metrics_endpoint = _DEFAULT_ENDPOINT
+    settings.metrics_search_endpoint = _SEARCH_ENDPOINT
+
+    def unexpected_factory(endpoint):
+        raise AssertionError("An injected querier must not construct an SDK client.")
+
+    monkeypatch.setattr("ai4ia_api.metrics.azure_monitor.AzureMonitorQuerier", unexpected_factory)
+    querier = _ManagedQuerier()
+    service = ResourceMetricsService(settings, querier=querier)
+    assert all(panel.status == "ok" for panel in (await service.resources()).panels)
+    assert len(querier.calls) == 3
+    await service.close()
+    assert querier.closed == 1

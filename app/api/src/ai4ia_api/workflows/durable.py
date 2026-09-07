@@ -312,7 +312,9 @@ class DurableWorkflowService:
         be able to fail an otherwise-clean app shutdown."""
         if self._worker is not None:
             try:
-                self._worker.stop()  # sync: the worker owns its own thread
+                # The SDK joins pending activities, which bridge back to the app
+                # loop. Keep that loop running until the worker has drained.
+                await asyncio.to_thread(self._worker.stop)
             except Exception:  # noqa: BLE001 — shutdown is best-effort.
                 logger.exception("durable workflows: worker stop() failed")
         if self._client is not None:

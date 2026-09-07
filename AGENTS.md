@@ -397,6 +397,18 @@ python3 -m unittest scripts.tests.test_immutable_image_promotion
 `PyYAML` (pinned in the workflow); `test_immutable_image_promotion` also needs
 `bash` and skips without it. The rest are stdlib-only.
 
+Operational guards must distinguish a failed Azure read from a missing resource.
+The custom-domain preflight fails closed on inventory/query errors. Teardown
+requires explicit `-Force` plus data-loss acknowledgement, honors `-WhatIf`
+through nested purges, and rejects all protected groups before the first Azure
+call. Its behavioral tests must record stub calls even while preview mode is on.
+
+Runtime media gates must be explicit Booleans, not inferred from artifact-store
+construction or Blob URLs. Enabled image/video generation outside local requires
+durable storage. Regional batch metrics must follow each resource's location;
+Search may differ from the API/Cosmos region. Preprovision naming validation
+preserves the full uniqueness suffix without renaming existing resources.
+
 The provider preflight derives deployed namespaces from Bicep and also carries the
 evidence-backed `Microsoft.ResourceHealth` operational dependency used by the
 status snapshot. The snapshot must publish provider/query failure as a source

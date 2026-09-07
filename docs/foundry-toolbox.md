@@ -3,10 +3,10 @@
 > **Status: ACTIVATED in this repo, public preview.** The `ai4ia-toolbox` toolbox is live in the
 > primary Foundry project, registered in `infra/mcp-servers.json`, and `enableOfficialMcp` +
 > `enableFoundryToolbox` + `enablePrivateToolCatalog` are `true` in `infra/main.parameters.json`. The
-> bicep param *defaults* remain `false`, so a consumer of this template starts off; this repo has
-> opted in. Every Foundry capability referenced here (toolboxes, tool search, browser
-> automation, computer use, private tool catalog, routines, A2A) is **public preview** — do not use
-> in production without your own validation.
+> raw Bicep parameter defaults remain `false`; the checked-in azd showcase
+> profile opts in. Consumers of that profile do not start with these features
+> off unless they override it. This integration uses preview toolbox/skill
+> contracts; individual SDK tools have their own GA or preview status below.
 >
 > **Portability (1:1 standup):** the toolbox is a data-plane resource, so `azd up`
 > alone cannot create it. Run the access check and ensure commands below. Automatic
@@ -33,8 +33,9 @@ through the existing `OfficialMcpService` + agent tool picker. Toolbox skills us
 the same endpoint's MCP resources: AI4IA advertises bounded skill metadata and
 loads the full `SKILL.md` only when the model selects `load_skill`.
 
-This is the maximal "through the proxy + APIM" outcome with minimal surface: one catalog
-entry, one RBAC grant, one feature flag.
+This adds one curated server to the existing official MCP plane. MCP calls go
+through APIM, not SimpleL7Proxy; the application keeps its existing agent runtime
+and execution-time governance.
 
 ### Foundry web search is not WebIQ
 
@@ -88,8 +89,8 @@ flowchart LR
 ```
 
 The app never sees the Foundry endpoint, the AAD token, or the preview header — APIM owns all
-three. From the app's perspective this is just another official MCP server named
-`foundry-toolbox`.
+three. From the app's perspective this is the official MCP server catalogued as
+`ai4ia-toolbox`.
 
 ## The one seam gap and its fix (shipped: `upstreamHeaders` / `upstreamQueryParams`)
 

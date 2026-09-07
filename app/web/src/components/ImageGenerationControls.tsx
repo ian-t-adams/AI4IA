@@ -142,6 +142,12 @@ export function ImageGenerationControls({
   if (!options) {
     return <p className="inspector-empty">Loading image models…</p>;
   }
+  if (options.enabled === false) {
+    return <p className="inspector-empty" role="status">Image generation is disabled for this environment.</p>;
+  }
+  if (options.models.length === 0) {
+    return <p className="inspector-empty" role="status">No image models are currently available.</p>;
+  }
 
   return (
     <div className="image-preferences">

@@ -9,13 +9,13 @@ Use the consolidated parameter/env map in
 [`../configuration-reference.md`](../configuration-reference.md) before changing
 feature posture.
 
-> **The modality review trigger has already fired.** The
-> [Responsible AI decision record](../rai-decision-record.md) is complete as a
-> document but incomplete as a control: its justification reasoned about text
-> completions, while image, video, Azure OpenAI Voice Live, and Speech Voice Live
-> are enabled. The repository contains no owner re-approval evidence for that
-> expanded scope. Do not enable another modality, or describe the current set as
-> fully approved, until the record's evidence checklist is satisfied.
+> **Policy approval and implementation evidence are different.** The
+> [Responsible AI decision record](../rai-decision-record.md) records the
+> 2026-09-03 owner direction for the named providers/modalities: show assessments
+> without adding application-level blocking. Assessment coverage, disclosure,
+> aggregate monitoring, and escalation remain incomplete. A new provider or
+> modality outside that decision still requires review; an enabled gate is not
+> evidence that all safety signals are captured.
 
 ## Flag inventory
 
@@ -26,14 +26,14 @@ feature posture.
 | Speech Voice Live (2nd voice provider) | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | advertised by web env | `speechVoiceLiveEnabled` | Voice Live enabled; `speech_voice_live` in `AI4IA_VOICE_PROVIDER_ALLOWLIST`; distinct `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`; repeat the standing APIM and authenticated-canary checks after changes |
 | Document library + multimodal understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `DOCUMENT_LIBRARY_ENABLED` | `documentUnderstandingEnabled` | Cosmos session store, blob account URL, CU endpoint outside local |
 | CU synchronous/preview analyzers | `AI4IA_CU_PREVIEW_ENABLED` | analyzer selector | `cuPreviewEnabled` | Document understanding plus successful postprovision GETs for Read, Layout, and the five tax analyzers on `2026-06-01-preview`. Automatic stays GA. |
-| CU Agentic document reasoning | `AI4IA_CU_AGENTIC_ANALYZER_ID` | analyzer selector only when valid | `cuAgenticAnalyzerId` | Preview enabled; existing analyzer resolves to `agentic.*`; primary GPT-5.2 deployment capacity ≥400K TPM. Current live capacity is 50K, so this remains unavailable. |
+| CU Agentic document reasoning | `AI4IA_CU_AGENTIC_ANALYZER_ID` | analyzer selector only when valid | `cuAgenticAnalyzerId` | Preview enabled; existing analyzer resolves to `agentic.*`; effective primary GPT-5.2 deployment capacity ≥400K TPM. The 50K baseline is insufficient; capacity alone does not configure an analyzer. |
 | Library compute / export | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | none | `documentComputeEnabled` | Document understanding, dedicated Code Interpreter APIM URL/key + model outside local |
 | Inline attachment Code Interpreter | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | none | `inlineDocumentComputeEnabled` | Dedicated Code Interpreter APIM URL/key + model outside local |
 | Azure AI Search chunk store | `AI4IA_SEARCH_ENDPOINT` set | none | `searchEnabled` + `searchLocation` | Search service + API identity RBAC |
 | Memory / semantic recall | `AI4IA_MEMORY_STORE=cosmos` | inspector create/edit/delete controls | `memoryStore` | Cosmos endpoint/database, vector capability/container, and catalog-resolved embedding/extraction models |
 | Rolling conversation summarization | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | none | `autoSummarizationEnabled` | None beyond the active chat model — once the transcript exceeds the model-derived threshold, older turns fold into a running summary while the full transcript stays in storage/scrollback. Off leaves the manual `/summarize` command working but never auto-injects a summary |
-| Image generation | `AI4IA_IMAGE_BLOB_ACCOUNT_URL` when provisioned | Settings / imagery UI | `imageGenerationEnabled` | Image-capable model deployment and media blob storage |
-| Video generation | `AI4IA_VIDEO_BLOB_ACCOUNT_URL` when provisioned | inline attachment rendering | `videoGenerationEnabled` | Sora-capable deployment and media blob storage |
+| Image generation | `AI4IA_IMAGE_GENERATION_ENABLED` | server-advertised imagery controls | `imageGenerationEnabled` | Image-capable deployment and durable media Blob storage outside local; storage presence alone does not enable generation |
+| Video generation | `AI4IA_VIDEO_GENERATION_ENABLED` | server-advertised tools and inline artifacts | `videoGenerationEnabled` | Video-capable deployment and durable media Blob storage outside local; advertisement and execution both check the gate |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
 | Official MCP plane | `AI4IA_OFFICIAL_MCP_ENABLED` | none | `enableOfficialMcp` | MCP-only product/subscription on the shared active Basic v2 APIM + ≥1 server in `infra/mcp-servers.json`; gateway URL + key auto-wired |
 | Foundry toolbox (bridge) | consumed via the official MCP plane (no dedicated flag) | none | `enableFoundryToolbox` (+ `enableOfficialMcp`) | Provisioned toolbox in the default Foundry project + a `foundry-toolbox` entry in `infra/mcp-servers.json`; grants APIM MI the project "Foundry User" role. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
@@ -154,17 +154,28 @@ surfaced as a warning on the card. Otherwise a model-chosen argument set could
 push the destination of an exfiltration out of view while it still went on the
 wire.
 
-The template and last observed live posture are deliberately separate:
+### Last observed deployment posture
+
+The following is a **2026-09-06 read-only configuration observation**, separate
+from template defaults. Repository overrides, running Container App settings,
+ARM resources, and scoped gateway/RBAC metadata were compared. It is not a fresh
+end-to-end exercise of every modality, toolbox operation, or WebIQ entitlement.
 
 | Control group | Checked-in profile default | Last observed live posture |
 | --- | --- | --- |
 | Image/video, document understanding/compute, raw/inline compute, Search, Voice Live + tools, custom tools, Web IQ, summarization, official MCP, Foundry toolbox, private tool catalog | `true`, each through its own `AI4IA_*` binding | Enabled |
 | Durable workflows | `${AI4IA_ENABLE_DURABLE_WORKFLOWS=true}` | Enabled |
-| Session/run tool auto-approval | `${AI4IA_TOOL_AUTO_APPROVE_ENABLED=false}` | Not changed by this implementation; inspect the deployed API gate |
+| Session/run tool auto-approval | `${AI4IA_TOOL_AUTO_APPROVE_ENABLED=false}` | Availability gate enabled; users must still explicitly consent per session/run |
 | Proxy priority reservations | `${AI4IA_PROXY_PRIORITIES_ENABLED=false}` | Enabled with `1:2` workers |
 | Azure Monitor alerts | `${AI4IA_ENABLE_ALERTS=false}` | Enabled with a recipient |
 | Speech Voice Live | `${AI4IA_SPEECH_VOICE_LIVE_ENABLED=false}` | Enabled; allowlist includes `speech_voice_live`, while Azure OpenAI remains the default |
 | Proxy profiles, Event Hub telemetry, proxy durable async | `false` | Disabled |
+
+The same observation found 115 model deployments across 48 enabled catalog
+entries in exact name/version/SKU/region/capacity parity with the `maximum`
+profile; Claude remained off. This is temporal evidence, not a portable quota
+allocation. The primary GPT-5.2 Global Standard deployment was 500K TPM, but no
+Agentic analyzer id was configured.
 
 Run authenticated direct-FastAPI protocol canaries for both voice providers
 after any change. Read the
@@ -172,6 +183,19 @@ deployed Container App env when you need the current answer; do not infer it fro
 the profile default.
 
 ## Enablement notes
+
+### Applying runtime-contract changes
+
+New image/video gates and the Search-region metrics endpoint are emitted by
+Bicep. Release these changes through the normal **provision and deploy** path,
+not an API-image-only deployment that skips configuration reconciliation.
+The recorded live observation above belongs to its stated deployed commit;
+it does not claim these later code/IaC corrections are already live.
+
+Disabling media generation stops new work; it does not authorize deletion of
+retained Azure resources or artifacts. An enabled nonlocal media feature with
+missing durable storage fails startup rather than silently using a per-replica
+artifact store.
 
 ### Voice Live
 
@@ -490,7 +514,9 @@ endpoint is missing or either catalog-driven memory model cannot resolve.
 The Conversation Inspector exposes create, inline edit, and confirmed delete.
 Automatic recall and planner consolidation remain best-effort so a memory service
 failure cannot break chat; explicit CRUD and forget operations surface failures.
-There is still no global consent toggle or recalled-memory provenance indicator.
+Execution receipts identify the memories admitted to a turn, with versions,
+hashes, and admitted text. That proves supplied context, not causal influence
+on the answer. There is still no per-user memory enable/disable switch.
 See [Memory architecture](../memory.md).
 
 ### Custom MCP tools

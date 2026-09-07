@@ -80,7 +80,7 @@ async def _noop_sleep(_seconds: float) -> None:
 
 
 def _client() -> TestClient:
-    app = create_app(make_settings(admin_subjects="alice"))
+    app = create_app(make_settings(admin_subjects="alice", video_generation_enabled=True))
     c = TestClient(app)
     c.__enter__()
     c.app.state.gateway = FakeVideoGateway()
@@ -102,6 +102,7 @@ def _internal_id(client, headers) -> str:
 
 def _service(client) -> VideoGenerationService:
     return VideoGenerationService(
+        settings=client.app.state.settings,
         catalog=client.app.state.catalog,
         gateway=client.app.state.gateway,
         poll_interval_seconds=0.0,
@@ -422,6 +423,7 @@ def test_service_times_out_when_job_never_succeeds(client):
     gateway = client.app.state.gateway
     gateway.poll_statuses = [{"status": "running"}]
     service = VideoGenerationService(
+        settings=client.app.state.settings,
         catalog=client.app.state.catalog,
         gateway=gateway,
         poll_interval_seconds=0.0,

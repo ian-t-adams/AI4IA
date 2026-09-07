@@ -73,7 +73,7 @@ param appInsightsConnectionString string
 ])
 param appEnvironment string = 'dev'
 
-@description('Expose FastAPI OpenAPI, Swagger UI, and ReDoc. Default OFF; when omitted, the app still exposes them in local/dev and hides them in prod.')
+@description('Expose FastAPI OpenAPI, Swagger UI, and ReDoc in this deployed API. Default OFF; false is explicitly enforced in both dev and prod.')
 param apiOpenapiEnabled bool = false
 
 @description('Auth provider the api enforces (dev|entra).')
@@ -220,7 +220,7 @@ param durableWorkflowTimeoutSeconds int = 1800
 @description('Enable the agent-callable generate_image tool. Default OFF. When on (and an image blob account is provisioned) any agent may attach generate_image; produced images persist to dedicated blob storage and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 
-@description('Blob account URL backing tool-generated images (empty until image storage is provisioned). When empty the api falls back to an in-memory store.')
+@description('Blob account URL backing generated images. Required for enabled image generation outside local development.')
 param imageBlobAccountUrl string = ''
 
 @description('Blob container tool-generated images are written to.')
@@ -229,7 +229,7 @@ param imageBlobContainer string = 'images'
 @description('Enable the agent-callable generate_video tool. Default OFF. When on (and a video blob account is provisioned) any agent may attach generate_video; produced clips persist to blob storage and serve through an authenticated endpoint.')
 param videoGenerationEnabled bool = false
 
-@description('Blob account URL backing tool-generated videos (empty until video storage is provisioned). When empty the api falls back to an in-memory store.')
+@description('Blob account URL backing generated videos. Required for enabled video generation outside local development.')
 param videoBlobAccountUrl string = ''
 
 @description('Blob container tool-generated videos are written to.')
@@ -243,6 +243,9 @@ param searchIndexPerUser bool = true
 
 @description('ARM resource id of the Azure AI Search service for the admin Search resource panel (empty when search is not deployed).')
 param metricsSearchResourceId string = ''
+
+@description('Azure AI Search resource location for its regional batch-metrics endpoint. Empty uses the API location for same-region callers.')
+param metricsSearchLocation string = ''
 
 @description('Existing Log Analytics workspace customer id (GUID) for fixed admin operations queries.')
 param logAnalyticsWorkspaceCustomerId string = ''
@@ -658,9 +661,19 @@ var inlineComputeEnv = inlineDocumentComputeEnabled ? [
   }
 ] : []
 
-// Image tool: the durable blob account/container are emitted only when
-// image generation is enabled AND an account is provisioned; otherwise the api
-// falls back to its in-memory artifact store (fine for local/dev, but ephemeral).
+// Always emit both Boolean gates; removing storage must never enable an
+// in-memory generation fallback in a deployed API.
+var mediaFeatureEnv = [
+  {
+    name: 'AI4IA_IMAGE_GENERATION_ENABLED'
+    value: string(imageGenerationEnabled)
+  }
+  {
+    name: 'AI4IA_VIDEO_GENERATION_ENABLED'
+    value: string(videoGenerationEnabled)
+  }
+]
+
 var imageEnv = (imageGenerationEnabled && !empty(imageBlobAccountUrl)) ? [
   {
     name: 'AI4IA_IMAGE_BLOB_ACCOUNT_URL'
@@ -672,9 +685,6 @@ var imageEnv = (imageGenerationEnabled && !empty(imageBlobAccountUrl)) ? [
   }
 ] : []
 
-// Video tool: same pattern as images — the durable blob account/container
-// are emitted only when video generation is enabled AND an account is provisioned;
-// otherwise the api falls back to its in-memory artifact store (ephemeral).
 var videoEnv = (videoGenerationEnabled && !empty(videoBlobAccountUrl)) ? [
   {
     name: 'AI4IA_VIDEO_BLOB_ACCOUNT_URL'
@@ -733,6 +743,10 @@ var resourceMetricsEnv = concat(
     {
       name: 'AI4IA_METRICS_SEARCH_RESOURCE_ID'
       value: metricsSearchResourceId
+    }
+    {
+      name: 'AI4IA_METRICS_SEARCH_ENDPOINT'
+      value: 'https://${empty(metricsSearchLocation) ? location : metricsSearchLocation}.metrics.monitor.azure.com'
     }
   ]
 )
@@ -793,12 +807,12 @@ var officialMcpEnv = officialMcpEnabled ? concat([
   }
 ] : []) : []
 
-var openapiEnv = apiOpenapiEnabled ? [
+var openapiEnv = [
   {
     name: 'AI4IA_OPENAPI_ENABLED'
-    value: 'true'
+    value: string(apiOpenapiEnabled)
   }
-] : []
+]
 
 var claudeEnv = claudeEnabled ? [
   {
@@ -863,7 +877,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], openapiEnv, claudeEnv, toolApprovalEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], openapiEnv, claudeEnv, toolApprovalEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

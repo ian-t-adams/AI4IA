@@ -58,10 +58,18 @@ describe("keepMonotonicLibraryDocument", () => {
     });
 
     it("formats byte sizes consistently", () => {
+      expect(formatBytes(0)).toBe("0 B");
       expect(formatBytes(512)).toBe("512 B");
       expect(formatBytes(1536)).toBe("1.5 KB");
       expect(formatBytes(1.5 * 1024 * 1024)).toBe("1.5 MB");
     });
+
+    it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+      "labels invalid byte size %s as unknown, matching execution receipts",
+      (bytes) => {
+        expect(formatBytes(bytes)).toBe("unknown size");
+      },
+    );
   });
 
   it("rejects a stale response that regresses a terminal document", () => {

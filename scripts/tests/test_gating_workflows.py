@@ -29,6 +29,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 # A hard import, deliberately not guarded by `unittest.skipIf`. This file is a
@@ -155,6 +156,24 @@ class DeployWorkflowOperationalScriptTriggers(unittest.TestCase):
             "a script deploy.yml executes can change without ever exercising "
             "itself in production",
         )
+
+
+class GeneratorDependencyTriggerTests(unittest.TestCase):
+    def test_shared_generators_trigger_their_consuming_workflows(self) -> None:
+        dependencies = {
+            "app-ci.yml": {"scripts/_generator.py"},
+            "deploy.yml": {"scripts/_generator.py"},
+            "pages.yml": {"scripts/_generator.py", "scripts/gen-docs-catalog.py"},
+        }
+        for filename, sources in dependencies.items():
+            document = yaml.safe_load((WORKFLOWS / filename).read_text(encoding="utf-8"))
+            paths = document.get("on", document.get(True, {}))["push"]["paths"]
+            for source in sources:
+                with self.subTest(workflow=filename, source=source):
+                    self.assertTrue(
+                        any(fnmatchcase(source, pattern) for pattern in paths),
+                        f"{filename} does not run when its generator dependency {source} changes",
+                    )
 
 
 BASH = find_bash()

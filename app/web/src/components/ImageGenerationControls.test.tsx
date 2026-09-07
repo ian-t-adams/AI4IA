@@ -77,6 +77,52 @@ afterEach(() => {
 });
 
 describe("ImageGenerationControls", () => {
+  it.each([false, true])("respects the server generation gate: %s", async (enabled) => {
+    mocks.getImageOptions.mockResolvedValue({ ...OPTIONS, enabled });
+    const onSave = vi.fn();
+    const onReset = vi.fn();
+    const onStart = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ImageGenerationControls
+        preferences={{ models: ["flux"], size: "1024x1024", quality: "auto" }}
+        disabled={false}
+        onSave={onSave}
+        onReset={onReset}
+        onStart={onStart}
+      />,
+    );
+
+    if (enabled) {
+      await user.click(await screen.findByRole("button", { name: "Start image in chat" }));
+      expect(onStart).toHaveBeenCalledOnce();
+    } else {
+      expect(
+        await screen.findByText("Image generation is disabled for this environment."),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button")).not.toBeInTheDocument();
+      expect(onStart).not.toHaveBeenCalled();
+    }
+    expect(onSave).not.toHaveBeenCalled();
+    expect(onReset).not.toHaveBeenCalled();
+  });
+
+  it("explains an empty catalog without offering unusable setup actions", async () => {
+    mocks.getImageOptions.mockResolvedValue({ ...OPTIONS, enabled: true, models: [] });
+    render(
+      <ImageGenerationControls
+        preferences={null}
+        disabled={false}
+        onSave={vi.fn()}
+        onReset={vi.fn()}
+        onStart={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("No image models are currently available.")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
   it("saves a bounded multi-model comparison with the common options", async () => {
     const onSave = vi.fn();
     const user = userEvent.setup();

@@ -25,6 +25,7 @@ on:
       - "infra/voice-providers.json"
       - "infra/voice-providers.schema.json"
       - "foundry/**"
+      - "scripts/_generator.py"
       - "scripts/gen-model-catalog.py"
       - "scripts/gen-mcp-catalog.py"
       - "scripts/gen-voice-provider-catalog.py"

@@ -64,6 +64,11 @@ playback, memory save, or sharing.
   and bounded excerpts into the user's memory backend; forget/delete cascades
   remove those derived memories.
 
+An omitted Search endpoint selects an in-memory chunk store in both local and
+deployed environments. Manifests and parsed bytes remain durable, but vector
+retrieval is replica-local and disappears on restart. Shared/per-user Azure
+Search index mode is configurable; owner filtering applies in either mode.
+
 ## Retrieval and tools
 
 - **Tier 1:** summary cards for ready accessible documents.
@@ -76,9 +81,9 @@ playback, memory save, or sharing.
   `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED=true`, which uploads the **original
   bytes** instead so the model reads real spreadsheet cells and PDF layout.
   Unsupported types, oversize originals, and upload failures all fall back to
-  parsed text. The setting ships default-`false`, but **this deployment enables
-  it** (`infra/main.parameters.json`), so treat original file bytes — not just
-  extracted text — as reaching the sandbox when assessing data handling.
+  parsed text. The raw Bicep default is `false`; the checked-in showcase profile
+  defaults it to `true`. Inspect the effective deployment value, and when enabled
+  treat original file bytes — not just extracted text — as reaching the sandbox.
 - **Inline compute:** `analyze_attachment` can hand the original bytes of an
   inline composer attachment to the same APIM-fronted Responses API Code
   Interpreter endpoint when `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED=true`; it is
@@ -184,8 +189,9 @@ analyzer id is supplied. The `agentic.*` workflow resolution and the 400K TPM
 floor on the primary GPT-5.2 deployment are **provisioning-time** checks
 (`scripts/validate-feature-prereqs.py` and `scripts/postprovision.ps1`); the API
 does not re-verify them per request, so setting the analyzer id directly on a
-running container bypasses them. The live deployment is currently 50K TPM, so
-AI4IA does not advertise Agentic mode yet.
+running container bypasses them. The portable baseline is 50K TPM and cannot
+meet the floor. A maximum profile must still be checked, and sufficient capacity
+does not make the feature available without an explicitly configured analyzer.
 
 The announcement's semantic chunking feature belongs to the Azure AI Search
 Content Understanding **skill** (`2026-05-01-preview`). AI4IA does not use that

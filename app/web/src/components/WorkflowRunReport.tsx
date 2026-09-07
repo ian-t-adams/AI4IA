@@ -7,7 +7,7 @@
 // workflow used to appear to produce nothing at all. Hand-off is now an explicit
 // button, so the user chooses when to leave.
 
-import { ActivityPanel, ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./MessageList";
+import { ActivityPanel, ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./ExecutionEvidence";
 import { Markdown } from "./Markdown";
 import type { SettledRunState } from "./workflowRun";
 

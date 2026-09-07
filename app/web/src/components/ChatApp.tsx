@@ -283,6 +283,7 @@ export function ChatApp() {
   // Cache of the user's full library, lazily fetched the first time a citation is
   // clicked so resolution doesn't pay a round-trip on every chip.
   const libraryIndexRef = useRef<LibraryDocument[] | null>(null);
+  const citationRequestGenerationRef = useRef(0);
 
   const abortRef = useRef<(() => void) | null>(null);
   // Synchronous in-flight flag so guards work before React state settles.
@@ -2109,6 +2110,19 @@ export function ChatApp() {
   const handleCitation = useCallback(
     async (target: CitationTarget) => {
       if (!libraryEnabled || target.ms === null) return;
+      const capturedSession = sessionIdRef.current;
+      const selectionGeneration = selectionGenerationRef.current;
+      const requestGeneration = ++citationRequestGenerationRef.current;
+      // Navigation (including A → B → A) and a later citation intent invalidate
+      // both success and failure. A cached hit must supersede pending reads too.
+      const isCurrent = () => mountedRef.current &&
+        requestGeneration === citationRequestGenerationRef.current &&
+        isCurrentSessionGeneration(
+          capturedSession,
+          selectionGeneration,
+          sessionIdRef.current,
+          selectionGenerationRef.current,
+        );
       const ms = target.ms;
       const playable = (d: LibraryDocument) =>
         d.status === "ready" && (d.modality === "audio" || d.modality === "video");
@@ -2125,6 +2139,7 @@ export function ChatApp() {
       if (!doc && target.documentId) {
         try {
           const accessible = await api.getLibraryDocument(target.documentId);
+          if (!isCurrent()) return;
           doc = playable(accessible) ? accessible : undefined;
           if (doc) {
             libraryIndexRef.current = [
@@ -2133,19 +2148,21 @@ export function ChatApp() {
             ];
           }
         } catch {
-          setError("Couldn't open the cited media.");
+          if (isCurrent()) setError("Couldn't open the cited media.");
           return;
         }
       } else if (!doc) {
         try {
           const all = await api.listLibraryDocuments();
+          if (!isCurrent()) return;
           libraryIndexRef.current = all;
           doc = resolve(all);
         } catch {
-          setError("Couldn't open the cited media.");
+          if (isCurrent()) setError("Couldn't open the cited media.");
           return;
         }
       }
+      if (!isCurrent()) return;
       if (doc) {
         setCitationTarget({ doc, seekToMs: ms });
       } else {

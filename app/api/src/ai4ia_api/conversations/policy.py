@@ -49,7 +49,15 @@ async def resolve_conversation_policy(
         )
     )
     removed_set = set(session.toolOverrides.removed)
-    effective = tuple(name for name in (*inherited, *added) if name not in removed_set)
+    settings = getattr(state, "settings", None)
+    media_enabled = {
+        "generate_image": getattr(settings, "image_generation_enabled", False),
+        "generate_video": getattr(settings, "video_generation_enabled", False),
+    }
+    effective = tuple(
+        name for name in (*inherited, *added)
+        if name not in removed_set and media_enabled.get(name, True)
+    )
     voice_tools = tuple(
         name
         for name in effective

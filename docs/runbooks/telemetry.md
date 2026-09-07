@@ -18,17 +18,18 @@ transcripts.
 | Security blocks | `security_block` custom events in `AppEvents` | Bounded category/reason/source for HTTP/admin auth, tool authorization, SSRF, and realtime denial |
 | Platform resources | Azure Monitor Metrics | One-hour window; `—` means no datapoint |
 
+Azure Monitor's batch endpoint must match the resource's region. API and Cosmos
+use `AI4IA_METRICS_ENDPOINT`; Search receives
+`AI4IA_METRICS_SEARCH_ENDPOINT`, derived from the same location used to deploy
+Search. The service reuses clients for identical endpoints. A Search service in
+East US must not be queried through the API's East US 2 endpoint; no resource
+move or additional role is needed to correct that routing.
+
 ## Querying it by hand (incident response)
 
-> **`az monitor app-insights query` returns an empty result set for this
-> component, not an error.** The component is workspace-based
-> (`IngestionMode: LogAnalytics`), so the classic schema names — `customEvents`,
-> `traces`, `requests`, `exceptions` — resolve to nothing through that command
-> even when the data exists. During an incident that reads as a clean all-clear,
-> which is the most dangerous possible failure mode for a search whose purpose is
-> to prove a secret did **not** appear.
-
-Query the workspace tables instead:
+The deployed Application Insights component is workspace-based. Query the
+Log Analytics workspace and its table names directly; do not interpret an empty
+query against a different API/schema as a clean bill of health.
 
 | Classic name | Workspace table |
 | --- | --- |
@@ -43,16 +44,14 @@ $cid = az monitor log-analytics workspace show -g <rg> -n <workspace> --query cu
 az monitor log-analytics query -w $cid --analytics-query "AppEvents | where TimeGenerated > ago(24h) | summarize count() by Name"
 ```
 
-**Always run a non-vacuity control beside any "we found nothing" search.** Count
-the rows the table holds over the same window first. A zero-match search against a
-table that turns out to hold zero rows proves nothing, and the two outcomes are
-indistinguishable in the output. The proxy is the case that matters here: it has
-no `APPLICATIONINSIGHTS_CONNECTION_STRING` and no `EVENT_LOGGERS`, so **none** of
-its events ever reach Application Insights. Searching `App*` tables for proxy
-content will always return zero, whatever happened. Its logs are in
-`ContainerAppConsoleLogs_CL` filtered on `ContainerAppName_s ==
-'ca-proxy-<env>'`.
+**Check source coverage before interpreting absence.** Count rows from the same
+producer and time window before applying an incident predicate. Zero matches in
+a table receiving no events proves nothing. Verify the proxy's configured
+exporters rather than assuming its events reach Application Insights.
+Container stdout is queried separately in `ContainerAppConsoleLogs_CL`, filtered
+by `ContainerAppName_s` for the target proxy.
 
+## Admin API contract
 
 - `GET /api/admin/metrics/operations?minutes=15..1440`
 - `GET /api/admin/metrics/security?minutes=15..1440`

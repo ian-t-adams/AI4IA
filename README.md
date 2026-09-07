@@ -1,126 +1,112 @@
 # AI4IA
 
-AI4IA is a governed, multi-model, multi-region **agentic chat workspace** and
-Azure capability showcase for enterprise knowledge workers, agent builders, and
-service administrators. It demonstrates durable conversations, models, tools,
-documents, memory, voice, usage, and governance in one deployable monorepo.
+AI4IA is a governed AI workspace for conversations, agents, documents, memory,
+voice, and generated media. Users can choose among catalogued models without
+moving their history or granting each provider direct access to their tools.
+The application makes effective settings, tool permissions, execution evidence,
+and usage visible alongside the work.
 
-The repository is not presented as a production-complete platform: current
-capabilities and known gaps are documented below, and every real deployment
-still needs tenant-specific security, identity, quota, data, and operational
-review. [`PRODUCT.md`](PRODUCT.md) defines the users, purpose, and design
-principles.
+It is also an **Azure architecture showcase**, not a production-complete
+platform. Its value is the integration: identity, model gateways, durable data,
+retrieval, orchestration, and observability working together with explicit
+boundaries and documented limitations.
 
-## Current state
+## Start here
 
-Implemented: governed HTTP/SSE model traffic through SimpleL7Proxy -> APIM,
-realtime through the FastAPI relay -> APIM, Entra/MSAL auth, agents
-and workflows (with opt-in durable execution on Durable Task Scheduler, so a
-run survives a deploy, scale-in, or crash), per-user memory, usage metering and
-entitlements, voice/STT/TTS +
-Voice Live, image/video generation, document and multimodal understanding,
-custom remote MCP tools, admin usage/resource dashboards, and Azure Monitor /
-Application Insights telemetry. Owner-visible execution receipts retain the
-effective redacted prompt/context, memory and document provenance, tools
-offered/invoked, bounded arguments/results, safety coverage, and correlation
-metadata without claiming access to hidden model reasoning.
+| Goal | Read |
+| --- | --- |
+| Use chat, agents, documents, voice, and tools | [User guide](docs/user-guide.md) |
+| Understand the design and its Azure tradeoffs | [Architecture](docs/architecture.md) |
+| Understand regions, processing location, and model capacity | [Region and capability map](docs/region-capability-matrix.md) |
+| Deploy into your own tenant | [Guided Azure deployment](docs/runbooks/deploy-to-azure.md) |
+| Change code or contribute a capability | [Contributor guide](AGENTS.md) |
+| Browse the complete documentation and dated deployment status | [Documentation portal](https://ian-t-adams.github.io/AI4IA/) |
 
-Advanced capabilities are feature-gated. The checked-in showcase profile keeps
-the current broad capability set as environment-overridable defaults; a new
-operator can opt out without editing the parameter file. For the observed
-deployment posture, use the
-[feature-enablement runbook](docs/runbooks/feature-enablement.md). For template
-defaults and every deployable variable, use the
-[configuration reference](docs/configuration-reference.md). Do not copy an
-observed environment's values into a new tenant.
+## What the workspace does
 
-Some capabilities are deliberately incomplete, and the docs say so where it
-matters: the Responsible AI record now carries the owner's non-blocking policy
-decision, but assessment coverage, aggregate monitoring, disclosure, and
-escalation remain incomplete across the full live modality scope
-([decision record](docs/rai-decision-record.md)); memory has no per-user
-capability switch ([memory](docs/memory.md)); and network isolation is design
-scaffolding rather than a served private mode
-([architecture](docs/architecture.md)).
+Use plain chat for one-off questions, an agent for a reusable persona and tool
+bundle, or a workflow for repeatable steps. Documents can be temporary chat
+attachments or reusable library sources. Memory carries selected personal
+context between conversations. Voice shares the conversation rather than
+creating a separate work surface.
 
-## Repository layout
+Tools can search the web, read documents, run governed sandbox computations, and
+create artifacts when the environment enables those capabilities. External
+calls may require approval. Optional session/run auto-approval is explicit,
+bounded, and revocable; it does not grant new tools or bypass authorization.
+Execution receipts record what was supplied and executed, **not hidden model
+reasoning**.
+
+## How it fits together
 
 ```text
-/infra      Bicep modules, main.bicep, parameters, and model catalog
-/app/web    Next.js web app: chat, admin dashboard, document/media UI, auth
-/app/api    FastAPI backend: auth, chat, agents, tools, memory, documents, usage
-/proxy      Vendored SimpleL7Proxy model gateway plus AI4IA Dockerfile/notes
-/foundry    Toolbox, routine, and A2A manifests plus schemas
-/scripts    Catalog, inventory, teardown, purge, and azd hook scripts
-/site       Self-documenting portal (docs + timestamped status), published to GitHub Pages
-/docs       Architecture, capability map, naming/tagging, and runbooks
-/assets     Generated brand assets
-azure.yaml  Azure Developer CLI service map
+Browser -> Next.js -> FastAPI -> SimpleL7Proxy -> APIM -> Foundry
+                        |
+                        +-> Cosmos: records and memory text/vectors
+                        +-> Blob: source documents and generated artifacts
+                        +-> AI Search: rebuildable document retrieval
 ```
 
-## Key decisions
+FastAPI owns identity, user isolation, feature gates, tool authorization, and
+usage. SimpleL7Proxy owns HTTP/SSE queueing and delayed retries; API Management
+owns model routing, bounded regional attempts, and managed-identity access to
+Foundry. Models and generated gateway routes come from `infra/models.json`.
 
-- **IaC:** Bicep + Azure Developer CLI (`azd`).
-- **Stack:** Next.js/TypeScript web, Python FastAPI API, .NET SimpleL7Proxy.
-- **Model gateway:** compatible HTTP/SSE calls go SimpleL7Proxy -> APIM; realtime
-  WebSockets go FastAPI relay -> APIM. Responses-API Code Interpreter Files and
-  stateful sandbox calls bypass SimpleL7Proxy but use their own API-scoped APIM
-  route; the FastAPI identity has no direct OpenAI inference role. Content
-  Understanding, WebIQ grounding, and Azure Monitor are separate non-model
-  control/data planes, not model inference.
-- **Catalog-driven models:** `infra/models.json` is the deployment source of truth
-  and generates the packaged API model catalog, including per-model
-  `reasoning_effort` values.
-- **Regions:** East US 2 and Sweden Central are the primary US/EU regions; West US
-  carries targeted models such as MAI Image and deep research. See
-  [`docs/region-capability-matrix.md`](docs/region-capability-matrix.md).
-- **Identity:** Entra workforce/B2B now, with an internal user id decoupled from
-  the identity provider.
+Two model paths bypass **only SimpleL7Proxy**, never APIM: realtime WebSockets
+use the FastAPI relay, and Code Interpreter uses its own constrained APIM API.
+Native service data planes, including Cosmos, Blob, Search, Content
+Understanding, and WebIQ, are separate from this model-inference path.
 
-## Deploy
+## Design implications
 
-Start with the **[guided Azure deployment](docs/runbooks/deploy-to-azure.md)**,
-which is a multi-step production setup rather than a one-click template and routes into
-the greenfield standup guide. It covers
-cost/quota review, tools, deployment identity/RBAC, both GitHub OIDC subjects,
-Entra apps, required variables, provider/model preflight, the first workflow
-provision, data-plane assets, and custom-domain sequencing. Use the
-[routine deployment runbook](docs/runbooks/deployment.md) for subsequent
-exact-digest releases and rollback. A standalone `azd provision` is not the
-release path for an existing environment because Bicep carries placeholder
-images for greenfield creation.
+- **Multi-region models are not a multi-region application.** The gateway,
+  application, and canonical data have their own availability boundaries.
+  Selecting an EU model does not relocate saved conversations or documents.
+- **Durable data is not disposable infrastructure.** Cosmos records and Blob
+  source bytes are canonical; rebuilding a search index is different from
+  recovering deleted user data.
+- **An enabled feature is not evidence that every endpoint works.** Provider
+  entitlement, model availability, credentials, and runtime prerequisites still
+  apply. Template defaults and live observations are recorded separately.
+- **Unknown means unknown.** Missing usage, cost, telemetry, or safety
+  assessments must not be shown as zero, healthy, or safe.
 
-If an AI coding agent is doing the work, point it at
-**[deploying with a coding agent](docs/deploy-with-an-agent.md)**, which states
-what the agent may do alone, what needs your approval, and the traps that cost
-the most time.
+The [Responsible AI record](docs/rai-decision-record.md) records the owner's
+non-blocking assessment policy and remaining coverage/monitoring gaps. There is
+no served private-network mode and no per-user memory opt-out switch. These are
+limitations, not capabilities implied by the showcase.
 
-## Documentation
+## Run or deploy
 
-The **[self-documenting portal](https://ian-t-adams.github.io/AI4IA/)** (published from
-[`site/`](site/) to GitHub Pages) is the friendliest entry point: it explains the app,
-renders the architecture diagrams, catalogues every deployed Azure service, lists the
-requirements (IaC, permissions, packages), and shows a
-**[timestamped status/health snapshot](https://ian-t-adams.github.io/AI4IA/status.html)** of the
-deployed resources. The portal's **Docs** index, generated from
-[`site/data/docs.manifest.json`](site/data/docs.manifest.json), is the complete
-curated list. New operators should begin with the
-[greenfield standup](docs/runbooks/greenfield-standup.md), then the
-[configuration reference](docs/configuration-reference.md) and
-[architecture](docs/architecture.md).
+For local development, use the [API](app/api/README.md#local-dev) and
+[web](app/web/README.md#local-dev) instructions. Local identity and in-memory
+stores support UI development; model responses still require a configured
+gateway.
 
-## Branding
+Azure deployment is a staged setup involving quota, identity, RBAC, configuration,
+and data-plane assets. Start with the [deployment guide](docs/runbooks/deploy-to-azure.md);
+use the [routine release runbook](docs/runbooks/deployment.md) for later releases.
+The release workflow builds each image once and deploys its registry digest.
+A standalone `azd provision` is not an application release and can temporarily
+restore greenfield placeholder images.
 
-![AI4IA lettermark](assets/branding/ai4ia-lettermark.png)
+Coding agents must also follow [the agent deployment rules](docs/deploy-with-an-agent.md).
+New resources, privilege changes, destructive operations, and deployments require
+the owner's approval.
 
-Brand assets live in [`assets/branding/`](assets/branding/), and are all generated
-by `python scripts/gen-brand-assets.py` — never edit them by hand:
+## Repository
 
-- `ai4ia-lettermark.png` — primary lettermark (1200x630, opaque). Byte-identical to
-  the portal's Open Graph card so the two cannot drift.
-- `ai4ia-icon-1024.png` — 1024x1024 icon with transparent rounded corners.
-- `ai4ia-icon.ico` — multi-size Windows icon (16-256px).
+| Path | Responsibility |
+| --- | --- |
+| `app/web` | Next.js/React experience and same-origin HTTP proxy |
+| `app/api` | FastAPI application, governance, integrations, and stores |
+| `infra` | Bicep, deployable parameters, model/tool/voice catalogs, APIM policies |
+| `proxy` | Pinned SimpleL7Proxy source and the maintained integration |
+| `foundry` | Toolbox and skill manifests; clearly labelled design-only examples |
+| `scripts` | Generation, validation, release, inventory, and recovery tooling |
+| `docs` / `site` | Explanatory documentation, operator runbooks, and static portal |
 
-The generator also owns the web app and portal icons. `scripts/tests/test_brand_assets.py`
-fails if any committed image is not covered by it, or if one still carries the
-previous palette.
+The [configuration reference](docs/configuration-reference.md) owns deployment
+settings; the [feature runbook](docs/runbooks/feature-enablement.md) separates
+defaults from observed posture. The portal's [status page](https://ian-t-adams.github.io/AI4IA/status.html)
+is timestamped evidence, not a real-time availability guarantee.
