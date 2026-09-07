@@ -1,9 +1,10 @@
 # app/api — AI4IA Backend
 
-FastAPI service for auth, sessions, chat, agents, tools, memory, documents,
-usage, admin analytics, and model-gateway access. Model calls use the configured
-gateway except for Azure service control/data planes that are not OpenAI chat
-surfaces.
+FastAPI is the application's trust boundary: auth, user-scoped state, chat,
+agents, tools, documents, memory, usage, and admin operations. Compatible
+HTTP/SSE model calls use SimpleL7Proxy -> APIM -> Foundry. Realtime and Code
+Interpreter use separately scoped APIM APIs; native service data planes are
+distinct from model inference.
 
 `AI4IA_MODEL_GATEWAY_URL` is the SimpleL7Proxy `/openai` URL for compatible
 HTTP/SSE calls. When Voice Live is enabled, `AI4IA_REALTIME_BASE_URL` is the APIM
@@ -36,18 +37,26 @@ SimpleL7Proxy.
 
 ## Local dev
 
+Run from `app/api`; use Python 3.12 to match CI and the container image.
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
-uvicorn ai4ia_api.main:app --reload
+# First setup only; retain an existing local .env.
+Copy-Item .env.example .env
+python -m uvicorn ai4ia_api.main:app --port 8080 --reload
 ```
+
+The web development proxy expects the API on port 8080. Local identity and
+in-memory stores need no Azure setup; model calls still need a working gateway.
 
 Run checks from this folder:
 
 ```powershell
 ruff check .
+pyright
 pytest -q
 ```
 
@@ -61,7 +70,8 @@ second Docker health policy that ACA ignores.
 Feature flags are fail-closed in `ai4ia_api.config.Settings.validate_runtime`.
 Local can use in-memory stores and fake clients; deployed environments must wire
 durable stores, credentials, Origin allowlists, and real auth for the features
-they enable. The authoritative flag list is
+they enable. The [architecture](../../docs/architecture.md) explains the
+boundaries; the authoritative flag list is
 [`../../docs/runbooks/feature-enablement.md`](../../docs/runbooks/feature-enablement.md).
 
 ## Current gaps

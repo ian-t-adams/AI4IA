@@ -55,8 +55,9 @@ persists Claude turns with an explicit `unavailable` safety record and shows a
 "not assessed" panel; it does not convert "no Azure verdict" into "nothing
 flagged." Anthropic's provider safety
 systems still apply, but they are not the per-turn Azure annotation contract this
-record describes. Adding Claude is another trigger-3 scope expansion, so the
-control remains incomplete pending an explicit compensating-control decision.
+record describes. Claude is named conditionally in the 2026-09-03 owner decision;
+its entitlement gate and provider-specific assessment evidence remain separate
+requirements.
 
 FLUX likewise has no Foundry deployment-time content filter. The application
 therefore owns a fixed BFL `safety_tolerance=2`, permits one generated image per
@@ -64,8 +65,8 @@ call, restricts model/size/quality through the server catalog, applies entitleme
 and per-turn spend bounds, and rejects oversized output. These are real
 compensating controls, but FLUX responses carry no Azure annotation verdict for
 AI4IA to persist or display. The owner's direction to deploy FLUX is
-recorded as enablement direction, not as the still-missing modality-wide approval
-needed to close this control.
+included in the 2026-09-03 policy scope. That approval does not supply the missing
+modality-specific assessment, monitoring, or escalation evidence.
 
 ## Approval
 
@@ -81,25 +82,16 @@ needed to close this control.
 | Next scheduled review | **2027-09-03**, or immediately on any review trigger below |
 | Invalidated immediately by | Any trigger in "Review triggers" below — these do not wait for the annual date |
 
-**What the deployed policy proves.** Azure's control plane refuses
-a RAI policy that disables blocking on the abuse filters unless the subscription
-holds an approved modification request. Verify against your own Foundry account
-(`<foundry-account>`) at deployment time:
+**What the deployed policy proves.** The template declares 12 enabled
+prompt/completion filter entries, all non-blocking, including indirect attack.
+A read-only control-plane observation on 2026-09-06 found that shape on the
+primary account's `ai4ia-annotate-only` policy, based on `Microsoft.DefaultV2`.
+Recheck the applied policy when deploying to another subscription.
 
-| Policy | Filters | Non-blocking |
-| --- | --- | --- |
-| `ai4ia-annotate-only` (base `Microsoft.DefaultV2`) | 11 | **11** |
-| `Microsoft.DefaultV2` | 11 | 1 |
-| `Microsoft.Default` | 8 | 0 |
-
-A policy turning off blocking on `jailbreak`, `protected_material_text` and
-`protected_material_code` exists, was accepted, and is applied. That state is not
-reachable without the exception, so the claim in
-`scripts/tests/test_rai_policy.py` is evidenced rather than unsupported. What the deployed policy does **not** establish is approval of AI4IA's modality
-scope, who accepted each modality's application risk, or whether modality-specific
-monitoring and escalation are adequate. Azure accepting a resource policy and an
-owner approving how this application uses every enabled modality are separate
-facts.
+Accepted configuration is evidence of the applied posture, not a substitute
+for retaining the Azure modification approval, its applicable scope, or the
+owner's application decision. It also does not prove that every provider
+returns an assessment or that AI4IA collects and escalates it.
 
 ## Evidence required to close the control
 
@@ -132,6 +124,7 @@ From `infra/modules/foundry.bicep`, applied to every deployment:
 | selfharm | Prompt, Completion | yes | **no** | High |
 | violence | Prompt, Completion | yes | **no** | High |
 | jailbreak (Prompt Shield) | Prompt | yes | **no** | n/a |
+| indirect attack (Prompt Shield) | Prompt | yes | **no** | n/a |
 | protected_material_text | Completion | yes | **no** | n/a |
 | protected_material_code | Completion | yes | **no** | n/a |
 
@@ -143,8 +136,8 @@ Two details worth stating plainly, because both are easy to misread:
 - **The jailbreak and protected-material filters ship blocking by default** in
   `Microsoft.DefaultV2`. They are non-blocking here only because they are explicitly
   overridden. Omitting them from the override list would silently leave them
-  blocking — which is why `test_rai_policy.py` checks all seven rather than the four
-  harm categories.
+  blocking — which is why `test_rai_policy.py` covers every declared filter,
+  not only the four harm categories.
 
 ## Compensating controls
 
@@ -171,9 +164,9 @@ non-blocking posture:**
    an explicit "not assessed" notice. A turn that also generated image, video, or
    voice output does not yet carry a separate per-modality assessment/coverage
    record for that artifact.
-4. **No tested moderation boundary.** The audit's premise for accepting an
-   annotate-only posture was "a documented and validated replacement boundary". The
-   replacement is currently visibility only.
+4. **No complete assessment boundary.** The approved application policy is
+   visibility, not moderation enforcement. End-to-end assessment collection and
+   disclosure are not yet established across all modalities.
 5. **No complete modality/provider evidence.** Azure/OpenAI and BFL image, video,
    and both Voice Live providers are enabled, while Claude remains gated. This
    record has no evidence that every available safety output is normalized,
@@ -206,17 +199,15 @@ annotate-only posture continues:
 | # | Trigger | Why it breaks the argument | How you would notice |
 | --- | --- | --- | --- |
 | 1 | A second Entra tenant is allowed, or any unauthenticated access is enabled | The whole justification is "small, known, internal, authenticated". This is also the moment the latent risk (tenant-public means application-public) stops being latent. | Startup already **refuses** when more than one tenant is allowed, so this cannot happen silently — the refusal is the notification. |
-| 2 | A high-severity annotation is observed on a production completion | The premise is that filters would fire on legitimate technical work, not on genuinely harmful content. One high-severity hit is evidence the premise is wrong. | `AppEvents` in the Log Analytics workspace. **Nothing alerts on this today** — see the gap below. |
+| 2 | A high-severity annotation is observed on a production completion | The premise is that filters would fire on legitimate technical work, not on genuinely harmful content. One high-severity hit is evidence the premise is wrong. | Per-turn assessment evidence on the saved message. **Aggregate safety events and alerting are not implemented** — see the gap below. |
 | 3 | A provider or output modality not named in the 2026-09-03 decision is enabled | The current direction covers the named text, image, video, and voice surfaces; a new provider or modality can introduce different assessment and refusal semantics. | Repository/deployment feature posture plus the provider/modality evidence matrix. |
-| 4 | The Azure guardrails-modification approval lapses, or a deployment is recreated on a stock policy | The approval *is* the deployed policy. If the policy reverts, the exception has already ended in fact. | `scripts/tests/test_rai_policy.py` pins the posture in IaC; a live drift would need a control-plane read. |
+| 4 | The Azure guardrails-modification approval lapses, or a deployment is recreated on a stock policy | Approval evidence and the applied configuration must both remain valid. | `scripts/tests/test_rai_policy.py` pins the posture in IaC; a live drift would need a control-plane read. |
 | 5 | A regulatory or customer commitment requires enforced filtering | External obligation overrides the internal tradeoff. | Owner judgement. |
 
-> **Known gap in trigger 2.** There is no alert on high-severity annotations —
-> they land in telemetry and nothing reads them. That makes the most
-> evidence-driven trigger the one least likely to fire on time. Until an alert
-> exists, treat trigger 2 as "checked at the annual review", not "detected".
-> This is the same gap the "No escalation path" limitation records above; it is
-> repeated here because it directly weakens a control this record depends on.
+> **Known gap in trigger 2.** Saved per-turn assessments are not an aggregate
+> monitoring system. There is no automatic detector or escalation path for
+> high-severity annotations; inspection is manual until those controls exist.
+> Do not describe the annual review date as continuous detection.
 
 ## What would change this decision
 

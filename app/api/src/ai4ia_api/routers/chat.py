@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..catalog import ModelCatalog, ModelEntry
+from ..config import Settings
 from ..chat_timing import ChatTiming, bind_chat_timing
 from ..citations import RetrievedSource, attest_message
 from ..conversations.policy import resolve_conversation_policy
@@ -678,6 +679,7 @@ _TOOL_COMMAND_USAGE: dict[str, str] = {
 def _capability_tool_available(
     name: str,
     *,
+    settings: Settings,
     image_artifacts: ImageArtifactStore | None,
     video_artifacts: VideoArtifactStore | None,
     document_artifacts: DocumentArtifactStore | None,
@@ -695,9 +697,9 @@ def _capability_tool_available(
     if name == RESEARCH_COMMAND_NAME:
         return web_search is not None
     if name == GENERATE_IMAGE_TOOL_NAME:
-        return image_artifacts is not None
+        return settings.image_generation_enabled and image_artifacts is not None
     if name == GENERATE_VIDEO_TOOL_NAME:
-        return video_artifacts is not None
+        return settings.video_generation_enabled and video_artifacts is not None
     if name == PROCESS_DOCUMENT_TOOL_NAME:
         return document_artifacts is not None and retrieval is not None
     if name == RECALL_TOOL_NAME:
@@ -850,6 +852,7 @@ async def chat(
     if capability_tool is not None:
         if not _capability_tool_available(
             capability_tool,
+            settings=request.app.state.settings,
             image_artifacts=image_artifacts,
             video_artifacts=video_artifacts,
             document_artifacts=document_artifacts,
@@ -1747,7 +1750,9 @@ async def chat(
         image_sink: list[MessageAttachment] = []
         if GENERATE_IMAGE_TOOL_NAME in agent.tools and image_artifacts is not None:
             try:
-                img_service = ImageGenerationService(catalog=catalog, gateway=gateway)
+                img_service = ImageGenerationService(
+                    settings=request.app.state.settings, catalog=catalog, gateway=gateway
+                )
                 i_tools, i_handlers = build_image_capability(
                     image_service=img_service,
                     artifact_store=image_artifacts,
@@ -1772,6 +1777,7 @@ async def chat(
             try:
                 settings = request.app.state.settings
                 vid_service = VideoGenerationService(
+                    settings=settings,
                     catalog=catalog,
                     gateway=gateway,
                     poll_interval_seconds=settings.gateway_video_poll_interval_seconds,

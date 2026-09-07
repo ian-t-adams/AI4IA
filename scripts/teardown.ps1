@@ -53,9 +53,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Force suppresses confirmation prompts, not WhatIf or the explicit data-loss gate.
+if ($Force -and -not $PSBoundParameters.ContainsKey('Confirm')) {
+    $ConfirmPreference = 'None'
+}
 . (Join-Path $PSScriptRoot 'azure-cli.ps1')
-$Protected = @("NetworkWatcherRG", "Default-ActivityLogAlerts", "DefaultResourceGroup-EUS",
-               "DefaultResourceGroup-WUS", "DefaultResourceGroup-WUS3", "DefaultResourceGroup-SCUS")
+$Protected = @("NetworkWatcherRG", "Default-ActivityLogAlerts")
 
 # Checked before anything is enumerated, so the refusal costs nothing and cannot
 # be reached halfway through a delete loop.
@@ -76,11 +79,17 @@ if ($Force -and -not $AcknowledgeDataLoss) {
     exit 2
 }
 
+$protectedTargets = @($ResourceGroups | Where-Object {
+    $Protected -contains $_ -or $_ -like 'DefaultResourceGroup-*'
+})
+if ($protectedTargets.Count -gt 0) {
+    throw "Refusing teardown containing protected resource group(s): $($protectedTargets -join ', ')"
+}
+
 Assert-AzureSubscription -Subscription $Subscription
 Write-Host "Subscription: $Subscription" -ForegroundColor Cyan
 
 foreach ($rg in $ResourceGroups) {
-    if ($Protected -contains $rg) { Write-Warning "Refusing to delete protected RG: $rg"; continue }
     $exists = Invoke-AzureCli -Arguments @('group', 'exists', '--name', $rg) | ConvertFrom-Json
     if (-not $exists) { Write-Host "  $rg : not found (skip)" -ForegroundColor DarkGray; continue }
 
@@ -90,12 +99,12 @@ foreach ($rg in $ResourceGroups) {
         '--query', '[].{name:name, type:type}', '--output', 'table'
     )
 
-    if ($Force -or $PSCmdlet.ShouldProcess($rg, "Delete resource group")) {
+    if ($Force -and $PSCmdlet.ShouldProcess($rg, "Delete resource group")) {
         Write-Host "  deleting $rg ..." -ForegroundColor Yellow
         Invoke-AzureCli -Arguments @('group', 'delete', '--name', $rg, '--yes') | Out-Null
         Write-Host "  deleted $rg" -ForegroundColor Green
     } else {
-        Write-Host "  (dry run) re-run with -Force to delete $rg" -ForegroundColor Yellow
+        Write-Host "  $rg not deleted (dry run or confirmation declined)." -ForegroundColor Yellow
     }
 }
 
@@ -105,7 +114,7 @@ if ($Force) {
         -Subscription $Subscription `
         -CognitiveAccountNames $CognitiveAccountNames `
         -KeyVaultNames $KeyVaultNames `
-        -Force
+        -Force -WhatIf:$WhatIfPreference -Confirm:($ConfirmPreference -ne 'None')
 } else {
     Write-Host "Dry run complete. Nothing deleted. Add -Force to execute." -ForegroundColor Yellow
 }

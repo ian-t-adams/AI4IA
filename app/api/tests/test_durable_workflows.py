@@ -14,6 +14,7 @@ import asyncio
 import copy
 import json
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -129,6 +130,46 @@ def test_enabled_deployed_fully_configured_validates():
         durable_task_endpoint="https://x.eastus2.durabletask.io",
         durable_task_hub_name="hub",
     ).validate_runtime()
+
+
+@pytest.mark.parametrize("worker_fails", [False, True])
+async def test_stop_keeps_app_loop_available_to_pending_worker_activity(worker_fails):
+    events: list[str] = []
+    app_thread = threading.get_ident()
+    svc = DurableWorkflowService(endpoint="", task_hub="", app_state=None)
+    svc._loop = asyncio.get_running_loop()
+
+    async def finish_activity():
+        events.append("activity_completed")
+
+    class Worker:
+        def stop(self):
+            # Fail rather than deadlock if stop is mistakenly called on the loop
+            # which the real SDK's pending activities need to finish.
+            assert threading.get_ident() != app_thread
+            svc._run_on_app_loop(finish_activity())
+            events.append("worker_stopped")
+            if worker_fails:
+                raise RuntimeError("worker stop failed")
+
+    class Closer:
+        def __init__(self, name):
+            self.name = name
+
+        async def close(self):
+            events.append(self.name)
+
+    svc._worker = Worker()
+    svc._client = Closer("client_closed")
+    svc._async_credential = Closer("credential_closed")
+
+    await asyncio.wait_for(svc.stop(), timeout=2)
+
+    assert events == [
+        "activity_completed", "worker_stopped", "client_closed", "credential_closed",
+    ]
+    assert svc._worker is None
+    assert svc._client is None
 
 
 # --------------------------------------------------------------------------

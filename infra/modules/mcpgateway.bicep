@@ -84,13 +84,16 @@ var serverInboundPolicies = [for s in servers: join(concat(
   ]
 ), '')]
 
+// APIM validates the subscription before inbound policies run. Remove its
+// header/query credential before the provider-owned MI/header/query block;
+// keep upstream Authorization and legitimate toolbox parameters intact.
 @batchSize(1)
 resource mcpPolicies 'Microsoft.ApiManagement/service/apis/policies@2024-06-01-preview' = [for (s, i) in servers: {
   parent: mcpApis[i]
   name: 'policy'
   properties: {
     format: 'rawxml'
-    value: '<policies><inbound><base />${serverInboundPolicies[i]}</inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>'
+    value: '<policies><inbound><base /><set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" /><set-query-parameter name="subscription-key" exists-action="delete" />${serverInboundPolicies[i]}</inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>'
   }
 }]
 

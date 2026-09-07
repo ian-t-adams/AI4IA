@@ -451,6 +451,10 @@ class Settings(BaseSettings):
     document_max_chunks: int = 5000
     document_embed_batch: int = 128
 
+    # --- Media generation and retained artifacts ---
+    image_generation_enabled: bool = False
+    video_generation_enabled: bool = False
+
     # --- Generated-image blob storage ---
     # Durable home for images produced by the ``generate_image`` agent tool. Each
     # artifact lives under ``{userId}/generated/{id}.png`` and is reached ONLY via
@@ -692,10 +696,12 @@ class Settings(BaseSettings):
     metrics_search_resource_id: str | None = None
     metrics_cosmos_resource_id: str | None = None
     metrics_container_app_resource_id: str | None = None
-    # Regional batch-metrics endpoint, e.g. https://<region>.metrics.monitor.azure.com
-    # (env AI4IA_METRICS_ENDPOINT). Required by the azure-monitor-querymetrics batch
-    # client; unset -> panels degrade to "unavailable" rather than erroring.
+    # Default regional batch-metrics endpoint (AI4IA_METRICS_ENDPOINT), e.g.
+    # https://<region>.metrics.monitor.azure.com. A panel without a resolved
+    # endpoint degrades to "unavailable" rather than erroring.
     metrics_endpoint: str | None = None
+    # Search can reside in a different region from the API and Cosmos panels.
+    metrics_search_endpoint: str | None = None
     # Existing Log Analytics workspace identifiers for bounded admin KQL.
     # The customer/workspace GUID is used by LogsQueryClient; the ARM id is used
     # only to build an Azure Portal diagnostics link.
@@ -1035,6 +1041,17 @@ class Settings(BaseSettings):
             raise RuntimeError("AI4IA_COSMOS_ENDPOINT is required for the cosmos session store.")
         if self.memory_store == MemoryStoreKind.cosmos and not self.cosmos_endpoint:
             raise RuntimeError("AI4IA_COSMOS_ENDPOINT is required for the cosmos memory store.")
+        for media in ("image", "video"):
+            if (
+                self.env != Environment.local
+                and getattr(self, f"{media}_generation_enabled")
+                and not (getattr(self, f"{media}_blob_account_url") or "").strip()
+            ):
+                raise RuntimeError(
+                    f"AI4IA_{media.upper()}_GENERATION_ENABLED requires "
+                    f"AI4IA_{media.upper()}_BLOB_ACCOUNT_URL outside local "
+                    "so generated artifacts remain durable."
+                )
         if self.entitlements_enabled and not self.usage_metering_enabled:
             # Budgets/rate limits accrue from the usage ledger; with metering off
             # every positive limit silently never trips (only disabled and

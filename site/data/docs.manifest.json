@@ -17,8 +17,8 @@
         { "path": "README.md", "title": "Repository overview", "desc": "What AI4IA is, current state, layout, key decisions and how to deploy." },
         { "path": "docs/runbooks/deploy-to-azure.md", "title": "Deploy to Azure", "desc": "Guided Azure deployment from fork and prerequisites through verified release, plus optional maximum model capacity." },
         { "path": "docs/runbooks/greenfield-standup.md", "title": "Start here: greenfield Azure standup", "desc": "New subscription or tenant setup: preflight, both GitHub OIDC subjects, RBAC, repo configuration, Entra apps, first provision, domains and validation." },
-        { "path": "docs/user-guide.md", "title": "User guide", "desc": "How to use the app: chat, agents, voice, library, media, memory and admin views." },
-        { "path": "docs/architecture.md", "title": "Architecture", "desc": "Governed multi-model design, request lifecycle, components and MCP planes." },
+        { "path": "docs/user-guide.md", "title": "User guide", "desc": "Choose models, context and tools; use documents, workflows and voice; understand approvals, memory, receipts and data boundaries." },
+        { "path": "docs/architecture.md", "title": "Architecture", "desc": "Azure service roles, governed request paths, state ownership, durability, inference residency, recovery and the design's limits." },
         { "path": "docs/deploy-with-an-agent.md", "title": "Deploying with a coding agent", "desc": "Agent-facing deployment guide: what an AI agent may do alone, what needs human approval, the exact commands, and the traps." },
         { "path": "AGENTS.md", "title": "Agent & contributor guide", "desc": "Machine-facing map for humans and AI agents: invariants, CI commands, and how to add tools, models, flags and routers." }
       ]
@@ -27,7 +27,7 @@
       "group": "Reference",
       "docs": [
         { "path": "docs/configuration-reference.md", "title": "Configuration reference", "desc": "Every feature/env/parameter mapping across bicep, params, workflow vars and app env." },
-        { "path": "docs/region-capability-matrix.md", "title": "Region & capability map", "desc": "Which models and capabilities live in East US 2, Sweden Central and West US." },
+        { "path": "docs/region-capability-matrix.md", "title": "Region & capability map", "desc": "Resource location versus inference residency, region strategy, shared quota pools, model capabilities and lifecycle discipline." },
         { "path": "docs/naming-and-tagging.md", "title": "Naming & tagging", "desc": "Resource naming tokens and the tag scheme applied across the deployment." },
         { "path": "docs/foundry-toolbox.md", "title": "Foundry toolbox", "desc": "The official MCP plane: toolbox tools, progressively disclosed Foundry skills, A2A, and the private tool catalog." },
         { "path": "docs/aca-sandboxes-evaluation.md", "title": "ACA Sandboxes evaluation", "desc": "Decision record and PoC contract for evaluating customizable ACA Sandboxes without replacing the APIM-fronted production Code Interpreter." },

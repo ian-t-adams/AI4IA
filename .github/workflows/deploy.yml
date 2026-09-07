@@ -45,6 +45,7 @@ on:
       # production to prove itself; before this list existed such a merge sat
       # dormant until an unrelated app/infra change happened to trigger deploy.
       - "scripts/postprovision.ps1"
+      - "scripts/_generator.py"
       - "scripts/post-deploy-verify.py"
       - "scripts/check-resource-providers.py"
       - "scripts/check-model-availability.py"
@@ -490,40 +491,42 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
         run: python scripts/check-resource-providers.py --register
 
-      # Two jobs, both of which bicep cannot do for itself. Container App names are
-      # deterministic from AZURE_ENV_NAME; the resource group additionally depends on
-      # the workload token, which is why it is derived rather than literal below.
-      #
-      # 1. Guard: a provision rewrites the Container App ingress from the bicep, which
-      #    sets customDomains to [] when AI4IA_*_CUSTOM_DOMAIN is empty -> it WIPES an
-      #    existing vanity-host binding (live site drops to ERR_CONNECTION_CLOSED; see
-      #    docs/runbooks/deployment.md). Bicep can't see the live binding to refuse, so
-      #    fail fast here when an app already has a domain bound but the matching repo
-      #    variable is empty.
-      # 2. First-bind bootstrap: Container Apps rejects a managed certificate whose
-      #    hostname is not already a custom hostname in the environment, and ARM creates
-      #    the cert before the ingress that would introduce it -- so the very first bind
-      #    of a hostname can never converge in a single pass, no matter the ordering
-      #    inside bicep. Register it here first; bicep still owns the durable binding.
+      # Protect existing bindings and register first-time hostnames before ARM
+      # creates their certificates. Failed reads are never evidence of absence.
       - name: Preflight custom-domain bindings (guard wipes, register first binds)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
         run: |
           set -euo pipefail
-          # Must match infra/main.bicep's `rg-${workload}-${environmentName}`. Hardcoding
-          # the workload token here would send every lookup below to a resource group
-          # that does not exist for a renamed workload -- and `guard` treats a missing
-          # app as "nothing bound", so the whole step would silently no-op instead of
-          # failing. Default matches the bicep parameter default.
+          # Must match infra/main.bicep's `rg-${workload}-${environmentName}`.
           rg="rg-${AI4IA_WORKLOAD:-ai4ia}-${AZURE_ENV_NAME}"
+          if ! group_exists="$(az group exists --name "$rg" -o tsv)"; then
+            echo "::error::Could not determine whether $rg exists; refusing to provision without a custom-domain inventory."
+            exit 1
+          fi
+          apps=""
+          case "$group_exists" in
+            true)
+              if ! apps="$(az containerapp list -g "$rg" --query "[].name" -o tsv)"; then
+                echo "::error::Could not enumerate Container Apps in $rg; refusing to treat a failed read as an empty environment."
+                exit 1
+              fi
+              ;;
+            false) ;;
+            *)
+              echo "::error::Unexpected resource-group existence response; refusing to provision without a custom-domain inventory."
+              exit 1
+              ;;
+          esac
           rc=0
           guard() {
             app="$1"; var_name="$2"; var_val="$3"
             bound=""
-            if az containerapp show -g "$rg" -n "$app" -o none 2>/dev/null; then
-              # Present but domain-less prints nothing, same as a missing app --
-              # hence the separate existence probe above.
-              bound="$(az containerapp show -g "$rg" -n "$app" \
-                --query "properties.configuration.ingress.customDomains[].name" -o tsv 2>/dev/null || true)"
+            if grep -qxF "$app" <<< "$apps"; then
+              if ! bound="$(az containerapp show -g "$rg" -n "$app" \
+                --query "properties.configuration.ingress.customDomains[].name" -o tsv)"; then
+                echo "::error::Could not read custom-domain bindings for $app; refusing to provision without them."
+                return 1
+              fi
             else
               if [ -n "$var_val" ]; then
                 echo "::error::$app does not exist yet but $var_name is set to '$var_val'. That is the wrong order for a new tenant: the managed certificate needs the app, and DNS has to point at an environment that exists. Clear $var_name (and its *_MANAGED_CERT_NAME), provision once, cut DNS over, then re-run. See docs/runbooks/greenfield-standup.md section 6.2."

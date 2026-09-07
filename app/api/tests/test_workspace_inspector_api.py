@@ -699,7 +699,7 @@ def test_document_tools_reject_unselected_ids_before_service_access():
 
 
 def test_voice_effective_tools_exclude_typed_only_synthetic_tools():
-    app = create_app(make_settings())
+    app = create_app(make_settings(image_generation_enabled=True))
     with TestClient(app) as client:
         session = client.post(
             "/api/sessions",

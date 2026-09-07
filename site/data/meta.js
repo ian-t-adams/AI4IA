@@ -3,7 +3,7 @@
 // inventory and health snapshot live in auto-generated inventory.js / status.js.
 window.AI4IA_META = {
   name: "AI4IA",
-  tagline: "A governed, multi-model, multi-region agentic chat platform on Azure.",
+  tagline: "A governed AI workspace with multi-region models on Azure.",
   description:
     "AI4IA provides governed multimodal and agent chat for enterprise knowledge work while " +
     "showcasing Azure capabilities. It is a monorepo: a Next.js web app, a FastAPI backend that owns all " +
@@ -37,8 +37,8 @@ window.AI4IA_META = {
   },
   featurePosture: {
     templateSource: "infra/main.parameters.json placeholder defaults",
-    observedSource: "README and feature-enablement production evidence",
-    observedAt: "2026-08-09",
+    observedSource: "Read-only Container App and ARM configuration; see feature-enablement",
+    observedAt: "2026-09-06",
     caveat:
       "CI validates templateOn against repository defaults. observedOn is a dated, hand-maintained production observation; CI does not query live Azure.",
   },
@@ -51,7 +51,9 @@ window.AI4IA_META = {
     { name: "Microsoft Entra / MSAL authentication", templateOn: true, observedOn: true, core: true,
       note: "Non-spoofable identity; an internal user id is decoupled from the IdP." },
     { name: "Agents, workflows & governed tools", templateOn: true, observedOn: true, core: true,
-      note: "Curated + user-defined agents, multi-step workflows, per-turn tool executor. Explicit session/run auto-approval is separately default-off and retains authorization checks, activity and receipts; its deployment is not implied by this observed core status." },
+      note: "Curated and user-defined agents, multi-step workflows, and execution-time tool authorization." },
+    { name: "Session/run tool auto-approval", templateOn: false, observedOn: true, param: "toolAutoApproveEnabled",
+      note: "The operator permits opt-in; each user still consents explicitly. Scope, expiry, revocation, authorization, activity, and receipts remain enforced." },
     { name: "Durable workflow execution", templateOn: true, observedOn: true, param: "enableDurableWorkflows",
       note: "Opt-in runs use Azure Durable Task Scheduler; synchronous runs remain available." },
     { name: "Per-user memory (Cosmos DB vectors)", templateOn: true, observedOn: true,

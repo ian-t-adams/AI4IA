@@ -21,6 +21,7 @@ import logging
 from dataclasses import dataclass
 
 from ..catalog import DeploymentOption, ModelCatalog
+from ..config import Settings
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..usage.models import ProviderCompletion, TokenUsage
 
@@ -122,9 +123,16 @@ class ImageGenerationService:
     the call site, which owns the request-scoped services.
     """
 
-    def __init__(self, *, catalog: ModelCatalog, gateway: ModelGatewayClient) -> None:
+    def __init__(
+        self, *, settings: Settings, catalog: ModelCatalog, gateway: ModelGatewayClient
+    ) -> None:
+        self._settings = settings
         self._catalog = catalog
         self._gateway = gateway
+
+    @property
+    def enabled(self) -> bool:
+        return self._settings.image_generation_enabled
 
     async def generate(
         self,
@@ -138,6 +146,8 @@ class ImageGenerationService:
         data_zone: str | None = None,
         correlation_id: str | None = None,
     ) -> ImageGenerationResult:
+        if not self.enabled:
+            raise ImageGenerationError(404, "Image generation is disabled.")
         clean_prompt = (prompt or "").strip()
         if not clean_prompt:
             raise ImageGenerationError(422, "Prompt must not be empty.")

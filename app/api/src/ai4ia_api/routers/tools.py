@@ -96,9 +96,15 @@ async def list_tools(
         elif name == "process_document":
             available = getattr(request.app.state, "document_retrieval", None) is not None
         elif name == "generate_video":
-            available = getattr(request.app.state, "video_artifacts", None) is not None
+            available = (
+                settings.video_generation_enabled
+                and getattr(request.app.state, "video_artifacts", None) is not None
+            )
         elif name == "generate_image":
-            available = getattr(request.app.state, "image_artifacts", None) is not None
+            available = (
+                settings.image_generation_enabled
+                and getattr(request.app.state, "image_artifacts", None) is not None
+            )
         elif name == "run_workflow":
             available = getattr(request.app.state, "workflow_service", None) is not None
         if not available:

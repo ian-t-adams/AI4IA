@@ -86,6 +86,23 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             "the deployment or produce valid Azure resource names."
         )
 
+    if environment_name:
+        # Keep existing names; reject inputs that take() would truncate before
+        # the complete 13-character uniqueString suffix reaches ARM.
+        suffix = "x" * 13
+        if len(f"cosmos-{workload}-{environment_name}-{suffix}") > 44:
+            errors.append(
+                "workload and environmentName must total at most 22 characters "
+                "to preserve the Cosmos account's complete unique suffix."
+            )
+        foundry_token = text((models.get("naming") or {}).get("foundryToken"))
+        for region in models.get("regions", {}):
+            if len(f"mf-{foundry_token}-{environment_name}-{region}-{suffix}") > 60:
+                errors.append(
+                    f"Foundry account naming in {region} would truncate its unique suffix; "
+                    "shorten naming.foundryToken or environmentName before provisioning."
+                )
+
     # Claude deployments auto-accept Anthropic Marketplace terms through the
     # modelProviderData block in modules/models.bicep. These are legal
     # attestations, not harmless deployment labels, so never infer them from

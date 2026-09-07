@@ -117,15 +117,6 @@ export function MediaPlayer({
     };
   }, [doc.id]);
 
-  // Esc closes the modal.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   const seek = useCallback((ms: number) => {
     const el = mediaRef.current;
     if (!el) return;
@@ -230,6 +221,7 @@ export function MediaPlayer({
               ref={mediaRef as React.RefObject<HTMLVideoElement>}
               src={mediaUrl}
               controls
+              tabIndex={0}
               style={{
                 width: "100%",
                 borderRadius: 8,
@@ -242,6 +234,7 @@ export function MediaPlayer({
               ref={mediaRef as React.RefObject<HTMLAudioElement>}
               src={mediaUrl}
               controls
+              tabIndex={0}
               style={{ width: "100%" }}
             />
           )

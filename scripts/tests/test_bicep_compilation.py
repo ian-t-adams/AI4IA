@@ -138,6 +138,68 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertIn("AI4IA_WEBIQ_BASE_URL", emitted)
         self.assertNotIn("value', parameters('webIqApiKey')", emitted)
 
+    def test_media_gates_emit_both_boolean_values_independently_of_storage(self) -> None:
+        module = self.template["resources"]["api"]["properties"]
+        api = module["template"]
+        expected = []
+        for parameter, env_name in (
+            ("imageGenerationEnabled", "AI4IA_IMAGE_GENERATION_ENABLED"),
+            ("videoGenerationEnabled", "AI4IA_VIDEO_GENERATION_ENABLED"),
+        ):
+            self.assertFalse(self.template["parameters"][parameter]["defaultValue"])
+            self.assertEqual(
+                module["parameters"][parameter]["value"], f"[parameters('{parameter}')]"
+            )
+            self.assertFalse(api["parameters"][parameter]["defaultValue"])
+            expected.append(
+                {"name": env_name, "value": f"[string(parameters('{parameter}'))]"}
+            )
+        self.assertEqual(api["variables"].get("mediaFeatureEnv"), expected)
+        self.assertIn("variables('mediaFeatureEnv')", api["variables"]["apiEnv"])
+
+    def test_openapi_false_is_emitted_rather_than_treated_as_unset(self) -> None:
+        module = self.template["resources"]["api"]["properties"]
+        api = module["template"]
+        self.assertEqual(
+            module["parameters"]["apiOpenapiEnabled"]["value"],
+            "[parameters('apiOpenapiEnabled')]",
+        )
+        self.assertEqual(
+            api["variables"]["openapiEnv"],
+            [
+                {
+                    "name": "AI4IA_OPENAPI_ENABLED",
+                    "value": "[string(parameters('apiOpenapiEnabled'))]",
+                }
+            ],
+        )
+        self.assertIn("variables('openapiEnv')", api["variables"]["apiEnv"])
+
+    def test_search_metrics_use_the_search_deployment_location(self) -> None:
+        self.assertEqual(
+            self.template["variables"].get("effectiveSearchLocation"),
+            "[if(empty(parameters('searchLocation')), parameters('location'), "
+            "parameters('searchLocation'))]",
+        )
+        search = self.template["resources"]["search"]["properties"]
+        api = self.template["resources"]["api"]["properties"]
+        self.assertEqual(
+            search["parameters"]["location"]["value"],
+            "[variables('effectiveSearchLocation')]",
+        )
+        self.assertEqual(
+            api["parameters"]["metricsSearchLocation"]["value"],
+            "[variables('effectiveSearchLocation')]",
+        )
+        emitted = api["template"]["variables"]["resourceMetricsEnv"]
+        self.assertIn("AI4IA_METRICS_SEARCH_ENDPOINT", emitted)
+        self.assertIn(
+            "format('https://{0}.metrics.monitor.azure.com', "
+            "if(empty(parameters('metricsSearchLocation')), parameters('location'), "
+            "parameters('metricsSearchLocation')))",
+            emitted,
+        )
+
     def test_null_forgiving_access_preserves_conditional_durable_outputs(self) -> None:
         parameters = self.template["resources"]["api"]["properties"]["parameters"]
         self.assertEqual(

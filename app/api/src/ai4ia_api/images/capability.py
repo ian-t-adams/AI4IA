@@ -86,6 +86,8 @@ def build_image_capability(
     size allowlist, payload caps — is shared with the HTTP endpoint via
     :class:`ImageGenerationService` and the per-turn entitlement check here.
     """
+    if not image_service.enabled:
+        return [], {}
     budget = {"used": 0}
     image_ids = _image_model_ids(catalog)
     models_hint = (
@@ -181,6 +183,8 @@ def build_image_capability(
     }
 
     async def _handler(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        if not image_service.enabled:
+            return {"error": "Image generation is disabled."}
         prompt = str(args.get("prompt") or "").strip()
         if not prompt:
             return {"error": "prompt must be a non-empty string."}

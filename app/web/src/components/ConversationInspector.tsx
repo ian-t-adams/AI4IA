@@ -26,6 +26,7 @@ import type {
   ToolConsentSummary,
   ToolOverrides,
 } from "@/lib/types";
+import { isCurrentSessionGeneration } from "@/lib/sessionMutation";
 import { inspectedSessionConsent, unverifiedSessionConsent, type SessionConsentView, type ToolConsentInspection } from "@/lib/toolConsent";
 import { SessionToolConsentControls } from "./ToolConsentControls";
 import { useSessionToolConsentMutation } from "./useSessionToolConsent";
@@ -275,6 +276,17 @@ export function ConversationInspector({
     savedTimerRef.current = setTimeout(() => setSaved(null), 2000);
   }, []);
 
+  const markResourceReady = useCallback((resource: "snapshot" | "tools" | "memory" | "library") => {
+    // A partial retry must retire only its own error, not a failed sibling's.
+    setSectionErrors((current) => {
+      if (!(resource in current)) return current;
+      const next = { ...current };
+      delete next[resource];
+      return next;
+    });
+    setPhases((current) => ({ ...current, [resource]: "ready" }));
+  }, []);
+
   const loadSnapshot = useCallback(async () => {
     if (!mountedRef.current) return;
     const capturedSession = sessionId;
@@ -302,7 +314,7 @@ export function ConversationInspector({
       setSnapshot(value);
       onToolConsentSnapshot?.(capturedSession, { phase: "ready", requestId, value });
       if (value.instructions.editable) setPromptDraft(value.instructions.value ?? "");
-      setPhases((current) => ({ ...current, snapshot: "ready" }));
+      markResourceReady("snapshot");
     } catch (reason) {
       if (
         !mountedRef.current || generation !== sectionGenerationRef.current.snapshot ||
@@ -315,7 +327,7 @@ export function ConversationInspector({
       setPhases((current) => ({ ...current, snapshot: "error" }));
       onToolConsentSnapshot?.(capturedSession, { phase: "error", requestId });
     }
-  }, [sessionId, onToolConsentSnapshot]);
+  }, [sessionId, onToolConsentSnapshot, markResourceReady]);
 
   const loadTools = useCallback(async () => {
     const capturedSession = sessionId;
@@ -333,7 +345,7 @@ export function ConversationInspector({
       ) return;
       setTools(value.tools);
       setDraftInheritedTools(value.inheritedTools);
-      setPhases((current) => ({ ...current, tools: "ready" }));
+      markResourceReady("tools");
     } catch (reason) {
       if (
         generation !== sectionGenerationRef.current.tools ||
@@ -342,7 +354,7 @@ export function ConversationInspector({
       setSectionErrors((current) => ({ ...current, tools: (reason as Error).message }));
       setPhases((current) => ({ ...current, tools: "error" }));
     }
-  }, [draftDefaults.agentName, sessionId]);
+  }, [draftDefaults.agentName, sessionId, markResourceReady]);
 
   const loadMemory = useCallback(async () => {
     const generation = ++sectionGenerationRef.current.memory;
@@ -352,13 +364,13 @@ export function ConversationInspector({
       const value = await listMemories();
       if (generation !== sectionGenerationRef.current.memory) return;
       setMemory(value);
-      setPhases((current) => ({ ...current, memory: "ready" }));
+      markResourceReady("memory");
     } catch (reason) {
       if (generation !== sectionGenerationRef.current.memory) return;
       setSectionErrors((current) => ({ ...current, memory: (reason as Error).message }));
       setPhases((current) => ({ ...current, memory: "error" }));
     }
-  }, []);
+  }, [markResourceReady]);
 
   const loadLibrary = useCallback(async () => {
     // Left at "idle", not "error": the endpoint is gated, so calling it when
@@ -376,13 +388,13 @@ export function ConversationInspector({
       const value = await getLibrarySummary();
       if (generation !== sectionGenerationRef.current.library) return;
       setLibrary(value);
-      setPhases((current) => ({ ...current, library: "ready" }));
+      markResourceReady("library");
     } catch (reason) {
       if (generation !== sectionGenerationRef.current.library) return;
       setSectionErrors((current) => ({ ...current, library: (reason as Error).message }));
       setPhases((current) => ({ ...current, library: "error" }));
     }
-  }, [libraryEnabled]);
+  }, [libraryEnabled, markResourceReady]);
 
   const load = useCallback(async () => {
     await Promise.allSettled([
@@ -417,30 +429,27 @@ export function ConversationInspector({
       }
       const capturedSession = sessionId;
       const generation = ++mutationGenerationRef.current;
+      // Releasing the pending state is a mutation too: an old A → B → A
+      // completion must not unlock controls owned by a newer request.
+      const isCurrent = () => mountedRef.current && isCurrentSessionGeneration(
+        capturedSession,
+        generation,
+        activeSessionRef.current,
+        mutationGenerationRef.current,
+      );
       setSaving(true);
       setSaved(null);
       try {
         const updated = await operation();
-        if (
-          generation !== mutationGenerationRef.current ||
-          activeSessionRef.current !== capturedSession
-        ) return;
+        if (!isCurrent()) return;
         onSessionUpdated(updated);
         await loadSnapshot();
-        if (
-          generation !== mutationGenerationRef.current ||
-          activeSessionRef.current !== capturedSession
-        ) return;
+        if (!isCurrent()) return;
         showSaved(successMessage);
       } catch (reason) {
-        if (
-          generation === mutationGenerationRef.current &&
-          activeSessionRef.current === capturedSession
-        ) setError(api.apiErrorDetail(reason));
+        if (isCurrent()) setError(api.apiErrorDetail(reason));
       } finally {
-        if (mountedRef.current && activeSessionRef.current === capturedSession) {
-          setSaving(false);
-        }
+        if (isCurrent()) setSaving(false);
       }
     },
     [
@@ -888,6 +897,7 @@ export function ConversationInspector({
                 />
                 {sessionId ? (
                   <ImageGenerationControls
+                    key={sessionId}
                     preferences={snapshot?.imagePreferences ?? null}
                     disabled={!canMutate}
                     onSave={(imagePreferences) => void patch({ imagePreferences })}

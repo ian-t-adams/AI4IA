@@ -346,6 +346,7 @@ var tags = {
 }
 
 var resourceGroupName = 'rg-${workload}-${environmentName}'
+var effectiveSearchLocation = empty(searchLocation) ? location : searchLocation
 
 // Curated, data-driven model catalog (see infra/models.json + models.schema.json).
 var models = loadJsonContent('models.json')
@@ -513,7 +514,7 @@ module search 'modules/search.bicep' = {
   name: 'search'
   scope: rg
   params: {
-    location: empty(searchLocation) ? location : searchLocation
+    location: effectiveSearchLocation
     tags: tags
     workload: workload
     uniqueSuffix: uniqueSuffix
@@ -1003,15 +1004,12 @@ module api 'modules/api.bicep' = {
     durableTaskEndpoint: enableDurableWorkflows ? durabletask!.outputs.endpoint : ''
     durableTaskHubName: enableDurableWorkflows ? durabletask!.outputs.taskHubName : ''
     durableWorkflowTimeoutSeconds: durableWorkflowTimeoutSeconds
-    // Agent-callable image tool. Default OFF; the dedicated image blob
-    // account/container are emitted to the api env only when the feature is on and
-    // the data module provisioned an account (else the api uses an in-memory store).
+    // Explicit creation gates are independent of storage wiring. Enabled
+    // deployed media must have durable storage; disabled media cannot fall back
+    // to creating process-local artifacts.
     imageGenerationEnabled: imageGenerationEnabled
     imageBlobAccountUrl: data.outputs.imageBlobAccountUrl
     imageBlobContainer: data.outputs.imageBlobContainerName
-    // Agent-callable video tool. Default OFF; the videos container on
-    // the shared media account is emitted to the api env only when on and the data
-    // module provisioned it (else the api uses an in-memory store).
     videoGenerationEnabled: videoGenerationEnabled
     videoBlobAccountUrl: data.outputs.videoBlobAccountUrl
     videoBlobContainer: data.outputs.videoBlobContainerName
@@ -1025,6 +1023,7 @@ module api 'modules/api.bicep' = {
     // is granted once at subscription scope above, as the batch API requires).
     // Empty when a resource is not deployed -> that panel stays 'unavailable'.
     metricsSearchResourceId: search.outputs.searchId
+    metricsSearchLocation: effectiveSearchLocation
     logAnalyticsWorkspaceCustomerId: monitoring.outputs.logAnalyticsCustomerId
     metricsCosmosResourceId: data.outputs.cosmosId
     // Custom tools / BYO MCP. Default OFF. When on, the flag is emitted

@@ -3,7 +3,9 @@
 ## Resource naming
 General Azure resources use `azd`-style names built from an abbreviation +
 `<workload>-<environment>` (plus `-<region>` where the resource is per-region).
-Abbreviations live in [`infra/abbreviations.json`](../infra/abbreviations.json).
+The Bicep name expressions are authoritative;
+[`infra/abbreviations.json`](../infra/abbreviations.json) is reference shorthand,
+not an input to the current naming logic.
 
 **Every resource whose name must be globally unique across Azure also carries
 `<suffix>`** — `uniqueString(subscription().id, environmentName)`, computed once in
@@ -14,6 +16,17 @@ unsuffixed name can only ever deploy into the one subscription that already owns
 Omitting it is exactly what broke the first cutover attempt — see
 [deployment runbook §7.6](./runbooks/deployment.md). `scripts/tests/test_bicep_naming.py`
 (run by `infra-validate`) fails the build if a globally-unique resource loses its suffix.
+
+The suffix is 13 characters; examples below abbreviate it. Individual
+workload/environment tokens may be 3-20 characters, but the supported deployment
+preflight also limits their **combined length to 22** so the 44-character Cosmos
+name retains the complete suffix. It checks each regional Foundry account
+against its 60-character limit, including `naming.foundryToken`. Individually
+valid inputs can therefore be invalid together.
+
+Unsafe combinations fail before provisioning. Existing name expressions are
+not rewritten: increasing the naming envelope requires a reviewed naming and
+migration plan, not silently recreating resources under new names.
 
 | Resource | Globally unique? | Pattern | Example |
 |---|---|---|---|

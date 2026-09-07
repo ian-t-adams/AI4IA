@@ -24,27 +24,24 @@ generated media, MCP server management, and the admin dashboard.
 
 ## Local dev
 
+Run from `app/web`, with the [API](../api/README.md#local-dev) on port 8080.
+
 ```powershell
 npm ci
+# First setup only; retain an existing local .env.local.
+Copy-Item .env.example .env.local
 npm run dev
 ```
 
-Use Node in the range declared by `engines.node` in this folder's
-`package.json` — this matches both CI (which pins Node 22, always resolving to
-the latest 22.x release) and the production Docker image (`node:22-alpine`).
-The floor is deliberately tighter than a bare `22.0.0` because direct
-devDependencies (currently `eslint` and `jsdom`) declare their own 22.x
-minimum; see the Web section of the repo-root `AGENTS.md` for the current
-rationale. Exact versions are deliberately not restated here — this file
-drifted from `package.json` once already. `engines.node` is advisory only (no
-`.npmrc`/`engine-strict` is set in this repo), so npm just prints a
-`npm warn EBADENGINE` warning on a mismatched local Node version instead of
-failing the install; CI and `docker-build` are the actual enforcement points
-for the pinned version, not this field.
+Use the Node 22 range declared by `package.json`'s `engines.node` to match CI
+and the production image. npm only warns about engine mismatches; it does not
+prevent an unsupported local run. Corporate registry and dependency-junction
+workarounds are documented in [AGENTS.md](../../AGENTS.md), not in the lockfile.
 
 Run checks from this folder:
 
 ```powershell
+npm run lint
 npm test
 npm run build
 ```

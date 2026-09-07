@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fetchLibraryMedia, fetchLibraryTimeline } from "@/lib/api";
@@ -63,6 +64,48 @@ afterEach(() => {
 });
 
 describe("MediaPlayer", () => {
+  it.each(["audio", "video"])(
+    "keeps native %s controls keyboard-reachable when there are no scene markers",
+    async (modality) => {
+      media.mockResolvedValue(new Blob(["media"]));
+      const { container } = render(
+        <MediaPlayer doc={{ ...doc("first"), modality }} onClose={vi.fn()} />,
+      );
+      const close = screen.getByRole("button", { name: "Close player" });
+      await waitFor(() => expect(container.querySelector(modality)).toBeInTheDocument());
+      await waitFor(() => expect(close).toHaveFocus());
+      const player = container.querySelector(modality);
+
+      await userEvent.tab();
+      expect(player).toHaveFocus();
+      await userEvent.tab();
+      expect(close).toHaveFocus();
+      await userEvent.tab({ shift: true });
+      expect(player).toHaveFocus();
+      await userEvent.tab({ shift: true });
+      expect(close).toHaveFocus();
+    },
+  );
+
+  it("closes exactly once on Escape through the shared dialog handler", () => {
+    media.mockReturnValue(new Promise<Blob>(() => {}));
+    const onClose = vi.fn();
+    const { unmount } = render(<MediaPlayer doc={doc("first")} onClose={onClose} />);
+    const close = screen.getByRole("button", { name: "Close player" });
+    close.focus();
+
+    fireEvent.keyDown(close, { key: "ArrowRight" });
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(close, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent.click(close);
+    expect(onClose).toHaveBeenCalledTimes(2);
+
+    unmount();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
   it("ignores an old document fetch after the selected document changes", async () => {
     const first = deferred<Blob>();
     const second = deferred<Blob>();

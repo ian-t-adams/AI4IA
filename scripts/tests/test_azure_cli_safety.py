@@ -52,7 +52,7 @@ function global:az {
     $call = [object[]] $args
     Add-Content -LiteralPath $env:AZ_STUB_LOG -Value (
         ConvertTo-Json -InputObject $call -Compress
-    )
+    ) -WhatIf:$false -Confirm:$false
     $key = $args -join ' '
 
     if ($env:AZ_STUB_FAIL_PREFIX -and $key.StartsWith($env:AZ_STUB_FAIL_PREFIX)) {
@@ -67,7 +67,7 @@ function global:az {
         return
     }
     if ($key.StartsWith('group exists ')) {
-        Write-Output 'false'
+        Write-Output $env:AZ_STUB_GROUP_EXISTS
         return
     }
     if ($env:AZ_STUB_PURGE_FIXTURE -eq '1' -and
@@ -116,6 +116,7 @@ class AzureCliSafetyExecutionTests(unittest.TestCase):
         fail_prefix: str = "",
         purge_fixture: bool = False,
         same_name_fixture: bool = False,
+        group_exists: bool = False,
     ) -> tuple[subprocess.CompletedProcess[str], list[list[str]], set[str]]:
         with tempfile.TemporaryDirectory(prefix=".azure-cli-safety-", dir=ROOT) as directory:
             work = Path(directory)
@@ -139,6 +140,7 @@ class AzureCliSafetyExecutionTests(unittest.TestCase):
                     "AZ_STUB_LOG": str(log),
                     "AZ_STUB_PURGE_FIXTURE": "1" if purge_fixture else "0",
                     "AZ_STUB_SAME_NAME_FIXTURE": "1" if same_name_fixture else "0",
+                    "AZ_STUB_GROUP_EXISTS": "true" if group_exists else "false",
                     "SCRIPT_PARAMETERS": json.dumps(actual_parameters),
                     "TARGET_SCRIPT": str(SCRIPTS / script_name),
                 }
@@ -203,6 +205,99 @@ class AzureCliSafetyExecutionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Azure CLI failed with exit code 23", result.stderr)
         self.assertEqual(calls[-1][:3], ["cognitiveservices", "model", "list"])
+
+    def test_teardown_requires_force_even_when_confirmation_is_disabled(self) -> None:
+        parameters = {**CASES["teardown.ps1"], "Confirm": False}
+        result, calls, _ = self.run_script(
+            "teardown.ps1", parameters, group_exists=True, purge_fixture=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any(call[:2] == ["resource", "list"] for call in calls))
+        self.assertFalse([call for call in calls if "delete" in call or "purge" in call])
+
+        parameters.update(Force=True, AcknowledgeDataLoss=True)
+        result, calls, _ = self.run_script(
+            "teardown.ps1", parameters, group_exists=True, purge_fixture=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len([call for call in calls if "delete" in call]), 1)
+        self.assertEqual(len([call for call in calls if "purge" in call]), 2)
+
+    def test_force_does_not_bypass_whatif_for_teardown_or_purge(self) -> None:
+        for script_name in ("teardown.ps1", "purge-soft-deleted.ps1"):
+            with self.subTest(script=script_name):
+                parameters = {**CASES[script_name], "Force": True, "WhatIf": True}
+                if script_name == "teardown.ps1":
+                    parameters["AcknowledgeDataLoss"] = True
+                result, calls, _ = self.run_script(
+                    script_name, parameters, group_exists=True, purge_fixture=True
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(any("list-deleted" in call for call in calls))
+                self.assertFalse(
+                    [call for call in calls if "delete" in call or "purge" in call]
+                )
+                self.assertIn("What if:", result.stdout)
+
+                parameters["WhatIf"] = False
+                result, calls, _ = self.run_script(
+                    script_name, parameters, group_exists=True, purge_fixture=True
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len([call for call in calls if "purge" in call]), 2)
+                expected_deletes = 1 if script_name == "teardown.ps1" else 0
+                self.assertEqual(
+                    len([call for call in calls if "delete" in call]), expected_deletes
+                )
+
+    def test_teardown_force_without_data_loss_acknowledgement_never_calls_azure(self) -> None:
+        result, calls, _ = self.run_script(
+            "teardown.ps1",
+            {**CASES["teardown.ps1"], "Force": True, "Confirm": False},
+            group_exists=True,
+            purge_fixture=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Refusing to run:", result.stdout)
+        self.assertEqual(calls, [])
+
+    def test_protected_groups_reject_the_whole_teardown_before_azure(self) -> None:
+        for protected in (
+            "NetworkWatcherRG",
+            "Default-ActivityLogAlerts",
+            "DefaultResourceGroup-NEU",
+        ):
+            with self.subTest(group=protected):
+                result, calls, _ = self.run_script(
+                    "teardown.ps1",
+                    {
+                        **CASES["teardown.ps1"],
+                        "ResourceGroups": ["rg-ai4ia-test", protected],
+                        "Force": True,
+                        "AcknowledgeDataLoss": True,
+                        "Confirm": False,
+                    },
+                    group_exists=True,
+                    purge_fixture=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("protected resource group", ANSI_RE.sub("", result.stderr))
+                self.assertEqual(calls, [])
+
+        result, calls, _ = self.run_script(
+            "teardown.ps1",
+            {
+                **CASES["teardown.ps1"],
+                "ResourceGroups": ["rg-ai4ia-test", "rg-ai4ia-second"],
+                "Force": True,
+                "AcknowledgeDataLoss": True,
+                "Confirm": False,
+            },
+            group_exists=True,
+            purge_fixture=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len([call for call in calls if "delete" in call]), 2)
 
     def test_purge_rejects_wildcard_and_empty_names_before_azure(self) -> None:
         for parameter in ("CognitiveAccountNames", "KeyVaultNames"):

@@ -1,525 +1,351 @@
 # AI4IA User Guide
 
-AI4IA is a governed chat, agent, and document workbench. Use it to talk to
-multiple models, run agent tools, work with documents and media, generate
-artifacts, and review usage. The API enforces identity, feature gates, ownership,
-and tool safety; the web app is the user interface.
+AI4IA keeps chat, agents, documents, memory, tools, and voice in one workspace.
+The most useful distinction is between **what you ask for**, **what context the
+model receives**, and **what actions it is allowed to take**. The Conversation
+Inspector makes those choices visible; the API enforces them.
 
 ## Start
 
-1. Open the web app URL for the environment.
-2. Sign in with Entra when prompted. Local/dev environments may use a configured
-   dev identity instead.
-3. Start a chat session or reopen an existing session from the sidebar.
-4. Open the Conversation Inspector. It has three tabs — **Setup** (model,
-   instructions, agent and tools, Voice Live), **Context** (documents and
-   memory), and **Usage** — and each tab's sections expand one at a time. The
-   app clamps model parameters, including reasoning effort, to catalog limits.
+1. Open your environment's web app and sign in with Microsoft Entra ID.
+   Local development may instead use a configured development identity.
+2. Start a conversation or reopen one from the sidebar.
+3. Open the Conversation Inspector: **Setup** controls the model, instructions,
+   agent, tools, and voice; **Context** controls documents and memory; **Usage**
+   explains the recorded consumption.
+4. Describe the outcome you need and attach or select only the relevant sources.
+
+Features vary by deployment. A hidden control can mean the operator disabled the
+capability or the selected model cannot use it; it is not a permission you can
+grant by changing a browser setting.
 
 ## Chat well
 
-- Put goals and constraints in the message. Mention files, models, regions, or
-  customer context when they matter.
-- Use attachments for one-off context in the current session.
-- Use the document library for reusable material that should be searchable across
-  sessions.
-- Treat cited document snippets and tool output as grounded context, not as
-  permission to skip review.
-- The model picker labels text-only, non-tool-capable models as **Plain chat
-  only**. They remain usable for ordinary conversation, but the API rejects them
-  for agents and workflows before persistence or provider I/O.
-- Temperature and Top P appear only for models that support sampling. The UI
-  bounds Temperature to 0-2 and Top P to 0-1; for compatible models, the API
-  forwards those values unchanged. The UI and API cap output tokens to the
-  selected catalog model's published maximum. For GPT-5 and o-series deployments,
-  the gateway strips unsupported sampling fields and translates the output-token
-  field to the model's accepted shape. Reasoning effort is offered only from the
-  `reasoningEffort` list in `infra/models.json`. GPT-5.6 uses the Responses API so
-  reasoning effort and governed function tools work together; this still follows
-  the normal SimpleL7Proxy → APIM → Foundry path. Unsupported values are provider
-  errors, not capacity failures. Control visibility does not grant a model
-  capability or override server policy.
+Give the assistant a goal, constraints, and an expected output. Use attachments
+for one-off material and the library for sources you expect to reuse.
+Check citations against the original source before relying on an answer.
+
+Model controls reflect the server's catalog. Context size, output limits,
+reasoning effort, sampling, input modalities, and tool support vary by model.
+**Plain chat only** models can answer ordinary questions but cannot run agents
+or workflows that need tools. A larger context window is a capacity limit, not
+a promise that every document will be included or every fact recalled.
+
+A selected agent is the standing persona. A leading `@agent` mention overrides
+it for one turn, for example `@coder explain this function`; a mention later in
+the message is ordinary text. Type `@` at the start for available agents, or
+use `/agents`. The internal `@conversation` badge means conversation-attached
+tools without a selected agent, not another agent to invoke.
+
+The inspector shows inherited instructions and tools alongside conversation
+overrides. Saved server values, not an unsaved control or a model's claim about
+its abilities, determine the next turn.
 
 ## Agents and workflows
 
-- Use built-in agents for common jobs.
-- Create a user agent when you repeatedly need a specific role, instruction set,
-  model, or tool bundle.
-- Use workflows for repeatable multi-step work. Workflows run through the same
-  governed tool path as chat, and each step is offered the same capabilities a
-  chat turn gets: reading your document library, Web IQ search and browsing, and
-  — when switched on for that step — recalling and saving memories.
-- The workflow editor has two tabs. **Build** is where you name the workflow and
-  order its steps; **Run & test** is where you run one and read the result. The
-  result stays in the panel — a per-step trace showing which steps succeeded,
-  which one failed, and which never started — so you can adjust a step and run
-  again without losing the output. Use **Open in chat** when you want the run's
-  conversation.
-- **Each step lists what it can actually do.** A step's tool surface is not the
-  same as its agent's tool list, so the editor states the difference per step:
-  document reading is always on, web search is offered whenever the deployment
-  has Web IQ configured, the two memory tools appear only when switched on for
-  that step, and anything that returns a chat attachment (image and video
-  generation, document processing, MCP tools) is marked **chat only** because a
-  workflow step has no way to deliver one.
-- **Tools are switched on per step, under "Tools for this step".** They are added
-  on top of whatever the step's agent already carries — never instead of them.
-  This is how you give a capability to one of the built-in agents, whose own tool
-  lists you cannot edit. Only the tools that genuinely work inside a workflow step
-  are offered, so there is no checkbox that saves and then does nothing.
-- **Memory has to be switched on, and a step without it will not tell you.**
-  `remember_memory` saves a short durable fact; `recall_memory` reads them back.
-  A step with neither cannot write to your memory — and, importantly, the model is
-  not told that it lacks the tool, so it will often reply as though it saved your
-  notes and the run will still be recorded as successful. Tick **Save memory**
-  under **Tools for this step**; the step's capability list flags it until you do.
-  Saves are then reported honestly: a fact already covered by an existing memory
-  is reported as "nothing new stored", not as a save.
-- **A run can be scoped to specific documents.** Under **Documents**, select the
-  library documents the run should be restricted to. Select nothing and every
-  step can read any of your ready documents.
-- When the deployment provides durable execution, the workflow runner offers
-  **Keep running if the app restarts**. Leave it off for quick runs: the reply
-  comes back in the request as usual. Turn it on for long multi-step work, and
-  the run is handed to an orchestration that survives a restart, scale-in, or
-  crash — the runner then waits for it to finish, because the reply is written
-  when the run completes rather than held open in the request. If it is still
-  going after two minutes the page stops waiting and says so; the run is *not*
-  cancelled, and its reply appears in the run's chat when it finishes. The option
-  is hidden entirely on deployments that cannot honour it.
-- To let an agent invoke a saved workflow, attach **Run workflow** to that agent
-  under **Agent & tools**. The chat tool advertises only enabled workflows whose
-  resolved steps use safe, read-only tools; it re-checks that condition when the
-  call executes and permits one workflow run per chat turn. A workflow containing
-  web search, memory writes, media generation, MCP, another workflow, or any
-  unclassified/disabled tool remains available from the workflow runner but is
-  deliberately absent from the agent tool.
-- **Start from a template.** When you create a new workflow the builder offers
-  starter templates, including two for documents: **Document review (Content
-  Understanding)** and **Extract from scans (Mistral OCR)**. Choosing one fills
-  the form so you can read and edit every step before saving — nothing is
-  created until you press save, and the name stays editable so you can keep more
-  than one variant. Both document templates read files that are *already* in
-  your library, so upload and analyze the document first (see
-  [Documents and media](#documents-and-media)); a workflow step cannot perform
-  the upload or the analysis itself.
-- Attach only the tools an agent needs. Tool output is metered, logged, bounded,
-  and redacted where applicable.
-- A selected agent is the standing conversation persona. An explicit `@agent`
-  mention **at the start of a message** is a one-turn override, for example
-  `@coder explain this function`. Type `@` at the start to open the agent menu,
-  or send `/agents` to list available names; an `@` later in the message is just
-  text. Change the standing agent in the inspector's **Setup > Agent & tools**
-  section. The inspector shows the resolved instruction stack read-only,
-  including whether an inherited agent prompt came from the curated catalog or
-  from one of your user agents; conversation-level instructions remain the
-  editable layer. It also shows inherited and
-  conversation-level tool changes; the API authorizes every call again at execution.
-- The `@conversation` badge is an internal label for a turn using
-  conversation-attached tools without a selected agent. It is not a built-in
-  agent you can mention, nor a model or search provider.
-- Tool rows state whether a capability is available in typed chat, Voice Live, or
-  both. Typed-only tools are never silently advertised to Voice Live.
+| Use | Best fit | Important boundary |
+| --- | --- | --- |
+| Plain conversation | A question or exploratory task | Context and model limits still apply |
+| Agent | A reusable persona, model, and tool bundle | Attach only the tools it needs |
+| Workflow | An ordered, repeatable set of steps | Each step has its own effective capabilities |
+| Durable workflow | Work that should survive an API restart | Requires deployment support and an explicit per-run choice |
+
+In the workflow editor, **Build** defines the steps; **Run & test** runs them and
+keeps their results visible. The result distinguishes completed, failed, and
+unstarted steps. **Open in chat** opens the run's conversation.
+
+**Tools for this step** adds capabilities to the selected agent's tools. Read
+the effective capability list: chat-only capabilities are not promised in a
+workflow. In particular, a step cannot upload or analyze a new library document;
+document-review templates work on sources already uploaded and ready.
+
+Memory tools are explicit per step. Enable **Save memory** when a step must
+store a fact, and look for the tool's result rather than trusting text such as
+"I've remembered that." A deduplicated fact can correctly report that nothing
+new was stored. Under **Documents**, a non-empty workflow selection restricts
+the run; selecting none allows the run to read your ready library documents.
+
+**Keep running if the app restarts** uses Azure Durable Task Scheduler.
+The page may stop waiting after two minutes without cancelling the run; its
+result can still arrive in the run's chat. Without this option, a replica
+restart can interrupt the request. Durability does not grant additional tools,
+remove approval requirements, or undo a tool's external effects.
+
+The chat **Run workflow** tool is deliberately narrower than the workflow
+editor. It advertises only enabled workflows whose resolved steps are safe,
+read-only, non-recursive, and compatible with that execution path.
 
 ### Agent activity
 
-Tool-using turns show live activity such as searching, reading, running a tool,
-being blocked, or encountering an error. Completed turns retain a collapsed,
-coarse activity list. Each completed model turn also has a collapsed **Execution
-receipt** for owner diagnosis: resolved model/deployment/region/SKU, correlation
-id, instruction/configuration hashes, the effective redacted prompt, admitted and
-displaced context, durable memory/document source versions, tools offered, and
-tools invoked with bounded credential-redacted arguments/results. A skill load
-records its source URI, version/default resolution, content hash, and truncation.
+Activity shows observable work: searching, reading, invoking tools, being
+blocked, or failing. A completed turn retains that bounded activity history.
 
-Neither panel is chain-of-thought. The app does not receive hidden model
-reasoning and does not claim to reconstruct it. Large payloads are shortened
-before persistence and retain their original redacted byte count and SHA-256.
-Auto-approval never hides this evidence: tool activity, arguments/results, usage,
-and safety coverage remain available, with approval provenance distinguishing
-session/run consent from an individual approval.
+An **Execution receipt** gives more detail: the effective redacted prompt,
+model/region, admitted and displaced context, source versions, offered and
+invoked tools, bounded arguments/results, approvals, usage, and safety coverage.
+Loaded skills include their source URI, version resolution, hash, and truncation.
+Long workflows also retain independently bounded step receipts.
+
+**These are not chain-of-thought.** They show what the application supplied and
+executed, not the model's private reasoning or proof of which source caused an
+answer. Shortened payloads retain their original redacted size and digest.
 
 ## Documents and media
 
-The composer has one **Attach** action for documents, images, audio, and video.
-The API advertises and enforces the actual type, size, count, modality, and ingest
-path limits. Uploads are queued sequentially, show progress/failure, and can be
-retried or dismissed.
-The Attach control remains disabled until those capabilities load. An uploaded
-library document appears as selected context only after the session association
-succeeds. Active uploads temporarily block conversation navigation so a late
-completion cannot attach to or appear in another conversation.
-AI4IA has two storage/context paths:
+The single **Attach** control accepts the types and limits advertised by the
+server. Uploads run sequentially with visible progress and retry/dismiss actions.
+A library upload becomes selected conversation context only after association
+succeeds. Navigation is temporarily blocked while an upload is active so it
+cannot land in a different conversation.
 
-- **Session attachments** add bounded text to the current chat only.
-- **Document library** uploads a reusable, user-owned document, enriches it,
-  indexes chunks for retrieval, and makes it available to library tools.
+| Path | Use it for | Lifetime and scope |
+| --- | --- | --- |
+| Session attachment | One-off material for this chat | Bounded, session-scoped context; not a reusable library entry |
+| Document library | Reusable documents, images, audio, or video | Owner-scoped source bytes, analysis, manifest, and retrieval index |
 
-Library documents move through ingest states. Only `ready` documents contribute to
-RAG, media deep-links, save-to-memory, sharing, `fetch_document`, `run_code`,
-`export_document`, or `process_document`.
+Only **ready** library documents participate in retrieval, sharing, media
+deep-links, memory saves, and document tools. Upload acceptance alone does not
+mean analysis and indexing have completed.
 
-The Library **Analyzer** selector chooses the extraction pathway before upload:
+### Choose an analyzer
 
-- **Automatic · Content Understanding** is the recommended default and selects
-  the modality-appropriate Azure Content Understanding analyzer for documents,
-  images, audio, and video.
-- **Mistral Document AI** and **Mistral OCR 4** are explicit PDF/image pathways.
-  Each request is capped at 30 pages and 30 MB. Their Markdown is normalized into
-  the same canonical `parsed.md` → chunk → embed → search pipeline; the document
-  card records provider, model, page count, region, and residency.
-- When the environment enables CU preview, **Content Understanding Read** and
-  **Layout** are synchronous choices for small files (10 MB; first five PDF
-  pages). They return before the upload request finishes and are clearly marked
-  Preview. Automatic remains the GA pathway.
-- Ready CU documents can show confidence and grounding counts. Choose
-  **Evidence** to inspect owner-scoped structured fields, signatures, metadata,
-  usage, and content-filter details. Confidence thresholds are workload- and
-  field-specific; recalibrate them whenever an analyzer or model changes.
+- **Automatic - Content Understanding** chooses the modality-appropriate Azure
+  analyzer and is the normal default.
+- **Mistral Document AI / Mistral OCR 4** are explicit PDF/image alternatives,
+  limited to 30 pages and 30 MB per request.
+- When enabled, **Content Understanding Read / Layout** are preview,
+  synchronous options for small files: 10 MB and the first five PDF pages.
 
-The selected analyzer is part of the dedupe key, so uploading the same bytes
-through two analyzers creates two independently attributable results rather than
-silently changing an existing document.
+The analyzer is part of deduplication: the same bytes analyzed two ways produce
+separately attributable results. Ready Content Understanding documents can expose
+**Evidence** with structured fields, confidence, grounding, and provider details.
+Confidence needs workload-specific interpretation; it is not a correctness
+guarantee. See [document and multimodal understanding](document-multimodal-understanding.md).
 
 ### Where Azure AI Search fits
 
-There is **no separate "upload to AI Search" surface, and you do not need one.**
-Azure AI Search is not a second destination you send files to — when it is
-configured it is the chunk index sitting behind the document library, used on
-every library upload and every retrieval:
+You do not upload separately to Search. Library ingestion extracts content,
+chunks it, obtains embeddings, and indexes the chunks. Retrieval combines
+keyword and vector search, with semantic reranking when configured.
 
-1. You upload a file and pick an analyzer (Content Understanding, or Mistral).
-2. The parsed Markdown is chunked and embedded.
-3. Those chunks are written to **your own** search index.
-4. Chat retrieval and `fetch_document` query that index — a hybrid of vector
-   similarity and BM25 keyword match, with the semantic reranker on top.
+Deployments can use per-user or shared indexes; access filtering still applies
+to every query. An explicit conversation selection is an allowlist. Clearing it
+to an empty selection disables library context; older sessions without a
+selection retain the all-accessible behavior. Revoked sharing is rechecked, so
+a stale selected id cannot restore access.
 
-So the Library upload *is* the AI Search ingestion path.
-
-Each user gets a dedicated index, and every query is *additionally* filtered to
-your user id, so isolation does not depend on the routing being right. A query
-can be narrowed further to an explicit document selection.
-
-It is derived state, not a source of record. Cosmos holds the manifests and Blob
-holds the raw bytes and `parsed.md`, so the index can be rebuilt without data
-loss if it is ever dropped. Deleting a document removes its chunks immediately.
-
-If the deployment has no Search service configured the pipeline still works —
-retrieval falls back to an in-process store — so a missing Search endpoint
-degrades quality, not correctness.
+Search is derived state. Cosmos owns the manifest and Blob owns the source
+bytes and parsed artifacts. Without a Search endpoint, the library uses an
+in-memory chunk store even outside local development. That index is replica-local
+and lost on restart; stored summaries and parsed-document reads remain available.
+It is not equivalent to shared, persistent retrieval on a scaled deployment.
 
 ### Managing the index
 
-Four owner-only operations, all under `/api/library`:
+Owner-scoped maintenance endpoints under `/api/library` separate retrieval from
+the original document:
 
-| Action | Endpoint | What it costs |
-|---|---|---|
-| Inspect | `GET /documents/{id}/index` | nothing |
-| Rebuild one | `POST /documents/{id}/reindex` | embeddings only |
-| Rebuild all | `POST /documents/reindex` | embeddings only |
-| Drop from retrieval | `DELETE /documents/{id}/chunks` | nothing |
+| Action | Endpoint | Additional model work |
+| --- | --- | --- |
+| Inspect one | `GET /documents/{id}/index` | None |
+| Rebuild one | `POST /documents/{id}/reindex` | Embeddings |
+| Rebuild all your ready documents | `POST /documents/reindex` | Embeddings |
+| Remove one from retrieval | `DELETE /documents/{id}/chunks` | None |
 
-"Rebuild all" means every *ready* document in **your own** library — the endpoint
-is per authenticated user and there is no cross-user variant.
+Reindexing reuses saved extraction, not another analyzer run. The saved
+`chunks.jsonl` sidecar preserves boundaries and media grounding; older documents
+without it fall back to parsed Markdown and may lose time grounding.
+Removing chunks leaves the document and analysis intact. These are maintenance
+operations, not agent tools; rebuilding is metered and entitlement-gated.
 
-**Reindex does not re-run the analyzer.** The provider's output is already
-durable — `chunks.jsonl` holds the exact chunk text and its grounding — so a
-rebuild re-embeds and re-indexes without re-billing Content Understanding or
-Mistral. It also reproduces the original chunk boundaries exactly, which matters
-because citations already stored against the document point at them; re-chunking
-could silently move them. Documents indexed before that sidecar existed fall
-back to re-chunking `parsed.md`, which loses audio/video time grounding.
+### Sharing
 
-**Dropping chunks is not deleting the document.** The file, its parsed Markdown,
-and its analysis all stay; only the searchable vectors go, and a reindex brings
-them back. Use it to take a document out of retrieval without losing it.
+**Private** means owner-only, **shared** grants read access by email, and
+**public** means readable by authenticated users of the configured tenant.
+Public does **not** create an anonymous internet link.
 
-Rebuilding spends on embeddings, so it takes the same entitlement gate as an
-upload. Inspecting and dropping do not.
-
-These are **not** exposed as agent tools. Reindexing is a maintenance action
-whose cost scales with the size of a library, and a model deciding mid-turn to
-rebuild every document is a bad failure mode; the agent reads the index through
-normal retrieval instead.
-
-Sharing is tenant-scoped:
-
-- `private` means owner-only.
-- `shared` grants read access by email.
-- `public` means tenant-authenticated users can read it. It is not an anonymous
-  internet link.
-
-Owned and shared documents can be explicitly selected for a conversation. A missing
-selection retains legacy all-accessible behavior, an explicit empty selection disables
-library context, and a non-empty selection is an exact allowlist. Revoking a share
-removes that document from effective retrieval and tools immediately, even if its
-stale id remains in an older session record.
+Sharing revocation affects subsequent reads. It does not erase snippets already
+saved in another conversation or its historical receipt.
 
 ## Voice
 
-- Turn-based transcription and text-to-speech use compatible HTTP calls on the
-  normal `FastAPI -> SimpleL7Proxy -> APIM -> Foundry` path. The **Play** control
-  synthesizes an assistant message independently of any Voice Live connection.
-- Voice Live uses a browser WebSocket directly to the API ingress because the
-  Next.js proxy does not proxy WebSockets.
-- The API still enforces auth, Origin checks, entitlements, metering, deployment
-  selection, and optional governed tools.
-- The orange live microphone starts and stops Voice Live inside the current chat.
-  The normal transcript and composer stay available, and finalized spoken turns
-  are saved into that same session.
-- Open **Voice** under the Conversation Inspector's **Setup** tab to choose the
-  provider, provider model, voice, locale, temperature, turn detection,
-  transcription, noise/echo, and interruption behavior. Settings apply to the
-  next connection.
-- Voice has no separate instructions field. The selected agent persona is
-  authoritative; otherwise the saved conversation system prompt is injected by
-  the API for both providers.
-- Two providers are available when an operator enables both: **Azure OpenAI**
-  (the default, with a catalog realtime model and its usual voice/turn-detection
-  options) and **Azure Speech** (a second, opt-in provider with six curated
-  `eastus2` / stable `2026-04-10` managed models). `gpt-realtime` (the Speech
-  default) and `gpt-realtime-mini` are native audio with GPT-4o Transcribe;
-  `gpt-4.1`, `gpt-4.1-mini`, `gpt-5-mini`, and `gpt-5.1` use the Azure Speech
-  chain and Azure Speech transcription. Speech also offers curated built-in
-  voices, locale, noise suppression, echo cancellation, and turn detection;
-  there is no custom endpoint, lexicon, personal voice, or free-text model.
-- Changing the provider (or any other voice setting) applies starting with the
-  **next** connection, not the current one; it never triggers a silent reconnect
-  mid-session. The chat transcript and session are shared across both providers,
-  so switching providers keeps the same conversation. Azure OpenAI and Speech
-  retain separate model/settings selections. Existing v2 browser preferences are
-  migrated to v3; the new Speech model choice defaults to `gpt-realtime`.
-- You can type while Voice Live is connected. Typed turns are saved immediately
-  in the shared transcript; because an open realtime socket cannot be reseeded,
-  they become Voice Live context the next time it connects.
-- Starting Voice Live in an empty chat does not create a chat record until a real
-  finalized voice turn needs saving. Denied microphone access or a gateway failure
-  leaves the session list unchanged; use the inline **Retry** action after fixing
-  connectivity. This holds for both providers.
-- **Stop** tears down capture and the socket independently of transcript
-  persistence. If saving finalized voice turns fails, use **Retry** or **Discard**;
-  a persistence error does not keep the microphone live or trap navigation.
-- If the browser reports that the microphone track ended/became muted, or its audio
-  processing context cannot recover, Voice Live closes completely and asks you to
-  reconnect instead of remaining silently "live."
+The orange microphone starts and stops Voice Live in the current conversation.
+Finalized spoken turns are saved to the normal transcript. **Play** on an
+assistant message is separate text-to-speech and does not require a live socket.
 
-If Voice Live controls are hidden, the feature is disabled for that environment. If
-only the provider selector is hidden, only the default provider is configured.
+Open **Setup > Voice** for provider, model, voice, locale, and supported audio
+options. Azure OpenAI uses catalogued realtime deployments. Optional Azure
+Speech uses a curated managed-model catalog in East US 2; it does not accept
+arbitrary model names, custom endpoints, or personal voices.
+
+Settings apply to the **next connection** without silently reconnecting the
+current one. The API supplies the selected agent persona or saved conversation
+instructions; voice has no competing instructions field.
+
+You can type while connected. Typed turns save immediately but enter the live
+provider's context on its next connection. A failed microphone permission or
+connection attempt does not create an empty conversation. If saving finalized
+turns fails, use **Retry** or **Discard**; stopping still releases the microphone
+and socket. A lost/muted microphone or unrecoverable audio context closes the
+connection rather than leaving a misleading "live" indicator.
+
+Voice connects directly to the API's WebSocket ingress, through its separately
+scoped APIM route. It does not bypass authentication, Origin validation,
+entitlements, metering, or tool governance.
 
 ## Generated artifacts
 
-Image, video, document-processing, and export tools return durable artifacts when
-the relevant feature and storage are configured. Artifacts are served through
-authenticated API routes rather than public blob URLs.
+Image, video, processing, and export tools create durable artifacts when enabled.
+Downloads use authenticated API routes, not anonymous Blob links.
 
-For images, open **Setup → Agent & tools → Image generation** in an existing
-conversation. Select one to three models plus a size and quality shared by all of
-them, then save. **Start image in chat** (or **Start comparison in chat**) prepends
-`/generate_image` to the composer without discarding a draft. The next image
-request snapshots the saved setup and sends the same prompt to every selected
-model. You can change the selection between any two turns.
+For images, open **Setup > Agent & tools > Image generation** in a saved
+conversation. Select one to three models and a size/quality they share, then
+save. **Start image in chat** or **Start comparison in chat** adds
+`/generate_image` without discarding your draft. Each request snapshots the setup;
+comparison output stays in selection order and records its model and deployment
+provenance.
 
-Comparison results remain in selection order and each image records its model,
-provider, deployment region/data zone, size, quality, and best-effort cost. A
-published estimate is labelled as such; **Cost estimate unavailable** means no
-unambiguous Azure retail meter is mapped and never means free.
+Video generation is asynchronous and slower than a text reply. Supported clip
+lengths are 4, 8, or 12 seconds, with 4 seconds as the default.
 
-`/generate_video` uses the configured Sora 2 deployment. The supported clip
-lengths are 4, 8, or 12 seconds; the default is 4 seconds. Video generation is
-asynchronous and can take materially longer than a text or image response.
-
-When the selected chat model cannot call tools, the inspector disables the
-conversation tool toggles and the server ignores stale conversation-level tool
-overrides. Pre-built agents and workflows that require tools still reject an
-incompatible model instead of silently skipping their configured capabilities.
+**Cost estimate unavailable** is not free. Published estimates can differ from
+Azure billing, especially for provider-specific media meters.
 
 ## Memory
 
-When memory is enabled, AI4IA can recall prior user context and can save ready
-document summaries to memory. The inspector lists only memories owned by the
-current user. You can create a memory, edit it inline, or delete it after an
-item-labelled confirmation. Pending, conflict, error, and retry states stay on
-the affected item rather than disabling the whole inspector.
+Memory can carry personal context between conversations. In **Context > Memory**,
+you can create, edit, or delete your own records. User-created or edited memories
+are protected from automatic consolidation.
 
-Memories you create or edit are locked against automatic consolidation. `/forget`
-removes this conversation's memories by default; `/forget me` removes all active
-memories for your profile. Document deletion also fences and removes memories
-derived from that document. A turn's execution receipt shows the identity,
-version, score, hash, and admitted text of each automatic memory supplied to that
-turn. There is no per-user memory capability switch yet.
+`/forget` removes this conversation's memories; `/forget me` removes all active
+memories for your profile. Deleting a document also fences and removes memory
+derived from it. A stale edit produces a conflict rather than overwriting a
+newer version.
 
-The Usage section reports known token, image, page, and cost subtotals plus request
-coverage when providers omit a billing dimension. `Unknown` is shown instead of
-zero when every request is unknown. Prompt pressure refers only to the latest
-token-metered turn and is unavailable when that turn used a different model or
-lacks prompt-token metadata.
+The execution receipt identifies the memories admitted to a turn, including
+their versions, hashes, and admitted text. Deleting active memory does not
+rewrite old answers or historical receipts, and provider backups retain their
+own retention window. There is **no per-user memory enable/disable switch**.
+See [memory architecture](memory.md) for the deletion boundary.
 
 ## Custom tools and web search
 
-Custom MCP servers and Web IQ search tools are feature-gated. When enabled:
+Custom MCP servers and WebIQ require deployment support. MCP connection secrets
+live in Key Vault outside local development. Remote endpoints are checked before
+discovery and again when invoked. Neither a remote server nor a retrieved page
+can grant itself permission.
 
-- MCP server credentials are stored in Key Vault outside local development.
-- Remote MCP endpoints pass an SSRF guard before discovery and each use.
-- WebIQ contributes eleven server-side tools. Their output is bounded,
-  credential-redacted, and treated as untrusted model context.
+Ask for live information in chat, or use `/research <query>`. WebIQ is a tool
+provider, not an `@webiq` agent. The available model tools are:
 
-These tools identify their provider to the model as **Microsoft WebIQ (Web IQ)**;
-the generic function names do not represent a different search service. Ask for
-WebIQ in ordinary chat, or use `/research <query>` to request live research
-explicitly, for example `/research current weather in Chicago`. WebIQ is a tool
-provider, not a built-in `@webiq` agent. It still requires an enabled deployment
-and a tool-capable model; `/research` does not bypass approval requirements.
-
-| Tool | Available capabilities |
+| Tool | Purpose |
 | --- | --- |
-| `web_search` | Web results, source metadata, passage/text/HTML/Markdown content, language/region/location, custom-search configuration and domain include/exclude filters |
-| `news_search` | News, publisher/source URLs, timestamps, thumbnails and content formats; use classic search for date filtering |
-| `video_search` | Videos and playlists, summaries, timestamped moments, embedding metadata, freshness, duration and resolution filters |
-| `image_search` | Existing images, host-page links, captions, thumbnails, dimensions, aspect/size/color/watermark and pixel-bound filters |
-| `browse_url` | Public HTTPS page content, returned web/image links, cache/fallback/forced live crawl, and dynamic-page rendering |
-| `classic_search` | All 30 supported answer categories, including structured weather, finance, sports, places, maps/directions, facts, events, jobs, recipes, travel and time zones |
-| `finance_search` | Instrument prices, volume, currencies and available as-of/source metadata |
-| `places_search` | Local places/businesses and available location, hours, ratings and contact data |
-| `sports_search` | Schedules and available scores/event data, with relative/date-range filtering |
-| `sonic_search` | Fast or advanced blended web/news/finance search with answer filters |
-| `web_autosuggest` | Query completions; internal beta and subject to upstream entitlement, not a factual answer source |
+| `web_search` | Web results and source content |
+| `news_search` | News, publisher information, and timestamps |
+| `video_search` | Videos, playlists, summaries, and timestamped moments |
+| `image_search` | Existing images and source-page metadata |
+| `browse_url` | Public HTTPS page content and returned links |
+| `classic_search` | Structured answers such as weather, finance, places, and events |
+| `finance_search` | Instrument prices and available as-of metadata |
+| `places_search` | Places, businesses, hours, and available contact data |
+| `sports_search` | Schedules, scores, and event data |
+| `sonic_search` | Blended web/news/finance search |
+| `web_autosuggest` | Query suggestions; beta entitlement, not an answer source |
 
-Use ordinary instructions to select these capabilities, for example
-`/research current Chicago weather and the forecast, using structured weather results`,
-or ask for videos with timestamped moments. The names above are model tools, not
-eleven new slash commands. Language, region, location and other filters are
-accepted only on endpoints that support them. Classic search may select from all
-30 categories but returns at most six answer types per call. An omitted answer
-type is not proof that no such information exists.
+These are tools, not eleven slash commands. Filters vary by endpoint. Classic
+search supports 30 categories but returns at most six answer types per call.
+An omitted type is not evidence that no information exists.
 
-The server keeps safe search strict and limits results, nested metadata and total
-output. Returned links are not automatically followed. A page crawl can return
-`pending` with retry timing instead of page content; that is not an empty page
-and does not trigger background polling. Additional endpoint access is controlled
-by WebIQ, so a configured credential does not prove every beta/vertical endpoint
-is entitled. Failures appear in tool results and admin Web search health.
+Safe search stays strict; output is bounded, redacted, and treated as untrusted.
+Returned links are not followed automatically. A crawl may report `pending`
+instead of content; there is no implied background polling. Credentials do not
+prove entitlement to every vertical or beta endpoint.
 
-By default, some tool calls are held until you approve them. You will see a card naming the
-tool, where the call is going, and the arguments it would send; the reply arrives
-normally and the call runs only after you approve *that* card. Approving one call
-does not approve the next one, and the approval expires in ten minutes.
+### Approving a call
 
-`browse_url` (fetching a web page) and `run_code` (running code over one of your
-documents) ask every time, because the model picks the address or the program.
-WebIQ searches/suggestions, image and video generation, and saving to memory ask only when the
-turn also contained something the assistant read on your behalf — a document you
-uploaded, a saved memory, or an earlier tool result — since that is the case where
-the request may not have come from you. An ordinary search or "remember that I
-prefer X" is not interrupted.
+Under the default policy, browsing and sandbox computation require approval
+because the model chooses a destination or program. Other outbound first-party
+tools, such as WebIQ search, prompt when the turn also carries untrusted
+document, memory, or tool context.
 
-If you did not ask for what the card describes, do not approve it: a document can
-contain text written to make the assistant act on the author's behalf rather than
-yours, and the card is where that becomes visible.
-
-If the controls are hidden, the feature is disabled for that environment.
+The card identifies the tool, destination, and bounded argument preview.
+Warnings identify hidden or omitted arguments. Approve only if the action
+matches your intent: a source can contain instructions designed to steer the
+assistant. Each approval is bound to one call's exact arguments, expires after
+ten minutes, and cannot authorize a different call or conversation.
 
 ### Auto-approving enabled tools
 
-If the operator enables this feature, you can explicitly opt in for the current
-session or for one workflow run. The option starts off. It does **not** enable
-every tool in the catalog: it authorizes calls only within the enabled-tool
-scope the server records when you consent.
+When available, **Setup > Agent & tools** lets you opt in for the current saved
+conversation. **Run & test** has a separate per-run workflow choice that resets
+for the next invocation. Consent is not active until the server confirms it.
 
-For a saved conversation, use the consent control in **Setup > Agent & tools**.
-The active state, covered tool count, and expiry (at most eight hours) remain
-visible outside the inspector. **Revoke auto-approval** works without
-waiting for the current reply to finish. New tools or changed tool contracts
-require renewed consent; expired or revoked consent no longer skips prompts.
+Consent covers only the recorded enabled-tool contracts, lasts at most eight
+hours, and can be revoked. New tools or changed contracts need renewed consent.
+Session consent does not authorize a workflow invocation. A workflow step that
+requires approval but has no run consent fails visibly rather than running with
+unattended authority.
 
-For a workflow, opt in in **Run & test** before starting that invocation. The
-choice applies to that run, including durable execution, not to every future run
-of the saved workflow; the checkbox resets for the next run. A requested opt-in
-is not displayed as active until the server confirms consent. Use
-**Revoke auto-approval & stop run** to stop subsequent calls/steps. Session
-consent does not automatically approve workflow
-runs. Without run consent, a step that needs a gated call fails visibly rather
-than executing without authority; `/run_workflow` in chat remains restricted to
-safe, read-only workflows.
+**The tradeoff is real:** hostile source content can influence later calls
+while per-call prompts are skipped. Ownership, scopes, destination checks, and
+usage limits still apply, and activity/receipts retain approval provenance.
+Revocation stops subsequent dispatch; it cannot undo an external request already
+in flight. **Revoke auto-approval & stop run** preserves completed/partial
+workflow evidence.
 
-**Understand the tradeoff:** a malicious webpage or document can influence the
-model's later tool calls. Auto-approval removes your opportunity to inspect each
-call before it runs. Ownership, permission, destination and usage limits still
-apply, and activity and execution receipts are still retained. Revocation stops
-subsequent dispatch; it cannot undo an external request already in flight.
-Workflow results expose independently bounded **Step execution receipts** as well
-as the aggregate receipt, so a long run does not hide later steps when the
-aggregate detail limit is reached. Historical receipts without approval
-provenance are shown as unrecorded, not assumed auto-approved.
+## Usage and admin views
 
-## Admin views
+Usage reports known token, image, page, and estimated-cost subtotals with coverage.
+Missing billing dimensions remain **Unknown**, not zero. Prompt pressure
+describes the latest token-metered turn and may be unavailable after switching
+models or when the provider omits prompt usage.
 
-Admins can open usage, analytics, and resource dashboards. The API enforces admin
-access on every endpoint; the web app only hides the navigation for non-admin users.
+Application quotas are **soft preflight checks, not hard spending caps**.
+Concurrent requests can overshoot, missing provider prices/usage can undercount,
+and ledger-check failures can allow work. Azure budget notifications are also
+alerts rather than a mechanism that stops spending.
 
-Usage and analytics panels are read-only over a selectable day window (default 30,
-maximum 90):
-
-- **Tokens by model** and **Tokens by day** — token consumption broken down by model
-  and over time.
-- **Top users** — highest-volume users by requests, tokens, and estimated cost.
-- **Agents in use** — per-agent request counts, with errored and cancelled requests
-  called out so failing agents are easy to spot.
-- **Who uses which agents** — a user-by-agent cross-tab.
-- **Requests by region**, **Requests by data zone**, and **Requests by deployment** —
-  where traffic actually lands across the catalog.
-- **Request status mix** — completed versus cancelled versus errored requests.
-
-Each analytics panel is computed from a single bounded scan of usage records and
-flags when a window was truncated, so large tenants stay responsive. User identities
-are shown as stable internal identifiers; see the troubleshooting note below.
-
-Platform resources shows live Azure Monitor metrics for the deployment's Container
-App (requests, response time, replicas, restarts), Cosmos DB, and Azure AI Search.
-Each tile degrades to unavailable when its Azure resource id, the
-`azure-monitor-query` SDK, or the API identity's Monitoring Reader permission is
-missing; a `—` cell means no data for that metric, not an error.
-The whole Cosmos panel uses the common one-hour grain required by
-`ServiceAvailability`. Metrics with incompatible aggregations are split into
-separate calls so one unsupported combination cannot invalidate the whole panel.
-
-Operations and Security panels query the existing Log Analytics workspace with
-fixed bounded KQL. Every panel names its source, source timestamp, lag, and
-`ok`/`partial`/`stale`/`unavailable` state. Request and dependency panels include
-p50/p95/p99 latency where Application Insights data exists. Voice, tools/MCP,
-documents, memory, usage coverage, and governance blocks are metadata-only.
-Exact SimpleL7Proxy queue/fairness/circuit-breaker metrics remain unsupported unless
-the current proxy exports stable queryable events.
+Admin access is enforced by the API. Admins can inspect usage by model, user,
+agent, date, deployment, and request outcome, plus Azure resource metrics and
+fixed-query operations panels. Capped scans are labelled truncated; unavailable,
+partial, and stale sources remain distinguishable. Telemetry does not provide
+complete proxy queue/fairness or provider-quota forecasting.
 
 ## Data boundaries
 
-- User identity is normalized at the API boundary.
-- Sessions, messages, usage, agents, workflows, MCP server records, and document
-  manifests are canonical in Cosmos DB.
-- Derived memory vectors, search indexes, chunks, parsed artifacts, and media
-  sidecars can be rebuilt from canonical records and blob storage.
-- Model calls route through the configured gateway unless a native Azure service
-  control plane is required.
+Cosmos is canonical for conversations, usage, agents/workflows, document
+manifests, and **memory text and vectors**. Blob holds source documents and
+generated artifacts. Search indexes and document chunks are rebuildable;
+deleting canonical data is a different operation.
 
-## Known gaps
+Conversation deletion is not transactional erasure across all stores: an
+already-authorized concurrent write can leave an orphaned child record. A
+durable cleanup/reconciliation design is still needed; do not treat a successful
+delete response as a physical-erasure guarantee.
 
-- Custom analyzer authoring, folder-level sharing, and anonymous public links are
-  not implemented.
-- Memory has no global user-facing enable/disable preference.
-- Some proxy/APIM/provider stage percentiles and quota forecasts remain unavailable
-  until the current telemetry sources expose stable dimensions; the admin UI labels
-  those states rather than fabricating zeroes.
+A model's region or data-zone selection concerns inference routing, not where
+your conversation and documents are stored. Global deployments are not
+region-resident just because their account has a regional name. Read the
+[region and capability map](region-capability-matrix.md) before using sensitive
+material with a residency requirement.
+
+Provider safety assessments are observations, not proof of safety. AI4IA's
+recorded policy is non-blocking assessment visibility; provider-native refusals
+still apply and modality coverage remains incomplete.
 
 ## Troubleshooting
 
-| Symptom | What it usually means |
+| Symptom | First thing to check |
 | --- | --- |
-| Feature controls are missing | The web feature flag is off or the API feature is disabled. |
-| A library route returns disabled/not found | Document understanding is not enabled or prerequisites failed startup validation. |
-| A document does not appear in chat | It is not `ready`, not accessible to you, or retrieval is capped for the turn. |
-| Voice Live reports that the gateway or realtime service is unavailable | The active provider's APIM WebSocket API, its scoped key, or its upstream backend (Foundry for Azure OpenAI, the Azure AI Services account for Azure Speech) is unavailable. Retry after gateway health is restored; each provider's API and key are independent, so one provider's outage does not necessarily affect the other. |
-| Voice Live fails before opening the socket | API public URL, Origin allowlist, browser microphone permission, or auth is misconfigured. |
-| Voice Live was connected but stopped hearing me | The browser muted or ended the microphone track, or audio processing could not recover. The app now closes the session and shows a reconnect message; confirm OS/browser input state before retrying. |
-| Azure Speech is not offered as a provider | The operator has not enabled it (`AI4IA_SPEECH_VOICE_LIVE_ENABLED` off, or it is not in the server's voice provider allowlist). Azure OpenAI remains available. |
-| A provider/model change appears not to apply | Voice settings intentionally affect the next connection. Stop and reconnect; the current socket is never silently replaced. |
-| Azure OpenAI Voice Live fails while other paths work | The UI now reports bounded protocol/close details for operator correlation, but that alone does not prove an Azure OpenAI upstream cause. Report the time, provider/model, and safe correlation/error shown; do not paste tokens, audio, transcripts, prompts, or tool data. |
-| Admin resource panel is unavailable | The resource id is empty, the API identity lacks Monitoring Reader, or Azure Monitor data is unavailable. |
+| A control is missing | Deployment availability and the selected model's capabilities |
+| A document is absent from context | Ready state, access, explicit selection, and the turn's context budget |
+| A memory edit conflicts | Reload the latest record before retrying |
+| Voice fails before connecting | Microphone permission, sign-in, API URL, and allowed Origin |
+| Voice settings seem unchanged | Stop and reconnect; settings affect the next connection |
+| Speech is not offered | The operator's provider allowlist and Speech feature gate |
+| Search or another tool fails | Its visible error/approval state; an enabled gate does not prove upstream entitlement |
+| An admin panel is unavailable | Resource wiring, API identity permissions, and source freshness |
+
+Report the time, selected model/provider, and safe correlation/error code.
+Do not paste access tokens, prompts, audio, documents, or tool payloads into
+general operational logs.

@@ -208,7 +208,9 @@ async def _chat_schemas(
         from ..images.service import ImageGenerationService
 
         extra, _ = build_image_capability(
-            image_service=ImageGenerationService(catalog=state.catalog, gateway=state.gateway),
+            image_service=ImageGenerationService(
+                settings=state.settings, catalog=state.catalog, gateway=state.gateway,
+            ),
             artifact_store=state.image_artifacts, entitlements=state.entitlements,
             metering=state.usage, catalog=state.catalog, user_id=user_id,
             session_id=session.id, sink=[], preferences=session.imagePreferences,
@@ -220,7 +222,7 @@ async def _chat_schemas(
 
         extra, _ = build_video_capability(
             video_service=VideoGenerationService(
-                catalog=state.catalog, gateway=state.gateway,
+                settings=state.settings, catalog=state.catalog, gateway=state.gateway,
                 poll_interval_seconds=state.settings.gateway_video_poll_interval_seconds,
                 max_wait_seconds=state.settings.gateway_video_max_wait_seconds,
             ),

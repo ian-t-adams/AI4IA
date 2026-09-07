@@ -41,6 +41,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($Force -and -not $PSBoundParameters.ContainsKey('Confirm')) {
+    $ConfirmPreference = 'None'
+}
 . (Join-Path $PSScriptRoot 'azure-cli.ps1')
 Assert-AzureSubscription -Subscription $Subscription
 
@@ -52,7 +55,7 @@ foreach ($c in $cog) {
     if ($CognitiveAccountNames -notcontains $c.name) { continue }
     $loc = $c.location
     $rg  = ($c.id -split "/resourceGroups/")[1].Split("/")[0]
-    if ($Force -or $PSCmdlet.ShouldProcess("$($c.name) ($loc)", "Purge Cognitive account")) {
+    if ($PSCmdlet.ShouldProcess("$($c.name) ($loc)", "Purge Cognitive account")) {
         Write-Host "  purging $($c.name) in $loc ..." -ForegroundColor Yellow
         Invoke-AzureCli -Arguments @(
             'cognitiveservices', 'account', 'purge',
@@ -65,7 +68,7 @@ Write-Host "== Soft-deleted Key Vaults ==" -ForegroundColor Cyan
 $kv = Invoke-AzureCli -Arguments @('keyvault', 'list-deleted', '--output', 'json') | ConvertFrom-Json
 foreach ($v in $kv) {
     if ($KeyVaultNames -notcontains $v.name) { continue }
-    if ($Force -or $PSCmdlet.ShouldProcess("$($v.name) ($($v.properties.location))", "Purge Key Vault")) {
+    if ($PSCmdlet.ShouldProcess("$($v.name) ($($v.properties.location))", "Purge Key Vault")) {
         Write-Host "  purging $($v.name) ..." -ForegroundColor Yellow
         Invoke-AzureCli -Arguments @(
             'keyvault', 'purge', '--name', $v.name, '--location', $v.properties.location

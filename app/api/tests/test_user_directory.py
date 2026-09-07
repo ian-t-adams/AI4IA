@@ -6,7 +6,10 @@ the best-effort resolve (degrades to ``{}`` when disabled or on a store error).
 """
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
+
+import pytest
 
 from ai4ia_api.auth.base import AuthenticatedUser
 from ai4ia_api.directory.memory_repo import InMemoryUserDirectoryRepository
@@ -156,6 +159,53 @@ async def test_capture_evicts_when_over_capacity():
             await t
     # Cache is bounded; the oldest id ("a") was evicted, so it can capture again.
     assert svc.capture(_user("a")) is not None
+
+
+@pytest.mark.parametrize("finish_before_close", [False, True])
+async def test_close_drains_captures_before_repository_close(finish_before_close):
+    events: list[str] = []
+
+    class PendingRepo(InMemoryUserDirectoryRepository):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def upsert(self, entry):
+            self.started.set()
+            try:
+                await self.release.wait()
+                await super().upsert(entry)
+            finally:
+                events.append("capture_finished")
+
+        async def close(self):
+            events.append("repo_closed")
+
+    repo = PendingRepo()
+    svc = UserDirectoryService(repo)
+    task = svc.capture(_user("u1"))
+    assert task is not None
+    try:
+        await asyncio.wait_for(repo.started.wait(), timeout=2)
+        if finish_before_close:
+            repo.release.set()
+            await task
+        await svc.close()
+        assert task.done()
+        assert task.cancelled() is not finish_before_close
+        assert events == ["capture_finished", "repo_closed"]
+        assert bool(await repo.resolve(["u1"])) is finish_before_close
+        assert not svc._tasks
+
+        late = svc.capture(_user("u2"))
+        if late is not None:
+            late.cancel()
+            await asyncio.gather(late, return_exceptions=True)
+        assert late is None
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 # ---- resolve: bounded, best-effort ----

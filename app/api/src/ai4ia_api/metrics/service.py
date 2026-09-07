@@ -37,6 +37,7 @@ class _PanelSpec:
     # the whole call with 400 BadRequest otherwise, so a panel that mixes a
     # coarser-grained metric with finer ones must request the coarser grain.
     granularity_minutes: int | None = None
+    endpoint_attr: str | None = None
 
 
 # Curated, low-cardinality metric set per resource. Names are the Azure Monitor
@@ -46,6 +47,7 @@ PANEL_SPECS: tuple[_PanelSpec, ...] = (
         key="search",
         display_name="Azure AI Search",
         id_attr="metrics_search_resource_id",
+        endpoint_attr="metrics_search_endpoint",
         metrics=(
             MetricRequest(name="SearchQueriesPerSecond", label="Queries/sec", aggregation="average"),
             MetricRequest(name="SearchLatency", label="Search latency", aggregation="average", unit="s"),
@@ -113,11 +115,12 @@ class ResourceMetricsService:
     ) -> None:
         self._settings = settings
         self._querier = querier
+        self._queriers: dict[str, MetricsQuerier] = {}
         self._window = window_minutes
         self._granularity = granularity_minutes
-        # Whether we already tried (and failed) to construct the real querier, so
-        # we don't repeatedly pay the import/credential cost on every request.
-        self._querier_unavailable = False
+        # Cache construction failures per endpoint so one unavailable region
+        # neither suppresses the other panels nor repeats setup on every request.
+        self._unavailable_endpoints: set[str] = set()
 
     async def resources(self) -> ResourceMetricsReport:
         report = ResourceMetricsReport(windowMinutes=self._window)
@@ -138,7 +141,11 @@ class ResourceMetricsService:
             return ResourcePanel.unavailable(
                 spec.key, spec.display_name, "Resource id not configured."
             )
-        querier = await self._get_querier()
+        endpoint = (
+            (getattr(self._settings, spec.endpoint_attr) or "").strip()
+            if spec.endpoint_attr else ""
+        )
+        querier = await self._get_querier(endpoint or self._settings.metrics_endpoint)
         if querier is None:
             return ResourcePanel.unavailable(
                 spec.key, spec.display_name, "Azure Monitor client unavailable."
@@ -190,33 +197,39 @@ class ResourceMetricsService:
             metrics=points,
         )
 
-    async def _get_querier(self) -> MetricsQuerier | None:
+    async def _get_querier(self, endpoint: str | None) -> MetricsQuerier | None:
         if self._querier is not None:
             return self._querier
-        if self._querier_unavailable:
+        endpoint = (endpoint or "").strip().rstrip("/")
+        if endpoint in self._queriers:
+            return self._queriers[endpoint]
+        if endpoint in self._unavailable_endpoints:
             return None
-        endpoint = self._settings.metrics_endpoint
         if not endpoint:
             logger.warning(
                 "Azure Monitor metrics endpoint not configured "
                 "(AI4IA_METRICS_ENDPOINT); resource panels unavailable"
             )
-            self._querier_unavailable = True
+            self._unavailable_endpoints.add(endpoint)
             return None
         try:
             from .azure_monitor import AzureMonitorQuerier
 
-            self._querier = AzureMonitorQuerier(endpoint)
-            return self._querier
+            querier = AzureMonitorQuerier(endpoint)
+            self._queriers[endpoint] = querier
+            return querier
         except Exception:  # noqa: BLE001 - SDK/credential absent -> degrade
             logger.warning("Azure Monitor querier construction failed", exc_info=True)
-            self._querier_unavailable = True
+            self._unavailable_endpoints.add(endpoint)
             return None
 
     async def close(self) -> None:
-        close = getattr(self._querier, "close", None)
-        if close is not None:
+        for querier in (self._querier, *self._queriers.values()):
+            close = getattr(querier, "close", None)
+            if close is None:
+                continue
             try:
                 await close()
             except Exception:  # noqa: BLE001
                 logger.warning("resource metrics querier close failed", exc_info=True)
+        self._queriers.clear()

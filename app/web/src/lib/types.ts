@@ -673,6 +673,8 @@ export interface ImageModelOption {
 }
 
 export interface ImageOptionsResponse {
+  // Older API revisions omit this field; execution is always server-enforced.
+  enabled?: boolean;
   maxSelectedModels: number;
   currency: string;
   priceVersion: string | null;

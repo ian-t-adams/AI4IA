@@ -50,12 +50,7 @@ def _preflight_script() -> str:
     return steps[0]["run"]
 
 
-# Stub `az`. Records every invocation, and mimics the two output shapes the step
-# depends on: `show -o none` exits non-zero for a missing app, and the
-# customDomains tsv query prints nothing when an existing app has no domains.
-# Pure shell on purpose -- the CI job that runs this has no interpreter beyond
-# the one running unittest, and the fixture is a directory rather than JSON so
-# the stub needs no parser.
+# The directory fixture distinguishes absent resources from failed ARM reads.
 AZ_STUB = """#!/usr/bin/env bash
 echo "$*" >> "$AZ_CALLS_FILE"
 
@@ -67,6 +62,24 @@ for arg in "$@"; do
 done
 
 case "$*" in
+  *"group exists"*)
+    if [ -e "$AZ_STATE_DIR/group_lookup" ]; then
+      echo "ERROR: AuthorizationFailed" >&2
+      exit 1
+    fi
+    if [ -e "$AZ_STATE_DIR/group_missing" ]; then echo false; else echo true; fi
+    exit 0
+    ;;
+  *"containerapp list"*)
+    if [ -e "$AZ_STATE_DIR/app_inventory" ]; then
+      echo "ERROR: resource inventory unavailable" >&2
+      exit 1
+    fi
+    for path in "$AZ_STATE_DIR/apps/"*; do
+      [ -f "$path" ] && basename "$path"
+    done
+    exit 0
+    ;;
   *"hostname add"*)
     if [ -e "$AZ_STATE_DIR/dns_fail" ]; then
       echo "ERROR: Failed to validate domain ownership" >&2
@@ -80,6 +93,10 @@ case "$*" in
     exit 1
     ;;
   *customDomains*)
+    if [ -e "$AZ_STATE_DIR/domain_query" ]; then
+      echo "ERROR: domain query unavailable" >&2
+      exit 1
+    fi
     if [ ! -f "$AZ_STATE_DIR/apps/$app" ]; then
       echo "ERROR: app not found" >&2
       exit 1
@@ -103,6 +120,8 @@ class CustomDomainPreflightTests(unittest.TestCase):
         web_var: str = "",
         proxy_var: str = "",
         dns_ok: bool = True,
+        failures: tuple[str, ...] = (),
+        group_exists: bool = True,
     ) -> tuple[int, str, list[str]]:
         import tempfile
 
@@ -116,6 +135,10 @@ class CustomDomainPreflightTests(unittest.TestCase):
                 )
             if not dns_ok:
                 (statedir / "dns_fail").write_text("")
+            for failure in failures:
+                (statedir / failure).write_text("")
+            if not group_exists:
+                (statedir / "group_missing").write_text("")
             calls = tmpdir / "calls.txt"
             calls.write_text("")
 
@@ -169,6 +192,39 @@ class CustomDomainPreflightTests(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("would WIPE the binding", out)
         self.assertFalse([c for c in calls if "hostname add" in c])
+
+    def test_failed_inventory_stops_before_domain_changes(self) -> None:
+        apps = {"ca-web-slurmfactory": [], "ca-proxy-slurmfactory": []}
+        for failure in ("group_lookup", "app_inventory"):
+            with self.subTest(failure=failure):
+                code, out, calls = self.run_preflight(
+                    apps=apps,
+                    web_var="ai4ia.nomad-analytics.com",
+                    failures=(failure,),
+                )
+                self.assertNotEqual(code, 0, out)
+                self.assertIn("::error::", out)
+                self.assertFalse([c for c in calls if "hostname add" in c])
+
+        code, out, calls = self.run_preflight(
+            apps=apps, web_var="ai4ia.nomad-analytics.com"
+        )
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len([c for c in calls if "hostname add" in c]), 1)
+
+    def test_failed_domain_read_is_not_an_empty_binding(self) -> None:
+        apps = {
+            "ca-web-slurmfactory": ["ai4ia.nomad-analytics.com"],
+            "ca-proxy-slurmfactory": [],
+        }
+        code, out, calls = self.run_preflight(apps=apps, failures=("domain_query",))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("Could not read custom-domain bindings", out)
+        self.assertFalse([c for c in calls if "hostname add" in c])
+
+        code, out, _ = self.run_preflight(apps=apps)
+        self.assertEqual(code, 1, out)
+        self.assertIn("would WIPE the binding", out)
 
     # -- the first-bind bootstrap ---------------------------------------
 
@@ -236,6 +292,19 @@ class CustomDomainPreflightTests(unittest.TestCase):
     def test_greenfield_with_domains_empty_passes(self) -> None:
         code, out, calls = self.run_preflight(apps={})
         self.assertEqual(code, 0, out)
+        self.assertFalse([c for c in calls if "hostname add" in c])
+
+    def test_missing_resource_group_is_a_valid_greenfield_state(self) -> None:
+        code, out, calls = self.run_preflight(apps={}, group_exists=False)
+        self.assertEqual(code, 0, out)
+        self.assertFalse([c for c in calls if "containerapp list" in c])
+        self.assertFalse([c for c in calls if "hostname add" in c])
+
+        code, out, calls = self.run_preflight(
+            apps={}, group_exists=False, web_var="ai4ia.nomad-analytics.com"
+        )
+        self.assertEqual(code, 1, out)
+        self.assertIn("wrong order", out)
         self.assertFalse([c for c in calls if "hostname add" in c])
 
     def test_steady_state_no_domains_configured_passes(self) -> None:

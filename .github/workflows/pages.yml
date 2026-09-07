@@ -30,6 +30,8 @@ on:
     paths:
       - "site/**"
       - "docs/**"
+      - "scripts/_generator.py"
+      - "scripts/gen-docs-catalog.py"
       - "scripts/status-snapshot.ps1"
       - ".github/workflows/pages.yml"
   workflow_dispatch:

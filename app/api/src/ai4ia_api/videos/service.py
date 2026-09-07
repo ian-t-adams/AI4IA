@@ -20,6 +20,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from ..catalog import DeploymentOption, ModelCatalog
+from ..config import Settings
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..usage.models import ProviderCompletion, TokenUsage
 
@@ -122,17 +123,23 @@ class VideoGenerationService:
     def __init__(
         self,
         *,
+        settings: Settings,
         catalog: ModelCatalog,
         gateway: ModelGatewayClient,
         poll_interval_seconds: float = 5.0,
         max_wait_seconds: float = 240.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
+        self._settings = settings
         self._catalog = catalog
         self._gateway = gateway
         self._poll_interval = poll_interval_seconds
         self._max_wait = max_wait_seconds
         self._sleep = sleep
+
+    @property
+    def enabled(self) -> bool:
+        return self._settings.video_generation_enabled
 
     async def generate(
         self,
@@ -145,6 +152,8 @@ class VideoGenerationService:
         data_zone: str | None = None,
         correlation_id: str | None = None,
     ) -> VideoGenerationResult:
+        if not self.enabled:
+            raise VideoGenerationError(404, "Video generation is disabled.")
         clean_prompt = (prompt or "").strip()
         if not clean_prompt:
             raise VideoGenerationError(422, "Prompt must not be empty.")

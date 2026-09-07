@@ -137,6 +137,10 @@ applies the score threshold, and injects a bounded, explicitly untrusted context
 block. Explicit CRUD and forget are not best-effort: failures surface to the
 caller.
 
+The turn's execution receipt records which memories were admitted, including
+their source identity, version, score, hash, and admitted text. This is input
+provenance, not evidence of which memory caused a particular model statement.
+
 ## Concurrency-safe forgetting
 
 Deletion is not implemented as an uncoordinated query followed by blind deletes.
@@ -178,6 +182,9 @@ recreate orphaned memory after the source manifest is gone.
 - Azure backup retention and restore behavior are governed by the Cosmos account
   policy. Active deletion is not a promise of immediate physical removal from
   every provider-maintained backup.
+- Historical messages and execution receipts are not rewritten when a memory is
+  deleted. A receipt may retain the redacted text previously supplied to a turn;
+  it is separate from metadata-only telemetry and idempotency receipts.
 - The migration intentionally ignores replica-local SQLite history.
 
 ## Failure behavior
@@ -195,7 +202,8 @@ recreate orphaned memory after the source manifest is gone.
 ## Remaining gaps
 
 - There is no global user-facing memory consent toggle.
-- Answers do not yet identify which recalled memories influenced the response.
+- Receipts identify supplied memories, not hidden model reasoning or causal
+  influence on the answer.
 
 ## Primary implementation files
 

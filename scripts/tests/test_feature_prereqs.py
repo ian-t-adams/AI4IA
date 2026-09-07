@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -295,6 +296,79 @@ class DeploymentAttestationTests(unittest.TestCase):
             code, _, err = _run(REAL_PARAMETERS)
         self.assertEqual(code, 1)
         self.assertIn("first day of a month", err)
+
+    def test_combined_names_cannot_truncate_the_cosmos_uniqueness_suffix(self) -> None:
+        builders = []
+        for filename, prefix in (
+            ("data.bicep", "cosmos-"),
+            ("apimcore.bicep", "apim-mcp-"),
+            ("keyvault.bicep", "appcs-"),
+            ("eventhubs.bicep", "evhns-"),
+        ):
+            source = (ROOT / "infra" / "modules" / filename).read_text(encoding="utf-8")
+            shape = re.search(rf"take\('({prefix}[^']+)', (\d+)\)", source)
+            self.assertIsNotNone(shape, filename)
+            assert shape is not None
+            builders.append((filename, shape.group(1), int(shape.group(2))))
+        for workload, environment_name, valid in (
+            ("w" * 10, "e" * 12, True),
+            ("w" * 11, "e" * 12, False),
+            ("w" * 20, "e" * 20, False),
+            ("ai4ia", "slurmfactory", True),
+        ):
+            with self.subTest(workload=workload, environment=environment_name):
+                with _environment(
+                    AI4IA_WORKLOAD=workload, AZURE_ENV_NAME=environment_name
+                ):
+                    code, _, err = _run(REAL_PARAMETERS)
+                self.assertEqual(code, 0 if valid else 1, err)
+                if not valid:
+                    self.assertIn("unique suffix", err)
+                    continue
+                for filename, template, limit in builders:
+                    names = []
+                    for suffix in ("a" * 13, "b" * 13):
+                        rendered = (
+                            template.replace("${workload}", workload)
+                            .replace("${environmentName}", environment_name)
+                            .replace("${uniqueSuffix}", suffix)
+                        )[:limit]
+                        self.assertNotIn("${", rendered)
+                        self.assertTrue(rendered.endswith(suffix), filename)
+                        names.append(rendered)
+                    self.assertNotEqual(*names, msg=filename)
+
+    def test_foundry_token_cannot_truncate_regional_account_suffix(self) -> None:
+        original = json.loads((ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
+        source = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
+        shape = re.search(r"take\('(mf-[^']+)', (\d+)\)", source)
+        self.assertIsNotNone(shape)
+        assert shape is not None
+        template, limit = shape.group(1), int(shape.group(2))
+        region = max(original["regions"], key=len)
+        environment_name = "e" * 12
+        prefix = (
+            template.replace("${foundryToken}", "")
+            .replace("${environmentName}", environment_name)
+            .replace("${r.name}", region)
+            .replace("${uniqueSuffix}", "a" * 13)
+        )
+        self.assertNotIn("${", prefix)
+        safe_length = limit - len(prefix)
+        for token_length, valid in ((safe_length, True), (safe_length + 1, False)):
+            with self.subTest(token_length=token_length), tempfile.TemporaryDirectory() as tmp:
+                original["naming"]["foundryToken"] = "f" * token_length
+                models_path = Path(tmp) / "models.json"
+                models_path.write_text(json.dumps(original), encoding="utf-8")
+                with (
+                    _environment(AZURE_ENV_NAME=environment_name),
+                    patch.object(VALIDATOR, "MODELS_FILE", models_path),
+                ):
+                    code, _, err = _run(REAL_PARAMETERS)
+                self.assertEqual(code, 0 if valid else 1, err)
+                if not valid:
+                    self.assertIn("Foundry", err)
+                    self.assertIn("unique suffix", err)
 
 
 class PrimaryLocationCatalogTests(unittest.TestCase):

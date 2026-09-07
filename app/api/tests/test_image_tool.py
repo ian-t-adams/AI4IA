@@ -35,7 +35,7 @@ from tests.test_image_api import TINY_PNG_B64, FakeImageGateway
 
 
 def _client() -> TestClient:
-    app = create_app(make_settings(admin_subjects="alice"))
+    app = create_app(make_settings(admin_subjects="alice", image_generation_enabled=True))
     c = TestClient(app)
     c.__enter__()
     c.app.state.gateway = FakeImageGateway()
@@ -62,6 +62,7 @@ def _build_capability(
     preferences: ImageGenerationPreferences | None = None,
 ):
     service = ImageGenerationService(
+        settings=client.app.state.settings,
         catalog=client.app.state.catalog, gateway=client.app.state.gateway
     )
     tools, handlers = build_image_capability(

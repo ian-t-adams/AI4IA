@@ -50,6 +50,7 @@ class UserDirectoryService:
         # Keep references to in-flight fire-and-forget writes so they aren't GC'd
         # mid-flight; tasks discard themselves on completion.
         self._tasks: set[asyncio.Task] = set()
+        self._closed = False
 
     @property
     def enabled(self) -> bool:
@@ -91,9 +92,9 @@ class UserDirectoryService:
         """Schedule a best-effort directory upsert for ``user`` (or skip).
 
         Returns the scheduled task (handy for tests to await), or ``None`` when
-        the capture was skipped: feature disabled, no name AND no email to store,
+        capture was skipped: disabled/closed, no name AND no email to store,
         deduped within the window, or no running event loop. Never raises."""
-        if not self._enabled:
+        if not self._enabled or self._closed:
             return None
         user_id = user.internal_user_id
         name = user.name
@@ -142,6 +143,14 @@ class UserDirectoryService:
             return {}
 
     async def close(self) -> None:
+        """Stop capture and drain cancelled writes before closing their store."""
+        self._closed = True
+        tasks = list(self._tasks)
+        self._tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         close = getattr(self._repo, "close", None)
         if close is not None:
             await close()

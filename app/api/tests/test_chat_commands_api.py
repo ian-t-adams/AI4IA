@@ -184,6 +184,7 @@ def test_get_current_time_slash_command_runs_locally(client):
 
 def test_generate_image_slash_command_routes_through_model(client):
     """A capability tool becomes an ephemeral single-tool agent run via the model."""
+    client.app.state.settings.image_generation_enabled = True
     gw = _CapturingGateway()
     client.app.state.gateway = gw
     sid = _create_session(client)["id"]
@@ -202,6 +203,7 @@ def test_generate_image_slash_command_routes_through_model(client):
 
 
 def test_generate_image_slash_command_usage_when_empty(client):
+    client.app.state.settings.image_generation_enabled = True
     sid = _create_session(client)["id"]
     resp = client.post(
         "/api/chat", json={"sessionId": sid, "content": "/generate_image", "stream": False}

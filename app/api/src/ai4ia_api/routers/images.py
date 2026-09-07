@@ -94,6 +94,7 @@ class ImageModelOption(BaseModel):
 
 
 class ImageOptionsResponse(BaseModel):
+    enabled: bool
     maxSelectedModels: int = 3
     currency: str
     priceVersion: str | None = None
@@ -109,7 +110,11 @@ async def image_options(
     pricing = load_pricing()
     models: list[ImageModelOption] = []
     for entry in catalog.models:
-        if entry.category != "image" or not catalog.available(entry):
+        if (
+            not request.app.state.settings.image_generation_enabled
+            or entry.category != "image"
+            or not catalog.available(entry)
+        ):
             continue
         sizes = entry.imageSizes or ["1024x1024"]
         qualities = entry.imageQualities or ["auto"]
@@ -147,6 +152,7 @@ async def image_options(
             )
         )
     return ImageOptionsResponse(
+        enabled=request.app.state.settings.image_generation_enabled,
         currency=pricing.currency,
         priceVersion=pricing.version,
         models=models,
@@ -159,9 +165,14 @@ async def generate_images(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ImageResponse:
+    if not request.app.state.settings.image_generation_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Image generation is disabled."
+        )
     # The generation core is stateless; build it per request so tests that swap
     # app.state.gateway after startup are honored.
     service = ImageGenerationService(
+        settings=request.app.state.settings,
         catalog=request.app.state.catalog, gateway=request.app.state.gateway
     )
     entitlements: EntitlementService = request.app.state.entitlements
