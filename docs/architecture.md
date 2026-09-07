@@ -133,10 +133,12 @@ session, entitlements, provider, and allowed tools before opening APIM.
 Instructions come from the selected agent or saved conversation, not an
 independent client-controlled voice prompt.
 
-Azure OpenAI resolves a realtime deployment from the model catalog. Optional
-Speech Voice Live uses its own curated catalog, APIM API/key, and East US 2
-backend. Settings apply on the next connection. Finalized turns join the same
-conversation; a persistence failure cannot keep the microphone running.
+Azure OpenAI is the server-authoritative default in the shipped profile and
+resolves realtime deployments from the model catalog. Speech Voice Live defaults
+off in that profile and Bicep; when enabled, it uses its own curated catalog,
+APIM API/key, and East US 2 backend. Settings apply on the next connection.
+Finalized turns join the same conversation; a persistence failure cannot keep
+the microphone running.
 Turn-based transcription and text-to-speech remain ordinary gateway HTTP calls.
 
 ### Code Interpreter
