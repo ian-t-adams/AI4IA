@@ -6,7 +6,7 @@ import pytest
 from ai4ia_api.catalog import load_catalog
 from ai4ia_api.library.ai_search_chunks import AzureSearchDocChunkStore
 from ai4ia_api.library.doc_chunks import DocChunkRecord, InMemoryDocChunkStore
-from ai4ia_api.library.ingest_factory import build_document_ingestor
+from ai4ia_api.library.ingest_factory import _build_chunk_store, build_document_ingestor
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
 from ai4ia_api.main import create_app
 from tests.conftest import FakeUsage, make_settings
@@ -149,3 +149,13 @@ async def test_identical_local_fixture_keeps_usable_in_memory_chunks():
     assert not await ingestor.chunks.search(
         "another-owner", [1.0, 0.0, 0.0], 1, document_ids=["document"], query_text="text",
     )
+
+
+@pytest.mark.parametrize("env", ["local", "dev", "prod"])
+def test_ephemeral_chunk_factory_itself_is_local_only(env):
+    settings = _settings(env=env, search_endpoint=None)
+    if env == "local":
+        assert isinstance(_build_chunk_store(settings), InMemoryDocChunkStore)
+    else:
+        with pytest.raises(RuntimeError, match="AI4IA_SEARCH_ENDPOINT"):
+            _build_chunk_store(settings)
