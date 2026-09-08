@@ -36,6 +36,8 @@ const mocks = vi.hoisted(() => ({
   getImageOptions: vi.fn(),
   getInspector: vi.fn(),
   listMemories: vi.fn(),
+  getMemoryPreference: vi.fn(),
+  updateMemoryPreference: vi.fn(),
   getLibrarySummary: vi.fn(),
   createMemory: vi.fn(),
   updateMemory: vi.fn(),
@@ -53,6 +55,8 @@ function mockToolCatalog(tools: ToolCatalogItem[]): void {
 vi.mock("@/lib/inspector", () => ({
   getInspector: mocks.getInspector,
   listMemories: mocks.listMemories,
+  getMemoryPreference: mocks.getMemoryPreference,
+  updateMemoryPreference: mocks.updateMemoryPreference,
   getLibrarySummary: mocks.getLibrarySummary,
   createMemory: mocks.createMemory,
   updateMemory: mocks.updateMemory,
@@ -150,15 +154,20 @@ vi.mock("./MessageList", () => ({
     messages,
     conversationId,
     onCitation,
+    onInspectMemory,
   }: {
     messages: { id: string; content: string }[];
     conversationId?: string | null;
     onCitation?: (target: CitationTarget) => void;
+    onInspectMemory?: (memoryId: string | null) => void;
   }) => (
     <div aria-label="Conversation" data-conversation-id={conversationId ?? "draft"}>
       {messages.map((message) => (
         <div key={message.id}>{message.content}</div>
       ))}
+      {onInspectMemory ? (
+        <button type="button" onClick={() => onInspectMemory("owned")}>Open memory reference</button>
+      ) : null}
       {onCitation && [
         { label: "Open shared citation", documentId: "shared-media", filename: "shared.mp4", ms: 42_000 },
         { label: "Open newer citation", documentId: "newer-media", filename: "newer.mp4", ms: 84_000 },
@@ -226,6 +235,7 @@ const libraryDocument = (id: string, filename: string) => ({
 
 beforeEach(() => {
   resetChatAppMocks(mocks);
+  mocks.getMemoryPreference.mockResolvedValue({ automaticMemoryEnabled: true, etag: '"pref-0"' });
   mocks.getImageOptions.mockResolvedValue({ maxSelectedModels: 3, currency: "USD", priceVersion: "test", models: [] });
   mocks.getLibraryDocument.mockRejectedValue(new Error("not configured"));
   mocks.associateLibraryDocument.mockImplementation(
@@ -265,6 +275,23 @@ afterEach(() => {
 });
 
 describe("ChatApp landmarks", () => {
+  it("opens the memory inspector from the selected answer's reference", async () => {
+    mocks.listMemories.mockResolvedValue({
+      status: "ok", supportsCreate: false, supportsEdit: false, supportsDelete: false, detail: null,
+      items: [{
+        id: "owned", text: "Owner record reached from answer", source: "fact", sessionId: null,
+        documentId: null, createdAt: null, updatedAt: null, version: 1, etag: '"v1"',
+        origin: "implicit", locked: false,
+      }],
+    });
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(screen.getByRole("button", { name: "Open memory reference" }));
+    expect(await screen.findByText("Owner record reached from answer")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Memory" })).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("owns exactly one main landmark and the skip-link target", () => {
     render(<ChatApp />);
 

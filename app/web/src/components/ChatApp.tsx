@@ -229,6 +229,9 @@ export function ChatApp() {
   const uploadChainRef = useRef<Promise<void>>(Promise.resolve());
   const activeUploadCountRef = useRef(0);
   const [inspectorVersion, setInspectorVersion] = useState(0);
+  const [memoryTarget, setMemoryTarget] = useState<{
+    sessionId: string | null; memoryId: string | null; request: number;
+  } | null>(null);
 
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [params, setParams] = useState<ChatParams>({
@@ -2846,6 +2849,12 @@ export function ChatApp() {
           conversationId={activeId}
           onError={setError}
           onCitation={libraryEnabled ? handleCitation : undefined}
+          onInspectMemory={(memoryId) => {
+            setMemoryTarget((current) => ({
+              sessionId: activeId, memoryId, request: (current?.request ?? 0) + 1,
+            }));
+            if (rightIsCollapsed) toggleRightPanel();
+          }}
         />
         <InlineVoiceLiveStatus voice={inlineVoice} />
         <ToolApprovalPanel
@@ -2926,6 +2935,7 @@ export function ChatApp() {
           onToolConsentUpdated={onToolConsentUpdated}
           onToolConsentSnapshot={onToolConsentSnapshot}
           refreshKey={inspectorVersion}
+          memoryTarget={memoryTarget?.sessionId === activeId ? memoryTarget : undefined}
           models={models}
           agents={agents}
           selectedModel={selectedModel}

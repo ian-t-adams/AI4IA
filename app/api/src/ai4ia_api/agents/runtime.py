@@ -555,6 +555,12 @@ async def run_agent_turn(
                 cause=budget_error,
                 partial=current_partial_result(include_current_attempt=False),
             ) from budget_error
+        if ctx.prepare_model_context is not None:
+            await ctx.prepare_model_context(convo)
+            current_user_index = next(
+                index for index in range(len(convo) - 1, -1, -1)
+                if convo[index].get("role") == "user"
+            )
         if not effective_prompt:
             effective_prompt = copy.deepcopy(_observable_messages(convo))
         model_requests.append(copy.deepcopy(_observable_messages(convo)))

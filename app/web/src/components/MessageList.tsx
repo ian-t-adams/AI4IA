@@ -20,6 +20,7 @@ import { SAFETY_MAX_SEVERITY_LEVEL } from "@/lib/types";
 import { fetchImageArtifact, fetchVideoArtifact, fetchDocumentArtifact } from "@/lib/api";
 import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
 import { ActivityPanel, ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./ExecutionEvidence";
+import { MemoryProvenance } from "./MemoryProvenance";
 import { Markdown, type CitationTarget } from "@/components/Markdown";
 import { msToTimecode } from "@/lib/citations";
 import { DOCS_INDEX_URL, STATUS_URL, USER_GUIDE_URL } from "@/lib/docs";
@@ -566,12 +567,15 @@ function Bubble({
   speechState,
   onToggleSpeak,
   onCitation,
+  onInspectMemory,
 }: {
   msg: DisplayMessage;
   speechState: SpeechState;
   onToggleSpeak: (id: string, text: string) => void;
   onCitation?: (target: CitationTarget) => void;
+  onInspectMemory?: (memoryId: string | null) => void;
 }) {
+  const receiptRef = useRef<HTMLDivElement>(null);
   const isUser = msg.role === "user";
   const isSystem = msg.role === "system";
   if (isSystem) return null;
@@ -666,12 +670,27 @@ function Bubble({
         ) : null}
         {/* The turn's execution receipt, shown once settled so a receipt for a
             turn still in flight is never presented as the whole record. */}
-        {!msg.pending && msg.workflowStepReceipts?.length ? (
-          <WorkflowStepReceiptPanels receipts={msg.workflowStepReceipts} />
+        {!isUser && !msg.pending ? (
+          <MemoryProvenance
+            receipt={msg.executionReceipt}
+            workflowReceipts={msg.workflowStepReceipts}
+            onInspectMemory={onInspectMemory}
+            onOpenReceipt={() => {
+              const disclosure = receiptRef.current?.querySelector("details");
+              if (!disclosure) return;
+              disclosure.open = true;
+              disclosure.querySelector("summary")?.focus();
+            }}
+          />
         ) : null}
-        {!msg.pending && msg.executionReceipt ? (
-          <ExecutionReceiptPanel receipt={msg.executionReceipt} />
-        ) : null}
+        <div ref={receiptRef}>
+          {!msg.pending && msg.workflowStepReceipts?.length ? (
+            <WorkflowStepReceiptPanels receipts={msg.workflowStepReceipts} />
+          ) : null}
+          {!msg.pending && msg.executionReceipt ? (
+            <ExecutionReceiptPanel receipt={msg.executionReceipt} />
+          ) : null}
+        </div>
         {msg.attachments?.some((attachment) =>
           ["image", "image_error"].includes(attachment.kind)
         ) ? (
@@ -764,11 +783,13 @@ export function MessageList({
   conversationId,
   onError,
   onCitation,
+  onInspectMemory,
 }: {
   messages: DisplayMessage[];
   conversationId?: string | null;
   onError?: (message: string) => void;
   onCitation?: (target: CitationTarget) => void;
+  onInspectMemory?: (memoryId: string | null) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -898,6 +919,7 @@ export function MessageList({
               }
               onToggleSpeak={playback.toggle}
               onCitation={onCitation}
+              onInspectMemory={onInspectMemory}
             />
           ))
         )}

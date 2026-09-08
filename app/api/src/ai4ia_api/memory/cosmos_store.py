@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
 from .models import MemoryRecord
+from .preferences import (
+    MemoryPreference,
+    MemoryPreferenceConflict,
+    MemoryPreferenceUnavailable,
+)
 
 _STATE_ID = "state"
 _MEMORY_TYPE = "memory"
@@ -59,6 +64,7 @@ class MemoryState:
     etag: str
     cutoffs: tuple[ForgetCutoff, ...]
     updated_at: datetime
+    preference: MemoryPreference = field(default_factory=MemoryPreference)
 
 
 def operation_ids(user_id: str, idempotency_key: str) -> tuple[str, str]:
@@ -197,6 +203,52 @@ class CosmosMemoryStore:
                     item=_STATE_ID, partition_key=user_id
                 )
         return self._state_from_document(user_id, document)
+
+    async def get_preference(self, user_id: str) -> MemoryPreference:
+        from azure.cosmos.exceptions import CosmosHttpResponseError
+
+        try:
+            return (await self.capture_state(user_id)).preference
+        except (CosmosHttpResponseError, RuntimeError, ValueError) as exc:
+            raise MemoryPreferenceUnavailable("Memory preference is unavailable.") from exc
+
+    async def set_preference(
+        self, user_id: str, automatic_enabled: bool, *, expected_etag: str
+    ) -> MemoryPreference:
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosHttpResponseError,
+        )
+
+        try:
+            for _attempt in range(8):
+                state = await self.capture_state(user_id)
+                if state.preference.etag != expected_etag:
+                    raise MemoryPreferenceConflict(
+                        "Memory preference changed; reload and try again."
+                    )
+                if state.preference.automatic_enabled == automatic_enabled:
+                    return state.preference
+                preference = MemoryPreference(
+                    automatic_enabled, state.preference.version + 1
+                )
+                body = self._state_document(
+                    state, preference=preference, updated_at=_now()
+                )
+                try:
+                    await self._container.replace_item(
+                        item=_STATE_ID,
+                        body=body,
+                        etag=state.etag,
+                        match_condition=MatchConditions.IfNotModified,
+                    )
+                    return preference
+                except CosmosAccessConditionFailedError:
+                    continue
+        except (CosmosHttpResponseError, RuntimeError, ValueError) as exc:
+            raise MemoryPreferenceUnavailable("Memory preference is unavailable.") from exc
+        raise MemoryPreferenceConflict("Memory changed concurrently; retry the preference update.")
 
     async def get_operation(
         self,
@@ -941,6 +993,14 @@ class CosmosMemoryStore:
         etag = document.get("_etag")
         if not isinstance(etag, str) or not etag:
             raise RuntimeError("memory state document has no ETag")
+        automatic_enabled = document.get("automaticMemoryEnabled", True)
+        preference_version = document.get("preferenceVersion", 0)
+        if (
+            not isinstance(automatic_enabled, bool)
+            or type(preference_version) is not int
+            or preference_version < 0
+        ):
+            raise RuntimeError("memory state preference is invalid")
         cutoffs: list[ForgetCutoff] = []
         raw_cutoffs = document.get("cutoffs", [])
         if not isinstance(raw_cutoffs, list):
@@ -968,6 +1028,7 @@ class CosmosMemoryStore:
             etag=etag,
             cutoffs=tuple(cutoffs),
             updated_at=_parse_datetime(document.get("updatedAt"), field="updatedAt"),
+            preference=MemoryPreference(automatic_enabled, preference_version),
         )
 
     def _state_document(
@@ -976,14 +1037,18 @@ class CosmosMemoryStore:
         *,
         epoch: int | None = None,
         cutoffs: Sequence[ForgetCutoff] | None = None,
+        preference: MemoryPreference | None = None,
         updated_at: datetime,
     ) -> dict[str, Any]:
         active_cutoffs = state.cutoffs if cutoffs is None else tuple(cutoffs)
+        active_preference = state.preference if preference is None else preference
         return {
             "id": _STATE_ID,
             "type": _STATE_TYPE,
             "userId": state.user_id,
             "epoch": state.epoch if epoch is None else epoch,
+            "automaticMemoryEnabled": active_preference.automatic_enabled,
+            "preferenceVersion": active_preference.version,
             "cutoffs": [
                 {
                     "key": cutoff.key,

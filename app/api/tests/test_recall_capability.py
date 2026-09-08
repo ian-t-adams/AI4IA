@@ -13,6 +13,7 @@ from ai4ia_api.agents.tool_exec import (
     build_tools,
 )
 from ai4ia_api.memory.models import MemoryRecord
+from ai4ia_api.memory.preferences import MemoryPreference
 from ai4ia_api.memory.recall_capability import (
     MAX_RECALLS_PER_TURN,
     RECALL_TOOL_NAME,
@@ -27,6 +28,9 @@ class _FakeMemory:
         self._records = records or []
         self._raises = raises
         self.calls: list[tuple[str, str]] = []
+
+    async def get_preference(self, user_id):
+        return MemoryPreference()
 
     async def recall(self, user_id, query):
         self.calls.append((user_id, query))

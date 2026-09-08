@@ -80,7 +80,7 @@ Every item uses the authenticated internal user id as `userId`.
 | Type | Purpose | Sensitive content |
 | --- | --- | --- |
 | `memory` | Canonical text, embedding, scope/source ids, origin/lock state, model, version, write epoch, and timestamps | Plaintext and embedding |
-| `state` | One per user: current write epoch and active scoped forget cutoffs | No memory text or embedding |
+| `state` | One per user: write epoch, scoped forget cutoffs, automatic-memory preference, and preference generation | No memory text or embedding |
 | `operation` | Idempotency receipt for create/update/delete; expires after seven days | Opaque ids and operation metadata only |
 | `documentState` | Active/deleted marker that fences document save against document deletion | Opaque document hash/state only |
 
@@ -122,6 +122,26 @@ and item-labelled confirmed delete controls. User-created or edited memories use
 
 ## Automatic remember and recall
 
+The owner's **Automatic memory** switch in **Context > Memory** defaults **on**.
+It is a capability preference, not consent, a tool permission, or a deletion
+request. The server's `AI4IA_MEMORY_STORE` gate remains authoritative: the switch
+cannot enable a disabled backend.
+
+`GET /api/memories/preference` returns `automaticMemoryEnabled` and an opaque
+preference `etag`. `PATCH /api/memories/preference` requires `If-Match` and a
+strict Boolean `automaticMemoryEnabled`; bodies cannot select a user. Both
+responses are `no-store`. A stale preference ETag returns `409`, an unavailable
+preference store returns `503`, and a server-disabled backend returns `404`.
+The browser shows loading/saving states and rolls a failed change back to the
+last confirmed display, marked **unconfirmed** until it reloads the server value.
+
+The preference lives in the existing `memories` container's per-user `state`
+item, as `automaticMemoryEnabled` and `preferenceVersion`. Missing historical
+fields mean on/version zero without rewriting the existing item on read. No
+directory cache, new container, resource, index, or data migration is involved.
+The local/dev `in_memory` backend keeps the same preference in its per-user
+in-process store; it is not durable across restarts.
+
 After a successful turn, sufficiently long user text can enter the best-effort
 memory planner. The planner receives bounded candidate memories and returns one
 strictly validated operation: `add`, `update`, `delete`, or `noop`.
@@ -137,9 +157,38 @@ applies the score threshold, and injects a bounded, explicitly untrusted context
 block. Explicit CRUD and forget are not best-effort: failures surface to the
 caller.
 
+When the preference is off, automatic recall, consolidation, and model-invoked
+`recall_memory` / `remember_memory` cannot read or save memories. This includes
+model-mediated slash commands, chat and agent turns on both transports,
+in-request workflows, and delayed/resumed durable workflow activities. Explicit
+owner create/list/edit/delete, document save/forget, `/forget`, and `/forget me`
+remain available. Existing records and other users' preferences are unchanged.
+
+Automatic operations recheck after embedding, search, and planner awaits.
+Before each model request, a current-preference check removes withheld recalled
+context, including turn-local recall-tool returns; receipt admission is corrected
+when the block was never sent. An unavailable preference never falls back to on.
+A prompt already sent cannot be withdrawn, and memory-derived text in existing
+conversation history is not erased or hidden by this switch.
+
 The turn's execution receipt records which memories were admitted, including
 their source identity, version, score, hash, and admitted text. This is input
 provenance, not evidence of which memory caused a particular model statement.
+The collapsed **Memories supplied** view reads those snapshots, offers links to
+the owner's current inspector items, and opens the full execution receipt.
+A missing item may have been deleted or be outside the bounded recent list;
+the UI does not substitute current text for the historical snapshot.
+
+### Preference write fence
+
+Each preference change conditionally replaces the same state item that every
+memory mutation checks in its transactional batch. The monotonically increasing
+preference generation is separate from the forget epoch and does not establish
+a purge cutoff. If a planner's state ETag loses to a disable, its retry refuses
+the changed generation even if memory has since been reenabled. Thus an
+in-flight automatic add, update, or delete cannot commit across the disabling
+fence. Explicit owner mutations may retry the state change and remain available.
+Ordinary memory writes do not invalidate the preference's separate ETag.
 
 ## Concurrency-safe forgetting
 
@@ -194,23 +243,36 @@ recreate orphaned memory after the source manifest is gone.
 | Cosmos endpoint missing for `memoryStore=cosmos` | Startup validation fails closed |
 | Memory model absent from the catalog | Factory disables memory and logs a metadata-only warning |
 | Recall/planner/embedding transient failure | Chat continues without new/recalled memory |
+| Unknown or unreadable automatic-memory preference | Automatic memory is withheld; preference API returns an error, never an enabled default |
+| Preference changed while automatic work was in flight | Recalled context is withheld; planned mutation is not committed |
 | Explicit CRUD data-plane failure | Request fails; no success-shaped fallback |
 | Stale ETag or changed write epoch | `409` conflict |
 | Cross-user id | `404` |
 | Document save/delete race | Permanent source tombstone prevents recreation |
 
-## Remaining gaps
+## Provenance and rollout limits
 
-- There is no global user-facing memory consent toggle.
+- Historical messages without a receipt remain **unrecorded**, not backfilled.
+- Receipts are bounded and may omit text, item references, or nested executions.
+  A recorded memory-tool return alone is not proof of delivery to a later model
+  request; consult retained request evidence in the full receipt.
 - Receipts identify supplied memories, not hidden model reasoning or causal
   influence on the answer.
+- All API replicas and durable workers must run the preference-aware release
+  before the switch's guarantees apply deployment-wide. Older writers do not
+  understand or preserve the preference fields. Rollout and mixed-revision
+  coordination are separate from this no-migration application change.
 
 ## Primary implementation files
 
 - `app/api/src/ai4ia_api/memory/cosmos_store.py`
 - `app/api/src/ai4ia_api/memory/cosmos_service.py`
 - `app/api/src/ai4ia_api/memory/planner.py`
+- `app/api/src/ai4ia_api/memory/preferences.py`
+- `app/api/src/ai4ia_api/memory/context.py`
 - `app/api/src/ai4ia_api/routers/memories.py`
 - `app/web/src/components/ConversationInspector.tsx`
+- `app/web/src/components/MemoryPreferenceControl.tsx`
+- `app/web/src/components/MemoryProvenance.tsx`
 - `infra/modules/data.bicep`
 - `scripts/migrate-memory-to-cosmos.py`

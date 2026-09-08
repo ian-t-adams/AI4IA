@@ -14,6 +14,7 @@ import {
   type LibrarySummary,
   type MemoryItem,
   type MemoryList,
+  type MemoryInspectorTarget,
 } from "@/lib/inspector";
 import type {
   AgentSummary,
@@ -35,6 +36,7 @@ import { ImageGenerationControls } from "./ImageGenerationControls";
 import { SectionDisclosure, SectionTitle, type Section } from "./InspectorAccordion";
 import { ModelPicker } from "./ModelPicker";
 import { ParamControls } from "./ParamControls";
+import { MemoryPreferenceControl } from "./MemoryPreferenceControl";
 import { VoiceSettingsPanel, type VoiceSettingsPanelProps } from "./VoiceSettingsPanel";
 import { useMediaQuery } from "./useMediaQuery";
 import { useModalFocus, useModalKeyDown } from "./useModalFocus";
@@ -150,6 +152,7 @@ export function ConversationInspector({
   onToolConsentSnapshot,
   onStartImagePrompt,
   onOpenLibrary,
+  memoryTarget,
   libraryEnabled,
   attachmentCapabilities,
   voiceSettings,
@@ -177,6 +180,7 @@ export function ConversationInspector({
   onToolConsentSnapshot?: (sessionId: string, inspection: ToolConsentInspection) => void;
   onStartImagePrompt?: () => void;
   onOpenLibrary?: () => void;
+  memoryTarget?: MemoryInspectorTarget;
   // Required, not defaulted: `/api/library/summary` 404s when the feature is
   // off, so an inspector that guesses renders a permanent error with a retry
   // button that can never succeed. A default would let a new call site inherit
@@ -371,6 +375,22 @@ export function ConversationInspector({
       setPhases((current) => ({ ...current, memory: "error" }));
     }
   }, [markResourceReady]);
+
+  useEffect(() => {
+    if (!memoryTarget) return;
+    setGroup("context");
+    setOpenSections((current) => ({ ...current, context: "memory" }));
+    void loadMemory();
+  }, [memoryTarget, loadMemory]);
+
+  useEffect(() => {
+    if (!memoryTarget || section !== "memory" || phases.memory !== "ready") return;
+    const item = memory?.items.find((entry) => entry.id === memoryTarget.memoryId);
+    const target = item
+      ? document.getElementById(`inspector-memory-${encodeURIComponent(item.id)}`)
+      : document.getElementById("inspector-section-memory");
+    target?.focus();
+  }, [memoryTarget, memory, section, phases.memory]);
 
   const loadLibrary = useCallback(async () => {
     // Left at "idle", not "error": the endpoint is gated, so calling it when
@@ -1295,6 +1315,16 @@ export function ConversationInspector({
               onToggle={() => toggleSection("memory")}
             >
               <section>
+                {memory?.status !== "disabled" ? (
+                  <MemoryPreferenceControl key={sessionId ?? "new-conversation"} onChanged={() => void loadTools()} />
+                ) : null}
+                {memoryTarget?.memoryId && phases.memory === "ready" &&
+                  !memory?.items.some((item) => item.id === memoryTarget.memoryId) ? (
+                    <p role="status" className="inspector-note">
+                      This reference is not in your current memory list. It may have been deleted
+                      or be outside the recent items shown. The recorded receipt is unchanged.
+                    </p>
+                  ) : null}
                 {phases.memory === "loading" ? (
                   <div className="inspector-empty">Loading memories…</div>
                 ) : null}
@@ -1358,7 +1388,7 @@ export function ConversationInspector({
                     {memory.items.map((item) => {
                       const editing = memoryEditId === item.id;
                       return (
-                        <li key={item.id}>
+                        <li key={item.id} id={`inspector-memory-${encodeURIComponent(item.id)}`} tabIndex={-1}>
                           {editing ? (
                             <form
                               className="memory-editor"

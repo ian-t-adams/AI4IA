@@ -11,6 +11,23 @@ new feature flag. They expose only capabilities already enabled by the authorita
 API settings below; disabled library, memory, voice, or telemetry sources return an
 explicit disabled/unavailable state.
 
+## Per-user automatic memory
+
+The **Automatic memory** switch in **Context > Memory** is on by default when
+the configured backend is available. It is not a deployment feature flag or
+session/run tool consent. The owner-scoped `GET` / `PATCH
+/api/memories/preference` contract persists the preference and a monotonic
+generation in the existing per-user Cosmos memory state. Historical absent
+fields default on; no new resource, RBAC, index, migration, or azd variable is
+required. `AI4IA_MEMORY_STORE=disabled` still prevents automatic memory regardless
+of the per-user setting.
+
+Off preserves explicit record management and historical messages/receipts while
+fencing automatic recall and planner/model-tool mutations. Storage failures are
+not enabled defaults. Deploy the preference-aware API to all replicas and durable
+workers before relying on the switch; mixed older writers cannot enforce it.
+See [memory architecture](memory.md) for the API and concurrency contract.
+
 ## Admin operations queries
 
 | API setting / environment | Source | Purpose |

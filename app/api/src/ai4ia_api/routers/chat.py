@@ -14,6 +14,7 @@ import json
 import logging
 import secrets
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -108,6 +109,7 @@ from ..docprocessing.service import (
 from ..library.compute_factory import DocumentComputeService
 from ..library.retrieval import DocumentRetrievalService, RetrievalContext
 from ..documents.analyze_factory import InlineAttachmentAnalysisService
+from ..memory.context import MemoryContextGuard
 from ..memory.recall_capability import RECALL_TOOL_NAME
 from ..memory.remember_capability import REMEMBER_TOOL_NAME
 from ..memory.service import MemoryServiceProtocol
@@ -1203,7 +1205,11 @@ async def chat(
     # prompt so the agent/session instructions keep top authority. ``recall`` runs
     # on the prior-history snapshot (the current user message was added to the
     # store, not the recall index, so it can't recall itself).
-    recalled = await memory.recall(user.internal_user_id, content_for_model)
+    memory_guard = MemoryContextGuard(memory, user.internal_user_id)
+    recalled = (
+        await memory.recall(user.internal_user_id, content_for_model)
+        if await memory_guard.allowed() else []
+    )
     used_memory_records = []
     memory_block = memory.format_context(
         recalled,
@@ -1374,6 +1380,7 @@ async def chat(
         ],
     }
     memory_block = memory_block if "memory" in kept_context_blocks else ""
+    memory_guard.block = memory_block or ""
     doc_block = doc_block if "documents" in kept_context_blocks else ""
     library_block = library_block if "library" in kept_context_blocks else ""
     # Turn-level provenance taint over only the blocks that actually survived
@@ -1470,6 +1477,16 @@ async def chat(
         partial=bool(library_context.notes),
         notes=library_context.notes,
     )
+
+    def memory_withheld() -> None:
+        receipt_draft.blocks = [
+            (kind, text, False if kind == "memory" else admitted)
+            for kind, text, admitted in receipt_draft.blocks
+        ]
+        if "memory" not in receipt_draft.dropped_context_blocks:
+            receipt_draft.dropped_context_blocks.append("memory")
+
+    memory_guard.on_withheld = memory_withheld
 
     # Intent routing (best-effort, flag-gated). Deterministically
     # classify the turn against the user's library into Q&A / compute / transform.
@@ -1917,6 +1934,7 @@ async def chat(
                         agent_tool_names.append(LOAD_SKILL_NAME)
             except Exception:  # noqa: BLE001 - MCP must never break a turn
                 logger.warning("mcp/skill capability build failed", exc_info=True)
+        ctx = replace(ctx, prepare_model_context=memory_guard.prepare)
         if body.stream:
             # Live-stream the agent's activity, then its answer; the generator
             # persists the terminal row before signaling completion.
@@ -2206,6 +2224,7 @@ async def chat(
                 invocation_approvals=invocation_approvals,
                 approval_sink=approval_sink,
                 consent_checker=consent_checker,
+                prepare_model_context=memory_guard.prepare,
             )
             plain_tools: list[dict] = []
             plain_handlers: dict = {}
@@ -2300,6 +2319,7 @@ async def chat(
                         MessageSafety | None,
                         bool,
                     ]:
+                        await memory_guard.prepare(payload_messages)
                         res = await gateway.complete(
                             deployment=deployment.deploymentName,
                             messages=payload_messages,
@@ -2504,6 +2524,7 @@ async def chat(
 
     if not body.stream:
         try:
+            await memory_guard.prepare(payload_messages)
             result = await gateway.complete(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,
@@ -2710,6 +2731,7 @@ async def chat(
                 content_for_model=content_for_model,
                 receipt_draft=receipt_draft,
                 safety_provider=safety_provider,
+                prepare_model_context=memory_guard.prepare,
             ),
         ),
         media_type="text/event-stream",
