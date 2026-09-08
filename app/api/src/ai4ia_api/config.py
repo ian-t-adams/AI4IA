@@ -27,6 +27,7 @@ from .voice_provider_catalog import (
 )
 
 if TYPE_CHECKING:
+    from .catalog import ModelCatalog
     from .http_retry import RetryPolicy
 
 
@@ -372,7 +373,8 @@ class Settings(BaseSettings):
     # Endpoint of the provisioned search service, e.g.
     # ``https://<svc>.search.windows.net``. Reached via the api managed identity
     # (RBAC: Search Index Data Contributor + Service Contributor) — no admin keys.
-    # Empty/None when no search service is provisioned (the feature is dormant).
+    # Required for enabled document libraries outside local. An omitted endpoint
+    # selects ephemeral chunks only in local mode, never in deployed dev/prod.
     search_endpoint: str | None = None
     # Name of the document-chunk index. Created lazily (idempotently) on first use
     # when ``search_endpoint`` is set. A single shared index, scoped per-user by a
@@ -393,7 +395,7 @@ class Settings(BaseSettings):
     # on, applies the L2 *semantic* reranker for materially better top-k ordering.
     # If the semantic tier is unavailable (quota/SKU), the store degrades gracefully
     # to plain hybrid — never breaking retrieval. Only affects the AI Search backend;
-    # pgvector / in-memory ignore it. Default ON (search.bicep provisions the
+    # in-memory ignores it. Default ON (search.bicep provisions the
     # standard semantic plan); set ``AI4IA_SEARCH_SEMANTIC_RANKING=false`` to force hybrid.
     search_semantic_ranking: bool = True
 
@@ -825,12 +827,10 @@ class Settings(BaseSettings):
         that silently produces an empty model picker looks like an outage, and a
         control that silently does nothing is worse than not having one.
 
-        The capability-model check matters as much as the chat one. Both the
-        memory service and the library ingestor resolve their embedding model and,
-        on ``None``, log a warning and carry on with the feature turned off
-        (``memory/factory.py``, ``library/ingest_factory.py``). Under a residency
-        policy that is a governance-relevant silent failure: memory and RAG would
-        appear enabled and simply never work. Fail loudly instead.
+        The capability-model check matters as much as the chat one: an enabled
+        feature must not silently lose its model under a residency policy.
+        Nonlocal document libraries additionally validate embedding resolution
+        in ``validate_document_search`` even under the global policy.
         """
         from .catalog import RESIDENCY_POLICIES, load_catalog
 
@@ -998,6 +998,59 @@ class Settings(BaseSettings):
                 "SimpleL7Proxy ingress credential "
                 "(AI4IA_MODEL_GATEWAY_AUTH_MODE=api_key and "
                 "AI4IA_MODEL_GATEWAY_API_KEY_HEADER=S7P-KEY)."
+            )
+
+    def validate_document_search(self, catalog: ModelCatalog | None = None) -> None:
+        """Validate durable retrieval configuration, without probing service health."""
+        if not self.document_understanding_enabled or self.env == Environment.local:
+            return
+        endpoint = (self.search_endpoint or "").strip()
+        if not endpoint:
+            raise RuntimeError(
+                "Document understanding requires AI4IA_SEARCH_ENDPOINT outside local. "
+                "Enable/provision Azure AI Search with approval, or disable the library "
+                "with AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false."
+            )
+        try:
+            parsed = urlparse(endpoint)
+            valid_endpoint = (
+                parsed.scheme == "https"
+                and bool(parsed.hostname)
+                and not any(character.isspace() for character in parsed.netloc)
+                and not parsed.username
+                and not parsed.password
+                and not parsed.query
+                and not parsed.fragment
+                and parsed.path in ("", "/")
+                and (parsed.port is None or 0 < parsed.port <= 65535)
+            )
+        except ValueError:
+            valid_endpoint = False
+        if not valid_endpoint:
+            raise RuntimeError(
+                "AI4IA_SEARCH_ENDPOINT must be an HTTPS service endpoint with no "
+                "embedded credentials, path, query or fragment."
+            )
+
+        if catalog is None:
+            from .catalog import load_catalog
+
+            catalog = load_catalog(
+                self.model_catalog_path, self.data_residency, self.claude_enabled
+            )
+        entry = catalog.get(self.memory_embedding_model)
+        deployment = catalog.resolve_deployment(self.memory_embedding_model)
+        if (
+            entry is None
+            or entry.category != "embedding"
+            or deployment is None
+            or not deployment.deploymentName.strip()
+        ):
+            raise RuntimeError(
+                "Document understanding requires AI4IA_MEMORY_EMBEDDING_MODEL to "
+                "resolve to an embedding deployment in the active model catalog "
+                "under the configured data-residency policy outside local, or disable "
+                "the library with AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false."
             )
 
     def validate_runtime(self) -> None:
@@ -1219,6 +1272,7 @@ class Settings(BaseSettings):
                     "AI4IA_CU_BASE_URL must be an https:// endpoint with no "
                     "embedded credentials, query or fragment."
                 )
+        self.validate_document_search()
         if (
             self.document_understanding_enabled
             and self.cu_base_url

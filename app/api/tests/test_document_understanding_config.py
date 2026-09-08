@@ -59,6 +59,7 @@ def test_enabled_deployed_with_cosmos_store_is_allowed():
         cosmos_endpoint="https://cosmos.example/",
         cu_base_url="https://cu.example/",
         document_blob_account_url="https://acct.blob.core.windows.net",
+        search_endpoint="https://example.search.windows.net",
     )
     s.validate_runtime()  # no raise
 
@@ -274,6 +275,7 @@ _DEPLOYED = dict(
     session_store="cosmos",
     cosmos_endpoint="https://cosmos.example/",
     document_blob_account_url="https://acct.blob.core.windows.net",
+    search_endpoint="https://example.search.windows.net",
 )
 
 

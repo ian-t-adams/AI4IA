@@ -11,8 +11,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import tomllib
+from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 
@@ -44,7 +47,7 @@ def _valid_manifest() -> dict:
         "owner": "repository-owner",
         "sdkContract": {
             "package": "azure-ai-projects",
-            "version": "2.5.0",
+            "version": "2.6.0",
             "status": "validated",
             "surface": "project.toolboxes",
         },
@@ -141,6 +144,36 @@ def test_every_allowed_type_maps_to_a_model_class():
     assert "computer_use" not in _tb._ALLOWED_TOOL_TYPES
     assert "browser_automation_preview" in _tb._ALLOWED_TOOL_TYPES
     assert _tb._TYPE_TO_MODEL["a2a"] == "A2AToolboxTool"
+
+
+def test_sdk_contract_metadata_matches_the_installed_exact_pin():
+    pytest.importorskip("azure.ai.projects")
+    project = tomllib.loads(
+        (_REPO_ROOT / "app" / "api" / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    pins = [
+        dependency.removeprefix("azure-ai-projects==")
+        for dependency in project["project"]["optional-dependencies"]["foundry"]
+        if dependency.startswith("azure-ai-projects==")
+    ]
+    assert pins == [version("azure-ai-projects")]
+    lock = tomllib.loads((_REPO_ROOT / "app" / "api" / "uv.lock").read_text(encoding="utf-8"))
+    assert [
+        package["version"]
+        for package in lock["package"]
+        if package["name"] == "azure-ai-projects"
+    ] == pins
+    assert _valid_manifest()["sdkContract"]["version"] == pins[0]
+    for path in (
+        _MANIFEST,
+        _EXAMPLE_MANIFEST,
+        _REPO_ROOT / "foundry" / "routines" / "example.routine.json",
+        _REPO_ROOT / "foundry" / "a2a" / "example.a2a.json",
+    ):
+        manifest = _tb.load_manifest(path)
+        schema = json.loads((path.parent / manifest["$schema"]).read_text(encoding="utf-8"))
+        assert manifest["sdkContract"]["version"] == pins[0], path
+        assert schema["properties"]["sdkContract"]["properties"]["version"]["const"] == pins[0]
 
 
 # ----------------------------- tool projection ----------------------------------------
@@ -997,6 +1030,10 @@ def test_create_toolbox_constructs_real_sdk_models_with_nested_fields_populated(
 
     _, kwargs = captured["create_version"]
     tools = kwargs["tools"]
+    assert len(tools) == len(manifest["tools"])
+    for source, built in zip(manifest["tools"], tools, strict=True):
+        assert type(built) is getattr(m, _tb._TYPE_TO_MODEL[source["type"]])
+        assert built.type == source["type"]
 
     search_tool = next(t for t in tools if isinstance(t, m.AzureAISearchToolboxTool))
     assert search_tool.azure_ai_search is not None
@@ -2203,6 +2240,52 @@ def test_schema_tool_configs_accepts_pin_and_additional_search_text_rejects_unkn
 
 
 # ----------------- round 7: web_search / file_search new optional fields ----------------
+@pytest.mark.parametrize("external_web_access", [False, True, None])
+def test_web_search_external_web_access_reaches_sdk_without_changing_the_default(
+    monkeypatch, external_web_access,
+):
+    m = pytest.importorskip("azure.ai.projects.models")
+    captured: dict = {}
+    _install_fake_ai_project_client(monkeypatch, returned_version="1", captured=captured)
+    manifest = _valid_manifest()
+    tool = {"type": "web_search", "name": "web"}
+    if external_web_access is not None:
+        tool["externalWebAccess"] = external_web_access
+    manifest["tools"] = [tool]
+
+    assert _tb.validate_manifest_schema(manifest) == []
+    _tb.create_toolbox(manifest, _ENDPOINT)
+    built = captured["create_version"][1]["tools"][0]
+    assert type(built) is m.WebSearchToolboxTool
+    assert built.external_web_access is external_web_access
+    wire = built.as_dict(exclude_readonly=True)
+    if external_web_access is None:
+        assert "external_web_access" not in wire
+    else:
+        assert wire["external_web_access"] is external_web_access
+
+
+@pytest.mark.parametrize("bad_value", ["false", 0, 1, None, {}, []])
+def test_web_search_external_web_access_requires_a_boolean(bad_value):
+    manifest = _valid_manifest()
+    manifest["tools"] = [{"type": "web_search", "externalWebAccess": False}]
+    assert _tb.validate_manifest_schema(manifest) == []
+    manifest["tools"][0]["externalWebAccess"] = bad_value
+    errors = _tb.validate_manifest_schema(manifest)
+    assert errors and any("externalWebAccess" in error for error in errors)
+
+
+@pytest.mark.parametrize("tool_type", sorted(_tb._ALLOWED_TOOL_TYPES - {"web_search"}))
+def test_external_web_access_is_rejected_on_other_tool_types(tool_type):
+    example = _tb.load_manifest(_EXAMPLE_MANIFEST)
+    manifest = _valid_manifest()
+    manifest["tools"] = [next(tool for tool in example["tools"] if tool["type"] == tool_type)]
+    assert _tb.validate_manifest_schema(manifest) == []
+    manifest["tools"][0]["externalWebAccess"] = False
+    errors = _tb.validate_manifest_schema(manifest)
+    assert errors and any("externalWebAccess" in error for error in errors)
+
+
 def test_schema_web_search_accepts_filters_user_location_search_context_size():
     # web_search's filters (allowedDomains-only) is a DIFFERENT shape from file_search's
     # comparison/compound filter tree (see next test) even though both are named "filters" --
@@ -2400,10 +2483,9 @@ def test_schema_rejects_mcp_authorization_and_headers_as_documented_secrets():
 # The coordinator's explicit ask: rather than hand-verifying each new field individually
 # (which silently drifts whenever the SDK adds/renames a field or type), enumerate every real
 # azure.ai.projects.models.*ToolboxTool subclass via reflection and prove (1) every SDK
-# toolbox type has a manifest "type" mapped to it in _TYPE_TO_MODEL, and (2) every field the
-# SDK constructor accepts for that type has camelCase coverage in _CAMEL_TO_SNAKE (or is
-# camelCase-identical, e.g. "container"/"filters"/"openapi") or is an explicitly documented
-# secret exclusion -- so a field is never silently unmapped.
+# toolbox type is supported or explicitly excluded, and (2) every supported field has an
+# exact per-type schema/adapter mapping or a documented secret exclusion. Excluded types
+# retain exact field inventories so even their SDK drift requires review.
 #
 # Reflection mechanism note: inspect.signature(cls.__init__) returns a generic
 # (*args, **kwargs) for these generated SDK model classes (the real parameter list only
@@ -2421,28 +2503,34 @@ def _sdk_declared_fields(cls) -> set:
     return set(fields)
 
 
-def _snake_to_camel(name: str) -> str:
-    head, *rest = name.split("_")
-    return head + "".join(part.title() for part in rest)
-
-
 # Fields azure-ai-projects 2.4.0 genuinely accepts but AI4IA deliberately never models in the
 # committed manifest schema because they carry literal secret material (AGENTS.md "no secret
 # sprawl"): MCPToolboxTool.authorization (bearer/API-key credentials for the upstream MCP
 # server) and .headers (arbitrary, possibly-secret HTTP headers). See docs/foundry-toolbox.md
 # and test_schema_rejects_mcp_authorization_and_headers_as_documented_secrets above.
 _DOCUMENTED_SECRET_EXCLUSIONS = {"MCPToolboxTool": {"authorization", "headers"}}
-# Fields common to every ToolboxTool subclass, already covered generically by
-# test_every_allowed_type_maps_to_a_model_class / test_plan_tools_camel_to_snake /
-# test_schema_tool_configs_accepts_pin_and_additional_search_text_rejects_unknown_keys, and
-# intentionally excluded from the per-type comparison below.
 _COMMON_TOOLBOX_FIELDS = {"type", "name", "description", "tool_configs"}
 
 
-def test_reflection_driven_parity_covers_every_sdk_toolbox_type_and_field():
-    pytest.importorskip("azure.ai.projects")
-    from azure.ai.projects import models as m
+def _schema_fields_for_tool(tool_schema, tool_type):
+    jsonschema = pytest.importorskip("jsonschema")
+    assert tool_schema["additionalProperties"] is False
+    fields = set(tool_schema["properties"])
+    for rule in tool_schema["allOf"]:
+        if not jsonschema.Draft7Validator(rule["if"]).is_valid({"type": tool_type}):
+            continue
+        denied = rule["then"].get("not")
+        if denied is None:
+            continue
+        for requirement in denied.get("anyOf", [denied]):
+            assert set(requirement) == {"required"} and len(requirement["required"]) == 1, (
+                "Update parity's field inventory for the changed schema restriction"
+            )
+            fields.difference_update(requirement["required"])
+    return fields
 
+
+def _assert_sdk_toolbox_parity(m):
     sdk_toolbox_classes: dict[str, type] = {}
     for class_name in dir(m):
         if not class_name.endswith("ToolboxTool") or class_name == "ToolboxTool":
@@ -2450,36 +2538,156 @@ def test_reflection_driven_parity_covers_every_sdk_toolbox_type_and_field():
         obj = getattr(m, class_name)
         if isinstance(obj, type):
             sdk_toolbox_classes[class_name] = obj
-    assert len(sdk_toolbox_classes) >= 14, (
-        f"expected at least the 14 known toolbox types via reflection, found: {sorted(sdk_toolbox_classes)}"
+    assert len(sdk_toolbox_classes) >= 16, (
+        f"expected at least the 16 known toolbox types via reflection, found: {sorted(sdk_toolbox_classes)}"
     )
 
     modeled_classes = set(_tb._TYPE_TO_MODEL.values())
-    assert set(sdk_toolbox_classes) == modeled_classes, (
-        "SDK toolbox classes and _TYPE_TO_MODEL have drifted -- "
-        f"SDK-only (missing from _TYPE_TO_MODEL): {set(sdk_toolbox_classes) - modeled_classes}; "
-        f"manifest-only (stale entries, no longer in SDK): {modeled_classes - set(sdk_toolbox_classes)}"
+    excluded = _tb._UNSUPPORTED_TOOL_TYPES
+    excluded_classes = {contract.model_class for contract in excluded.values()}
+    assert not (set(_tb._TYPE_TO_MODEL) & set(excluded))
+    assert not (modeled_classes & excluded_classes)
+    accounted_classes = modeled_classes | excluded_classes
+    assert set(sdk_toolbox_classes) == accounted_classes, (
+        "SDK toolbox classes and supported/excluded contracts have drifted -- "
+        f"SDK-only (unreviewed): {set(sdk_toolbox_classes) - accounted_classes}; "
+        f"stale contracts: {accounted_classes - set(sdk_toolbox_classes)}"
     )
+    assert _sdk_declared_fields(m.ToolboxTool) == _COMMON_TOOLBOX_FIELDS
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+    tool_schema = schema["properties"]["tools"]["items"]
+    assert set(tool_schema["properties"]["type"]["enum"]) == set(_tb._TYPE_TO_MODEL)
+    assert _tb._ALLOWED_TOOL_TYPES == set(_tb._TYPE_TO_MODEL)
+    for tool_type, contract in excluded.items():
+        cls = sdk_toolbox_classes[contract.model_class]
+        assert contract.rationale.strip(), f"{tool_type}: missing exclusion rationale"
+        assert get_args(cls.__annotations__["type"]) == (tool_type,)
+        assert _sdk_declared_fields(cls) == contract.sdk_fields, (
+            f"{contract.model_class}: excluded SDK field inventory has drifted"
+        )
 
-    for class_name, cls in sdk_toolbox_classes.items():
-        own_fields = _sdk_declared_fields(cls) - _COMMON_TOOLBOX_FIELDS
+    for tool_type, class_name in _tb._TYPE_TO_MODEL.items():
+        cls = sdk_toolbox_classes[class_name]
+        assert get_args(cls.__annotations__["type"]) == (tool_type,)
+        sdk_fields = _sdk_declared_fields(cls)
         secret_exclusions = _DOCUMENTED_SECRET_EXCLUSIONS.get(class_name, set())
-        stale_exclusions = secret_exclusions - own_fields
+        stale_exclusions = secret_exclusions - sdk_fields
         assert not stale_exclusions, (
             f"{class_name}: documented secret exclusion(s) no longer exist on the SDK class "
             f"(update _DOCUMENTED_SECRET_EXCLUSIONS): {stale_exclusions}"
         )
 
-        uncovered = [
-            field
-            for field in sorted(own_fields - secret_exclusions)
-            if _snake_to_camel(field) not in _tb._CAMEL_TO_SNAKE and _snake_to_camel(field) != field
-        ]
-        assert not uncovered, (
-            f"{class_name}: SDK field(s) with no camelCase mapping in _CAMEL_TO_SNAKE and no "
-            f"documented secret exclusion -- add a schema property + _CAMEL_TO_SNAKE entry, or "
-            f"an explicit, justified _DOCUMENTED_SECRET_EXCLUSIONS entry: {uncovered}"
+        schema_fields = _schema_fields_for_tool(tool_schema, tool_type)
+        mapped_fields = {_tb._to_snake(field) for field in schema_fields}
+        assert len(mapped_fields) == len(schema_fields), f"{class_name}: duplicate field mapping"
+        assert sdk_fields - secret_exclusions == mapped_fields, (
+            f"{class_name}: SDK/schema field parity has drifted -- "
+            f"uncovered SDK fields: {sdk_fields - secret_exclusions - mapped_fields}; "
+            f"stale schema fields: {mapped_fields - sdk_fields}"
         )
+
+
+def test_reflection_driven_parity_covers_every_sdk_toolbox_type_and_field():
+    _assert_sdk_toolbox_parity(pytest.importorskip("azure.ai.projects.models"))
+
+
+def test_unknown_future_sdk_toolbox_type_still_fails_parity(monkeypatch):
+    m = pytest.importorskip("azure.ai.projects.models")
+    _assert_sdk_toolbox_parity(m)
+    monkeypatch.setattr(m, "FutureToolboxTool", m.ToolboxTool, raising=False)
+    with pytest.raises(AssertionError, match="SDK-only.*FutureToolboxTool"):
+        _assert_sdk_toolbox_parity(m)
+
+
+@pytest.mark.parametrize(
+    ("class_name", "field"),
+    [
+        ("WebSearchToolboxTool", "future"),
+        ("WebSearchToolboxTool", "allowed_callers"),
+        ("ShellToolboxTool", "future"),
+        ("WebIQPreviewToolboxTool", "future"),
+    ],
+)
+def test_new_sdk_fields_still_fail_parity_even_on_excluded_types(monkeypatch, class_name, field):
+    m = pytest.importorskip("azure.ai.projects.models")
+    _assert_sdk_toolbox_parity(m)
+    cls = getattr(m, class_name)
+    monkeypatch.setattr(cls, "__annotations__", {**cls.__annotations__, field: str})
+    with pytest.raises(AssertionError, match=class_name):
+        _assert_sdk_toolbox_parity(m)
+
+
+@pytest.mark.parametrize("tool_type", ["shell", "web_iq_preview"])
+def test_excluded_sdk_types_are_rejected_by_schema_and_semantic_validation(tool_type):
+    jsonschema = pytest.importorskip("jsonschema")
+    manifest = _valid_manifest()
+    manifest["tools"] = [{"type": "web_search", "name": "review-required"}]
+    assert _tb.validate_manifest(manifest) == []
+    assert _tb.validate_manifest_schema(manifest) == []
+    manifest["tools"][0]["type"] = tool_type
+    contract = _tb._UNSUPPORTED_TOOL_TYPES[tool_type]
+    assert any(contract.rationale in error for error in _tb.validate_manifest(manifest))
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+    errors = list(jsonschema.Draft7Validator(schema).iter_errors(manifest))
+    assert any(
+        error.validator == "enum" and list(error.path) == ["tools", 0, "type"]
+        for error in errors
+    )
+    schema["properties"]["tools"]["items"]["properties"]["type"]["enum"].append(tool_type)
+    jsonschema.validate(manifest, schema)
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        {
+            "type": "shell",
+            "name": "review-required",
+            "environment": {"type": "container_auto", "networkPolicy": {"type": "disabled"}},
+            "allowedCallers": ["direct"],
+        },
+        {
+            "type": "web_iq_preview",
+            "name": "review-required",
+            "projectConnectionId": "review-required",
+            "serverLabel": "webiq",
+            "requireApproval": "always",
+        },
+    ],
+)
+def test_excluded_sdk_types_cannot_dispatch_even_if_added_to_the_supported_map(monkeypatch, tool):
+    m = pytest.importorskip("azure.ai.projects.models")
+    captured: dict = {}
+    _install_fake_ai_project_client(monkeypatch, returned_version="1", captured=captured)
+    manifest = _valid_manifest()
+    manifest["tools"] = [tool]
+    contract = _tb._UNSUPPORTED_TOOL_TYPES[tool["type"]]
+    monkeypatch.setitem(_tb._TYPE_TO_MODEL, tool["type"], contract.model_class)
+    monkeypatch.setattr(_tb, "_ALLOWED_TOOL_TYPES", _tb._ALLOWED_TOOL_TYPES | {tool["type"]})
+
+    assert any(contract.rationale in error for error in _tb.validate_manifest(manifest))
+    assert _tb.validate_manifest_schema(manifest)
+    with pytest.raises(SystemExit, match="intentionally unsupported"):
+        _tb.create_toolbox(manifest, _ENDPOINT)
+    assert "create_version" not in captured
+    assert "update_calls" not in captured
+
+    # Flip only the exclusion gate: this identical valid SDK payload now dispatches.
+    monkeypatch.delitem(_tb._UNSUPPORTED_TOOL_TYPES, tool["type"])
+    assert _tb.validate_manifest(manifest) == []
+    _tb.create_toolbox(manifest, _ENDPOINT)
+    built = captured["create_version"][1]["tools"][0]
+    assert type(built) is getattr(m, contract.model_class)
+    assert built.type == tool["type"]
+    if tool["type"] == "shell":
+        assert type(built.environment) is m.ToolboxShellContainerAutoEnvironment
+        assert built.environment.network_policy.type == "disabled"
+        assert built.allowed_callers == ["direct"]
+    else:
+        assert built.project_connection_id == "review-required"
+        assert built.server_label == "webiq"
+        assert built.require_approval == "always"
+    assert len(captured["update_calls"]) == 1
 
 
 # ----------------------------- config fail-closed -------------------------------------
@@ -2639,7 +2847,7 @@ def _simulate_azure_ai_projects_missing(monkeypatch):
 
 
 def test_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch):
-    # `azure-ai-projects==2.5.0` is pinned exactly in pyproject.toml/uv.lock so every
+    # `azure-ai-projects==2.6.0` is pinned exactly in pyproject.toml/uv.lock so every
     # install path lands on the one version this whole audit reflection-verified field-by-field
     # -- but both create_toolbox()'s and _project_client()'s ImportError fallback still told an
     # operator without `uv` to run a bare, unpinned `pip install azure-ai-projects
@@ -2651,5 +2859,5 @@ def test_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch
     with pytest.raises(SystemExit) as exc_info:
         _tb.create_toolbox({"tools": []}, _ENDPOINT)
     message = str(exc_info.value)
-    assert "pip install azure-ai-projects==2.5.0 azure-identity" in message
+    assert "pip install azure-ai-projects==2.6.0 azure-identity" in message
     assert "pip install azure-ai-projects azure-identity" not in message

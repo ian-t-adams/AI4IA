@@ -24,7 +24,7 @@ feature posture.
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | `voiceLiveEnabled` | Browser Origin allowlist outside local |
 | Voice Live tools | `AI4IA_REALTIME_TOOLS_ENABLED` | advertised by web env | `voiceLiveToolsEnabled` | Voice Live enabled |
 | Speech Voice Live (2nd voice provider) | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | advertised by web env | `speechVoiceLiveEnabled` | Voice Live enabled; `speech_voice_live` in `AI4IA_VOICE_PROVIDER_ALLOWLIST`; distinct `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`; repeat the standing APIM and authenticated-canary checks after changes |
-| Document library + multimodal understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `DOCUMENT_LIBRARY_ENABLED` | `documentUnderstandingEnabled` | Cosmos session store, blob account URL, CU endpoint outside local |
+| Document library + multimodal understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `DOCUMENT_LIBRARY_ENABLED` | `documentUnderstandingEnabled` | Cosmos session store, Blob, CU, Search endpoint and catalog-resolved embedding deployment outside local; preprovision requires `searchEnabled=true` |
 | CU synchronous/preview analyzers | `AI4IA_CU_PREVIEW_ENABLED` | analyzer selector | `cuPreviewEnabled` | Document understanding plus successful postprovision GETs for Read, Layout, and the five tax analyzers on `2026-06-01-preview`. Automatic stays GA. |
 | CU Agentic document reasoning | `AI4IA_CU_AGENTIC_ANALYZER_ID` | analyzer selector only when valid | `cuAgenticAnalyzerId` | Preview enabled; existing analyzer resolves to `agentic.*`; effective primary GPT-5.2 deployment capacity ≥400K TPM. The 50K baseline is insufficient; capacity alone does not configure an analyzer. |
 | Library compute / export | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | none | `documentComputeEnabled` | Document understanding, dedicated Code Interpreter APIM URL/key + model outside local |
@@ -421,15 +421,49 @@ Set:
 
 ```text
 documentUnderstandingEnabled=true
+searchEnabled=true
 ```
 
-Outside local, this also requires `AI4IA_SESSION_STORE=cosmos` and
-`AI4IA_DOCUMENT_BLOB_ACCOUNT_URL`. CU is the ingest front door for parsed
+Outside local (both `dev` and `prod`), this requires `AI4IA_SESSION_STORE=cosmos`,
+`AI4IA_DOCUMENT_BLOB_ACCOUNT_URL`, a configured HTTPS `AI4IA_SEARCH_ENDPOINT`,
+and an embedding deployment resolved from `AI4IA_MEMORY_EMBEDDING_MODEL` under
+the active catalog/residency policy. The embedding selection remains an API-side
+default, not an azd variable. CU is the ingest front door for parsed
 Markdown, grounded fields, and media timelines; ready documents feed summary
 cards, RAG chunks, `fetch_document`, annotations, save/forget memory, sharing,
 and the media player.
 The normal azd path derives the Content Understanding endpoint from the primary
 Foundry account; `cuBaseUrl` is a direct-Bicep override, not a repository variable.
+The Search endpoint is derived from the provisioned service. Both azd
+preprovision shells reject library-on/Search-off before model preflight and ARM.
+Missing runtime configuration refuses API startup without contacting Search;
+in-memory chunks remain a `local` development option only.
+
+**Before adopting this runtime contract:** an environment still relying on
+nonlocal in-memory retrieval must obtain approval to enable/provision Search and
+confirm embedding resolution, or set `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false`
+before upgrading. When disabling the library, also disable
+`AI4IA_DOCUMENT_COMPUTE_ENABLED` and `AI4IA_CU_PREVIEW_ENABLED` and clear any
+`AI4IA_CU_AGENTIC_ANALYZER_ID`. The independent inline-attachment path need not be
+disabled. Existing Search-enabled environments retain their tenancy and embedding
+configuration. This release does not provision Search, delete indexes, switch
+tenancy or rebuild chunks; any necessary derived-index rebuild is a separate
+approved operation.
+
+**During a Search outage:** chat reports `library_retrieval_unavailable`, or
+`library_retrieval_partial` if some owner-scoped searches succeed. These safe
+codes persist in the existing execution receipt's `notes` with `partial=true`
+and are visible beside the answer, even if its library prompt block was dropped
+for space. Successfully queried zero matches are not an outage. Summary cards,
+owned/access-controlled parsed reads and `fetch_document` remain usable when
+Cosmos/Blob are healthy; authentication and unrelated plain chat are not
+disabled. The Conversation Inspector's document inventory is canonical metadata,
+not a live Search query. Semantic-reranker errors still use the same backend's
+hybrid fallback and bounded breaker; never resolve a query outage by changing
+the tenancy mode or starting an automatic reindex.
+
+Keep rollout work open until configuration compatibility and the approved
+rollout's retrieval and source-access behavior are evidenced.
 
 Gaps: the web upload UI is document-centric, custom analyzer authoring is not
 surfaced, folder-level sharing is not implemented, and `public` documents remain
@@ -511,12 +545,25 @@ operators deliberately set it to `disabled` to freeze writes before migration,
 then restore `cosmos` only after verification. Startup fails closed if the Cosmos
 endpoint is missing or either catalog-driven memory model cannot resolve.
 
-The Conversation Inspector exposes create, inline edit, and confirmed delete.
-Automatic recall and planner consolidation remain best-effort so a memory service
-failure cannot break chat; explicit CRUD and forget operations surface failures.
+The Conversation Inspector exposes a default-on **Automatic memory** switch,
+create, inline edit, and confirmed delete. The per-user preference is canonical
+state in the existing `memories` container, not a new resource or consent grant.
+Missing historical fields default on without a backfill. Off gates automatic
+recall, planner writes, and model memory tools at execution time, including
+delayed/resumed work; a changed preference generation prevents pre-disable
+automatic writes from committing even after reenable. Explicit CRUD, document
+save/forget, and scoped forgetting remain available.
+
+Automatic recall and planner consolidation remain best-effort. An unreadable
+preference withholds automatic memory, never defaults to enabled; explicit CRUD,
+preference updates, and forget operations surface failures. Roll out the
+preference-aware API to every replica and durable worker before relying on the
+control; an older writer cannot enforce or preserve the new state fields.
 Execution receipts identify the memories admitted to a turn, with versions,
 hashes, and admitted text. That proves supplied context, not causal influence
-on the answer. There is still no per-user memory enable/disable switch.
+on the answer. The collapsed **Memories supplied** view provides focused owner
+navigation and identifies unrecorded or bounded evidence without backfilling old
+answers. Disabling/deleting memories does not erase historical messages/receipts.
 See [Memory architecture](../memory.md).
 
 ### Custom MCP tools

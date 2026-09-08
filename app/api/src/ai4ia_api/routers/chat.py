@@ -15,6 +15,7 @@ import json
 import logging
 import secrets
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -108,8 +109,9 @@ from ..docprocessing.service import (
     DocumentProcessingService,
 )
 from ..library.compute_factory import DocumentComputeService
-from ..library.retrieval import DocumentRetrievalService
+from ..library.retrieval import DocumentRetrievalService, RetrievalContext
 from ..documents.analyze_factory import InlineAttachmentAnalysisService
+from ..memory.context import MemoryContextGuard
 from ..memory.recall_capability import RECALL_TOOL_NAME
 from ..memory.remember_capability import REMEMBER_TOOL_NAME
 from ..memory.service import MemoryServiceProtocol
@@ -1206,7 +1208,11 @@ async def chat(
     # prompt so the agent/session instructions keep top authority. ``recall`` runs
     # on the prior-history snapshot (the current user message was added to the
     # store, not the recall index, so it can't recall itself).
-    recalled = await memory.recall(user.internal_user_id, content_for_model)
+    memory_guard = MemoryContextGuard(memory, user.internal_user_id)
+    recalled = (
+        await memory.recall(user.internal_user_id, content_for_model)
+        if await memory_guard.allowed() else []
+    )
     used_memory_records = []
     memory_block = memory.format_context(
         recalled,
@@ -1236,6 +1242,7 @@ async def chat(
     # fetch_document tool (Tier 3) so both share one anti-injection marker. When
     # retrieval is off (default) or the library is empty, this is "".
     library_nonce = secrets.token_hex(4)
+    library_context = RetrievalContext()
     library_block = ""
     receipt_library_sources: list[RetrievedSource] = []
     # Span-level citation provenance for this turn (audit P1-14). ``None`` means
@@ -1248,19 +1255,17 @@ async def chat(
     )
     if retrieval is not None and library_tools_enabled:
         try:
-            built = await retrieval.context(
+            library_context = await retrieval.context(
                 user.internal_user_id, content_for_model, nonce=library_nonce,
                 email=user.email,
                 document_ids=session.libraryDocumentIds,
             )
-            library_block = built.block
-            library_sources = built.sources if built.block else None
-            receipt_library_sources = list(built.sources)
         except Exception:  # noqa: BLE001 - retrieval must never break a turn
-            logger.warning("library context build failed", exc_info=True)
-            library_block = ""
-            library_sources = None
-            receipt_library_sources = []
+            logger.warning("library_retrieval_unavailable: context build failed")
+            library_context = RetrievalContext.unavailable()
+        library_block = library_context.block
+        library_sources = library_context.sources if library_context.block else None
+        receipt_library_sources = list(library_context.sources)
 
     # Newest verbatim turns outrank every optional context block. Bound them first;
     # the rolling summary is admitted only if it fits without displacing that suffix.
@@ -1378,6 +1383,7 @@ async def chat(
         ],
     }
     memory_block = memory_block if "memory" in kept_context_blocks else ""
+    memory_guard.block = memory_block or ""
     doc_block = doc_block if "documents" in kept_context_blocks else ""
     library_block = library_block if "library" in kept_context_blocks else ""
     # Turn-level provenance taint over only the blocks that actually survived
@@ -1483,8 +1489,20 @@ async def chat(
         dropped_context_blocks=list(dropped_context_blocks),
         approvals_granted=len(invocation_approvals),
         tool_consent=session.toolConsent,
+        partial=bool(library_context.notes),
+        notes=library_context.notes,
         model_evidence=model_evidence,
     )
+
+    def memory_withheld() -> None:
+        receipt_draft.blocks = [
+            (kind, text, False if kind == "memory" else admitted)
+            for kind, text, admitted in receipt_draft.blocks
+        ]
+        if "memory" not in receipt_draft.dropped_context_blocks:
+            receipt_draft.dropped_context_blocks.append("memory")
+
+    memory_guard.on_withheld = memory_withheld
 
     # Intent routing (best-effort, flag-gated). Deterministically
     # classify the turn against the user's library into Q&A / compute / transform.
@@ -1933,6 +1951,7 @@ async def chat(
                         agent_tool_names.append(LOAD_SKILL_NAME)
             except Exception:  # noqa: BLE001 - MCP must never break a turn
                 logger.warning("mcp/skill capability build failed", exc_info=True)
+        ctx = replace(ctx, prepare_model_context=memory_guard.prepare)
         if body.stream:
             # Live-stream the agent's activity, then its answer; the generator
             # persists the terminal row before signaling completion.
@@ -2227,6 +2246,7 @@ async def chat(
                 invocation_approvals=invocation_approvals,
                 approval_sink=approval_sink,
                 consent_checker=consent_checker,
+                prepare_model_context=memory_guard.prepare,
             )
             plain_tools: list[dict] = []
             plain_handlers: dict = {}
@@ -2322,6 +2342,7 @@ async def chat(
                         MessageSafety | None,
                         bool,
                     ]:
+                        await memory_guard.prepare(payload_messages)
                         res = await model_evidence.observe(gateway.complete(
                             deployment=deployment.deploymentName,
                             messages=payload_messages,
@@ -2530,6 +2551,7 @@ async def chat(
 
     if not body.stream:
         try:
+            await memory_guard.prepare(payload_messages)
             result = await model_evidence.observe(gateway.complete(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,
@@ -2739,6 +2761,7 @@ async def chat(
                 content_for_model=content_for_model,
                 receipt_draft=receipt_draft,
                 safety_provider=safety_provider,
+                prepare_model_context=memory_guard.prepare,
             ),
         ),
         media_type="text/event-stream",

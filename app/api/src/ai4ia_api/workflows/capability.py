@@ -8,6 +8,7 @@ cannot leak into a chat turn.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from typing import Any
 
 from ..agents.agent_catalog import AgentCatalog
@@ -190,6 +191,13 @@ def build_workflow_capability(
         if not decision.allowed:
             return {"error": decision.reason or "Workflow execution is not permitted."}
 
+        async def prepare_tools(
+            names: Sequence[str], nested: ToolContext
+        ) -> tuple[ToolRegistry, ToolExecutor, ToolContext]:
+            return registry, executor, replace(
+                nested, prepare_model_context=ctx.prepare_model_context
+            )
+
         outcome = await run_workflow(
             current,
             run_input=run_input,
@@ -201,6 +209,7 @@ def build_workflow_capability(
             capabilities=safe_capabilities,
             correlation_id=ctx.correlation_id,
             approval_policy=ApprovalPolicy.always,
+            tool_builder=prepare_tools,
             api=api,
             model_id=model_id, pricing=metering.pricing,
         )

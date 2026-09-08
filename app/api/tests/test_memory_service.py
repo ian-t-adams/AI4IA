@@ -88,15 +88,18 @@ async def test_a_failed_store_write_reports_unavailable_not_noop():
     """
 
     class BoomStore(InMemoryVectorStore):
-        async def add(self, record, vector):
+        async def add(self, record, vector, *, expected_preference=None):
+            self.called = True
             raise RuntimeError("Cosmos 503 ServiceUnavailable")
 
+    store = BoomStore()
     svc = MemoryService(
-        store=BoomStore(),
+        store=store,
         embedder=FakeEmbedder({"a durable fact worth keeping": [1.0, 0.0, 0.0]}),
         min_chars_to_store=12,
     )
     assert await svc.remember("u1", "s1", "a durable fact worth keeping") == "unavailable"
+    assert store.called
 
 
 async def test_an_embedder_that_returns_no_vector_reports_unavailable():

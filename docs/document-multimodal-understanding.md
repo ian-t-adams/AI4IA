@@ -57,17 +57,24 @@ playback, memory save, or sharing.
   Built-ins are not persisted as user records and cannot be shadowed.
 - **Blob Storage**: raw bytes, `parsed.md`, `chunks.jsonl`, media timeline
   sidecars, and versioned/exported artifacts under a user/document prefix.
-- **Azure AI Search**: per-user document chunks. Azure AI Search, when
-  configured, provides hybrid vector + BM25 retrieval with optional semantic
+- **Azure AI Search**: derived document chunks, required for enabled libraries
+  outside local. Provides hybrid vector + BM25 retrieval with optional semantic
   reranking.
 - **Memory store**: explicit save-to-memory promotes a ready document's summary
   and bounded excerpts into the user's memory backend; forget/delete cascades
   remove those derived memories.
 
-An omitted Search endpoint selects an in-memory chunk store in both local and
-deployed environments. Manifests and parsed bytes remain durable, but vector
-retrieval is replica-local and disappears on restart. Shared/per-user Azure
-Search index mode is configurable; owner filtering applies in either mode.
+Only `AI4IA_ENV=local` may select an in-memory chunk store when the Search
+endpoint is omitted. Enabled libraries in both `dev` and `prod` require a
+configured HTTPS `AI4IA_SEARCH_ENDPOINT` and a catalog-resolved embedding
+deployment selected by `AI4IA_MEMORY_EMBEDDING_MODEL`, in addition to Cosmos,
+Blob and Content Understanding. Invalid configuration refuses API startup.
+The normal azd preprovision hook rejects `documentUnderstandingEnabled=true`
+with `searchEnabled=false` before ARM can change resources.
+
+Shared/per-user Search index mode remains configurable; owner and accessible
+ready-document filters apply in either mode. There is no runtime switch to an
+in-memory store, other tenant index, or different embedding model.
 
 ## Retrieval and tools
 
@@ -98,6 +105,46 @@ Search index mode is configurable; owner filtering applies in either mode.
 
 All tool paths re-check ownership/access, require `ready` status, apply caps, and
 sanitize untrusted strings before returning them to the model.
+
+### Retrieval availability is not configuration validity
+
+Startup validates configuration without querying Search. A later Search query
+failure produces `library_retrieval_unavailable`, not a successful zero-result
+search. When searches for some accessible owners succeed and others fail, their
+successful excerpts survive with `library_retrieval_partial`. An embedding
+failure is also unavailable. A successfully queried empty result carries neither
+failure code.
+
+The model receives a bounded, server-authored availability notice alongside any
+usable summary cards and excerpts. The existing execution receipt retains the
+safe code in `notes` and marks coverage `partial`, even if the prompt budget
+drops the library block. Chat displays that warning without requiring the user
+to expand the receipt. This records the retrieval outcome at that turn, not
+current service health or a complete inventory of library contents.
+
+Plain chat and authentication continue when their own dependencies are healthy.
+Canonical manifests, summaries, the Conversation Inspector's document inventory,
+and ownership-gated `fetch_document` / parsed-source reads do not query Search.
+The inspector's indexed chunk counts describe stored ingest metadata, not a
+live Search health result. A semantic-reranker failure still falls back to hybrid
+on the **same** Search backend under the existing bounded circuit breaker; a
+failure of that query is reported unavailable rather than silently ignored.
+Application outage logs contain fixed reason codes, never provider exception
+bodies containing query or source payloads.
+
+### Adopting the stricter nonlocal contract
+
+Before deploying this version to an environment relying on nonlocal in-memory
+retrieval, obtain approval to enable/provision Search and confirm the embedding
+model resolves, **or disable the document library** (and dependent compute/preview
+flags) before upgrading. Existing Search-enabled environments should retain their
+endpoint, tenancy mode and embedding configuration. This change performs no
+provisioning, resource/SKU/RBAC changes, migration, index deletion or reindex.
+If derived chunks must be rebuilt after provisioning Search, that is a separate
+approved operation, not automatic failover. Record configuration compatibility
+and an approved rollout's retrieval/source-access evidence before closing rollout
+work; a passing local test or an already-configured production endpoint is not
+rollout evidence.
 
 ## Alternate parsers: Mistral Document AI / OCR
 

@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 from .models import MemoryRecord
+from .preferences import MemoryPreference
 
 
 @runtime_checkable
@@ -28,7 +29,19 @@ class Embedder(Protocol):
 class MemoryStore(Protocol):
     """A per-user vector store. Every method is user-scoped by signature."""
 
-    async def add(self, record: MemoryRecord, vector: Sequence[float]) -> None: ...
+    async def get_preference(self, user_id: str) -> MemoryPreference: ...
+
+    async def set_preference(
+        self, user_id: str, automatic_enabled: bool, *, expected_etag: str
+    ) -> MemoryPreference: ...
+
+    async def add(
+        self,
+        record: MemoryRecord,
+        vector: Sequence[float],
+        *,
+        expected_preference: MemoryPreference | None = None,
+    ) -> None: ...
 
     async def search(
         self, user_id: str, query_vector: Sequence[float], top_k: int

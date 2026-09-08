@@ -11,6 +11,23 @@ new feature flag. They expose only capabilities already enabled by the authorita
 API settings below; disabled library, memory, voice, or telemetry sources return an
 explicit disabled/unavailable state.
 
+## Per-user automatic memory
+
+The **Automatic memory** switch in **Context > Memory** is on by default when
+the configured backend is available. It is not a deployment feature flag or
+session/run tool consent. The owner-scoped `GET` / `PATCH
+/api/memories/preference` contract persists the preference and a monotonic
+generation in the existing per-user Cosmos memory state. Historical absent
+fields default on; no new resource, RBAC, index, migration, or azd variable is
+required. `AI4IA_MEMORY_STORE=disabled` still prevents automatic memory regardless
+of the per-user setting.
+
+Off preserves explicit record management and historical messages/receipts while
+fencing automatic recall and planner/model-tool mutations. Storage failures are
+not enabled defaults. Deploy the preference-aware API to all replicas and durable
+workers before relying on the switch; mixed older writers cannot enforce it.
+See [memory architecture](memory.md) for the API and concurrency contract.
+
 ## Admin operations queries
 
 | API setting / environment | Source | Purpose |
@@ -96,7 +113,7 @@ the container — those names are *outputs*, not knobs you set.
 | Speech Voice Live (second voice provider) | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. The six managed models and default are catalog-controlled. **Template default OFF** in both Bicep and `infra/main.parameters.json`; the default allowlist is only `azure_openai`. |
 | Voice provider allowlist / default | n/a (server-authoritative) | `voiceProviderAllowlist`, `voiceDefaultProvider` | `AI4IA_VOICE_PROVIDER_ALLOWLIST` (default `azure_openai`), `AI4IA_VOICE_DEFAULT_PROVIDER` (default `azure_openai`) | Allowlist must always include `azure_openai`; default provider must be an allowlist member. The browser may only select an advertised, allowlisted provider. |
 | Data residency | API-only setting; not mapped through azd/CI | n/a (API setting) | `AI4IA_DATA_RESIDENCY` (default `global`) | `global` \| `zonal` \| `us` \| `eu`. Restricts model routing by processing boundary. The available model set depends on the current catalog, not a fixed count; see [Data residency](#data-residency). |
-| Document library / Content Understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `documentUnderstandingEnabled` | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`, `DOCUMENT_LIBRARY_ENABLED` | Profile default `true`. Cosmos + blob storage; CU endpoint defaults to the primary Foundry endpoint unless overridden. |
+| Document library / Content Understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `documentUnderstandingEnabled` | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`, `DOCUMENT_LIBRARY_ENABLED` | Profile default `true`. Outside local, requires Cosmos, Blob, CU, configured Search and a catalog-resolved embedding deployment. Preprovision requires `searchEnabled=true`. CU endpoint defaults to the primary Foundry endpoint unless overridden. |
 | Content Understanding preview | `AI4IA_CU_PREVIEW_ENABLED` | `cuPreviewEnabled` | `AI4IA_CU_PREVIEW_ENABLED` | Profile default `true`. Enables only explicitly selected `2026-06-01-preview` capabilities. Production keeps the automatic/default analyzer on GA `2025-11-01`; synchronous Read/Layout are the preview choices exposed when this is true. `AI4IA_CU_API_VERSION` is **not** the preview switch: it pins the automatic path and `validate_runtime` fails startup if it is set to anything but `2025-11-01`, because preview analyzers carry their own API version. Turning preview off while a preview-analyzed document is awaiting enrichment fails that document (`The selected analyzer is not currently available.`) rather than silently re-analyzing it with the default analyzer. |
 | Content Understanding Agentic analyzer | `AI4IA_CU_AGENTIC_ANALYZER_ID` | `cuAgenticAnalyzerId` | `AI4IA_CU_AGENTIC_ANALYZER_ID` | Existing, operator-created analyzer whose resolved `config.workflow` is `agentic.*`. Empty means unavailable. Provision validation requires preview and at least 400K TPM on the effective primary GPT-5.2 deployment. The portable 50K baseline is insufficient; a maximum profile is not a substitute for configuring and validating the analyzer. |
 | Library compute / export | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | `documentComputeEnabled` | `AI4IA_DOCUMENT_COMPUTE_ENABLED`, `AI4IA_CODE_INTERPRETER_BASE_URL`, `AI4IA_CODE_INTERPRETER_MODEL`, `AI4IA_CODE_INTERPRETER_AUTH_MODE=api_key`, `AI4IA_CODE_INTERPRETER_API_KEY` | Profile default `true`; requires document understanding. The normal azd path creates a dedicated `/code-interpreter` API and API-scoped subscription on the existing APIM, fixes the primary-region `gpt-5.4-mini-*` deployment in policy, and removes direct OpenAI inference RBAC from FastAPI. |
@@ -121,6 +138,37 @@ the container — those names are *outputs*, not knobs you set.
 | Proxy durable async | `AI4IA_PROXY_ASYNC_ENABLED` | `proxyAsyncEnabled` | `AsyncModeEnabled`, MI-only Blob/Service Bus config | Creates dedicated default-off AVM Storage + Service Bus resources and grants only Blob Contributor plus Service Bus Sender/Receiver to `id-proxy`. |
 | Proxy capacity | `AI4IA_PROXY_WORKERS`, `AI4IA_PROXY_MIN_REPLICAS`, `AI4IA_PROXY_MAX_REPLICAS` | `proxyWorkers`, `proxyMinReplicas`, `proxyMaxReplicas` | `Workers` + Container App scale | Minimum replicas cannot be zero on the active model path. More replicas increase capacity but split in-memory fairness state. |
 | Proxy App Configuration label | `AI4IA_PROXY_APPCONFIG_LABEL` | `proxyAppConfigLabel` | `AZURE_APP_CONFIG_LABEL`, `AZURE_APPCONFIG_ENDPOINT`, label-aware `Warm:Sentinel`, 30-second refresh | Postprovision reconciles the sentinel with Entra auth through the deployment identity's narrow store-scoped Data Owner role; the proxy remains Data Reader only. Additional warm settings reload; cold settings require a new revision or restart. |
+
+### Document-library retrieval configuration and availability
+
+An enabled library in `AI4IA_ENV=dev` or `prod` requires a nonblank HTTPS
+`AI4IA_SEARCH_ENDPOINT` without embedded credentials, a path, query or fragment.
+The embedding model selected by `AI4IA_MEMORY_EMBEDDING_MODEL` must have category
+`embedding` and resolve in the active catalog under the configured residency
+policy. This is enforced even when memory recall is disabled. Only `local`
+retains the in-memory chunk-store option.
+
+The normal deployment path binds `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` and
+`AI4IA_SEARCH_ENABLED` through CI and `main.parameters.json`. Both azd
+preprovision shells reject library-on/Search-off before continuing to model
+preflight or ARM. Bicep supplies the actual Search endpoint to the API;
+`AI4IA_MEMORY_EMBEDDING_MODEL` remains an **API-side default, not an azd/CI input**.
+It is resolved through the packaged catalog, not a hardcoded deployment name.
+
+Configuration validation does not probe service health. A configured Search
+outage keeps healthy chat/auth and canonical source reads available, while the
+turn's existing receipt reports `library_retrieval_unavailable` or
+`library_retrieval_partial` in `notes` with `partial=true`. The chat warning is
+not inferred from zero excerpts. Semantic-to-hybrid fallback stays on the same
+Search backend with the existing bounded breaker; no in-memory failover, tenancy
+switch or automatic reindex is performed.
+
+**Rollout checkpoint:** environments using nonlocal ephemeral retrieval must
+obtain approval to enable/provision Search, or disable the library and dependent
+features before adopting this stricter startup contract. Keep an existing
+Search tenancy/embedding configuration unchanged. Any rebuild of derived chunks
+requires separate approval. See the
+[feature runbook](runbooks/feature-enablement.md#document-library-and-multimodal-understanding).
 
 ## Custom domains
 
@@ -418,11 +466,11 @@ Two consequences worth knowing before switching:
 - **Available throughput may drop.** Zone-bounded deployments can have different
   quota pools and allocations from Global Standard; compare effective capacity
   rather than assuming regional/SKU parity.
-- **Startup fails closed if an enabled feature loses its model.** Memory and the
-  library ingestor resolve their embedding model and, on failure, log a warning
-  and switch themselves off. Under a residency policy that silent degradation is
-  a governance problem, so `validate_runtime` refuses to start instead, naming
-  the model and the env var. Features that are *off* are not checked.
+- **Startup fails closed if an enabled feature loses its model.** Under a
+  residency policy, `validate_runtime` refuses enabled capability models that
+  cannot resolve rather than silently disabling them. Enabled nonlocal document
+  libraries additionally require a resolvable embedding model even under
+  `global`. Features that are *off* are not checked.
 
 Adding a `DataZoneStandard` deployment does not itself cost anything: like
 `GlobalStandard` it is billed per token consumed, not for reserved capacity

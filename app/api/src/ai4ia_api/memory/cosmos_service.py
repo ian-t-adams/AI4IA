@@ -20,6 +20,7 @@ from .cosmos_store import (
 from .formatting import format_memory_context
 from .models import MemoryRecord
 from .planner import MemoryPlan, MemoryPlanner
+from .preferences import MemoryPreference, MemoryPreferenceConflict
 from .service import MemoryWriteOutcome
 from .telemetry import emit_memory_operation
 
@@ -61,17 +62,46 @@ class CosmosMemoryService:
         self._max_total_chars = max_total_chars
         self._min_chars_to_store = min_chars_to_store
 
+    async def get_preference(self, user_id: str) -> MemoryPreference:
+        return await self._store.get_preference(user_id)
+
+    async def set_preference(
+        self, user_id: str, automatic_enabled: bool, *, expected_etag: str
+    ) -> MemoryPreference:
+        return await self._store.set_preference(
+            user_id, automatic_enabled, expected_etag=expected_etag
+        )
+
+    async def _check_automatic_state(self, state: MemoryState) -> None:
+        current = await self._store.capture_state(state.user_id)
+        if (
+            not state.preference.automatic_enabled
+            or current.preference != state.preference
+        ):
+            raise MemoryPreferenceConflict("Automatic memory preference changed.")
+        if current.epoch != state.epoch:
+            raise MemoryConflictError("Memory was forgotten while the operation was in flight.")
+
     async def recall(self, user_id: str, query: str) -> list[MemoryRecord]:
         started = time.monotonic()
         if not query or not query.strip():
             emit_memory_operation("recall", "skipped", "cosmos", started, count=0)
             return []
         try:
+            state = await self._store.capture_state(user_id)
+            if not state.preference.automatic_enabled:
+                emit_memory_operation("recall", "disabled", "cosmos", started, count=0)
+                return []
             vector = await self._embedder.embed_one(query)
             if not vector:
                 emit_memory_operation("recall", "skipped", "cosmos", started, count=0)
                 return []
-            hits = await self._store.search(user_id, vector, self._top_k)
+            await self._check_automatic_state(state)
+            hits = await self._store.search(user_id, vector, self._top_k, state=state)
+            await self._check_automatic_state(state)
+        except MemoryPreferenceConflict:
+            emit_memory_operation("recall", "disabled", "cosmos", started, count=0)
+            return []
         except Exception as exc:  # noqa: BLE001 - recall must not break chat
             logger.warning("cosmos memory recall failed (%s)", type(exc).__name__)
             emit_memory_operation("recall", "failed", "cosmos", started)
@@ -101,19 +131,28 @@ class CosmosMemoryService:
             return "noop"
         try:
             state = await self._store.capture_state(user_id)
+            if not state.preference.automatic_enabled:
+                emit_memory_operation("save", "disabled", "cosmos", started, count=0)
+                return "disabled"
             query_vector = await self._embedder.embed_one(cleaned)
             if not query_vector:
                 # No vector means no candidate search and therefore no plan: the
                 # write was never attempted, which is a failure, not a decline.
                 emit_memory_operation("save", "failed", "cosmos", started)
                 return "unavailable"
+            await self._check_automatic_state(state)
             candidates = await self._store.search(
                 user_id, query_vector, 8, state=state
             )
+            await self._check_automatic_state(state)
             plan = await self._planner.plan(cleaned, candidates)
+            await self._check_automatic_state(state)
             applied = await self._apply_plan(
                 user_id, session_id, plan, candidates, state
             )
+        except MemoryPreferenceConflict:
+            emit_memory_operation("save", "disabled", "cosmos", started, count=0)
+            return "disabled"
         except Exception as exc:  # noqa: BLE001 - remember must not break chat
             logger.warning("cosmos memory remember failed (%s)", type(exc).__name__)
             emit_memory_operation("save", "failed", "cosmos", started)
@@ -153,6 +192,7 @@ class CosmosMemoryService:
             if not vector:
                 # The plan intended to write and could not; the fact is lost.
                 return "unavailable"
+            await self._check_automatic_state(state)
 
         if plan.action == "add":
             record = MemoryRecord(
@@ -170,6 +210,7 @@ class CosmosMemoryService:
                 lambda fence: self._store.commit_create(
                     fence, record, vector or []
                 ),
+                automatic=True,
             )
             return "saved"
 
@@ -200,6 +241,7 @@ class CosmosMemoryService:
                 lambda fence: self._store.commit_update(
                     fence, updated, vector or [], expected_etag=target.etag or ""
                 ),
+                automatic=True,
             )
             return "saved"
 
@@ -208,6 +250,7 @@ class CosmosMemoryService:
             lambda fence: self._store.commit_delete(
                 fence, target.id, expected_etag=target.etag or ""
             ),
+            automatic=True,
         )
         return "removed"
 
@@ -434,9 +477,16 @@ class CosmosMemoryService:
         self,
         initial: MemoryState,
         operation: Callable[[MemoryState], Awaitable[_T]],
+        *,
+        automatic: bool = False,
     ) -> _T:
         state = initial
         for _attempt in range(3):
+            if automatic and (
+                not state.preference.automatic_enabled
+                or state.preference != initial.preference
+            ):
+                raise MemoryPreferenceConflict("Automatic memory preference changed.")
             try:
                 return await operation(state)
             except MemoryFenceConflict:

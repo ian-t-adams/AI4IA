@@ -15,6 +15,7 @@ from ..agents.tools import ToolRisk
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..conversations.policy import resolve_conversation_policy
+from ..memory.context import MemoryContextGuard
 from ..websearch.contracts import MAX_CONTENT_CHARS, MAX_RESULTS, WEBIQ_TOOL_NAMES, tool_schema
 
 logger = logging.getLogger(__name__)
@@ -85,14 +86,17 @@ async def list_tools(
         )
         for spec in registry.list()
     ]
+    automatic_memory = await MemoryContextGuard(
+        getattr(request.app.state, "memory", None), user.internal_user_id
+    ).allowed()
     for name in sorted(SELECTABLE_SYNTHETIC_TOOL_NAMES):
         spec = synthetic_spec(name)
         available = True
         detail = None
-        if name == "recall_memory":
-            available = bool(getattr(request.app.state.memory, "enabled", False))
-        elif name == "remember_memory":
-            available = bool(getattr(request.app.state.memory, "enabled", False))
+        if name in {"recall_memory", "remember_memory"}:
+            available = automatic_memory
+            if not available:
+                detail = "Automatic memory is off or its preference is unavailable."
         elif name == "process_document":
             available = getattr(request.app.state, "document_retrieval", None) is not None
         elif name == "generate_video":
@@ -107,7 +111,7 @@ async def list_tools(
             )
         elif name == "run_workflow":
             available = getattr(request.app.state, "workflow_service", None) is not None
-        if not available:
+        if not available and detail is None:
             detail = "The required server feature is not enabled."
         items.append(
             ToolCatalogItem(

@@ -17,7 +17,7 @@ from __future__ import annotations
 import ast
 import inspect
 import operator
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -87,6 +87,7 @@ class ToolContext:
     # surface owning the turn can mint, persist and stream them.
     approval_sink: ApprovalSink | None = None
     consent_checker: ConsentChecker | None = None
+    prepare_model_context: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None
 
 
 @dataclass(frozen=True)

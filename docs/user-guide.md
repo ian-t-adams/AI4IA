@@ -227,18 +227,34 @@ Azure billing, especially for provider-specific media meters.
 ## Memory
 
 Memory can carry personal context between conversations. In **Context > Memory**,
-you can create, edit, or delete your own records. User-created or edited memories
-are protected from automatic consolidation.
+**Automatic memory** is on by default. Turn it off to stop automatic recall,
+saving, and model memory tools across chats, agents, and workflows, including
+delayed/resumed work. This is a capability switch, not a consent ceremony or
+tool approval. It does not enable a backend disabled by the operator.
+
+You can still create, list, edit, or delete your own records while it is off.
+User-created or edited memories are protected from automatic consolidation.
+The control shows when a change is pending. If saving fails, the last confirmed
+setting is restored visually but marked unconfirmed; reload it before trying
+again. Turning memory back on makes retained records available to new work.
 
 `/forget` removes this conversation's memories; `/forget me` removes all active
 memories for your profile. Deleting a document also fences and removes memory
 derived from it. A stale edit produces a conflict rather than overwriting a
 newer version.
 
-The execution receipt identifies the memories admitted to a turn, including
-their versions, hashes, and admitted text. Deleting active memory does not
-rewrite old answers or historical receipts, and provider backups retain their
-own retention window. There is **no per-user memory enable/disable switch**.
+Expand **Memories supplied** below an answer for the bounded memory context
+recorded in its execution receipt, links to your inspector items, and an entry
+point to the full receipt. It describes supplied context, not which memory
+influenced a sentence or hidden reasoning. Memory tool returns are shown
+separately because a return alone does not prove later model delivery. Old
+answers without provenance stay **unrecorded**, and truncated or missing
+references are not reconstructed from your current records.
+
+Disabling or deleting memory does not rewrite old answers or historical receipts.
+Already-sent prompts cannot be withdrawn, and existing transcript text can still
+be sent as conversation history. Provider backups retain their own retention
+window.
 See [memory architecture](memory.md) for the deletion boundary.
 
 ## Custom tools and web search
