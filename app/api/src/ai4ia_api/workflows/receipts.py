@@ -5,8 +5,9 @@ from typing import Any
 
 from ..agents.consent import ToolConsentSummary
 from ..agents.tools import redact
+from ..model_evidence import ReceiptCostSummary, combine_costs
 from ..receipts import (
-    MAX_TOOLS_OFFERED, ExecutionReceipt, ReceiptRuntime, build_receipt,
+    MAX_DELEGATIONS, MAX_TOOLS_OFFERED, ExecutionReceipt, ReceiptRuntime, build_receipt,
     enforce_receipt_budget,
 )
 from ..safety import MessageSafety, merge_safety
@@ -57,6 +58,7 @@ def workflow_activity(steps: list[WorkflowStepResult]) -> list[ActivityStep]:
 def workflow_receipt(
     result: WorkflowRunResult, *, runtime: ReceiptRuntime,
     correlation_id: str | None = None, consent: ToolConsentSummary | None = None,
+    include_steps: bool = False,
 ) -> ExecutionReceipt:
     children = [step.receipt for step in result.steps if step.receipt is not None]
     receipt = build_receipt(
@@ -71,10 +73,19 @@ def workflow_receipt(
     )
     receipt.toolCallCount = sum(child.toolCallCount for child in children)
     receipt.autoApprovedToolCalls = sum(child.autoApprovedToolCalls for child in children)
+    receipt.usage.cost = combine_costs(
+        [child.usage.cost or ReceiptCostSummary(totalCalls=child.usage.calls) for child in children],
+        expected_calls=result.usage.calls,
+    )
     offers = [offer for child in children for offer in child.toolsOffered]
-    receipt.toolsOffered = offers[:MAX_TOOLS_OFFERED]
+    receipt.toolsOffered = [offer.model_copy(deep=True) for offer in offers[:MAX_TOOLS_OFFERED]]
     receipt.toolsOfferedCount = sum(child.toolsOfferedCount for child in children)
     receipt.notes.append("workflow_step_receipts")
+    if include_steps:
+        receipt.delegations = [child.model_copy(deep=True) for child in children[:MAX_DELEGATIONS]]
+        if len(children) > MAX_DELEGATIONS:
+            receipt.notes.append("delegations_capped")
+            receipt.truncated = True
     if any(child.truncated for child in children):
         receipt.truncated = True
     return enforce_receipt_budget(receipt)

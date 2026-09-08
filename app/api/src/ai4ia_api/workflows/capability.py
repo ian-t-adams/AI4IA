@@ -13,15 +13,20 @@ from typing import Any
 from ..agents.agent_catalog import AgentCatalog
 from ..agents.approvals import ApprovalPolicy
 from ..agents.capabilities import CapabilityBuilder, Handler
+from ..agents.runtime import (
+    AgentRunResult, DelegatedAgentRunCancelled, DelegatedRunTrace, DelegatedToolResult,
+)
 from ..agents.synthetic_governance import synthetic_spec
 from ..agents.tool_exec import CHAT_ONLY_SYNTHETIC_TOOL_NAMES, ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry, ToolRisk
 from ..catalog import DeploymentOption
 from ..entitlements.service import EntitlementService
 from ..gateway.client import ModelGatewayClient
+from ..receipts import ReceiptRuntime, json_payload
 from ..usage.service import UsageService
 from .models import MAX_RUN_INPUT_LEN, RUN_WORKFLOW_TOOL_NAME, Workflow
 from .runner import run_workflow
+from .receipts import workflow_receipt
 from .service import WorkflowService
 
 MAX_WORKFLOW_CALLS_PER_TURN = 1
@@ -197,6 +202,7 @@ def build_workflow_capability(
             correlation_id=ctx.correlation_id,
             approval_policy=ApprovalPolicy.always,
             api=api,
+            model_id=model_id, pricing=metering.pricing,
         )
         if outcome.usage.calls > 0:
             await metering.record_completion(
@@ -210,7 +216,28 @@ def build_workflow_capability(
                 agent=f"workflow:{current.name}",
                 correlation_id=ctx.correlation_id,
             )
-        return {
+        nested_receipt = workflow_receipt(
+            outcome,
+            runtime=ReceiptRuntime(
+                modelId=model_id, deployment=deployment.deploymentName,
+                region=deployment.region, sku=deployment.sku, dataZone=deployment.dataZone,
+                residency=deployment.residency, api=api, agent=f"workflow:{current.name}",
+                workflowConfigSha256=json_payload(current.model_dump(mode="json")).sha256,
+            ),
+            correlation_id=ctx.correlation_id, include_steps=True,
+        )
+        trace = DelegatedRunTrace(
+            agent=f"workflow:{current.name}", usage=outcome.usage,
+            iterations=sum(step.iterations for step in outcome.steps),
+            status=nested_receipt.status, partial=nested_receipt.partial,
+            receipt=nested_receipt, metered_separately=True,
+        )
+        if outcome.cancelled:
+            raise DelegatedAgentRunCancelled(
+                AgentRunResult(text=outcome.text, model=deployment.deploymentName, usage=outcome.usage),
+                trace,
+            )
+        return DelegatedToolResult({
             "ok": outcome.ok,
             "workflow": current.name,
             # Workflows are immutable for the duration of this execution. The
@@ -222,6 +249,6 @@ def build_workflow_capability(
                 {"agent": step.agent, "ok": step.ok, "error": step.error}
                 for step in outcome.steps
             ],
-        }
+        }, trace=trace)
 
     return [schema], {RUN_WORKFLOW_TOOL_NAME: _handler}

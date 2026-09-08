@@ -86,6 +86,19 @@ invoked tools, bounded arguments/results, approvals, usage, and safety coverage.
 Loaded skills include their source URI, version resolution, hash, and truncation.
 Long workflows also retain independently bounded step receipts.
 
+Under **Runtime**, **Application-effective model parameters** shows the controls
+actually sent for each model call after the application adapted them for the
+chosen model. An omitted control says its provider default is unknown. Workflow
+steps and delegated agents show their own defaults rather than inheriting the
+parent turn's sliders.
+
+**Estimated model cost** uses the token rates and price version recorded during
+execution. **Known subtotal** means some calls could be priced but the total is
+unknown; **Unknown** is not zero. These are model-token estimates, not a bill, and
+exclude tool, media, and other service charges. Changing session settings or
+updating prices does not change a saved receipt. Older receipts show parameters
+and cost as **not recorded**, rather than reconstructing them from current settings.
+
 **These are not chain-of-thought.** They show what the application supplied and
 executed, not the model's private reasoning or proof of which source caused an
 answer. Shortened payloads retain their original redacted size and digest.

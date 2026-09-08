@@ -73,6 +73,14 @@ class PricingBook:
     def rate(self, model_id: str) -> PriceRate | None:
         return self._rates.get(model_id)
 
+    def snapshot_token_prices(self, model_id: str | None) -> PricingBook:
+        """Freeze one call's token rates/version without a second cost calculator."""
+        rate = self._rates.get(model_id) if model_id is not None else None
+        return PricingBook(
+            {model_id: rate} if model_id is not None and rate is not None else {},
+            currency=self._currency, version=self._version,
+        )
+
     def estimate(
         self, model_id: str, *, prompt_tokens: int | None, completion_tokens: int | None
     ) -> CostEstimate:

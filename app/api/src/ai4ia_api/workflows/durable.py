@@ -55,7 +55,7 @@ from ..agents.approvals import ApprovalPolicy
 from ..agents.consent import ToolConsentState
 from ..agents.consent_service import execution_tools_for_state, run_consent_checker
 from ..catalog import DeploymentOption
-from ..receipts import ReceiptRuntime
+from ..receipts import ReceiptRuntime, json_payload
 from ..sessions.models import Message, MessageRole, MessageStatus, Session
 from ..usage.models import TokenUsage, UsageTarget
 from .models import MAX_STEPS, Workflow
@@ -707,6 +707,7 @@ class DurableWorkflowService:
                 state, user_id=uid, tool_names=names, ctx=ctx,
             ),
             api=context.get("api") or "chat",
+            model_id=context.get("modelId"), pricing=state.usage.pricing,
         )
         return {
             "result": step_to_dict(outcome.result),
@@ -765,6 +766,10 @@ class DurableWorkflowService:
                 result, runtime=ReceiptRuntime(
                     modelId=context["modelId"], deployment=context["deployment"],
                     api=context.get("api") or "chat", agent=agent_attr,
+                    workflowConfigSha256=(
+                        json_payload(context["workflowSnapshot"]).sha256
+                        if context.get("workflowSnapshot") is not None else None
+                    ),
                 ),
                 correlation_id=context.get("correlationId"),
                 consent=consent.grant if consent else None,
