@@ -45,13 +45,27 @@ updates:
     groups:
       api-deps:
         patterns: ["*"]
-        exclude-patterns: ["azure-ai-projects", "fastapi", "starlette"]
+        exclude-patterns:
+          - azure-ai-projects
+          - fastapi
+          - starlette
+          - azure-monitor-opentelemetry
+          - opentelemetry-instrumentation-httpx
         update-types: ["minor", "patch"]
       # The API framework is a compatibility pair; the Foundry SDK instead
       # stays ungrouped so its exact schema/adapter contract is reviewed alone.
       api-framework:
         patterns: ["fastapi", "starlette"]
         update-types: ["minor", "patch"]
+      api-telemetry:
+        patterns: ["azure-monitor-opentelemetry", "opentelemetry-instrumentation-httpx"]
+        update-types: ["minor", "patch"]
+    # Verified 2026-09-08 (#409): distro 1.8.9 requires OTel SDK 1.43,
+    # but this exact HTTPX candidate requires semantic conventions/API 1.44.
+    # Revisit when the distro supports that train; no future versions are ignored.
+    ignore:
+      - dependency-name: opentelemetry-instrumentation-httpx
+        versions: ["0.65b0"]
 
   # These four projects restore as one locked graph. Dependabot refreshes locks
   # for projects whose direct dependencies move, but NuGet does not recalculate
