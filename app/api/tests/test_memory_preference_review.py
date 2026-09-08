@@ -361,3 +361,71 @@ async def test_stream_cancellation_retains_actual_first_prompt_and_completed_evi
     assert (OWNER_FACT in json.dumps(receipt.model_dump()["prompt"])) is first_supplied
     if iteration == 2:
         assert (OWNER_FACT in json.dumps(receipt.model_dump()["modelRequests"][-1])) is (not disable)
+
+
+@pytest.mark.parametrize("surface", ["plain", "agent", "fallback"])
+@pytest.mark.parametrize("transition", ["on", "off", "off_on"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_memory_fence_and_gateway_evidence_share_the_actual_request(
+    monkeypatch, surface, transition, stream
+):
+    from tests.test_memory_preference_execution import AvailableWebSearch
+    from tests.test_model_call_evidence import receipts, transport_client
+
+    def respond(_body, index, result):
+        if surface == "fallback" and index == 1:
+            result["choices"] = [{"message": {"content": ""}}]
+        return result
+
+    with transport_client(respond=respond) as (client, requests):
+        memory, _store, _embedder, _planner, _container = cosmos_memory()
+        client.app.state.memory = memory
+        assert client.post("/api/memories", json={"text": OWNER_FACT}).status_code == 201
+        created = client.post("/api/sessions", json={"title": "Merge seam", "model": "gpt-5.2"})
+        assert created.status_code == 201
+        session = created.json()
+        content = "Describe my preferences"
+        if surface == "agent":
+            assert client.post("/api/agents", json={
+                "name": "memory-tester", "systemPrompt": "Answer accurately.", "tools": ["calculator"],
+            }).status_code == 201
+            content = "@memory-tester " + content
+        elif surface == "fallback":
+            client.app.state.web_search = AvailableWebSearch()
+        original = client.app.state.session_repo.patch_session
+        entered = []
+
+        async def after_context(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            entered.append(True)
+            if transition != "on":
+                await set_automatic(memory, session["userId"], False)
+                if transition == "off_on":
+                    await set_automatic(memory, session["userId"], True)
+            return result
+
+        monkeypatch.setattr(client.app.state.session_repo, "patch_session", after_context)
+        response = client.post("/api/chat", json={
+            "sessionId": session["id"], "content": content, "stream": stream,
+            "params": {"max_tokens": 2048, "reasoning_effort": "low"},
+        })
+        assert response.status_code == 200, response.text
+        assert entered
+        saved = receipts(client, session["id"])[0]
+        expected_calls = 2 if surface == "fallback" else 1
+        assert len(requests) == saved["runtime"]["modelCallCount"] == expected_calls
+        block = next(item for item in saved["contextBlocks"] if item["kind"] == "memory")
+        assert block["admitted"] is (transition == "on")
+        assert (OWNER_FACT in json.dumps(saved["prompt"])) is (transition == "on")
+        for wire, call in zip(requests, saved["runtime"]["modelCalls"], strict=True):
+            assert (OWNER_FACT in json.dumps(wire["messages"])) is (transition == "on")
+            assert call["coverage"] == "recorded" and call["httpAttempts"] == 1
+            assert call["parameters"]["maxOutputTokens"] == wire["max_completion_tokens"] == 2048
+            assert call["parameters"]["reasoningEffort"] == wire["reasoning_effort"] == "low"
+            assert call["cost"]["priceVersion"] == "receipt-test-v1"
+            assert call["cost"]["estCostMicroUsd"] == 4000
+        assert saved["usage"]["cost"]["totalCalls"] == expected_calls
+        assert saved["usage"]["cost"]["estCostMicroUsd"] == 4000 * expected_calls
+        if surface == "fallback":
+            assert requests[0]["tools"]
+            assert "tools" not in requests[1]

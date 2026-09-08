@@ -19,6 +19,7 @@ import httpx
 
 from ..config import GatewayAuthMode, GatewayProviderStyle, Settings
 from ..chat_timing import current_chat_timing
+from ..model_evidence import CapturedModelCall, begin_model_call
 from ..http_retry import request_with_retry
 from ..model_traits import (
     is_anthropic_messages_deployment,
@@ -1122,6 +1123,9 @@ class ModelGatewayClient:
                 stream=False,
                 correlation_id=correlation_id,
             )
+        evidence = begin_model_call(deployment, resolved_api)
+        if evidence is not None:
+            evidence.request(req.json)
         client, owned = self._client()
         timing = current_chat_timing()
         timing_started = timing.gateway_started() if timing is not None else None
@@ -1142,12 +1146,14 @@ class ModelGatewayClient:
                 if data.get("status") == "failed":
                     err = (data.get("error") or {}).get("message") or "responses failed"
                     raise ModelGatewayError(502, err)
-                return _responses_json_to_chat(data)
-            if resolved_api == ANTHROPIC_API:
+                data = _responses_json_to_chat(data)
+            elif resolved_api == ANTHROPIC_API:
                 if data.get("type") == "error":
                     err = (data.get("error") or {}).get("message")
                     raise ModelGatewayError(502, err or _REQUEST_FAILED)
-                return anthropic_json_to_chat(data)
+                data = anthropic_json_to_chat(data)
+            if evidence is not None:
+                evidence.report_usage(data.get("usage"), completed=True)
             return data
         finally:
             if timing is not None and timing_started is not None:
@@ -1196,6 +1202,7 @@ class ModelGatewayClient:
         owned = False
         try:
             resolved_api = _resolved_api(api, deployment)
+            evidence = begin_model_call(deployment, resolved_api)
             if resolved_api == "responses":
                 async with aclosing(
                     self._stream_responses(
@@ -1203,9 +1210,12 @@ class ModelGatewayClient:
                         messages=messages,
                         params=params,
                         correlation_id=correlation_id,
+                        evidence=evidence,
                     )
                 ) as response_stream:
                     async for chunk in response_stream:
+                        if evidence is not None:
+                            evidence.report_usage(chunk.usage, completed=chunk.done)
                         yield chunk
                 return
             if resolved_api == ANTHROPIC_API:
@@ -1215,9 +1225,12 @@ class ModelGatewayClient:
                         messages=messages,
                         params=params,
                         correlation_id=correlation_id,
+                        evidence=evidence,
                     )
                 ) as anthropic_stream:
                     async for chunk in anthropic_stream:
+                        if evidence is not None:
+                            evidence.report_usage(chunk.usage, completed=chunk.done)
                         yield chunk
                 return
             client, owned = self._client()
@@ -1236,6 +1249,8 @@ class ModelGatewayClient:
                     include_usage=include_usage,
                     correlation_id=correlation_id,
                 )
+                if evidence is not None:
+                    evidence.request(req.json)
                 is_last = attempt_idx == len(attempts) - 1
                 async with client.stream(
                     "POST", req.url, headers=req.headers, json=req.json
@@ -1250,6 +1265,8 @@ class ModelGatewayClient:
                     async for line in resp.aiter_lines():
                         chunk = parse_sse_line(line)
                         if chunk is not None:
+                            if evidence is not None:
+                                evidence.report_usage(chunk.usage, completed=chunk.done)
                             yield chunk
                             if chunk.done:
                                 return
@@ -1269,6 +1286,7 @@ class ModelGatewayClient:
         messages: Sequence[dict[str, Any]],
         params: dict[str, Any] | None = None,
         correlation_id: str | None = None,
+        evidence: CapturedModelCall | None = None,
     ) -> AsyncGenerator[ChatChunk, None]:
         """Translate Claude Messages SSE frames into chat-shaped chunks."""
         client, owned = self._client()
@@ -1281,6 +1299,8 @@ class ModelGatewayClient:
                 stream=True,
                 correlation_id=correlation_id,
             )
+            if evidence is not None:
+                evidence.request(req.json)
             async with client.stream(
                 "POST", req.url, headers=req.headers, json=req.json
             ) as resp:
@@ -1334,6 +1354,7 @@ class ModelGatewayClient:
         messages: Sequence[dict[str, Any]],
         params: dict[str, Any] | None = None,
         correlation_id: str | None = None,
+        evidence: CapturedModelCall | None = None,
     ) -> AsyncGenerator[ChatChunk, None]:
         """Stream a Responses turn, translating its SSE events into the synthetic
         chat-shaped ``ChatChunk`` stream the router already consumes.
@@ -1353,6 +1374,8 @@ class ModelGatewayClient:
                 stream=True,
                 correlation_id=correlation_id,
             )
+            if evidence is not None:
+                evidence.request(req.json)
             async with client.stream(
                 "POST", req.url, headers=req.headers, json=req.json
             ) as resp:

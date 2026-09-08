@@ -45,7 +45,7 @@ from ..catalog import ModelCatalog
 from ..entitlements.service import EntitlementService
 from ..gateway.client import ModelGatewayClient
 from ..logging_setup import get_correlation_id
-from ..receipts import ExecutionReceipt, ReceiptRuntime
+from ..receipts import ExecutionReceipt, ReceiptRuntime, json_payload
 from ..sessions.models import Message, MessageRole, MessageStatus
 from ..sessions.repository import SessionRepository
 from ..usage.service import UsageService
@@ -795,6 +795,7 @@ async def run_workflow_endpoint(
             request.app.state, user_id=uid, tool_names=names, ctx=ctx,
         ),
         api=entry.api if entry is not None else "chat",
+        model_id=model_id, pricing=metering.pricing,
     )
 
     assistant = Message(
@@ -825,6 +826,7 @@ async def run_workflow_endpoint(
                 modelId=model_id, deployment=deployment.deploymentName,
                 region=deployment.region, dataZone=deployment.dataZone,
                 api=entry.api if entry is not None else "chat", agent=agent_attr,
+                workflowConfigSha256=json_payload(workflow.model_dump(mode="json")).sha256,
             ),
             correlation_id=correlation_id, consent=consent.grant if consent else None,
         ),

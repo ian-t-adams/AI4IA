@@ -17,13 +17,23 @@ Yes, when deployment is not explicitly disabled. A push to `main` that touches
 application, infrastructure, proxy, Foundry, deployment workflow, or directly
 executed release-script paths runs `.github/workflows/deploy.yml`.
 Documentation-only changes do not deploy; use **Actions → deploy → Run
-workflow** when an explicit redeploy is needed.
+workflow** with the **main** branch when an explicit redeploy is needed.
 
-The workflow validates `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+The first admission step rejects every ref except `refs/heads/main`, including
+tags named `main`, before evaluating configuration. It has no token permissions,
+checkout, or Azure login. Only the admitted deployment job can request OIDC, and
+its read-only checkout does not retain Git credentials.
+
+The workflow then validates `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
 `AZURE_SUBSCRIPTION_ID`, `AZURE_ENV_NAME`, and `AZURE_LOCATION` before the
 deployment job can start. Missing values fail the workflow with their names;
 they never produce a successful skipped job. A repository with no deployment
 target must declare that posture with `AI4IA_DEPLOYMENT_ENABLED=false`.
+
+This source guard does not replace the independently configured `production`
+environment branch policy. An operator must still restrict that environment as
+described in the standup guide; changing workflow source alone does not update
+live GitHub environment/security settings.
 
 ## Moved setup sections
 
@@ -48,14 +58,18 @@ preserve old inbound links while keeping setup instructions in one place:
 ## 1. Exact-digest release flow
 
 ```text
-push to main (app/infra/proxy/azure.yaml)       manual workflow_dispatch
+push to main (app/infra/proxy/azure.yaml)       manual dispatch on main
                     |                                   |
                     +----------------+------------------+
                                      v
                          deploy.yml (production)
                                      |
                                      v
-                    OIDC login and repository checks
+                     ref/configuration admission
+                            (no permissions)
+                                     |
+                                     v
+                      deploy job: checkout + OIDC
                                      |
                                      v
               provider + custom-domain safety preflights

@@ -173,6 +173,31 @@ class DependencyReviewBoundaries(unittest.TestCase):
             with self.subTest(package=package):
                 self.assertEqual(self.matching_groups(package), ["api-deps"])
 
+    def test_azure_monitor_and_httpx_instrumentation_are_reviewed_together(self) -> None:
+        for package in ("azure-monitor-opentelemetry", "opentelemetry-instrumentation-httpx"):
+            with self.subTest(package=package):
+                self.assertEqual(self.matching_groups(package), ["api-telemetry"])
+        groups = _python_entries_for(API_DIR)[0]["groups"]
+        self.assertIn("api-telemetry", groups)
+        self.assertEqual(set(groups["api-telemetry"]["update-types"]), {"minor", "patch"})
+
+    def test_only_the_proven_incompatible_telemetry_release_is_deferred(self) -> None:
+        ignores = _python_entries_for(API_DIR)[0].get("ignore", [])
+        self.assertEqual(
+            ignores,
+            [
+                {
+                    "dependency-name": "opentelemetry-instrumentation-httpx",
+                    "versions": ["0.65b0"],
+                }
+            ],
+            "Do not suppress all future telemetry releases or unrelated dependencies.",
+        )
+        excluded = ignores[0]["versions"]
+        for allowed in ("0.64b0", "0.65b1", "0.66b0", "1.0.0"):
+            with self.subTest(version=allowed):
+                self.assertNotIn(allowed, excluded)
+
     def test_gate_installers_use_declared_exact_versions(self) -> None:
         cases = (
             (

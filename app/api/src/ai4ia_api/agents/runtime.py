@@ -57,6 +57,8 @@ from typing import Any
 
 from ..gateway.client import RESPONSES_OUTPUT_ITEMS_KEY, ModelGatewayClient
 from ..usage.models import TokenUsage
+from ..model_evidence import ModelCallRecorder
+from ..receipts import ExecutionReceipt, ReceiptRuntime
 from ..safety import MessageSafety, merge_safety, parse_safety
 from ..logging_setup import emit_custom_event, emit_security_block
 from .prompt_budget import (
@@ -122,7 +124,7 @@ class AgentStep:
 
 @dataclass
 class DelegatedRunTrace:
-    """One linked agent's complete observable execution inputs and outcomes."""
+    """Receipt-only inputs and outcomes for a nested agent or saved workflow."""
 
     agent: str
     effective_prompt: list[dict[str, Any]] = field(default_factory=list)
@@ -134,6 +136,10 @@ class DelegatedRunTrace:
     safety: MessageSafety | None = None
     status: str = "complete"
     partial: bool = False
+    runtime: ReceiptRuntime | None = None
+    model_evidence: ModelCallRecorder | None = None
+    receipt: ExecutionReceipt | None = None
+    metered_separately: bool = False
 
 
 @dataclass
@@ -174,6 +180,7 @@ class AgentRunResult:
     delegations: list[DelegatedRunTrace] = field(default_factory=list)
     incomplete: bool = False
     incomplete_reason: str | None = None
+    model_evidence: ModelCallRecorder | None = None
 
 
 class DelegatedToolResult(dict[str, Any]):
@@ -217,6 +224,14 @@ class DelegatedAgentRunFailed(AgentRunFailed):
         trace: DelegatedRunTrace,
     ) -> None:
         super().__init__(cause=cause, partial=partial)
+        self.trace = trace
+
+
+class DelegatedAgentRunCancelled(AgentRunCancelled):
+    """A cancelled linked agent still owns its parameters and consumed usage."""
+
+    def __init__(self, partial: AgentRunResult, trace: DelegatedRunTrace) -> None:
+        super().__init__(partial)
         self.trace = trace
 
 
@@ -282,6 +297,7 @@ async def run_agent_turn(
     on_delta: Callable[[str], Awaitable[None]] | None = None,
     prompt_budget_bytes: int | None = None,
     retain_failed_request: bool = False,
+    model_evidence: ModelCallRecorder | None = None,
 ) -> AgentRunResult:
     """Run a single agent turn with tool calling and return the final answer.
 
@@ -307,6 +323,7 @@ async def run_agent_turn(
     the turn changes: the same schema is advertised, the same governance runs on
     the same reassembled tool calls, and the same bounds apply.
     """
+    evidence = model_evidence if model_evidence is not None else ModelCallRecorder()
     convo: list[dict[str, Any]] = [dict(m) for m in messages]
     current_user_index = next(
         (
@@ -490,6 +507,7 @@ async def run_agent_turn(
             model_requests=list(model_requests),
             safety=safety_agg,
             delegations=list(delegated_runs),
+            model_evidence=evidence,
         )
 
     async def call_model(
@@ -568,7 +586,7 @@ async def run_agent_turn(
             model_requests.append(copy.deepcopy(_observable_messages(convo)))
             request_started = True
             if stream_tokens:
-                iteration = await stream_iteration(
+                iteration = await evidence.observe(stream_iteration(
                     gateway=gateway,
                     deployment=deployment,
                     messages=convo,
@@ -577,7 +595,7 @@ async def run_agent_turn(
                     api=api,
                     on_delta=emit_delta,
                     on_usage=observe_stream_usage,
-                )
+                ))
                 completed_model_calls += 1
                 if iteration.safety is not None:
                     tagged = iteration.safety.model_copy(deep=True)
@@ -600,7 +618,7 @@ async def run_agent_turn(
             )
             if api != "chat":
                 complete_kwargs["api"] = api
-            result = await gateway.complete(**complete_kwargs)
+            result = await evidence.observe(gateway.complete(**complete_kwargs))
             completed_model_calls += 1
             parsed_safety = parse_safety(result)
             if parsed_safety is not None:
@@ -666,6 +684,7 @@ async def run_agent_turn(
             delegations=list(delegated_runs),
             incomplete=incomplete,
             incomplete_reason=incomplete_reason,
+            model_evidence=evidence,
         )
 
     async def record(step: AgentStep, *, persist: bool = True) -> None:
@@ -1016,6 +1035,10 @@ async def run_agent_turn(
                 try:
                     raw_result = await handlers[name](parsed, ctx)
                 except asyncio.CancelledError as exc:
+                    if isinstance(exc, DelegatedAgentRunCancelled):
+                        delegated_runs.append(exc.trace)
+                        if not exc.trace.metered_separately:
+                            usage_agg = usage_agg.add(exc.partial.usage)
                     await record(AgentStep(
                         kind="tool_error", tool=safe_name, detail="cancelled",
                     ))
@@ -1058,6 +1081,7 @@ async def run_agent_turn(
                         model_requests=list(model_requests),
                         safety=safety_agg,
                         delegations=list(delegated_runs),
+                        model_evidence=evidence,
                     )
                     raise AgentRunFailed(cause=exc.cause, partial=partial) from exc.cause
                 except Exception as exc:  # noqa: BLE001 - never crash the turn

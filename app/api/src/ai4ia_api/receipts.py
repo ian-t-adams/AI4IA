@@ -55,6 +55,7 @@ from pydantic import BaseModel, Field
 
 from .agents.tools import is_safe_tool_name, redact, redact_obj
 from .agents.consent import ApprovalSource, ToolConsentSummary
+from .model_evidence import ModelCallEvidence, ModelCallRecorder, ReceiptCostSummary, combine_costs
 from .safety import MessageSafety
 from .usage.models import TokenUsage
 
@@ -288,6 +289,11 @@ class ReceiptRuntime(BaseModel):
     instructionSource: str | None = None
     instructionSha256: str | None = None
     agentConfigSha256: str | None = None
+    workflowConfigSha256: str | None = None
+    # None is historical/not recorded. An empty list records an observation gap
+    # or no dispatched call; never infer provider defaults from either.
+    modelCalls: list[ModelCallEvidence] | None = None
+    modelCallCount: int | None = Field(default=None, ge=0)
 
 
 class ReceiptUsage(BaseModel):
@@ -299,6 +305,7 @@ class ReceiptUsage(BaseModel):
     promptTokens: int | None = None
     completionTokens: int | None = None
     totalTokens: int | None = None
+    cost: ReceiptCostSummary | None = None
 
 
 class ReceiptSafetySummary(BaseModel):
@@ -401,6 +408,9 @@ def enforce_receipt_budget(receipt: ExecutionReceipt) -> ExecutionReceipt:
 
     if size() <= MAX_RECEIPT_BYTES:
         return receipt
+    # Include the marker in every subsequent size decision, including exact
+    # boundary cases where adding it after shedding would exceed the limit.
+    _note(receipt, "receipt_size_capped")
 
     for call in receipt.toolCalls:
         if call.result is not None:
@@ -416,6 +426,8 @@ def enforce_receipt_budget(receipt: ExecutionReceipt) -> ExecutionReceipt:
             return receipt
     for message in receipt.prompt:
         message.content = message.content.shed()
+        if message.toolCalls is not None:
+            message.toolCalls = message.toolCalls.shed()
         if size() <= MAX_RECEIPT_BYTES:
             _note(receipt, "receipt_size_capped")
             return receipt
@@ -463,7 +475,22 @@ def enforce_receipt_budget(receipt: ExecutionReceipt) -> ExecutionReceipt:
     # Last resort: descriptions are the only remaining free text.
     for offer in receipt.toolsOffered:
         offer.description = None
-    _note(receipt, "receipt_size_capped")
+    # Metadata alone can exceed the cap after adding per-call evidence. Keep
+    # original counts and the immutable cost subtotal/version evidence, rather
+    # than allowing large tool/schema inventories to bypass the total bound.
+    for entries, marker in (
+        (receipt.toolsOffered, "tools_offered_capped"),
+        (receipt.prompt, "prompt_capped"),
+        (receipt.toolCalls, "tool_calls_capped"),
+        (receipt.contextBlocks, "context_blocks_capped"),
+    ):
+        while entries and size() > MAX_RECEIPT_BYTES:
+            entries.pop()
+            _note(receipt, marker)
+    if receipt.runtime.modelCalls is not None:
+        while len(receipt.runtime.modelCalls) > 1 and size() > MAX_RECEIPT_BYTES:
+            receipt.runtime.modelCalls.pop()
+            _note(receipt, "model_calls_capped")
     return receipt
 
 
@@ -622,6 +649,7 @@ def build_receipt(
     safety: MessageSafety | None = None,
     delegations: list[ExecutionReceipt] | None = None,
     model_requests: list[list[dict[str, Any]]] | None = None,
+    model_evidence: ModelCallRecorder | None = None,
     iterations: int = 0,
     status: Literal["complete", "incomplete", "error", "cancelled"] = "complete",
     partial: bool = False,
@@ -634,12 +662,27 @@ def build_receipt(
     """
     snapshot, prompt_count, prompt_bytes, prompt_capped = prompt_snapshot(prompt_messages)
     offers, offered_count = tool_offers(offered)
-    all_calls = list(calls or [])
+    all_calls = [call.model_copy(deep=True) for call in calls or []]
     effective_usage = usage or TokenUsage.empty()
     later_requests, later_request_count = model_request_snapshots(model_requests)
+    saved_runtime = runtime.model_copy(deep=True) if runtime is not None else ReceiptRuntime()
+    cost = None
+    if model_evidence is not None:
+        saved_runtime.modelCalls = model_evidence.snapshot()
+        saved_runtime.modelCallCount = model_evidence.count
+        cost = combine_costs(
+            [
+                model_evidence.cost(),
+                *[
+                    child.usage.cost or ReceiptCostSummary(totalCalls=child.usage.calls)
+                    for child in delegations or []
+                ],
+            ],
+            expected_calls=effective_usage.calls,
+        )
     receipt = ExecutionReceipt(
         correlationId=correlation_id,
-        runtime=runtime or ReceiptRuntime(),
+        runtime=saved_runtime,
         prompt=snapshot,
         promptMessageCount=prompt_count,
         promptBytes=prompt_bytes,
@@ -674,6 +717,7 @@ def build_receipt(
             totalTokens=(
                 effective_usage.total if effective_usage.known else None
             ),
+            cost=cost,
         ),
         safety=ReceiptSafetySummary(
             status=(
@@ -691,7 +735,7 @@ def build_receipt(
             ),
             truncated=safety.truncated if safety is not None else False,
         ),
-        delegations=list(delegations or [])[:MAX_DELEGATIONS],
+        delegations=[child.model_copy(deep=True) for child in (delegations or [])[:MAX_DELEGATIONS]],
         modelRequests=later_requests,
         iterations=max(0, int(iterations or 0)),
         status=status,
@@ -717,4 +761,6 @@ def build_receipt(
         _note(receipt, "delegations_capped")
     if later_request_count > len(receipt.modelRequests):
         _note(receipt, "model_requests_capped")
+    if model_evidence is not None and model_evidence.count > len(saved_runtime.modelCalls or []):
+        _note(receipt, "model_calls_capped")
     return enforce_receipt_budget(receipt)
