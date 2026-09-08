@@ -7,11 +7,8 @@
 
 A drop-in :class:`~ai4ia_api.library.doc_chunks.DocChunkStore` implementation that
 indexes the library's CU-parsed chunks into an Azure AI Search index instead of
-Postgres/pgvector. Selected by :mod:`ai4ia_api.library.ingest_factory` when
-``search_endpoint`` is configured; otherwise pgvector / the in-memory store back
-retrieval, so this is purely additive and dormant by default.
-
-Design mirrors :class:`~ai4ia_api.library.doc_chunks.PgDocChunkStore`:
+process-local storage. Required by :mod:`ai4ia_api.library.ingest_factory` for
+enabled document libraries outside local. Local mode can use the in-memory store.
 
 * **Keyless / AAD-only.** Reached over the global ``*.search.windows.net`` endpoint
   via the api managed identity (RBAC: *Search Index Data Contributor* +
@@ -525,10 +522,9 @@ class AzureSearchDocChunkStore:
     def _trip_semantic(self) -> None:
         """Record a semantic failure and suppress further attempts for a while.
 
-        Logged at WARNING with the traceback exactly once per trip: repeating it
-        per request is what made an exhausted quota fill the logs. Concurrent
-        failures from a single outage wave advance the backoff once, not once per
-        in-flight query.
+        Logged at WARNING exactly once per trip, without provider exception
+        bodies (which may contain query/source payloads). Concurrent failures
+        from one outage wave advance the backoff once, not once per in-flight query.
         """
         already_open = (
             self._semantic_retry_at is not None
@@ -543,7 +539,6 @@ class AzureSearchDocChunkStore:
             "AI Search semantic rerank unavailable; falling back to hybrid and "
             "suppressing semantic for %.0fs",
             cooldown,
-            exc_info=True,
         )
 
     def _reset_semantic(self) -> None:
@@ -656,7 +651,6 @@ class AzureSearchDocChunkStore:
                     logger.warning(
                         "AI Search semantic query rejected; falling back to "
                         "hybrid for this query only",
-                        exc_info=True,
                     )
             else:
                 self._reset_semantic()

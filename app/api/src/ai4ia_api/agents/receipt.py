@@ -133,6 +133,8 @@ class ReceiptDraft:
     offered: list[dict[str, Any]] = field(default_factory=list)
     approvals_granted: int = 0
     tool_consent: ToolConsentSummary | None = None
+    partial: bool = False
+    notes: list[str] = field(default_factory=list)
 
     def build(
         self,
@@ -192,7 +194,8 @@ class ReceiptDraft:
                 model_requests=model_requests,
                 iterations=iterations,
                 status=status,
-                partial=partial,
+                partial=partial or self.partial,
+                notes=self.notes,
             )
         except Exception:  # noqa: BLE001 - a receipt must never break a turn
             return ExecutionReceipt(

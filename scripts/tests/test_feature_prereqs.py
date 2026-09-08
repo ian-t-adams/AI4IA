@@ -25,8 +25,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
@@ -120,6 +123,118 @@ class CommittedParametersTests(unittest.TestCase):
         with _environment(**PROD_ENV):
             code, _, err = _run(REAL_PARAMETERS)
         self.assertEqual(code, 0, f"production configuration failed validation:\n{err}")
+
+
+class DocumentSearchPrerequisiteTests(unittest.TestCase):
+    def test_document_and_search_flags_through_real_azd_placeholders(self) -> None:
+        for environment in ("dev", "prod"):
+            for enabled, search_enabled in (
+                (True, False), (True, True), (False, False), (False, True),
+            ):
+                with self.subTest(
+                    environment=environment, enabled=enabled, search=search_enabled,
+                ), _environment(
+                    **{
+                        **PROD_ENV,
+                        "AI4IA_APP_ENVIRONMENT": environment,
+                        "AI4IA_DOCUMENT_UNDERSTANDING_ENABLED": str(enabled).lower(),
+                        "AI4IA_SEARCH_ENABLED": str(search_enabled).lower(),
+                        "AI4IA_DOCUMENT_COMPUTE_ENABLED": "false",
+                        "AI4IA_CU_PREVIEW_ENABLED": "false",
+                    }
+                ):
+                    code, _, err = _run(
+                        REAL_PARAMETERS, require_deployment_attestation=True,
+                    )
+                    if enabled and not search_enabled:
+                        self.assertEqual(code, 1)
+                        self.assertIn(
+                            "documentUnderstandingEnabled=true requires searchEnabled=true",
+                            err,
+                        )
+                    else:
+                        self.assertEqual(code, 0, err)
+
+    def test_literal_parameters_cannot_bypass_the_search_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            path = _write_parameters(
+                tmp, {"documentUnderstandingEnabled": True, "searchEnabled": False},
+            )
+            code, _, err = _run(path)
+        self.assertEqual(code, 1)
+        self.assertIn("searchEnabled=true", err)
+
+    def _assert_hook_stops(self, shell: str, hook_index: int, stub: str) -> None:
+        executable = shutil.which(shell)
+        if executable is None:
+            self.skipTest(f"{shell} is not installed")
+        source = (ROOT / "azure.yaml").read_text(encoding="utf-8")
+        preprovision = source.split("  preprovision:\n", 1)[1].split("  postprovision:\n", 1)[0]
+        hooks = re.findall(r"      run: \|\n((?:        .*\n|\n)+)", preprovision)
+        self.assertEqual(len(hooks), 2)
+        hook = textwrap.dedent(hooks[hook_index])
+        for code in (0, 17):
+            with self.subTest(shell=shell, exit_code=code):
+                command = [executable]
+                command.extend(
+                    ["-NoProfile", "-NonInteractive", "-Command"]
+                    if shell == "pwsh"
+                    else ["-c"]
+                )
+                result = subprocess.run(
+                    [*command, stub + "\n" + hook],
+                    cwd=ROOT,
+                    env={**os.environ, "TEST_PREFLIGHT_EXIT_CODE": str(code)},
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual("REACHED_MODEL_PREFLIGHT" in result.stdout, code == 0)
+
+    def test_windows_hook_stops_before_model_preflight_on_parameter_failure(self) -> None:
+        self._assert_hook_stops("pwsh", 0, r"""
+function python {
+    $global:LASTEXITCODE = 0
+    if ($args[0] -eq 'scripts/validate-feature-prereqs.py') {
+        $global:LASTEXITCODE = [int]$env:TEST_PREFLIGHT_EXIT_CODE
+    }
+    if ($args[0] -eq 'scripts/check-model-availability.py') {
+        Write-Output 'REACHED_MODEL_PREFLIGHT'
+    }
+}
+""")
+
+    def test_posix_hook_stops_before_model_preflight_on_parameter_failure(self) -> None:
+        self._assert_hook_stops("sh", 1, r"""
+python3() {
+    if [ "$1" = "scripts/validate-feature-prereqs.py" ]; then
+        return "$TEST_PREFLIGHT_EXIT_CODE"
+    fi
+    if [ "$1" = "scripts/check-model-availability.py" ]; then
+        printf '%s\n' 'REACHED_MODEL_PREFLIGHT'
+    fi
+}
+""")
+
+    def test_document_search_flags_reach_ci_bicep_and_backend(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+        main = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
+        api = (ROOT / "infra" / "modules" / "api.bicep").read_text(encoding="utf-8")
+        for parameter, variable in (
+            ("documentUnderstandingEnabled", "AI4IA_DOCUMENT_UNDERSTANDING_ENABLED"),
+            ("searchEnabled", "AI4IA_SEARCH_ENABLED"),
+        ):
+            self.assertEqual(parameters[parameter]["value"], "${" + variable + "=true}")
+            self.assertIn(variable + ": ${{ vars." + variable + " }}", workflow)
+        self.assertIn("documentUnderstandingEnabled: documentUnderstandingEnabled", main)
+        self.assertIn("deploySearch: searchEnabled", main)
+        self.assertIn("searchEndpoint: search.outputs.searchEndpoint", main)
+        self.assertIn("var documentEnv = documentUnderstandingEnabled ? concat([", api)
+        self.assertIn("name: 'AI4IA_DOCUMENT_UNDERSTANDING_ENABLED'", api)
+        self.assertIn("name: 'AI4IA_SEARCH_ENDPOINT'", api)
+        self.assertIn("value: searchEndpoint", api)
 
 
 class ContentUnderstandingPreviewTests(unittest.TestCase):

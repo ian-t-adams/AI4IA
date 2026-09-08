@@ -294,6 +294,12 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     cu_enabled = truthy(
         parameter_value(parameters, "documentUnderstandingEnabled", False)
     )
+    if cu_enabled and not truthy(parameter_value(parameters, "searchEnabled", False)):
+        errors.append(
+            "documentUnderstandingEnabled=true requires searchEnabled=true. "
+            "Enabled deployed libraries require durable Azure AI Search retrieval; "
+            "enable/provision Search with approval or disable the library."
+        )
     cu_preview_enabled = truthy(
         parameter_value(parameters, "cuPreviewEnabled", False)
     )

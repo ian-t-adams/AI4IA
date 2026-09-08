@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+from azure.core.exceptions import HttpResponseError
+
 from ai4ia_api.library.blob_store import (
     MEDIA_NAME,
     PARSED_NAME,
@@ -24,6 +27,7 @@ from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
 from ai4ia_api.library.models import DocumentStatus, Modality, UserDocument, Visibility
 from ai4ia_api.library.retrieval import DocumentRetrievalService
 from tests.conftest import make_settings
+from tests.test_ai_search_chunks import _FakeResults, _FakeSearchClient, _store
 
 
 class FakeEmbedder:
@@ -236,7 +240,170 @@ async def test_context_block_best_effort_on_repo_failure():
             raise RuntimeError("cosmos down")
 
     svc = _service(library=BoomRepo())
-    assert await svc.context_block("u1", "q", nonce="n4") == ""
+    context = await svc.context("u1", "q", nonce="n4")
+    assert context.status == "unavailable"
+    assert "Library retrieval is unavailable" in context.block
+    assert context.sources == []
+
+
+class _UnavailableResults(_FakeResults):
+    def __aiter__(self):
+        async def _gen():
+            async for document in super(_UnavailableResults, self).__aiter__():
+                yield document
+            raise HttpResponseError(message="PRIVATE QUERY AND SOURCE CONTENT token=secret")
+
+        return _gen()
+
+
+class UnavailableSearchClient(_FakeSearchClient):
+    def __init__(self, *, failure_phase="request"):
+        super().__init__()
+        self.unavailable = True
+        self.failure_phase = failure_phase
+
+    async def search(self, **kwargs):
+        self.search_calls.append(kwargs)
+        if self.unavailable:
+            if self.failure_phase == "page":
+                return _UnavailableResults(self.results)
+            raise HttpResponseError(message="PRIVATE QUERY AND SOURCE CONTENT token=secret")
+        return _FakeResults(self.results)
+
+
+@pytest.mark.parametrize("per_user", [False, True])
+@pytest.mark.parametrize("failure_phase", ["request", "page"])
+async def test_search_outage_is_not_successful_empty_and_preserves_sources(
+    per_user, failure_phase, caplog,
+):
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    client = UnavailableSearchClient(failure_phase=failure_phase)
+    chunks = _store(search_client=client, per_user_index=per_user)
+    svc = _service(library=library, blob=blob, chunks=chunks, embedder=FakeEmbedder())
+    doc = await _seed_doc(library, blob)
+
+    unavailable = await svc.context("u1", "PRIVATE QUERY", nonce="outage")
+    assert "Library retrieval is unavailable" in unavailable.block
+    assert unavailable.status == "unavailable"
+    assert unavailable.sources == []
+    assert doc.summary in unavailable.block
+    assert "PRIVATE QUERY AND SOURCE CONTENT" not in caplog.text
+    assert "token=secret" not in caplog.text
+    assert "Relevant excerpts" not in unavailable.block
+    assert "error" in await svc.fetch_document("another-user", doc.id)
+    assert "Revenue grew" in (await svc.fetch_document("u1", doc.id))["content"]
+    tools, handlers = build_document_capability(service=svc, user_id="u1", nonce="tool")
+    assert tools[0]["function"]["name"] == "fetch_document"
+    assert "Revenue grew" in (
+        await handlers["fetch_document"]({"document_id": doc.id}, ctx=None)
+    )["content"]
+
+    # Only the service outcome changes: the same store, index, query and owner
+    # filters now yield a genuinely successful zero-result search.
+    client.unavailable = False
+    empty = await svc.context("u1", "PRIVATE QUERY", nonce="recovered")
+    assert empty.status == "ok"
+    assert empty.sources == []
+    assert "Library retrieval is unavailable" not in empty.block
+    assert "Relevant excerpts" not in empty.block
+    assert len(client.search_calls) == 3  # semantic failure, hybrid failure, hybrid recovery
+    for call in client.search_calls:
+        assert call["filter"] == f"user_id eq 'u1' and (document_id eq '{doc.id}')"
+    assert client.uploaded == client.deleted == []
+    assert svc._chunks is chunks
+
+
+@pytest.mark.parametrize("per_user", [False, True])
+@pytest.mark.parametrize("failed_owner", ["u1", "shared-owner"])
+@pytest.mark.parametrize("has_matches", [False, True])
+async def test_partial_owner_search_keeps_only_successful_results(
+    per_user, failed_owner, has_matches, caplog,
+):
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    owned = await _seed_doc(library, blob, doc_id="owned")
+    shared = await _seed_doc(
+        library, blob, user="shared-owner", filename="shared.md", doc_id="shared",
+    )
+    shared.visibility = Visibility.shared
+    shared.acl = ["viewer@example.com"]
+    await library.update_document(shared)
+    documents = {document.userId: document for document in (owned, shared)}
+
+    class OwnerSearchClient(_FakeSearchClient):
+        failed_owner = None
+        by_owner = {}
+
+        async def search(self, **kwargs):
+            self.search_calls.append(kwargs)
+            for owner, document in documents.items():
+                if kwargs["filter"] == (
+                    f"user_id eq '{owner}' and (document_id eq '{document.id}')"
+                ):
+                    if self.failed_owner == owner:
+                        raise HttpResponseError(message="PRIVATE OWNER QUERY token=secret")
+                    return _FakeResults(self.by_owner[owner])
+            pytest.fail("Search must retain owner AND accessible ready-document filters")
+
+    client = OwnerSearchClient()
+    chunks = _store(search_client=client, per_user_index=per_user, semantic_ranking=False)
+    for owner, document in documents.items():
+        record = DocChunkRecord(
+            user_id=owner,
+            document_id=document.id,
+            chunk_index=0,
+            content=f"EXCERPT FROM {document.id}",
+        )
+        client.by_owner[owner] = [chunks._to_document(record, [1.0, 0.0, 0.0])] if has_matches else []
+    svc = _service(library=library, blob=blob, chunks=chunks, embedder=FakeEmbedder())
+    client.failed_owner = failed_owner
+    partial = await svc.context("u1", "q", nonce="partial", email="viewer@example.com")
+    assert partial.status == "partial"
+    assert partial.notes == ["library_retrieval_partial"]
+    assert "Library retrieval is partial" in partial.block
+    expected_ids = {
+        document.id for owner, document in documents.items() if owner != failed_owner
+    } if has_matches else set()
+    assert {source.documentId for source in partial.sources} == expected_ids
+    assert "EXCERPT FROM " + documents[failed_owner].id not in partial.block
+    assert f"id={owned.id}" in partial.block and f"id={shared.id}" in partial.block
+    assert "PRIVATE OWNER QUERY" not in caplog.text
+    assert "token=secret" not in caplog.text
+
+    client.failed_owner = None
+    recovered = await svc.context("u1", "q", nonce="ok", email="viewer@example.com")
+    assert recovered.status == "ok"
+    assert recovered.notes == []
+    assert {source.documentId for source in recovered.sources} == (
+        {"owned", "shared"} if has_matches else set()
+    )
+    assert len(client.search_calls) == 4
+    assert {index.name for index in chunks._index_client.created} == {
+        chunks.index_name_for_user(owner) for owner in documents
+    }
+    assert client.uploaded == client.deleted == []
+    assert svc._chunks is chunks
+
+
+async def test_empty_embedding_is_unavailable_not_zero_matches():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    client = _FakeSearchClient()
+    chunks = _store(search_client=client)
+    embedder = FakeEmbedder()
+    svc = _service(library=library, blob=blob, chunks=chunks, embedder=embedder)
+    await _seed_doc(library, blob)
+    successful = await svc.context("u1", "q", nonce="ok")
+    assert successful.status == "ok"
+    assert len(client.search_calls) == 1
+
+    embedder._vector = []
+    failed = await svc.context("u1", "q", nonce="empty")
+    assert failed.status == "unavailable"
+    assert "Library retrieval is unavailable" in failed.block
+    assert len(client.search_calls) == 1
+    assert embedder.queries == ["q", "q"]
 
 
 async def test_explicit_ids_resolve_owned_shared_public_and_skip_inaccessible():
