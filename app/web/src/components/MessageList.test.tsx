@@ -1082,6 +1082,22 @@ describe("MessageList execution receipt", () => {
     );
   }
 
+  it.each([
+    ["library_retrieval_unavailable", "Library retrieval is unavailable"],
+    ["library_retrieval_partial", "Library retrieval is partial"],
+  ])("shows %s before expanding the receipt", (note, label) => {
+    renderReceipt({ notes: [note], partial: true });
+    const warning = screen.getByRole("status");
+    expect(warning).toHaveTextContent(label);
+    expect(warning).toHaveTextContent(/not.*no matching/i);
+    expect(warning.closest("details")).toBeNull();
+  });
+
+  it("does not infer a retrieval outage from zero sources or historical receipts", () => {
+    renderReceipt({ notes: [], contextBlocks: [], toolCalls: [] });
+    expect(screen.queryByText(/Library retrieval is (unavailable|partial)/)).not.toBeInTheDocument();
+  });
+
   it("connects recorded memory references to the inspector and the full receipt", async () => {
     const inspect = vi.fn();
     render(<MessageList messages={[msg({

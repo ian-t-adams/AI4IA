@@ -35,7 +35,8 @@ Why it matters even though nothing installs from the lock today:
   public repository.
 
 If you regenerate the lockfile behind a corporate mirror, re-run `uv lock` with
-`UV_INDEX_URL=https://pypi.org/simple` (or on an unproxied network) before
+`UV_DEFAULT_INDEX=https://pypi.org/simple` and
+`uv lock --default-index https://pypi.org/simple` (or on an unproxied network) before
 committing.
 """
 from __future__ import annotations
@@ -69,7 +70,8 @@ class LockfileResolvesFromPublicPyPI(unittest.TestCase):
             "app/api/uv.lock references hosts that are not public PyPI: "
             f"{sorted(foreign)}. This usually means `uv lock` was run behind a "
             "corporate package mirror, which rewrites every artifact URL. "
-            "Regenerate with UV_INDEX_URL=https://pypi.org/simple (or off the "
+            "Regenerate with UV_DEFAULT_INDEX=https://pypi.org/simple and "
+            "uv lock --default-index https://pypi.org/simple (or off the "
             "proxied network). Note that `uv lock --check` does NOT catch this: "
             "it only compares the lock against pyproject.toml.",
         )

@@ -173,6 +173,11 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
   const blocks = receipt.contextBlocks ?? [];
   const delegations = receipt.delegations ?? [];
   const notes = receipt.notes ?? [];
+  const retrievalWarning = notes.includes("library_retrieval_unavailable")
+    ? "Library retrieval is unavailable for this turn. This is not evidence of no matching content. Accessible document summaries and direct source reads may still work."
+    : notes.includes("library_retrieval_partial")
+      ? "Library retrieval is partial for this turn: some accessible documents could not be searched. This is not evidence of no matching content in those documents."
+      : null;
   const invoked = new Set(calls.map((call) => call.tool));
   const modelCalls = runtime.modelCalls ?? [];
   const cost = receipt.usage?.cost;
@@ -242,7 +247,9 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
   ];
 
   return (
-    <ReceiptFrame embedded={embedded} summary={<>
+    <>
+      {retrievalWarning ? <p role="status" className="safety-note">{retrievalWarning}</p> : null}
+      <ReceiptFrame embedded={embedded} summary={<>
         {`Execution receipt · ${receipt.promptMessageCount} prompt message${
           receipt.promptMessageCount === 1 ? "" : "s"
         }, ${receipt.toolsOfferedCount} tool${receipt.toolsOfferedCount === 1 ? "" : "s"} offered, ${
@@ -331,7 +338,7 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
             ) : null}
             {notes.length > 0 && (
               <div className="activity-row">
-                <span className="activity-label">Bounds applied</span>
+                <span className="activity-label">Notes</span>
                 <span className="activity-detail">{notes.join(", ")}</span>
               </div>
             )}
@@ -527,7 +534,8 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
           </div>
         </details>
       </div>
-    </ReceiptFrame>
+      </ReceiptFrame>
+    </>
   );
 }
 

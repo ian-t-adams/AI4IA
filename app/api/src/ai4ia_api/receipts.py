@@ -653,6 +653,7 @@ def build_receipt(
     iterations: int = 0,
     status: Literal["complete", "incomplete", "error", "cancelled"] = "complete",
     partial: bool = False,
+    notes: list[str] | None = None,
 ) -> ExecutionReceipt:
     """Assemble a bounded receipt from data the turn already has.
 
@@ -740,6 +741,11 @@ def build_receipt(
         iterations=max(0, int(iterations or 0)),
         status=status,
         partial=bool(partial),
+        notes=[
+            label
+            for note in list(notes or [])[:MAX_CONTEXT_BLOCKS]
+            if (label := _short(note, MAX_DETAIL_CHARS))
+        ],
     )
     if prompt_capped:
         _note(receipt, "prompt_capped")

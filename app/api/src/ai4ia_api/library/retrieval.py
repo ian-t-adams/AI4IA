@@ -21,11 +21,12 @@ Two invariants are enforced here, both required by the ingest hardening that
 precedes this phase:
 
 1. **Status gating.** Only ``ready`` documents ever surface. Tier 2 scopes the
-   pgvector ``search`` to the set of ready document ids, so a ``failed`` /
+   chunk-store ``search`` to the set of ready document ids, so a ``failed`` /
    ``analyzing`` document can never contribute a chunk *even if a stray vector
    exists* — defense in depth on top of the producer's no-orphan purge.
-2. **Best-effort.** Every public method swallows store/IO errors and degrades to
-   an empty result; retrieval must never break a chat turn.
+2. **Explicit degradation.** A failed retrieval is unavailable/partial, never a
+   successful empty search. Healthy summaries and canonical reads remain usable;
+   a transient Search outage must not break a chat turn or switch stores.
 
 The block is wrapped in the same per-message *nonce fence* the session-document
 context uses, so a crafted document body cannot forge the closing marker to
@@ -39,14 +40,19 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from typing import Literal
+
+from azure.core.exceptions import AzureError
+from httpx import HTTPError
 
 from ..citations import RetrievedSource, SpanRegistry
 from ..config import Settings
+from ..gateway.client import ModelGatewayError
 from ..memory.embedder import GatewayEmbedder
 from .access import can_access, get_accessible_document
 from .blob_store import MEDIA_NAME, PARSED_NAME, BlobNotFoundError, BlobStore, blob_path
 from .chunking import format_timestamp
-from .doc_chunks import DocChunkStore
+from .doc_chunks import DocChunkRecord, DocChunkStore
 from .models import DocumentStatus, Modality, UserDocument
 from .repository import DocumentLibraryRepository, DocumentNotFoundError
 
@@ -55,6 +61,21 @@ logger = logging.getLogger(__name__)
 # Max chars of a single Tier-1 summary card label/summary kept on one line.
 _SUMMARY_LIMIT = 240
 _LABEL_LIMIT = 120
+
+RetrievalStatus = Literal["not_requested", "ok", "partial", "unavailable"]
+_RETRIEVAL_ERRORS = (AzureError, HTTPError, ModelGatewayError, OSError, RuntimeError, ValueError)
+_UNAVAILABLE_NOTICE = (
+    "Library retrieval is unavailable for this turn (library_retrieval_unavailable). "
+    "This is not a successful search with no matching excerpts. Do not claim the "
+    "library has no relevant content. Any summary cards below remain usable; "
+    "fetch_document can still read accessible ready documents when offered."
+)
+_PARTIAL_NOTICE = (
+    "Library retrieval is partial for this turn (library_retrieval_partial): some "
+    "accessible documents could not be searched. Do not treat missing excerpts as "
+    "evidence of no matching content. The returned excerpts and summary cards "
+    "remain usable; fetch_document can still read accessible ready documents when offered."
+)
 
 
 @dataclass(slots=True)
@@ -70,6 +91,25 @@ class RetrievalContext:
 
     block: str = ""
     sources: list[RetrievedSource] = field(default_factory=list)
+    status: RetrievalStatus = "not_requested"
+
+    @property
+    def notes(self) -> list[str]:
+        return [f"library_retrieval_{self.status}"] if self.status in {
+            "partial", "unavailable",
+        } else []
+
+    @property
+    def notice(self) -> str:
+        if self.status == "unavailable":
+            return _UNAVAILABLE_NOTICE
+        if self.status == "partial":
+            return _PARTIAL_NOTICE
+        return ""
+
+    @classmethod
+    def unavailable(cls) -> RetrievalContext:
+        return cls(block=_UNAVAILABLE_NOTICE, status="unavailable")
 
 
 def _one_line(text: str, limit: int) -> str:
@@ -205,10 +245,10 @@ class DocumentRetrievalService:
         documents plus those shared with ``email``), fenced with ``nonce``, plus
         the server-minted registry of the Tier-2 spans it injected.
 
-        Returns an empty :class:`RetrievalContext` when the library is empty or
-        on any store error (best-effort: retrieval never breaks a turn). An empty
-        ``block`` always carries no sources, so a turn that got no context is
-        never attested as though it had."""
+        An empty library returns an empty context. Store/IO failures instead
+        return a safe unavailable/partial notice, independent of excerpt count.
+        Summary cards survive a Search failure; only successfully retrieved
+        excerpts can enter the citation registry."""
         try:
             if document_ids is None:
                 ready = await self._accessible_ready_documents(user_id, email)
@@ -216,9 +256,9 @@ class DocumentRetrievalService:
                 ready = await self._selected_ready_documents(
                     user_id, email, document_ids
                 )
-        except Exception:  # noqa: BLE001 - retrieval must never break a turn
-            logger.warning("library context load failed user=%s", user_id, exc_info=True)
-            return RetrievalContext()
+        except _RETRIEVAL_ERRORS:
+            logger.warning("library_retrieval_unavailable: source lookup failed")
+            return RetrievalContext.unavailable()
         if not ready:
             return RetrievalContext()
 
@@ -231,7 +271,8 @@ class DocumentRetrievalService:
             cards.append(f"- id={doc.id} filename={label}{shared_tag}{suffix}")
 
         registry = SpanRegistry()
-        excerpts = await self._retrieve_excerpts(user_id, query, ready, registry)
+        excerpts, retrieval_status = await self._retrieve_excerpts(query, ready, registry)
+        context = RetrievalContext(status=retrieval_status)
 
         body_parts: list[str] = []
         if cards:
@@ -239,7 +280,8 @@ class DocumentRetrievalService:
         if excerpts:
             body_parts.append("Relevant excerpts:\n" + "\n\n".join(excerpts))
         if not body_parts:
-            return RetrievalContext()
+            context.block = context.notice
+            return context
 
         body = "\n\n".join(body_parts)
         block = (
@@ -260,32 +302,32 @@ class DocumentRetrievalService:
             f'""" <documents>\nBEGIN LIBRARY {nonce}\n{body}\n'
             f'END LIBRARY {nonce}\n</documents> """'
         )
-        return RetrievalContext(block=block, sources=registry.sources())
+        context.block = f"{context.notice}\n\n{block}" if context.notice else block
+        context.sources = registry.sources()
+        return context
 
     async def _retrieve_excerpts(
         self,
-        user_id: str,
         query: str,
         ready: list[UserDocument],
         registry: SpanRegistry,
-    ) -> list[str]:
+    ) -> tuple[list[str], RetrievalStatus]:
         """Tier 2: top-k RAG excerpts for ``query`` scoped to the ready documents.
 
-        Returns ``[]`` when retrieval is unavailable (no embedder/chunk store, no
-        query) or on any error. The pgvector search is scoped to the ready
-        document ids, so a non-ready document never surfaces a chunk.
+        The status distinguishes a successful zero-result query from failure.
+        Search is scoped to ready document ids and never fails over to another
+        backend. One owner's failure does not discard another's successful results.
 
         Chunks are partitioned by their owner's ``userId``, so documents shared by
         other users are searched against the *owner's* partition: the ready set is
         grouped by owner and one scoped search is issued per owner, then the
         results are merged by score. For the common case (only the caller's own
         documents) this is a single search, identical to before."""
+        if not (query or "").strip() or not ready:
+            return [], "not_requested"
         if self._embedder is None or self._chunks is None:
-            return []
-        if not (query or "").strip():
-            return []
-        if not ready:
-            return []
+            logger.warning("library_retrieval_unavailable: local retrieval is not configured")
+            return [], "unavailable"
         documents = {document.id: document for document in ready}
         names = {
             document_id: _one_line(document.filename, _LABEL_LIMIT) or "document"
@@ -298,10 +340,17 @@ class DocumentRetrievalService:
         top_k = max(1, self._settings.document_retrieval_top_k)
         try:
             vector = await self._embedder.embed_one(query)
-            if not vector:
-                return []
-            records = []
-            for owner_id, doc_ids in by_owner.items():
+        except _RETRIEVAL_ERRORS:
+            logger.warning("library_retrieval_unavailable: query embedding failed")
+            return [], "unavailable"
+        if not vector:
+            logger.warning("library_retrieval_unavailable: query embedding was empty")
+            return [], "unavailable"
+
+        records: list[DocChunkRecord] = []
+        failures = 0
+        for owner_id, doc_ids in by_owner.items():
+            try:
                 owned = await self._chunks.search(
                     owner_id,
                     vector,
@@ -309,10 +358,15 @@ class DocumentRetrievalService:
                     document_ids=doc_ids,
                     query_text=query,
                 )
+            except _RETRIEVAL_ERRORS:
+                failures += 1
+            else:
                 records.extend(owned)
-        except Exception:  # noqa: BLE001 - retrieval must never break a turn
-            logger.warning("library RAG search failed user=%s", user_id, exc_info=True)
-            return []
+        retrieval_status: RetrievalStatus = "ok"
+        if failures:
+            retrieval_status = "unavailable" if failures == len(by_owner) else "partial"
+            # Provider exceptions may contain query/source payloads or credentials.
+            logger.warning("library_retrieval_%s: chunk search failed", retrieval_status)
 
         # Merge across owners by score (desc), deterministic tie-break, then cap
         # to the global top-k so a multi-owner search yields the same budget as a
@@ -378,7 +432,7 @@ class DocumentRetrievalService:
             # documentId and start offset.
             header = f"[{cite}] cite-as: [[cite:{source.spanId}]]"
             out.append(f"{header}\n{content}")
-        return out
+        return out, retrieval_status
 
     async def _gated_ready_doc(
         self, user_id: str, document_id: str, *, email: str | None = None

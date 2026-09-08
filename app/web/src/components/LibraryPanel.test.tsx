@@ -353,13 +353,8 @@ describe("LibraryPanel uploads and polling", () => {
   });
 
   it("keeps polling single-flight and never regresses a ready document", async () => {
+    vi.useFakeTimers();
     let resolvePoll!: (documents: LibraryDocument[]) => void;
-    let poll!: () => Promise<void>;
-    const intervalSpy = vi.spyOn(window, "setInterval").mockImplementation((handler) => {
-      poll = handler as () => Promise<void>;
-      return 1 as unknown as ReturnType<typeof setInterval>;
-    });
-
     const analyzing = { ...DOC, status: "analyzing" as const };
     const ready = { ...DOC, status: "ready" as const };
     mocks.listLibraryDocuments
@@ -373,31 +368,34 @@ describe("LibraryPanel uploads and polling", () => {
       .mockResolvedValueOnce([ready]);
     mocks.uploadLibraryDocument.mockResolvedValue(ready);
     render(<LibraryPanel onClose={vi.fn()} />);
-    expect(await screen.findByText("Analyzing…")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(
-        intervalSpy.mock.calls.some((call) => call[1] === 3000),
-      ).toBe(true),
-    );
-    poll = intervalSpy.mock.calls.find(
-      (call) => call[1] === 3000,
-    )?.[0] as () => Promise<void>;
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Analyzing…")).toBeInTheDocument();
+    expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      void poll();
-      await Promise.resolve();
-      void poll();
+      await vi.advanceTimersByTimeAsync(2_999);
     });
-    await waitFor(() =>
-      expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(2),
-    );
+    expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9_000);
+    });
+    expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(2);
 
-    fireEvent.change(screen.getByLabelText("Upload library documents"), {
-      target: {
-        files: [new File(["new"], "new.pdf", { type: "application/pdf" })],
-      },
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Upload library documents"), {
+        target: {
+          files: [new File(["new"], "new.pdf", { type: "application/pdf" })],
+        },
+      });
     });
-    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    expect(mocks.uploadLibraryDocument).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Ready")).toBeInTheDocument();
 
     await act(async () => {
       resolvePoll([analyzing]);
@@ -405,6 +403,10 @@ describe("LibraryPanel uploads and polling", () => {
     });
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.queryByText("Analyzing…")).not.toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9_000);
+    });
+    expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(2);
   });
 
   it("shows confidence and owner-scoped analysis evidence on demand", async () => {
