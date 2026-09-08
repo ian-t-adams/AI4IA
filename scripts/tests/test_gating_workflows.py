@@ -175,6 +175,24 @@ class GeneratorDependencyTriggerTests(unittest.TestCase):
                         f"{filename} does not run when its generator dependency {source} changes",
                     )
 
+class WorkflowCheckoutCredentialTests(unittest.TestCase):
+    def test_checkouts_do_not_retain_tokens_for_later_steps(self) -> None:
+        checked = 0
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            for job_name, job in document.get("jobs", {}).items():
+                for step in job.get("steps", []):
+                    if not step.get("uses", "").startswith("actions/checkout@"):
+                        continue
+                    checked += 1
+                    with self.subTest(workflow=path.name, job=job_name):
+                        self.assertIs(
+                            step.get("with", {}).get("persist-credentials"),
+                            False,
+                            "No current workflow needs a checkout credential after fetching source.",
+                        )
+        self.assertGreaterEqual(checked, 15, "checkout discovery is no longer exercising the workflows")
+
 
 BASH = find_bash()
 
