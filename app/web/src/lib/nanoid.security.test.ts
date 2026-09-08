@@ -23,8 +23,8 @@ async function generate(
   defaultSize: number,
   requestedSize: number | null,
 ): Promise<string> {
-  // The vulnerable version spins forever. A worker keeps that regression
-  // bounded and terminable instead of hanging the test runner.
+  // Keep a possible zero-size regression bounded and terminable instead of
+  // allowing an unsafe generator implementation to hang the test runner.
   const worker = new Worker(workerSource, {
     eval: true,
     workerData: { entry: nanoidEntry, kind, defaultSize, requestedSize },
