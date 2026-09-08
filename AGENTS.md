@@ -473,6 +473,20 @@ test to make an SDK upgrade green. The gate installers are pinned by `UV_VERSION
 in `app-ci.yml` and `CHECK_JSONSCHEMA_VERSION` in `infra-validate.yml`; update the
 documented local command when a pin changes.
 
+Azure Monitor's distribution and HTTPX instrumentation are a second compatibility
+pair in `api-telemetry`. On 2026-09-08, public-PyPI resolution proved that
+`azure-monitor-opentelemetry==1.8.9` requires OpenTelemetry SDK 1.43 while
+`opentelemetry-instrumentation-httpx==0.65b0` requires semantic conventions/API
+1.44. The `0.64b0` control resolves on Python 3.12; the conflict is not fixed by
+removing Python 3.14 from the supported range.
+
+Dependabot defers only that exact incompatible `0.65b0` candidate. This is update
+selection, not an alert dismissal or a runtime dependency override; later
+versions remain eligible. Revisit the deferral when the Azure Monitor
+distribution supports the new train or a security advisory makes that candidate
+necessary. Resolve and validate the pair before removing the exception; never
+disable telemetry or force incompatible packages to make an updater green.
+
 Before closing work, reconcile each linked issue's original acceptance criteria
 with shipped evidence. Use `Closes #...` only when the PR completes the full
 scope; otherwise use `Refs #...` and record delivered and remaining work on the
