@@ -20,15 +20,19 @@ from tests.test_memory_preference_execution import HEADERS, OWNER_FACT
 @pytest.mark.parametrize("preference", ["on", "off", "off_on"])
 @pytest.mark.parametrize("search_unavailable", [False, True])
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("usage_known", [False, True])
 async def test_memory_fence_and_search_status_describe_the_same_actual_request(
-    monkeypatch, preference, search_unavailable, stream,
+    monkeypatch, preference, search_unavailable, stream, usage_known,
 ):
     requests: list[dict] = []
 
     async def provider(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         requests.append(body)
-        usage = {"prompt_tokens": 11, "completion_tokens": 3, "total_tokens": 14}
+        usage = (
+            {"prompt_tokens": 11, "completion_tokens": 3, "total_tokens": 14}
+            if usage_known else None
+        )
         if body.get("stream"):
             chunks = [
                 {"choices": [{"delta": {"content": "An observed answer."}}]},
@@ -120,19 +124,24 @@ async def test_memory_fence_and_search_status_describe_the_same_actual_request(
             ) is (preference == "on")
             assert ("library_retrieval_unavailable" in receipt["notes"]) is search_unavailable
             assert receipt["partial"] is search_unavailable
-            assert receipt["usage"]["totalTokens"] == 14
+            assert receipt["usage"]["totalTokens"] == (14 if usage_known else None)
             assert receipt["runtime"]["modelCallCount"] == 1
+            assert len(receipt["runtime"]["modelCalls"]) == 1
             call = receipt["runtime"]["modelCalls"][0]
             assert call["coverage"] == "recorded"
+            assert call["httpAttempts"] == 1
+            assert call["providerCompleted"] is True
+            assert call["usageKnown"] is usage_known
             assert call["parameters"]["maxOutputTokens"] == actual["max_completion_tokens"]
             assert call["parameters"]["outputTokenField"] == "max_completion_tokens"
             assert call["parameters"]["reasoningEffort"] == actual["reasoning_effort"]
-            assert call["cost"]["coverage"] == "known"
+            assert call["cost"]["coverage"] == ("known" if usage_known else "unknown")
             assert call["cost"]["priceVersion"] == "integration-prices-v1"
             cost = receipt["usage"]["cost"]
-            assert cost["coverage"] == "known"
-            assert cost["totalCalls"] == cost["pricedCalls"] == 1
-            assert cost["estCostMicroUsd"] == 34
+            assert cost["coverage"] == ("known" if usage_known else "unknown")
+            assert cost["totalCalls"] == 1
+            assert cost["pricedCalls"] == (1 if usage_known else 0)
+            assert cost["estCostMicroUsd"] == (34 if usage_known else None)
             assert cost["priceVersions"] == ["integration-prices-v1"]
             assert "PRIVATE QUERY AND SOURCE CONTENT" not in json.dumps(receipt)
         finally:
