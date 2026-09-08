@@ -8,6 +8,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from azure.core.exceptions import (
+    ClientAuthenticationError,
+    ServiceRequestError,
+    ServiceResponseError,
+)
+
 from .models import MemoryRecord
 from .preferences import (
     MemoryPreference,
@@ -209,7 +215,10 @@ class CosmosMemoryStore:
 
         try:
             return (await self.capture_state(user_id)).preference
-        except (CosmosHttpResponseError, RuntimeError, ValueError) as exc:
+        except (
+            CosmosHttpResponseError, ServiceRequestError, ServiceResponseError,
+            ClientAuthenticationError, RuntimeError, ValueError,
+        ) as exc:
             raise MemoryPreferenceUnavailable("Memory preference is unavailable.") from exc
 
     async def set_preference(
@@ -246,7 +255,10 @@ class CosmosMemoryStore:
                     return preference
                 except CosmosAccessConditionFailedError:
                     continue
-        except (CosmosHttpResponseError, RuntimeError, ValueError) as exc:
+        except (
+            CosmosHttpResponseError, ServiceRequestError, ServiceResponseError,
+            ClientAuthenticationError, RuntimeError, ValueError,
+        ) as exc:
             raise MemoryPreferenceUnavailable("Memory preference is unavailable.") from exc
         raise MemoryPreferenceConflict("Memory changed concurrently; retry the preference update.")
 

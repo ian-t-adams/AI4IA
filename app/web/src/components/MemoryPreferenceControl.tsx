@@ -1,61 +1,36 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import {
-  getMemoryPreference,
-  updateMemoryPreference,
-  type MemoryPreference,
-} from "@/lib/inspector";
+import { useEffect, useId, useRef, useSyncExternalStore } from "react";
+import type { MemoryPreferenceState } from "@/lib/memoryPreferenceState";
+import { useMemoryPreferenceStore } from "./MemoryPreferenceProvider";
 
-type Phase = "loading" | "ready" | "saving" | "error";
+const unavailable: MemoryPreferenceState = {
+  preference: null, phase: "error", error: "Sign in to manage your memory preference.",
+};
+const noSubscription = () => () => {};
+const unavailableSnapshot = () => unavailable;
 
 export function MemoryPreferenceControl({ onChanged }: { onChanged?: () => void }) {
   const id = useId();
-  const generation = useRef(0);
-  const [preference, setPreference] = useState<MemoryPreference | null>(null);
-  const [phase, setPhase] = useState<Phase>("loading");
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    const current = ++generation.current;
-    return getMemoryPreference().then(
-      (value) => {
-        if (generation.current !== current) return;
-        setPreference(value);
-        setPhase("ready");
-      },
-      (reason: unknown) => {
-        if (generation.current !== current) return;
-        setError(reason instanceof Error ? reason.message : "Memory preference is unavailable.");
-        setPhase("error");
-      },
-    );
-  }, []);
+  const store = useMemoryPreferenceStore();
+  const bindingRef = useRef({ active: false });
+  const { preference, phase, error } = useSyncExternalStore(
+    store?.subscribe ?? noSubscription,
+    store?.getSnapshot ?? unavailableSnapshot,
+    unavailableSnapshot,
+  );
 
   useEffect(() => {
-    void load();
-    return () => { generation.current += 1; };
-  }, [load]);
+    const binding = { active: true };
+    bindingRef.current = binding;
+    void store?.refresh();
+    return () => { binding.active = false; };
+  }, [store]);
 
   async function change(enabled: boolean) {
-    if (!preference || phase !== "ready") return;
-    const previous = preference;
-    const current = ++generation.current;
-    setPreference({ ...previous, automaticMemoryEnabled: enabled });
-    setPhase("saving");
-    setError(null);
-    try {
-      const value = await updateMemoryPreference(enabled, previous.etag);
-      if (generation.current !== current) return;
-      setPreference(value);
-      setPhase("ready");
-      onChanged?.();
-    } catch (reason) {
-      if (generation.current !== current) return;
-      setPreference(previous);
-      setError(reason instanceof Error ? reason.message : "The memory preference could not be saved.");
-      setPhase("error");
-    }
+    const binding = bindingRef.current;
+    await store?.change(enabled);
+    if (binding.active) onChanged?.();
   }
 
   return (
@@ -86,11 +61,8 @@ export function MemoryPreferenceControl({ onChanged }: { onChanged?: () => void 
       {error ? (
         <div className="inspector-error" role="alert">
           {error} {preference ? "Showing the last confirmed setting." : "The default has not been confirmed."}
-          <button type="button" onClick={() => {
-            setPhase("loading");
-            setError(null);
-            void load();
-          }}>Reload memory preference</button>
+          <button type="button" disabled={!store || phase === "saving" || phase === "loading"}
+            onClick={() => void store?.refresh()}>Reload memory preference</button>
         </div>
       ) : null}
     </div>

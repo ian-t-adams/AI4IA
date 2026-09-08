@@ -494,7 +494,7 @@ async def run_agent_turn(
             text=partial_text,
             model=deployment,
             steps=list(steps),
-            iterations=iterations,
+            iterations=len(model_requests),
             usage=(
                 usage_agg.add(TokenUsage.parse(current_stream_usage))
                 if include_current_attempt
@@ -573,16 +573,18 @@ async def run_agent_turn(
                 cause=budget_error,
                 partial=current_partial_result(include_current_attempt=False),
             ) from budget_error
-        if ctx.prepare_model_context is not None:
-            await ctx.prepare_model_context(convo)
-            current_user_index = next(
-                index for index in range(len(convo) - 1, -1, -1)
-                if convo[index].get("role") == "user"
-            )
-        if not effective_prompt:
-            effective_prompt = copy.deepcopy(_observable_messages(convo))
-        model_requests.append(copy.deepcopy(_observable_messages(convo)))
+        request_started = False
         try:
+            if ctx.prepare_model_context is not None:
+                await ctx.prepare_model_context(convo)
+                current_user_index = next(
+                    index for index in range(len(convo) - 1, -1, -1)
+                    if convo[index].get("role") == "user"
+                )
+            if not effective_prompt:
+                effective_prompt = copy.deepcopy(_observable_messages(convo))
+            model_requests.append(copy.deepcopy(_observable_messages(convo)))
+            request_started = True
             if stream_tokens:
                 iteration = await evidence.observe(stream_iteration(
                     gateway=gateway,
@@ -643,7 +645,9 @@ async def run_agent_turn(
                 str(incomplete_reason) if incomplete_reason is not None else None,
             )
         except asyncio.CancelledError as exc:
-            raise AgentRunCancelled(current_partial_result()) from exc
+            raise AgentRunCancelled(
+                current_partial_result(include_current_attempt=request_started)
+            ) from exc
         except Exception as exc:
             if not retain_failed_request and not (
                 streamed_parts
@@ -655,7 +659,7 @@ async def run_agent_turn(
                 raise
             raise AgentRunFailed(
                 cause=exc,
-                partial=current_partial_result(),
+                partial=current_partial_result(include_current_attempt=request_started),
             ) from exc
 
     def finish(

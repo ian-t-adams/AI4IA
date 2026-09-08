@@ -1,9 +1,15 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatApp } from "./ChatApp";
+import { MemoryPreferenceProvider } from "./MemoryPreferenceProvider";
+
+function render(ui: ReactElement) {
+  return rtlRender(ui, { wrapper: MemoryPreferenceProvider });
+}
 import type { CitationTarget } from "./Markdown";
 import type { LibraryDocument } from "@/lib/library";
 import type { Session, ToolCatalogItem, ToolConsentStatus } from "@/lib/types";
@@ -275,6 +281,31 @@ afterEach(() => {
 });
 
 describe("ChatApp landmarks", () => {
+  it("keeps a pending per-user enable through the actual conversation-keyed inspector remount", async () => {
+    let canonical = { automaticMemoryEnabled: false, etag: '"pref-1"' };
+    let commit!: (value: typeof canonical) => void;
+    mocks.getMemoryPreference.mockImplementation(async () => canonical);
+    mocks.updateMemoryPreference.mockReturnValue(new Promise((resolve) => { commit = resolve; }));
+    mocks.listMemories.mockResolvedValue({
+      status: "ok", supportsCreate: false, supportsEdit: false, supportsDelete: false,
+      detail: null, items: [],
+    });
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(screen.getByRole("button", { name: "Open memory reference" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Automatic memory" })).toBeEnabled());
+    await user.click(screen.getByRole("switch", { name: "Automatic memory" }));
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    await user.click(screen.getByRole("button", { name: "Open memory reference" }));
+    expect(await screen.findByRole("switch", { name: "Automatic memory" })).toBeDisabled();
+    expect(screen.queryByText("Automatic memory is off.")).not.toBeInTheDocument();
+    canonical = { automaticMemoryEnabled: true, etag: '"pref-2"' };
+    await act(async () => commit(canonical));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Automatic memory" })).toBeEnabled());
+    expect(screen.getByRole("switch", { name: "Automatic memory" })).toBeChecked();
+  });
+
   it("opens the memory inspector from the selected answer's reference", async () => {
     mocks.listMemories.mockResolvedValue({
       status: "ok", supportsCreate: false, supportsEdit: false, supportsDelete: false, detail: null,

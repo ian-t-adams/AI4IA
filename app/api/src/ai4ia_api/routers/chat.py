@@ -11,6 +11,7 @@ messages for attribution and future tracing.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import secrets
@@ -1494,7 +1495,8 @@ async def chat(
         model_evidence=model_evidence,
     )
 
-    def memory_withheld() -> None:
+    def memory_withheld(messages: list[dict[str, Any]]) -> None:
+        receipt_draft.prompt_messages = copy.deepcopy(messages)
         receipt_draft.blocks = [
             (kind, text, False if kind == "memory" else admitted)
             for kind, text, admitted in receipt_draft.blocks
