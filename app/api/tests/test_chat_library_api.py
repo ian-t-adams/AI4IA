@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ai4ia_api.gateway.client import ChatChunk
@@ -16,6 +17,8 @@ from ai4ia_api.library.blob_store import PARSED_NAME, blob_path
 from ai4ia_api.library.models import DocumentStatus, UserDocument
 from ai4ia_api.main import create_app
 from tests.conftest import make_settings
+from tests.test_ai_search_chunks import _FakeIndexClient
+from tests.test_doc_retrieval import FakeEmbedder, UnavailableSearchClient
 
 
 class CapturingGateway:
@@ -151,5 +154,137 @@ async def test_nonempty_library_selection_is_an_exact_allowlist():
         )
         assert "selected.md" in library
         assert "excluded.md" not in library
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("agent_prefix", ["", "@general "])
+@pytest.mark.parametrize("admit_library", [False, True])
+async def test_search_outage_receipt_survives_chat_and_keeps_canonical_access(
+    stream, agent_prefix, admit_library, caplog, monkeypatch,
+):
+    if not admit_library:
+        monkeypatch.setattr(
+            "ai4ia_api.routers.chat._prompt_byte_budget", lambda *args: 1200,
+        )
+    client = _make_client(
+        document_understanding_enabled=True,
+        search_endpoint="https://example.search.windows.net",
+        memory_embedding_dimensions=3,
+    )
+    try:
+        uid = _uid(client)
+        sid = _new_session(client)
+        doc = await _seed_ready_doc(client, uid)
+        retrieval = client.app.state.document_retrieval
+        chunks = client.app.state.document_ingestor.chunks
+        search = UnavailableSearchClient()
+        chunks._injected_search_client = search
+        chunks._index_client = _FakeIndexClient()
+        retrieval._embedder = FakeEmbedder()
+
+        for unavailable in (True, False):
+            search.unavailable = unavailable
+            response = client.post(
+                "/api/chat",
+                json={
+                    "sessionId": sid,
+                    "content": agent_prefix + "What is the Falcon status?",
+                    "stream": stream,
+                },
+            )
+            assert response.status_code == 200, response.text
+            if stream:
+                assert "[DONE]" in response.text
+            rows = client.get(f"/api/sessions/{sid}/messages").json()
+            assistant = [row for row in rows if row["role"] == "assistant"][-1]
+            assert assistant["content"] == "Acknowledged."
+            receipt = assistant["executionReceipt"]
+            assert receipt["status"] == "complete"
+            if agent_prefix:
+                assert "fetch_document" in {
+                    tool["name"] for tool in receipt["toolsOffered"]
+                }
+            else:
+                assert receipt["toolsOffered"] == []
+            assert (
+                "library_retrieval_unavailable" in receipt["notes"]
+            ) is unavailable
+            assert receipt["partial"] is unavailable
+            context = next(block for block in receipt["contextBlocks"] if block["kind"] == "library")
+            assert context["admitted"] is admit_library
+            assert context["sources"] == []
+            if admit_library:
+                assert (
+                    "Library retrieval is unavailable" in context["content"]["text"]
+                ) is unavailable
+            else:
+                assert context["content"] is None
+                assert "library" in receipt["droppedContextBlocks"]
+            assert "PRIVATE QUERY AND SOURCE CONTENT" not in json.dumps(receipt)
+            assert "PRIVATE QUERY AND SOURCE CONTENT" not in caplog.text
+            assert "token=secret" not in caplog.text
+            if admit_library:
+                assert "brief.md" in next(
+                    message["content"]
+                    for message in client.app.state.gateway.last_messages
+                    if "BEGIN LIBRARY" in message["content"]
+                )
+            else:
+                assert all(
+                    "BEGIN LIBRARY" not in message["content"]
+                    for message in client.app.state.gateway.last_messages
+                )
+
+            # Auth, manifest/summary reads, parsed-source access and inspector
+            # inventory do not become health probes or depend on the chunk index.
+            calls = len(search.search_calls)
+            assert _uid(client) == uid
+            manifest = client.get(f"/api/library/documents/{doc.id}")
+            assert manifest.status_code == 200
+            assert manifest.json()["status"] == "ready"
+            assert manifest.json()["summary"] == doc.summary
+            assert "All systems nominal." in (
+                await retrieval.fetch_document(uid, doc.id)
+            )["content"]
+            inspector = client.get(f"/api/sessions/{sid}/inspector")
+            assert inspector.status_code == 200
+            assert inspector.json()["libraryDocuments"][0]["id"] == doc.id
+            assert len(search.search_calls) == calls
+
+        # Plain chat with an explicit empty selection never attempts retrieval,
+        # even while the same configured Search backend is unavailable again.
+        search.unavailable = True
+        plain_sid = _new_session(client, [])
+        calls = len(search.search_calls)
+        _chat(client, plain_sid)
+        assert len(search.search_calls) == calls
+        assert retrieval._chunks is chunks
+    finally:
+        client.__exit__(None, None, None)
+
+
+async def test_context_build_failure_is_explicit_and_redacted(monkeypatch, caplog):
+    client = _make_client(document_understanding_enabled=True)
+    try:
+        sid = _new_session(client)
+        _chat(client, sid)
+        rows = client.get(f"/api/sessions/{sid}/messages").json()
+        assert "library_retrieval_unavailable" not in rows[-1]["executionReceipt"]["notes"]
+
+        async def failed_context(*args, **kwargs):
+            raise TypeError("PRIVATE SOURCE BODY token=secret")
+
+        monkeypatch.setattr(client.app.state.document_retrieval, "context", failed_context)
+        _chat(client, sid)
+        rows = client.get(f"/api/sessions/{sid}/messages").json()
+        receipt = rows[-1]["executionReceipt"]
+        assert "library_retrieval_unavailable" in receipt["notes"]
+        assert receipt["partial"] is True
+        assert receipt["status"] == "complete"
+        assert "Library retrieval is unavailable" in json.dumps(receipt)
+        assert "PRIVATE SOURCE BODY" not in json.dumps(receipt)
+        assert "PRIVATE SOURCE BODY" not in caplog.text
     finally:
         client.__exit__(None, None, None)

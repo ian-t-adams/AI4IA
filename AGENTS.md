@@ -54,7 +54,11 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
 4. **Cosmos is canonical.** Sessions, messages, usage, user agents/workflows, MCP
    server records, document manifests, and memory text/vectors are canonical and
    scoped per user. Document chunks, search indexes, and parsed artifacts must be
-   rebuildable.
+   rebuildable. Enabled document libraries outside `local` require configured
+   Search and a catalog-resolved embedding deployment; only local may use
+   in-memory chunks. A transient Search failure is unavailable/partial, never a
+   successful empty search or an automatic store/tenancy switch. Keep healthy
+   canonical source reads and unrelated chat available.
 5. **Tools re-check at execution time.** Tool execution must re-validate scopes,
    approvals, target hosts, and SSRF/public-HTTPS rules when a call runs, not only
    when a tool/server is registered. User opt-in auto-approval is a bounded

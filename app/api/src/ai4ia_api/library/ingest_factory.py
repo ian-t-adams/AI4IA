@@ -3,17 +3,17 @@
 Returns ``None`` when document understanding is disabled (or the library repo was
 not built), so the upload endpoint refuses and nothing is constructed — the
 default-OFF, zero-regression posture. When enabled, the backing IO mirrors the
-rest of the app: an in-memory blob store + chunk store locally, and Azure Blob +
-Azure AI Search when configured. The Content Understanding client is only wired
-when ``cu_base_url`` is set; without it, ``enrich`` is a no-op and a document stays
-at ``stored`` with its instant quick-text summary.
+rest of the app: an in-memory blob store + chunk store locally, and required
+Azure Blob + Azure AI Search outside local. The Content Understanding client is
+only wired when ``cu_base_url`` is set; without it in local mode, ``enrich`` is a
+no-op and a document stays at ``stored`` with its instant quick-text summary.
 """
 from __future__ import annotations
 
 import logging
 
 from ..catalog import ModelCatalog
-from ..config import Settings
+from ..config import Environment, Settings
 from ..content_understanding.client import ContentUnderstandingClient
 from ..gateway.client import ModelGatewayClient
 from ..memory.embedder import GatewayEmbedder
@@ -37,19 +37,19 @@ def _build_blob_store(settings: Settings) -> BlobStore:
 
 
 def _build_chunk_store(settings: Settings) -> DocChunkStore:
-    # Azure AI Search is the durable chunk index; the in-memory store backs
-    # local/dev/tests. Dormant unless ``search_endpoint`` is set, so this is
-    # zero-regression by default.
-    if settings.search_endpoint:
+    endpoint = (settings.search_endpoint or "").strip()
+    if endpoint:
         from .ai_search_chunks import AzureSearchDocChunkStore
 
         return AzureSearchDocChunkStore(
-            endpoint=settings.search_endpoint,
+            endpoint=endpoint,
             index_name=settings.search_index_name,
             expected_dim=settings.memory_embedding_dimensions,
             semantic_ranking=settings.search_semantic_ranking,
             per_user_index=settings.search_index_per_user,
         )
+    if settings.env != Environment.local:
+        raise RuntimeError("AI4IA_SEARCH_ENDPOINT is required for document chunks outside local.")
     return InMemoryDocChunkStore(expected_dim=settings.memory_embedding_dimensions)
 
 
@@ -65,6 +65,7 @@ def build_document_ingestor(
     if not settings.document_understanding_enabled or library is None:
         return None
 
+    settings.validate_document_search(catalog)
     blob_store = _build_blob_store(settings)
     cu_client = (
         ContentUnderstandingClient(settings) if settings.cu_base_url else None
@@ -75,8 +76,7 @@ def build_document_ingestor(
     chunk_store: DocChunkStore | None = None
     deployment = catalog.resolve_deployment(settings.memory_embedding_model)
     if deployment is None:
-        # Without an embedding deployment we can still store + summarize, just not
-        # build the retrieval index. Log and continue (chunks skipped in enrich).
+        # Local-only degraded mode; deployed configuration was checked above.
         logger.warning(
             "document ingest: embedding model %r has no deployment; chunks disabled",
             settings.memory_embedding_model,
@@ -114,7 +114,7 @@ def build_document_retrieval(
     store, chunk store, embedder) rather than constructing its own. For the
     in-memory stores used locally and in tests this is required for correctness
     (a document indexed by the producer must be visible to the consumer); for the
-    Azure/Postgres stores it keeps a single source of IO truth.
+    Azure stores it keeps a single source of IO truth.
     """
     if ingestor is None:
         return None
