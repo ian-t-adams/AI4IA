@@ -70,6 +70,8 @@ jobs:
   api:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      UV_VERSION: "0.12.10"
     defaults:
       run:
         working-directory: app/api
@@ -104,7 +106,7 @@ jobs:
       # pyproject.toml. `uv` comes from pip so no new pinned action is needed.
       - name: Dependency lock drift check (uv)
         run: |
-          pip install uv
+          pip install "uv==${UV_VERSION}"
           uv lock --check
       - name: Lint (ruff)
         run: ruff check .
