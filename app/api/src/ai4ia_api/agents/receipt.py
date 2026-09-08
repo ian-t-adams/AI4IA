@@ -32,10 +32,12 @@ from ..receipts import (
     ReceiptRuntime,
     ReceiptToolCall,
     build_receipt,
+    enforce_receipt_budget,
     json_payload,
     safe_tool_label,
 )
 from ..safety import MessageSafety, attributed_safety
+from ..model_evidence import ModelCallRecorder
 from ..usage.models import TokenUsage
 from .runtime import AgentStep, DelegatedRunTrace
 from .consent import ToolConsentSummary
@@ -94,12 +96,13 @@ def delegation_receipts(
     *,
     provider: str | None = None,
 ) -> list[ExecutionReceipt]:
-    """Build one bounded child receipt per successful linked-agent run."""
+    """Build bounded nested-agent/workflow receipts, including partial outcomes."""
     return [
-        build_receipt(
-            runtime=ReceiptRuntime(agent=trace.agent),
+        enforce_receipt_budget(trace.receipt.model_copy(deep=True)) if trace.receipt else build_receipt(
+            runtime=trace.runtime or ReceiptRuntime(agent=trace.agent),
             prompt_messages=trace.effective_prompt,
             model_requests=trace.model_requests,
+            model_evidence=trace.model_evidence,
             offered=trace.offered_tools,
             calls=receipt_tool_calls(trace.steps),
             iterations=trace.iterations,
@@ -114,13 +117,12 @@ def delegation_receipts(
 
 @dataclass
 class ReceiptDraft:
-    """The turn-invariant half of a receipt, assembled once before the model runs.
+    """Turn-invariant metadata plus its call-scoped execution recorder.
 
-    Everything here is known at prompt-assembly time and does not change with
-    the outcome, so each persistence path (streaming, non-streaming, success,
-    error, cancellation, fallback) can call :meth:`build` with only the outcome
-    it holds and get a consistent receipt. That is what keeps the paths from
-    drifting: they cannot each decide what a receipt contains.
+    Metadata is assembled once; ``model_evidence`` adds only observed gateway
+    facts. Every persistence path (streaming, non-streaming, success, error,
+    cancellation, fallback) builds the same independent snapshot with the
+    outcome it holds, rather than inventing its own receipt contract.
     """
 
     correlation_id: str | None = None
@@ -135,6 +137,7 @@ class ReceiptDraft:
     tool_consent: ToolConsentSummary | None = None
     partial: bool = False
     notes: list[str] = field(default_factory=list)
+    model_evidence: ModelCallRecorder | None = None
 
     def build(
         self,
@@ -166,6 +169,10 @@ class ReceiptDraft:
         rather than becoming the turn's error.
         """
         try:
+            receipt_usage = usage or TokenUsage.empty()
+            for trace in delegations or []:
+                if trace.metered_separately:
+                    receipt_usage = receipt_usage.add(trace.usage)
             return build_receipt(
                 correlation_id=self.correlation_id,
                 runtime=self.runtime,
@@ -185,13 +192,14 @@ class ReceiptDraft:
                 approvals_requested=approvals_requested,
                 approvals_granted=self.approvals_granted,
                 tool_consent=self.tool_consent,
-                usage=usage,
+                usage=receipt_usage,
                 safety=safety,
                 delegations=delegation_receipts(
                     delegations,
                     provider=safety.provider if safety is not None else None,
                 ),
                 model_requests=model_requests,
+                model_evidence=self.model_evidence,
                 iterations=iterations,
                 status=status,
                 partial=partial or self.partial,

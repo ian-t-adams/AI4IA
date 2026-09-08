@@ -51,10 +51,12 @@ from ..agents.runtime import AgentRunCancelled, AgentRunFailed, AgentRunResult, 
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
-from ..receipts import ExecutionReceipt, ReceiptRuntime, json_payload
+from ..model_evidence import ModelCallRecorder
+from ..receipts import ExecutionReceipt, ReceiptRuntime, build_receipt, json_payload, text_payload
 from ..safety import MessageSafety, attributed_safety, provider_for_api
 from ..sessions.models import ActivityStep
 from ..usage.models import TokenUsage
+from ..usage.pricing import PricingBook
 from .models import INPUT_TOKEN, PREVIOUS_TOKEN, Workflow, WorkflowStep
 
 logger = logging.getLogger(__name__)
@@ -153,6 +155,8 @@ async def run_workflow_step(
     tool_consent: ToolConsentSummary | None = None,
     tool_builder: ToolTurnBuilder | None = None,
     api: str = "chat",
+    model_id: str | None = None,
+    pricing: PricingBook | None = None,
 ) -> StepOutcome:
     """Execute a single workflow step. Total: never raises.
 
@@ -174,18 +178,24 @@ async def run_workflow_step(
 
     ``index`` is 0-based; user-facing messages report ``index + 1``.
     """
+    evidence = ModelCallRecorder(
+        model_id=model_id, deployment=deployment, pricing=pricing,
+        model_source="workflow", parameter_source="workflow_default",
+    )
+
     def rejected(error: str, *, cancelled: bool = False) -> StepOutcome:
+        receipt = build_receipt(
+            runtime=ReceiptRuntime(
+                modelId=model_id, deployment=deployment, api=api, agent=step.agent,
+            ),
+            tool_consent=tool_consent, model_evidence=evidence,
+            status="cancelled" if cancelled else "error", partial=True,
+        )
+        receipt.notes.append("workflow_step_not_started")
         return StepOutcome(
             result=WorkflowStepResult(
                 agent=step.agent, ok=False, error=error, cancelled=cancelled,
-                receipt=ExecutionReceipt(
-                    runtime=ReceiptRuntime(
-                        deployment=deployment, api=api, agent=step.agent,
-                    ),
-                    toolConsent=tool_consent,
-                    status="cancelled" if cancelled else "error",
-                    partial=True, notes=["workflow_step_not_started"],
-                ),
+                receipt=receipt,
             ),
             fatal=True,
         )
@@ -291,12 +301,14 @@ async def run_workflow_step(
         draft = ReceiptDraft(
             correlation_id=correlation_id,
             runtime=ReceiptRuntime(
-                deployment=deployment, api=api, agent=target.name,
+                modelId=model_id, deployment=deployment, api=api, agent=target.name,
                 instructionSource="agent",
+                instructionSha256=text_payload(target.systemPrompt).sha256,
                 agentConfigSha256=json_payload(target.model_dump(mode="json")).sha256,
             ),
             prompt_messages=messages,
             tool_consent=tool_consent,
+            model_evidence=evidence,
         )
         return WorkflowStepResult(
             agent=step.agent, ok=error is None, text=run.text, error=error,
@@ -326,6 +338,7 @@ async def run_workflow_step(
             extra_handlers=extra_handlers,
             api=api,
             retain_failed_request=True,
+            model_evidence=evidence,
         )
     except AgentRunCancelled as exc:
         return StepOutcome(
@@ -418,6 +431,8 @@ async def run_workflow(
     tool_consent: ToolConsentSummary | None = None,
     tool_builder: ToolTurnBuilder | None = None,
     api: str = "chat",
+    model_id: str | None = None,
+    pricing: PricingBook | None = None,
 ) -> WorkflowRunResult:
     """Run ``workflow`` end-to-end and return a total, never-raising result.
 
@@ -449,6 +464,7 @@ async def run_workflow(
             tool_consent=tool_consent,
             tool_builder=tool_builder,
             api=api,
+            model_id=model_id, pricing=pricing,
         )
         usage = usage.add(outcome.usage)
         trace.append(outcome.result)

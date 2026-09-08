@@ -10,6 +10,7 @@ messages for attribution and future tracing.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
@@ -64,6 +65,7 @@ from ..agents.prompt_budget import (
 )
 from ..agents.runtime import (
     AgentContextBudgetError,
+    AgentRunCancelled,
     AgentRunFailed,
     AgentRunResult,
     AgentStep,
@@ -114,6 +116,7 @@ from ..memory.recall_capability import RECALL_TOOL_NAME
 from ..memory.remember_capability import REMEMBER_TOOL_NAME
 from ..memory.service import MemoryServiceProtocol
 from ..receipts import ReceiptRuntime, json_payload, text_payload
+from ..model_evidence import PARAMETER_NAMES, ModelCallRecorder, ParameterName
 from ..safety import (
     MessageSafety,
     attributed_safety,
@@ -1437,6 +1440,18 @@ async def chat(
     # may be inserted later; the receipt must describe the prompt actually sent.
     # The runtime works on its own copy, so a tool loop cannot rewrite this list.
     safety_provider = provider_for_api(api)
+    request_overrides: tuple[ParameterName, ...] = tuple(
+        name for name in PARAMETER_NAMES if getattr(body.params, name) is not None
+    )
+    model_evidence = ModelCallRecorder(
+        model_id=model_id, deployment=deployment.deploymentName, pricing=metering.pricing,
+        model_source=(
+            "request" if body.model else "session" if session.model else
+            "agent" if model_from_agent_default else "unknown"
+        ),
+        parameter_source="request" if request_overrides else "application_default",
+        overrides=request_overrides,
+    )
     receipt_draft = ReceiptDraft(
         correlation_id=correlation_id,
         runtime=ReceiptRuntime(
@@ -1476,6 +1491,7 @@ async def chat(
         tool_consent=session.toolConsent,
         partial=bool(library_context.notes),
         notes=library_context.notes,
+        model_evidence=model_evidence,
     )
 
     def memory_withheld() -> None:
@@ -1629,6 +1645,7 @@ async def chat(
             executor=executor,
             deployment=deployment.deploymentName,
             api=api,
+            model_id=model_id, pricing=metering.pricing,
         )
         # Tier 3 + Web IQ + memory come from the SHARED builder, so a tool-enabled
         # agent turn, a plain turn, and a workflow step all offer the same
@@ -1961,6 +1978,7 @@ async def chat(
                     executor=turn_executor,
                     ctx=ctx,
                     params=effective_params,
+                    model_evidence=model_evidence,
                     extra_tools=extra_tools or None,
                     extra_handlers=extra_handlers or None,
                     api=api,
@@ -2009,6 +2027,7 @@ async def chat(
                 executor=turn_executor,
                 ctx=ctx,
                 params=effective_params,
+                model_evidence=model_evidence,
                 extra_tools=extra_tools or None,
                 extra_handlers=extra_handlers or None,
                 api=api,
@@ -2041,7 +2060,7 @@ async def chat(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
-        except AgentRunFailed as exc:
+        except (AgentRunFailed, AgentRunCancelled) as exc:
             partial = exc.partial
             total_usage = partial.usage
             for sub_usage in usage_sink:
@@ -2054,6 +2073,7 @@ async def chat(
                 model_id=model_id,
                 deployment=deployment,
                 usage=total_usage,
+                cancelled=isinstance(exc, AgentRunCancelled),
                 agent_name=agent_name,
                 correlation_id=correlation_id,
                 content=partial.text or partial.streamed_text,
@@ -2063,7 +2083,7 @@ async def chat(
                 receipt=receipt_draft.build(
                     steps=partial.steps,
                     iterations=partial.iterations,
-                    status="error",
+                    status="cancelled" if isinstance(exc, AgentRunCancelled) else "error",
                     partial=True,
                     offered=partial.offered_tools,
                     dropped_history_messages=partial.dropped_context_messages,
@@ -2079,6 +2099,8 @@ async def chat(
                 safety_provider=safety_provider,
                 safety=partial.safety,
             )
+            if isinstance(exc, AgentRunCancelled):
+                raise
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=CHAT_COMPLETION_FAILED,
@@ -2305,6 +2327,7 @@ async def chat(
                             executor=executor,
                             ctx=ctx,
                             params=effective_params,
+                            model_evidence=model_evidence,
                             extra_tools=plain_tools or None,
                             extra_handlers=plain_handlers or None,
                             api=api,
@@ -2320,13 +2343,13 @@ async def chat(
                         bool,
                     ]:
                         await memory_guard.prepare(payload_messages)
-                        res = await gateway.complete(
+                        res = await model_evidence.observe(gateway.complete(
                             deployment=deployment.deploymentName,
                             messages=payload_messages,
                             params=effective_params,
                             correlation_id=correlation_id,
                             api=api,
-                        )
+                        ))
                         return (
                             _extract_text(res),
                             TokenUsage.parse(res.get("usage")),
@@ -2375,6 +2398,7 @@ async def chat(
                     executor=executor,
                     ctx=ctx,
                     params=effective_params,
+                    model_evidence=model_evidence,
                     extra_tools=plain_tools or None,
                     extra_handlers=plain_handlers or None,
                     api=api,
@@ -2461,7 +2485,7 @@ async def chat(
                 # no final prose. Preserve that usage and its safety assessments
                 # when the normal one-call fallback completes the answer.
                 plain_fallback_usage = plain_fallback_usage.add(run.usage)
-        except AgentRunFailed as exc:
+        except (AgentRunFailed, AgentRunCancelled) as exc:
             partial = exc.partial
             await _persist_nonstream_failure(
                 repo=repo,
@@ -2471,6 +2495,7 @@ async def chat(
                 model_id=model_id,
                 deployment=deployment,
                 usage=partial.usage,
+                cancelled=isinstance(exc, AgentRunCancelled),
                 agent_name=agent_name,
                 correlation_id=correlation_id,
                 content=partial.text or partial.streamed_text,
@@ -2479,7 +2504,7 @@ async def chat(
                 receipt=receipt_draft.build(
                     steps=partial.steps,
                     iterations=partial.iterations,
-                    status="error",
+                    status="cancelled" if isinstance(exc, AgentRunCancelled) else "error",
                     partial=True,
                     offered=partial.offered_tools,
                     dropped_history_messages=partial.dropped_context_messages,
@@ -2494,6 +2519,8 @@ async def chat(
                 safety_provider=safety_provider,
                 safety=partial.safety,
             )
+            if isinstance(exc, AgentRunCancelled):
+                raise
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=CHAT_COMPLETION_FAILED,
@@ -2525,14 +2552,14 @@ async def chat(
     if not body.stream:
         try:
             await memory_guard.prepare(payload_messages)
-            result = await gateway.complete(
+            result = await model_evidence.observe(gateway.complete(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,
                 params=effective_params,
                 correlation_id=correlation_id,
                 api=api,
-            )
-        except ModelGatewayError as exc:
+            ))
+        except (ModelGatewayError, asyncio.CancelledError) as exc:
             await _persist_nonstream_failure(
                 repo=repo,
                 metering=metering,
@@ -2541,13 +2568,14 @@ async def chat(
                 model_id=model_id,
                 deployment=deployment,
                 usage=plain_fallback_usage.add(TokenUsage.parse(None)),
+                cancelled=isinstance(exc, asyncio.CancelledError),
                 agent_name=agent_name,
                 correlation_id=correlation_id,
                 sources=library_sources,
                 receipt=receipt_draft.build(
                     steps=plain_tool_run.steps if plain_tool_run is not None else None,
                     iterations=plain_model_attempts + 1,
-                    status="error",
+                    status="cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
                     partial=True,
                     offered=(
                         plain_tool_run.offered_tools
@@ -2593,6 +2621,8 @@ async def chat(
                     else None
                 ),
             )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=CHAT_COMPLETION_FAILED,

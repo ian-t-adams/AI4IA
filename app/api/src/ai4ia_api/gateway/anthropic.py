@@ -9,13 +9,20 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
 ANTHROPIC_API = "anthropic"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_MAX_TOKENS = 4096
+_TOKEN_FIELDS = (
+    "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens",
+)
+
+
+def _valid_token_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2**53 - 1
 
 
 def _content_blocks(content: Any) -> list[dict[str, Any]]:
@@ -209,19 +216,17 @@ def build_anthropic_payload(
 
 
 def anthropic_usage_to_chat(usage: Any) -> dict[str, Any] | None:
-    if not isinstance(usage, dict):
+    if not isinstance(usage, dict) or not {"input_tokens", "output_tokens"} <= usage.keys():
         return None
-
-    def token(name: str) -> int:
-        value = usage.get(name)
-        return int(value) if isinstance(value, (int, float)) else 0
-
+    counts = {name: usage.get(name, 0) for name in _TOKEN_FIELDS}
+    if not all(_valid_token_count(value) for value in counts.values()):
+        return None
     prompt = (
-        token("input_tokens")
-        + token("cache_creation_input_tokens")
-        + token("cache_read_input_tokens")
+        counts["input_tokens"]
+        + counts["cache_creation_input_tokens"]
+        + counts["cache_read_input_tokens"]
     )
-    completion = token("output_tokens")
+    completion = counts["output_tokens"]
     return {
         "prompt_tokens": prompt,
         "completion_tokens": completion,
@@ -288,24 +293,34 @@ class AnthropicStreamState:
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
     output_tokens: int = 0
-    saw_usage: bool = False
+    reported_fields: set[str] = field(default_factory=set)
+    final_output_reported: bool = False
+    invalid_usage: bool = False
 
-    def update(self, usage: Any) -> None:
-        if not isinstance(usage, dict):
+    def update(self, usage: Any, *, final_output: bool = False) -> None:
+        if usage is None:
             return
-        self.saw_usage = True
-        for name in (
-            "input_tokens",
-            "cache_creation_input_tokens",
-            "cache_read_input_tokens",
-            "output_tokens",
-        ):
-            value = usage.get(name)
-            if isinstance(value, (int, float)):
-                setattr(self, name, max(getattr(self, name), int(value)))
+        if not isinstance(usage, dict):
+            self.invalid_usage = True
+            return
+        for name in _TOKEN_FIELDS:
+            if name not in usage:
+                continue
+            value = usage[name]
+            if not _valid_token_count(value):
+                self.invalid_usage = True
+                continue
+            setattr(self, name, max(getattr(self, name), value))
+            self.reported_fields.add(name)
+            if name == "output_tokens" and final_output:
+                self.final_output_reported = True
 
     def as_chat_usage(self) -> dict[str, Any] | None:
-        if not self.saw_usage:
+        if self.invalid_usage:
+            # Explicitly invalidate any earlier report instead of leaving the
+            # stream consumer holding stale, apparently complete counters.
+            return {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}
+        if "input_tokens" not in self.reported_fields or not self.final_output_reported:
             return None
         return anthropic_usage_to_chat(
             {
@@ -353,7 +368,7 @@ def parse_anthropic_event(
         state.update((event.get("message") or {}).get("usage"))
         return None
     if event_type == "message_delta":
-        state.update(event.get("usage"))
+        state.update(event.get("usage"), final_output=True)
         return AnthropicStreamEvent(usage=state.as_chat_usage())
     if event_type == "message_stop":
         return AnthropicStreamEvent(done=True, usage=state.as_chat_usage())

@@ -6,10 +6,13 @@ import type { ReactNode } from "react";
 import type {
   ActivityStep,
   ExecutionReceipt,
+  ModelCallEvidence,
+  ReceiptCostSummary,
   ReceiptPayload,
   ReceiptPromptMessage,
 } from "@/lib/types";
 import { formatBytes } from "@/lib/library";
+import { formatUsd } from "@/lib/admin";
 import { ToolApprovalProvenance } from "./ToolApprovalProvenance";
 
 // One receipt payload as monospaced, pre-wrapped diagnostic text.
@@ -97,6 +100,72 @@ function ReceiptFrame({ embedded, summary, children }: { embedded: boolean; summ
   );
 }
 
+function receiptUsd(micro: number): string {
+  return micro > 0 && micro < 100 ? "<$0.0001" : formatUsd(micro);
+}
+
+function costLabel(cost: ReceiptCostSummary | null | undefined): string {
+  if (!cost) return "Cost not recorded";
+  if (cost.coverage === "unknown" || cost.estCostMicroUsd == null) {
+    return "Unknown (no priced model calls)";
+  }
+  const amount = receiptUsd(cost.estCostMicroUsd);
+  return cost.coverage === "partial"
+    ? `Known subtotal ${amount}; total unknown`
+    : `Estimated ${amount}`;
+}
+
+const PARAMETER_SOURCES = {
+  request: "request overrides, adapted by the application",
+  application_default: "application defaults",
+  workflow_default: "workflow defaults (no session parameter inheritance)",
+  delegation_default: "delegation defaults (no parent overrides)",
+};
+
+function ModelCallPanel({ call }: { call: ModelCallEvidence }) {
+  const parameters = call.parameters;
+  const missing = !parameters ? "Not recorded" : call.coverage === "recorded"
+    ? "Not sent (provider default unknown)" : "Not recorded (or not sent)";
+  const scalar = (value: string | number | boolean | null | undefined) =>
+    value == null ? missing : String(value);
+  const cost = call.cost;
+  const rows: [string, string][] = [
+    ["Model selection source", call.modelSource],
+    ["Parameter source", PARAMETER_SOURCES[call.parameterSource]],
+    ["Request overrides supplied", call.requestOverrides.join(", ") || "None"],
+    ["Temperature", scalar(parameters?.temperature)],
+    ["Top p", scalar(parameters?.topP)],
+    ["Output-token limit", parameters?.maxOutputTokens != null
+      ? `${parameters.maxOutputTokens} (${parameters.outputTokenField})` : missing],
+    ["Effort setting", scalar(parameters?.reasoningEffort)],
+    ["Tool choice", scalar(parameters?.toolChoice)],
+    ["Parallel tool calls", scalar(parameters?.parallelToolCalls)],
+    ["HTTP attempts", String(call.httpAttempts)],
+    ["Provider completion", call.providerCompleted ? "Observed" : "Not observed"],
+    ["Call cost", cost.coverage === "known" && cost.estCostMicroUsd != null
+      ? `Estimated ${receiptUsd(cost.estCostMicroUsd)}` : "Unknown"],
+    ["Price version at execution", cost.priceVersion ?? "Not recorded"],
+    ["Pricing basis", cost.priceInputPer1M != null && cost.priceOutputPer1M != null
+      ? `${cost.priceInputPer1M} / ${cost.priceOutputPer1M} USD per million input / output tokens`
+      : "Input / output token rates unknown"],
+  ];
+  return (
+    <details>
+      <summary className="activity-label">
+        {`Model call ${call.iteration} · ${call.api} · ${call.coverage}`}
+      </summary>
+      <div className="activity-rows">
+        {rows.map(([label, value]) => (
+          <div key={label} className="activity-row">
+            <span className="activity-label">{label}</span>
+            <span className="activity-detail">{value}</span>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: ExecutionReceipt; embedded?: boolean }) {
   const runtime = receipt.runtime ?? {};
   const offered = receipt.toolsOffered ?? [];
@@ -110,6 +179,8 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
       ? "Library retrieval is partial for this turn: some accessible documents could not be searched. This is not evidence of no matching content in those documents."
       : null;
   const invoked = new Set(calls.map((call) => call.tool));
+  const modelCalls = runtime.modelCalls ?? [];
+  const cost = receipt.usage?.cost;
 
   const runtimeRows: [string, string | null | undefined][] = [
     ["Model", runtime.modelId],
@@ -120,7 +191,20 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
     ["Processing residency", runtime.residency],
     ["API surface", runtime.api],
     ["Agent", runtime.agent ? `@${runtime.agent}` : null],
+    ["Model parameters", runtime.modelCalls == null
+      ? notes.includes("workflow_step_receipts")
+        ? "See workflow step receipts (no parent parameter defaults)"
+        : "Model parameters not recorded"
+      : modelCalls.length
+        ? `${modelCalls.length} of ${runtime.modelCallCount ?? modelCalls.length} model calls retained`
+        : "No gateway parameter snapshot recorded"],
+    ["Estimated model cost", costLabel(cost)],
+    ["Cost coverage", cost ? `${cost.pricedCalls} of ${cost.totalCalls} model calls priced` : null],
+    ["Price versions", cost
+      ? `${cost.priceVersions.join(", ") || "Not recorded"}${cost.priceVersionsTruncated ? " (bounded)" : ""}`
+      : null],
     ["Instruction source", runtime.instructionSource],
+    ["Workflow configuration", runtime.workflowConfigSha256 ? `sha256 ${runtime.workflowConfigSha256}` : null],
     [
       "Instruction hash",
       runtime.instructionSha256
@@ -193,6 +277,25 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
                   <span className="activity-detail">{value}</span>
                 </div>
               ))}
+            {cost ? (
+              <p className="safety-note">
+                Estimates use the recorded input/output token rates, not today&apos;s prices.
+                They cover model tokens only, not tool, media or other service charges, and are not a bill.
+              </p>
+            ) : null}
+            {modelCalls.length > 0 ? (
+              <details>
+                <summary className="activity-label">Application-effective model parameters</summary>
+                <div className="activity-rows">
+                  <p className="safety-note">
+                    Scalar controls the application sent after model-capability adaptation.
+                    Provider-internal values are unknown. An omitted control does not record
+                    a provider default. Request overrides may have been changed or removed.
+                  </p>
+                  {modelCalls.map((call) => <ModelCallPanel key={call.iteration} call={call} />)}
+                </div>
+              </details>
+            ) : null}
             <div className="activity-row">
               <span className="activity-label">Outcome</span>
               <span className="activity-detail">

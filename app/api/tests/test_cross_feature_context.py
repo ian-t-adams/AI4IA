@@ -7,6 +7,9 @@ import httpx
 import pytest
 
 from ai4ia_api.gateway.client import ModelGatewayClient
+from ai4ia_api.usage.memory_repo import InMemoryUsageRepository
+from ai4ia_api.usage.pricing import PriceRate, PricingBook
+from ai4ia_api.usage.service import UsageService
 from tests.test_ai_search_chunks import _FakeIndexClient
 from tests.test_chat_library_api import _make_client, _seed_ready_doc
 from tests.test_doc_retrieval import FakeEmbedder, UnavailableSearchClient
@@ -51,6 +54,13 @@ async def test_memory_fence_and_search_status_describe_the_same_actual_request(
             memory, _store, _embedder, _planner, _container = cosmos_memory()
             client.app.state.memory = memory
             client.app.state.gateway = ModelGatewayClient(client.app.state.settings, http)
+            client.app.state.usage = UsageService(
+                InMemoryUsageRepository(),
+                PricingBook(
+                    {"gpt-5.2": PriceRate(input_per_1m=2.0, output_per_1m=4.0)},
+                    currency="USD", version="integration-prices-v1",
+                ),
+            )
             created = client.post("/api/memories", headers=HEADERS, json={"text": OWNER_FACT})
             assert created.status_code == 201, created.text
             response = client.post("/api/sessions", headers=HEADERS, json={
@@ -111,6 +121,19 @@ async def test_memory_fence_and_search_status_describe_the_same_actual_request(
             assert ("library_retrieval_unavailable" in receipt["notes"]) is search_unavailable
             assert receipt["partial"] is search_unavailable
             assert receipt["usage"]["totalTokens"] == 14
+            assert receipt["runtime"]["modelCallCount"] == 1
+            call = receipt["runtime"]["modelCalls"][0]
+            assert call["coverage"] == "recorded"
+            assert call["parameters"]["maxOutputTokens"] == actual["max_completion_tokens"]
+            assert call["parameters"]["outputTokenField"] == "max_completion_tokens"
+            assert call["parameters"]["reasoningEffort"] == actual["reasoning_effort"]
+            assert call["cost"]["coverage"] == "known"
+            assert call["cost"]["priceVersion"] == "integration-prices-v1"
+            cost = receipt["usage"]["cost"]
+            assert cost["coverage"] == "known"
+            assert cost["totalCalls"] == cost["pricedCalls"] == 1
+            assert cost["estCostMicroUsd"] == 34
+            assert cost["priceVersions"] == ["integration-prices-v1"]
             assert "PRIVATE QUERY AND SOURCE CONTENT" not in json.dumps(receipt)
         finally:
             client.__exit__(None, None, None)

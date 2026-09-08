@@ -15,7 +15,7 @@ from ..agents.approvals import (
     mint_pending_approval,
 )
 from ..agents.receipt import ReceiptDraft
-from ..agents.runtime import AgentRunFailed, AgentRunResult, AgentStep
+from ..agents.runtime import AgentRunCancelled, AgentRunFailed, AgentRunResult, AgentStep
 from ..auth.base import AuthenticatedUser
 from ..catalog import DeploymentOption
 from ..chat_timing import current_chat_timing
@@ -145,14 +145,15 @@ async def _persist_nonstream_failure(
     receipt: ExecutionReceipt | None = None,
     safety_provider: str | None = None,
     safety: MessageSafety | None = None,
+    cancelled: bool = False,
 ) -> Message:
-    """Persist and meter a terminal error for an accepted non-streaming turn."""
+    """Persist and meter a terminal error/cancellation for an accepted non-streaming turn."""
     assistant = Message(
         sessionId=session_id,
         userId=user.internal_user_id,
         role=MessageRole.assistant,
         content=content,
-        status=MessageStatus.error,
+        status=MessageStatus.cancelled if cancelled else MessageStatus.error,
         model=deployment.deploymentName,
         agent=agent_name,
         attachments=attachments or [],
@@ -173,7 +174,7 @@ async def _persist_nonstream_failure(
         model_id=model_id,
         deployment=deployment,
         usage=usage,
-        status="error",
+        status="cancelled" if cancelled else "error",
         agent=agent_name,
         correlation_id=correlation_id,
         timing=timing,
@@ -275,6 +276,7 @@ async def _agentic_stream(
     backpressure_logged = False
     observed_steps: list[AgentStep] = []
     runner_result: AgentRunResult | None = None
+    runner_cancelled = False
 
     async def enqueue(item: object) -> None:
         nonlocal backpressure_logged
@@ -302,7 +304,7 @@ async def _agentic_stream(
             await enqueue(("delta", text))
 
     async def runner() -> tuple[AgentRunResult | None, Exception | None]:
-        nonlocal runner_result
+        nonlocal runner_result, runner_cancelled
         try:
             completed = await (
                 run(on_step, on_delta) if stream_tokens else run(on_step)
@@ -310,6 +312,10 @@ async def _agentic_stream(
             runner_result = completed
             await enqueue(("result", completed))
             return completed, None
+        except AgentRunCancelled as exc:
+            runner_result = exc.partial
+            runner_cancelled = True
+            raise
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - surfaced below; never crashes the response
@@ -420,6 +426,11 @@ async def _agentic_stream(
                     )
                 elif isinstance(run_error, ModelGatewayError):
                     attempted_iterations = max(attempted_iterations, 1)
+
+        if runner_cancelled:
+            final = MessageStatus.cancelled
+            result = runner_result
+            return
 
         if isinstance(run_error, ModelGatewayError):
             total_usage = total_usage.add(TokenUsage.parse(None))
@@ -711,15 +722,16 @@ async def _plain_gateway_stream(
         yield _stream_metadata(user_message_id, assistant.id, assistant.sources)
         if prepare_model_context is not None:
             await prepare_model_context(messages)
-        async with aclosing(
-            gateway.stream(
-                deployment=deployment.deploymentName,
-                messages=messages,
-                params=params,
-                correlation_id=correlation_id,
-                api=api,
-            )
-        ) as chunks:
+        stream = gateway.stream(
+            deployment=deployment.deploymentName,
+            messages=messages,
+            params=params,
+            correlation_id=correlation_id,
+            api=api,
+        )
+        if receipt_draft is not None and receipt_draft.model_evidence is not None:
+            stream = receipt_draft.model_evidence.observe_stream(stream)
+        async with aclosing(stream) as chunks:
             async for chunk in chunks:
                 if chunk.usage:
                     stream_usage = chunk.usage

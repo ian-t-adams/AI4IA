@@ -76,6 +76,11 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    their approval provenance; skipping a prompt never means skipping a trace.
    Cancellation/checkpoint CAS writes must bind the caller's message snapshot,
    not just a status/lease shared by successive checkpoints.
+   Capture model parameters from the adapted gateway request, not UI/session
+   drafts; child runs own their parameter evidence. Snapshot token rates/version
+   before the provider await through the shared pricing helper. Missing usage or
+   prices remain unknown, and receipt reads never reprice history. New evidence
+   must still fit the 32 KiB receipt budget under escaped durable serialization.
 
 ## CI build / test / lint commands
 

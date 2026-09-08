@@ -251,6 +251,26 @@ approval provenance, usage/safety coverage, and correlation metadata. Payload
 and whole-receipt limits keep them bounded; step receipts preserve later workflow
 evidence beyond the aggregate limit.
 
+`ReceiptRuntime.modelCalls` captures a typed scalar allowlist from the actual
+gateway request body after model-capability and provider-adapter normalization.
+Each initial, later tool-loop, and final no-tool call has its own posture:
+sampling controls, output-token limit and field, effort setting, and tool-choice
+controls when supplied. Model selection and request/default provenance are
+explicit. Workflows and linked agents record their own defaults, never copied
+parent parameters. A setting the application did not send is not a claim about
+the provider's internal default.
+
+`ReceiptUsage.cost` is an immutable estimate or known subtotal for model tokens,
+including nested executions, not a bill or a hard-budget policy. Per-call rates
+and price-book version are frozen before the provider await and use the existing
+pricing helper. Completed calls keep their estimates if a later call or delivery
+fails; missing, malformed, incomplete, or unpriced usage remains unknown.
+Tool, media, search, and other service charges are outside this token estimate.
+Receipt reads never reprice against the current book. Historical rows lack these
+fields and render as not recorded; no migration or retrospective rewrite runs.
+Call details are bounded and keep pre-bound counts, while the complete receipt
+still fits 32 KiB, including ASCII-escaped durable-task serialization.
+
 They are diagnostic evidence, not a complete replay log or a model's private
 reasoning. Historical receipts can retain admitted source text after a source is
 deleted, just as a past answer can. Active-store deletion is therefore not
