@@ -471,6 +471,13 @@ Adding a check is a three-step ordering: make it always-reported, prove it on a 
 that would previously have skipped it, then require it. A required context that is
 never reported blocks every PR permanently.
 
+All current workflow checkouts use `persist-credentials: false`: they need source
+fetching, not a repository token left for later steps. An action that uploads
+artifacts or calls GitHub uses its explicit job token, not checkout credentials.
+New authenticated Git writes need a separately reviewed, narrowly scoped path.
+`scripts/tests/test_gating_workflows.py` discovers every checkout so a new job
+cannot silently restore credential persistence.
+
 ## Dependency updates and issue closeout
 
 Routine API updates stay in `api-deps`. FastAPI and Starlette are a compatibility
