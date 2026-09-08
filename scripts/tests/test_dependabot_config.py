@@ -24,7 +24,9 @@ the configuration from drifting back into the broken combination.
 
 from __future__ import annotations
 
+import shlex
 import unittest
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 import yaml
@@ -138,6 +140,72 @@ class DependabotNuGetLockCoupling(unittest.TestCase):
             "--locked-mode",
             quality,
         )
+
+
+class DependencyReviewBoundaries(unittest.TestCase):
+    def matching_groups(self, package: str) -> list[str]:
+        entry = _python_entries_for(API_DIR)[0]
+        return [
+            name
+            for name, group in entry.get("groups", {}).items()
+            if group.get("applies-to", "version-updates") == "version-updates"
+            and any(fnmatchcase(package, pattern) for pattern in group.get("patterns", []))
+            and not any(
+                fnmatchcase(package, pattern)
+                for pattern in group.get("exclude-patterns", [])
+            )
+        ]
+
+    def test_foundry_sdk_is_reviewed_as_an_individual_update(self) -> None:
+        self.assertEqual(self.matching_groups("azure-ai-projects"), [])
+
+    def test_fastapi_and_starlette_stay_in_the_same_dedicated_group(self) -> None:
+        for package in ("fastapi", "starlette"):
+            with self.subTest(package=package):
+                self.assertEqual(self.matching_groups(package), ["api-framework"])
+        groups = _python_entries_for(API_DIR)[0]["groups"]
+        self.assertIn("api-framework", groups)
+        framework = groups["api-framework"]
+        self.assertEqual(set(framework["update-types"]), {"minor", "patch"})
+
+    def test_routine_dependencies_still_receive_grouped_updates(self) -> None:
+        for package in ("azure-cosmos", "pydantic", "httpx"):
+            with self.subTest(package=package):
+                self.assertEqual(self.matching_groups(package), ["api-deps"])
+
+    def test_gate_installers_use_declared_exact_versions(self) -> None:
+        cases = (
+            (
+                APP_CI, "api", "Dependency lock drift check (uv)",
+                "uv", "UV_VERSION", ["pip", "install"],
+            ),
+            (
+                ROOT / ".github/workflows/infra-validate.yml",
+                "bicep-lint-build", "Validate models.json against schema",
+                "check-jsonschema", "CHECK_JSONSCHEMA_VERSION",
+                ["python", "-m", "pip", "install", "--quiet"],
+            ),
+        )
+        for path, job_name, step_name, package, variable, prefix in cases:
+            with self.subTest(package=package):
+                document = yaml.safe_load(path.read_text(encoding="utf-8"))
+                job = document["jobs"][job_name]
+                steps = [step for step in job["steps"] if step.get("name") == step_name]
+                self.assertEqual(len(steps), 1)
+                step = steps[0]
+                environment = {
+                    **document.get("env", {}),
+                    **job.get("env", {}),
+                    **step.get("env", {}),
+                }
+                self.assertIn(variable, environment, "the installer version must be explicit")
+                self.assertRegex(str(environment[variable]), r"^\d+\.\d+\.\d+$")
+                commands = [
+                    shlex.split(line, comments=True)
+                    for line in step["run"].splitlines()
+                    if line.strip()
+                ]
+                self.assertIn([*prefix, f"{package}==${{{variable}}}"], commands)
 
 
 if __name__ == "__main__":
