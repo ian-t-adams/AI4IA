@@ -64,6 +64,11 @@ class UsageService:
     def enabled(self) -> bool:
         return self._enabled
 
+    @property
+    def pricing(self) -> PricingBook:
+        """The same price book used by metering and immutable receipt estimates."""
+        return self._pricing
+
     @staticmethod
     def _normalize_target(
         target: UsageTarget | DeploymentOption | None,

@@ -28,12 +28,17 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
+from ..model_evidence import ModelCallRecorder
+from ..receipts import ReceiptRuntime, json_payload, text_payload
 from ..usage.models import TokenUsage
+from ..usage.pricing import PricingBook
 from .agent_catalog import AgentCatalog, AgentSpec
 from .runtime import (
+    AgentRunCancelled,
     AgentRunFailed,
     AgentRunResult,
     DelegatedAgentRunFailed,
+    DelegatedAgentRunCancelled,
     DelegatedRunTrace,
     DelegatedToolResult,
     run_agent_turn,
@@ -87,6 +92,8 @@ def build_delegate_capability(
     executor: ToolExecutor,
     deployment: str,
     api: str = "chat",
+    model_id: str | None = None,
+    pricing: PricingBook | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, DelegateHandler], list[TokenUsage]]:
     """Build the ``delegate_to_agent`` synthetic tool for an orchestrator.
 
@@ -169,6 +176,15 @@ def build_delegate_capability(
             registry=registry,
             ctx=sub_context,
         )
+        evidence = ModelCallRecorder(
+            model_id=model_id, deployment=deployment, pricing=pricing,
+            model_source="supervisor", parameter_source="delegation_default",
+        )
+        runtime = ReceiptRuntime(
+            modelId=model_id, deployment=deployment, api=api, agent=target_name,
+            instructionSource="agent", instructionSha256=text_payload(target.systemPrompt).sha256,
+            agentConfigSha256=json_payload(target.model_dump(mode="json")).sha256,
+        )
         # Depth-1: no extra_tools/extra_handlers, so the sub-agent cannot itself
         # delegate. Supervisor deployment + params=None for correct, simple
         # metering and to avoid inheriting the parent's sampling/token budget.
@@ -184,7 +200,23 @@ def build_delegate_capability(
                 params=None,
                 max_iters=_SUB_AGENT_MAX_ITERS,
                 api=api,
+                model_evidence=evidence,
+                retain_failed_request=True,
             )
+        except AgentRunCancelled as exc:
+            raise DelegatedAgentRunCancelled(
+                exc.partial,
+                DelegatedRunTrace(
+                    agent=target_name,
+                    effective_prompt=exc.partial.effective_prompt or sub_messages,
+                    model_requests=exc.partial.model_requests,
+                    offered_tools=exc.partial.offered_tools,
+                    steps=exc.partial.steps, iterations=exc.partial.iterations,
+                    usage=exc.partial.usage, safety=exc.partial.safety,
+                    status="cancelled", partial=True,
+                    runtime=runtime, model_evidence=evidence,
+                ),
+            ) from exc
         except AgentRunFailed as exc:
             raise DelegatedAgentRunFailed(
                 cause=exc.cause,
@@ -200,6 +232,7 @@ def build_delegate_capability(
                     safety=exc.partial.safety,
                     status="error",
                     partial=True,
+                    runtime=runtime, model_evidence=evidence,
                 ),
             ) from exc
         except ModelGatewayError as exc:
@@ -222,6 +255,7 @@ def build_delegate_capability(
                     usage=partial.usage,
                     status="error",
                     partial=True,
+                    runtime=runtime, model_evidence=evidence,
                 ),
             ) from exc
         usage_sink.append(run.usage)
@@ -239,6 +273,7 @@ def build_delegate_capability(
             safety=run.safety,
             status="incomplete" if run.incomplete else "complete",
             partial=run.incomplete,
+            runtime=runtime, model_evidence=evidence,
         )
         if run.incomplete:
             return DelegatedToolResult(

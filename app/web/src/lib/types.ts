@@ -277,6 +277,60 @@ export interface ReceiptRuntime {
   instructionSource?: string | null;
   instructionSha256?: string | null;
   agentConfigSha256?: string | null;
+  workflowConfigSha256?: string | null;
+  modelCalls?: ModelCallEvidence[] | null;
+  modelCallCount?: number | null;
+}
+
+export interface EffectiveModelParameters {
+  temperature?: number | null;
+  topP?: number | null;
+  maxOutputTokens?: number | null;
+  outputTokenField?: "max_tokens" | "max_completion_tokens" | "max_output_tokens" | null;
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
+  toolChoice?: "auto" | "none" | "required" | "any" | "named" | null;
+  parallelToolCalls?: boolean | null;
+}
+
+export interface ModelCostEstimate {
+  coverage: "known" | "unknown";
+  estCostMicroUsd?: number | null;
+  currency: "USD";
+  pricingBasis: "input_output_tokens";
+  priceVersion?: string | null;
+  priceInputPer1M?: number | null;
+  priceOutputPer1M?: number | null;
+}
+
+export interface ReceiptCostSummary {
+  coverage: "known" | "partial" | "unknown";
+  estCostMicroUsd?: number | null;
+  currency: "USD";
+  pricingBasis: "model_tokens_only";
+  totalCalls: number;
+  pricedCalls: number;
+  priceVersions: string[];
+  priceVersionsTruncated: boolean;
+}
+
+export interface ModelCallEvidence {
+  iteration: number;
+  scope: "application_effective";
+  providerInternals: "unknown";
+  modelId?: string | null;
+  api: "chat" | "responses" | "anthropic" | "unknown";
+  modelSource: "request" | "session" | "agent" | "workflow" | "supervisor" | "unknown";
+  parameterSource: "request" | "application_default" | "workflow_default" | "delegation_default";
+  requestOverrides: ("temperature" | "top_p" | "max_tokens" | "reasoning_effort")[];
+  coverage: "recorded" | "partial" | "unknown";
+  parameters?: EffectiveModelParameters | null;
+  httpAttempts: number;
+  providerCompleted: boolean;
+  usageKnown: boolean;
+  usageComplete: boolean;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  cost: ModelCostEstimate;
 }
 
 export interface ReceiptUsage {
@@ -286,6 +340,7 @@ export interface ReceiptUsage {
   promptTokens?: number | null;
   completionTokens?: number | null;
   totalTokens?: number | null;
+  cost?: ReceiptCostSummary | null;
 }
 
 export interface ReceiptSafetySummary {
