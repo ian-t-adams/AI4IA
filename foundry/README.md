@@ -23,11 +23,17 @@ APIM injects the managed-identity bearer, the static
 | Path | What it is |
 | --- | --- |
 | `toolbox.manifest.json` | Canonical definition of the live `ai4ia-toolbox` (a new tenant reproduces it 1:1). |
-| `toolbox.manifest.example.json` | Populated `reference` manifest with one of every tool. It is never reconciled as-is. |
+| `toolbox.manifest.example.json` | Populated `reference` manifest with one of every supported tool. It is never reconciled as-is. |
 | `toolbox.manifest.schema.json` | JSON Schema for the manifest; validated in CI (`infra-validate`). |
 | `skills/<name>/SKILL.md` | Repository-owned source for an unpinned active skill. `--create` reconciles immutable skill versions before the toolbox. |
 | `routines/routine.schema.json` + `routines/example.routine.json` | Design/preview routine contract. It is validated against canonical toolbox names but is not created or served. |
 | `a2a/a2a.schema.json` + `a2a/example.a2a.json` | Design/preview A2A contract with an explicit blocker inventory. It does not create a callable integration. |
+
+The audited provisioning SDK is `azure-ai-projects==2.6.0`. Its new `shell` and
+`web_iq_preview` toolbox types remain deliberately unsupported pending capability
+and governance review. All 16 SDK classes are accounted for, but the manifest
+allowlist remains 14 types and the canonical three tools plus `evidence-review`
+skill are unchanged. See the full runbook for the exact exclusion contracts.
 
 ## Reconciliation
 

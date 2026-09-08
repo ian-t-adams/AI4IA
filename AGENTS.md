@@ -189,7 +189,10 @@ silently rewrites every artifact URL in the lockfile to the internal proxy. Thos
 URLs are inert until something actually reads the lock, at which point it breaks
 for everyone — and the lock meanwhile lies about provenance and leaks internal
 feed identifiers into a public repo. Re-run with
-`UV_INDEX_URL=https://pypi.org/simple` or off the proxied network.
+`UV_DEFAULT_INDEX=https://pypi.org/simple` and
+`uv lock --default-index https://pypi.org/simple`, or off the proxied network.
+The deprecated `UV_INDEX_URL` / `--index-url` does not override a configured
+`UV_DEFAULT_INDEX`; the command can succeed while still rewriting every URL.
 `scripts/tests/test_lockfile_provenance.py` fails on a single non-PyPI URL and
 refuses to pass vacuously on a truncated lock.
 
@@ -469,7 +472,10 @@ never reported blocks every PR permanently.
 Routine API updates stay in `api-deps`. FastAPI and Starlette are a compatibility
 pair in `api-framework`; `azure-ai-projects` stays ungrouped so its exact SDK,
 manifest, and adapter contract is reviewed independently. Do not weaken a parity
-test to make an SDK upgrade green. The gate installers are pinned by `UV_VERSION`
+test to make an SDK upgrade green. New SDK toolbox types require complete support
+or named exclusions with rationale and exact reflected field inventories; exclusions
+must remain rejected by both the manifest and adapter. The gate installers are
+pinned by `UV_VERSION`
 in `app-ci.yml` and `CHECK_JSONSCHEMA_VERSION` in `infra-validate.yml`; update the
 documented local command when a pin changes.
 
