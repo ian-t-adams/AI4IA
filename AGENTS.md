@@ -318,7 +318,7 @@ python -m unittest scripts.tests.test_immutable_image_promotion
 `infra-validate` runs:
 
 ```powershell
-python -m pip install --quiet check-jsonschema
+python -m pip install --quiet "check-jsonschema==0.38.0"
 check-jsonschema --schemafile infra/models.schema.json infra/models.json
 check-jsonschema --schemafile infra/mcp-servers.schema.json infra/mcp-servers.json
 check-jsonschema --schemafile infra/voice-providers.schema.json infra/voice-providers.json
@@ -463,6 +463,27 @@ docs-only PR.
 Adding a check is a three-step ordering: make it always-reported, prove it on a PR
 that would previously have skipped it, then require it. A required context that is
 never reported blocks every PR permanently.
+
+## Dependency updates and issue closeout
+
+Routine API updates stay in `api-deps`. FastAPI and Starlette are a compatibility
+pair in `api-framework`; `azure-ai-projects` stays ungrouped so its exact SDK,
+manifest, and adapter contract is reviewed independently. Do not weaken a parity
+test to make an SDK upgrade green. The gate installers are pinned by `UV_VERSION`
+in `app-ci.yml` and `CHECK_JSONSCHEMA_VERSION` in `infra-validate.yml`; update the
+documented local command when a pin changes.
+
+Before closing work, reconcile each linked issue's original acceptance criteria
+with shipped evidence. Use `Closes #...` only when the PR completes the full
+scope; otherwise use `Refs #...` and record delivered and remaining work on the
+issue. If completion requires a deployment, keep the issue open until that
+rollout is evidenced. Use N/A when a PR has no related issue; do not invent one
+just to satisfy the template.
+
+Treat implementation, deployment, and issue closure as separate states. Review
+independently green dependency updates independently, and close superseded bot
+PRs only after their replacement has actually merged. A plan or passing local
+run alone is never completion evidence.
 
 ## Test discipline: mutate the guard, or you have not written one
 

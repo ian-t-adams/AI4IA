@@ -45,6 +45,12 @@ updates:
     groups:
       api-deps:
         patterns: ["*"]
+        exclude-patterns: ["azure-ai-projects", "fastapi", "starlette"]
+        update-types: ["minor", "patch"]
+      # The API framework is a compatibility pair; the Foundry SDK instead
+      # stays ungrouped so its exact schema/adapter contract is reviewed alone.
+      api-framework:
+        patterns: ["fastapi", "starlette"]
         update-types: ["minor", "patch"]
 
   # These four projects restore as one locked graph. Dependabot refreshes locks

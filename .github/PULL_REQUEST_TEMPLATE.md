@@ -2,6 +2,15 @@
 
 <!-- What changed and why? -->
 
+## Issue linkage and closeout
+
+<!-- Use N/A when no issue applies. Closes is for fully satisfied scope, not partial progress. -->
+
+- Related issues:
+- Remaining acceptance criteria or follow-up work:
+- [ ] Fully implemented scope uses `Closes #...`; partial work uses `Refs #...` and records what remains.
+- [ ] Closure evidence distinguishes implementation, required rollout, and issue completion; passing local checks alone are not a shipped outcome.
+
 ## Validation
 
 <!-- Paste relevant command output or explain why a check is not applicable. -->
