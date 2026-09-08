@@ -131,6 +131,16 @@ export interface MemoryList {
   detail: string | null;
 }
 
+export interface MemoryPreference {
+  automaticMemoryEnabled: boolean;
+  etag: string;
+}
+
+export interface MemoryInspectorTarget {
+  memoryId: string | null;
+  request: number;
+}
+
 export interface LibrarySummary {
   generatedAt: string;
   status: string;
@@ -153,6 +163,33 @@ export async function getInspector(sessionId: string): Promise<InspectorSnapshot
 
 export async function listMemories(): Promise<MemoryList> {
   return jsonOrThrow(await apiFetch("/api/memories", { cache: "no-store" }));
+}
+
+export async function getMemoryPreference(): Promise<MemoryPreference> {
+  return memoryPreferenceOrThrow(await apiFetch("/api/memories/preference", { cache: "no-store" }));
+}
+
+async function memoryPreferenceOrThrow(response: Response): Promise<MemoryPreference> {
+  const value = await jsonOrThrow<MemoryPreference>(response);
+  if (!value || typeof value.automaticMemoryEnabled !== "boolean" ||
+    typeof value.etag !== "string" || !value.etag) {
+    throw new Error("The server returned an invalid memory preference.");
+  }
+  return value;
+}
+
+export async function updateMemoryPreference(
+  automaticMemoryEnabled: boolean,
+  etag: string,
+): Promise<MemoryPreference> {
+  return memoryPreferenceOrThrow(
+    await apiFetch("/api/memories/preference", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "If-Match": etag },
+      body: JSON.stringify({ automaticMemoryEnabled }),
+      cache: "no-store",
+    }),
+  );
 }
 
 function mutationKey(): string {

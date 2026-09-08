@@ -511,12 +511,25 @@ operators deliberately set it to `disabled` to freeze writes before migration,
 then restore `cosmos` only after verification. Startup fails closed if the Cosmos
 endpoint is missing or either catalog-driven memory model cannot resolve.
 
-The Conversation Inspector exposes create, inline edit, and confirmed delete.
-Automatic recall and planner consolidation remain best-effort so a memory service
-failure cannot break chat; explicit CRUD and forget operations surface failures.
+The Conversation Inspector exposes a default-on **Automatic memory** switch,
+create, inline edit, and confirmed delete. The per-user preference is canonical
+state in the existing `memories` container, not a new resource or consent grant.
+Missing historical fields default on without a backfill. Off gates automatic
+recall, planner writes, and model memory tools at execution time, including
+delayed/resumed work; a changed preference generation prevents pre-disable
+automatic writes from committing even after reenable. Explicit CRUD, document
+save/forget, and scoped forgetting remain available.
+
+Automatic recall and planner consolidation remain best-effort. An unreadable
+preference withholds automatic memory, never defaults to enabled; explicit CRUD,
+preference updates, and forget operations surface failures. Roll out the
+preference-aware API to every replica and durable worker before relying on the
+control; an older writer cannot enforce or preserve the new state fields.
 Execution receipts identify the memories admitted to a turn, with versions,
 hashes, and admitted text. That proves supplied context, not causal influence
-on the answer. There is still no per-user memory enable/disable switch.
+on the answer. The collapsed **Memories supplied** view provides focused owner
+navigation and identifies unrecorded or bounded evidence without backfilling old
+answers. Disabling/deleting memories does not erase historical messages/receipts.
 See [Memory architecture](../memory.md).
 
 ### Custom MCP tools

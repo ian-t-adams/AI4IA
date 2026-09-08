@@ -36,6 +36,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..agents.tool_exec import ToolContext
+from .context import MemoryContextGuard
 from .service import MemoryServiceProtocol
 
 REMEMBER_TOOL_NAME = "remember_memory"
@@ -61,6 +62,7 @@ def build_remember_capability(
     :func:`~ai4ia_api.agents.runtime.run_agent_turn`.
     """
     budget = {"used": 0}
+    guard = MemoryContextGuard(memory, user_id)
 
     schema: dict[str, Any] = {
         "type": "function",
@@ -114,6 +116,11 @@ def build_remember_capability(
                 ),
             }
         budget["used"] += 1
+        if not await guard.allowed():
+            return {
+                "saved": False,
+                "error": "Automatic memory is off or unavailable. Nothing was saved.",
+            }
         try:
             # user_id is closure-bound, NEVER taken from tool args, so the model
             # cannot write into another user's memory.
@@ -125,6 +132,14 @@ def build_remember_capability(
             outcome = "unavailable"
         if outcome == "saved":
             return {"saved": True, "text": text}
+        if outcome == "disabled":
+            return {
+                "saved": False,
+                "error": (
+                    "Automatic memory is off or its preference changed during this call. "
+                    "Nothing was saved. The owner can change it in Context > Memory."
+                ),
+            }
         if outcome == "unavailable":
             return {
                 "saved": False,

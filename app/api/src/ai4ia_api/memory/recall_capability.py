@@ -29,6 +29,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..agents.tool_exec import ToolContext
+from .context import MemoryContextGuard
 from .service import MemoryServiceProtocol
 
 RECALL_TOOL_NAME = "recall_memory"
@@ -60,6 +61,7 @@ def build_recall_capability(
     ``scope="session"`` to restrict results to the current conversation.
     """
     budget = {"used": 0}
+    guard = MemoryContextGuard(memory, user_id)
 
     scope_desc = (
         "Optional. 'all' (default) searches the user's memories across every "
@@ -103,12 +105,16 @@ def build_recall_capability(
             return {"error": "query must be a non-empty string."}
         budget["used"] += 1
         scope = str(args.get("scope") or "all").strip().lower()
+        if not await guard.allowed():
+            return {"results": "", "count": 0, "note": "Automatic memory is off or unavailable."}
         try:
             # user_id is closure-bound, NEVER taken from tool args, so the model
             # cannot recall another user's memory.
             records = await memory.recall(user_id, query)
         except Exception:  # noqa: BLE001 - recall must never break a turn
             return {"results": "", "count": 0, "note": "Memory recall unavailable."}
+        if not await guard.allowed():
+            return {"results": "", "count": 0, "note": "Automatic memory preference changed."}
         if scope == "session" and session_id:
             records = [r for r in records if r.session_id == session_id]
 

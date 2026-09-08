@@ -8,6 +8,7 @@ from dataclasses import replace
 from typing import Any
 
 from ..conversations.policy import resolve_conversation_policy
+from ..memory.context import MemoryContextGuard
 from ..sessions.models import Session
 from ..sessions.repository import SessionNotFoundError
 from .agent_catalog import AgentCatalog
@@ -105,6 +106,9 @@ async def execution_tools_for_state(
     tool_names: Sequence[str],
     ctx: ToolContext,
 ) -> tuple[ToolRegistry, ToolExecutor, ToolContext]:
+    if ctx.prepare_model_context is None:
+        guard = MemoryContextGuard(getattr(state, "memory", None), user_id)
+        ctx = replace(ctx, prepare_model_context=guard.prepare)
     if not any(is_mcp_tool_name(name) for name in tool_names):
         return state.tool_registry, state.tool_executor, ctx
     planes: list[McpPlane] = []
@@ -132,6 +136,7 @@ async def execution_tools_for_state(
     return registry, executor, replace(
         mcp_ctx, granted_scopes=ctx.granted_scopes,
         approvals=mcp_ctx.approvals | ctx.approvals,
+        prepare_model_context=ctx.prepare_model_context,
     )
 
 

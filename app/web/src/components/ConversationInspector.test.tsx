@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   toolCatalog: [] as ToolCatalogItem[],
   getToolCatalog: vi.fn(),
   listMemories: vi.fn(),
+  getMemoryPreference: vi.fn(),
+  updateMemoryPreference: vi.fn(),
   getLibrarySummary: vi.fn(),
   updateSession: vi.fn(),
   setSessionToolConsent: vi.fn(),
@@ -48,6 +50,8 @@ function mockToolCatalog(tools: ToolCatalogItem[]): void {
 vi.mock("@/lib/inspector", () => ({
   getInspector: mocks.getInspector,
   listMemories: mocks.listMemories,
+  getMemoryPreference: mocks.getMemoryPreference,
+  updateMemoryPreference: mocks.updateMemoryPreference,
   getLibrarySummary: mocks.getLibrarySummary,
   createMemory: mocks.createMemory,
   updateMemory: mocks.updateMemory,
@@ -115,6 +119,10 @@ function model(overrides: Partial<ModelEntry> = {}): ModelEntry {
 }
 
 beforeEach(() => {
+  mocks.getMemoryPreference.mockResolvedValue({ automaticMemoryEnabled: true, etag: '"pref-0"' });
+  mocks.updateMemoryPreference.mockImplementation(async (automaticMemoryEnabled: boolean) => ({
+    automaticMemoryEnabled, etag: '"pref-1"',
+  }));
   mocks.getInspector.mockImplementation(async (id: string) => snapshot(id));
   mockToolCatalog([]);
   mocks.getToolCatalog.mockImplementation(
@@ -171,6 +179,32 @@ afterEach(() => {
 });
 
 describe("ConversationInspector", () => {
+  it("opens and focuses a recorded memory through the owner-scoped list", async () => {
+    mocks.getMemoryPreference.mockResolvedValue({ automaticMemoryEnabled: false, etag: '"pref-1"' });
+    mocks.listMemories.mockResolvedValue({
+      status: "ok", supportsCreate: true, supportsEdit: true, supportsDelete: true, detail: null,
+      items: [{
+        id: "owned", text: "Current owner record", source: "explicit", sessionId: null,
+        documentId: null, createdAt: null, updatedAt: null, version: 3, etag: '"v3"',
+        origin: "user", locked: true,
+      }],
+    });
+    render(<ConversationInspector {...props()} memoryTarget={{ memoryId: "owned", request: 1 }} />);
+    const row = (await screen.findByText("Current owner record")).closest("li");
+    await waitFor(() => expect(row).toHaveFocus());
+    expect(screen.getByRole("button", { name: "Memory" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Edit memory: Current owner record" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Delete memory: Current owner record" })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Automatic memory" })).not.toBeChecked());
+  });
+
+  it("does not resolve a missing receipt reference from another owner's labels", async () => {
+    render(<ConversationInspector {...props()} memoryTarget={{ memoryId: "no-longer-listed", request: 1 }} />);
+    expect(await screen.findByText(/not in your current memory list/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /^Edit memory:/ })).not.toBeInTheDocument();
+    expect(mocks.listMemories).toHaveBeenCalledWith();
+  });
+
   it("edits agent, tool, and library defaults without patching a missing session", async () => {
     const onDraftDefaultsChange = vi.fn();
     const draftDefaults: ConversationDraftDefaults = {

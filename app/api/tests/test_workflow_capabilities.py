@@ -25,6 +25,7 @@ from ai4ia_api.agents.tool_exec import (
     build_tools,
 )
 from ai4ia_api.memory.recall_capability import RECALL_TOOL_NAME
+from ai4ia_api.memory.preferences import MemoryPreference
 from ai4ia_api.memory.remember_capability import (
     MAX_REMEMBERS_PER_TURN,
     MAX_TEXT_LEN,
@@ -66,6 +67,9 @@ class _FakeMemory:
         self.enabled = enabled
         self._outcome: MemoryWriteOutcome = outcome
         self.writes: list[tuple[str, str | None, str]] = []
+
+    async def get_preference(self, user_id):
+        return MemoryPreference()
 
     async def recall(self, *_args, **_kwargs):  # pragma: no cover - unused here
         return []

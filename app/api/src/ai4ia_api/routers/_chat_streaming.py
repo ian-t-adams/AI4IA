@@ -675,6 +675,7 @@ async def _plain_gateway_stream(
     content_for_model: str,
     receipt_draft: ReceiptDraft | None = None,
     safety_provider: str | None = None,
+    prepare_model_context: Callable[[list[dict]], Awaitable[None]] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream a plain gateway call and own its terminal lifecycle."""
     parts: list[str] = []
@@ -708,6 +709,8 @@ async def _plain_gateway_stream(
 
     try:
         yield _stream_metadata(user_message_id, assistant.id, assistant.sources)
+        if prepare_model_context is not None:
+            await prepare_model_context(messages)
         async with aclosing(
             gateway.stream(
                 deployment=deployment.deploymentName,

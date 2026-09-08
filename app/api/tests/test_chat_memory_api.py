@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from ai4ia_api.gateway.client import ChatChunk
 from ai4ia_api.main import create_app
 from ai4ia_api.memory.in_memory import InMemoryVectorStore
+from ai4ia_api.memory.preferences import MemoryPreference
 from ai4ia_api.memory.service import MemoryService
 from tests.conftest import make_settings
 
@@ -161,6 +162,11 @@ def test_optional_memory_context_is_dropped_before_it_can_overflow_model_budget(
     mem_client, monkeypatch
 ):
     class OversizedMemory:
+        enabled = True
+
+        async def get_preference(self, _user_id):
+            return MemoryPreference()
+
         async def recall(self, *_args):
             return []
 

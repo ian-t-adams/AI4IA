@@ -20,6 +20,7 @@ import math
 from collections.abc import Sequence
 
 from .models import MemoryRecord
+from .preferences import MemoryPreference, MemoryPreferenceConflict
 
 
 def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
@@ -49,9 +50,34 @@ class InMemoryVectorStore:
     def __init__(self, expected_dim: int | None = None) -> None:
         # user_id -> list of (record, vector)
         self._by_user: dict[str, list[tuple[MemoryRecord, list[float]]]] = {}
+        self._preferences: dict[str, MemoryPreference] = {}
         self._expected_dim = expected_dim
 
-    async def add(self, record: MemoryRecord, vector: Sequence[float]) -> None:
+    async def get_preference(self, user_id: str) -> MemoryPreference:
+        return self._preferences.get(user_id, MemoryPreference())
+
+    async def set_preference(
+        self, user_id: str, automatic_enabled: bool, *, expected_etag: str
+    ) -> MemoryPreference:
+        current = self._preferences.get(user_id, MemoryPreference())
+        if current.etag != expected_etag:
+            raise MemoryPreferenceConflict("Memory preference changed; reload and try again.")
+        if current.automatic_enabled != automatic_enabled:
+            current = MemoryPreference(automatic_enabled, current.version + 1)
+            self._preferences[user_id] = current
+        return current
+
+    async def add(
+        self,
+        record: MemoryRecord,
+        vector: Sequence[float],
+        *,
+        expected_preference: MemoryPreference | None = None,
+    ) -> None:
+        if expected_preference is not None:
+            current = self._preferences.get(record.user_id, MemoryPreference())
+            if not current.automatic_enabled or current != expected_preference:
+                raise MemoryPreferenceConflict("Automatic memory preference changed.")
         vec = list(vector)
         if self._expected_dim is not None and len(vec) != self._expected_dim:
             raise ValueError(

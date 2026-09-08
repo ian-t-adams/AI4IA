@@ -24,12 +24,17 @@ from typing import Literal, Protocol
 from .base import Embedder, MemoryStore
 from .formatting import format_memory_context
 from .models import MemoryRecord
+from .preferences import (
+    MemoryPreference,
+    MemoryPreferenceConflict,
+    MemoryPreferenceUnavailable,
+)
 from .telemetry import emit_memory_operation
 
 logger = logging.getLogger(__name__)
 
 # What a remember() attempt actually did. This is deliberately NOT a bool: the
-# three "nothing was stored" cases are not interchangeable, and collapsing them
+# different "nothing was stored" cases are not interchangeable, and collapsing them
 # is how a failed write comes to be reported to the model as a benign no-op.
 #
 #   saved       - the text is now durably stored (added, or updated in place).
@@ -41,7 +46,9 @@ logger = logging.getLogger(__name__)
 #                 failure). Swallowed so a chat turn never breaks, but reported
 #                 so an agent-callable caller can say so instead of claiming
 #                 the fact was remembered.
-MemoryWriteOutcome = Literal["saved", "noop", "removed", "unavailable"]
+#   disabled    - the owner's automatic-memory preference is off or changed
+#                 while this operation was in flight.
+MemoryWriteOutcome = Literal["saved", "noop", "removed", "unavailable", "disabled"]
 
 
 class MemoryServiceProtocol(Protocol):
@@ -49,6 +56,12 @@ class MemoryServiceProtocol(Protocol):
 
     @property
     def enabled(self) -> bool: ...
+
+    async def get_preference(self, user_id: str) -> MemoryPreference: ...
+
+    async def set_preference(
+        self, user_id: str, automatic_enabled: bool, *, expected_etag: str
+    ) -> MemoryPreference: ...
 
     async def recall(self, user_id: str, query: str) -> list[MemoryRecord]: ...
 
@@ -92,6 +105,14 @@ class NoopMemoryService:
     """Disabled memory: every operation is a safe no-op."""
 
     enabled = False
+
+    async def get_preference(self, user_id: str) -> MemoryPreference:
+        raise MemoryPreferenceUnavailable("Memory is disabled by the server.")
+
+    async def set_preference(
+        self, user_id: str, automatic_enabled: bool, *, expected_etag: str
+    ) -> MemoryPreference:
+        raise MemoryPreferenceUnavailable("Memory is disabled by the server.")
 
     async def recall(self, user_id: str, query: str) -> list[MemoryRecord]:
         return []
@@ -164,6 +185,16 @@ class MemoryService:
         self._max_total_chars = max_total_chars
         self._min_chars_to_store = min_chars_to_store
 
+    async def get_preference(self, user_id: str) -> MemoryPreference:
+        return await self._store.get_preference(user_id)
+
+    async def set_preference(
+        self, user_id: str, automatic_enabled: bool, *, expected_etag: str
+    ) -> MemoryPreference:
+        return await self._store.set_preference(
+            user_id, automatic_enabled, expected_etag=expected_etag
+        )
+
     async def recall(self, user_id: str, query: str) -> list[MemoryRecord]:
         """Best-effort: return relevant memories, or [] on any failure."""
         started = time.monotonic()
@@ -171,11 +202,21 @@ class MemoryService:
             emit_memory_operation("recall", "skipped", "custom", started, count=0)
             return []
         try:
+            preference = await self.get_preference(user_id)
+            if not preference.automatic_enabled:
+                emit_memory_operation("recall", "disabled", "custom", started, count=0)
+                return []
             vector = await self._embedder.embed_one(query)
             if not vector:
                 emit_memory_operation("recall", "skipped", "custom", started, count=0)
                 return []
+            if await self.get_preference(user_id) != preference:
+                emit_memory_operation("recall", "disabled", "custom", started, count=0)
+                return []
             hits = await self._store.search(user_id, vector, self._top_k)
+            if await self.get_preference(user_id) != preference:
+                emit_memory_operation("recall", "disabled", "custom", started, count=0)
+                return []
         except Exception:  # noqa: BLE001 - memory must never break chat
             logger.warning("memory recall failed", exc_info=True)
             emit_memory_operation("recall", "failed", "custom", started)
@@ -199,6 +240,10 @@ class MemoryService:
             emit_memory_operation("save", "skipped", "custom", started, count=0)
             return "noop"
         try:
+            preference = await self.get_preference(user_id)
+            if not preference.automatic_enabled:
+                emit_memory_operation("save", "disabled", "custom", started, count=0)
+                return "disabled"
             vector = await self._embedder.embed_one(cleaned)
             if not vector:
                 # `cleaned` is non-empty by the check above, so an empty vector is
@@ -207,7 +252,10 @@ class MemoryService:
                 emit_memory_operation("save", "failed", "custom", started)
                 return "unavailable"
             record = MemoryRecord(user_id=user_id, session_id=session_id, text=cleaned)
-            await self._store.add(record, vector)
+            await self._store.add(record, vector, expected_preference=preference)
+        except MemoryPreferenceConflict:
+            emit_memory_operation("save", "disabled", "custom", started, count=0)
+            return "disabled"
         except Exception:  # noqa: BLE001 - memory must never break chat
             logger.warning("memory remember failed", exc_info=True)
             emit_memory_operation("save", "failed", "custom", started)

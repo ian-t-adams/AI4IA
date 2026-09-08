@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import time
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..memory.cosmos_store import MemoryConflictError, MemoryNotFoundError
 from ..memory.models import MemoryRecord
+from ..memory.preferences import MemoryPreferenceConflict, MemoryPreferenceUnavailable
+from ..memory.service import MemoryServiceProtocol
 from ..memory.telemetry import emit_memory_operation
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
@@ -43,6 +45,67 @@ class MemoryCreateRequest(BaseModel):
 
 class MemoryUpdateRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2_000)
+
+
+class MemoryPreferenceResponse(BaseModel):
+    automaticMemoryEnabled: bool
+    etag: str
+
+
+class MemoryPreferenceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    automaticMemoryEnabled: StrictBool
+
+
+@router.get("/preference", response_model=MemoryPreferenceResponse)
+async def get_memory_preference(
+    request: Request,
+    response: Response,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> MemoryPreferenceResponse:
+    memory: MemoryServiceProtocol = request.app.state.memory
+    if not memory.enabled:
+        raise HTTPException(status_code=404, detail="Memory is disabled by the server.")
+    try:
+        preference = await memory.get_preference(user.internal_user_id)
+    except MemoryPreferenceUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Memory preference is unavailable.") from exc
+    response.headers["ETag"] = preference.etag
+    response.headers["Cache-Control"] = "no-store"
+    return MemoryPreferenceResponse(
+        automaticMemoryEnabled=preference.automatic_enabled, etag=preference.etag
+    )
+
+
+@router.patch("/preference", response_model=MemoryPreferenceResponse)
+async def update_memory_preference(
+    body: MemoryPreferenceUpdate,
+    request: Request,
+    response: Response,
+    if_match: str = Header(alias="If-Match"),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> MemoryPreferenceResponse:
+    memory: MemoryServiceProtocol = request.app.state.memory
+    if not memory.enabled:
+        raise HTTPException(status_code=404, detail="Memory is disabled by the server.")
+    try:
+        preference = await memory.set_preference(
+            user.internal_user_id,
+            body.automaticMemoryEnabled,
+            expected_etag=if_match,
+        )
+    except MemoryPreferenceConflict as exc:
+        raise HTTPException(
+            status_code=409, detail="Memory preference changed; reload and try again."
+        ) from exc
+    except MemoryPreferenceUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Memory preference is unavailable.") from exc
+    response.headers["ETag"] = preference.etag
+    response.headers["Cache-Control"] = "no-store"
+    return MemoryPreferenceResponse(
+        automaticMemoryEnabled=preference.automatic_enabled, etag=preference.etag
+    )
 
 
 def _item(record: MemoryRecord) -> MemoryItem:
