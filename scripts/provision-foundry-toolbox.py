@@ -68,7 +68,7 @@ _SKILL_FRONT_MATTER_RE = re.compile(
     r"\A---\n(?P<header>.*?)\n---\n(?P<body>.*)\Z",
     re.DOTALL,
 )
-# Toolbox tool types that can actually be placed in a toolbox via azure-ai-projects, mapped to
+# Toolbox tool types approved for AI4IA manifests, mapped to
 # their discriminated model classes (resolved lazily in the live path so the pure functions stay
 # dependency-free). NOTE: `computer_use` and `bing_custom_search` exist only as AGENT-level tools
 # in the SDK (ComputerUsePreviewTool / BingCustomSearchPreviewTool); there is no matching
@@ -101,6 +101,41 @@ _TYPE_TO_MODEL = {
     "work_iq_preview": "WorkIQPreviewToolboxTool",
 }
 _ALLOWED_TOOL_TYPES = set(_TYPE_TO_MODEL)
+
+
+class _UnsupportedToolboxType(NamedTuple):
+    model_class: str
+    sdk_fields: frozenset[str]
+    rationale: str
+
+
+# SDK 2.6.0 additions require deliberate capability review, not automatic exposure.
+# Keep exact field inventories so excluded models still participate in SDK parity.
+_UNSUPPORTED_TOOL_TYPES = {
+    "shell": _UnsupportedToolboxType(
+        model_class="ShellToolboxTool",
+        sdk_fields=frozenset({
+            "type", "name", "description", "tool_configs", "allowed_callers", "environment",
+        }),
+        rationale=(
+            "Arbitrary shell execution requires a separate sandbox, egress, approval, "
+            "and skill-execution review; the SDK upgrade does not authorize it."
+        ),
+    ),
+    "web_iq_preview": _UnsupportedToolboxType(
+        model_class="WebIQPreviewToolboxTool",
+        sdk_fields=frozenset({
+            "type", "name", "description", "tool_configs", "project_connection_id",
+            "server_label", "require_approval",
+        }),
+        rationale=(
+            "The Foundry-hosted WebIQ connection and approval contract has not been "
+            "reviewed for AI4IA; it must not bypass the existing runtime WebIQ feature "
+            "gate, fixed endpoints, budgets, and governance."
+        ),
+    ),
+}
+
 # camelCase manifest keys -> snake_case payload keys (only the ones that differ).
 _CAMEL_TO_SNAKE = {
     "serverLabel": "server_label",
@@ -129,6 +164,7 @@ _CAMEL_TO_SNAKE = {
     "additionalSearchText": "additional_search_text",
     "userLocation": "user_location",
     "searchContextSize": "search_context_size",
+    "externalWebAccess": "external_web_access",
     "maxNumResults": "max_num_results",
     "rankingOptions": "ranking_options",
     "scoreThreshold": "score_threshold",
@@ -352,6 +388,12 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
             errors.append(f"tools[{i}] must be a JSON object, got {type(tool).__name__}.")
             continue
         ttype = tool.get("type")
+        if ttype in _UNSUPPORTED_TOOL_TYPES:
+            errors.append(
+                f"tools[{i}].type '{ttype}' is intentionally unsupported: "
+                f"{_UNSUPPORTED_TOOL_TYPES[ttype].rationale}"
+            )
+            continue
         if ttype not in _ALLOWED_TOOL_TYPES:
             errors.append(f"tools[{i}].type '{ttype}' is not one of {sorted(_ALLOWED_TOOL_TYPES)}.")
             continue
@@ -546,7 +588,7 @@ def _project_client(project_endpoint: str) -> Any:
     except ImportError as exc:  # pragma: no cover - exercised only on live provisioning
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.5.0 azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.6.0 azure-identity'
         ) from exc
     return AIProjectClient(endpoint=project_endpoint, credential=DefaultAzureCredential())
 
@@ -557,7 +599,7 @@ def _sdk_models() -> Any:
     except ImportError as exc:  # pragma: no cover - exercised only without provisioning extra
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.5.0 azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.6.0 azure-identity'
         ) from exc
     return models
 
@@ -695,10 +737,15 @@ def _build_toolbox_kwargs(manifest: dict[str, Any], models: Any) -> dict[str, An
     """Build the exact SDK request fields used for creation and live-state comparison."""
     tools: list[Any] = []
     for tool in manifest.get("tools") or []:
-        cls_name = _TYPE_TO_MODEL.get(tool["type"])
-        if cls_name is None:  # pragma: no cover - guarded earlier by validate_manifest
+        unsupported = _UNSUPPORTED_TOOL_TYPES.get(tool["type"])
+        if unsupported is not None:
             raise SystemExit(
-                f"tool type '{tool['type']}' cannot be placed in a toolbox via azure-ai-projects "
+                f"tool type '{tool['type']}' is intentionally unsupported: {unsupported.rationale}"
+            )
+        cls_name = _TYPE_TO_MODEL.get(tool["type"])
+        if cls_name is None:
+            raise SystemExit(
+                f"tool type '{tool['type']}' is not supported by the AI4IA toolbox adapter "
                 f"(creatable types: {sorted(_ALLOWED_TOOL_TYPES)})."
             )
         model_cls = getattr(models, cls_name)
