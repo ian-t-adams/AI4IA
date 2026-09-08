@@ -1,12 +1,18 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatApp } from "./ChatApp";
+import { MemoryPreferenceProvider } from "./MemoryPreferenceProvider";
 import type { StreamHandlers } from "@/lib/api";
 import type { ToolCatalogItem } from "@/lib/types";
 import { resetChatAppMocks } from "./chatTestFixtures";
+
+function render(ui: ReactElement) {
+  return rtlRender(ui, { wrapper: MemoryPreferenceProvider });
+}
 
 const mocks = vi.hoisted(() => ({
   listModels: vi.fn(),

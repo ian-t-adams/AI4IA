@@ -134,6 +134,12 @@ responses are `no-store`. A stale preference ETag returns `409`, an unavailable
 preference store returns `503`, and a server-disabled backend returns `404`.
 The browser shows loading/saving states and rolls a failed change back to the
 last confirmed display, marked **unconfirmed** until it reloads the server value.
+Preference state and pending writes belong to the authenticated owner, outside
+conversation-keyed and collapsible inspector components. Navigating between
+conversations or closing the inspector cannot replace a pending write with a
+stale confirmed setting. Settlement triggers a canonical reread for the same
+active owner; switching accounts cannot apply the result to the next account
+or issue that reread with the next account's credentials.
 
 The preference lives in the existing `memories` container's per-user `state`
 item, as `automaticMemoryEnabled` and `preferenceVersion`. Missing historical
@@ -170,6 +176,11 @@ context, including turn-local recall-tool returns; receipt admission is correcte
 when the block was never sent. An unavailable preference never falls back to on.
 A prompt already sent cannot be withdrawn, and memory-derived text in existing
 conversation history is not erased or hidden by this switch.
+SDK transport or authentication failures withhold memory just like an unavailable
+Cosmos response; cancellation still propagates. Cancellation or failure while
+preparing a later request preserves completed usage, tool activity, and request
+evidence without counting an unsent request. First-request failure receipts retain
+the filtered prompt, not a draft that still contains withheld memory.
 
 The turn's execution receipt records which memories were admitted, including
 their source identity, version, score, hash, and admitted text. This is input

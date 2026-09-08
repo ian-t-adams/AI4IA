@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { useState } from "react";
+import { useState, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type {
@@ -12,7 +12,12 @@ import type {
   ToolConsentSummary,
 } from "@/lib/types";
 import { ConversationInspector } from "./ConversationInspector";
+import { MemoryPreferenceProvider } from "./MemoryPreferenceProvider";
 import { emptyLibrarySummary, makeChatSession, makeInspectorSnapshot } from "./chatTestFixtures";
+
+function render(ui: ReactElement) {
+  return rtlRender(ui, { wrapper: MemoryPreferenceProvider });
+}
 
 const mocks = vi.hoisted(() => ({
   getInspector: vi.fn(),

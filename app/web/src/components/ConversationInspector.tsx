@@ -1316,7 +1316,7 @@ export function ConversationInspector({
             >
               <section>
                 {memory?.status !== "disabled" ? (
-                  <MemoryPreferenceControl key={sessionId ?? "new-conversation"} onChanged={() => void loadTools()} />
+                  <MemoryPreferenceControl onChanged={() => void loadTools()} />
                 ) : null}
                 {memoryTarget?.memoryId && phases.memory === "ready" &&
                   !memory?.items.some((item) => item.id === memoryTarget.memoryId) ? (

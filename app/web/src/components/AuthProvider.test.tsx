@@ -19,6 +19,10 @@ vi.mock("@azure/msal-react", () => ({
 vi.mock("./SignInGate", () => ({
   SignInGate: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
+vi.mock("./MemoryPreferenceProvider", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./MemoryPreferenceProvider")>(),
+  EntraMemoryPreferenceProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
 
 const config: WebAuthConfig = {
   provider: "entra",

@@ -221,9 +221,12 @@ tool approval. It does not enable a backend disabled by the operator.
 
 You can still create, list, edit, or delete your own records while it is off.
 User-created or edited memories are protected from automatic consolidation.
-The control shows when a change is pending. If saving fails, the last confirmed
-setting is restored visually but marked unconfirmed; reload it before trying
-again. Turning memory back on makes retained records available to new work.
+The control keeps a change pending even if you switch conversations or close and
+reopen the inspector. After the request settles it reloads your current server
+setting. If confirmation fails, the last confirmed setting is restored visually
+but marked unconfirmed; reload it before trying again. Changing accounts never
+applies one owner's pending result to another. Turning memory back on makes
+retained records available to new work.
 
 `/forget` removes this conversation's memories; `/forget me` removes all active
 memories for your profile. Deleting a document also fences and removes memory

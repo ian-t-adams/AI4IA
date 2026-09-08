@@ -15,6 +15,7 @@ import {
 
 import { initAuth, type WebAuthConfig } from "@/lib/auth";
 import { SignInGate } from "./SignInGate";
+import { EntraMemoryPreferenceProvider, MemoryPreferenceProvider } from "./MemoryPreferenceProvider";
 
 const AUTH_INIT_TIMEOUT_MS = 15_000;
 
@@ -162,7 +163,9 @@ function EntraAuthProvider({
 
   return (
     <MsalProvider instance={authState.instance}>
-      <SignInGate>{children}</SignInGate>
+      <EntraMemoryPreferenceProvider>
+        <SignInGate>{children}</SignInGate>
+      </EntraMemoryPreferenceProvider>
     </MsalProvider>
   );
 }
@@ -195,7 +198,7 @@ export function AuthProvider({
   // app directly — no MSAL, no sign-in gate. This is the unchanged default path.
   if (config.provider === "dev") {
     initAuth(config);
-    return <>{children}</>;
+    return <MemoryPreferenceProvider>{children}</MemoryPreferenceProvider>;
   }
   return <EntraAuthProvider config={config}>{children}</EntraAuthProvider>;
 }

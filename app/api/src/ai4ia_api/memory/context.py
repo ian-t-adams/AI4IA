@@ -20,7 +20,7 @@ class MemoryContextGuard:
         self._blocked = False
         self._supplied = False
         self.block = ""
-        self.on_withheld: Callable[[], None] | None = None
+        self.on_withheld: Callable[[list[dict[str, Any]]], None] | None = None
 
     async def allowed(self) -> bool:
         if self._blocked:
@@ -64,7 +64,7 @@ class MemoryContextGuard:
                 )
             ]
             if not self._supplied and self.on_withheld is not None:
-                self.on_withheld()
+                self.on_withheld(messages)
         # Only turn-local tool exchanges are changed, never stored chat history.
         recall_ids = {
             call.get("id")

@@ -15,7 +15,7 @@ from ..agents.approvals import (
     mint_pending_approval,
 )
 from ..agents.receipt import ReceiptDraft
-from ..agents.runtime import AgentRunFailed, AgentRunResult, AgentStep
+from ..agents.runtime import AgentRunCancelled, AgentRunFailed, AgentRunResult, AgentStep
 from ..auth.base import AuthenticatedUser
 from ..catalog import DeploymentOption
 from ..chat_timing import current_chat_timing
@@ -310,6 +310,9 @@ async def _agentic_stream(
             runner_result = completed
             await enqueue(("result", completed))
             return completed, None
+        except AgentRunCancelled as exc:
+            runner_result = exc.partial
+            raise
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - surfaced below; never crashes the response
