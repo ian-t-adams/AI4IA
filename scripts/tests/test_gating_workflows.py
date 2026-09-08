@@ -226,6 +226,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         posture: str = "",
         claude_enabled: str = "true",
         missing: tuple[str, ...] = (),
+        ref: str = "refs/heads/main",
     ) -> tuple[subprocess.CompletedProcess[str], str]:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -237,6 +238,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
             env.update(self.REQUIRED)
             env["AI4IA_DEPLOYMENT_ENABLED"] = posture
             env["AI4IA_CLAUDE_ENABLED"] = claude_enabled
+            env["GITHUB_REF"] = ref
             env["GITHUB_OUTPUT"] = str(output)
             for name in missing:
                 env.pop(name, None)
@@ -254,6 +256,42 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         result, output = self.run_validation()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(output.strip(), "deployment_enabled=true")
+
+    def test_only_the_exact_main_branch_can_reach_deployment_admission(self) -> None:
+        for ref in ("", "main", "refs/heads/release", "refs/tags/main", "refs/heads/Main"):
+            with self.subTest(ref=ref):
+                result, output = self.run_validation(ref=ref)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output, "")
+                self.assertIn("Deployments are restricted to refs/heads/main.", result.stdout)
+        result, output = self.run_validation(ref="refs/heads/main")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(output.strip(), "deployment_enabled=true")
+
+    def test_non_main_ref_is_rejected_even_when_deployment_is_disabled(self) -> None:
+        result, output = self.run_validation(
+            ref="refs/heads/release", posture="false", missing=tuple(self.REQUIRED)
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
+        self.assertIn("Deployments are restricted to refs/heads/main.", result.stdout)
+
+    def test_only_the_gated_deploy_job_can_request_oidc(self) -> None:
+        self.assertEqual(self.document["permissions"], {})
+        self.assertNotIn("permissions", self.validation_job)
+        self.assertEqual(
+            self.jobs["deploy"]["permissions"],
+            {"id-token": "write", "contents": "read"},
+        )
+        self.assertEqual(
+            [(step.get("name"), step.get("uses")) for step in self.validation_job["steps"]],
+            [("Validate required deployment variables", None)],
+        )
+        checkout = next(
+            step for step in self.jobs["deploy"]["steps"]
+            if step.get("uses", "").startswith("actions/checkout@")
+        )
+        self.assertIs(checkout.get("with", {}).get("persist-credentials"), False)
 
     def test_missing_variables_fail_with_each_actionable_name(self) -> None:
         missing = (
