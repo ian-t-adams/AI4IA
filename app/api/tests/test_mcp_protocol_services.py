@@ -24,13 +24,14 @@ from ai4ia_api.agents.mcp_servers import (
 from ai4ia_api.agents.mcp_service import McpServerService
 from ai4ia_api.agents.mcp_skills import build_load_skill_definition
 from ai4ia_api.agents.mcp_store import InMemoryUserMcpServerStore
-from ai4ia_api.agents.official_mcp_service import OfficialMcpService, build_official_servers
+from ai4ia_api.agents.official_mcp_service import OfficialMcpService
 from ai4ia_api.agents.runtime import run_agent_turn
 from ai4ia_api.agents.tool_exec import ToolContext, ToolExecutionError, build_tools
 from ai4ia_api.official_mcp_catalog import (
     OfficialMcpCatalog, OfficialMcpServer, _project_infra_catalog, load_official_mcp_catalog,
 )
 from tests.test_mcp_execution import ScriptedGateway, _assistant_text, _assistant_tool_calls, _messages
+from tests.test_mcp_client import _MockInnerConnector
 from tests.test_mcp_protocol import CONTEXT, ENDPOINT, LEGACY, MODERN, PROTOCOLS, URI, _result, _wire
 
 PUBLIC = lambda _host: ["93.184.216.34"]  # noqa: E731
@@ -40,8 +41,9 @@ ROUTING_SCHEMA = {"type": "object", "properties": {
 
 
 @pytest.mark.parametrize("source", ["packaged", "infra"])
-async def test_foundry_catalog_matches_observed_stateful_initialize(source):
-    """The live mismatch was a November result without stateless metadata."""
+@pytest.mark.parametrize("notification_status", [202, 204])
+async def test_foundry_catalog_matches_observed_stateful_initialize(source, notification_status):
+    """Actual catalog/service lifecycle; synthetic metadata, never live contents."""
     catalog = load_official_mcp_catalog()
     if source == "infra":
         raw = json.loads(
@@ -49,13 +51,15 @@ async def test_foundry_catalog_matches_observed_stateful_initialize(source):
             .read_text(encoding="utf-8")
         )
         catalog = OfficialMcpCatalog(**_project_infra_catalog(raw))
-    [server] = build_official_servers(catalog, gateway_url="https://apim.example.com")
     seen = []
 
     def handler(request):
         body = json.loads(request.content)
         seen.append((request, body))
         assert request.headers["Ocp-Apim-Subscription-Key"] == "synthetic-apim-key"
+        assert request.url.host == "93.184.216.34"
+        assert request.headers["Host"] == "apim.example.com"
+        assert request.extensions["sni_hostname"] == "apim.example.com"
         if body["method"] == "initialize":
             return httpx.Response(200, json={
                 "jsonrpc": "2.0", "id": body["id"],
@@ -67,22 +71,36 @@ async def test_foundry_catalog_matches_observed_stateful_initialize(source):
         assert request.headers["MCP-Protocol-Version"] == "2025-11-25"
         assert request.headers["Mcp-Session-Id"] == "synthetic-session"
         if body["method"] == "notifications/initialized":
-            return httpx.Response(202, headers={"MCP-Protocol-Version": "2025-11-25"})
-        assert body["method"] == "tools/list"
+            assert "id" not in body
+            return httpx.Response(notification_status, headers={"MCP-Protocol-Version": "2025-11-25"})
+        assert body["method"] in ("tools/list", "resources/list")
+        fields = {
+            "tools/list": {"tools": [
+                {"name": name, "inputSchema": {"type": "object"}}
+                for name in ("fixture_tool", "fixture_other")
+            ]},
+            "resources/list": {"resources": [
+                {"uri": f"skill://{name}/SKILL.md", "name": name}
+                for name in ("fixture_skill", "fixture_other_skill")
+            ]},
+        }[body["method"]]
         return httpx.Response(200, json={
-            "jsonrpc": "2.0", "id": body["id"],
-            "result": {"tools": [{"name": "fixture_tool", "inputSchema": {"type": "object"}}]},
+            "jsonrpc": "2.0", "id": body["id"], "result": fields,
         })
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        tools = await HttpxMcpConnector(client=client).discover(
-            endpoint=server.endpoint,
-            auth=McpAuth(server.authMode, "synthetic-apim-key"),
-            context=McpRequestContext.for_server(server),
-        )
-    assert [tool.name for tool in tools] == ["fixture_tool"]
+    service = OfficialMcpService(
+        catalog, gateway_url="https://apim.example.com", subscription_key="synthetic-apim-key",
+        connector=_MockInnerConnector(handler, resolver=PUBLIC), resolver=PUBLIC,
+    )
+    [server] = await service.list_all()
+    assert not server.lastError
+    assert [tool.name for tool in server.discoveredTools] == ["fixture_tool", "fixture_other"]
+    assert [resource.name for resource in server.discoveredResources] == [
+        "fixture_skill", "fixture_other_skill",
+    ]
     assert [body["method"] for _, body in seen] == [
         "initialize", "notifications/initialized", "tools/list",
+        "initialize", "notifications/initialized", "resources/list",
     ]
     assert seen[0][1]["params"] == {
         "protocolVersion": "2025-11-25", "capabilities": {},

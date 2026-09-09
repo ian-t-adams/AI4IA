@@ -730,6 +730,12 @@ Four rules follow:
   guard must match the catalog's exact selection, not a list of accepted dates.
   Stateless requests carry per-request metadata and no session. Never infer
   Foundry/APIM preview support from offline fixtures.
+- Notification acknowledgements are normatively empty HTTP 202. Only explicit
+  November mode also accepts empty HTTP 204, as observed on the official APIM
+  path, with the same version/session validation. Require absent/exactly-zero
+  Content-Length, no content/transfer encoding, range or trailer headers, and no
+  raw bytes under the existing timeout; never buffer/decompress an ack or treat
+  it as an RPC result. This includes cancellation without adding replay.
 - Derive routing mirrors from the exact RPC and consent-bound schema. Bound and
   encode them, reject sensitive annotations/values, and preserve the catalog-owned
   APIM boundary. Neither caller headers nor server identity/cache hints authorize

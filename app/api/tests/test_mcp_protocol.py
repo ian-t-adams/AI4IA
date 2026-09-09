@@ -50,7 +50,7 @@ def _result(protocol, **fields):
     return fields
 
 
-def _wire(protocol, seen, *, response=None, sse=False, auth=None):
+def _wire(protocol, seen, *, response=None, sse=False, auth=None, notification_status=202):
     """Only a mock server; all framing, lifecycle and headers are production code."""
     def handler(request):
         body = json.loads(request.content)
@@ -81,7 +81,7 @@ def _wire(protocol, seen, *, response=None, sse=False, auth=None):
             assert "id" not in body
             assert request.headers["MCP-Protocol-Version"] == protocol.value
             assert request.headers["Mcp-Session-Id"] == "legacy-session"
-            return httpx.Response(202, headers={
+            return httpx.Response(notification_status, headers={
                 "MCP-Protocol-Version": protocol.value, "Mcp-Session-Id": "legacy-session",
             })
         if protocol is MODERN:
@@ -131,18 +131,22 @@ def _wire(protocol, seen, *, response=None, sse=False, auth=None):
     return handler
 
 
-@pytest.mark.parametrize("protocol", PROTOCOLS)
+@pytest.mark.parametrize(("protocol", "notification_status"), [
+    (LEGACY, 202), (NOVEMBER, 202), (NOVEMBER, 204), (MODERN, 202),
+])
 @pytest.mark.parametrize("sse", [False, True])
 @pytest.mark.parametrize("auth", [
     McpAuth(), McpAuth(McpAuthMode.bearer, "test-token"),
     McpAuth(McpAuthMode.api_key, "test-key"),
     McpAuth(McpAuthMode.apim_subscription, "test-subscription"),
 ])
-async def test_all_protocols_discover_read_and_call_with_request_scoped_auth(protocol, sse, auth):
+async def test_all_protocols_discover_read_and_call_with_request_scoped_auth(
+    protocol, notification_status, sse, auth,
+):
     seen = []
     context = replace(CONTEXT, protocol_version=protocol)
     async with httpx.AsyncClient(transport=httpx.MockTransport(
-        _wire(protocol, seen, sse=sse, auth=auth)
+        _wire(protocol, seen, sse=sse, auth=auth, notification_status=notification_status)
     )) as client:
         connector = HttpxMcpConnector(client=client)
         if protocol is MODERN:
@@ -280,11 +284,13 @@ async def test_stateful_rpc_rejects_contradictory_protocol_and_session(protocol,
     ]
 
 
-@pytest.mark.parametrize("protocol", STATEFUL)
+@pytest.mark.parametrize(("protocol", "notification_status"), [
+    (LEGACY, 202), (NOVEMBER, 202), (NOVEMBER, 204),
+])
 @pytest.mark.parametrize("notification", ["notifications/initialized", "notifications/cancelled"])
 @pytest.mark.parametrize("fault", [None, "version", "session"])
 async def test_stateful_notifications_validate_configured_version_and_session(
-    protocol, notification, fault, caplog,
+    protocol, notification_status, notification, fault, caplog,
 ):
     seen = []
     other = NOVEMBER if protocol is LEGACY else LEGACY
@@ -297,7 +303,9 @@ async def test_stateful_notifications_validate_configured_version_and_session(
             "jsonrpc": "2.0", "id": body["id"], "result": {"content": [{"type": "text", "text": "ok"}]},
         })
 
-    normal = _wire(protocol, seen, response=response, auth=auth)
+    normal = _wire(
+        protocol, seen, response=response, auth=auth, notification_status=notification_status,
+    )
 
     def handler(request):
         reply = normal(request)
@@ -329,6 +337,128 @@ async def test_stateful_notifications_validate_configured_version_and_session(
     assert sum(body["method"] == "tools/call" for _, body in seen) == (
         0 if notification == "notifications/initialized" and fault else 1
     )
+
+
+@pytest.mark.parametrize("protocol", [None, *PROTOCOLS])
+@pytest.mark.parametrize("status", [202, 204, 200, 201, 301, 302, 303, 307, 308, 400, 401, 403, 404, 429, 500, 503])
+@pytest.mark.parametrize("method", ["notifications/initialized", "notifications/cancelled"])
+async def test_notification_ack_status_is_scoped_to_explicit_november(protocol, status, method):
+    context = McpRequestContext() if protocol is None else replace(CONTEXT, protocol_version=protocol)
+    seen = []
+    auth = McpAuth(McpAuthMode.apim_subscription, "notification-key")
+    params = {"requestId": 2} if method == "notifications/cancelled" else None
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(request)
+        assert body == {"jsonrpc": "2.0", "method": method, **({"params": params} if params else {})}
+        assert request.headers["Ocp-Apim-Subscription-Key"] == "notification-key"
+        assert request.headers["MCP-Protocol-Version"] == context.protocol_version.value
+        return httpx.Response(status, headers={"Location": "https://elsewhere.example.com/mcp"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        call = HttpxMcpConnector(client=client)._notify(
+            client, ENDPOINT, {**auth.headers(), "MCP-Protocol-Version": context.protocol_version.value},
+            method=method, params=params, context=context,
+        )
+        if status == 202 or (status == 204 and protocol is NOVEMBER):
+            await call
+        else:
+            with pytest.raises(McpConnectionError, match=f"HTTP {status}"):
+                await call
+    assert len(seen) == 1
+    assert str(seen[0].url) == ENDPOINT
+
+
+@pytest.mark.parametrize("preloaded", [False, True])
+@pytest.mark.parametrize(("headers", "content", "error"), [
+    ({}, b"", None),
+    ({"Content-Length": "0"}, b"", None),
+    ({"Content-Type": "application/json"}, b"", None),
+    ({"Content-Length": "1"}, b"", "content headers"),
+    ({"Content-Length": "-1"}, b"", "content headers"),
+    ({"Content-Length": "invalid"}, b"", "content headers"),
+    ({"Content-Length": "0, 0"}, b"", "content headers"),
+    ({"Content-Length": "+0"}, b"", "content headers"),
+    ({"Transfer-Encoding": "chunked"}, b"", "content headers"),
+    ({"Transfer-Encoding": "identity"}, b"", "content headers"),
+    ({"Transfer-Encoding": ""}, b"", "content headers"),
+    ({"Content-Encoding": "gzip"}, b"", "content headers"),
+    ({"Content-Encoding": "identity"}, b"", "content headers"),
+    ({"Content-Range": "bytes 0-0/1"}, b"", "content headers"),
+    ({"Trailer": "Digest"}, b"", "content headers"),
+    ({"Content-Length": "0"}, b"x", "must be empty"),
+    ({"Content-Length": "0"}, b" ", "must be empty"),
+    ({"Content-Length": "0"}, b"{", "must be empty"),
+    ({"Content-Length": "0"}, b'{"jsonrpc":"2.0","id":2,"result":{}}', "must be empty"),
+])
+async def test_november_204_ack_requires_empty_headers_and_raw_body(preloaded, headers, content, error):
+    seen = []
+    stream = _TrackingStream([content, b"must not be read"] if content else [b""])
+    reply = httpx.Response(
+        204, headers=headers, **({"content": content} if preloaded else {"stream": stream}),
+    )
+    assert reply.is_stream_consumed is preloaded
+    normal = _wire(NOVEMBER, seen)
+
+    def handler(request):
+        response = normal(request)
+        return reply if seen[-1][1]["method"] == "notifications/initialized" else response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        call = HttpxMcpConnector(client=client).discover(
+            endpoint=ENDPOINT, auth=McpAuth(), context=replace(CONTEXT, protocol_version=NOVEMBER),
+        )
+        if error is None:
+            assert [tool.name for tool in await call] == ["forecast"]
+        else:
+            with pytest.raises(McpConnectionError, match=error):
+                await call
+    assert reply.is_closed
+    if not preloaded:
+        assert stream.closed
+        assert stream.reads == (0 if error == "content headers" else 1)
+    assert [body["method"] for _, body in seen] == [
+        "initialize", "notifications/initialized", *([] if error else ["tools/list"]),
+    ]
+
+
+@pytest.mark.parametrize(("protocol", "method"), [
+    (protocol, method) for protocol in PROTOCOLS
+    for method in ("initialize", "tools/list", "resources/list", "tools/call", "resources/read")
+    if protocol in STATEFUL or method != "initialize"
+] + [(MODERN, "server/discover")])
+@pytest.mark.parametrize("status", [200, 204])
+async def test_rpc_204_is_not_a_notification_ack(protocol, method, status):
+    seen = []
+    normal = _wire(protocol, seen)
+
+    def handler(request):
+        response = normal(request)
+        if seen[-1][1]["method"] == method and status == 204:
+            return httpx.Response(204, headers={"Content-Type": "application/json"})
+        return response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        connector = HttpxMcpConnector(client=client)
+        kwargs = {"endpoint": ENDPOINT, "auth": McpAuth(), "context": replace(CONTEXT, protocol_version=protocol)}
+        if method in ("initialize", "tools/list"):
+            call = connector.discover(**kwargs)
+        elif method == "resources/list":
+            call = connector.list_resources(**kwargs)
+        elif method == "resources/read":
+            call = connector.read_resource(**kwargs, uri=URI)
+        elif method == "tools/call":
+            call = connector.call_tool(**kwargs, tool="forecast", arguments={})
+        else:
+            call = connector.discover_server(**kwargs)
+        if status == 200:
+            assert await call is not None
+        else:
+            with pytest.raises(McpConnectionError, match="no JSON-RPC response"):
+                await call
+            assert not connector._cache
+    assert sum(body["method"] == method for _, body in seen) == 1
 
 
 @pytest.mark.parametrize("error_code", [-32020, -32021, -32022, -32601])
@@ -438,29 +568,65 @@ async def test_authenticated_connections_never_degrade_to_anonymous(protocol, cr
 
 
 class _WaitingStream(httpx.AsyncByteStream):
-    def __init__(self):
+    def __init__(self, chunk=b": started\n\n"):
+        self.chunk = chunk
         self.started = asyncio.Event()
+        self.release = asyncio.Event()
         self.closed = False
 
     async def __aiter__(self):
-        yield b": started\n\n"
+        yield self.chunk
         self.started.set()
-        await asyncio.Event().wait()
+        await self.release.wait()
 
     async def aclose(self):
         self.closed = True
 
 
-@pytest.mark.parametrize("protocol", PROTOCOLS)
+@pytest.mark.parametrize("finished", [False, True])
+async def test_november_204_ack_wait_is_bounded_and_closes_stream(finished):
+    seen = []
+    stream = _WaitingStream(chunk=b"")
+    if finished:
+        stream.release.set()
+    normal = _wire(NOVEMBER, seen)
+
+    def handler(request):
+        response = normal(request)
+        if seen[-1][1]["method"] == "notifications/initialized":
+            return httpx.Response(204, stream=stream)
+        return response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        call = HttpxMcpConnector(client=client, timeout_s=0.05).discover(
+            endpoint=ENDPOINT, auth=McpAuth(), context=replace(CONTEXT, protocol_version=NOVEMBER),
+        )
+        if finished:
+            assert [tool.name for tool in await call] == ["forecast"]
+        else:
+            with pytest.raises(McpConnectionError, match="transport error"):
+                await call
+    assert stream.started.is_set()
+    assert stream.closed
+    assert [body["method"] for _, body in seen] == [
+        "initialize", "notifications/initialized", *(["tools/list"] if finished else []),
+    ]
+
+
+@pytest.mark.parametrize(("protocol", "notification_status"), [
+    (LEGACY, 202), (NOVEMBER, 202), (NOVEMBER, 204), (MODERN, 202),
+])
 @pytest.mark.parametrize("cancel", [False, True])
-async def test_cancellation_and_total_timeout_close_stream_without_replay(protocol, cancel):
+async def test_cancellation_and_total_timeout_close_stream_without_replay(
+    protocol, notification_status, cancel, caplog,
+):
     seen = []
     stream = _WaitingStream()
     auth = McpAuth(McpAuthMode.api_key, "cancellation-key")
     def response(_request, _body):
         return httpx.Response(200, stream=stream, headers={"Content-Type": "text/event-stream"})
     async with httpx.AsyncClient(transport=httpx.MockTransport(
-        _wire(protocol, seen, response=response, auth=auth)
+        _wire(protocol, seen, response=response, auth=auth, notification_status=notification_status)
     )) as client:
         connector = HttpxMcpConnector(client=client, timeout_s=1 if cancel else 0.05)
         task = asyncio.create_task(connector.call_tool(
@@ -481,6 +647,7 @@ async def test_cancellation_and_total_timeout_close_stream_without_replay(protoc
     if protocol in STATEFUL:
         assert methods[-1] == "notifications/cancelled"
         assert seen[-1][1]["params"] == {"requestId": 2}
+        assert "cancellation notification could not be delivered" not in caplog.text
     else:
         assert methods == ["tools/call"]
 
