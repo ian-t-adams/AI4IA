@@ -67,6 +67,14 @@ and an explicit allocation decision.
 Capacity limits throughput. It does not grant an upstream entitlement, make a
 model tool-capable, enable an unsupported API, or guarantee low latency.
 
+Use the [read-only capacity evidence report](runbooks/deploy-to-azure.md#read-only-capacity-and-usage-evidence)
+to collect dated live allocations, raw quota/platform observations and bounded
+per-deployment request/token counts. It keeps measured zero distinct from missing
+samples, never sums unlike units, and does not infer pool identity from processing
+geography or the catalog's maximum declarations. Optional reviewed pool
+assertions are explicitly operator-supplied, not authorization to change capacity.
+No production-critical selection, reserve policy or production profile is implied.
+
 ## Model capabilities and provider paths
 
 Models are not interchangeable simply because they accept text.

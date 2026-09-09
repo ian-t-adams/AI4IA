@@ -851,10 +851,10 @@ models-swedencentral  DeploymentFailed
   capacity 0. The current quota usage is 2 and the quota limit is 2.
 ```
 
-**Model quota is subscription-wide, not per-region — the usage API just reports it per
-region.** This is the single most misleading thing about diagnosing it. `az cognitiveservices
-usage list -l <region>` replicates one subscription-wide aggregate into *every* region's
-response, so the same counter reads identically everywhere:
+**In this MAI incident, quota was subscription-wide, not independent in each
+region.** This is not a universal rule for every model or publisher.
+`az cognitiveservices usage list -l <region>` returned the same counter in every
+queried region:
 
 ```powershell
 foreach ($r in 'eastus2','swedencentral','westus') {
@@ -872,15 +872,18 @@ of two regions is fine region-by-region (2 ≤ 2 twice) but it is 4 against a sh
 2. Whichever region ARM reaches first wins and the other dies. **This is deterministic —
 re-running only changes which region loses.**
 
-Enforcement is not uniform, and the difference matters:
+Enforcement is not uniform. These are specific observed examples, not a
+publisher-wide scope authority:
 
-| Publisher | Enforced | Evidence |
+| Observed model family | Enforced in this incident | Evidence |
 | --- | --- | --- |
-| `AIServices.*` (Microsoft) | subscription-wide | MAI-Image-2.5/-Flash/-Pro deployed in westus, then failed in swedencentral |
-| `OpenAI.*` | per region | `gpt-image-1.5` holds a full 9-capacity deployment in eastus2 **and** swedencentral — 18 against a limit of 9, both succeeded |
+| MAI image deployments (`AIServices` counters) | subscription-wide | MAI-Image-2.5/-Flash/-Pro deployed in westus, then failed in swedencentral |
+| `gpt-image-1.5` (`OpenAI` counter) | per region | Full 9-capacity deployment in eastus2 **and** swedencentral — 18 against a limit of 9, both succeeded |
 
-`check-model-availability.py` encodes exactly that: a multi-region overcommit is an **error**
-for non-OpenAI models and a **warning** for OpenAI ones. The azd `preprovision` hook runs
+`check-model-availability.py` uses a conservative publisher-based preflight:
+a multi-region overcommit is an **error** for non-OpenAI models and a **warning**
+for OpenAI ones. That heuristic is not fresh evidence of a pool's identity.
+The azd `preprovision` hook runs
 the full check without `--skip-quota`; missing Azure CLI credentials or a CLI subscription
 that differs from `AZURE_SUBSCRIPTION_ID` fails before resource creation.
 
@@ -896,9 +899,16 @@ that differs from `AZURE_SUBSCRIPTION_ID` fails before resource creation.
    are in case 1 and re-running will not help. Models whose `capacity` equals their `limit`
    have zero headroom and are the ones exposed to this; the preflight warns about each.
 
-Do **not** treat a saturated `currentValue` in one region as proof of anything by itself. It
-is a subscription-wide aggregate, it is clamped to the limit (`gpt-image-1.5` shows `9/9`
-while 18 units are deployed), and it moves during a provision.
+Do **not** treat a saturated `currentValue` in one region as proof of scope by
+itself. A replica or clamp can hide the allocation boundary (`gpt-image-1.5`
+showed `9/9` while 18 units were deployed), and counters move during provision.
+Equal regional values do not prove a shared global pool, either.
+
+For a dated, read-only allocation/usage review, use
+[capacity evidence collection](./deploy-to-azure.md#read-only-capacity-and-usage-evidence).
+That reporter keeps raw counter observations separate from operator-asserted
+pool arithmetic, includes quota usage outside matched catalog allocation, and
+never interprets missing metrics as permission to downsize or remove a model.
 
 Remember ARM aborts the whole `models-<region>` nested deployment at the first failure, so
 one error hides the rest. Re-running the preflight after a failure is the cheapest way to see
