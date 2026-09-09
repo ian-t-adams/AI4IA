@@ -115,7 +115,7 @@ def test_create_connection_failure_is_502():
     assert resp.status_code == 502, resp.text
 
 
-@pytest.mark.parametrize("protocol", ["2025-06-18", "2026-07-28"])
+@pytest.mark.parametrize("protocol", ["2025-06-18", "2025-11-25", "2026-07-28"])
 def test_protocol_selection_round_trips_and_old_updates_preserve_it(protocol):
     c = _enabled_client()
     try:
@@ -140,7 +140,7 @@ def test_protocol_selection_round_trips_and_old_updates_preserve_it(protocol):
         c.__exit__(None, None, None)
 
 
-@pytest.mark.parametrize("protocol", ["auto", "2025-11-25", "2099-01-01", None, 20260728])
+@pytest.mark.parametrize("protocol", ["auto", "2025-03-26", "2099-01-01", None, 20260728])
 def test_unsupported_protocol_is_rejected_before_discovery(protocol):
     c = _enabled_client()
     try:

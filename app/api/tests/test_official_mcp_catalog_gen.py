@@ -140,17 +140,20 @@ def test_schema_accepts_toolbox_entry_and_rejects_unknown_fields():
         jsonschema.validate({"servers": [{**_TOOLBOX_ENTRY, "bogus": 1}]}, schema)
 
 
-@pytest.mark.parametrize("protocol", ["2025-06-18", "2026-07-28"])
+@pytest.mark.parametrize("protocol", ["2025-06-18", "2025-11-25", "2026-07-28"])
 def test_generator_and_dev_projection_preserve_explicit_protocol(protocol):
+    import jsonschema
+
     from ai4ia_api.official_mcp_catalog import OfficialMcpCatalog, _project_infra_catalog
 
     raw = {"servers": [{**_TOOLBOX_ENTRY, "protocolVersion": protocol}]}
     generated = _build_catalog()(raw)
     assert generated["servers"] == _project_infra_catalog(raw)["servers"]
     assert OfficialMcpCatalog(**generated).servers[0].protocolVersion.value == protocol
+    jsonschema.validate(raw, json.loads(_SCHEMA.read_text(encoding="utf-8")))
 
 
-@pytest.mark.parametrize("protocol", ["auto", "2025-11-25", "2099-01-01"])
+@pytest.mark.parametrize("protocol", ["auto", "2025-03-26", "2099-01-01"])
 def test_schema_and_generator_reject_unimplemented_protocol(protocol):
     import jsonschema
 

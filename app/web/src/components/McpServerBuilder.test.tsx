@@ -55,35 +55,41 @@ afterEach(() => {
 });
 
 describe("McpServerBuilder", () => {
-  it("keeps legacy as the default and submits stateless only after explicit selection", async () => {
-    const user = userEvent.setup();
-    mocks.createMcpServer.mockResolvedValue({ ...SERVER, protocolVersion: "2026-07-28" });
-    render(<McpServerBuilder />);
-    expect(screen.getByRole("combobox", { name: "MCP protocol" })).toHaveValue("2025-06-18");
-    await user.type(screen.getByLabelText("Name"), "weather");
-    await user.type(screen.getByLabelText("Endpoint URL (https)"), SERVER.endpoint);
-    await user.selectOptions(screen.getByRole("combobox", { name: "MCP protocol" }), "2026-07-28");
-    await user.click(screen.getByRole("button", { name: "Connect & save" }));
-    await waitFor(() => expect(mocks.createMcpServer).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "weather", protocolVersion: "2026-07-28" }),
-    ));
-  });
+  it.each(["2025-11-25", "2026-07-28"] as const)(
+    "keeps legacy as the default and submits %s only after explicit selection",
+    async (protocolVersion) => {
+      const user = userEvent.setup();
+      mocks.createMcpServer.mockResolvedValue({ ...SERVER, protocolVersion });
+      render(<McpServerBuilder />);
+      expect(screen.getByRole("combobox", { name: "MCP protocol" })).toHaveValue("2025-06-18");
+      await user.type(screen.getByLabelText("Name"), "weather");
+      await user.type(screen.getByLabelText("Endpoint URL (https)"), SERVER.endpoint);
+      await user.selectOptions(screen.getByRole("combobox", { name: "MCP protocol" }), protocolVersion);
+      await user.click(screen.getByRole("button", { name: "Connect & save" }));
+      await waitFor(() => expect(mocks.createMcpServer).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "weather", protocolVersion }),
+      ));
+    },
+  );
 
-  it("preserves a saved stateless selection when changing standing tool approval", async () => {
-    const user = userEvent.setup();
-    const modern: UserMcpServer = { ...SERVER, protocolVersion: "2026-07-28" };
-    mocks.listMcpServers.mockResolvedValue([modern]);
-    mocks.updateMcpServer.mockResolvedValue(modern);
-    render(<McpServerBuilder />);
-    await user.click(await screen.findByRole("button", { name: /Weather/ }));
-    expect(screen.getByRole("combobox", { name: "MCP protocol" })).toHaveValue("2026-07-28");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Approval" }), "never");
-    await waitFor(() => expect(mocks.updateMcpServer).toHaveBeenCalledWith("weather",
-      expect.objectContaining({
-        protocolVersion: "2026-07-28", toolApprovals: { forecast: "never" },
-      }),
-    ));
-  });
+  it.each(["2025-11-25", "2026-07-28"] as const)(
+    "preserves a saved %s selection when changing standing tool approval",
+    async (protocolVersion) => {
+      const user = userEvent.setup();
+      const saved: UserMcpServer = { ...SERVER, protocolVersion };
+      mocks.listMcpServers.mockResolvedValue([saved]);
+      mocks.updateMcpServer.mockResolvedValue(saved);
+      render(<McpServerBuilder />);
+      await user.click(await screen.findByRole("button", { name: /Weather/ }));
+      expect(screen.getByRole("combobox", { name: "MCP protocol" })).toHaveValue(protocolVersion);
+      await user.selectOptions(screen.getByRole("combobox", { name: "Approval" }), "never");
+      await waitFor(() => expect(mocks.updateMcpServer).toHaveBeenCalledWith("weather",
+        expect.objectContaining({
+          protocolVersion, toolApprovals: { forecast: "never" },
+        }),
+      ));
+    },
+  );
 
   it("interprets an older server response without a protocol field as legacy", async () => {
     render(<McpServerBuilder />);

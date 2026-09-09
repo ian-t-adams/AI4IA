@@ -1,8 +1,9 @@
-"""Bounded MCP 2026-07-28 request metadata and schema-derived HTTP headers.
+"""Versioned MCP HTTP headers and bounded stateless request metadata.
 
 Contracts: specification/2026-07-28/basic/transports/streamable-http and
-schema/2026-07-28/schema.ts in modelcontextprotocol/specification. These helpers
-do not discover destinations, grant capabilities, or fetch schema references.
+schema/2026-07-28/schema.ts in modelcontextprotocol/specification, plus the
+2025-11-25/basic/transports stateful version header. These helpers do not discover
+destinations, grant capabilities, or fetch schema references.
 """
 from __future__ import annotations
 
@@ -211,7 +212,7 @@ def request_headers(
             raise McpConnectionError("tools/call: invalid name or arguments.")
     if method == "resources/read":
         validate_resource_uri(params.get("uri"))
-    if protocol is McpProtocolVersion.legacy:
+    if protocol is not McpProtocolVersion.stateless:
         if method == "server/discover":
             raise McpConnectionError("server/discover requires MCP 2026-07-28.")
         return {} if method == "initialize" else {"MCP-Protocol-Version": protocol.value}

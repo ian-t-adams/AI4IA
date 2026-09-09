@@ -1,6 +1,6 @@
-"""Versioned wire contracts verified against the official 2026-07-28 schema.
+"""Versioned wire contracts for the June/November 2025 and July 2026 protocols.
 
-Legacy/modern controls use the same transport fixture, not a second MCP stack.
+Stateful/stateless controls use the same transport fixture, not a second MCP stack.
 No real DNS, upstream, credential, or model calls are made.
 """
 from __future__ import annotations
@@ -33,7 +33,10 @@ from ai4ia_api.agents.mcp_servers import McpAuthMode, McpConnectionError, McpPro
 from tests.test_mcp_client import _MockInnerConnector, _TrackingStream
 
 LEGACY = McpProtocolVersion.legacy
+NOVEMBER = McpProtocolVersion.stateful_2025_11_25
 MODERN = McpProtocolVersion.stateless
+STATEFUL = (LEGACY, NOVEMBER)
+PROTOCOLS = (*STATEFUL, MODERN)
 ENDPOINT = "https://mcp.example.com/rpc"
 URI = "skill://evidence-review/SKILL.md"
 SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}}
@@ -56,18 +59,31 @@ def _wire(protocol, seen, *, response=None, sse=False, auth=None):
         if auth is not None:
             for name, value in auth.headers().items():
                 assert request.headers[name] == value
-        if method == "initialize":
-            assert protocol is LEGACY
-            assert body["params"]["protocolVersion"] == LEGACY.value
+        if protocol in STATEFUL:
+            assert "_meta" not in body.get("params", {})
+            assert "resultType" not in body
             assert "mcp-method" not in request.headers
+            assert "mcp-name" not in request.headers
+            assert "last-event-id" not in request.headers
+            assert not any(name.startswith("mcp-param-") for name in request.headers)
+        if method == "initialize":
+            assert protocol in STATEFUL
+            assert body["params"] == {
+                "protocolVersion": protocol.value, "capabilities": {}, "clientInfo": CLIENT_INFO,
+            }
             return httpx.Response(200, json={
                 "jsonrpc": "2.0", "id": body["id"],
-                "result": {"protocolVersion": LEGACY.value, "capabilities": {"tools": {}}},
-            }, headers={"Mcp-Session-Id": "legacy-session"})
+                "result": {"protocolVersion": protocol.value, "capabilities": {"tools": {}, "resources": {}}},
+            }, headers={"Mcp-Session-Id": "legacy-session", "MCP-Protocol-Version": protocol.value})
         if method.startswith("notifications/"):
-            assert protocol is LEGACY
+            assert protocol in STATEFUL
+            assert method in ("notifications/initialized", "notifications/cancelled")
+            assert "id" not in body
+            assert request.headers["MCP-Protocol-Version"] == protocol.value
             assert request.headers["Mcp-Session-Id"] == "legacy-session"
-            return httpx.Response(202)
+            return httpx.Response(202, headers={
+                "MCP-Protocol-Version": protocol.value, "Mcp-Session-Id": "legacy-session",
+            })
         if protocol is MODERN:
             assert body["params"]["_meta"] == {
                 PROTOCOL_META: MODERN.value,
@@ -84,7 +100,7 @@ def _wire(protocol, seen, *, response=None, sse=False, auth=None):
                 assert request.headers["Mcp-Name"] == encode_header_value(body["params"]["uri"])
         else:
             assert "_meta" not in body["params"]
-            assert request.headers["MCP-Protocol-Version"] == LEGACY.value
+            assert request.headers["MCP-Protocol-Version"] == protocol.value
             assert request.headers["Mcp-Session-Id"] == "legacy-session"
             assert "mcp-method" not in request.headers
             assert "mcp-name" not in request.headers
@@ -115,14 +131,14 @@ def _wire(protocol, seen, *, response=None, sse=False, auth=None):
     return handler
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 @pytest.mark.parametrize("sse", [False, True])
 @pytest.mark.parametrize("auth", [
     McpAuth(), McpAuth(McpAuthMode.bearer, "test-token"),
     McpAuth(McpAuthMode.api_key, "test-key"),
     McpAuth(McpAuthMode.apim_subscription, "test-subscription"),
 ])
-async def test_both_protocols_discover_read_and_call_with_request_scoped_auth(protocol, sse, auth):
+async def test_all_protocols_discover_read_and_call_with_request_scoped_auth(protocol, sse, auth):
     seen = []
     context = replace(CONTEXT, protocol_version=protocol)
     async with httpx.AsyncClient(transport=httpx.MockTransport(
@@ -148,7 +164,7 @@ async def test_both_protocols_discover_read_and_call_with_request_scoped_auth(pr
             tool="forecast", arguments={"city": "SEA"}, input_schema=SCHEMA,
         )).content == "Sunny"
     methods = [body["method"] for _, body in seen]
-    if protocol is LEGACY:
+    if protocol in STATEFUL:
         assert methods == [
             method for operation in ("tools/list", "resources/list", "resources/read", "tools/call")
             for method in ("initialize", "notifications/initialized", operation)
@@ -157,13 +173,15 @@ async def test_both_protocols_discover_read_and_call_with_request_scoped_auth(pr
         assert methods == ["server/discover", "tools/list", "resources/list", "resources/read", "tools/call"]
 
 
-@pytest.mark.parametrize("version", [LEGACY.value, None, MODERN.value, "1900-01-01"])
-async def test_legacy_initialize_must_agree_before_notification_or_tool_call(version):
+@pytest.mark.parametrize("protocol", STATEFUL)
+@pytest.mark.parametrize("version", [LEGACY.value, NOVEMBER.value, None, MODERN.value, "1900-01-01"])
+async def test_stateful_initialize_must_agree_before_notification_or_tool_call(protocol, version):
     seen = []
 
     def handler(request):
         if json.loads(request.content)["method"] == "initialize":
             seen.append((request, json.loads(request.content)))
+            assert seen[-1][1]["params"]["protocolVersion"] == protocol.value
             result = {"capabilities": {"tools": {}}}
             if version is not None:
                 result["protocolVersion"] = version
@@ -179,16 +197,17 @@ async def test_legacy_initialize_must_agree_before_notification_or_tool_call(ver
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         connector = HttpxMcpConnector(client=client)
-        if version == LEGACY.value:
-            assert len(await connector.discover(endpoint=ENDPOINT, auth=McpAuth())) == 1
+        context = replace(CONTEXT, protocol_version=protocol)
+        if version == protocol.value:
+            assert len(await connector.discover(endpoint=ENDPOINT, auth=McpAuth(), context=context)) == 1
             assert len(seen) == 3
         else:
             with pytest.raises(McpConnectionError, match="protocol"):
-                await connector.discover(endpoint=ENDPOINT, auth=McpAuth())
+                await connector.discover(endpoint=ENDPOINT, auth=McpAuth(), context=context)
             assert len(seen) == 1
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 @pytest.mark.parametrize("status", [200, 400, 401, 403, 404, 429, 500])
 async def test_errors_never_switch_protocol_replay_tools_or_drop_auth(protocol, status):
     seen = []
@@ -220,7 +239,96 @@ async def test_errors_never_switch_protocol_replay_tools_or_drop_auth(protocol, 
                     await call
                 assert "must-not-surface" not in str(error.value)
             assert sum(body["method"] == "tools/call" for _, body in seen) == attempt + 1
-    assert len(seen) == (6 if protocol is LEGACY else 2)
+    assert len(seen) == (6 if protocol in STATEFUL else 2)
+
+
+@pytest.mark.parametrize("protocol", STATEFUL)
+@pytest.mark.parametrize("fault", [None, "version-header", "version-meta", "version-result", "session"])
+async def test_stateful_rpc_rejects_contradictory_protocol_and_session(protocol, fault):
+    seen = []
+    other = NOVEMBER if protocol is LEGACY else LEGACY
+
+    def response(_request, body):
+        result = {"content": [{"type": "text", "text": "ok"}]}
+        headers = {"MCP-Protocol-Version": protocol.value, "Mcp-Session-Id": "legacy-session"}
+        if fault == "version-header":
+            headers["MCP-Protocol-Version"] = other.value
+        elif fault == "version-meta":
+            result["_meta"] = {PROTOCOL_META: other.value}
+        elif fault == "version-result":
+            result["protocolVersion"] = other.value
+        elif fault == "session":
+            headers["Mcp-Session-Id"] = "another-session"
+        return httpx.Response(200, headers=headers, json={
+            "jsonrpc": "2.0", "id": body["id"], "result": result,
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        _wire(protocol, seen, response=response)
+    )) as client:
+        call = HttpxMcpConnector(client=client).call_tool(
+            endpoint=ENDPOINT, auth=McpAuth(), tool="forecast", arguments={},
+            context=replace(CONTEXT, protocol_version=protocol),
+        )
+        if fault is None:
+            assert (await call).content == "ok"
+        else:
+            with pytest.raises(McpConnectionError, match="contradictory"):
+                await call
+    assert [body["method"] for _, body in seen] == [
+        "initialize", "notifications/initialized", "tools/call",
+    ]
+
+
+@pytest.mark.parametrize("protocol", STATEFUL)
+@pytest.mark.parametrize("notification", ["notifications/initialized", "notifications/cancelled"])
+@pytest.mark.parametrize("fault", [None, "version", "session"])
+async def test_stateful_notifications_validate_configured_version_and_session(
+    protocol, notification, fault, caplog,
+):
+    seen = []
+    other = NOVEMBER if protocol is LEGACY else LEGACY
+    auth = McpAuth(McpAuthMode.apim_subscription, "notification-key")
+
+    def response(request, body):
+        if notification == "notifications/cancelled":
+            raise httpx.ReadTimeout("synthetic timeout", request=request)
+        return httpx.Response(200, json={
+            "jsonrpc": "2.0", "id": body["id"], "result": {"content": [{"type": "text", "text": "ok"}]},
+        })
+
+    normal = _wire(protocol, seen, response=response, auth=auth)
+
+    def handler(request):
+        reply = normal(request)
+        if json.loads(request.content)["method"] == notification:
+            if fault == "version":
+                reply.headers["MCP-Protocol-Version"] = other.value
+            elif fault == "session":
+                reply.headers["Mcp-Session-Id"] = "another-session"
+        return reply
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        call = HttpxMcpConnector(client=client).call_tool(
+            endpoint=ENDPOINT, auth=auth, tool="forecast", arguments={},
+            context=replace(CONTEXT, protocol_version=protocol),
+        )
+        if notification == "notifications/cancelled":
+            with pytest.raises(McpConnectionError, match="timed out"):
+                await call
+            assert seen[-1][1] == {
+                "jsonrpc": "2.0", "method": notification, "params": {"requestId": 2},
+            }
+            assert ("cancellation notification could not be delivered" in caplog.text) is (fault is not None)
+        elif fault is not None:
+            with pytest.raises(McpConnectionError, match="contradictory"):
+                await call
+            assert [body["method"] for _, body in seen] == ["initialize", notification]
+        else:
+            assert (await call).content == "ok"
+    assert sum(body["method"] == "tools/call" for _, body in seen) == (
+        0 if notification == "notifications/initialized" and fault else 1
+    )
 
 
 @pytest.mark.parametrize("error_code", [-32020, -32021, -32022, -32601])
@@ -308,7 +416,7 @@ async def test_modern_contradictory_responses_fail_visibly(fault):
     assert len(seen) == 1
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 @pytest.mark.parametrize("credential", [None, "", "bad\r\nvalue", "valid-credential"])
 async def test_authenticated_connections_never_degrade_to_anonymous(protocol, credential):
     seen = []
@@ -343,7 +451,7 @@ class _WaitingStream(httpx.AsyncByteStream):
         self.closed = True
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_cancellation_and_total_timeout_close_stream_without_replay(protocol, cancel):
     seen = []
@@ -370,14 +478,14 @@ async def test_cancellation_and_total_timeout_close_stream_without_replay(protoc
     assert stream.closed
     methods = [body["method"] for _, body in seen]
     assert methods.count("tools/call") == 1
-    if protocol is LEGACY:
+    if protocol in STATEFUL:
         assert methods[-1] == "notifications/cancelled"
         assert seen[-1][1]["params"] == {"requestId": 2}
     else:
         assert methods == ["tools/call"]
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 async def test_stream_returns_on_final_result_without_waiting_for_disconnect(protocol):
     seen = []
     payload = {"jsonrpc": "2.0", "id": 2, "result": _result(protocol, tools=[TOOL])}
@@ -399,7 +507,7 @@ async def test_stream_returns_on_final_result_without_waiting_for_disconnect(pro
     assert stream.closed
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 @pytest.mark.parametrize("private", [False, True])
 async def test_dns_pin_uses_public_control_and_denies_rebinding_before_http(protocol, private):
     seen = []
@@ -558,8 +666,9 @@ async def test_discovery_filters_only_invalid_annotated_tools_and_keeps_safe_con
     assert "unsafe parameter-header schema" in caplog.text
 
 
+@pytest.mark.parametrize("stateful", STATEFUL)
 @pytest.mark.parametrize("cache_scope", ["private", "public"])
-async def test_list_cache_never_crosses_owner_auth_endpoint_server_protocol_or_config(cache_scope):
+async def test_list_cache_never_crosses_owner_auth_endpoint_server_protocol_or_config(cache_scope, stateful):
     seen = []
     def response(_request, body):
         return httpx.Response(200, json={
@@ -590,14 +699,15 @@ async def test_list_cache_never_crosses_owner_auth_endpoint_server_protocol_or_c
         # No auth values or approvals are retained in a cache key.
         assert "auth-a" not in repr(list(connector._cache))
         assert "auth-b" not in repr(list(connector._cache))
-        legacy_seen = []
-        client._transport = httpx.MockTransport(_wire(LEGACY, legacy_seen))
+        stateful_seen = []
+        client._transport = httpx.MockTransport(_wire(stateful, stateful_seen))
         await connector.discover(
-            endpoint=ENDPOINT, auth=auth, context=replace(CONTEXT, protocol_version=LEGACY)
+            endpoint=ENDPOINT, auth=auth, context=replace(CONTEXT, protocol_version=stateful)
         )
-        assert [body["method"] for _, body in legacy_seen] == [
+        assert [body["method"] for _, body in stateful_seen] == [
             "initialize", "notifications/initialized", "tools/list",
         ]
+        assert all(key[0].protocol_version is MODERN for key in connector._cache)
 
 
 @pytest.mark.parametrize("ttl", [None, -1, 0, 100, 10**12])
@@ -723,8 +833,8 @@ async def test_concurrent_stateless_requests_have_distinct_ids_and_matching_resp
     assert {result.content for result in results} == {str(value) for value in ids}
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
-async def test_transport_read_timeout_cancels_legacy_without_tool_replay(protocol):
+@pytest.mark.parametrize("protocol", PROTOCOLS)
+async def test_transport_read_timeout_cancels_stateful_without_tool_replay(protocol):
     seen = []
     def response(request, _body):
         raise httpx.ReadTimeout("token=never-log", request=request)
@@ -739,7 +849,7 @@ async def test_transport_read_timeout_cancels_legacy_without_tool_replay(protoco
     assert "never-log" not in str(error.value)
     methods = [body["method"] for _, body in seen]
     assert methods.count("tools/call") == 1
-    assert ("notifications/cancelled" in methods) is (protocol is LEGACY)
+    assert ("notifications/cancelled" in methods) is (protocol in STATEFUL)
 
 
 @pytest.mark.parametrize("fits", [False, True])
@@ -758,9 +868,9 @@ async def test_cache_serialized_byte_budget_evicts_only_when_needed(monkeypatch,
         assert len(seen) == 2
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 @pytest.mark.parametrize("fits", [False, True])
-async def test_raw_response_bounds_close_both_protocols_without_overreading(protocol, fits):
+async def test_raw_response_bounds_close_all_protocols_without_overreading(protocol, fits):
     seen = []
     payload = {"jsonrpc": "2.0", "id": 2, "result": _result(
         protocol, content=[{"type": "text", "text": "x" * 2000}],
@@ -787,7 +897,7 @@ async def test_raw_response_bounds_close_both_protocols_without_overreading(prot
     assert stream.closed
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 async def test_redirects_cannot_reach_another_host_even_with_redirect_enabled_test_client(protocol):
     seen = []
     def response(_request, _body):
@@ -804,9 +914,12 @@ async def test_redirects_cannot_reach_another_host_even_with_redirect_enabled_te
     assert sum(body["method"] == "tools/call" for _, body in seen) == 1
 
 
+@pytest.mark.parametrize("protocol", STATEFUL)
 @pytest.mark.parametrize("operation", ["tools/list", "resources/list"])
 @pytest.mark.parametrize("session_bound", [False, True])
-async def test_legacy_pagination_keeps_session_scoped_cursors_and_distinct_request_ids(operation, session_bound):
+async def test_stateful_pagination_keeps_session_scoped_cursors_and_distinct_request_ids(
+    protocol, operation, session_bound,
+):
     requests = []
     initialized = []
     lookups = []
@@ -821,8 +934,10 @@ async def test_legacy_pagination_keeps_session_scoped_cursors_and_distinct_reque
             initialized.append(session)
             return httpx.Response(200, headers={"Mcp-Session-Id": session}, json={
                 "jsonrpc": "2.0", "id": body["id"],
-                "result": {"protocolVersion": LEGACY.value, "capabilities": {"tools": {}, "resources": {}}},
+                "result": {"protocolVersion": protocol.value, "capabilities": {"tools": {}, "resources": {}}},
             })
+        assert request.headers["MCP-Protocol-Version"] == protocol.value
+        assert "_meta" not in body.get("params", {})
         if method == "notifications/initialized":
             return httpx.Response(202)
         assert method == operation
@@ -852,7 +967,9 @@ async def test_legacy_pagination_keeps_session_scoped_cursors_and_distinct_reque
             return client
     connector = Connector(handler, resolver=resolver)
     method = connector.discover if operation == "tools/list" else connector.list_resources
-    result = await method(endpoint=ENDPOINT, auth=auth)
+    result = await method(
+        endpoint=ENDPOINT, auth=auth, context=replace(CONTEXT, protocol_version=protocol),
+    )
     assert [item.name for item in result] == ["first", "second"]
     if session_bound:
         assert initialized == ["session-1"]
@@ -861,7 +978,49 @@ async def test_legacy_pagination_keeps_session_scoped_cursors_and_distinct_reque
     assert len(clients) == 1 and clients[0].is_closed
 
 
-async def test_legacy_pagination_item_cap_closes_owned_client_without_fetching_another_page():
+@pytest.mark.parametrize("protocol", STATEFUL)
+@pytest.mark.parametrize("operation", ["tools/list", "resources/list"])
+@pytest.mark.parametrize("fault", [None, "repeat", "page-limit"])
+async def test_stateful_pagination_bounds_and_cache_hints_never_escape_session(protocol, operation, fault):
+    seen = []
+
+    def response(_request, body):
+        page = body["id"] - 2
+        fields = (
+            {"tools": [{**TOOL, "name": f"tool-{page}"}]} if operation == "tools/list"
+            else {"resources": [{"uri": f"skill://resource-{page}/SKILL.md"}]}
+        )
+        if not page or fault:
+            fields["nextCursor"] = "repeated" if fault == "repeat" else f"cursor-{page + 1}"
+        return httpx.Response(200, json={
+            "jsonrpc": "2.0", "id": body["id"],
+            "result": {**fields, "ttlMs": 1000, "cacheScope": "public"},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        _wire(protocol, seen, response=response)
+    )) as client:
+        connector = HttpxMcpConnector(client=client)
+        method = connector.discover if operation == "tools/list" else connector.list_resources
+        context = replace(CONTEXT, protocol_version=protocol)
+        if fault is None:
+            for _ in range(2):
+                assert len(await method(endpoint=ENDPOINT, auth=McpAuth(), context=context)) == 2
+            assert [body["method"] for _, body in seen] == [
+                "initialize", "notifications/initialized", operation, operation,
+            ] * 2
+        else:
+            with pytest.raises(McpConnectionError, match="cursor|pagination"):
+                await method(endpoint=ENDPOINT, auth=McpAuth(), context=context)
+            pages = [body for _, body in seen if body["method"] == operation]
+            assert len(pages) == (2 if fault == "repeat" else mcp_client.MAX_LIST_PAGES)
+            assert len(seen) == len(pages) + 2
+        assert not connector._cache
+        assert connector._cache_bytes == 0
+
+
+@pytest.mark.parametrize("protocol", STATEFUL)
+async def test_stateful_pagination_item_cap_closes_owned_client_without_fetching_another_page(protocol):
     clients = []
     seen = []
     def response(_request, body):
@@ -875,7 +1034,9 @@ async def test_legacy_pagination_item_cap_closes_owned_client_without_fetching_a
             client = super()._new_client(pinned_ip)
             clients.append(client)
             return client
-    connector = Connector(_wire(LEGACY, seen, response=response), resolver=lambda _host: ["93.184.216.34"])
-    assert len(await connector.discover(endpoint=ENDPOINT, auth=McpAuth())) == 50
+    connector = Connector(_wire(protocol, seen, response=response), resolver=lambda _host: ["93.184.216.34"])
+    assert len(await connector.discover(
+        endpoint=ENDPOINT, auth=McpAuth(), context=replace(CONTEXT, protocol_version=protocol),
+    )) == 50
     assert len(seen) == 3
     assert len(clients) == 1 and clients[0].is_closed

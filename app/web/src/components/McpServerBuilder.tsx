@@ -386,8 +386,9 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
             ))}
           </select>
           <p style={{ ...labelStyle, marginTop: 4 }}>
-            Use stateless only after verifying this server supports it. Saving reconnects
-            and changes the tool consent contract. Errors never switch protocols or replay calls.
+            Change versions only after verifying this server supports the selected protocol.
+            Saving reconnects and changes the tool consent contract.
+            Errors never switch protocols or replay calls.
           </p>
         </div>
 

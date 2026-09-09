@@ -10,9 +10,10 @@ the capability, not the transport: tests use :class:`FakeMcpConnector`, and the
 live :class:`HttpxMcpConnector`'s framing/auth/error handling is unit-tested
 with ``httpx.MockTransport`` (no live server required).
 
-The default 2025-06-18 flow remains ``initialize`` -> ``notifications/initialized``
--> request. Explicitly configured 2026-07-28 servers receive self-contained
-requests, without a session or handshake. Neither errors nor cache hints can
+The default 2025-06-18 and explicitly selected 2025-11-25 flows use
+``initialize`` -> ``notifications/initialized`` -> request. Explicitly configured
+2026-07-28 servers receive self-contained requests, without a session or handshake.
+Neither errors nor cache hints can
 change the configured version, grant capabilities, or replay a tool invocation.
 """
 from __future__ import annotations
@@ -404,7 +405,7 @@ class HttpxMcpConnector:
         self._validate_connection(auth, context)
         try:
             async with self._client_for(endpoint, method) as client:
-                # Legacy cursors belong to the initialized session. Keep both
+                # Stateful cursors belong to the initialized session. Keep both
                 # that session and its DNS-pinned client until pagination ends.
                 headers = await self._open_session(client, endpoint, auth, context)
                 for page in range(MAX_LIST_PAGES):
@@ -569,7 +570,7 @@ class HttpxMcpConnector:
             rpc_id=1,
             method="initialize",
             params={
-                "protocolVersion": PROTOCOL_VERSION,
+                "protocolVersion": context.protocol_version.value,
                 "capabilities": {},
                 "clientInfo": CLIENT_INFO,
             },
@@ -583,12 +584,14 @@ class HttpxMcpConnector:
         ):
             raise McpConnectionError("initialize: unsupported or contradictory protocol version.")
 
-        post_init = {**base_headers, "MCP-Protocol-Version": PROTOCOL_VERSION}
+        post_init = {**base_headers, "MCP-Protocol-Version": context.protocol_version.value}
         if init.session_id:
             post_init["Mcp-Session-Id"] = init.session_id
 
         # ``notifications/initialized`` is a fire-and-forget notification (no id).
-        await self._notify(client, endpoint, post_init, method="notifications/initialized")
+        await self._notify(
+            client, endpoint, post_init, method="notifications/initialized", context=context,
+        )
         return post_init
 
     # --- transport helpers ----------------------------------------------------
@@ -618,7 +621,7 @@ class HttpxMcpConnector:
         mirrors = request_headers(
             body, protocol=context.protocol_version, input_schema=input_schema, secret=auth.secret
         )
-        # Only the legacy handshake owns a session header. All routing mirrors
+        # Only a stateful handshake owns a session header. All routing mirrors
         # come from this body, not from callers or a previous request.
         headers = {
             name: value for name, value in headers.items()
@@ -666,13 +669,13 @@ class HttpxMcpConnector:
         except (asyncio.CancelledError, TimeoutError, httpx.TimeoutException) as exc:
             self.invalidate(context)
             if not modern and method != "initialize":
-                # Legacy disconnect is NOT cancellation. Signal the same request,
+                # Stateful disconnect is NOT cancellation. Signal the same request,
                 # with its auth/session, after the response stream has closed.
                 try:
                     async with asyncio.timeout(min(1.0, self._timeout_s)):
                         await self._notify(
                             client, endpoint, headers, method="notifications/cancelled",
-                            params={"requestId": rpc_id},
+                            params={"requestId": rpc_id}, context=context,
                         )
                 except (McpConnectionError, TimeoutError):
                     logger.warning("MCP cancellation notification could not be delivered.")
@@ -762,6 +765,7 @@ class HttpxMcpConnector:
         headers: dict[str, str],
         *,
         method: str,
+        context: McpRequestContext,
         params: dict[str, Any] | None = None,
     ) -> None:
         body: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
@@ -777,7 +781,7 @@ class HttpxMcpConnector:
                             f"{method}: server returned HTTP {resp.status_code}."
                         )
                     self._validate_response_headers(
-                        resp.headers, _LEGACY_CONTEXT, method, headers.get("Mcp-Session-Id")
+                        resp.headers, context, method, headers.get("Mcp-Session-Id")
                     )
         except SsrfError as exc:
             # Defense in depth: the pinned transport refused the target. The primary

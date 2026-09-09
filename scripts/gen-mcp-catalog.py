@@ -57,7 +57,7 @@ def build_catalog(raw: dict) -> dict:
         if mode == "managed_identity" and not entry.get("upstreamMiResource"):
             errors.append(f"{name}: upstreamMiResource is required when upstreamAuthMode == managed_identity")
         protocol = entry.get("protocolVersion", "2025-06-18")
-        if protocol not in ("2025-06-18", "2026-07-28"):
+        if protocol not in ("2025-06-18", "2025-11-25", "2026-07-28"):
             errors.append(f"{name}: unsupported protocolVersion")
         for header in entry.get("upstreamHeaders", {}):
             if header.lower().startswith("mcp-") or header.lower() == "last-event-id":

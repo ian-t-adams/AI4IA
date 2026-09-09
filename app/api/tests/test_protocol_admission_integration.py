@@ -13,15 +13,15 @@ from ai4ia_api.hard_quota.models import QuotaError
 from ai4ia_api.realtime_protocol import RealtimeProtocol
 from ai4ia_api.routers.realtime import DEV_SUBPROTOCOL, UpstreamMessage
 from tests.test_hard_quota_dispatch import Harness
-from tests.test_mcp_protocol import CONTEXT, ENDPOINT, LEGACY, MODERN, URI, _wire
+from tests.test_mcp_protocol import CONTEXT, ENDPOINT, MODERN, PROTOCOLS, STATEFUL, URI, _wire
 from tests.test_realtime_api import ScriptedRealtimeConnector, _client, _origin
 from tests.test_realtime_staged_api import GA_SETTINGS
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 @pytest.mark.parametrize("operation", ["tool", "resource"])
 @pytest.mark.parametrize("denial", ["requests", "tokens", "dollars", "storage", "owner"])
-async def test_both_mcp_eras_reserve_once_before_any_handshake_or_rpc(protocol, operation, denial):
+async def test_all_mcp_versions_reserve_once_before_any_handshake_or_rpc(protocol, operation, denial):
     harness = Harness()
     context = replace(CONTEXT, protocol_version=protocol, owner_id="alice")
     seen = []
@@ -62,7 +62,7 @@ async def test_both_mcp_eras_reserve_once_before_any_handshake_or_rpc(protocol, 
         assert result.content == "Sunny" if operation == "tool" else result.text == "Skill instructions"
         expected = "tools/call" if operation == "tool" else "resources/read"
         assert [body["method"] for _, body in seen] == (
-            ["initialize", "notifications/initialized", expected] if protocol is LEGACY else [expected]
+            ["initialize", "notifications/initialized", expected] if protocol in STATEFUL else [expected]
         )
         assert admission.evidence_count == 1
         assert len(admission.evidence) == 1
@@ -76,7 +76,7 @@ async def test_both_mcp_eras_reserve_once_before_any_handshake_or_rpc(protocol, 
         assert len(seen) == sent_count
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 async def test_mcp_frozen_arguments_and_derived_headers_remain_one_admitted_payload(protocol):
     harness = Harness()
     seen = []
