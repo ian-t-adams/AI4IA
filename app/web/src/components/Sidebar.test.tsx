@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Sidebar } from "./Sidebar";
+import { makeChatSession } from "./chatTestFixtures";
 
 vi.mock("./AdminLink", () => ({ AdminLink: () => null }));
 vi.mock("./UserMenu", () => ({ UserMenu: () => null }));
@@ -70,6 +71,7 @@ describe("responsive sidebar", () => {
                 onNewChat={vi.fn()}
                 onDelete={vi.fn()}
                 onRename={vi.fn()}
+                onOpenDeletionStatus={vi.fn()}
                 onOpenSettings={vi.fn()}
                 onOpenStudio={vi.fn()}
                 onCollapse={() => setOpen(false)}
@@ -148,5 +150,52 @@ describe("responsive sidebar", () => {
       await screen.findByRole("button", { name: "Open conversations" }),
     ).toHaveFocus();
     expect(dialog).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])("keeps deletion status reachable without bypassing navigation locks (locked=%s)", async (disabled) => {
+    const props = {
+      sessions: [makeChatSession("A"), makeChatSession("B")],
+      activeId: "A", onSelect: vi.fn(), onNewChat: vi.fn(), onDelete: vi.fn(),
+      onRename: vi.fn(), onOpenSettings: vi.fn(), onOpenStudio: vi.fn(),
+      onOpenDeletionStatus: vi.fn(), disabled,
+      disabledReason: "Wait for the current reply to finish generating.",
+    };
+    const user = userEvent.setup();
+    render(<Sidebar {...props} />);
+    await user.click(screen.getByRole("button", { name: "Deletion status" }));
+    expect(props.onOpenDeletionStatus).toHaveBeenCalledTimes(1);
+    expect(props.onSelect).not.toHaveBeenCalled();
+    expect(props.onDelete).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    await user.click(screen.getByRole("button", { name: "+ New chat" }));
+    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
+    expect(props.onSelect).toHaveBeenCalledTimes(disabled ? 0 : 1);
+    expect(props.onNewChat).toHaveBeenCalledTimes(disabled ? 0 : 1);
+    expect(props.onDelete).toHaveBeenCalledTimes(disabled ? 0 : 1);
+    if (disabled) {
+      expect(screen.getByRole("button", { name: "Delete Session A" })).toHaveAccessibleDescription(props.disabledReason);
+    }
+  });
+
+  it("disables only the in-flight deletion and leaves another conversation usable", async () => {
+    const props = {
+      sessions: [makeChatSession("A"), makeChatSession("B")],
+      activeId: "B", onSelect: vi.fn(), onNewChat: vi.fn(), onDelete: vi.fn(),
+      onRename: vi.fn(), onOpenSettings: vi.fn(), onOpenStudio: vi.fn(),
+      onOpenDeletionStatus: vi.fn(),
+    };
+    const user = userEvent.setup();
+    const view = render(<Sidebar {...props} deletingIds={new Set(["A"])} />);
+    const deleting = screen.getByRole("button", { name: "Delete Session A" });
+    expect(deleting).toBeDisabled();
+    expect(deleting).toHaveAttribute("aria-busy", "true");
+    await user.click(deleting);
+    expect(props.onDelete).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    expect(props.onSelect).toHaveBeenCalledExactlyOnceWith("B");
+    expect(screen.getByRole("button", { name: "Delete Session B" })).toBeEnabled();
+    view.rerender(<Sidebar {...props} deletingIds={new Set()} />);
+    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
+    expect(props.onDelete).toHaveBeenCalledExactlyOnceWith("A");
   });
 });

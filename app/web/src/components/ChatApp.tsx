@@ -22,6 +22,7 @@ import type {
   AttachmentCapabilities,
   ChatParams,
   ConversationDraftDefaults,
+  DeletionStatus,
   DocumentSummary,
   Message,
   ModelEntry,
@@ -36,6 +37,8 @@ import {
   type LibraryDocument,
 } from "@/lib/library";
 import { Sidebar } from "./Sidebar";
+import { ConversationDeletionNotice, ConversationDeletionPanel } from "./ConversationDeletionPanel";
+import { useCurrentOwner, type CurrentOwner } from "./MemoryPreferenceProvider";
 import { ConversationInspector } from "./ConversationInspector";
 import { SettingsPanel } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
@@ -162,6 +165,23 @@ function providerModelRegion(models: ModelEntry[], modelId: string | null): stri
 }
 
 export function ChatApp() {
+  const owner = useCurrentOwner();
+  const [deletionView, setDeletionView] = useState<{
+    owner: CurrentOwner; sessionId: string | null;
+  } | null>(null);
+  const [deletionNotice, setDeletionNotice] = useState<{
+    owner: CurrentOwner; status: DeletionStatus;
+  } | null>(null);
+  const [deleting, setDeleting] = useState<{
+    owner: CurrentOwner; ids: ReadonlySet<string>;
+  } | null>(null);
+  const deletionRequestsRef = useRef(new Map<string, symbol>());
+  const deletionNoticeRequestRef = useRef<symbol | null>(null);
+  const deletionPanelOpen = deletionView?.owner === owner;
+  useLayoutEffect(() => {
+    const requests = deletionRequestsRef.current;
+    return () => { requests.clear(); };
+  }, [owner]);
   const voiceLiveConfig = useVoiceLiveConfig();
   const libraryConfig = useLibraryConfig();
   const customToolsConfig = useCustomToolsConfig();
@@ -934,6 +954,7 @@ export function ChatApp() {
 
   const deleteSession = useCallback(
     async (id: string) => {
+      if (deletionRequestsRef.current.has(id) || !owner.isCurrent()) return;
       if (streamingRef.current) {
         setError("Wait for the current response to finish before deleting a conversation.");
         return;
@@ -953,33 +974,58 @@ export function ChatApp() {
       const title = sessions.find((session) => session.id === id)?.title || "this conversation";
       if (
         !window.confirm(
-          `Permanently delete "${title}"? This can't be undone.`,
+          `Remove "${title}" from chats and request cleanup of its conversation content and inline originals? Cleanup may remain pending; check Deletion status for resumable requests. This does not erase backups, library documents, memories, or generated media.`,
         )
       ) {
         return;
       }
       if (id === activeId && voiceActiveRef.current) voiceStopRef.current();
+      const request = Symbol();
+      const signOutGeneration = signOutGenerationRef.current;
+      deletionRequestsRef.current.set(id, request);
+      deletionNoticeRequestRef.current = request;
+      setDeleting((current) => ({
+        owner, ids: new Set([...(current?.owner === owner ? current.ids : []), id]),
+      }));
+      const isCurrent = () => mountedRef.current && owner.isCurrent()
+        && signOutGenerationRef.current === signOutGeneration
+        && deletionRequestsRef.current.get(id) === request;
       try {
-        await api.deleteSession(id);
+        const status = await api.deleteSession(id);
+        if (!isCurrent()) return;
         pendingAssistantIdsRef.current.delete(id);
         const refreshGeneration = ++sessionListGenerationRef.current;
         setSessions((current) => current.filter((session) => session.id !== id));
-        if (id === activeId) newChat();
+        if (id === sessionIdRef.current) newChat();
+        if (status && deletionNoticeRequestRef.current === request) {
+          setDeletionNotice({ owner, status });
+        }
         try {
           const all = await api.listSessions();
-          if (sessionListGenerationRef.current === refreshGeneration) {
+          if (isCurrent() && sessionListGenerationRef.current === refreshGeneration) {
             setSessions(all.filter((session) => session.id !== id));
           }
         } catch (refreshError) {
-          setError(
-            `Conversation deleted, but the conversation list couldn't refresh: ${(refreshError as Error).message}`,
-          );
+          if (isCurrent() && sessionListGenerationRef.current === refreshGeneration) {
+            setError(
+              `Conversation removed from chats, but the conversation list couldn't refresh: ${api.apiErrorDetail(refreshError)}`,
+            );
+          }
         }
       } catch (e) {
-        setError((e as Error).message);
+        if (isCurrent()) setError(api.apiErrorDetail(e));
+      } finally {
+        if (deletionRequestsRef.current.get(id) === request) {
+          deletionRequestsRef.current.delete(id);
+          if (mountedRef.current && owner.isCurrent()) {
+            setDeleting((current) => current?.owner === owner
+              ? { owner, ids: new Set([...current.ids].filter((value) => value !== id)) }
+              : current);
+          }
+        }
       }
     },
-    [activeId, newChat, sessions],
+    [activeId, newChat, owner, sessions],
   );
 
   const renameSession = useCallback(async (id: string, title: string) => {
@@ -1929,6 +1975,10 @@ export function ChatApp() {
       return false;
     }
     signOutGenerationRef.current += 1;
+    deletionRequestsRef.current.clear();
+    setDeletionView(null);
+    setDeletionNotice(null);
+    setDeleting(null);
     const pendingCreation = creatingRef.current;
     creatingRef.current = null;
     pendingCreation?.controller.abort();
@@ -2676,8 +2726,8 @@ export function ChatApp() {
       ) : null}
       <div
         className="sidebar-slot"
-        inert={mobileInspectorOpen ? true : undefined}
-        aria-hidden={mobileInspectorOpen ? true : undefined}
+        inert={mobileInspectorOpen || deletionPanelOpen ? true : undefined}
+        aria-hidden={mobileInspectorOpen || deletionPanelOpen ? true : undefined}
       >
         {leftIsCollapsed ? (
           <div
@@ -2737,6 +2787,8 @@ export function ChatApp() {
           onNewChat={newChat}
           onDelete={deleteSession}
           onRename={renameSession}
+          deletingIds={deleting?.owner === owner ? deleting.ids : undefined}
+          onOpenDeletionStatus={() => setDeletionView({ owner, sessionId: null })}
           onOpenSettings={openSettings}
           onOpenStudio={openStudio}
           onOpenLibrary={libraryEnabled ? openLibrary : undefined}
@@ -2752,12 +2804,12 @@ export function ChatApp() {
       <main
         id="main"
         inert={
-          mobileSidebarOpen || mobileInspectorOpen
+          mobileSidebarOpen || mobileInspectorOpen || deletionPanelOpen
             ? true
             : undefined
         }
         aria-hidden={
-          mobileSidebarOpen || mobileInspectorOpen
+          mobileSidebarOpen || mobileInspectorOpen || deletionPanelOpen
             ? true
             : undefined
         }
@@ -2807,6 +2859,14 @@ export function ChatApp() {
             {streaming ? "Generating…" : "Ready"}
           </div>
         </header>
+
+        {deletionNotice?.owner === owner && (
+          <ConversationDeletionNotice
+            status={deletionNotice.status}
+            onOpen={() => setDeletionView({ owner, sessionId: deletionNotice.status.sessionId })}
+            onDismiss={() => setDeletionNotice(null)}
+          />
+        )}
 
         {error && (
           <div
@@ -2924,8 +2984,8 @@ export function ChatApp() {
       ) : null}
       <div
         className="inspector-slot"
-        inert={mobileSidebarOpen ? true : undefined}
-        aria-hidden={mobileSidebarOpen ? true : undefined}
+        inert={mobileSidebarOpen || deletionPanelOpen ? true : undefined}
+        aria-hidden={mobileSidebarOpen || deletionPanelOpen ? true : undefined}
       >
         <ConversationInspector
           key={activeId ?? "new-conversation"}
@@ -2991,6 +3051,12 @@ export function ChatApp() {
         />
       </div>
 
+      <ConversationDeletionPanel
+        open={deletionPanelOpen}
+        sessionId={deletionPanelOpen ? deletionView.sessionId : null}
+        onShowAll={() => setDeletionView({ owner, sessionId: null })}
+        onClose={() => setDeletionView(null)}
+      />
       {settingsOpen && (
         <SettingsPanel onClose={closeSettings} />
       )}
