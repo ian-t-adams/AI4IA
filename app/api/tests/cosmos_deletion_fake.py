@@ -224,6 +224,11 @@ class Container:
             yield {"id": raw["id"]} if query.startswith("SELECT c.id ") else raw
 
 
+class _NoopResource:
+    async def close(self):
+        return None
+
+
 class CosmosState:
     def __init__(self):
         self.sessions = Container("userId")
@@ -238,6 +243,8 @@ class CosmosState:
         repo._deletion_enabled = enabled
         repo._attachment_storage_required = False
         repo._attachment_storage_id = "local"
+        repo._client = _NoopResource()
+        repo._credential = _NoopResource()
         return repo
 
     def snapshot(self) -> dict[str, Any]:
