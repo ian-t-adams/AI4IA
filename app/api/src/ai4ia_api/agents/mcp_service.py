@@ -18,6 +18,7 @@ import logging
 from . import mcp_health
 from . import mcp_observability as obs
 from .mcp_client import McpAuth, McpConnector
+from .mcp_protocol import McpRequestContext
 from .mcp_secrets import McpSecretStore, new_secret_ref
 from .mcp_servers import (
     MAX_DESCRIPTION_LEN,
@@ -30,6 +31,7 @@ from .mcp_servers import (
     McpConflictError,
     McpConnectionError,
     McpNotFoundError,
+    McpProtocolVersion,
     McpServerError,
     McpToolApproval,
     McpValidationError,
@@ -137,7 +139,11 @@ class McpServerService:
             secret=req.secret,
         )
         auth = McpAuth(mode=req.authMode, secret=req.secret)
-        tools = await self._discover(endpoint, auth)
+        tools = await self._discover(
+            endpoint, auth, McpRequestContext(
+                protocol_version=req.protocolVersion, owner_id=user_id, server_id=name
+            ),
+        )
 
         # Persist the secret durably only after a successful connect
         # (fail-fast-persist-nothing: a server we could not reach is never saved,
@@ -156,6 +162,7 @@ class McpServerService:
             description=desc,
             endpoint=endpoint,
             host=host,
+            protocolVersion=req.protocolVersion,
             authMode=req.authMode,
             trusted=bool(req.trusted),
             enabled=bool(req.enabled),
@@ -168,6 +175,7 @@ class McpServerService:
             lastError=None,
         )
         await self._store.put(server)
+        self._connector.invalidate(McpRequestContext.for_server(server))
         return server
 
     async def update(
@@ -211,7 +219,13 @@ class McpServerService:
                     f"A secret is required for '{req.authMode.value}' auth."
                 )
         auth = McpAuth(mode=req.authMode, secret=connect_secret)
-        tools = await self._discover(endpoint, auth)
+        protocol = req.protocolVersion or current.protocolVersion
+        # Management reconnects must not return a TTL-cached discovery snapshot.
+        tools = await self._discover(
+            endpoint, auth, McpRequestContext(
+                protocol_version=protocol, owner_id=user_id, server_id=current.name
+            ),
+        )
 
         # Persist/rotate/clear the durable secret only after a successful connect.
         secret_ref = current.secretRef
@@ -240,6 +254,7 @@ class McpServerService:
             description=desc,
             endpoint=endpoint,
             host=host,
+            protocolVersion=protocol,
             authMode=req.authMode,
             trusted=bool(req.trusted),
             enabled=bool(req.enabled),
@@ -254,6 +269,7 @@ class McpServerService:
             lastHealthCheck=now,
         )
         await self._store.put(server)
+        self._connector.invalidate(McpRequestContext.for_server(current))
         return server
 
     async def delete(self, user_id: str, name: str) -> None:
@@ -264,6 +280,7 @@ class McpServerService:
         if current.secretRef:
             await self._secret_store.delete_secret(current.secretRef)
         await self._store.delete(user_id, key)
+        self._connector.invalidate(McpRequestContext.for_server(current))
 
     async def test(
         self, user_id: str, name: str, secret: str | None = None
@@ -282,8 +299,10 @@ class McpServerService:
                 connect_secret = await self._secret_store.get_secret(current.secretRef)
             self._validate_secret(current.authMode, connect_secret)
         auth = McpAuth(mode=current.authMode, secret=connect_secret)
+        context = McpRequestContext.for_server(current)
+        self._connector.invalidate(context)
         try:
-            tools = await self._discover(current.endpoint, auth)
+            tools = await self._discover(current.endpoint, auth, context)
         except McpConnectionError as exc:
             current.lastError = mcp_health.summarize_error(exc)
             current.updatedAt = _now()
@@ -292,6 +311,7 @@ class McpServerService:
             mcp_health.record_failure(current, exc)
             self._emit_quarantine_if_any(current)
             await self._store.put(current)
+            self._connector.invalidate(context)
             raise
         current.discoveredTools = tools
         current.configurationRevision = new_configuration_revision()
@@ -305,6 +325,7 @@ class McpServerService:
         )
         mcp_health.record_success(current)
         await self._store.put(current)
+        self._connector.invalidate(context)
         return current
 
     async def record_health(
@@ -438,12 +459,20 @@ class McpServerService:
             )
         if len(secret) > MAX_SECRET_LEN:
             raise McpValidationError("Secret is too long.")
+        if any(not 0x20 <= ord(char) <= 0x7E for char in secret):
+            raise McpValidationError("Secret must be a valid HTTP credential value.")
 
-    async def _discover(self, endpoint: str, auth: McpAuth):
+    async def _discover(self, endpoint: str, auth: McpAuth, context: McpRequestContext):
         host = _host_of(endpoint)
         timer = obs.Timer()
         try:
-            tools = await self._connector.discover(endpoint=endpoint, auth=auth)
+            if context.protocol_version is McpProtocolVersion.stateless:
+                description = await self._connector.discover_server(
+                    endpoint=endpoint, auth=auth, context=context
+                )
+                if "tools" not in description.capabilities:
+                    raise McpConnectionError("server/discover: server does not advertise tools.")
+            tools = await self._connector.discover(endpoint=endpoint, auth=auth, context=context)
         except McpServerError as exc:
             category = mcp_health.summarize_error(exc)
             obs.emit(

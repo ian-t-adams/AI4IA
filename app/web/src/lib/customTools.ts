@@ -29,6 +29,7 @@ export interface CustomToolsConfig {
 
 export type McpAuthMode = "none" | "api_key" | "bearer";
 export type McpTransport = "streamable_http";
+export type McpProtocolVersion = "2025-06-18" | "2026-07-28";
 
 // Per-tool standing discovery/attachment posture, overriding the server-level
 // default. This decides whether the model is offered a discovered tool; it does
@@ -53,6 +54,7 @@ export interface UserMcpServer {
   endpoint: string;
   host: string;
   transport: McpTransport;
+  protocolVersion?: McpProtocolVersion;
   authMode: McpAuthMode;
   trusted: boolean;
   enabled: boolean;
@@ -83,6 +85,7 @@ export interface UserMcpServerCreate {
   displayName?: string | null;
   description: string;
   endpoint: string;
+  protocolVersion?: McpProtocolVersion;
   authMode: McpAuthMode;
   secret?: string | null;
   trusted: boolean;
@@ -95,6 +98,7 @@ export interface UserMcpServerUpdate {
   displayName?: string | null;
   description: string;
   endpoint: string;
+  protocolVersion?: McpProtocolVersion;
   authMode: McpAuthMode;
   secret?: string | null;
   trusted: boolean;
@@ -125,6 +129,11 @@ export const MCP_NAME_RE = STUDIO_NAME_RE;
 
 // The namespaced-tool-name prefix, mirroring the backend TOOL_NAME_PREFIX.
 export const MCP_TOOL_NAME_PREFIX = "mcp";
+
+export const MCP_PROTOCOL_VERSIONS: { value: McpProtocolVersion; label: string }[] = [
+  { value: "2025-06-18", label: "2025-06-18 (legacy, default)" },
+  { value: "2026-07-28", label: "2026-07-28 (stateless, opt-in)" },
+];
 
 export const MCP_AUTH_MODES: { value: McpAuthMode; label: string; hint: string }[] = [
   { value: "none", label: "None (public)", hint: "No credential is sent." },

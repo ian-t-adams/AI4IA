@@ -417,6 +417,7 @@ keeps endpoint and authentication configuration in the Foundry project connectio
 ```powershell
 python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/redaction rules
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
+python3 -m unittest scripts.tests.test_capacity_evidence        # read-only allocation/quota/aggregate metrics
 python3 -m unittest scripts.tests.test_postprovision_appconfig_sentinel scripts.tests.test_postprovision_cu_defaults scripts.tests.test_postprovision_hard_gates
 python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap
 python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deploy.yml's real block with `az` stubbed
@@ -451,7 +452,11 @@ python3 -m unittest scripts.tests.test_immutable_image_promotion
 `test_base_image_pins`, `test_subscription_preflight`,
 `test_proxy_delivery_contracts`, and `test_immutable_image_promotion` need
 `PyYAML` (pinned in the workflow); `test_immutable_image_promotion` also needs
-`bash` and skips without it. The rest are stdlib-only.
+`bash` and skips without it. `test_capacity_evidence` also requires
+`jmespath==0.9.5`, pinned in quality to the inspected Azure CLI parser version:
+the raw ARM projection regressions must execute the real query, not skip it or
+test only already-projected data. The reporter itself remains stdlib-only.
+The rest are stdlib-only.
 
 Operational guards must distinguish a failed Azure read from a missing resource.
 The custom-domain preflight fails closed on inventory/query errors. Teardown
@@ -651,6 +656,30 @@ Four rules follow:
   must describe the same enabled tool surface. Optional endpoint access, including
   beta autosuggest, is an upstream entitlement, not a successful local-test claim.
 
+### Change MCP protocol behavior
+
+- Official and BYO servers share `app/api/src/ai4ia_api/agents/mcp_client.py` and its
+  bounded helpers in `app/api/src/ai4ia_api/agents/mcp_protocol.py`.
+  Keep `protocolVersion=2025-06-18` as the
+  record/catalog default; `2026-07-28` is an explicit per-server opt-in, not an
+  error-triggered downgrade/upgrade policy.
+- Verify wire contracts against the official versioned specification/schema.
+  Legacy initialization must confirm the selected version and retain its session;
+  stateless requests carry per-request metadata and no session. Never infer
+  Foundry/APIM preview support from offline fixtures.
+- Derive routing mirrors from the exact RPC and consent-bound schema. Bound and
+  encode them, reject sensitive annotations/values, and preserve the catalog-owned
+  APIM boundary. Neither caller headers nor server identity/cache hints authorize
+  tools.
+- Cache only bounded discovery/list responses, scoped by owner/auth/server/
+  endpoint/protocol/configuration and request parameters. Invalidate on changes;
+  never cache grants, tool results or skill contents, return stale success on an
+  error, or replay a tool after a protocol/transport failure.
+- Keep `_call_with` and `_read_resource_with` as shared execution seams containing
+  handshake plus RPC work under either version. Discovery cache hits do not run
+  those seams. Exercise both protocols through services, consent, SSRF/DNS pinning,
+  redaction, cancellation and Streamable HTTP, not just framing helpers.
+
 ### Add a Foundry skill
 
 - Author instruction-only skills at `foundry/skills/<name>/SKILL.md` using the
@@ -714,6 +743,45 @@ Model deployment `capacity` is the portable baseline. Optional `maxCapacity` val
 are subscription-specific output from `scripts/sync-model-capacity.py`; never
 hand-copy portal bars or set every regional deployment to the same global limit.
 Bicep uses them only when `AI4IA_MODEL_CAPACITY_PROFILE=maximum`.
+
+`scripts/report-model-capacity.py` is a separate **read-only evidence collector**,
+not another planner. It reuses the existing deployment naming function but never
+calls the maximum planner, its collectors, or its write path. Every Azure read
+names an explicit subscription; exact RG, environment tags, AIServices account
+naming and deployment resource IDs bind inventory and aggregate metrics. It uses
+fixed ARM GET operations with bounded process time, bytes, inventory, hourly
+series, samples and final serialization. No login, subscription selection,
+provider registration, model invocation, logs/traces, new workflow or Azure write
+is part of collection. The existing quality job runs only mocked/offline tests.
+
+Only account inventory may continue pages: validate exact HTTPS ARM host,
+subscription/RG/account-list path, unchanged API version and the observed
+`api-version`/`$skiptoken` query keys before rebuilding each request. Keep call,
+byte, time and total account-row bounds across pages; reject duplicate
+names/IDs/cursors and incomplete ownership. Until terminal-page validation,
+safe page observations are candidates, not a verified inventory. Never discard
+the partial flag merely because the first page contains all expected regions.
+
+Metric definitions advertise TitleCase dimension names, while ARM timeseries
+metadata also uses `modeldeploymentname`, `modelname`, `modelversion`, and
+`region`. The CLI projection and parser explicitly canonicalize only these
+evidenced aliases. Keep the original dimension count before filtering and reject
+canonical-key collisions/unknown extras; never lowercase identity values or
+remove deployment/model/version proof to accommodate a schema difference.
+
+Quota counter replicas and `modelCapacities` are observations, not pool identity.
+Never infer scope from equal numbers, publisher names, SKU processing geography,
+or catalog `maxCapacityPool`. Optional fresh, subscription-bound **operator
+assertions** enable separately labeled pool arithmetic only when counter/unit,
+all-version membership, regional coverage and live allocation evidence agree.
+Overlapping declarations cannot split one counter across versions; counter usage
+outside matched catalog allocation stays unattributed, never available quota.
+No headroom is emitted for missing, stale, warning/partial or contradictory pool
+evidence. A measured zero needs actual samples; absent series and null samples
+are unknown. Neither zero nor incomplete usage recommends removal or downsizing.
+Units stay raw, pricing is unknown, and production criticality/reserves/profile
+selection require separate approval. See the
+[capacity evidence runbook](docs/runbooks/deploy-to-azure.md#read-only-capacity-and-usage-evidence).
 
 ### Add a feature flag
 
@@ -789,6 +857,42 @@ completeness (assets are discovered via `git ls-files`; anything not owned by th
 generator must be listed in `NON_BRAND_RASTERS`), colour (≥40% of saturated pixels
 near the brand hue), and shape/weight against the portal's declared `og:image`
 dimensions and per-file size ceilings.
+
+## Staged GA Realtime protocol
+
+`AI4IA_REALTIME_GA_ENABLED=false` stages no GA infrastructure; enabling it only
+admits/provisions the separate APIM WebSocket API and scoped key.
+`AI4IA_REALTIME_PROTOCOL=preview` remains the independent server-only selector.
+`ga` requires the staging gate, Voice Live, same-APIM-host HTTPS/WSS
+`AI4IA_REALTIME_GA_BASE_URL` at `/openai/v1` and a distinct
+`AI4IA_REALTIME_GA_GATEWAY_API_KEY`. Keys remain secure module-to-module values
+and Container App secrets. Never expose a direct Foundry URL or broaden another
+API's subscription scope. APIM supplies one immutable `onHandshake` per
+WebSocket API: the second path is a second API, not an HTTP GET operation.
+
+`app/api/src/ai4ia_api/realtime_protocol.py` is the provider adapter, not a second
+browser protocol. It maps nested audio/session configuration, response overrides,
+assistant seed/output content and GA events to the existing application contract.
+The relay still owns model selection, tools and persona, including per-response
+and encoded event-type controls. An unoffered tool is never executable just
+because it exists in the registry. Keep execution-time authorization intact.
+GA temperature is omitted and disclosed as unavailable by the UI without
+discarding the saved preview preference. The safe runtime config field is
+`openaiRealtimeProtocol`; it is informational, never a browser routing knob.
+
+Preserve raw unaffected legacy/Speech frames, cancellation/truncation IDs,
+usage, error classification and cleanup. Do not retry/downgrade or replay a
+possibly accepted response/tool/audio frame. `gen-gateway-policy.py --check`
+covers both generated Realtime policies; `test_realtime_protocol.py`,
+`test_realtime_staged_api.py`, existing voice tests and the shared synthetic
+`app/web/test-fixtures/realtime_protocol.json` cover both sides of the boundary.
+Keep shared browser fixtures inside the web Docker build context.
+Run the targeted browser lifecycle/settings tests when changing that boundary.
+
+This is source staging only: no model/version/capacity or TTS change, live success
+claim, default cutover or legacy removal. Follow the approved
+[activation/rollback procedure](docs/runbooks/feature-enablement.md#staged-ga-realtime).
+Issue #413 stays open for its remaining live/model/TTS acceptance criteria.
 
 ## Auth model and `apiFetch` contract
 

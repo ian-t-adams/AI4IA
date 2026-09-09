@@ -121,6 +121,23 @@ param realtimeGatewayApiKey string = ''
 @description('Azure OpenAI realtime api-version the relay uses for the upstream WebSocket.')
 param realtimeApiVersion string = '2025-04-01-preview'
 
+@description('Enable the staged GA APIM route prerequisites. Does not select GA; default OFF.')
+param realtimeGaEnabled bool = false
+
+@allowed([
+  'preview'
+  'ga'
+])
+@description('Server-only protocol selection for Azure OpenAI realtime; Speech Voice Live is unaffected.')
+param realtimeProtocol string = 'preview'
+
+@description('Shared active APIM /openai/v1 URL for GA realtime; never a direct Foundry URL.')
+param realtimeGaBaseUrl string = ''
+
+@secure()
+@description('Dedicated GA realtime API-scoped APIM key, distinct from legacy realtime and all other planes.')
+param realtimeGaGatewayApiKey string = ''
+
 @description('Comma-separated browser Origin allowlist for the live-voice relay handshake. Required (non-empty) when realtimeEnabled in a deployed env (the relay fails closed otherwise).')
 param realtimeAllowedOrigins string = ''
 
@@ -452,6 +469,34 @@ var realtimeEnv = realtimeEnabled ? [
     value: realtimeToolsEnabled ? 'true' : 'false'
   }
 ] : []
+
+var hasRealtimeGaGatewayKey = realtimeEnabled && realtimeGaEnabled && !empty(realtimeGaGatewayApiKey)
+var realtimeGaGatewaySecrets = hasRealtimeGaGatewayKey ? [
+  {
+    name: 'realtime-ga-gateway-api-key'
+    value: realtimeGaGatewayApiKey
+  }
+] : []
+var realtimeGaEnv = concat([
+  {
+    name: 'AI4IA_REALTIME_GA_ENABLED'
+    value: realtimeGaEnabled ? 'true' : 'false'
+  }
+  {
+    name: 'AI4IA_REALTIME_PROTOCOL'
+    value: realtimeProtocol
+  }
+], realtimeGaEnabled ? [
+  {
+    name: 'AI4IA_REALTIME_GA_BASE_URL'
+    value: realtimeGaBaseUrl
+  }
+] : [], hasRealtimeGaGatewayKey ? [
+  {
+    name: 'AI4IA_REALTIME_GA_GATEWAY_API_KEY'
+    secretRef: 'realtime-ga-gateway-api-key'
+  }
+] : [])
 
 // Speech Voice Live: a second, additive realtime provider. Inert unless
 // realtimeEnabled is ALSO true (see config.py validate_runtime), matching the
@@ -887,7 +932,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], openapiEnv, claudeEnv, toolApprovalEnv, hardQuotaEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], openapiEnv, claudeEnv, toolApprovalEnv, hardQuotaEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName
@@ -905,7 +950,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
     managedEnvironmentId: containerEnvId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: concat(gatewaySecrets, realtimeGatewaySecrets, speechVoiceLiveGatewaySecrets, codeInterpreterSecrets, adminSecrets, webIqSecrets, officialMcpSecrets)
+      secrets: concat(gatewaySecrets, realtimeGatewaySecrets, realtimeGaGatewaySecrets, speechVoiceLiveGatewaySecrets, codeInterpreterSecrets, adminSecrets, webIqSecrets, officialMcpSecrets)
       ingress: {
         // External for v1 so the api is directly testable before the web app
         // exists. Flip to internal once web is the only public frontend.

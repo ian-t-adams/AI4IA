@@ -141,6 +141,14 @@ Finalized turns join the same conversation; a persistence failure cannot keep
 the microphone running.
 Turn-based transcription and text-to-speech remain ordinary gateway HTTP calls.
 
+GA Realtime is staged separately from selection: `AI4IA_REALTIME_GA_ENABLED`
+defaults off, while `AI4IA_REALTIME_PROTOCOL` stays `preview`. A gated second
+APIM WebSocket API/key serves `/openai/v1/realtime`; the backend adapter maps GA
+session/audio/content/event shapes to the existing browser contract. No client
+setting can select it, no failed call is downgraded/replayed, and Speech remains
+independent. The [operator staging procedure](runbooks/feature-enablement.md#staged-ga-realtime)
+requires approved live evidence before any default cutover or legacy removal.
+
 ### Code Interpreter
 
 Document/attachment compute uses a dedicated APIM API because Files and stateful
@@ -224,6 +232,85 @@ resources do not become instructions merely by existing.
 Retrieved documents, memories, skills, and tool results are untrusted context.
 Nonce fences protect delimiters, but **a text fence is not an information-flow
 barrier**: source text can still influence the model's proposed next action.
+
+### Staged MCP protocol compatibility
+
+Official and BYO servers share one HTTPX connector. Each server has an explicit
+`protocolVersion`: **`2025-06-18` remains the default**, including the packaged
+Foundry Toolbox. It uses `initialize`, validates the returned version, sends
+`notifications/initialized`, and retains any valid negotiated session ID on
+subsequent requests. A server returning a different or missing version fails
+visibly rather than being called under a contradictory contract.
+Paginated legacy lists retain one initialized, DNS-pinned session and use distinct
+request IDs; cursors never cross sessions. Reaching a list cap closes that client.
+
+Opting one server into **`2026-07-28`** uses self-contained POST requests with
+`params._meta` protocol version, client identity and empty client capabilities.
+There is no initialize handshake, session ID, GET stream or automatic replay.
+Modern management discovery uses `server/discover` to check the configured
+version and capabilities; direct tool/resource invocations need no discovery
+handshake. Self-reported server identity and discovery instructions grant no
+permissions and do not become model instructions. Unsupported versions, header
+mismatches, server-initiated requests, unadvertised input requests and unknown
+result types surface as errors. Legacy results may omit `resultType`; modern
+results must supply `complete` for this client's supported operations.
+
+`Mcp-Method`, `Mcp-Name` and annotated `Mcp-Param-*` headers are derived from the
+same RPC payload and consent-bound tool schema used for dispatch. Names/values
+use the specification's UTF-8 Base64 sentinel when needed, including escaping
+literal sentinels. Parameter annotations must have unique, valid HTTP-token
+names and statically reachable `properties` paths of string, Boolean or safe
+integer type. Local limits are 16 parameter headers, 64-character suffixes,
+4 KiB encoded values and 16 KiB total routing metadata. Sensitive field/header
+annotations are rejected from discovery; secret-looking or credential-containing
+values fail before dispatch rather than being promoted into routing metadata.
+No headers are logged. Changing protocol or routing annotations changes the
+tool consent contract; invocation still rechecks ownership, scope, consent and
+the live server definition after credential resolution.
+Introducing protocol-bound metadata may require renewing an existing consent
+after rollout, even when its server remains on legacy. Official configuration
+revisions are deterministic across replicas/restarts; they never use discovery
+timestamps or process-local randomness.
+
+Only modern `server/discover`, `tools/list` and `resources/list` results can enter
+the bounded process-local response cache. Its key includes owner, authorization
+context (credential fingerprint, never plaintext), server, endpoint, protocol,
+configuration and exact method/parameters, including page cursors. Even `public`
+hints remain owner/auth-scoped. TTL is capped at five minutes, with at most
+64 entries and 4 MB of escaped JSON; absent/zero/negative hints are immediately
+stale. Access checks freshness without polling. Config/auth changes, explicit
+refresh and observed list-change notifications invalidate entries, including
+in-flight fills; errors never return stale success. Registration and reconnect
+refresh the durable BYO attachment snapshot independently of this cache.
+Neither approvals nor tool results nor skill contents are cached.
+Official discovery readers join an in-flight refresh rather than interpreting
+retry backoff as freshness. Cancellation clears the active server's expired
+metadata with a visible error, without counting it as an upstream failure.
+Refresh results cannot publish across configuration/auth changes or an explicit
+invalidation.
+
+Both versions use the same no-redirect, bounded-response and DNS-pinned public
+HTTPS transport. SSE returns on the matching final response; cancellation closes
+the stream and, on the legacy path, also sends a bounded cancellation notification
+with the original request ID/auth/session. Errors never downgrade protocols,
+retry `tools/call`, reauthorize automatically, or fetch advertised auth URLs.
+Existing supplied bearer/API-key and official APIM credentials remain the auth
+strategy; this change does not implement a new OAuth flow.
+
+The MCP APIM policy selects its boundary from the **catalog**, not a caller's
+version header. Legacy routes reject modern mirrors; modern routes require the
+configured version and forward mirrors for upstream body validation. Subscription
+auth and fixed catalog backends remain authoritative in both cases. Static
+upstream headers cannot overwrite protocol metadata. Model egress is unchanged.
+
+These contracts follow the official [versioning rules](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning),
+[HTTP binding](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http),
+[cache rules](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching)
+and [release schema at 271ecc9](https://github.com/modelcontextprotocol/specification/blob/271ecc9accafdd9b83a3c869fa67c22953b2af80/schema/2026-07-28/schema.ts).
+Offline compatibility coverage is not evidence that a live official server,
+APIM's preview MCP surface or Foundry Toolbox supports the new revision. Verify
+that exact upstream before changing its catalog entry; no default cutover is
+implied.
 
 ### Per-invocation tool approval
 

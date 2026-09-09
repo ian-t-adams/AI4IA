@@ -25,6 +25,31 @@ docs_generator = load_script(
 
 
 class GatewayPolicyTests(unittest.TestCase):
+    def test_ga_routes_are_generated_from_the_same_realtime_catalog(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        generated = gateway_generator.generate_realtime_policy(models, ga=True)
+        self.assertEqual(generated, gateway_generator.REALTIME_GA_OUTPUT_PATH.read_text(encoding="utf-8"))
+        gateway_generator.validate_realtime_policy(generated, "GA fixture", ga=True)
+        root = ElementTree.fromstring(generated)
+        routes = root.findall("./inbound/choose/when")
+        naming = models["naming"]
+        expected = {
+            gateway_generator.deployment_name(
+                model=model["name"], subscription_token=naming["subscriptionToken"],
+                region=deployment["region"], sku=deployment["sku"], sku_short=naming["skuShort"],
+            ): f"{{{{foundry-{deployment['region']}-realtime-wss-endpoint}}}}/openai/v1/realtime"
+            for model in models["catalog"] if model["category"] == "realtime"
+            for deployment in model["deployments"]
+        }
+        self.assertGreater(len(expected), 1)
+        self.assertEqual(len(routes), len(expected))
+        for route in routes:
+            selector = route.find("./set-query-parameter[@name='model']/value").text
+            self.assertIn(selector, route.attrib["condition"])
+            self.assertIn('GetValueOrDefault("model", "")', route.attrib["condition"])
+            self.assertEqual(route.find("set-backend-service").get("base-url"), expected[selector])
+        self.assertEqual(root.find("./inbound/choose/otherwise/return-response/set-status").get("code"), "404")
+
     def test_category_without_a_gateway_surface_fails_generation(self) -> None:
         """A capability the gateway cannot serve must not get a fabricated route.
 
@@ -1801,6 +1826,38 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("parameters('sharedApimPrincipalId')", json.dumps(gateway_resources["sharedApimOpenAiUsers"]))
         self.assertIn("parameters('sharedApimGatewayUrl')", json.dumps(gateway_template["variables"]["hostEnv"]))
 
+        ga_api = gateway_resources["sharedRealtimeGaApi"]["properties"]
+        self.assertEqual("websocket", ga_api["type"])
+        self.assertEqual(["wss"], ga_api["protocols"])
+        self.assertEqual("openai/v1/realtime", ga_api["path"])
+        self.assertTrue(ga_api["subscriptionRequired"])
+        self.assertNotEqual(gateway_resources["sharedRealtimeGaApi"]["name"], gateway_resources["sharedRealtimeApi"]["name"])
+        self.assertTrue(gateway_resources["sharedRealtimeGaHandshake"].get("existing"))
+        self.assertEqual(
+            "Microsoft.ApiManagement/service/apis/operations/policies",
+            gateway_resources["sharedRealtimeGaApiPolicy"]["type"],
+        )
+        for name in ("sharedRealtimeGaApi", "sharedRealtimeGaHandshake", "sharedRealtimeGaApiPolicy", "sharedApiRealtimeGaSubscription"):
+            self.assertEqual(gateway_resources[name].get("condition"), "[parameters('realtimeGaEnabled')]")
+        ga_subscription = gateway_resources["sharedApiRealtimeGaSubscription"]
+        self.assertIn("sharedRealtimeGaApiPolicy", ga_subscription["dependsOn"])
+        self.assertIn("openai-realtime-ga", ga_subscription["properties"]["scope"])
+        self.assertNotEqual(ga_subscription["properties"]["scope"], gateway_resources["sharedApiRealtimeSubscription"]["properties"]["scope"])
+        self.assertFalse(template["parameters"]["realtimeGaEnabled"]["defaultValue"])
+        self.assertFalse(gateway_template["parameters"]["realtimeGaEnabled"]["defaultValue"])
+        self.assertEqual(template["parameters"]["realtimeProtocol"]["defaultValue"], "preview")
+        self.assertEqual(template["parameters"]["realtimeProtocol"]["allowedValues"], ["preview", "ga"])
+        self.assertEqual(gateway_template["outputs"]["realtimeGaGatewayKey"]["type"].lower(), "securestring")
+        self.assertIn("[if(parameters('realtimeGaEnabled'),", gateway_template["outputs"]["realtimeGaGatewayKey"]["value"])
+        self.assertIn("[if(parameters('realtimeGaEnabled'),", gateway_template["outputs"]["realtimeGaGatewayUrl"]["value"])
+        api_template = template["resources"]["api"]["properties"]["template"]
+        self.assertFalse(api_template["parameters"]["realtimeGaEnabled"]["defaultValue"])
+        self.assertEqual(api_template["parameters"]["realtimeProtocol"]["defaultValue"], "preview")
+        self.assertEqual(api_template["parameters"]["realtimeGaGatewayApiKey"]["type"].lower(), "securestring")
+        self.assertIn("AI4IA_REALTIME_GA_ENABLED", json.dumps(api_template["variables"]["realtimeGaEnv"]))
+        self.assertIn("AI4IA_REALTIME_PROTOCOL", json.dumps(api_template["variables"]["realtimeGaEnv"]))
+        self.assertIn("realtime-ga-gateway-api-key", json.dumps(api_template["variables"]["realtimeGaGatewaySecrets"]))
+
         speech_api = gateway_resources["sharedSpeechVoiceLiveApi"]["properties"]
         self.assertEqual("websocket", speech_api["type"])
         self.assertEqual(["wss"], speech_api["protocols"])
@@ -2136,6 +2193,63 @@ class SubscriptionCredentialPolicyTests(unittest.TestCase):
     HEADER = "Ocp-Apim-Subscription-Key"
     QUERY = "subscription-key"
 
+    def test_mcp_protocol_boundary_is_catalog_owned_not_header_selected(self) -> None:
+        source = (ROOT / "infra/modules/mcpgateway.bicep").read_text(encoding="utf-8")
+        policies = {}
+        for name in ("legacyProtocolPolicy", "statelessProtocolPolicy"):
+            match = re.search(rf"var {name} = '''\n(.*?)\n'''", source, re.DOTALL)
+            self.assertIsNotNone(match)
+            assert match is not None
+            policies[name] = ElementTree.fromstring(match.group(1))
+            self.assertEqual(policies[name].find(".//set-status").get("code"), "400")
+        selection = (
+            "(s.?protocolVersion ?? '2025-06-18') == '2026-07-28' ? [\n"
+            "    statelessProtocolPolicy\n  ] : [\n    legacyProtocolPolicy\n  ]"
+        )
+        self.assertIn(selection, source)
+        self.assertLess(source.index(selection), source.index("s.upstreamAuthMode == 'managed_identity'"))
+        legacy = policies["legacyProtocolPolicy"].find("when").get("condition")
+        self.assertEqual(
+            legacy,
+            '@(context.Request.Headers.Any(h => h.Key.Equals("Mcp-Method", StringComparison.OrdinalIgnoreCase) '
+            '|| h.Key.Equals("Mcp-Name", StringComparison.OrdinalIgnoreCase) '
+            '|| h.Key.StartsWith("Mcp-Param-", StringComparison.OrdinalIgnoreCase)) '
+            '|| (context.Request.Headers.ContainsKey("MCP-Protocol-Version") '
+            '&& context.Request.Headers.GetValueOrDefault("MCP-Protocol-Version", "") != "2025-06-18"))',
+        )
+        modern = policies["statelessProtocolPolicy"].find("when").get("condition")
+        self.assertEqual(
+            modern,
+            '@(context.Request.Headers.GetValueOrDefault("MCP-Protocol-Version", "") != "2026-07-28" '
+            '|| String.IsNullOrEmpty(context.Request.Headers.GetValueOrDefault("Mcp-Method", "")) '
+            '|| context.Request.Headers.ContainsKey("Mcp-Session-Id") '
+            '|| context.Request.Headers.ContainsKey("Last-Event-ID"))',
+        )
+        # Routing and upstream authentication remain independent of every mirror.
+        self.assertIn('<set-backend-service backend-id="${s.name}-backend" />', source)
+        self.assertNotRegex(source, r'<set-backend-service[^>]*context\.Request')
+        self.assertNotRegex(source, r'<authentication-managed-identity[^>]*context\.Request')
+        self.assertNotIn("context.Response.Body", source.split("var legacyProtocolPolicy", 1)[1].split("// Per-server", 1)[0])
+
+    def test_mcp_legacy_boundary_covers_case_insensitive_mirrors_with_plain_controls(self) -> None:
+        source = (ROOT / "infra/modules/mcpgateway.bicep").read_text(encoding="utf-8")
+        match = re.search(r"var legacyProtocolPolicy = '''\n(.*?)\n'''", source, re.DOTALL)
+        assert match is not None
+        condition = ElementTree.fromstring(match.group(1)).find("when").get("condition")
+        names = re.findall(r'h.Key.Equals\("([^"]+)", StringComparison.OrdinalIgnoreCase\)', condition)
+        prefixes = re.findall(r'h.Key.StartsWith\("([^"]+)", StringComparison.OrdinalIgnoreCase\)', condition)
+        self.assertEqual(set(names), {"Mcp-Method", "Mcp-Name"})
+        self.assertEqual(prefixes, ["Mcp-Param-"])
+        # Project only the literal mirror-name guard, not an APIM/C# emulator.
+        def is_mirror(header):
+            return header.lower() in {name.lower() for name in names} or any(
+                header.lower().startswith(prefix.lower()) for prefix in prefixes
+            )
+        for header in ("Mcp-Method", "mCP-nAME", "MCP-PARAM-Region"):
+            self.assertTrue(is_mirror(header))
+        for header in ("MCP-Protocol-Version", "Mcp-Session-Id", "Foundry-Features", self.HEADER):
+            self.assertFalse(is_mirror(header))
+
     def _model_parts(self):
         source = ElementTree.parse(gateway_generator.PRIORITY_POLICY_PATH).getroot()
         wrapper, fragments = gateway_generator.generate_priority_policies()
@@ -2329,6 +2443,41 @@ class SubscriptionCredentialPolicyTests(unittest.TestCase):
                 "https://cognitiveservices.azure.com",
             )
             gateway_generator.validate_realtime_policy(policy, "realtime fixture")
+
+    def test_ga_strips_preview_selectors_and_credentials_only_on_its_route(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        headers = {
+            self.HEADER: ["subscription"], "OpenAI-Beta": ["realtime=v1"],
+            "Authorization": ["Bearer synthetic"], "api-key": ["synthetic"],
+            "x-api-key": ["synthetic"], "S7P-KEY": ["synthetic"],
+        }
+        query = {
+            self.QUERY: ["subscription"], "model": ["catalog-target"],
+            "api-version": ["preview"], "deployment": ["wrong-target"],
+            "api-key": ["synthetic"], "intent": ["transcription"],
+        }
+        for ga in (False, True):
+            policy = gateway_generator.generate_realtime_policy(models, ga=ga)
+            inbound = ElementTree.fromstring(policy).find("inbound")
+            projected_headers, projected_query = self._delete_projection(inbound, headers, query)
+            if ga:
+                self.assertEqual(projected_headers, {})
+                self.assertEqual(projected_query, {"model": ["catalog-target"]})
+                for tag, name in (
+                    ("set-header", "OpenAI-Beta"), ("set-query-parameter", "api-version"),
+                    ("set-query-parameter", "deployment"), ("set-query-parameter", "intent"),
+                ):
+                    strip = f'    <{tag} name="{name}" exists-action="delete" />\n'
+                    self.assertIn(strip, policy)
+                    with self.assertRaises(ValueError):
+                        gateway_generator.validate_realtime_policy(
+                            policy.replace(strip, ""), "missing GA strip", ga=True,
+                        )
+            else:
+                self.assertEqual(projected_headers["openai-beta"], ["realtime=v1"])
+                self.assertEqual(projected_query["api-version"], ["preview"])
+                self.assertEqual(projected_query["deployment"], ["wrong-target"])
+            gateway_generator.validate_realtime_policy(policy, "control", ga=ga)
 
     def test_mcp_strips_configured_credentials_before_provider_policies(self) -> None:
         inbound, header, query_name, source = self._mcp_inbound()

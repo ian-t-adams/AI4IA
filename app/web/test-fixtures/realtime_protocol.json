@@ -1,0 +1,163 @@
+{
+  "sources": {
+    "migration": "https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-preview-api-migration-guide",
+    "websocket": "https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets",
+    "schema": "https://github.com/openai/openai-python/tree/41f0a2317759e8796ccfbde75536bd42e4aca7a2/src/openai/types/realtime",
+    "note": "Synthetic offline examples shared by API and browser tests. Kept inside the web Docker build context; not recorded live success."
+  },
+  "deployment": "catalog-realtime-deployment",
+  "client": [
+    {
+      "name": "browser-default-session",
+      "application": {
+        "type": "session.update",
+        "session": {
+          "voice": "alloy",
+          "input_audio_format": "pcm16",
+          "output_audio_format": "pcm16",
+          "turn_detection": {"type": "server_vad"},
+          "input_audio_transcription": {"model": "whisper-1"}
+        }
+      },
+      "ga": {
+        "type": "session.update",
+        "session": {
+          "type": "realtime",
+          "model": "catalog-realtime-deployment",
+          "audio": {
+            "input": {
+              "format": {"type": "audio/pcm", "rate": 24000},
+              "turn_detection": {"type": "server_vad"},
+              "transcription": {"model": "whisper-1"}
+            },
+            "output": {"voice": "alloy", "format": {"type": "audio/pcm", "rate": 24000}}
+          }
+        }
+      }
+    },
+    {
+      "name": "session-controls",
+      "application": {
+        "event_id": "configure-1",
+        "type": "session.update",
+        "session": {
+          "modalities": ["text", "audio"],
+          "temperature": 0.8,
+          "max_response_output_tokens": 512,
+          "voice": "verse",
+          "input_audio_format": "g711_ulaw",
+          "output_audio_format": "g711_alaw",
+          "input_audio_transcription": {"model": "whisper-1", "language": "en"},
+          "input_audio_noise_reduction": null,
+          "turn_detection": {"type": "server_vad", "threshold": 0.6, "prefix_padding_ms": 300, "silence_duration_ms": 500, "create_response": true, "interrupt_response": false}
+        }
+      },
+      "ga": {
+        "event_id": "configure-1",
+        "type": "session.update",
+        "session": {
+          "type": "realtime",
+          "model": "catalog-realtime-deployment",
+          "output_modalities": ["audio"],
+          "max_output_tokens": 512,
+          "audio": {
+            "input": {
+              "format": {"type": "audio/pcmu"},
+              "transcription": {"model": "whisper-1", "language": "en"},
+              "noise_reduction": null,
+              "turn_detection": {"type": "server_vad", "threshold": 0.6, "prefix_padding_ms": 300, "silence_duration_ms": 500, "create_response": true, "interrupt_response": false}
+            },
+            "output": {"voice": "verse", "format": {"type": "audio/pcma"}}
+          }
+        }
+      }
+    },
+    {
+      "name": "manual-turn-text-only",
+      "application": {"type": "session.update", "session": {"modalities": ["text"], "turn_detection": null, "input_audio_transcription": null}},
+      "ga": {"type": "session.update", "session": {"type": "realtime", "model": "catalog-realtime-deployment", "output_modalities": ["text"], "audio": {"input": {"turn_detection": null, "transcription": null}}}}
+    },
+    {
+      "name": "semantic-vad",
+      "application": {"type": "session.update", "session": {"turn_detection": {"type": "semantic_vad", "eagerness": "low", "create_response": true, "interrupt_response": true}}},
+      "ga": {"type": "session.update", "session": {"type": "realtime", "model": "catalog-realtime-deployment", "audio": {"input": {"turn_detection": {"type": "semantic_vad", "eagerness": "low", "create_response": true, "interrupt_response": true}}}}}
+    },
+    {
+      "name": "user-seed",
+      "application": {"type": "conversation.item.create", "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]}},
+      "ga": {"type": "conversation.item.create", "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]}}
+    },
+    {
+      "name": "assistant-seed",
+      "application": {"type": "conversation.item.create", "item": {"type": "message", "role": "assistant", "content": [{"type": "text", "text": "Hello"}]}},
+      "ga": {"type": "conversation.item.create", "item": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hello"}]}}
+    },
+    {
+      "name": "response-controls",
+      "application": {"type": "response.create", "response": {"modalities": ["text", "audio"], "voice": "alloy", "output_audio_format": "pcm16", "temperature": 0.8, "max_output_tokens": 128, "conversation": "none", "input": [{"type": "message", "role": "assistant", "content": [{"type": "text", "text": "Context"}]}], "metadata": {"purpose": "offline-fixture"}}},
+      "ga": {"type": "response.create", "response": {"output_modalities": ["audio"], "audio": {"output": {"voice": "alloy", "format": {"type": "audio/pcm", "rate": 24000}}}, "max_output_tokens": 128, "conversation": "none", "input": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Context"}]}], "metadata": {"purpose": "offline-fixture"}}}
+    }
+  ],
+  "server": [
+    {
+      "name": "session-created",
+      "ga": {"type": "session.created", "session": {"id": "sess_1", "object": "realtime.session", "type": "realtime", "model": "catalog-realtime-deployment", "output_modalities": ["audio"], "max_output_tokens": 512, "audio": {"input": {"format": {"type": "audio/pcm", "rate": 24000}, "transcription": {"model": "whisper-1"}, "turn_detection": null}, "output": {"format": {"type": "audio/pcm", "rate": 24000}, "voice": "alloy"}}}},
+      "application": {"type": "session.created", "session": {"id": "sess_1", "object": "realtime.session", "model": "catalog-realtime-deployment", "modalities": ["text", "audio"], "max_response_output_tokens": 512, "input_audio_format": "pcm16", "input_audio_transcription": {"model": "whisper-1"}, "turn_detection": null, "output_audio_format": "pcm16", "voice": "alloy"}}
+    },
+    {
+      "name": "session-updated",
+      "ga": {"type": "session.updated", "session": {"type": "realtime", "audio": {"input": {"noise_reduction": null, "transcription": null, "turn_detection": {"type": "semantic_vad"}}, "output": {"voice": "verse", "speed": 1.2}}}},
+      "application": {"type": "session.updated", "session": {"input_audio_noise_reduction": null, "input_audio_transcription": null, "turn_detection": {"type": "semantic_vad"}, "voice": "verse", "speed": 1.2}}
+    },
+    {
+      "name": "audio-delta",
+      "ga": {"type": "response.output_audio.delta", "response_id": "resp_1", "item_id": "item_1", "output_index": 0, "content_index": 0, "delta": "AAA="},
+      "application": {"type": "response.audio.delta", "response_id": "resp_1", "item_id": "item_1", "output_index": 0, "content_index": 0, "delta": "AAA="}
+    },
+    {
+      "name": "audio-done",
+      "ga": {"type": "response.output_audio.done", "response_id": "resp_1", "item_id": "item_1", "output_index": 0, "content_index": 0},
+      "application": {"type": "response.audio.done", "response_id": "resp_1", "item_id": "item_1", "output_index": 0, "content_index": 0}
+    },
+    {
+      "name": "transcript-delta",
+      "ga": {"type": "response.output_audio_transcript.delta", "response_id": "resp_1", "item_id": "item_1", "output_index": 0, "content_index": 0, "delta": "Hello"},
+      "application": {"type": "response.audio_transcript.delta", "response_id": "resp_1", "item_id": "item_1", "output_index": 0, "content_index": 0, "delta": "Hello"}
+    },
+    {
+      "name": "transcript-done",
+      "ga": {"type": "response.output_audio_transcript.done", "response_id": "resp_1", "item_id": "item_1", "output_index": 0, "content_index": 0, "transcript": "Hello"},
+      "application": {"type": "response.audio_transcript.done", "response_id": "resp_1", "item_id": "item_1", "output_index": 0, "content_index": 0, "transcript": "Hello"}
+    },
+    {
+      "name": "text-delta",
+      "ga": {"type": "response.output_text.delta", "response_id": "resp_text", "item_id": "text_1", "output_index": 0, "content_index": 0, "delta": "Text"},
+      "application": {"type": "response.text.delta", "response_id": "resp_text", "item_id": "text_1", "output_index": 0, "content_index": 0, "delta": "Text"}
+    },
+    {
+      "name": "text-done",
+      "ga": {"type": "response.output_text.done", "response_id": "resp_text", "item_id": "text_1", "output_index": 0, "content_index": 0, "text": "Text"},
+      "application": {"type": "response.text.done", "response_id": "resp_text", "item_id": "text_1", "output_index": 0, "content_index": 0, "text": "Text"}
+    },
+    {
+      "name": "conversation-added",
+      "ga": {"type": "conversation.item.added", "previous_item_id": null, "item": {"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "status": "in_progress", "content": [{"type": "output_text", "text": "Hello"}]}},
+      "application": {"type": "conversation.item.created", "previous_item_id": null, "item": {"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "status": "in_progress", "content": [{"type": "text", "text": "Hello"}]}}
+    },
+    {
+      "name": "output-item",
+      "ga": {"type": "response.output_item.done", "response_id": "resp_1", "output_index": 0, "item": {"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_audio", "transcript": "Hello"}]}},
+      "application": {"type": "response.output_item.done", "response_id": "resp_1", "output_index": 0, "item": {"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "audio", "transcript": "Hello"}]}}
+    },
+    {
+      "name": "content-part",
+      "ga": {"type": "response.content_part.done", "response_id": "resp_1", "item_id": "item_1", "output_index": 0, "content_index": 0, "part": {"type": "output_audio", "transcript": "Hello"}},
+      "application": {"type": "response.content_part.done", "response_id": "resp_1", "item_id": "item_1", "output_index": 0, "content_index": 0, "part": {"type": "audio", "transcript": "Hello"}}
+    },
+    {
+      "name": "response-done",
+      "ga": {"type": "response.done", "response": {"id": "resp_1", "object": "realtime.response", "status": "completed", "output_modalities": ["audio"], "audio": {"output": {"voice": "alloy", "format": {"type": "audio/pcm", "rate": 24000}}}, "output": [{"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "content": [{"type": "output_audio", "transcript": "Hello"}]}], "usage": {"total_tokens": 14, "input_tokens": 10, "output_tokens": 4, "input_token_details": {"cached_tokens": 2, "text_tokens": 4, "audio_tokens": 6}, "output_token_details": {"text_tokens": 1, "audio_tokens": 3}}}},
+      "application": {"type": "response.done", "response": {"id": "resp_1", "object": "realtime.response", "status": "completed", "modalities": ["text", "audio"], "voice": "alloy", "output_audio_format": "pcm16", "output": [{"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "content": [{"type": "audio", "transcript": "Hello"}]}], "usage": {"total_tokens": 14, "input_tokens": 10, "output_tokens": 4, "input_token_details": {"cached_tokens": 2, "text_tokens": 4, "audio_tokens": 6}, "output_token_details": {"text_tokens": 1, "audio_tokens": 3}}}}
+    }
+  ]
+}

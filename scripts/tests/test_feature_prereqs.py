@@ -107,6 +107,42 @@ def _write_parameters(tmpdir: str, overrides: dict[str, Any]) -> Path:
     return path
 
 
+class StagedRealtimeTests(unittest.TestCase):
+    def test_ga_staging_and_selection_require_their_parent_gate(self) -> None:
+        cases = (
+            (
+                {"voiceLiveEnabled": False, "voiceLiveToolsEnabled": False, "realtimeGaEnabled": True},
+                {"voiceLiveEnabled": True}, "realtimeGaEnabled=true requires voiceLiveEnabled=true",
+            ),
+            (
+                {"realtimeGaEnabled": False, "realtimeProtocol": "ga"},
+                {"realtimeGaEnabled": True}, "realtimeProtocol=ga requires realtimeGaEnabled=true",
+            ),
+            (
+                {"realtimeProtocol": "automatic"},
+                {"realtimeProtocol": "preview"}, "realtimeProtocol must be preview or ga",
+            ),
+        )
+        for denied, allowed, message in cases:
+            with self.subTest(denied=denied), tempfile.TemporaryDirectory() as tmp, _environment():
+                code, _, err = _run(_write_parameters(tmp, denied))
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+                code, _, err = _run(_write_parameters(tmp, {**denied, **allowed}))
+                self.assertEqual(code, 0, err)
+
+    def test_committed_ga_surface_is_off_and_preview_remains_selected(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        self.assertEqual(parameters["realtimeGaEnabled"]["value"], "${AI4IA_REALTIME_GA_ENABLED=false}")
+        self.assertEqual(parameters["realtimeProtocol"]["value"], "${AI4IA_REALTIME_PROTOCOL=preview}")
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            for protocol in ("preview", "ga"):
+                code, _, err = _run(_write_parameters(tmp, {
+                    "realtimeGaEnabled": True, "realtimeProtocol": protocol,
+                }))
+                self.assertEqual(code, 0, err)
+
+
 class CommittedParametersTests(unittest.TestCase):
     def test_hard_quota_default_off_and_deployed_activation_refused(self) -> None:
         for enabled in ("true", "false"):

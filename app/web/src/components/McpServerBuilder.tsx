@@ -8,6 +8,7 @@ import {
   MCP_AUTH_MODES,
   MCP_MAX_DESCRIPTION_LEN,
   MCP_MAX_DISPLAY_NAME_LEN,
+  MCP_PROTOCOL_VERSIONS,
   MCP_TOOL_APPROVALS,
   mcpEndpointError,
   mcpSecretError,
@@ -15,6 +16,7 @@ import {
   quarantineReason,
   toolApprovalPosture,
   type McpAuthMode,
+  type McpProtocolVersion,
   type McpToolApproval,
   type UserMcpServer,
 } from "@/lib/customTools";
@@ -35,6 +37,7 @@ interface ServerForm {
   displayName: string;
   description: string;
   endpoint: string;
+  protocolVersion: McpProtocolVersion;
   authMode: McpAuthMode;
   secret: string;
   trusted: boolean;
@@ -47,6 +50,7 @@ function blankForm(): ServerForm {
     displayName: "",
     description: "",
     endpoint: "",
+    protocolVersion: "2025-06-18",
     authMode: "none",
     secret: "",
     trusted: false,
@@ -62,6 +66,7 @@ function formFrom(s: UserMcpServer): ServerForm {
     displayName: s.displayName,
     description: s.description,
     endpoint: s.endpoint,
+    protocolVersion: s.protocolVersion ?? "2025-06-18",
     authMode: s.authMode,
     secret: "",
     trusted: s.trusted,
@@ -132,6 +137,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
       displayName: form.displayName || null,
       description: form.description,
       endpoint: form.endpoint.trim(),
+      protocolVersion: form.protocolVersion,
       authMode: form.authMode,
       secret: form.authMode === "none" ? null : form.secret || null,
       trusted: form.trusted,
@@ -222,6 +228,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
           displayName: server.displayName || null,
           description: server.description,
           endpoint: server.endpoint,
+          protocolVersion: server.protocolVersion ?? "2025-06-18",
           authMode: server.authMode,
           secret: null, // reuse the durably stored credential
           trusted: server.trusted,
@@ -357,6 +364,31 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
             onChange={(e) => setForm((f) => ({ ...f, endpoint: e.target.value }))}
             style={inputStyle}
           />
+        </div>
+
+        <div>
+          <label style={labelStyle} htmlFor="mcp-protocol">MCP protocol</label>
+          <select
+            id="mcp-protocol"
+            value={form.protocolVersion}
+            onChange={(e) => {
+              const choice = MCP_PROTOCOL_VERSIONS.find((p) => p.value === e.target.value);
+              if (!choice) {
+                setError("Unsupported MCP protocol.");
+                return;
+              }
+              setForm((f) => ({ ...f, protocolVersion: choice.value }));
+            }}
+            style={inputStyle}
+          >
+            {MCP_PROTOCOL_VERSIONS.map((p) => (
+              <option key={p.value} value={p.value}>{p.label}</option>
+            ))}
+          </select>
+          <p style={{ ...labelStyle, marginTop: 4 }}>
+            Use stateless only after verifying this server supports it. Saving reconnects
+            and changes the tool consent contract. Errors never switch protocols or replay calls.
+          </p>
         </div>
 
         <div>
