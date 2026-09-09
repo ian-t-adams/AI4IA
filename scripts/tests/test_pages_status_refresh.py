@@ -265,6 +265,47 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertIn("refuses to publish stale seed data", greenfield)
         self.assertNotIn("if you also want pushes", greenfield)
 
+    def test_pages_metadata_and_publication_are_isolated_from_the_status_build(self) -> None:
+        document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        jobs = document["jobs"]
+
+        def locate(action: str) -> tuple[str, int]:
+            matches = [
+                (job_name, index)
+                for job_name, job in jobs.items()
+                for index, step in enumerate(job["steps"])
+                if step.get("uses", "").startswith(f"{action}@")
+            ]
+            self.assertEqual(len(matches), 1, f"Expected exactly one {action} step.")
+            return matches[0]
+
+        build_name, _ = locate("actions/upload-pages-artifact")
+        deploy_name, deploy_index = locate("actions/deploy-pages")
+        configure_name, configure_index = locate("actions/configure-pages")
+        login_name, _ = locate("azure/login")
+        self.assertNotEqual(build_name, deploy_name)
+        self.assertEqual(login_name, build_name)
+        self.assertEqual(configure_name, deploy_name, "The status build must not read or write Pages.")
+        self.assertLess(configure_index, deploy_index)
+
+        build, deploy = jobs[build_name], jobs[deploy_name]
+        self.assertEqual(document["permissions"], {})
+        self.assertEqual(build["permissions"], {"contents": "read", "id-token": "write"})
+        self.assertEqual(deploy["permissions"], {"pages": "write", "id-token": "write"})
+        self.assertNotIn("environment", build, "Azure federation must keep the main-ref subject.")
+        self.assertEqual(deploy["environment"]["name"], "github-pages")
+        needs = deploy["needs"]
+        self.assertEqual([needs] if isinstance(needs, str) else needs, [build_name])
+        self.assertNotIn("if", deploy, "Publication must still require a successful status build.")
+
+        configure = deploy["steps"][configure_index]
+        self.assertNotIn("if", configure)
+        self.assertNotIn("continue-on-error", configure)
+        self.assertIn(configure.get("with", {}).get("enablement", False), (False, "false"))
+        # No generator configuration or metadata output feeds this plain static
+        # artifact, so configure-pages can run without a checkout in the deploy job.
+        self.assertNotIn("static_site_generator", configure.get("with", {}))
+
     def test_public_copy_calls_status_a_timestamped_snapshot_not_live_health(self) -> None:
         public_copy = "\n".join(
             path.read_text(encoding="utf-8").lower()
