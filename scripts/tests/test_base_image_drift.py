@@ -10,6 +10,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from email.message import Message
 from pathlib import Path
@@ -249,6 +250,15 @@ class BaseImageDriftTests(unittest.TestCase):
         control = drift.observe(pin, Mock(return_value=response))
         self.assertIsNone(control["error"])
 
+    def test_unsupported_media_cannot_pass_even_with_an_index_shaped_body(self):
+        for media_type in (CHILD, "application/json"):
+            response = index_response(index_document(media_type))
+            result = drift.observe(pin_for(response), Mock(return_value=response))
+            self.assertEqual(result["error"], "index_response_required")
+            self.assertIsNone(result["observedDigest"])
+        response = index_response()
+        self.assertIsNone(drift.observe(pin_for(response), Mock(return_value=response))["error"])
+
     def test_attestation_descriptors_do_not_inflate_platform_coverage(self):
         document = index_document()
         attestation = copy.deepcopy(document["manifests"][0])
@@ -351,6 +361,22 @@ class BaseImageDriftTests(unittest.TestCase):
                 self.assertEqual(drift.main(["--format", "json"]), exit_code)
             self.assertEqual(json.loads(output.getvalue())["status"], status)
         self.assertEqual(before, {path: (ROOT / path).read_bytes() for path in paths})
+
+    def test_observation_deadline_really_terminates_an_unresponsive_worker(self):
+        run = subprocess.run
+
+        def sleeping_worker(_command, **kwargs):
+            return run([sys.executable, "-c", "import time; time.sleep(2)"], **kwargs)
+
+        started = time.monotonic()
+        with (
+            patch.object(drift, "OBSERVATION_TIMEOUT", 0.2),
+            patch.object(drift.subprocess, "run", side_effect=sleeping_worker),
+        ):
+            result = drift.observe_bounded(pin_for(index_response()))
+        self.assertEqual(result["error"], "observation_deadline_exceeded")
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertIsNone(result["observedDigest"])
 
     def test_source_failures_and_oversized_reports_cannot_look_complete(self):
         with (
