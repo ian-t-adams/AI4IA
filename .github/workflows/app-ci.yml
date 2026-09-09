@@ -34,6 +34,8 @@ on:
       - "scripts/provision-foundry-routine.py"
       - "scripts/provision-foundry-a2a.py"
       - "scripts/tests/test_memory_cosmos_migration.py"
+      - "scripts/evaluations/**"
+      - "scripts/tests/test_behavioral_evaluations.py"
       - ".github/workflows/app-ci.yml"
 
 permissions:
@@ -118,6 +120,25 @@ jobs:
         run: pyright
       - name: Test (pytest)
         run: pytest -q
+      - name: Offline behavioral evaluations
+        id: behavioral
+        working-directory: .
+        run: python -m scripts.evaluations run --output "${RUNNER_TEMP}/behavioral-evaluation.json"
+      - name: Retain content-free synthetic evaluation report
+        if: ${{ !cancelled() && (steps.behavioral.outcome == 'success' || steps.behavioral.outcome == 'failure') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: behavioral-evaluation
+          path: ${{ runner.temp }}/behavioral-evaluation.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Behavioral evaluator controls
+        if: ${{ !cancelled() && (steps.behavioral.outcome == 'success' || steps.behavioral.outcome == 'failure') }}
+        working-directory: .
+        run: |
+          ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py
+          pyright --project scripts/evaluations
+          python -m pytest -q scripts/tests/test_behavioral_evaluations.py
       - name: Memory migration script tests
         working-directory: .
         run: pytest -q scripts/tests/test_memory_cosmos_migration.py

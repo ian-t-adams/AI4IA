@@ -28,6 +28,7 @@
       "docs": [
         { "path": "docs/configuration-reference.md", "title": "Configuration reference", "desc": "Every feature/env/parameter mapping across bicep, params, workflow vars and app env." },
         { "path": "docs/region-capability-matrix.md", "title": "Region & capability map", "desc": "Resource location versus inference residency, region strategy, shared quota pools, model capabilities and lifecycle discipline." },
+        { "path": "docs/behavioral-evaluations.md", "title": "Offline behavioral evaluations", "desc": "Synthetic behavioral regression commands, executed app seams, complete coverage reports, compatible comparisons, and live/judge/privacy approval boundaries." },
         { "path": "docs/naming-and-tagging.md", "title": "Naming & tagging", "desc": "Resource naming tokens and the tag scheme applied across the deployment." },
         { "path": "docs/foundry-toolbox.md", "title": "Foundry toolbox", "desc": "The official MCP plane: toolbox tools, progressively disclosed Foundry skills, A2A, and the private tool catalog." },
         { "path": "docs/aca-sandboxes-evaluation.md", "title": "ACA Sandboxes evaluation", "desc": "Decision record and PoC contract for evaluating customizable ACA Sandboxes without replacing the APIM-fronted production Code Interpreter." },
