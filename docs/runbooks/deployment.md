@@ -135,6 +135,53 @@ commit and a fresh provision, not a rollback.
 
 ## 2. Before a routine deployment
 
+### Read-only base image drift
+
+Inspect the current public base-tag indexes before proposing a pin refresh:
+
+```powershell
+python scripts/check-base-image-drift.py
+python scripts/check-base-image-drift.py --format json
+```
+
+This stdlib-only check derives owned Dockerfiles from Git using the same helper
+as the existing base-pin CI contract. It excludes only the pinned vendored proxy
+Dockerfile, resolves earlier build-stage aliases, and deduplicates repeated
+`FROM` references while retaining every file/line source. It does not require
+Docker, an Azure login, stored registry credentials or a running daemon.
+
+The check reads tag metadata from public Docker Hub and Microsoft Container
+Registry. It accepts only OCI indexes or Docker manifest lists with at least two
+distinct runnable platform identities; attestation entries do not inflate that
+count. The observed digest is SHA-256 over the exact index bytes, checked against
+the registry digest header when present. Platform-specific manifests,
+contradictory media/digest evidence, unsupported registries, malformed sources and
+network failures are unknown, not up-to-date. Docker Hub's anonymous token
+challenge is restricted to its official token endpoint and the exact repository's
+pull-only scope; redirects, stored credentials and image-layer downloads are not
+used.
+
+Exit codes are **0** for all pins current, **1** for observed drift, and **2**
+for incomplete/unknown coverage. Unknown takes precedence over drift, but healthy
+and changed rows remain in the report when a different observation fails. Each
+row records its attempted observation time, pinned/observed digest, platform
+coverage and safe failure category without publishing token responses or raw
+network errors.
+
+Limits are 32 owned Dockerfiles, 32 distinct base references, 128 reference
+locations, 128 KiB per Dockerfile, 1 MiB per manifest, 64 KiB per token response,
+256 index descriptors and 128 KiB per final report. A 30-second child-process
+deadline bounds each entire metadata/auth/body observation, including a peer that
+drips bytes; individual TLS operations also have a 10-second timeout. Public
+HTTPS connectivity to the named registries is required. Coverage failures remain
+nonzero rather than falling back to cached/private credentials.
+
+No new workflow or schedule is activated. A report never rewrites a Dockerfile,
+refreshes a pin, pushes an image or deploys the app. Review a proposed
+multi-platform pin update separately and run the existing image-build gates.
+This does not provide production SBOMs, signatures, provenance or their
+pre-deployment verification; those remaining requirements stay tracked in #414.
+
 ### 2.1 Confirm configuration and generated artifacts
 
 The deploy workflow runs the catalog, gateway-policy, and prerequisite checks

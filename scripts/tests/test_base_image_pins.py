@@ -38,7 +38,6 @@ fails there, loudly, on the PR that introduces it.
 from __future__ import annotations
 
 import re
-import subprocess
 import unittest
 from pathlib import Path
 
@@ -46,6 +45,13 @@ from pathlib import Path
 # skips silently reports success while checking nothing. The workflow step
 # installs it.
 import yaml
+
+from scripts._base_image_refs import (
+    PINNED_REF,
+    VENDORED_PREFIXES,
+    external_references,
+    tracked_dockerfiles,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCKER_BUILD = ROOT / ".github/workflows/docker-build.yml"
@@ -55,22 +61,7 @@ APP_CI = ROOT / ".github/workflows/app-ci.yml"
 # pinned commit and carries its own upstream Dockerfile, which AI4IA does not
 # build (the AI4IA image is `proxy/Dockerfile`, one level up) and must not edit.
 # `.yamllint` excludes the same path for the same reason.
-VENDORED_PREFIXES = ("proxy/SimpleL7Proxy/",)
-
 UNPINNED_DOCKERFILES: dict[str, str] = {}
-
-# `FROM [--flag=value ...] <ref> [AS <stage>]`
-FROM_LINE = re.compile(
-    r"^\s*FROM\s+(?:--\S+\s+)*(?P<ref>\S+)(?:\s+AS\s+(?P<stage>\S+))?\s*$",
-    re.IGNORECASE,
-)
-
-# `<name>:<tag>@sha256:<64 lowercase hex>`. The tag is required, not optional:
-# a bare `name@sha256:...` is still immutable but drops the version a reader and
-# Dependabot both rely on.
-PINNED_REF = re.compile(
-    r"^(?P<name>[^@\s]+):(?P<tag>[^@:/]+)@sha256:(?P<digest>[0-9a-f]{64})$"
-)
 
 # Expected (image name, tag prefix) per CI toolchain version key.
 CI_TOOLCHAIN = {
@@ -82,37 +73,13 @@ CI_TOOLCHAIN = {
 def _tracked_dockerfiles() -> list[str]:
     """Every Dockerfile this repo owns, vendored upstream trees excluded."""
 
-    out = subprocess.run(
-        ["git", "ls-files", "--", "*Dockerfile", "*Dockerfile.*"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    return sorted(
-        line.strip()
-        for line in out.splitlines()
-        if line.strip() and not line.strip().startswith(VENDORED_PREFIXES)
-    )
+    return tracked_dockerfiles(ROOT)
 
 
 def _parse_froms(path: str) -> list[str]:
     """External base-image references in ``path``, skipping intra-file stages."""
 
-    stages: set[str] = set()
-    refs: list[str] = []
-    for line in (ROOT / path).read_text(encoding="utf-8").splitlines():
-        match = FROM_LINE.match(line)
-        if not match:
-            continue
-        ref = match.group("ref")
-        stage = match.group("stage")
-        # `FROM builder AS runner` names an earlier stage, not a registry image.
-        if ref.lower() not in stages:
-            refs.append(ref)
-        if stage:
-            stages.add(stage.lower())
-    return refs
+    return [reference for _, reference in external_references(ROOT / path)]
 
 
 def _dockerfiles_built_by_ci() -> set[str]:
