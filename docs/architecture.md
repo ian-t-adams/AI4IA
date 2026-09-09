@@ -227,6 +227,8 @@ Foundry Toolbox. It uses `initialize`, validates the returned version, sends
 `notifications/initialized`, and retains any valid negotiated session ID on
 subsequent requests. A server returning a different or missing version fails
 visibly rather than being called under a contradictory contract.
+Paginated legacy lists retain one initialized, DNS-pinned session and use distinct
+request IDs; cursors never cross sessions. Reaching a list cap closes that client.
 
 Opting one server into **`2026-07-28`** uses self-contained POST requests with
 `params._meta` protocol version, client identity and empty client capabilities.
@@ -267,6 +269,11 @@ refresh and observed list-change notifications invalidate entries, including
 in-flight fills; errors never return stale success. Registration and reconnect
 refresh the durable BYO attachment snapshot independently of this cache.
 Neither approvals nor tool results nor skill contents are cached.
+Official discovery readers join an in-flight refresh rather than interpreting
+retry backoff as freshness. Cancellation clears the active server's expired
+metadata with a visible error, without counting it as an upstream failure.
+Refresh results cannot publish across configuration/auth changes or an explicit
+invalidation.
 
 Both versions use the same no-redirect, bounded-response and DNS-pinned public
 HTTPS transport. SSE returns on the matching final response; cancellation closes

@@ -802,3 +802,80 @@ async def test_redirects_cannot_reach_another_host_even_with_redirect_enabled_te
             )
     assert all(request.url.host == "mcp.example.com" for request, _ in seen)
     assert sum(body["method"] == "tools/call" for _, body in seen) == 1
+
+
+@pytest.mark.parametrize("operation", ["tools/list", "resources/list"])
+@pytest.mark.parametrize("session_bound", [False, True])
+async def test_legacy_pagination_keeps_session_scoped_cursors_and_distinct_request_ids(operation, session_bound):
+    requests = []
+    initialized = []
+    lookups = []
+    clients = []
+    auth = McpAuth(McpAuthMode.api_key, "legacy-key")
+    def handler(request):
+        body = json.loads(request.content)
+        assert request.headers["X-API-Key"] == "legacy-key"
+        method = body["method"]
+        if method == "initialize":
+            session = f"session-{len(initialized) + 1}"
+            initialized.append(session)
+            return httpx.Response(200, headers={"Mcp-Session-Id": session}, json={
+                "jsonrpc": "2.0", "id": body["id"],
+                "result": {"protocolVersion": LEGACY.value, "capabilities": {"tools": {}, "resources": {}}},
+            })
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        assert method == operation
+        session = request.headers["Mcp-Session-Id"]
+        cursor = body["params"].get("cursor")
+        requests.append((session, cursor, body["id"]))
+        if cursor and session_bound and cursor != f"{session}:next":
+            return httpx.Response(200, json={
+                "jsonrpc": "2.0", "id": body["id"],
+                "error": {"code": -32602, "message": "Cursor belongs to another session."},
+            })
+        name = "second" if cursor else "first"
+        fields = (
+            {"tools": [{**TOOL, "name": name}]} if operation == "tools/list"
+            else {"resources": [{"uri": f"skill://{name}/SKILL.md", "name": name}]}
+        )
+        if not cursor:
+            fields["nextCursor"] = f"{session}:next" if session_bound else "portable"
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": fields})
+    def resolver(host):
+        lookups.append(host)
+        return ["93.184.216.34"]
+    class Connector(_MockInnerConnector):
+        def _new_client(self, pinned_ip):
+            client = super()._new_client(pinned_ip)
+            clients.append(client)
+            return client
+    connector = Connector(handler, resolver=resolver)
+    method = connector.discover if operation == "tools/list" else connector.list_resources
+    result = await method(endpoint=ENDPOINT, auth=auth)
+    assert [item.name for item in result] == ["first", "second"]
+    if session_bound:
+        assert initialized == ["session-1"]
+        assert requests == [("session-1", None, 2), ("session-1", "session-1:next", 3)]
+    assert lookups == ["mcp.example.com"]
+    assert len(clients) == 1 and clients[0].is_closed
+
+
+async def test_legacy_pagination_item_cap_closes_owned_client_without_fetching_another_page():
+    clients = []
+    seen = []
+    def response(_request, body):
+        assert "cursor" not in body["params"]
+        return httpx.Response(200, json={
+            "jsonrpc": "2.0", "id": body["id"],
+            "result": {"tools": [{**TOOL, "name": f"tool-{i}"} for i in range(50)], "nextCursor": "unused"},
+        })
+    class Connector(_MockInnerConnector):
+        def _new_client(self, pinned_ip):
+            client = super()._new_client(pinned_ip)
+            clients.append(client)
+            return client
+    connector = Connector(_wire(LEGACY, seen, response=response), resolver=lambda _host: ["93.184.216.34"])
+    assert len(await connector.discover(endpoint=ENDPOINT, auth=McpAuth())) == 50
+    assert len(seen) == 3
+    assert len(clients) == 1 and clients[0].is_closed

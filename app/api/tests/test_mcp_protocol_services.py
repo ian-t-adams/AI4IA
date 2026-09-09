@@ -303,3 +303,122 @@ def test_request_context_changes_for_connection_configuration_even_without_revis
     assert McpRequestContext.for_server(server.model_copy()) == original
     setattr(server, change, value)
     assert McpRequestContext.for_server(server) != original
+
+
+class _RefreshingWire:
+    def __init__(self, block_method):
+        self.block_method = block_method
+        self.refreshing = False
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def response(self, _request, body):
+        method = body["method"]
+        if self.refreshing and method == self.block_method:
+            self.started.set()
+            await self.release.wait()
+        label = "new" if self.refreshing else "old"
+        fields = {
+            "server/discover": {"supportedVersions": [MODERN.value], "capabilities": {"tools": {}, "resources": {}}},
+            "tools/list": {"tools": [{
+                "name": f"{label}_tool", "description": label, "inputSchema": ROUTING_SCHEMA,
+            }]},
+            "resources/list": {"resources": [{"uri": URI, "name": "evidence-review", "description": label}]},
+            "resources/read": {"contents": [{"uri": URI, "text": f"{label} skill"}]},
+        }[method]
+        return httpx.Response(200, json={
+            "jsonrpc": "2.0", "id": body["id"], "result": _result(MODERN, ttlMs=10, **fields),
+        })
+
+
+@pytest.mark.parametrize("block_method", ["tools/list", "resources/list"])
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_official_readers_wait_for_refresh_and_cancellation_cannot_serve_stale_metadata(
+    monkeypatch, block_method, cancel,
+):
+    clock = [100.0]
+    monkeypatch.setattr(mcp_client, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    seen = []
+    wire = _RefreshingWire(block_method)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        _wire(MODERN, seen, response=wire.response)
+    )) as client:
+        service = _official(HttpxMcpConnector(client=client), MODERN)
+        service._retry_interval_s = 60
+        [server] = await service.list_all()
+        assert [tool.name for tool in server.discoveredTools] == ["old_tool"]
+        assert (await service.read_resource(server, URI)).text == "old skill"
+        clock[0] += 0.011
+        wire.refreshing = True
+        refresh = asyncio.create_task(service.list_all())
+        await asyncio.wait_for(wire.started.wait(), 1)
+        reader = asyncio.create_task(service.list_all())
+        resource = asyncio.create_task(service.read_resource(server, URI))
+        try:
+            await asyncio.sleep(0)
+            assert not reader.done()  # Backoff must not expose the expired snapshot.
+            assert not resource.done()
+            if cancel:
+                refresh.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await refresh
+                [after] = await reader
+                assert not after.discoveredTools
+                assert not after.discoveredResources
+                assert after.lastError == "MCP discovery was cancelled."
+                assert after.consecutiveFailures == 0
+                with pytest.raises(ValueError, match="not advertised"):
+                    await resource
+                before = len(seen)
+                [backoff] = await service.list_all()
+                assert not backoff.discoveredTools and not backoff.discoveredResources
+                assert backoff.lastError
+                assert len(seen) == before
+            else:
+                wire.release.set()
+                await refresh
+                [after] = await reader
+                assert [tool.name for tool in after.discoveredTools] == ["new_tool"]
+                assert after.discoveredResources[0].description == "new"
+                assert after.lastError is None
+                assert (await resource).text == "new skill"
+            assert sum(body["method"] == "resources/read" for _, body in seen) == (1 if cancel else 2)
+        finally:
+            wire.release.set()
+            if not refresh.done():
+                refresh.cancel()
+            await asyncio.gather(refresh, reader, resource, return_exceptions=True)
+
+
+@pytest.mark.parametrize("change", [None, "auth", "endpoint", "refresh"])
+async def test_official_in_flight_discovery_cannot_publish_invalidated_identity(monkeypatch, change):
+    clock = [100.0]
+    monkeypatch.setattr(mcp_client, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    seen = []
+    wire = _RefreshingWire("tools/list")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        _wire(MODERN, seen, response=wire.response)
+    )) as client:
+        service = _official(HttpxMcpConnector(client=client), MODERN)
+        [server] = await service.list_all()
+        clock[0] += 0.011
+        wire.refreshing = True
+        task = asyncio.create_task(service.list_all())
+        await asyncio.wait_for(wire.started.wait(), 1)
+        if change == "auth":
+            service._subscription_key = "replacement-key"
+        elif change == "endpoint":
+            server.endpoint += "/replacement"
+        elif change == "refresh":
+            service.refresh()
+        wire.release.set()
+        [result] = await task
+        if change is None:
+            assert [tool.name for tool in result.discoveredTools] == ["new_tool"]
+        else:
+            assert not result.discoveredTools and not result.discoveredResources
+            assert result.lastError == "MCP configuration changed during discovery."
+            assert result.consecutiveFailures == 0
+            [fresh] = await service.list_all()
+            assert [tool.name for tool in fresh.discoveredTools] == ["new_tool"]
+            assert fresh.lastError is None

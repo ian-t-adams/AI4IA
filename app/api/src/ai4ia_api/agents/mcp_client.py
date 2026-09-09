@@ -25,7 +25,8 @@ import re
 import secrets
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import aclosing, asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from itertools import count
@@ -351,15 +352,16 @@ class HttpxMcpConnector:
     ) -> list[DiscoveredTool]:
         tools: list[DiscoveredTool] = []
         seen: set[str] = set()
-        async for payload in self._list_pages(endpoint, auth, context, "tools/list"):
-            for tool in self._parse_tools(
-                payload, modern=context.protocol_version is McpProtocolVersion.stateless
-            ):
-                if tool.name not in seen:
-                    tools.append(tool)
-                    seen.add(tool.name)
-                if len(tools) >= MAX_TOOLS_PER_SERVER:
-                    return tools
+        async with aclosing(self._list_pages(endpoint, auth, context, "tools/list")) as pages:
+            async for payload in pages:
+                for tool in self._parse_tools(
+                    payload, modern=context.protocol_version is McpProtocolVersion.stateless
+                ):
+                    if tool.name not in seen:
+                        tools.append(tool)
+                        seen.add(tool.name)
+                    if len(tools) >= MAX_TOOLS_PER_SERVER:
+                        return tools
         return tools
 
     async def call_tool(
@@ -380,41 +382,51 @@ class HttpxMcpConnector:
     ) -> list[DiscoveredResource]:
         resources: list[DiscoveredResource] = []
         seen: set[str] = set()
-        async for payload in self._list_pages(endpoint, auth, context, "resources/list"):
-            for resource in self._parse_resources(payload):
-                if resource.uri not in seen:
-                    resources.append(resource)
-                    seen.add(resource.uri)
-                if len(resources) >= MAX_RESOURCES_PER_SERVER:
-                    return resources
+        async with aclosing(self._list_pages(endpoint, auth, context, "resources/list")) as pages:
+            async for payload in pages:
+                for resource in self._parse_resources(payload):
+                    if resource.uri not in seen:
+                        resources.append(resource)
+                        seen.add(resource.uri)
+                    if len(resources) >= MAX_RESOURCES_PER_SERVER:
+                        return resources
         return resources
 
     async def _list_pages(
         self, endpoint: str, auth: McpAuth, context: McpRequestContext, method: str
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         params: dict[str, Any] = {}
         seen: set[str] = set()
         scope: str | None = None
+        self._validate_connection(auth, context)
         try:
-            for _ in range(MAX_LIST_PAGES):
-                response = await self._request(endpoint, auth, context, method=method, params=params)
-                result = response.payload["result"]
-                if context.protocol_version is McpProtocolVersion.stateless:
-                    page_scope = result.get("cacheScope", "private")
-                    if scope is not None and page_scope != scope:
-                        raise McpConnectionError(f"{method}: contradictory page cache scopes.")
-                    scope = page_scope
-                yield response.payload
-                cursor = result.get("nextCursor")
-                if cursor is None:
-                    return
-                if (
-                    not isinstance(cursor, str) or not cursor or len(cursor) > 2048
-                    or cursor in seen
-                ):
-                    raise McpConnectionError(f"{method}: invalid or repeated pagination cursor.")
-                seen.add(cursor)
-                params = {"cursor": cursor}
+            async with self._client_for(endpoint, method) as client:
+                # Legacy cursors belong to the initialized session. Keep both
+                # that session and its DNS-pinned client until pagination ends.
+                headers = await self._open_session(client, endpoint, auth, context)
+                for page in range(MAX_LIST_PAGES):
+                    response = await self._rpc(
+                        client, endpoint, headers,
+                        rpc_id=next(self._request_ids) if context.protocol_version is McpProtocolVersion.stateless else page + 2,
+                        method=method, params=params, context=context, auth=auth,
+                    )
+                    result = response.payload["result"]
+                    if context.protocol_version is McpProtocolVersion.stateless:
+                        page_scope = result.get("cacheScope", "private")
+                        if scope is not None and page_scope != scope:
+                            raise McpConnectionError(f"{method}: contradictory page cache scopes.")
+                        scope = page_scope
+                    yield response.payload
+                    cursor = result.get("nextCursor")
+                    if cursor is None:
+                        return
+                    if (
+                        not isinstance(cursor, str) or not cursor or len(cursor) > 2048
+                        or cursor in seen
+                    ):
+                        raise McpConnectionError(f"{method}: invalid or repeated pagination cursor.")
+                    seen.add(cursor)
+                    params = {"cursor": cursor}
             raise McpConnectionError(f"{method}: pagination exceeds local bounds.")
         except McpConnectionError:
             self.invalidate(context)
@@ -434,6 +446,16 @@ class HttpxMcpConnector:
         self, endpoint: str, auth: McpAuth, context: McpRequestContext, *,
         method: str, params: dict[str, Any], input_schema: dict[str, Any] | None = None,
     ) -> _RpcResult:
+        self._validate_connection(auth, context)
+        params = deepcopy(params)
+        input_schema = deepcopy(input_schema)
+        async with self._client_for(endpoint, method) as client:
+            return await self._request_with(
+                client, endpoint, auth, context, method, params, input_schema
+            )
+
+    @staticmethod
+    def _validate_connection(auth: McpAuth, context: McpRequestContext) -> None:
         if not isinstance(context.protocol_version, McpProtocolVersion):
             raise McpConnectionError("Unsupported configured MCP protocol version.")
         if auth.mode is not McpAuthMode.none and not (auth.secret and auth.secret.strip()):
@@ -443,18 +465,15 @@ class HttpxMcpConnector:
             or any(not 0x20 <= ord(char) <= 0x7E for char in auth.secret)
         ):
             raise McpConnectionError("MCP connection credential is not a valid HTTP value.")
-        params = deepcopy(params)
-        input_schema = deepcopy(input_schema)
+    @asynccontextmanager
+    async def _client_for(self, endpoint: str, method: str) -> AsyncIterator[httpx.AsyncClient]:
         if self._client is not None:
-            return await self._request_with(
-                self._client, endpoint, auth, context, method, params, input_schema
-            )
-        # Cache hits do not bypass the transport-owned DNS/public-IP check.
-        pinned_ip = await self._pin_or_raise(endpoint, method)
-        async with self._new_client(pinned_ip) as client:
-            return await self._request_with(
-                client, endpoint, auth, context, method, params, input_schema
-            )
+            yield self._client
+        else:
+            # Cache hits do not bypass the transport-owned DNS/public-IP check.
+            pinned_ip = await self._pin_or_raise(endpoint, method)
+            async with self._new_client(pinned_ip) as client:
+                yield client
 
     async def _request_with(
         self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth,

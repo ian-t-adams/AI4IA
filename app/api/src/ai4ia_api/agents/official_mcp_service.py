@@ -148,6 +148,7 @@ class OfficialMcpService:
         self._last_attempt: dict[str, float] = {}
         self._last_success: dict[str, float] = {}
         self._discovery_contexts: dict[str, McpRequestContext] = {}
+        self._discovery_generation = 0
         self._lock = asyncio.Lock()
 
     async def close(self) -> None:
@@ -186,6 +187,11 @@ class OfficialMcpService:
         """
         if not self._servers:
             return []
+        # Backoff says when to try again, not whether an old snapshot is fresh.
+        # A refresh already owns that decision; readers must join it first.
+        if self._lock.locked():
+            async with self._lock:
+                pass
         fingerprint = hashlib.sha256(self._subscription_key.encode()).digest()
         if fingerprint != self._auth_fingerprint:
             self.refresh()
@@ -207,6 +213,7 @@ class OfficialMcpService:
         re-attempted without a process restart. In-memory health state is left
         intact.
         """
+        self._discovery_generation += 1
         self._discovered_ok.clear()
         self._last_attempt.clear()
         self._last_success.clear()
@@ -234,6 +241,9 @@ class OfficialMcpService:
         execution time so a caller cannot turn the official bridge into a generic
         MCP resource fetch primitive.
         """
+        if self._lock.locked():
+            async with self._lock:
+                pass
         if (
             not any(candidate is server for candidate in self._servers)
             or not server.enabled
@@ -315,58 +325,98 @@ class OfficialMcpService:
 
     async def _discover_many(self, servers: list[UserMcpServer]) -> None:
         for server in servers:
-            context = McpRequestContext.for_server(server)
-            self._discovery_contexts[server.name] = context
-            self._last_attempt[server.name] = time.monotonic()
-            self._discovered_ok.discard(server.name)
             try:
-                await async_validate_public_https_url(
-                    server.endpoint,
-                    resolver=self._resolver,
+                await self._discover_one(server)
+            except asyncio.CancelledError:
+                self._clear_discovery(server, "MCP discovery was cancelled.")
+                self._connector.invalidate(McpRequestContext.for_server(server))
+                raise
+
+    def _clear_discovery(self, server: UserMcpServer, detail: str) -> None:
+        self._discovered_ok.discard(server.name)
+        server.discoveredTools = []
+        server.discoveredResources = []
+        server.lastError = detail
+
+    async def _discover_one(self, server: UserMcpServer) -> None:
+        context = McpRequestContext.for_server(server)
+        endpoint, auth = server.endpoint, self._auth
+        resources_enabled = server.resourcesEnabled
+        generation = self._discovery_generation
+        self._discovery_contexts[server.name] = context
+        self._last_attempt[server.name] = time.monotonic()
+        self._discovered_ok.discard(server.name)
+
+        def still_current() -> bool:
+            return (
+                generation == self._discovery_generation
+                and context == McpRequestContext.for_server(server)
+                and auth == self._auth
+            )
+
+        def discard_changed() -> None:
+            self._clear_discovery(server, "MCP configuration changed during discovery.")
+            self._connector.invalidate(context)
+            self._last_attempt.pop(server.name, None)
+
+        try:
+            await async_validate_public_https_url(endpoint, resolver=self._resolver)
+            if not still_current():
+                discard_changed()
+                return
+            if context.protocol_version is McpProtocolVersion.stateless:
+                description = await self._connector.discover_server(
+                    endpoint=endpoint, auth=auth, context=context
                 )
-                if server.protocolVersion is McpProtocolVersion.stateless:
-                    description = await self._connector.discover_server(
-                        endpoint=server.endpoint, auth=self._auth, context=context
+                if not still_current():
+                    discard_changed()
+                    return
+                if "tools" not in description.capabilities or (
+                    resources_enabled and "resources" not in description.capabilities
+                ):
+                    raise McpConnectionError(
+                        "server/discover: configured server capabilities are unavailable."
                     )
-                    if "tools" not in description.capabilities or (
-                        server.resourcesEnabled and "resources" not in description.capabilities
-                    ):
-                        raise McpConnectionError(
-                            "server/discover: configured server capabilities are unavailable."
-                        )
-                tools = await self._connector.discover(
-                    endpoint=server.endpoint, auth=self._auth, context=context
+            tools = await self._connector.discover(endpoint=endpoint, auth=auth, context=context)
+        except Exception as exc:  # noqa: BLE001 - a bad server must not break the app
+            if not still_current():
+                discard_changed()
+                return
+            logger.warning(
+                "official mcp discovery failed for %s category=%s",
+                server.name, mcp_health.summarize_error(exc),
+            )
+            self._clear_discovery(server, mcp_health.summarize_error(exc))
+            mcp_health.record_failure(server, exc)
+            return
+        if not still_current():
+            discard_changed()
+            return
+        resources = []
+        resources_ok = True
+        last_error = None
+        if resources_enabled:
+            try:
+                resources = await self._connector.list_resources(
+                    endpoint=endpoint, auth=auth, context=context,
                 )
-            except Exception as exc:  # noqa: BLE001 - a bad server must not break the app
+            except Exception as exc:  # noqa: BLE001 - resources are additive to tools
                 logger.warning(
-                    "official mcp discovery failed for %s category=%s",
+                    "official mcp resource discovery failed for %s category=%s",
                     server.name, mcp_health.summarize_error(exc),
                 )
-                server.discoveredTools = []
-                server.discoveredResources = []
-                server.lastError = mcp_health.summarize_error(exc)
-                mcp_health.record_failure(server, exc)
-                continue
-            server.discoveredTools = tools
-            server.lastError = None
-            resources_ok = True
-            if server.resourcesEnabled:
-                try:
-                    server.discoveredResources = await self._connector.list_resources(
-                        endpoint=server.endpoint,
-                        auth=self._auth,
-                        context=context,
-                    )
-                except Exception as exc:  # noqa: BLE001 - resources are additive to tools
-                    logger.warning(
-                        "official mcp resource discovery failed for %s category=%s",
-                        server.name, mcp_health.summarize_error(exc),
-                    )
-                    server.discoveredResources = []
-                    server.lastError = mcp_health.summarize_error(exc)
-                    resources_ok = False
-            server.lastConnectedAt = _now()
-            mcp_health.record_success(server)
-            if resources_ok:
-                self._discovered_ok.add(server.name)
-                self._last_success[server.name] = time.monotonic()
+                last_error = mcp_health.summarize_error(exc)
+                resources_ok = False
+        if not still_current():
+            discard_changed()
+            return
+        # Publish the snapshot together, never a partly refreshed tool/resource
+        # pair or a response belonging to invalidated configuration/credentials.
+        server.discoveredTools = tools
+        server.discoveredResources = resources
+        server.lastError = last_error
+        server.lastConnectedAt = _now()
+        mcp_health.record_success(server)
+        if resources_ok:
+            self._discovered_ok.add(server.name)
+            self._last_success[server.name] = time.monotonic()
