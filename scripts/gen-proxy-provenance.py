@@ -22,8 +22,8 @@ SOURCE_SCOPES = ("Shared", "Shared-parser", "SimpleL7Proxy")
 
 AI4IA_PATCH_REASONS = {
     "Shared-parser/Shared-parser.csproj": (
-        "Remove unused runtime packages and retain the logging abstraction used by "
-        "the parser."
+        "Remove unused runtime packages and update "
+        "Microsoft.Extensions.Logging.Abstractions to 10.0.12 for the parser."
     ),
     "Shared/packages.lock.json": "AI4IA-generated NuGet lock for deterministic restore.",
     "Shared-parser/packages.lock.json": "AI4IA-generated NuGet lock for deterministic restore.",

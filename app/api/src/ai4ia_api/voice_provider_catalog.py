@@ -268,6 +268,7 @@ class VoiceLiveRuntimeConfig(BaseModel):
     defaultProviderId: str
     enabledProviderIds: list[str]
     providers: list[VoiceProviderPublic]
+    openaiRealtimeProtocol: Literal["preview", "ga"] = "preview"
 
 
 class VoiceProviderCatalog(BaseModel):

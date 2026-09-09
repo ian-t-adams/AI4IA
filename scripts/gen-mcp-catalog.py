@@ -56,6 +56,12 @@ def build_catalog(raw: dict) -> dict:
             errors.append(f"{name}: upstreamAuthMode '{mode}' must be 'none' or 'managed_identity'")
         if mode == "managed_identity" and not entry.get("upstreamMiResource"):
             errors.append(f"{name}: upstreamMiResource is required when upstreamAuthMode == managed_identity")
+        protocol = entry.get("protocolVersion", "2025-06-18")
+        if protocol not in ("2025-06-18", "2026-07-28"):
+            errors.append(f"{name}: unsupported protocolVersion")
+        for header in entry.get("upstreamHeaders", {}):
+            if header.lower().startswith("mcp-") or header.lower() == "last-event-id":
+                errors.append(f"{name}: upstreamHeaders must not override MCP protocol metadata")
         items.append(
             {
                 "id": name,
@@ -68,6 +74,7 @@ def build_catalog(raw: dict) -> dict:
                 # curated Foundry Toolbox. BYO and generic official MCP servers do
                 # not become instruction sources merely by exposing resources.
                 "resourcesEnabled": bool(entry.get("foundryToolbox")),
+                "protocolVersion": protocol,
             }
         )
 

@@ -264,6 +264,15 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     ):
         errors.append("voiceLiveToolsEnabled=true is inert unless voiceLiveEnabled=true.")
 
+    realtime_ga_enabled = truthy(parameter_value(parameters, "realtimeGaEnabled", False))
+    realtime_protocol = text(parameter_value(parameters, "realtimeProtocol", "preview"))
+    if realtime_protocol not in {"preview", "ga"}:
+        errors.append("realtimeProtocol must be preview or ga.")
+    if realtime_ga_enabled and not truthy(parameter_value(parameters, "voiceLiveEnabled", False)):
+        errors.append("realtimeGaEnabled=true requires voiceLiveEnabled=true.")
+    if realtime_protocol == "ga" and not realtime_ga_enabled:
+        errors.append("realtimeProtocol=ga requires realtimeGaEnabled=true.")
+
     # Speech Voice Live is a second, additive realtime provider. It must never be
     # reachable unless the master Voice Live gate is also on, its allowlist entry
     # is present, and its default (if pointed at Speech) is actually allowlisted.

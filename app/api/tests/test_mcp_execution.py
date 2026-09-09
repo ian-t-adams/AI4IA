@@ -41,6 +41,7 @@ from ai4ia_api.agents.mcp_secrets import InMemoryMcpSecretStore
 from ai4ia_api.agents.mcp_servers import (
     DiscoveredTool,
     McpAuthMode,
+    McpProtocolVersion,
     McpToolApproval,
     UserMcpServer,
     UserMcpServerCreate,
@@ -982,27 +983,39 @@ _TRUNCATE_SUFFIX = "...[truncated]"
 _RUNTIME_RESULT_CAP = 8192
 
 
-def _httpx_call_tool_connector(content_blocks: list[dict]) -> HttpxMcpConnector:
+def _httpx_call_tool_connector(
+    content_blocks: list[dict], protocol=McpProtocolVersion.legacy,
+) -> HttpxMcpConnector:
     """HttpxMcpConnector whose MockTransport answers the handshake then returns a
     ``tools/call`` result carrying ``content_blocks`` (a real MCP content array)."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         method = json.loads(request.content).get("method")
         if method == "initialize":
+            assert protocol is McpProtocolVersion.legacy
             return httpx.Response(
                 200,
-                json={"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+                json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2025-06-18", "capabilities": {}},
+                },
                 headers={"Mcp-Session-Id": "sess"},
             )
         if method == "notifications/initialized":
             return httpx.Response(202)
         if method == "tools/call":
+            if protocol is McpProtocolVersion.stateless:
+                assert request.headers["MCP-Protocol-Version"] == protocol.value
+                assert request.headers["Mcp-Method"] == method
+                assert "Mcp-Session-Id" not in request.headers
             return httpx.Response(
                 200,
                 json={
                     "jsonrpc": "2.0",
                     "id": 2,
-                    "result": {"content": content_blocks, "isError": False},
+                    "result": {"content": content_blocks, "isError": False, **(
+                        {"resultType": "complete"} if protocol is McpProtocolVersion.stateless else {}
+                    )},
                 },
             )
         raise AssertionError(f"unexpected method {method}")
@@ -1011,7 +1024,8 @@ def _httpx_call_tool_connector(content_blocks: list[dict]) -> HttpxMcpConnector:
     return HttpxMcpConnector(client=client)
 
 
-async def test_tools_call_content_is_redacted_and_truncated_through_runtime():
+@pytest.mark.parametrize("protocol", list(McpProtocolVersion))
+async def test_tools_call_content_is_redacted_and_truncated_through_runtime(protocol):
     # A content array with (a) a redactable high-entropy token and (b) an oversized
     # text block that pushes the JSON-encoded result well past the 8KB runtime cap.
     oversized = "X" * (_RUNTIME_RESULT_CAP * 2)
@@ -1019,9 +1033,11 @@ async def test_tools_call_content_is_redacted_and_truncated_through_runtime():
         [
             {"type": "text", "text": f"token={_REDACTABLE_TOKEN}"},
             {"type": "text", "text": oversized},
-        ]
+        ],
+        protocol,
     )
     servers = [_server("weather", trusted=True, tools=[_tool("forecast")])]
+    servers[0].protocolVersion = protocol
     gateway = ScriptedGateway(
         [
             _assistant_tool_calls([("c1", tool_alias("weather", "forecast"), "{}")]),

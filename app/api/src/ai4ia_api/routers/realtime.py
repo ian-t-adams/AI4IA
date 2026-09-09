@@ -54,6 +54,11 @@ from ..catalog import DeploymentOption, ModelCatalog
 from ..config import Environment, GatewayAuthMode, Settings
 from ..conversations.policy import resolve_conversation_policy
 from ..logging_setup import emit_custom_event, emit_security_block, new_correlation_id, set_correlation_id
+from ..realtime_protocol import (
+    RealtimeProtocol,
+    rewrite_ga_upstream_frame,
+    rewrite_openai_client_frame,
+)
 from ..sessions.repository import SessionNotFoundError
 from ..voice_provider_catalog import (
     AZURE_OPENAI_PROVIDER_ID,
@@ -196,12 +201,14 @@ class LiveVoiceProviderResolution:
     managed_model: VoiceProviderManagedModel | None
     usage_target: UsageTarget
     base_url: str
-    api_version: str
+    api_version: str | None
     target_param: str
     target_name: str
     auth_mode: GatewayAuthMode
     api_key: str
     rewrite_client_frame: Callable[[str], str | None]
+    protocol: str = "preview"
+    rewrite_upstream_frame: Callable[[str], str] | None = None
 
 
 class LiveVoiceProviderError(Exception):
@@ -235,19 +242,37 @@ def _resolve_live_voice_provider(
             model,
             region,
         )
+        protocol = settings.realtime_protocol
+        if protocol == RealtimeProtocol.ga:
+            try:
+                settings.validate_realtime_ga()
+            except RuntimeError as exc:
+                raise LiveVoiceProviderError("GA realtime is not fully configured.") from exc
+
+        def rewrite_openai_frame(frame: str) -> str:
+            return rewrite_openai_client_frame(
+                frame, protocol=protocol, deployment=deployment.deploymentName
+            )
+
+        ga = protocol == RealtimeProtocol.ga
         return LiveVoiceProviderResolution(
             provider=provider,
             model_id=model_id,
             deployment=deployment,
             managed_model=None,
             usage_target=UsageTarget.from_deployment(deployment),
-            base_url=settings.realtime_effective_base_url,
-            api_version=settings.realtime_api_version,
-            target_param="deployment",
+            base_url=settings.realtime_ga_base_url if ga else settings.realtime_effective_base_url,
+            api_version=None if ga else settings.realtime_api_version,
+            target_param="model" if ga else "deployment",
             target_name=deployment.deploymentName,
-            auth_mode=settings.model_gateway_auth_mode,
-            api_key=settings.realtime_gateway_api_key or "",
-            rewrite_client_frame=lambda frame: frame,
+            auth_mode=GatewayAuthMode.api_key if ga else settings.model_gateway_auth_mode,
+            api_key=(
+                settings.realtime_ga_gateway_api_key if ga
+                else settings.realtime_gateway_api_key or ""
+            ),
+            rewrite_client_frame=rewrite_openai_frame,
+            protocol=protocol.value,
+            rewrite_upstream_frame=rewrite_ga_upstream_frame if ga else None,
         )
 
     if requested != SPEECH_VOICE_LIVE_PROVIDER_ID:
@@ -286,6 +311,7 @@ def _resolve_live_voice_provider(
         auth_mode=GatewayAuthMode.api_key,
         api_key=settings.speech_voice_live_gateway_api_key,
         rewrite_client_frame=rewrite_client_frame,
+        protocol="speech",
     )
 
 
@@ -314,23 +340,19 @@ def _to_ws_scheme(url: str) -> str:
 
 def build_upstream_url(
     base_url: str,
-    api_version: str,
+    api_version: str | None,
     target_name: str,
     *,
     target_param: str = "deployment",
 ) -> str:
     """Construct a realtime WebSocket URL.
 
-    ``{ws_base}/realtime?api-version=<v>&<target_param>=<name>`` where the base
-    already carries the provider-specific APIM prefix (``/openai`` or
-    ``/speech/voice-live``). http(s) is converted to ws(s).
+    The base already carries the APIM prefix. GA uses ``/openai/v1`` and
+    ``model`` without an api-version; legacy and Speech retain their versions.
     """
     ws_base = _to_ws_scheme(base_url.rstrip("/"))
-    return (
-        f"{ws_base}/realtime"
-        f"?api-version={quote(api_version, safe='')}"
-        f"&{target_param}={quote(target_name, safe='')}"
-    )
+    version = f"api-version={quote(api_version, safe='')}&" if api_version is not None else ""
+    return f"{ws_base}/realtime?{version}{target_param}={quote(target_name, safe='')}"
 
 
 def _speech_locale(provider: SpeechVoiceProvider, session: dict[str, Any]) -> str:
@@ -509,17 +531,24 @@ def normalize_speech_client_frame(
 
 
 def reject_client_system_message(frame: str) -> str | None:
-    """Reject client-created system/developer conversation items for every provider."""
+    """Reject system/developer items, including per-response out-of-band context."""
     try:
         payload = json.loads(frame)
     except (TypeError, ValueError):
         return frame
-    if not isinstance(payload, dict) or payload.get("type") != "conversation.item.create":
+    if not isinstance(payload, dict):
         return frame
-    item = payload.get("item")
-    if isinstance(item, dict) and item.get("role") in {"system", "developer"}:
-        logger.info("voice-live rejected client system conversation item")
-        return None
+    items = []
+    if payload.get("type") == "conversation.item.create":
+        items = [payload.get("item")]
+    elif payload.get("type") == RESPONSE_CREATE_TYPE:
+        response = payload.get("response")
+        if isinstance(response, dict) and isinstance(response.get("input"), list):
+            items = response["input"]
+    for item in items:
+        if isinstance(item, dict) and item.get("role") in {"system", "developer"}:
+            logger.info("voice-live rejected client system conversation item")
+            return None
     return frame
 
 
@@ -781,7 +810,6 @@ RESPONSE_CREATE_FRAME = '{"type":"response.create"}'
 # Cheap pre-filters so the hot path only full-parses the two frame kinds the
 # bridge owns; audio frames (``input_audio_buffer.append`` / ``response.audio.delta``)
 # never contain these markers and are forwarded without a JSON parse.
-_SESSION_UPDATE_HINT = '"session.update"'
 _FUNCTION_CALL_HINT = '"response.function_call_arguments.done"'
 
 
@@ -822,45 +850,44 @@ def inject_session_tools(
     instructions: str | None = None,
     instructions_authoritative: bool = False,
 ) -> str:
-    """Merge relay-owned fields into a client ``session.update`` frame.
+    """Own tool/persona fields in both session and per-response configuration.
 
-    Returns the frame unchanged when it isn't a parseable session.update (the relay
-    stays transparent for everything it doesn't own). The client's own session
-    fields are preserved EXCEPT the ones the relay owns:
-
-    * ``tools`` / ``tool_choice`` — so the browser can never advertise a tool the
-      gateway didn't authorize, and
-    * ``instructions`` — when an agent persona is bound, the relay sets the system
-      instructions server-authoritatively so the browser can't spoof a different
-      persona. When ``instructions`` is ``None`` the client's own value is left
-      untouched (generic-assistant behavior).
-
-    A no-op (frame returned verbatim) when there is nothing to inject — neither
-    tools nor instructions.
+    Empty authorized tools must also remove client/native MCP tools. Response
+    overrides cannot escape the session policy, including encoded event names.
+    Unaffected frames retain their original bytes.
     """
-    if (
-        not tools
-        and instructions is None
-        and not instructions_authoritative
-    ) or _SESSION_UPDATE_HINT not in frame:
-        return frame
     try:
         payload = json.loads(frame)
     except (ValueError, TypeError):
         return frame
-    if not isinstance(payload, dict) or payload.get("type") != SESSION_UPDATE_TYPE:
+    if not isinstance(payload, dict) or payload.get("type") not in (
+        SESSION_UPDATE_TYPE, RESPONSE_CREATE_TYPE,
+    ):
         return frame
-    session = payload.get("session")
-    if not isinstance(session, dict):
-        session = {}
-    if tools:
-        session["tools"] = list(tools)
-        session["tool_choice"] = tool_choice
+    is_session = payload["type"] == SESSION_UPDATE_TYPE
+    field_name = "session" if is_session else "response"
+    original = payload.get(field_name)
+    config = dict(original) if isinstance(original, dict) else {}
+    if is_session and tools:
+        config["tools"] = list(tools)
+        config["tool_choice"] = tool_choice
+    elif "tools" in config or "tool_choice" in config:
+        # Per-response calls inherit the relay-owned session tool contract.
+        # With tools off, explicitly clear any client-advertised surface.
+        if is_session:
+            config["tools"] = []
+            config["tool_choice"] = "none"
+        else:
+            config.pop("tools", None)
+            config.pop("tool_choice", None)
+    config.pop("prompt", None)
     if instructions is not None:
-        session["instructions"] = instructions
+        config["instructions"] = instructions
     elif instructions_authoritative:
-        session.pop("instructions", None)
-    payload["session"] = session
+        config.pop("instructions", None)
+    if config == original or (original is None and not config):
+        return frame
+    payload[field_name] = config
     return json.dumps(payload)
 
 
@@ -941,12 +968,6 @@ class ToolBridge:
         return bool(self.tools)
 
     def rewrite_client_frame(self, frame: str) -> str:
-        if (
-            not self.tools
-            and self.instructions is None
-            and not self.instructions_authoritative
-        ):
-            return frame
         return inject_session_tools(
             frame,
             self.tools,
@@ -966,6 +987,9 @@ class ToolBridge:
         return [build_function_call_output(call.call_id, output), RESPONSE_CREATE_FRAME]
 
     async def _run(self, call: RealtimeFunctionCall) -> str:
+        if call.name not in {tool["name"] for tool in self.tools}:
+            logger.info("voice-live rejected a tool outside the session contract")
+            return _tool_error("tool is not permitted in this live session")
         # Authorize through the SAME governance as chat. Built-ins are ``safe`` with
         # no scopes, but a denied/unknown tool must still fail closed to a structured
         # error the model can speak (never an unguarded execution).
@@ -1468,6 +1492,7 @@ async def _pump_upstream_to_client(
     lock: anyio.Lock,
     bridge: ToolBridge,
     state: _RelayState,
+    rewrite_upstream_frame: Callable[[str], str] | None,
 ) -> None:
     try:
         while True:
@@ -1506,7 +1531,9 @@ async def _pump_upstream_to_client(
                 if protocol_error is not None and state.protocol_error is None:
                     state.protocol_error = protocol_error
                 try:
-                    await client_ws.send_text(msg.text)
+                    await client_ws.send_text(
+                        rewrite_upstream_frame(msg.text) if rewrite_upstream_frame else msg.text
+                    )
                 except (WebSocketDisconnect, RuntimeError) as exc:
                     state.stop(_client_termination_from_exception(exc))
                     return
@@ -1543,6 +1570,7 @@ async def relay(
     max_seconds: float,
     bridge: ToolBridge,
     rewrite_client_frame: Callable[[str], str | None] | None = None,
+    rewrite_upstream_frame: Callable[[str], str] | None = None,
 ) -> RelayOutcome:
     """Pump frames both ways and return a content-free, typed terminal outcome."""
 
@@ -1567,6 +1595,7 @@ async def relay(
                 send_lock,
                 bridge,
                 state,
+                rewrite_upstream_frame,
             )
             await state.stopped.wait()
             tg.cancel_scope.cancel()
@@ -1709,6 +1738,7 @@ def _emit_relay_completion(
         "event": "voice_live_completion",
         "correlationId": correlation_id,
         "provider": resolution.provider.id,
+        "protocol": resolution.protocol,
         "usageTarget": {
             "provider": target.provider,
             "deployment": target.deployment,
@@ -1747,6 +1777,7 @@ def _emit_relay_completion(
         {
             "correlationId": correlation_id,
             "provider": resolution.provider.id,
+            "protocol": resolution.protocol,
             "model": resolution.model_id,
             "outcome": outcome.status,
             "sourceEvent": outcome.metadata.source_event,
@@ -1911,6 +1942,7 @@ async def voice_live(websocket: WebSocket) -> None:
                 max_seconds=settings.realtime_max_session_seconds,
                 bridge=bridge,
                 rewrite_client_frame=rewrite_client_frame,
+                rewrite_upstream_frame=provider_resolution.rewrite_upstream_frame,
             )
 
     async def finalize_relay(outcome: RelayOutcome) -> None:

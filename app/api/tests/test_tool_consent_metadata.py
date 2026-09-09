@@ -200,7 +200,7 @@ def test_webiq_per_turn_nonce_is_not_part_of_the_consent_contract(client):
     assert initial != hashes("nonce-one")
 
 
-@pytest.mark.parametrize("change", [None, "add", "description", "version", "endpoint", "mime"])
+@pytest.mark.parametrize("change", [None, "add", "description", "version", "endpoint", "mime", "protocol"])
 def test_official_skill_contract_changes_require_renewed_consent_before_egress(client, change):
     from ai4ia_api.agents.mcp_client import McpResourceResult
     from tests.test_agent_runtime import ScriptedGateway, _assistant_text, _assistant_tool_call
@@ -261,6 +261,9 @@ def test_official_skill_contract_changes_require_renewed_consent_before_egress(c
         server.host = "changed.example.com"
     elif change == "mime":
         server.discoveredResources = [_resource(mime_type="text/plain")]
+    elif change == "protocol":
+        from ai4ia_api.agents.mcp_servers import McpProtocolVersion
+        server.protocolVersion = McpProtocolVersion.stateless
 
     inspected = client.get(f"/api/sessions/{sid}/inspector").json()
     client.app.state.gateway = ScriptedGateway([

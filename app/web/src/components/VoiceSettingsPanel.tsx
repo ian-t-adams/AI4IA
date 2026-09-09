@@ -54,6 +54,7 @@ export interface VoiceSettingsPanelProps {
   provider: VoiceProviderId;
   onProviderChange: (provider: VoiceProviderId) => void;
   activeProvider: VoiceProvider;
+  openaiRealtimeProtocol?: "preview" | "ga";
   models: VoiceSettingsModel[];
   defaultModelLabel: string;
   explicitModel: string | null;
@@ -95,6 +96,7 @@ export function VoiceSettingsPanel({
   provider,
   onProviderChange,
   activeProvider,
+  openaiRealtimeProtocol = "preview",
   models,
   defaultModelLabel,
   explicitModel,
@@ -112,6 +114,7 @@ export function VoiceSettingsPanel({
 }: VoiceSettingsPanelProps) {
   const idPrefix = useId();
   const isSpeechProvider = provider === "speech_voice_live";
+  const isGaRealtime = !isSpeechProvider && openaiRealtimeProtocol === "ga";
   const selectedProvider = providers.find((entry) => entry.id === provider);
   const speechProvider = isSpeechVoiceProvider(activeProvider) ? activeProvider : undefined;
   const voiceOptions: readonly string[] = activeProvider.capabilities.voices.options;
@@ -263,20 +266,21 @@ export function VoiceSettingsPanel({
               padding: "8px 0 2px",
             }}
           >
-            <label style={FIELD_STYLE} htmlFor={`${idPrefix}-temperature`}>
-              Temperature
+            <div style={FIELD_STYLE}>
+              <label htmlFor={`${idPrefix}-temperature`}>Temperature</label>
               <input
                 id={`${idPrefix}-temperature`}
+                aria-describedby={isGaRealtime ? `${idPrefix}-temperature-description` : undefined}
                 type="number"
                 min={TEMPERATURE_MIN}
                 max={TEMPERATURE_MAX}
                 step={0.1}
                 value={
-                  (isSpeechProvider
+                  isGaRealtime ? "" : (isSpeechProvider
                     ? speechSettings.temperature
                     : settings.temperature) ?? ""
                 }
-                disabled={locked}
+                disabled={locked || isGaRealtime}
                 placeholder="Model default"
                 onChange={(e) =>
                   isSpeechProvider
@@ -291,7 +295,12 @@ export function VoiceSettingsPanel({
                 }
                 style={CONTROL_STYLE}
               />
-            </label>
+              {isGaRealtime && (
+                <span id={`${idPrefix}-temperature-description`} style={{ maxWidth: 240 }}>
+                  Temperature is not configurable with GA Realtime.
+                </span>
+              )}
+            </div>
 
             <div style={FIELD_STYLE}>
               <label htmlFor={`${idPrefix}-playback-profile`}>Playback stability</label>

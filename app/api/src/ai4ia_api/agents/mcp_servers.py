@@ -72,6 +72,13 @@ class McpTransport(str, Enum):
     streamable_http = "streamable_http"
 
 
+class McpProtocolVersion(str, Enum):
+    """An explicit server contract, never an error-triggered downgrade policy."""
+
+    legacy = "2025-06-18"
+    stateless = "2026-07-28"
+
+
 class McpToolApproval(str, Enum):
     """Standing discovery/attachment posture, overriding the server default.
 
@@ -155,6 +162,7 @@ class UserMcpServer(BaseModel):
     endpoint: str
     host: str
     transport: McpTransport = McpTransport.streamable_http
+    protocolVersion: McpProtocolVersion = McpProtocolVersion.legacy
     authMode: McpAuthMode = McpAuthMode.none
     trusted: bool = False
     enabled: bool = True
@@ -204,7 +212,7 @@ class UserMcpServer(BaseModel):
 def health_config_revision(server: UserMcpServer) -> str:
     """Fingerprint connection identity so stale health cannot taint a replacement."""
     if server.configurationRevision:
-        return f"revision:{server.configurationRevision}"
+        return f"revision:{server.configurationRevision}:{server.protocolVersion.value}"
     payload = {
         "userId": server.userId,
         "name": server.name,
@@ -212,6 +220,7 @@ def health_config_revision(server: UserMcpServer) -> str:
         "endpoint": server.endpoint,
         "host": server.host,
         "transport": server.transport.value,
+        "protocolVersion": server.protocolVersion.value,
         "authMode": server.authMode.value,
         "secretRef": server.secretRef,
         "trusted": server.trusted,
@@ -244,6 +253,7 @@ class UserMcpServerCreate(BaseModel):
     displayName: str | None = None
     description: str = ""
     endpoint: str
+    protocolVersion: McpProtocolVersion = McpProtocolVersion.legacy
     authMode: McpAuthMode = McpAuthMode.none
     secret: str | None = None
     trusted: bool = False
@@ -256,6 +266,8 @@ class UserMcpServerUpdate(BaseModel):
     displayName: str | None = None
     description: str = ""
     endpoint: str
+    # Older management clients omit this field; preserve the saved selection.
+    protocolVersion: McpProtocolVersion | None = None
     authMode: McpAuthMode = McpAuthMode.none
     secret: str | None = None
     trusted: bool = False

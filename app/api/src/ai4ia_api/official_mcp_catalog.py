@@ -22,6 +22,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from .agents.mcp_servers import McpProtocolVersion
+
 _PACKAGED = Path(__file__).resolve().parent / "data" / "official_mcp_catalog.json"
 
 
@@ -39,6 +41,7 @@ class OfficialMcpServer(BaseModel):
     description: str = ""
     path: str
     resourcesEnabled: bool = False
+    protocolVersion: McpProtocolVersion = McpProtocolVersion.legacy
 
 
 class OfficialMcpCatalog(BaseModel):
@@ -60,6 +63,7 @@ def _project_infra_catalog(raw: dict[str, Any]) -> dict[str, Any]:
                 "description": entry.get("description", ""),
                 "path": f"{name}/mcp",
                 "resourcesEnabled": bool(entry.get("foundryToolbox")),
+                "protocolVersion": entry.get("protocolVersion", McpProtocolVersion.legacy.value),
             }
         )
     return {"servers": servers}

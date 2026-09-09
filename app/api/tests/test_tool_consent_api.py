@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ai4ia_api.agents.mcp_client import FakeMcpConnector, McpToolResult
+from ai4ia_api.agents.mcp_servers import McpProtocolVersion
 from ai4ia_api.main import create_app
 from tests.conftest import make_settings
 from tests.test_tool_approval_gate import (
@@ -109,7 +110,8 @@ def test_plain_chat_uses_synthetic_consent_without_an_agent():
 
 
 @pytest.mark.parametrize("trusted", [False, True])
-def test_consent_exposes_only_attached_mcp_contracts_and_retains_receipts(trusted):
+@pytest.mark.parametrize("protocol", list(McpProtocolVersion))
+def test_consent_exposes_only_attached_mcp_contracts_and_retains_receipts(trusted, protocol):
     connector = FakeMcpConnector(
         [_SEND], call_results={"send": McpToolResult(content={"api_key": "private-value", "sent": True})},
     )
@@ -119,7 +121,10 @@ def test_consent_exposes_only_attached_mcp_contracts_and_retains_receipts(truste
         client.patch(f"/api/sessions/{sid}", json={"agentName": "courierbot"})
         assert client.put(
             "/api/agents/mcp-servers/courier",
-            json={"endpoint": "https://courier.example.com/rpc", "trusted": trusted},
+            json={
+                "endpoint": "https://courier.example.com/rpc", "trusted": trusted,
+                "protocolVersion": protocol.value,
+            },
         ).status_code == 200
         client.app.state.gateway = _InjectedModelGateway(repeat=2)
         without = _turn(client, sid)
@@ -158,8 +163,10 @@ def test_consent_exposes_only_attached_mcp_contracts_and_retains_receipts(truste
 
 @pytest.mark.parametrize("change", [
     None, "revoke", "disable", "endpoint", "schema", "permission", "selection", "expire", "entitlement",
+    "protocol", "routing-schema",
 ])
-def test_live_consent_is_rechecked_between_calls_in_one_model_iteration(change):
+@pytest.mark.parametrize("protocol", list(McpProtocolVersion))
+def test_live_consent_is_rechecked_between_calls_in_one_model_iteration(change, protocol):
     class ChangingConnector(FakeMcpConnector):
         after_first = None
 
@@ -170,11 +177,15 @@ def test_live_consent_is_rechecked_between_calls_in_one_model_iteration(change):
             return result
 
     connector = ChangingConnector(
-        [_SEND], call_results={"send": McpToolResult(content="delivered")},
+        [_SEND.model_copy(deep=True)], call_results={"send": McpToolResult(content="delivered")},
     )
     client = _client(connector, tool_auto_approve_enabled=True)
     try:
         sid = _bootstrap(client)
+        assert client.put("/api/agents/mcp-servers/courier", json={
+            "endpoint": "https://courier.example.com/rpc", "trusted": True,
+            "protocolVersion": protocol.value,
+        }).status_code == 200
         client.patch(f"/api/sessions/{sid}", json={"agentName": "courierbot"})
         granted = client.post(f"/api/sessions/{sid}/tool-consent", json={"enabled": True})
         assert granted.status_code == 200, granted.text
@@ -186,7 +197,7 @@ def test_live_consent_is_rechecked_between_calls_in_one_model_iteration(change):
                 await repo.set_tool_consent(uid, sid, None)
             elif change == "disable":
                 client.app.state.settings.tool_auto_approve_enabled = False
-            elif change in {"endpoint", "schema", "permission"}:
+            elif change in {"endpoint", "schema", "permission", "protocol", "routing-schema"}:
                 service = client.app.state.mcp_service
                 server = await service.get(uid, "courier")
                 if change == "endpoint":
@@ -194,9 +205,16 @@ def test_live_consent_is_rechecked_between_calls_in_one_model_iteration(change):
                     server.host = "different.example.org"
                 elif change == "schema":
                     server.discoveredTools[0].inputSchema["required"] = ["to"]
+                elif change == "protocol":
+                    server.protocolVersion = (
+                        McpProtocolVersion.stateless if protocol is McpProtocolVersion.legacy
+                        else McpProtocolVersion.legacy
+                    )
+                elif change == "routing-schema":
+                    server.discoveredTools[0].inputSchema["properties"]["to"]["x-mcp-header"] = "Recipient"
                 else:
                     server.trusted = False
-                await service._store.upsert(server)
+                await service._store.put(server)
             elif change == "selection":
                 await repo.patch_session(uid, sid, {"toolOverrides": {"added": ["calculator"]}})
             elif change == "expire":
@@ -222,6 +240,8 @@ def test_live_consent_is_rechecked_between_calls_in_one_model_iteration(change):
         calls = response.json()["message"]["executionReceipt"]["toolCalls"]
         assert len(calls) == 2
         assert calls[0]["approval"] == "session"
+        assert calls[0]["outcome"] == "result"
+        assert "delivered" in calls[0]["result"]["text"]
         if change is not None:
             assert calls[1]["outcome"] == "denied"
             assert calls[1]["detail"].startswith("consent_") or calls[1]["detail"] == "entitlement_denied"
@@ -230,13 +250,18 @@ def test_live_consent_is_rechecked_between_calls_in_one_model_iteration(change):
         client.__exit__(None, None, None)
 
 
-def test_consent_does_not_bypass_mcp_ssrf_revalidation():
+@pytest.mark.parametrize("protocol", list(McpProtocolVersion))
+def test_consent_does_not_bypass_mcp_ssrf_revalidation(protocol):
     connector = FakeMcpConnector(
         [_SEND], call_results={"send": McpToolResult(content="delivered")},
     )
     client = _client(connector, tool_auto_approve_enabled=True)
     try:
         sid = _bootstrap(client)
+        assert client.put("/api/agents/mcp-servers/courier", json={
+            "endpoint": "https://courier.example.com/rpc", "trusted": True,
+            "protocolVersion": protocol.value,
+        }).status_code == 200
         client.patch(f"/api/sessions/{sid}", json={"agentName": "courierbot"})
         assert client.post(
             f"/api/sessions/{sid}/tool-consent", json={"enabled": True},

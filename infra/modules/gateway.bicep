@@ -122,6 +122,9 @@ param containerEnvName string
 @description('Provision the additive Speech Voice Live APIM API, subscription, named values, and account-scoped RBAC. Default OFF.')
 param speechVoiceLiveEnabled bool = false
 
+@description('Stage the separate GA Realtime WebSocket API and API-scoped subscription on the shared APIM. Default OFF; does not select the protocol or change any model deployment.')
+param realtimeGaEnabled bool = false
+
 @description('Name of the existing AIServices account Speech Voice Live routes to. This is the SAME account already used as a Foundry model backend (see foundryBackends); no new AIServices account is created for this capability.')
 param speechVoiceLiveAccountName string
 
@@ -147,12 +150,14 @@ var proxyModelSubscriptionName = '${workload}-proxy-models'
 var proxyIngressProductName = '${workload}-proxy-ingress'
 var proxyIngressSubscriptionName = '${workload}-api-proxy-ingress'
 var realtimeSubscriptionName = '${workload}-api-realtime'
+var realtimeGaSubscriptionName = '${workload}-api-realtime-ga'
 var speechVoiceLiveSubscriptionName = '${workload}-api-speech-voice-live'
 var codeInterpreterSubscriptionName = '${workload}-api-code-interpreter'
 
 var foundryBase = endsWith(primaryFoundryEndpoint, '/') ? primaryFoundryEndpoint : '${primaryFoundryEndpoint}/'
 var foundryOpenAiUrl = '${foundryBase}openai'
 var primaryFoundryRealtimeWssUrl = '${replace(endsWith(primaryFoundryEndpoint, '/') ? substring(primaryFoundryEndpoint, 0, max(length(primaryFoundryEndpoint) - 1, 0)) : primaryFoundryEndpoint, 'https://', 'wss://')}/openai/realtime'
+var primaryFoundryRealtimeGaWssUrl = '${replace(foundryBase, 'https://', 'wss://')}openai/v1/realtime'
 // Speech Voice Live's backend host, independent of the foundryBackends loop
 // above (that loop drives Azure OpenAI realtime routing across every region).
 // The same underlying AIServices account may coincide with one of those
@@ -506,6 +511,58 @@ resource sharedApiRealtimeSubscription 'Microsoft.ApiManagement/service/subscrip
   }
   dependsOn: [
     sharedRealtimeApiPolicy
+  ]
+}
+
+// Each WebSocket API has one immutable, generated onHandshake operation:
+// https://learn.microsoft.com/azure/api-management/websocket-api#onhandshake-operation
+// A second URL needs a second API, not an HTTP operation or a widened legacy key.
+resource sharedRealtimeGaApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = if (realtimeGaEnabled) {
+  parent: sharedApim
+  name: 'openai-realtime-ga'
+  properties: {
+    displayName: 'FastAPI staged GA realtime relay backend'
+    path: 'openai/v1/realtime'
+    protocols: [
+      'wss'
+    ]
+    serviceUrl: primaryFoundryRealtimeGaWssUrl
+    subscriptionRequired: true
+    type: 'websocket'
+  }
+  dependsOn: [
+    sharedRealtimeWssEndpointValues
+  ]
+}
+
+resource sharedRealtimeGaHandshake 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' existing = if (realtimeGaEnabled) {
+  parent: sharedRealtimeGaApi
+  name: 'onHandshake'
+}
+
+resource sharedRealtimeGaApiPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = if (realtimeGaEnabled) {
+  parent: sharedRealtimeGaHandshake
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/realtime-ga-routing.xml')
+  }
+  dependsOn: [
+    sharedRealtimeWssEndpointValues
+  ]
+}
+
+resource sharedApiRealtimeGaSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = if (realtimeGaEnabled) {
+  parent: sharedApim
+  name: realtimeGaSubscriptionName
+  properties: {
+    displayName: 'AI4IA FastAPI GA realtime relay'
+    scope: sharedRealtimeGaApi.id
+    state: 'active'
+    allowTracing: false
+  }
+  dependsOn: [
+    sharedRealtimeGaApiPolicy
   ]
 }
 
@@ -1051,6 +1108,10 @@ output proxyIngressKey string = sharedProxyIngressSubscription.listSecrets().pri
 output realtimeGatewayUrl string = '${sharedApimGatewayUrl}/openai'
 @secure()
 output realtimeGatewayKey string = sharedApiRealtimeSubscription.listSecrets().primaryKey
+output realtimeGaGatewayUrl string = realtimeGaEnabled ? '${sharedApimGatewayUrl}/openai/v1' : ''
+@secure()
+#disable-next-line BCP422
+output realtimeGaGatewayKey string = realtimeGaEnabled ? sharedApiRealtimeGaSubscription.listSecrets().primaryKey : ''
 output codeInterpreterGatewayUrl string = codeInterpreterEnabled ? '${sharedApimGatewayUrl}/code-interpreter' : ''
 @secure()
 #disable-next-line BCP422

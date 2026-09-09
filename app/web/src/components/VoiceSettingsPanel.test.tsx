@@ -57,8 +57,10 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
     ...overrides,
   };
   const user = userEvent.setup();
-  render(<VoiceSettingsPanel {...props} />);
+  const view = render(<VoiceSettingsPanel {...props} />);
   return {
+    rerender: (changes: Partial<VoiceSettingsPanelProps>) =>
+      view.rerender(<VoiceSettingsPanel {...props} {...changes} />),
     user,
     onProviderChange,
     onModelChange,
@@ -71,6 +73,36 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
 }
 
 describe("VoiceSettingsPanel", () => {
+  it("discloses GA temperature limits without changing saved preview or Speech settings", async () => {
+    const { user, rerender, onSettingsChange } = setup({
+      settings: { ...DEFAULT_VOICE_SETTINGS, temperature: 0.8 },
+      openaiRealtimeProtocol: "ga",
+    });
+    const temperature = screen.getByRole("spinbutton", { name: "Temperature" });
+    expect(temperature).toBeDisabled();
+    expect(temperature).toHaveValue(null);
+    expect(temperature).toHaveAccessibleDescription(
+      "Temperature is not configurable with GA Realtime.",
+    );
+    await user.type(temperature, "0.7");
+    expect(onSettingsChange).not.toHaveBeenCalled();
+
+    rerender({ openaiRealtimeProtocol: "preview" });
+    expect(temperature).toBeEnabled();
+    expect(temperature).toHaveValue(0.8);
+    expect(temperature).not.toHaveAttribute("aria-describedby");
+    await user.clear(temperature);
+    expect(onSettingsChange).toHaveBeenCalled();
+
+    rerender({
+      openaiRealtimeProtocol: "ga",
+      provider: "speech_voice_live",
+      activeProvider: voiceProviderCatalog.providers[1],
+    });
+    expect(temperature).toBeEnabled();
+    expect(temperature).not.toHaveAttribute("aria-describedby");
+  });
+
   it("renders controls directly without a nested disclosure or dialog", () => {
     setup();
     expect(screen.queryByRole("dialog")).toBeNull();

@@ -66,6 +66,18 @@ resource mcpApis 'Microsoft.ApiManagement/service/apis@2024-06-01-preview' = [fo
   }
 }]
 
+// The catalog, not a caller-supplied header, selects the protocol boundary.
+// Legacy servers do not validate routing mirrors, so reject them there. Modern
+// mirrors are forwarded for upstream body validation; neither era routes or
+// authorizes from Mcp-Method, Mcp-Name, or Mcp-Param-*.
+var legacyProtocolPolicy = '''
+<choose><when condition="@(context.Request.Headers.Any(h =&gt; h.Key.Equals(&quot;Mcp-Method&quot;, StringComparison.OrdinalIgnoreCase) || h.Key.Equals(&quot;Mcp-Name&quot;, StringComparison.OrdinalIgnoreCase) || h.Key.StartsWith(&quot;Mcp-Param-&quot;, StringComparison.OrdinalIgnoreCase)) || (context.Request.Headers.ContainsKey(&quot;MCP-Protocol-Version&quot;) &amp;&amp; context.Request.Headers.GetValueOrDefault(&quot;MCP-Protocol-Version&quot;, &quot;&quot;) != &quot;2025-06-18&quot;))"><return-response><set-status code="400" reason="Bad Request" /><set-body>MCP metadata does not match the configured legacy server.</set-body></return-response></when></choose>
+'''
+
+var statelessProtocolPolicy = '''
+<choose><when condition="@(context.Request.Headers.GetValueOrDefault(&quot;MCP-Protocol-Version&quot;, &quot;&quot;) != &quot;2026-07-28&quot; || String.IsNullOrEmpty(context.Request.Headers.GetValueOrDefault(&quot;Mcp-Method&quot;, &quot;&quot;)) || context.Request.Headers.ContainsKey(&quot;Mcp-Session-Id&quot;) || context.Request.Headers.ContainsKey(&quot;Last-Event-ID&quot;))"><return-response><set-status code="400" reason="Bad Request" /><set-body>MCP metadata does not match the configured stateless server.</set-body></return-response></when></choose>
+'''
+
 // Per-server inbound policy fragments, precomputed so the policy resource stays
 // readable. Each server's inbound = (optional managed-identity bearer) + (optional
 // static upstream headers) + (optional static query params) + route to the backend.
@@ -73,6 +85,11 @@ resource mcpApis 'Microsoft.ApiManagement/service/apis@2024-06-01-preview' = [fo
 // from loadJsonContent() in main.bicep. The response body is never touched
 // (context.Response.Body) — buffering it breaks MCP streaming.
 var serverInboundPolicies = [for s in servers: join(concat(
+  (s.?protocolVersion ?? '2025-06-18') == '2026-07-28' ? [
+    statelessProtocolPolicy
+  ] : [
+    legacyProtocolPolicy
+  ],
   s.upstreamAuthMode == 'managed_identity' ? [
     '<authentication-managed-identity resource="${s.?upstreamMiResource ?? ''}" output-token-variable-name="msi-access-token" ignore-error="false" />'
     '<set-header name="Authorization" exists-action="override"><value>@("Bearer " + (string)context.Variables["msi-access-token"])</value></set-header>'

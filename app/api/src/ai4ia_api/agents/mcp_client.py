@@ -10,17 +10,26 @@ the capability, not the transport: tests use :class:`FakeMcpConnector`, and the
 live :class:`HttpxMcpConnector`'s framing/auth/error handling is unit-tested
 with ``httpx.MockTransport`` (no live server required).
 
-Discovery performs the minimal MCP flow: ``initialize`` → ``notifications/
-initialized`` → ``tools/list``. Per-turn execution adds
-:meth:`McpConnector.call_tool`, which reuses the same handshake then issues a
-``tools/call`` request and parses the returned content blocks into a bounded
-string — so a governed :class:`~ai4ia_api.agents.tool_exec.ToolDefinition` can run
-a remote tool through the exact same registry/redaction machinery as the built-ins.
+The default 2025-06-18 flow remains ``initialize`` -> ``notifications/initialized``
+-> request. Explicitly configured 2026-07-28 servers receive self-contained
+requests, without a session or handshake. Neither errors nor cache hints can
+change the configured version, grant capabilities, or replay a tool invocation.
 """
 from __future__ import annotations
 
+import asyncio
+import hmac
 import json
+import logging
+import re
+import secrets
+import time
+from collections import OrderedDict
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import aclosing, asynccontextmanager
+from copy import deepcopy
 from dataclasses import dataclass
+from itertools import count
 from typing import Any, Protocol
 
 import httpx
@@ -33,21 +42,41 @@ from .mcp_servers import (
     MAX_RESOURCE_NAME_LEN,
     MAX_RESOURCE_URI_LEN,
     MAX_RESOURCES_PER_SERVER,
+    MAX_SECRET_LEN,
     DiscoveredResource,
     DiscoveredTool,
     McpAuthMode,
     McpConnectionError,
+    McpProtocolVersion,
     is_valid_remote_tool_name,
+)
+from .mcp_protocol import (
+    CAPABILITIES_META,
+    CLIENT_INFO,
+    CLIENT_INFO_META,
+    PROTOCOL_META,
+    McpRequestContext,
+    header_parameters,
+    request_headers,
+    validate_resource_uri,
 )
 from .ssrf import Resolver, SsrfError, async_resolve_pinned_ip
 
-# The MCP protocol revision we advertise. Servers negotiate down if needed; this
-# is sent both in the initialize params and as a header on later requests.
-PROTOCOL_VERSION = "2025-06-18"
+logger = logging.getLogger(__name__)
 
-_CLIENT_INFO = {"name": "ai4ia", "version": "1.0"}
+# Kept for callers that import the legacy default. Never a global cutover switch.
+PROTOCOL_VERSION = McpProtocolVersion.legacy.value
 _DEFAULT_TIMEOUT_S = 15.0
 _DEFAULT_MAX_BYTES = 2_000_000
+MAX_CACHE_TTL_MS = 300_000
+MAX_CACHE_ENTRIES = 64
+MAX_CACHE_BYTES = 4_000_000
+MAX_LIST_PAGES = 8
+_CACHE_METHODS = frozenset({"server/discover", "tools/list", "resources/list"})
+_LEGACY_CONTEXT = McpRequestContext()
+_SSE_BOUNDARY = re.compile(br"\r\n\r\n|\n\n|\r\r")
+
+_CacheKey = tuple[McpRequestContext, str, str, str, str, str]
 
 
 async def _single_chunk(content: bytes):
@@ -96,19 +125,38 @@ class McpResourceResult:
     truncated: bool = False
 
 
+@dataclass(frozen=True)
+class McpServerDescription:
+    """Advisory discovery data, never server instructions or authorization."""
+
+    supported_versions: tuple[str, ...]
+    capabilities: dict[str, Any]
+
+
 class McpConnector(Protocol):
-    async def discover(self, *, endpoint: str, auth: McpAuth) -> list[DiscoveredTool]: ...
+    def invalidate(self, context: McpRequestContext | None = None) -> None: ...
+
+    async def discover_server(
+        self, *, endpoint: str, auth: McpAuth, context: McpRequestContext
+    ) -> McpServerDescription: ...
+
+    async def discover(
+        self, *, endpoint: str, auth: McpAuth, context: McpRequestContext = _LEGACY_CONTEXT
+    ) -> list[DiscoveredTool]: ...
 
     async def list_resources(
-        self, *, endpoint: str, auth: McpAuth
+        self, *, endpoint: str, auth: McpAuth, context: McpRequestContext = _LEGACY_CONTEXT
     ) -> list[DiscoveredResource]: ...
 
     async def read_resource(
-        self, *, endpoint: str, auth: McpAuth, uri: str
+        self, *, endpoint: str, auth: McpAuth, uri: str,
+        context: McpRequestContext = _LEGACY_CONTEXT,
     ) -> McpResourceResult: ...
 
     async def call_tool(
-        self, *, endpoint: str, auth: McpAuth, tool: str, arguments: dict[str, Any]
+        self, *, endpoint: str, auth: McpAuth, tool: str, arguments: dict[str, Any],
+        context: McpRequestContext = _LEGACY_CONTEXT,
+        input_schema: dict[str, Any] | None = None,
     ) -> McpToolResult: ...
 
 
@@ -178,6 +226,73 @@ class HttpxMcpConnector:
         self._timeout_s = timeout_s
         self._max_bytes = max_bytes
         self._resolver = resolver
+        self._cache: OrderedDict[_CacheKey, _CacheEntry] = OrderedDict()
+        self._cache_bytes = 0
+        self._cache_generation = 0
+        self._cache_salt = secrets.token_bytes(32)
+        self._request_ids = count(2)
+
+    def invalidate(self, context: McpRequestContext | None = None) -> None:
+        """Drop only discovery data, including in-flight fills from before invalidation."""
+        self._cache_generation += 1
+        for key in list(self._cache):
+            if context is None or (
+                key[0].owner_id == context.owner_id and key[0].server_id == context.server_id
+            ):
+                self._cache_bytes -= self._cache.pop(key).size
+
+    def _cache_key(
+        self, context: McpRequestContext, endpoint: str, auth: McpAuth,
+        method: str, params: dict[str, Any],
+    ) -> _CacheKey | None:
+        if (
+            context.protocol_version is not McpProtocolVersion.stateless
+            or method not in _CACHE_METHODS
+            or not (context.owner_id and context.server_id and context.configuration_revision)
+            or "inputResponses" in params or "requestState" in params
+        ):
+            return None
+        secret = auth.secret if auth.mode is not McpAuthMode.none else None
+        credential = hmac.digest(self._cache_salt, (secret or "").encode("utf-8"), "sha256").hex()
+        return (
+            context, endpoint, auth.mode.value, credential, method,
+            json.dumps(params, sort_keys=True, separators=(",", ":"), allow_nan=False),
+        )
+
+    def _cached(self, key: _CacheKey | None) -> _RpcResult | None:
+        if key is None:
+            return None
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        if time.monotonic() >= entry.expires:
+            self._cache_bytes -= self._cache.pop(key).size
+            return None
+        self._cache.move_to_end(key)
+        return deepcopy(entry.result)
+
+    def _cache_put(self, key: _CacheKey | None, result: _RpcResult, generation: int) -> None:
+        if key is None or generation != self._cache_generation:
+            return
+        payload = result.payload["result"]
+        ttl = payload.get("ttlMs", 0)
+        # Even a "public" hint stays owner/auth-scoped. Missing/negative hints
+        # are immediately stale; resource bodies and tool results are never cached.
+        if type(ttl) is not int or ttl <= 0 or payload.get("cacheScope") not in ("public", "private"):
+            return
+        size = len(json.dumps(result.payload, ensure_ascii=True).encode("utf-8"))
+        if size > MAX_CACHE_BYTES:
+            return
+        if key in self._cache:
+            self._cache_bytes -= self._cache.pop(key).size
+        while self._cache and (
+            len(self._cache) >= MAX_CACHE_ENTRIES or self._cache_bytes + size > MAX_CACHE_BYTES
+        ):
+            self._cache_bytes -= self._cache.popitem(last=False)[1].size
+        self._cache[key] = _CacheEntry(
+            deepcopy(result), result.received_at + min(ttl, MAX_CACHE_TTL_MS) / 1000, size
+        )
+        self._cache_bytes += size
 
     def _new_client(self, pinned_ip: str) -> httpx.AsyncClient:
         """Build a short-lived client whose socket connects are pinned to ``pinned_ip``.
@@ -218,42 +333,200 @@ class HttpxMcpConnector:
                 f"{method_label}: endpoint is not a permitted egress target: {exc}"
             ) from exc
 
-    async def discover(self, *, endpoint: str, auth: McpAuth) -> list[DiscoveredTool]:
-        if self._client is not None:
-            return await self._discover_with(self._client, endpoint, auth)
-        pinned_ip = await self._pin_or_raise(endpoint, "tools/list")
-        async with self._new_client(pinned_ip) as client:
-            return await self._discover_with(client, endpoint, auth)
+    async def discover_server(
+        self, *, endpoint: str, auth: McpAuth, context: McpRequestContext
+    ) -> McpServerDescription:
+        if context.protocol_version is not McpProtocolVersion.stateless:
+            raise McpConnectionError("server/discover requires MCP 2026-07-28.")
+        response = await self._request(
+            endpoint, auth, context, method="server/discover", params={}
+        )
+        result = response.payload["result"]
+        return McpServerDescription(
+            supported_versions=tuple(result["supportedVersions"]),
+            capabilities=deepcopy(result["capabilities"]),
+        )
+
+    async def discover(
+        self, *, endpoint: str, auth: McpAuth, context: McpRequestContext = _LEGACY_CONTEXT
+    ) -> list[DiscoveredTool]:
+        tools: list[DiscoveredTool] = []
+        seen: set[str] = set()
+        async with aclosing(self._list_pages(endpoint, auth, context, "tools/list")) as pages:
+            async for payload in pages:
+                for tool in self._parse_tools(
+                    payload, modern=context.protocol_version is McpProtocolVersion.stateless
+                ):
+                    if tool.name not in seen:
+                        tools.append(tool)
+                        seen.add(tool.name)
+                    if len(tools) >= MAX_TOOLS_PER_SERVER:
+                        return tools
+        return tools
 
     async def call_tool(
-        self, *, endpoint: str, auth: McpAuth, tool: str, arguments: dict[str, Any]
+        self, *, endpoint: str, auth: McpAuth, tool: str, arguments: dict[str, Any],
+        context: McpRequestContext = _LEGACY_CONTEXT,
+        input_schema: dict[str, Any] | None = None,
     ) -> McpToolResult:
-        if self._client is not None:
-            return await self._call_with(self._client, endpoint, auth, tool, arguments)
-        pinned_ip = await self._pin_or_raise(endpoint, "tools/call")
-        async with self._new_client(pinned_ip) as client:
-            return await self._call_with(client, endpoint, auth, tool, arguments)
+        if not is_valid_remote_tool_name(tool) or not isinstance(arguments, dict):
+            raise McpConnectionError("tools/call: invalid name or arguments.")
+        result = await self._request(
+            endpoint, auth, context, method="tools/call",
+            params={"name": tool, "arguments": arguments}, input_schema=input_schema,
+        )
+        return self._parse_tool_result(result.payload, self._max_bytes)
 
     async def list_resources(
-        self, *, endpoint: str, auth: McpAuth
+        self, *, endpoint: str, auth: McpAuth, context: McpRequestContext = _LEGACY_CONTEXT
     ) -> list[DiscoveredResource]:
-        if self._client is not None:
-            return await self._list_resources_with(self._client, endpoint, auth)
-        pinned_ip = await self._pin_or_raise(endpoint, "resources/list")
-        async with self._new_client(pinned_ip) as client:
-            return await self._list_resources_with(client, endpoint, auth)
+        resources: list[DiscoveredResource] = []
+        seen: set[str] = set()
+        async with aclosing(self._list_pages(endpoint, auth, context, "resources/list")) as pages:
+            async for payload in pages:
+                for resource in self._parse_resources(payload):
+                    if resource.uri not in seen:
+                        resources.append(resource)
+                        seen.add(resource.uri)
+                    if len(resources) >= MAX_RESOURCES_PER_SERVER:
+                        return resources
+        return resources
+
+    async def _list_pages(
+        self, endpoint: str, auth: McpAuth, context: McpRequestContext, method: str
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        params: dict[str, Any] = {}
+        seen: set[str] = set()
+        scope: str | None = None
+        self._validate_connection(auth, context)
+        try:
+            async with self._client_for(endpoint, method) as client:
+                # Legacy cursors belong to the initialized session. Keep both
+                # that session and its DNS-pinned client until pagination ends.
+                headers = await self._open_session(client, endpoint, auth, context)
+                for page in range(MAX_LIST_PAGES):
+                    response = await self._rpc(
+                        client, endpoint, headers,
+                        rpc_id=next(self._request_ids) if context.protocol_version is McpProtocolVersion.stateless else page + 2,
+                        method=method, params=params, context=context, auth=auth,
+                    )
+                    result = response.payload["result"]
+                    if context.protocol_version is McpProtocolVersion.stateless:
+                        page_scope = result.get("cacheScope", "private")
+                        if scope is not None and page_scope != scope:
+                            raise McpConnectionError(f"{method}: contradictory page cache scopes.")
+                        scope = page_scope
+                    yield response.payload
+                    cursor = result.get("nextCursor")
+                    if cursor is None:
+                        return
+                    if (
+                        not isinstance(cursor, str) or not cursor or len(cursor) > 2048
+                        or cursor in seen
+                    ):
+                        raise McpConnectionError(f"{method}: invalid or repeated pagination cursor.")
+                    seen.add(cursor)
+                    params = {"cursor": cursor}
+            raise McpConnectionError(f"{method}: pagination exceeds local bounds.")
+        except McpConnectionError:
+            self.invalidate(context)
+            raise
 
     async def read_resource(
-        self, *, endpoint: str, auth: McpAuth, uri: str
+        self, *, endpoint: str, auth: McpAuth, uri: str,
+        context: McpRequestContext = _LEGACY_CONTEXT,
     ) -> McpResourceResult:
+        validate_resource_uri(uri)
+        result = await self._request(
+            endpoint, auth, context, method="resources/read", params={"uri": uri}
+        )
+        return self._parse_resource_result(result.payload, uri)
+
+    async def _request(
+        self, endpoint: str, auth: McpAuth, context: McpRequestContext, *,
+        method: str, params: dict[str, Any], input_schema: dict[str, Any] | None = None,
+    ) -> _RpcResult:
+        self._validate_connection(auth, context)
+        params = deepcopy(params)
+        input_schema = deepcopy(input_schema)
+        async with self._client_for(endpoint, method) as client:
+            return await self._request_with(
+                client, endpoint, auth, context, method, params, input_schema
+            )
+
+    @staticmethod
+    def _validate_connection(auth: McpAuth, context: McpRequestContext) -> None:
+        if not isinstance(context.protocol_version, McpProtocolVersion):
+            raise McpConnectionError("Unsupported configured MCP protocol version.")
+        if auth.mode is not McpAuthMode.none and not (auth.secret and auth.secret.strip()):
+            raise McpConnectionError("MCP connection credential is unavailable.")
+        if auth.mode is not McpAuthMode.none and auth.secret and (
+            len(auth.secret) > MAX_SECRET_LEN
+            or any(not 0x20 <= ord(char) <= 0x7E for char in auth.secret)
+        ):
+            raise McpConnectionError("MCP connection credential is not a valid HTTP value.")
+    @asynccontextmanager
+    async def _client_for(self, endpoint: str, method: str) -> AsyncIterator[httpx.AsyncClient]:
         if self._client is not None:
-            return await self._read_resource_with(self._client, endpoint, auth, uri)
-        pinned_ip = await self._pin_or_raise(endpoint, "resources/read")
-        async with self._new_client(pinned_ip) as client:
-            return await self._read_resource_with(client, endpoint, auth, uri)
+            yield self._client
+        else:
+            # Cache hits do not bypass the transport-owned DNS/public-IP check.
+            pinned_ip = await self._pin_or_raise(endpoint, method)
+            async with self._new_client(pinned_ip) as client:
+                yield client
+
+    async def _request_with(
+        self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth,
+        context: McpRequestContext, method: str, params: dict[str, Any],
+        input_schema: dict[str, Any] | None,
+    ) -> _RpcResult:
+        if method == "tools/call":
+            return await self._call_with(
+                client, endpoint, auth, params["name"], params["arguments"],
+                context=context, input_schema=input_schema,
+            )
+        if method == "resources/read":
+            return await self._read_resource_with(
+                client, endpoint, auth, params["uri"], context=context,
+            )
+        return await self._perform_request(client, endpoint, auth, context, method, params)
+
+    async def _call_with(
+        self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth,
+        tool: str, arguments: dict[str, Any], *,
+        context: McpRequestContext = _LEGACY_CONTEXT,
+        input_schema: dict[str, Any] | None = None,
+    ) -> _RpcResult:
+        """Execution seam includes every handshake/RPC, independent of protocol."""
+        return await self._perform_request(
+            client, endpoint, auth, context, "tools/call",
+            {"name": tool, "arguments": arguments}, input_schema,
+        )
+
+    async def _read_resource_with(
+        self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth, uri: str, *,
+        context: McpRequestContext = _LEGACY_CONTEXT,
+    ) -> _RpcResult:
+        return await self._perform_request(
+            client, endpoint, auth, context, "resources/read", {"uri": uri},
+        )
+
+    async def _perform_request(
+        self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth,
+        context: McpRequestContext, method: str, params: dict[str, Any],
+        input_schema: dict[str, Any] | None = None,
+    ) -> _RpcResult:
+        headers = await self._open_session(client, endpoint, auth, context)
+        return await self._rpc(
+            client, endpoint, headers,
+            rpc_id=next(self._request_ids) if context.protocol_version is McpProtocolVersion.stateless else 2,
+            method=method, params=params,
+            context=context, auth=auth, input_schema=input_schema,
+        )
 
     async def _open_session(
-        self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth
+        self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth,
+        context: McpRequestContext,
     ) -> dict[str, str]:
         """Run ``initialize`` + ``notifications/initialized`` and return the
         headers (protocol version + any negotiated session id) to use for the
@@ -264,6 +537,8 @@ class HttpxMcpConnector:
             "Accept-Encoding": "identity",
             **auth.headers(),
         }
+        if context.protocol_version is McpProtocolVersion.stateless:
+            return base_headers
 
         init = await self._rpc(
             client,
@@ -274,10 +549,17 @@ class HttpxMcpConnector:
             params={
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": _CLIENT_INFO,
+                "clientInfo": CLIENT_INFO,
             },
+            context=context,
+            auth=auth,
         )
-        self._raise_for_rpc_error(init.payload, "initialize")
+        result = init.payload["result"]
+        if (
+            result.get("protocolVersion") != context.protocol_version.value
+            or not isinstance(result.get("capabilities"), dict)
+        ):
+            raise McpConnectionError("initialize: unsupported or contradictory protocol version.")
 
         post_init = {**base_headers, "MCP-Protocol-Version": PROTOCOL_VERSION}
         if init.session_id:
@@ -286,77 +568,6 @@ class HttpxMcpConnector:
         # ``notifications/initialized`` is a fire-and-forget notification (no id).
         await self._notify(client, endpoint, post_init, method="notifications/initialized")
         return post_init
-
-    async def _discover_with(
-        self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth
-    ) -> list[DiscoveredTool]:
-        post_init = await self._open_session(client, endpoint, auth)
-        listed = await self._rpc(
-            client, endpoint, post_init, rpc_id=2, method="tools/list", params={}
-        )
-        self._raise_for_rpc_error(listed.payload, "tools/list")
-        return self._parse_tools(listed.payload)
-
-    async def _call_with(
-        self,
-        client: httpx.AsyncClient,
-        endpoint: str,
-        auth: McpAuth,
-        tool: str,
-        arguments: dict[str, Any],
-    ) -> McpToolResult:
-        post_init = await self._open_session(client, endpoint, auth)
-        called = await self._rpc(
-            client,
-            endpoint,
-            post_init,
-            rpc_id=2,
-            method="tools/call",
-            params={"name": tool, "arguments": arguments or {}},
-        )
-        self._raise_for_rpc_error(called.payload, "tools/call")
-        return self._parse_tool_result(called.payload, self._max_bytes)
-
-    async def _list_resources_with(
-        self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth
-    ) -> list[DiscoveredResource]:
-        post_init = await self._open_session(client, endpoint, auth)
-        listed = await self._rpc(
-            client,
-            endpoint,
-            post_init,
-            rpc_id=2,
-            method="resources/list",
-            params={},
-        )
-        self._raise_for_rpc_error(listed.payload, "resources/list")
-        return self._parse_resources(listed.payload)
-
-    async def _read_resource_with(
-        self,
-        client: httpx.AsyncClient,
-        endpoint: str,
-        auth: McpAuth,
-        uri: str,
-    ) -> McpResourceResult:
-        if (
-            not isinstance(uri, str)
-            or not uri
-            or len(uri) > MAX_RESOURCE_URI_LEN
-            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in uri)
-        ):
-            raise McpConnectionError("resources/read: invalid resource URI.")
-        post_init = await self._open_session(client, endpoint, auth)
-        read = await self._rpc(
-            client,
-            endpoint,
-            post_init,
-            rpc_id=2,
-            method="resources/read",
-            params={"uri": uri},
-        )
-        self._raise_for_rpc_error(read.payload, "resources/read")
-        return self._parse_resource_result(read.payload, uri)
 
     # --- transport helpers ----------------------------------------------------
 
@@ -369,56 +580,158 @@ class HttpxMcpConnector:
         rpc_id: int,
         method: str,
         params: dict[str, Any],
+        context: McpRequestContext,
+        auth: McpAuth,
+        input_schema: dict[str, Any] | None = None,
     ) -> _RpcResult:
+        params = deepcopy(params)
+        modern = context.protocol_version is McpProtocolVersion.stateless
+        if modern:
+            params["_meta"] = {
+                PROTOCOL_META: context.protocol_version.value,
+                CLIENT_INFO_META: dict(CLIENT_INFO),
+                CAPABILITIES_META: {},
+            }
         body = {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params}
+        mirrors = request_headers(
+            body, protocol=context.protocol_version, input_schema=input_schema, secret=auth.secret
+        )
+        # Only the legacy handshake owns a session header. All routing mirrors
+        # come from this body, not from callers or a previous request.
+        headers = {
+            name: value for name, value in headers.items()
+            if not name.lower().startswith("mcp-") and name.lower() != "last-event-id"
+        } | mirrors | (
+            {"Mcp-Session-Id": headers["Mcp-Session-Id"]}
+            if not modern and "Mcp-Session-Id" in headers else {}
+        )
         try:
-            async with client.stream(
-                "POST", endpoint, headers=headers, json=body
-            ) as resp:
-                if resp.status_code >= 400:
-                    raise McpConnectionError(
-                        f"{method}: server returned HTTP {resp.status_code}."
+            content = json.dumps(body, allow_nan=False).encode("utf-8")
+        except (ValueError, TypeError, UnicodeEncodeError) as exc:
+            raise McpConnectionError(f"{method}: invalid JSON request.") from exc
+        if len(content) > _DEFAULT_MAX_BYTES:
+            raise McpConnectionError(f"{method}: request too large.")
+        key = self._cache_key(context, endpoint, auth, method, params)
+        cached = self._cached(key)
+        if cached is not None:
+            cached.payload["id"] = rpc_id
+            return cached
+        generation = self._cache_generation
+        try:
+            async with asyncio.timeout(self._timeout_s):
+                async with client.stream(
+                    "POST", endpoint, headers=headers, content=content, follow_redirects=False
+                ) as resp:
+                    if resp.status_code != 400 and not 200 <= resp.status_code < 300:
+                        raise McpConnectionError(
+                            f"{method}: server returned HTTP {resp.status_code}."
+                        )
+                    self._validate_response_headers(
+                        resp.headers, context, method, headers.get("Mcp-Session-Id")
                     )
-                encoding = (resp.headers.get("content-encoding") or "").strip().lower()
-                if encoding not in ("", "identity"):
-                    raise McpConnectionError(
-                        f"{method}: compressed responses are not accepted."
+                    payload = await self._read_response(resp, rpc_id, method, context)
+                    if payload is None:
+                        raise McpConnectionError(f"{method}: no JSON-RPC response found.")
+                    self._raise_for_rpc_error(payload, method, context.protocol_version)
+                    if resp.status_code == 400:
+                        raise McpConnectionError(f"{method}: server returned HTTP 400.")
+                    self._validate_result(payload, method, context.protocol_version)
+                    result = _RpcResult(
+                        payload=payload,
+                        session_id=resp.headers.get("mcp-session-id"),
+                        received_at=time.monotonic(),
                     )
-                declared = resp.headers.get("content-length")
-                if declared is not None:
-                    try:
-                        if int(declared) > self._max_bytes:
-                            raise McpConnectionError(f"{method}: response too large.")
-                    except ValueError:
-                        pass
-                parts: list[bytes] = []
-                total = 0
-                chunks = (
-                    _single_chunk(resp.content)
-                    if resp.is_stream_consumed
-                    else resp.aiter_raw()
-                )
-                async for chunk in chunks:
-                    total += len(chunk)
-                    if total > self._max_bytes:
-                        raise McpConnectionError(f"{method}: response too large.")
-                    parts.append(chunk)
-                raw = b"".join(parts)
-                content_type = resp.headers.get("content-type", "")
-                session_id = resp.headers.get("mcp-session-id")
+        except (asyncio.CancelledError, TimeoutError, httpx.TimeoutException) as exc:
+            self.invalidate(context)
+            if not modern and method != "initialize":
+                # Legacy disconnect is NOT cancellation. Signal the same request,
+                # with its auth/session, after the response stream has closed.
+                try:
+                    async with asyncio.timeout(min(1.0, self._timeout_s)):
+                        await self._notify(
+                            client, endpoint, headers, method="notifications/cancelled",
+                            params={"requestId": rpc_id},
+                        )
+                except (McpConnectionError, TimeoutError):
+                    logger.warning("MCP cancellation notification could not be delivered.")
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise McpConnectionError(f"{method}: request timed out.") from exc
         except SsrfError as exc:
-            # Defense in depth: the pinned transport refused the target (e.g. a
-            # non-https URL slipped through). The primary rebind rejection happens
-            # up front in _pin_for, before this client is even built.
+            self.invalidate(context)
             raise McpConnectionError(
                 f"{method}: endpoint is not a permitted egress target: {exc}"
             ) from exc
         except httpx.HTTPError as exc:
+            self.invalidate(context)
             raise McpConnectionError(f"{method}: transport error.") from exc
-        payload = _decode_jsonrpc(raw, content_type, rpc_id)
-        if payload is None:
-            raise McpConnectionError(f"{method}: no JSON-RPC response found.")
-        return _RpcResult(payload=payload, session_id=session_id)
+        except McpConnectionError:
+            self.invalidate(context)
+            raise
+        self._cache_put(key, result, generation)
+        return result
+
+    @staticmethod
+    def _validate_response_headers(
+        headers: httpx.Headers, context: McpRequestContext, method: str, session: str | None
+    ) -> None:
+        version = headers.get("mcp-protocol-version")
+        if version is not None and version != context.protocol_version.value:
+            raise McpConnectionError(f"{method}: contradictory response protocol version.")
+        assigned = headers.get("mcp-session-id")
+        if assigned is None:
+            return
+        if context.protocol_version is McpProtocolVersion.stateless:
+            raise McpConnectionError(f"{method}: stateless response must not assign a session.")
+        if (
+            not assigned or len(assigned) > 1024
+            or any(not 0x21 <= ord(char) <= 0x7E for char in assigned)
+            or (method != "initialize" and assigned != session)
+        ):
+            raise McpConnectionError(f"{method}: invalid or contradictory MCP session.")
+
+    async def _read_response(
+        self, resp: httpx.Response, rpc_id: int, method: str, context: McpRequestContext
+    ) -> dict[str, Any] | None:
+        encoding = (resp.headers.get("content-encoding") or "").strip().lower()
+        if encoding not in ("", "identity"):
+            raise McpConnectionError(f"{method}: compressed responses are not accepted.")
+        declared = resp.headers.get("content-length")
+        if declared is not None:
+            try:
+                if int(declared) > self._max_bytes:
+                    raise McpConnectionError(f"{method}: response too large.")
+            except ValueError:
+                pass
+        modern = context.protocol_version is McpProtocolVersion.stateless
+        content_type = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if modern and content_type not in ("application/json", "text/event-stream"):
+            raise McpConnectionError(f"{method}: unsupported response content type.")
+        total = 0
+        pending = bytearray()
+        chunks = _single_chunk(resp.content) if resp.is_stream_consumed else resp.aiter_raw()
+
+        def notification(name: str) -> None:
+            if name in ("notifications/tools/list_changed", "notifications/resources/list_changed"):
+                self.invalidate(context)
+
+        async for chunk in chunks:
+            total += len(chunk)
+            if total > self._max_bytes:
+                raise McpConnectionError(f"{method}: response too large.")
+            pending.extend(chunk)
+            if content_type == "text/event-stream":
+                while (boundary := _SSE_BOUNDARY.search(pending)) is not None:
+                    block = bytes(pending[:boundary.start()])
+                    del pending[:boundary.end()]
+                    response = _decode_jsonrpc(
+                        block, content_type, rpc_id, strict=modern, notification=notification
+                    )
+                    if response is not None:
+                        return response
+        return _decode_jsonrpc(
+            bytes(pending), content_type, rpc_id, strict=modern, notification=notification
+        )
 
     async def _notify(
         self,
@@ -427,13 +740,23 @@ class HttpxMcpConnector:
         headers: dict[str, str],
         *,
         method: str,
+        params: dict[str, Any] | None = None,
     ) -> None:
-        body = {"jsonrpc": "2.0", "method": method}
+        body: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            body["params"] = params
         try:
-            async with client.stream(
-                "POST", endpoint, headers=headers, json=body
-            ):
-                pass
+            async with asyncio.timeout(self._timeout_s):
+                async with client.stream(
+                    "POST", endpoint, headers=headers, json=body, follow_redirects=False
+                ) as resp:
+                    if resp.status_code != 202:
+                        raise McpConnectionError(
+                            f"{method}: server returned HTTP {resp.status_code}."
+                        )
+                    self._validate_response_headers(
+                        resp.headers, _LEGACY_CONTEXT, method, headers.get("Mcp-Session-Id")
+                    )
         except SsrfError as exc:
             # Defense in depth: the pinned transport refused the target. The primary
             # rebind rejection happens up front in _pin_for; a notification must still
@@ -441,19 +764,93 @@ class HttpxMcpConnector:
             raise McpConnectionError(
                 f"{method}: endpoint is not a permitted egress target: {exc}"
             ) from exc
-        except httpx.HTTPError:
-            # A notification has no response; a transport hiccup here shouldn't abort
-            # discovery (the subsequent tools/list call will surface real issues).
-            return
+        except (httpx.HTTPError, TimeoutError) as exc:
+            raise McpConnectionError(f"{method}: transport error.") from exc
 
     @staticmethod
-    def _raise_for_rpc_error(payload: dict[str, Any], method: str) -> None:
+    def _raise_for_rpc_error(
+        payload: dict[str, Any], method: str, protocol: McpProtocolVersion
+    ) -> None:
         error = payload.get("error")
-        if error:
-            raise McpConnectionError(f"{method}: remote protocol error.")
+        if error is None:
+            return
+        if (
+            not isinstance(error, dict) or type(error.get("code")) is not int
+            or not isinstance(error.get("message"), str)
+        ):
+            raise McpConnectionError(f"{method}: malformed protocol error.")
+        if protocol is McpProtocolVersion.stateless:
+            code = error["code"]
+            if code == -32022:
+                data = error.get("data")
+                if (
+                    not isinstance(data, dict) or data.get("requested") != protocol.value
+                    or not isinstance(data.get("supported"), list)
+                    or not data["supported"]
+                    or not all(isinstance(value, str) for value in data["supported"])
+                    or protocol.value in data["supported"]
+                ):
+                    raise McpConnectionError(f"{method}: contradictory version-negotiation error.")
+                raise McpConnectionError(
+                    f"{method}: configured MCP protocol is unsupported; select a version explicitly."
+                )
+            if code == -32020:
+                raise McpConnectionError(f"{method}: server rejected MCP header/body metadata.")
+            if code == -32021:
+                raise McpConnectionError(f"{method}: server requires unsupported client capabilities.")
+        raise McpConnectionError(f"{method}: remote protocol error.")
 
     @staticmethod
-    def _parse_tools(payload: dict[str, Any]) -> list[DiscoveredTool]:
+    def _validate_result(
+        payload: dict[str, Any], method: str, protocol: McpProtocolVersion
+    ) -> None:
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise McpConnectionError(f"{method}: malformed result.")
+        modern = protocol is McpProtocolVersion.stateless
+        result_type = result.get("resultType", None if modern else "complete")
+        if result_type != "complete":
+            raise McpConnectionError(f"{method}: unsupported or missing resultType.")
+        meta = result.get("_meta", {})
+        if (
+            not isinstance(meta, dict)
+            or meta.get(PROTOCOL_META, protocol.value) != protocol.value
+            or result.get("protocolVersion", protocol.value) != protocol.value
+        ):
+            raise McpConnectionError(f"{method}: contradictory result protocol metadata.")
+        if modern and method in _CACHE_METHODS | {"resources/read"}:
+            if (
+                ("ttlMs" in result and type(result["ttlMs"]) is not int)
+                or ("cacheScope" in result and result["cacheScope"] not in ("public", "private"))
+            ):
+                raise McpConnectionError(f"{method}: malformed cache hints.")
+        if method == "server/discover":
+            versions = result.get("supportedVersions")
+            capabilities = result.get("capabilities")
+            if (
+                not isinstance(versions, list) or not 1 <= len(versions) <= 16
+                or not all(
+                    isinstance(version, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", version)
+                    for version in versions
+                )
+                or protocol.value not in versions
+                or not isinstance(capabilities, dict)
+                or not all(isinstance(value, dict) for value in capabilities.values())
+            ):
+                raise McpConnectionError("server/discover: unsupported or contradictory discovery.")
+        if method in ("tools/list", "resources/list"):
+            field = "tools" if method == "tools/list" else "resources"
+            if not isinstance(result.get(field), list):
+                raise McpConnectionError(f"{method}: result has no {field} array.")
+        if modern and method == "tools/call":
+            if (
+                ("isError" in result and not isinstance(result["isError"], bool))
+                or (not isinstance(result.get("content"), list) and "structuredContent" not in result)
+            ):
+                raise McpConnectionError("tools/call: malformed result content.")
+
+    @staticmethod
+    def _parse_tools(payload: dict[str, Any], *, modern: bool = False) -> list[DiscoveredTool]:
         result = payload.get("result")
         if not isinstance(result, dict):
             raise McpConnectionError("tools/list: malformed result.")
@@ -477,6 +874,15 @@ class HttpxMcpConnector:
             seen_names.add(name)
             description = raw.get("description")
             schema = raw.get("inputSchema")
+            if modern:
+                if not isinstance(schema, dict):
+                    logger.warning("MCP tool definition rejected: missing input schema.")
+                    continue
+                try:
+                    header_parameters(schema)
+                except McpConnectionError:
+                    logger.warning("MCP tool definition rejected: unsafe parameter-header schema.")
+                    continue
             tools.append(
                 DiscoveredTool(
                     name=name,
@@ -594,6 +1000,10 @@ class HttpxMcpConnector:
         # RPC-protocol errors above) are fixed, content-free strings, since
         # those can otherwise chain into log output.
         content = cls._content_to_text(result.get("content"), max_bytes)
+        if not content and "structuredContent" in result:
+            content = cls._content_to_text(
+                json.dumps(result["structuredContent"], ensure_ascii=True, allow_nan=False), max_bytes
+            )
         return McpToolResult(content=content, is_error=is_error)
 
     @staticmethod
@@ -628,30 +1038,66 @@ class HttpxMcpConnector:
 class _RpcResult:
     payload: dict[str, Any]
     session_id: str | None
+    received_at: float
+
+
+@dataclass(frozen=True)
+class _CacheEntry:
+    result: _RpcResult
+    expires: float
+    size: int
+
+
+def _json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError("Duplicate JSON object key.")
+        result[name] = value
+    return result
+
+
+def _invalid_constant(_value: str) -> Any:
+    raise ValueError("Non-JSON numeric constant.")
+
+
+def _load_json(text: str, *, strict: bool) -> Any:
+    if strict:
+        return json.loads(text, object_pairs_hook=_json_object, parse_constant=_invalid_constant)
+    return json.loads(text)
 
 
 def _decode_jsonrpc(
-    raw: bytes, content_type: str, expected_id: int
+    raw: bytes, content_type: str, expected_id: int, *, strict: bool = False,
+    notification: Callable[[str], None] | None = None,
 ) -> dict[str, Any] | None:
     """Decode a JSON-RPC response from either a JSON body or an SSE stream."""
-    text = raw.decode("utf-8", errors="replace").strip()
+    try:
+        text = raw.decode("utf-8", errors="strict" if strict else "replace").strip()
+    except UnicodeDecodeError as exc:
+        raise McpConnectionError("MCP response is not valid UTF-8.") from exc
     if not text:
         return None
     if "text/event-stream" in content_type.lower():
-        return _decode_sse(text, expected_id)
+        return _decode_sse(text, expected_id, strict=strict, notification=notification)
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
+        payload = _load_json(text, strict=strict)
+    except (ValueError, RecursionError) as exc:
+        if strict:
+            raise McpConnectionError("MCP response is not valid JSON.") from exc
         # Some servers send SSE without the precise content-type; try anyway.
         return _decode_sse(text, expected_id)
-    return _match_response(payload, expected_id)
+    return _match_response(payload, expected_id, strict=strict)
 
 
-def _decode_sse(text: str, expected_id: int) -> dict[str, Any] | None:
+def _decode_sse(
+    text: str, expected_id: int, *, strict: bool = False,
+    notification: Callable[[str], None] | None = None,
+) -> dict[str, Any] | None:
     """Scan SSE events for the JSON-RPC response matching ``expected_id``."""
     # Events are separated by a blank line; an event's data is the join of its
     # ``data:`` field values.
-    for block in text.replace("\r\n", "\n").split("\n\n"):
+    for block in text.replace("\r\n", "\n").replace("\r", "\n").split("\n\n"):
         data_lines = [
             line[len("data:"):].lstrip()
             for line in block.split("\n")
@@ -660,18 +1106,34 @@ def _decode_sse(text: str, expected_id: int) -> dict[str, Any] | None:
         if not data_lines:
             continue
         try:
-            payload = json.loads("\n".join(data_lines))
-        except json.JSONDecodeError:
+            payload = _load_json("\n".join(data_lines), strict=strict)
+        except (ValueError, RecursionError) as exc:
+            if strict:
+                raise McpConnectionError("MCP stream contains invalid JSON.") from exc
             continue
-        matched = _match_response(payload, expected_id)
+        if isinstance(payload, dict) and "method" in payload and "id" not in payload:
+            name = payload["method"]
+            if strict and (
+                payload.get("jsonrpc") != "2.0" or not isinstance(name, str)
+                or not name.startswith("notifications/")
+            ):
+                raise McpConnectionError("MCP stream contains an invalid notification.")
+            if notification is not None and isinstance(name, str):
+                notification(name)
+            continue
+        matched = _match_response(payload, expected_id, strict=strict)
         if matched is not None:
             return matched
     return None
 
 
-def _match_response(payload: Any, expected_id: int) -> dict[str, Any] | None:
+def _match_response(
+    payload: Any, expected_id: int, *, strict: bool = False
+) -> dict[str, Any] | None:
     """Return ``payload`` if it is the JSON-RPC response for ``expected_id``."""
     if isinstance(payload, list):
+        if strict:
+            raise McpConnectionError("MCP response must be a single JSON-RPC message.")
         for item in payload:
             matched = _match_response(item, expected_id)
             if matched is not None:
@@ -679,12 +1141,22 @@ def _match_response(payload: Any, expected_id: int) -> dict[str, Any] | None:
         return None
     if not isinstance(payload, dict):
         return None
+    if "method" in payload:
+        if strict:
+            raise McpConnectionError("MCP server-initiated requests are not supported.")
+        return None
     if "result" not in payload and "error" not in payload:
         return None
+    if payload.get("jsonrpc") != "2.0" or ("result" in payload and "error" in payload):
+        raise McpConnectionError("MCP response has an invalid JSON-RPC envelope.")
     rid = payload.get("id")
-    # Tolerate string/int id mismatch (some servers echo ids as strings).
-    if rid == expected_id or str(rid) == str(expected_id):
+    if type(rid) is int and rid == expected_id:
         return payload
+    # Preserve the existing legacy adapter's string/int echo compatibility only.
+    if not strict and isinstance(rid, str) and rid == str(expected_id):
+        return payload
+    if strict:
+        raise McpConnectionError("MCP response id does not match the request.")
     return None
 
 
@@ -715,17 +1187,42 @@ class FakeMcpConnector:
         self.tool_calls: list[tuple[str, str, dict[str, Any], McpAuth]] = []
         self.resource_lists: list[tuple[str, McpAuth]] = []
         self.resource_reads: list[tuple[str, str, McpAuth]] = []
+        self.contexts: list[tuple[str, McpRequestContext]] = []
+        self.invalidations: list[McpRequestContext | None] = []
+        self.server_discoveries: list[tuple[str, McpAuth]] = []
+        self.tool_schemas: list[dict[str, Any] | None] = []
 
-    async def discover(self, *, endpoint: str, auth: McpAuth) -> list[DiscoveredTool]:
+    def invalidate(self, context: McpRequestContext | None = None) -> None:
+        self.invalidations.append(context)
+
+    async def discover_server(
+        self, *, endpoint: str, auth: McpAuth, context: McpRequestContext
+    ) -> McpServerDescription:
+        self.server_discoveries.append((endpoint, auth))
+        self.contexts.append(("server/discover", context))
+        if self._error is not None:
+            raise self._error
+        return McpServerDescription(
+            (context.protocol_version.value,), {"tools": {}, "resources": {}}
+        )
+
+    async def discover(
+        self, *, endpoint: str, auth: McpAuth, context: McpRequestContext = _LEGACY_CONTEXT
+    ) -> list[DiscoveredTool]:
         self.calls.append((endpoint, auth))
+        self.contexts.append(("tools/list", context))
         if self._error is not None:
             raise self._error
         return list(self._tools)
 
     async def call_tool(
-        self, *, endpoint: str, auth: McpAuth, tool: str, arguments: dict[str, Any]
+        self, *, endpoint: str, auth: McpAuth, tool: str, arguments: dict[str, Any],
+        context: McpRequestContext = _LEGACY_CONTEXT,
+        input_schema: dict[str, Any] | None = None,
     ) -> McpToolResult:
         self.tool_calls.append((endpoint, tool, dict(arguments or {}), auth))
+        self.contexts.append(("tools/call", context))
+        self.tool_schemas.append(deepcopy(input_schema))
         if self._call_error is not None:
             raise self._call_error
         if tool in self._call_results:
@@ -733,17 +1230,20 @@ class FakeMcpConnector:
         return McpToolResult(content=f"ok:{tool}", is_error=False)
 
     async def list_resources(
-        self, *, endpoint: str, auth: McpAuth
+        self, *, endpoint: str, auth: McpAuth, context: McpRequestContext = _LEGACY_CONTEXT
     ) -> list[DiscoveredResource]:
         self.resource_lists.append((endpoint, auth))
+        self.contexts.append(("resources/list", context))
         if self._resource_error is not None:
             raise self._resource_error
         return list(self._resources)
 
     async def read_resource(
-        self, *, endpoint: str, auth: McpAuth, uri: str
+        self, *, endpoint: str, auth: McpAuth, uri: str,
+        context: McpRequestContext = _LEGACY_CONTEXT,
     ) -> McpResourceResult:
         self.resource_reads.append((endpoint, uri, auth))
+        self.contexts.append(("resources/read", context))
         if self._resource_error is not None:
             raise self._resource_error
         if uri in self._resource_results:
