@@ -405,7 +405,7 @@ python3 -m unittest scripts.tests.test_lean_azure_cleanup       # retained-resou
 python3 -m unittest scripts.tests.test_documented_paths_exist   # repo paths named in docs must resolve
 python3 -m unittest scripts.tests.test_markdown_anchors         # Markdown #fragment links must resolve
 python3 -m unittest scripts.tests.test_markdown_tables          # tables cannot silently swallow rows/columns
-python3 -m unittest scripts.tests.test_gating_workflows         # required PR checks always report
+python3 -m unittest scripts.tests.test_gating_workflows         # required checks, checkout and job-token boundaries
 python3 -m unittest scripts.tests.test_governance_contracts     # cross-file governance/Foundry/config invariants
 python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name reachable azd vars
 python3 -m unittest scripts.tests.test_foundry_assets_workflow  # Foundry handoff stays artifact-scoped
@@ -498,11 +498,29 @@ that would previously have skipped it, then require it. A required context that 
 never reported blocks every PR permanently.
 
 All current workflow checkouts use `persist-credentials: false`: they need source
-fetching, not a repository token left for later steps. An action that uploads
-artifacts or calls GitHub uses its explicit job token, not checkout credentials.
+fetching, not a repository token left for later steps. GitHub REST calls use the
+job's scoped `GITHUB_TOKEN`; same-run artifact uploads/listing and Actions caches
+use runner-scoped runtime credentials, not retained Git credentials.
 New authenticated Git writes need a separately reviewed, narrowly scoped path.
-`scripts/tests/test_gating_workflows.py` discovers every checkout so a new job
-cannot silently restore credential persistence.
+`scripts/tests/test_gating_workflows.py` discovers both `.yml` and `.yaml`
+workflows, their checkouts, and their action/REST/OIDC permission consumers.
+
+Workflow defaults are empty or `contents: read` for checkout-only jobs; all other
+grants are job-scoped. A new job without a repository-read consumer must opt out
+of a read default with `permissions: {}`. The discovery-based contract rejects
+unused/inherited grants, missing consumer grants, and unreviewed actions rather
+than pinning a copied workflow/job permission map.
+
+Pages defaults to `permissions: {}`. Its build gets only `contents: read` and
+Azure `id-token: write`, with **no environment** so the main-ref federated subject
+does not change. Its deploy gets only `pages: write` and `id-token: write`, under
+`github-pages`. The pinned `configure-pages` action reads Pages metadata even
+without a generator, so it runs in deploy before `deploy-pages`, with enablement
+explicitly false. Do not grant Pages access to the status build or add
+`actions: write` for its artifact. CodeQL retains job-scoped scanning writes and
+workflow-metadata reads; the Foundry handoff gate retains `actions: read` for
+exact-run job/artifact reads, without checkout or OIDC. Deployment admission
+stays permissionless. These source contracts do not configure live GitHub policy.
 
 ## Dependency updates and issue closeout
 
