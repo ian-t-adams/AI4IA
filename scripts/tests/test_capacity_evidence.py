@@ -817,11 +817,12 @@ class BoundsAndCliTests(unittest.TestCase):
 
     def test_failed_real_processes_consume_response_budget(self):
         allowances = []
+        exit_code = [0]
 
         def failed_process(_command, timeout, limit):
             allowances.append(limit)
             return capacity.run_bounded(
-                [sys.executable, "-c", "import sys; sys.stdout.write('x' * 12); sys.exit(1)"],
+                [sys.executable, "-c", f"import sys; sys.stdout.write('{{\"value\":[]}}'); sys.exit({exit_code[0]})"],
                 timeout, limit,
             )
 
@@ -831,6 +832,11 @@ class BoundsAndCliTests(unittest.TestCase):
             patch.object(capacity, "MAX_TOTAL_RESPONSE_BYTES", 32),
             patch.object(capacity, "az_command", return_value=["mock-az"]),
         ):
+            self.assertEqual(reader.read("quota", region="eastus2").document, {"value": []})
+            self.assertEqual(reader.bytes, 12)
+            reader.bytes = 0
+            allowances.clear()
+            exit_code[0] = 1
             for expected_code, consumed in (("azure_read_failed", 12), ("azure_read_failed", 24), ("response_too_large", 32)):
                 with self.assertRaisesRegex(capacity.EvidenceError, expected_code):
                     reader.read("quota", region="eastus2")
