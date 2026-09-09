@@ -108,6 +108,7 @@ the container — those names are *outputs*, not knobs you set.
 
 | Feature | azd / CI variable | Bicep parameter | Runtime setting emitted | Required companion config |
 | --- | --- | --- | --- | --- |
+| Atomic application admission (source only) | `AI4IA_HARD_QUOTA_ENABLED` | `hardQuotaEnabled` | `AI4IA_HARD_QUOTA_ENABLED` | **Default `false`.** Preprovision and API startup refuse deployed activation; local Cosmos is also refused. Only explicitly seeded local test state is executable. No automatic bootstrap or acknowledgement override. See [hard admission](hard-quota-admission.md) for units, meter exclusions and the remaining operator boundary. |
 | Voice Live | `AI4IA_VOICE_LIVE_ENABLED` | `voiceLiveEnabled` | `AI4IA_REALTIME_ENABLED`, `VOICE_LIVE_ENABLED`, `API_PUBLIC_URL`, `AI4IA_REALTIME_ALLOWED_ORIGINS` | Profile default `true`. The Origin allowlist is derived in Bicep from the deployed web origins (ACA default FQDN + `webCustomDomain`); `AI4IA_REALTIME_ALLOWED_ORIGINS` is optional and only *adds* origins. |
 | Voice Live tools | `AI4IA_VOICE_LIVE_TOOLS_ENABLED` | `voiceLiveToolsEnabled` | `AI4IA_REALTIME_TOOLS_ENABLED`, `VOICE_LIVE_TOOLS_ENABLED` | Profile default `true`; requires Voice Live. |
 | Stage GA Realtime | `AI4IA_REALTIME_GA_ENABLED` | `realtimeGaEnabled` | `AI4IA_REALTIME_GA_ENABLED`, `AI4IA_REALTIME_GA_BASE_URL`, `AI4IA_REALTIME_GA_GATEWAY_API_KEY` | Default `false` in Bicep and the profile. Requires Voice Live; provisions a separate WebSocket API/key on the existing APIM. Does not select GA. |

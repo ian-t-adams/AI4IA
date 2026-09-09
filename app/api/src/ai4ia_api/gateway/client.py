@@ -9,9 +9,10 @@ be fixed at integration time without code changes.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
-from collections.abc import AsyncGenerator, Sequence
-from contextlib import aclosing
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +22,8 @@ from ..config import GatewayAuthMode, GatewayProviderStyle, Settings
 from ..chat_timing import current_chat_timing
 from ..model_evidence import CapturedModelCall, begin_model_call
 from ..http_retry import request_with_retry
+from ..hard_quota.dispatch import DispatchLease, admitted_dispatch
+from ..hard_quota.models import Surface
 from ..model_traits import (
     is_anthropic_messages_deployment,
     is_reasoning_deployment,
@@ -483,6 +486,55 @@ class ModelGatewayClient:
         # create) are deliberately NOT retried — see ai4ia_api.http_retry.
         self._retry_policy = settings.outbound_retry_policy()
         self._http = http_client
+        self._hard_quota_enabled = settings.hard_quota_enabled
+
+    async def _post(
+        self, client: httpx.AsyncClient, url: str, *, surface: Surface,
+        deployment: str, payload: dict[str, Any], api: str = "chat",
+        evidence: CapturedModelCall | None = None, **kwargs: Any,
+    ) -> httpx.Response:
+        async with admitted_dispatch(
+            surface, payload, deployment=deployment, target=url, required=self._hard_quota_enabled,
+            observe=evidence.report_admission if evidence is not None else None,
+        ) as admission:
+            if "json" in kwargs:
+                kwargs["json"] = admission.payload
+            response = await client.post(url, **kwargs)
+            if admission.reservation is not None and response.is_success:
+                usage = None
+                if surface in {"chat", "embedding"}:
+                    try:
+                        body = response.json()
+                    except ValueError:
+                        return response  # caller reports malformed output; hold the bound
+                    if isinstance(body, dict):
+                        if body.get("status") == "failed" or body.get("type") == "error":
+                            return response
+                        usage = body.get("usage")
+                        if api == "responses":
+                            usage = _responses_usage_to_chat(usage)
+                        elif api == ANTHROPIC_API:
+                            usage = anthropic_json_to_chat(body).get("usage")
+                        elif surface == "embedding" and isinstance(usage, dict):
+                            usage = {**usage, "completion_tokens": 0}
+                admission.report(usage)
+                if evidence is not None:
+                    evidence.report_usage(usage, completed=True)
+            return response
+
+    @asynccontextmanager
+    async def _stream_request(
+        self, client: httpx.AsyncClient, req: GatewayRequest, *, deployment: str,
+        evidence: CapturedModelCall | None,
+    ) -> AsyncIterator[tuple[httpx.Response, DispatchLease]]:
+        async with admitted_dispatch(
+            "chat", req.json, deployment=deployment, target=req.url, required=self._hard_quota_enabled,
+            observe=evidence.report_admission if evidence is not None else None,
+        ) as admission:
+            async with client.stream(
+                "POST", req.url, headers=req.headers, json=admission.payload,
+            ) as response:
+                yield response, admission
 
     def _auth_headers(self, correlation_id: str | None) -> dict[str, str]:
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -745,8 +797,9 @@ class ModelGatewayClient:
         else:
             client, owned = httpx.AsyncClient(timeout=self._image_timeout), True
         try:
-            resp = await client.post(
-                req.url, headers=req.headers, json=req.json, timeout=self._image_timeout
+            resp = await self._post(
+                client, surface="image", deployment=deployment, payload=req.json,
+                url=req.url, headers=req.headers, json=req.json, timeout=self._image_timeout
             )
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)
@@ -821,8 +874,8 @@ class ModelGatewayClient:
         else:
             client, owned = httpx.AsyncClient(timeout=self._image_timeout), True
         try:
-            response = await client.post(
-                req.url,
+            response = await self._post(
+                client, req.url, surface="document", deployment=deployment, payload=req.json,
                 headers=req.headers,
                 json=req.json,
                 timeout=self._image_timeout,
@@ -896,8 +949,8 @@ class ModelGatewayClient:
         else:
             client, owned = httpx.AsyncClient(timeout=self._video_timeout), True
         try:
-            resp = await client.post(
-                url,
+            resp = await self._post(
+                client, url, surface="video", deployment=deployment, payload=body,
                 headers=self._auth_headers(correlation_id),
                 json=body,
                 timeout=self._video_timeout,
@@ -1019,8 +1072,9 @@ class ModelGatewayClient:
         else:
             client, owned = httpx.AsyncClient(timeout=self._audio_timeout), True
         try:
-            resp = await client.post(
-                req.url, headers=req.headers, json=req.json, timeout=self._audio_timeout
+            resp = await self._post(
+                client, req.url, surface="speech", deployment=deployment, payload=req.json,
+                headers=req.headers, json=req.json, timeout=self._audio_timeout
             )
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)
@@ -1064,8 +1118,11 @@ class ModelGatewayClient:
         else:
             client, owned = httpx.AsyncClient(timeout=self._audio_timeout), True
         try:
-            resp = await client.post(
-                url, headers=headers, data=data, files=files, timeout=self._audio_timeout
+            resp = await self._post(
+                client, url, surface="transcription", deployment=deployment,
+                payload={**data, "audioDigest": hashlib.sha256(audio).hexdigest(),
+                         "filename": filename, "contentType": content_type},
+                headers=headers, data=data, files=files, timeout=self._audio_timeout
             )
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)
@@ -1131,7 +1188,10 @@ class ModelGatewayClient:
         timing_started = timing.gateway_started() if timing is not None else None
         try:
             try:
-                resp = await client.post(req.url, headers=req.headers, json=req.json)
+                resp = await self._post(
+                    client, req.url, surface="chat", deployment=deployment, payload=req.json,
+                    api=resolved_api, evidence=evidence, headers=req.headers, json=req.json,
+                )
             except httpx.HTTPError as exc:
                 raise ModelGatewayError(502, _REQUEST_FAILED) from exc
             if resp.status_code >= 400:
@@ -1176,7 +1236,10 @@ class ModelGatewayClient:
         )
         client, owned = self._client()
         try:
-            resp = await client.post(req.url, headers=req.headers, json=req.json)
+            resp = await self._post(
+                client, req.url, surface="embedding", deployment=deployment, payload=req.json,
+                headers=req.headers, json=req.json,
+            )
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)
             data = resp.json().get("data") or []
@@ -1252,9 +1315,9 @@ class ModelGatewayClient:
                 if evidence is not None:
                     evidence.request(req.json)
                 is_last = attempt_idx == len(attempts) - 1
-                async with client.stream(
-                    "POST", req.url, headers=req.headers, json=req.json
-                ) as resp:
+                async with self._stream_request(
+                    client, req, deployment=deployment, evidence=evidence,
+                ) as (resp, admission):
                     if resp.status_code >= 400:
                         body = await resp.aread()
                         detail = body.decode("utf-8", "replace")
@@ -1265,6 +1328,7 @@ class ModelGatewayClient:
                     async for line in resp.aiter_lines():
                         chunk = parse_sse_line(line)
                         if chunk is not None:
+                            admission.report(chunk.usage, complete=chunk.done)
                             if evidence is not None:
                                 evidence.report_usage(chunk.usage, completed=chunk.done)
                             yield chunk
@@ -1301,9 +1365,9 @@ class ModelGatewayClient:
             )
             if evidence is not None:
                 evidence.request(req.json)
-            async with client.stream(
-                "POST", req.url, headers=req.headers, json=req.json
-            ) as resp:
+            async with self._stream_request(
+                client, req, deployment=deployment, evidence=evidence,
+            ) as (resp, admission):
                 if resp.status_code >= 400:
                     body = await resp.aread()
                     raise ModelGatewayError(
@@ -1327,6 +1391,7 @@ class ModelGatewayClient:
                             usage=event.usage,
                             done=event.done,
                         )
+                        admission.report(chunk.usage, complete=chunk.done)
                         yield chunk
                         if chunk.done:
                             return
@@ -1335,6 +1400,7 @@ class ModelGatewayClient:
                     if event is not None:
                         if event.error:
                             raise ModelGatewayError(502, _STREAM_FAILED)
+                        admission.report(event.usage, complete=event.done)
                         yield ChatChunk(
                             delta=event.delta,
                             raw=event.raw,
@@ -1376,9 +1442,9 @@ class ModelGatewayClient:
             )
             if evidence is not None:
                 evidence.request(req.json)
-            async with client.stream(
-                "POST", req.url, headers=req.headers, json=req.json
-            ) as resp:
+            async with self._stream_request(
+                client, req, deployment=deployment, evidence=evidence,
+            ) as (resp, admission):
                 if resp.status_code >= 400:
                     body = await resp.aread()
                     raise ModelGatewayError(
@@ -1395,6 +1461,7 @@ class ModelGatewayClient:
                             chunk = _parse_responses_event("\n".join(data_buf))
                             data_buf = []
                             if chunk is not None:
+                                admission.report(chunk.usage, complete=chunk.done and not chunk.incomplete)
                                 yield chunk
                                 if chunk.done:
                                     return
@@ -1403,6 +1470,7 @@ class ModelGatewayClient:
                 if data_buf:
                     chunk = _parse_responses_event("\n".join(data_buf))
                     if chunk is not None:
+                        admission.report(chunk.usage, complete=chunk.done and not chunk.incomplete)
                         yield chunk
         except httpx.HTTPError as exc:
             raise ModelGatewayError(502, _STREAM_FAILED) from exc

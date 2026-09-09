@@ -205,11 +205,17 @@ row-capped scan supplies all its rollups. Truncation is reported as incomplete
 coverage, not an exact total. This avoids multiple copies of the same large
 ledger window in a replica also serving conversations.
 
-Entitlements read prior usage rather than atomically reserving capacity.
+Default entitlements read prior usage rather than atomically reserving capacity.
 Parallel admissions and missing provider meters can overshoot a budget.
 Ledger-check failures allow work; entitlement-store failures retain a cached
 disabled override or use the configured default policy. These are soft checks,
 not a hard quota or spending guarantee.
+
+The separate [hard admission source contract](hard-quota-admission.md) is
+default-off and refuses deployed activation pending a reviewed bootstrap and
+fleet cutover. Its guarded dispatches never use the soft ledger as an atomic
+balance, and unsupported token/dollar meters refuse rather than count as free.
+The disabled-user guard remains authoritative even with numeric enforcement off.
 
 ## Agent and tool execution
 

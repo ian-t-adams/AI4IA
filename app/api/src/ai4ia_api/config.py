@@ -246,8 +246,11 @@ class Settings(BaseSettings):
     # The mechanism is present but ships effectively UNLIMITED: with no per-user
     # override and no global default_* cap below, every user is unlimited. An
     # admin sets a per-user limit to govern a specific user. Set false to bypass
-    # the check entirely.
+    # numeric soft checks; an explicit disabled user remains blocked.
     entitlements_enabled: bool = True
+    # Source-only hard admission. Durable cutover/bootstrap is not implemented:
+    # only explicitly seeded local/test coordination may be used.
+    hard_quota_enabled: bool = False
     # TTL for the in-process effective-entitlement cache (keeps the unlimited hot
     # path off Cosmos; an admin change propagates within this window).
     entitlement_cache_ttl_seconds: int = 30
@@ -1173,6 +1176,15 @@ class Settings(BaseSettings):
                 "AI4IA_USAGE_METERING_ENABLED=true, or disable enforcement with "
                 "AI4IA_ENTITLEMENTS_ENABLED=false."
             )
+        if self.hard_quota_enabled:
+            if not self.usage_metering_enabled:
+                raise RuntimeError("Hard quota admission requires usage metering.")
+            if self.env != Environment.local or self.session_store != SessionStoreKind.memory:
+                raise RuntimeError(
+                    "AI4IA_HARD_QUOTA_ENABLED has no approved durable activation path. "
+                    "Reviewed bootstrap, retention and fleet cutover are still required; "
+                    "only explicitly seeded local/test coordination is supported."
+                )
         if self.realtime_enabled:
             if not self.realtime_base_url or not self.realtime_gateway_api_key:
                 raise RuntimeError(

@@ -11,6 +11,9 @@ class InMemoryEntitlementStore:
     async def get(self, user_id: str) -> Entitlement | None:
         return self._by_user.get(user_id)
 
+    async def get_strict(self, user_id: str) -> Entitlement | None:
+        return await self.get(user_id)
+
     async def put(self, entitlement: Entitlement) -> None:
         self._by_user[entitlement.userId] = entitlement
 

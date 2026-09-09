@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -79,6 +79,28 @@ class PricingBook:
         return PricingBook(
             {model_id: rate} if model_id is not None and rate is not None else {},
             currency=self._currency, version=self._version,
+        )
+
+    def estimate_token_bound(
+        self, model_id: str, *, prompt_tokens: int, completion_tokens: int,
+    ) -> CostEstimate:
+        """Ceiling of a caller-proven token envelope under this exact price version.
+
+        This does not establish a provider-attempt or billing bound. Admission
+        must prove those separately; the shipping gateway cannot do so yet.
+        """
+        rate = self.rate(model_id)
+        micro = None
+        if rate is not None and self.currency == "USD" and self.version:
+            micro = conservative_token_cost(
+                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                input_rate=str(rate.input_per_1m), output_rate=str(rate.output_per_1m),
+            )
+        return CostEstimate(
+            micro_usd=micro, known=micro is not None,
+            input_per_1m=rate.input_per_1m if rate else None,
+            output_per_1m=rate.output_per_1m if rate else None,
+            currency=self.currency, version=self.version,
         )
 
     def estimate(
@@ -222,6 +244,24 @@ def _operation_rates(raw: Any) -> dict[str, dict[str, Any]]:
 
 def _decimal(value: Any) -> Decimal:
     return Decimal(str(value))
+
+
+def conservative_token_cost(
+    *, prompt_tokens: int, completion_tokens: int, input_rate: str, output_rate: str,
+) -> int | None:
+    """One ceiling calculator for reservation and settlement of frozen rates."""
+    if any(type(value) is not int or value < 0 for value in (prompt_tokens, completion_tokens)):
+        return None
+    try:
+        rates = (_decimal(input_rate), _decimal(output_rate))
+        if any(not rate.is_finite() or rate < 0 for rate in rates):
+            return None
+        cost = (prompt_tokens * rates[0] + completion_tokens * rates[1]).to_integral_value(
+            rounding=ROUND_CEILING,
+        )
+        return int(cost) if 0 <= cost <= 2**53 - 1 else None
+    except (InvalidOperation, ValueError, OverflowError):
+        return None
 
 
 def _megapixels(size: str | None) -> Decimal | None:
