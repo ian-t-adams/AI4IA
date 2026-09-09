@@ -65,6 +65,25 @@ health authority: Bicep wires process-only `/health/live` liveness and cached
 session-store `/health/ready` readiness probes. The image does not declare a
 second Docker health policy that ACA ignores.
 
+## Runtime image dependencies
+
+The Docker build consumes the committed `uv.lock`, not the dependency ranges
+alone. It checks freshness with `uv lock --check --offline` before frozen syncs;
+a missing or stale lock fails the build with no automatic relock or pip fallback.
+`--frozen` on its own would skip the freshness check.
+
+Only runtime dependencies and the non-editable API package enter `/opt/venv`.
+Dev and Foundry provisioning extras are not enabled; shared runtime dependencies
+still remain. The final image copies that root-owned environment, not uv, build
+caches, source inputs, or a workstation virtual environment, and runs as UID
+`10001`. The build-only uv version must match `UV_VERSION` in `app-ci.yml`.
+
+When changing dependencies, refresh the lock deliberately from public PyPI and
+commit it with `pyproject.toml`; see [the contributor guide](../../AGENTS.md#frozen-api-runtime-dependencies).
+Do not repair a failing build by dropping the freshness guard. The image build
+checks package import and re-discovers lazy imports from the installed package
+without installing any test tools in the image.
+
 ## Configuration posture
 
 Feature flags are fail-closed in `ai4ia_api.config.Settings.validate_runtime`.

@@ -186,18 +186,16 @@ pytest -q scripts/tests/test_memory_cosmos_migration.py
 **Any edit to `app/api/pyproject.toml` must be followed by `uv lock` in the same
 commit.** `uv.lock` records the declared specifier alongside resolved versions, so
 even a change that moves no package desyncs it and fails the `uv lock --check`
-gate. Nothing on the install path reads the lock (`Dockerfile` runs
-`pip install .`; CI runs `pip install -e ".[dev]"`), which is why it can rot
-silently. This is also why `.github/dependabot.yml` uses `package-ecosystem: uv`
-rather than `pip` for `/app/api`: the pip ecosystem edits `pyproject.toml` and
-cannot see `uv.lock`. `scripts/tests/test_dependabot_config.py` fails if that
-pairing regresses.
+gate. The Dockerfile now consumes that lock; CI's dev/foundry environment still
+uses `pip install -e ".[dev,foundry]"`. This is also why
+`.github/dependabot.yml` uses `package-ecosystem: uv` rather than `pip` for
+`/app/api`: the pip ecosystem edits `pyproject.toml` and cannot see `uv.lock`.
+`scripts/tests/test_dependabot_config.py` fails if that pairing regresses.
 
 **Run `uv lock` against public PyPI.** Behind a corporate package mirror, `uv lock`
 silently rewrites every artifact URL in the lockfile to the internal proxy. Those
-URLs are inert until something actually reads the lock, at which point it breaks
-for everyone — and the lock meanwhile lies about provenance and leaks internal
-feed identifiers into a public repo. Re-run with
+URLs break the frozen Docker install for other contributors and CI, and leak
+internal feed identifiers into a public repo. Re-run with
 `UV_DEFAULT_INDEX=https://pypi.org/simple` and
 `uv lock --default-index https://pypi.org/simple`, or off the proxied network.
 The deprecated `UV_INDEX_URL` / `--index-url` does not override a configured
@@ -216,7 +214,40 @@ failure, confirm CI actually fails and that you changed `pyproject.toml` at all.
 neither `pyright` nor `pytest` notices when such a dependency goes missing — the
 break first appears as a production `ImportError`.
 `app/api/tests/test_lazy_imports_are_declared.py` re-derives the lazy imports from
-source on every run.
+source on every run. `docker-build` also runs that file with plain Python against
+the installed package in the runtime-only image, so a dependency hidden in a dev
+or Foundry extra cannot satisfy the shipping-image check.
+
+### Frozen API runtime dependencies
+
+`app/api/Dockerfile` installs the same exact `UV_VERSION` as the `api` job in
+`app-ci.yml`; `test_dependabot_config.py` gates that coupling. Keep both pins in
+step. The build copies `pyproject.toml` and `uv.lock` explicitly, runs
+`uv lock --check --offline`, then uses
+`uv sync --frozen --no-dev --no-default-groups` without optional extras.
+**`--frozen` alone does not check freshness.** Do not remove the offline check or
+add a fallback that regenerates the lock or installs project ranges. A missing
+lock fails `COPY`; a stale lock fails before dependency installation.
+
+The first sync omits the project for layer caching; after copying `src`, the
+second installs the project non-editably. Only `/opt/venv` crosses into the final
+stage. uv, build caches, source inputs, and local virtual environments do not.
+The installed files remain root-owned while the unchanged UID `10001` runs the
+API. The build uses the base image's Python with downloads disabled and public
+PyPI, not workstation uv configuration. Shared dependencies such as `anyio` and
+`azure-identity` remain installed because runtime also needs them.
+
+`app-ci` runs the native, offline lock guard and dependency-selection controls
+with its pinned uv and Python 3.12:
+
+```powershell
+# From the repository root, with app-ci.yml's UV_VERSION installed:
+python -m unittest scripts.tests.test_api_runtime_dependencies
+```
+
+This freezes runtime distribution versions, not isolated Hatchling build tooling
+or byte-for-byte image output. Production SBOMs/signing, exact-subject
+attestation verification, and base-index drift reporting remain separate work.
 
 ### Base image pins
 
@@ -254,8 +285,9 @@ which only lints Dockerfile syntax:
 
 ```powershell
 docker buildx build --file app/web/Dockerfile --load app/web
-docker buildx build --file app/api/Dockerfile --load app/api
-docker run --rm <api-image> python -c "import ai4ia_api.main"
+docker buildx build --file app\api\Dockerfile --tag ai4ia-api:local --load app\api
+docker run --rm ai4ia-api:local python -c "import ai4ia_api.main"
+Get-Content -Raw app\api\tests\test_lazy_imports_are_declared.py | docker run --rm --interactive ai4ia-api:local python -
 docker buildx build --file proxy/Dockerfile --load proxy
 ```
 
@@ -492,8 +524,9 @@ test to make an SDK upgrade green. New SDK toolbox types require complete suppor
 or named exclusions with rationale and exact reflected field inventories; exclusions
 must remain rejected by both the manifest and adapter. The gate installers are
 pinned by `UV_VERSION`
-in `app-ci.yml` and `CHECK_JSONSCHEMA_VERSION` in `infra-validate.yml`; update the
-documented local command when a pin changes.
+in `app-ci.yml` (also the API Dockerfile's build-only installer) and
+`CHECK_JSONSCHEMA_VERSION` in `infra-validate.yml`; update both uv declarations
+and any documented local command when a pin changes.
 
 Azure Monitor's distribution and HTTPX instrumentation are a second compatibility
 pair in `api-telemetry`. On 2026-09-08, public-PyPI resolution proved that
