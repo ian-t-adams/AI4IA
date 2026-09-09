@@ -6,8 +6,8 @@ name: docker-build
 # quality.yml's hadolint job only linted Dockerfile *syntax* - it never ran
 # `docker build`, so a broken/renamed base image tag, or an install failure
 # specific to the pinned Python/Node version, could pass CI green and only
-# surface at `azd deploy` (or worse, in production). azd owns the real
-# build-and-push path at deploy time (see azure.yaml, deploy.yml); this
+# surface at `azd deploy` (or worse, in production). deploy.yml owns the real
+# build-and-push path at deploy time (see azure.yaml); this
 # workflow is build-and-load validation only - no registry, no credentials.
 #
 # The proxy image is also scanned by its exact loaded image tag. That gate uses
@@ -187,7 +187,7 @@ jobs:
               image: $image,
               localImageId: $image_id,
               signed: false,
-              note: "Local content-addressed image ID; no registry digest exists for this load-only PR build. Production signing is not configured."
+              note: "Local content-addressed image ID; no registry digest exists for this load-only PR build. deploy.yml separately signs and verifies production registry digests."
             }' > proxy-build-provenance.json
 
       - name: Retain proxy SBOM and build metadata

@@ -46,9 +46,13 @@ failure is not a reason to refresh them.
 
 Frozen runtime dependencies do not establish byte-for-byte image reproducibility
 or signed provenance. Isolated package build tooling is not in the runtime lock;
-production SBOM/signing and exact-subject verification before deployment remain
-separate delivery requirements. Read-only base-index drift reporting is available
-in the [deployment runbook](./deployment.md#read-only-base-image-drift).
+the release workflow separately generates and signs SPDX/SLSA attestations for
+all three production digests and verifies their exact subject, workflow, commit
+and run identity before deployment. See the
+[image attestation gate](./deployment.md#production-image-attestations) for trust,
+retention, failure and reproducibility limits. Read-only base-index drift
+reporting remains available in the
+[deployment runbook](./deployment.md#read-only-base-image-drift).
 
 ## Read-only capacity and usage evidence
 

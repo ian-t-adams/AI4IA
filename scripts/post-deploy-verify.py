@@ -62,8 +62,9 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
+from _image_refs import SERVICES, ImageInputError as VerifyInputError, parse_expected_images
+
 STATE_VERSION = 1
-SERVICES = ("api", "web", "proxy")
 APP_NAME_PREFIX = {"api": "ca-api-", "web": "ca-web-", "proxy": "ca-proxy-"}
 DEFAULT_WORKLOAD = "ai4ia"
 DEFAULT_TOKEN_ENV = "AI4IA_DEPLOY_CANARY_TOKEN"
@@ -116,10 +117,6 @@ _SECRET_VALUE_RE = re.compile(
     r"\b[\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
     re.IGNORECASE,
 )
-
-
-class VerifyInputError(ValueError):
-    """The operator supplied an unsafe or unusable input."""
 
 
 class AzError(RuntimeError):
@@ -507,42 +504,6 @@ def snapshot_app(
 def _revision_props(revision: Any) -> dict:
     props = _properties(revision)
     return props if props else (revision if isinstance(revision, dict) else {})
-
-
-def parse_expected_images(values: Sequence[str]) -> dict[str, str]:
-    """Turn ``--expect-image web=host/repo@sha256:...`` pairs into a mapping.
-
-    Deploying by digest (audit finding P1-7) makes this possible AND makes it
-    necessary. The image assertion below used to lean on `azd deploy` tagging
-    every build `azd-deploy-<unix-ts>`, so the string was guaranteed to differ
-    from the pre-deploy one. A digest is content-addressed instead, so two
-    builds of identical content produce identical references -- and the
-    "changed?" heuristic would then fail a perfectly healthy deploy and roll it
-    back, which is the single worst outcome this gate can produce. Naming the
-    reference the deploy actually pushed replaces the heuristic with the real
-    question: is the app running the bytes we shipped?
-    """
-
-    expected: dict[str, str] = {}
-    for raw in values:
-        service, separator, reference = raw.partition("=")
-        service = service.strip()
-        reference = reference.strip()
-        if not separator or not service or not reference:
-            raise VerifyInputError(
-                f"--expect-image {raw!r} is not in SERVICE=REFERENCE form."
-            )
-        if service not in SERVICES:
-            raise VerifyInputError(
-                f"--expect-image names unknown service {service!r}; "
-                f"expected one of {', '.join(SERVICES)}."
-            )
-        if service in expected and expected[service] != reference:
-            raise VerifyInputError(
-                f"--expect-image was given two different references for {service}."
-            )
-        expected[service] = reference
-    return expected
 
 
 def rollout_problems(

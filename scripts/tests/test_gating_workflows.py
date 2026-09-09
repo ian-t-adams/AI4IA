@@ -61,6 +61,7 @@ ACTION_PERMISSIONS: dict[str, dict[str, str]] = {
     "actions/configure-pages": {"pages": "read"},
     "actions/deploy-pages": {"pages": "write", "id-token": "write"},
     "azure/login": {"id-token": "write"},
+    "actions/attest": {"id-token": "write", "attestations": "write"},
     # CodeQL reads its workflow/run metadata as well as writing code scanning.
     "github/codeql-action/init": {"actions": "read", "security-events": "write"},
     "github/codeql-action/analyze": {"actions": "read", "security-events": "write"},
@@ -177,6 +178,8 @@ class DeployWorkflowOperationalScriptTriggers(unittest.TestCase):
             {
                 "scripts/postprovision.ps1",
                 "scripts/post-deploy-verify.py",
+                "scripts/verify-image-provenance.py",
+                "scripts/_image_refs.py",
                 "scripts/check-resource-providers.py",
                 "scripts/check-model-availability.py",
                 "scripts/validate-feature-prereqs.py",
@@ -252,6 +255,12 @@ class WorkflowPermissionBoundaryTests(unittest.TestCase):
             if action == "azure/login":
                 self.assertNotIn("creds", inputs, "Keep the reviewed OIDC login path.")
                 self.assertEqual(inputs.get("auth-type", "SERVICE_PRINCIPAL"), "SERVICE_PRINCIPAL")
+            if action == "actions/attest":
+                # ACR uses the existing Docker login, not packages:write. The
+                # unreviewed org-only metadata consumer must stay disabled.
+                self.assertIs(inputs.get("create-storage-record"), False)
+                self.assertIs(inputs.get("push-to-registry"), True)
+                self.assertNotIn("github-token", inputs, "Use the scoped job token.")
             if action == "actions/download-artifact" and inputs.get("github-token"):
                 # Unlike same-run uploads/listing, findBy uses the Actions REST API.
                 require({"actions": "read"})
@@ -300,7 +309,7 @@ class WorkflowPermissionBoundaryTests(unittest.TestCase):
             "jobs": {"validation": {"permissions": {}, "steps": [{"run": "true"}]}},
         }
         self.assert_permission_boundary(document)
-        for scope in ("contents", "pages", "id-token", "security-events", "actions"):
+        for scope in ("contents", "pages", "id-token", "security-events", "actions", "attestations"):
             with self.subTest(scope=scope):
                 document["permissions"] = {scope: "write"}
                 with self.assertRaisesRegex(AssertionError, "Privileged workflow default"):
@@ -347,6 +356,36 @@ class WorkflowPermissionBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "new-name: permissions"):
             self.assert_permission_boundary(document)
         moved["permissions"] = {"id-token": "write"}
+        self.assert_permission_boundary(document)
+
+    def test_attestation_permissions_follow_the_actual_consumer(self) -> None:
+        step = {
+            "uses": "actions/attest@reviewed-sha",
+            "with": {"create-storage-record": False, "push-to-registry": True},
+        }
+        document = {
+            "permissions": {},
+            "jobs": {"sign": {
+                "permissions": {"id-token": "write", "attestations": "write"},
+                "steps": [step],
+            }},
+        }
+        self.assert_permission_boundary(document)
+        job = document["jobs"]["sign"]
+        for scope in ("id-token", "attestations"):
+            original = job["permissions"].pop(scope)
+            with self.assertRaises(AssertionError):
+                self.assert_permission_boundary(document)
+            job["permissions"][scope] = original
+        for scope in ("packages", "artifact-metadata", "contents"):
+            job["permissions"][scope] = "write"
+            with self.assertRaises(AssertionError):
+                self.assert_permission_boundary(document)
+            del job["permissions"][scope]
+        job["steps"] = []
+        with self.assertRaises(AssertionError):
+            self.assert_permission_boundary(document)
+        job["permissions"] = {}
         self.assert_permission_boundary(document)
 
 
@@ -455,7 +494,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         self.assertNotIn("permissions", self.validation_job)
         self.assertEqual(
             self.jobs["deploy"]["permissions"],
-            {"id-token": "write", "contents": "read"},
+            {"id-token": "write", "contents": "read", "attestations": "write"},
         )
         self.assertEqual(
             [(step.get("name"), step.get("uses")) for step in self.validation_job["steps"]],
