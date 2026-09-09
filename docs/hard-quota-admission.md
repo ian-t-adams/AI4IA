@@ -108,6 +108,10 @@ window to have expired. A pruned old key is rejected, not treated as new work.
 Active and unknown entries are never pruned. The state has at most 1,024 entries
 and a 512 KiB escaped JSON budget, whichever is reached first. Exhaustion refuses
 new admission; it does not evict protected entries.
+Admission also reserves worst-case timestamp, outcome, digest and charge growth
+for **every** retained reserved/dispatched operation. Existing tickets recheck
+this transition space before dispatch. A currently fitting reservation must not
+consume the bytes an already-admitted operation needs to settle or expire safely.
 
 ## Cosmos isolation and evidence
 
@@ -117,6 +121,13 @@ explicit policy version and epoch. Every usage summary, record query, projected
 admin rollup and session query excludes **both** the reserved id and kind while
 retaining legacy usage rows. A coordination document cannot become an apparently
 free usage row or poison an otherwise healthy usage query.
+
+Persisted quota keys are required recursively before Pydantic construction
+defaults can run, including explicit null unsupported axes/timestamps and
+explicit `blocked`/`entries`. Missing state cannot mean zero consumption.
+Persisted request/compute quantities must also match their dispatch surface.
+Defaults remain available for normal in-memory model construction, not recovery
+of an incomplete durable accounting document.
 
 The adapter requires observed single-region writes, the exact owner partition,
 non-expiring container retention, a compatible existing document, and an ETag.

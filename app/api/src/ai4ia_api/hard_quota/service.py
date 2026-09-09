@@ -18,6 +18,7 @@ from .models import (
     Snapshot,
     Surface,
     canonical_digest,
+    ensure_transition_capacity,
     parse_operation_id,
     state_document,
 )
@@ -46,7 +47,7 @@ class ReservationService:
             snapshot = await self.store.read(owner)
             self._validate_snapshot(owner, snapshot)
             now = max(snapshot.now, snapshot.state.observedAt)
-            state = self._reconcile(snapshot.state, now)
+            state = self._reconcile(snapshot.state, now).model_copy(update={"observedAt": now})
             updated, result = change(state, now)
             updated = updated.model_copy(update={"observedAt": now})
             if await self.store.replace(owner, snapshot, updated):
@@ -114,6 +115,7 @@ class ReservationService:
                     self._check_limits(
                         state, prior.bounds.amounts, limits, now, excluding=key,
                     )
+                    ensure_transition_capacity(state)
                 return state, prior
             self._check_limits(state, bounds.amounts, limits, now)
             if len(state.entries) >= MAX_ENTRIES:
@@ -122,7 +124,9 @@ class ReservationService:
                 operationId=key, payloadDigest=digest, surface=surface, bounds=bounds,
                 reservedAt=now, expiresAt=now + RESERVATION_SECONDS, charged=bounds.amounts,
             )
-            return state.model_copy(update={"entries": {**state.entries, key: record}}), record
+            updated = state.model_copy(update={"entries": {**state.entries, key: record}})
+            ensure_transition_capacity(updated)
+            return updated, record
 
         return await self._change(owner, change)
 
@@ -160,6 +164,7 @@ class ReservationService:
                 raise QuotaError("Hard quota operation was already claimed or expired.", code=409)
             if state.blocked:
                 raise QuotaError("Hard quota state requires reviewed reconciliation.")
+            ensure_transition_capacity(state)
             record = record.model_copy(update={"phase": "dispatched", "dispatchedAt": now})
             return state.model_copy(update={"entries": {
                 **state.entries, record.operationId: record,

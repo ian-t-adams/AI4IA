@@ -385,3 +385,213 @@ def test_invalid_quantity_and_state_version_are_rejected():
     state["policyVersion"] = "future"
     with pytest.raises(ValidationError):
         QuotaState.model_validate(state)
+
+
+@pytest.mark.parametrize("contract", ["cosmos"], indirect=True)
+@pytest.mark.parametrize("missing", [
+    "entries", "blocked", "phase_and_dispatch", "outcome", "settlementDigest",
+    "bounds.compute", "charged.compute", "bounds.requests", "charged.requests",
+    "bounds.tokens", "charged.microUsd",
+])
+async def test_incomplete_persisted_accounting_never_uses_construction_defaults(contract, missing):
+    service, container = contract["service"], contract["container"]
+    bounds = Bounds(amounts=Amounts(compute=1), basis="compute-v1")
+    record = await service.reserve(
+        "alice", key=key(contract), payload={}, surface="compute",
+        bounds=bounds, limits=EntitlementLimits(computeExecutionsPerDay=1),
+    )
+    await service.dispatch("alice", record)
+    raw = container.rows[("alice", STATE_ID)]
+    original = copy.deepcopy(raw)
+    entry = raw["entries"][record.operationId]
+    if missing in {"entries", "blocked"}:
+        del raw[missing]
+    elif missing == "phase_and_dispatch":
+        del entry["phase"]
+        del entry["dispatchedAt"]
+    elif "." in missing:
+        part, field = missing.split(".")
+        amounts = entry["bounds"]["amounts"] if part == "bounds" else entry["charged"]
+        del amounts[field]
+    else:
+        del entry[missing]
+    with pytest.raises(QuotaError, match="incompatible"):
+        await contract["store"].read("alice")
+    container.rows[("alice", STATE_ID)] = original
+    restored = (await contract["store"].read("alice")).state
+    assert restored.entries[record.operationId].charged.compute == 1
+    assert restored.entries[record.operationId].charged.tokens is None
+    with pytest.raises(QuotaError, match="would be exceeded"):
+        await service.reserve(
+            "alice", key=key(contract), payload={}, surface="compute",
+            bounds=bounds, limits=EntitlementLimits(computeExecutionsPerDay=1),
+        )
+    control = await service.reserve(
+        "alice", key=key(contract), payload={}, surface="compute",
+        bounds=bounds, limits=EntitlementLimits(computeExecutionsPerDay=2),
+    )
+    assert await service.dispatch("alice", control)
+
+
+@pytest.mark.parametrize("contract", ["cosmos"], indirect=True)
+@pytest.mark.parametrize("axis", ["requests", "compute"])
+async def test_persisted_attempt_counts_must_match_the_actual_surface(contract, axis):
+    service, container = contract["service"], contract["container"]
+    record = await service.reserve(
+        "alice", key=key(contract), payload={}, surface="compute",
+        bounds=Bounds(amounts=Amounts(compute=1), basis="compute-v1"),
+        limits=EntitlementLimits(),
+    )
+    await service.dispatch("alice", record)
+    original = copy.deepcopy(container.rows[("alice", STATE_ID)])
+    entry = container.rows[("alice", STATE_ID)]["entries"][record.operationId]
+    entry["bounds"]["amounts"][axis] = 0
+    entry["charged"][axis] = 0
+    with pytest.raises(QuotaError, match="incompatible"):
+        await contract["store"].read("alice")
+    container.rows[("alice", STATE_ID)] = original
+    assert (await contract["store"].read("alice")).state.entries[record.operationId].charged.compute == 1
+
+
+@pytest.mark.parametrize("finish", ["complete", "unknown", "release", "expiry"])
+async def test_capacity_reserves_growth_for_every_outstanding_operation(contract, monkeypatch, finish):
+    from ai4ia_api.hard_quota import models
+
+    # A smaller test budget exercises many simultaneous transitions cheaply.
+    # The exact 512KiB / 600-operation regression is covered separately.
+    monkeypatch.setattr(models, "MAX_STATE_BYTES", 16 * 1024)
+    service = contract["service"]
+    admitted = []
+    for index in range(100):
+        try:
+            record = await reserve(contract, tokens=None, limits=EntitlementLimits())
+        except QuotaError as exc:
+            assert "capacity" in str(exc)
+            break
+        if index % 2:
+            record = await service.dispatch("alice", record)
+        admitted.append(record)
+    else:
+        raise AssertionError("capacity fixture did not fill its bounded document")
+    assert len(admitted) > 2
+    if finish == "expiry":
+        contract["clock"][0] += 121
+        state = await service.reconcile("alice")
+        assert {r.phase for r in state.entries.values()} == {"released", "dispatched"}
+    else:
+        for record in admitted:
+            if finish == "release" and record.phase == "reserved":
+                await service.release("alice", record)
+                continue
+            if record.phase == "reserved":
+                record = await service.dispatch("alice", record)
+            await service.settle(
+                "alice", record,
+                outcome="complete" if finish == "complete" else "unknown" if finish == "unknown" else "cancelled",
+                actual=Amounts(tokens=2**53 - 1, microUsd=2**53 - 1)
+                if finish == "complete" else None,
+            )
+    state = (await contract["store"].read("alice")).state
+    assert len(state.entries) == len(admitted)
+    assert len(json.dumps(state_document(state), ensure_ascii=True).encode("utf-8")) <= 16 * 1024
+
+
+async def test_600_operation_size_reproduction_refuses_before_egress(contract):
+    from ai4ia_api.hard_quota.models import RESERVATION_SECONDS, Reservation, canonical_digest
+
+    service, store = contract["service"], contract["store"]
+    bounds = Bounds(amounts=Amounts(), basis="request-v1")
+    cap = EntitlementLimits(requestsPerMinute=1)
+    actual = Amounts()
+    settlement = canonical_digest({"outcome": "complete", "actual": actual.model_dump(mode="json")})
+    initial = (await store.read("alice")).state
+
+    def operation(index):
+        timestamp = NOW + 61 * index
+        surface = "transcription" if index < 25 else "chat"
+        return Reservation(
+            operationId=operation_id(initial.epoch, timestamp, str(index)),
+            payloadDigest=canonical_digest({
+                "owner": "alice", "surface": surface, "payload": {},
+                "bounds": bounds.model_dump(mode="json"),
+            }),
+            surface=surface, bounds=bounds, reservedAt=timestamp,
+            expiresAt=timestamp + RESERVATION_SECONDS, charged=actual,
+        )
+
+    def completed(record):
+        return record.model_copy(update={
+            "phase": "settled", "dispatchedAt": record.reservedAt,
+            "settledAt": record.reservedAt, "outcome": "complete",
+            "settlementDigest": settlement,
+        })
+
+    # Exact settled prefix of the reviewer's probe: 25 transcription calls,
+    # then chat, one every 61s. Preloading avoids quadratic 600-round-trip test
+    # overhead while preserving every real persisted byte and time fence.
+    prefix = [completed(operation(index)) for index in range(598)]
+    seeded = initial.model_copy(update={
+        "entries": {record.operationId: record for record in prefix},
+        "observedAt": prefix[-1].settledAt,
+    })
+    assert await store.replace("alice", await store.read("alice"), seeded)
+    contract["clock"][0] = NOW + 61 * 598
+    control = await service.reserve(
+        "alice", key=operation(598).operationId, payload={}, surface="chat", bounds=bounds, limits=cap,
+    )
+    control = await service.dispatch("alice", control)
+    assert (await service.settle("alice", control, outcome="complete", actual=actual)).phase == "settled"
+    before = (await store.read("alice")).state
+    assert len(before.entries) == 599
+
+    contract["clock"][0] += 61
+    candidate = operation(599)
+    old_dispatched = before.model_copy(update={
+        "observedAt": candidate.reservedAt,
+        "entries": {**before.entries, candidate.operationId: candidate.model_copy(update={
+            "phase": "dispatched", "dispatchedAt": candidate.reservedAt,
+        })},
+    })
+    old_settled = old_dispatched.model_copy(update={
+        "entries": {**old_dispatched.entries, candidate.operationId: completed(candidate)},
+    })
+    def wire_size(state):
+        return len(json.dumps(state.model_dump(mode="json"), ensure_ascii=True).encode("utf-8"))
+    assert wire_size(old_dispatched) == 524225
+    assert wire_size(old_settled) == 524296 > MAX_STATE_BYTES
+
+    with pytest.raises(QuotaError, match="capacity"):
+        await service.reserve(
+            "alice", key=candidate.operationId, payload={}, surface="chat", bounds=bounds, limits=cap,
+        )
+    assert (await store.read("alice")).state.entries == before.entries
+    # No stranded operation600: normal expiry of known history restores capacity.
+    contract["clock"][0] += MONTH_SECONDS * 2
+    assert not (await service.reconcile("alice")).entries
+    later = await service.reserve(
+        "alice", key=key(contract), payload={}, surface="chat", bounds=bounds, limits=cap,
+    )
+    later = await service.dispatch("alice", later)
+    assert (await service.settle("alice", later, outcome="complete", actual=actual)).phase == "settled"
+
+
+async def test_existing_reservation_without_transition_room_cannot_dispatch(contract, monkeypatch):
+    from ai4ia_api.hard_quota import models
+
+    record = await reserve(contract)
+    before = (await contract["store"].read("alice")).state
+    claimed = before.model_copy(update={"entries": {
+        **before.entries, record.operationId: record.model_copy(update={
+            "phase": "dispatched", "dispatchedAt": contract["clock"][0],
+        }),
+    }})
+    dispatch_bytes = len(json.dumps(state_document(claimed), ensure_ascii=True).encode("utf-8"))
+    monkeypatch.setattr(models, "MAX_STATE_BYTES", dispatch_bytes + 1)
+    with pytest.raises(QuotaError, match="capacity"):
+        await contract["service"].dispatch("alice", record)
+    assert (await contract["store"].read("alice")).state.entries[record.operationId].phase == "reserved"
+    monkeypatch.setattr(models, "MAX_STATE_BYTES", MAX_STATE_BYTES)
+    assert await contract["service"].dispatch("alice", record)
+    assert (await contract["service"].settle(
+        "alice", record, outcome="complete", actual=Amounts(tokens=3),
+    )).phase == "settled"

@@ -85,7 +85,10 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    soft ledger checks into a distributed quota or bootstrap an empty hard
    balance for an existing owner. Metered egress goes through the shared owner
    admission seam; unknown/unpriced capped paths refuse. Dispatched/unknown
-   reservations never expire into free capacity. Deployed activation remains
+   reservations never expire into free capacity. Reject incomplete persisted
+   accounting before construction defaults and
+   reserve serialization space for all outstanding dispatch/settlement transitions.
+   Deployed activation remains
    blocked pending the boundaries in `docs/hard-quota-admission.md`; neither an
    acknowledgement flag nor a local fake proves a Cosmos cutover or bill cap.
 

@@ -67,7 +67,7 @@ class CosmosReservationStore:
             if observed.tzinfo is None:
                 raise QuotaError("Hard quota coordination time is invalid.")
             document = {key: value for key, value in raw.items() if not key.startswith("_")}
-            state = QuotaState.model_validate(document)
+            state = QuotaState.model_validate(document, context={"persisted_quota": True})
             state_document(state)
             if state.userId != owner:
                 raise QuotaError("Hard quota owner mismatch.", code=403)

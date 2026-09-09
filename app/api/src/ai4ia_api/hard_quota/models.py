@@ -4,9 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
 from ..entitlements.models import MONTH_SECONDS
 
@@ -18,8 +18,9 @@ MAX_STATE_BYTES = 512 * 1024
 REPLAY_SECONDS = MONTH_SECONDS
 RESERVATION_SECONDS = 120
 MAX_ADMISSION_EVIDENCE = 8
+MAX_QUANTITY = 2**53 - 1
 
-Count = Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
+Count = Annotated[int, Field(strict=True, ge=0, le=MAX_QUANTITY)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Epoch = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
 Owner = Annotated[str, Field(min_length=1, max_length=128)]
@@ -41,6 +42,17 @@ class QuotaError(RuntimeError):
 
 class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def require_persisted_fields(cls, value: Any, info: ValidationInfo) -> Any:
+        # Context propagates through nested Pydantic models. Construction may
+        # use defaults; a persisted v1 record must explicitly contain every key,
+        # including null unsupported axes and null not-yet-reached timestamps.
+        if info.context and info.context.get("persisted_quota"):
+            if not isinstance(value, dict) or cls.model_fields.keys() - value.keys():
+                raise ValueError("incomplete persisted quota accounting")
+        return value
 
 
 class Amounts(ContractModel):
@@ -132,6 +144,15 @@ class QuotaState(ContractModel):
         if self.replayFloor < self.validAfter or self.observedAt < self.replayFloor:
             raise ValueError("invalid quota time fences")
         for key, entry in self.entries.items():
+            compute = 1 if entry.surface == "compute" else 0
+            if entry.bounds.amounts.requests != 1 or entry.bounds.amounts.compute != compute:
+                raise ValueError("quota bounds do not match the dispatch surface")
+            released = entry.phase == "released"
+            if (
+                entry.charged.requests != (0 if released else 1)
+                or entry.charged.compute != (0 if released else compute)
+            ):
+                raise ValueError("quota charge lost its dispatch attempt")
             if key != entry.operationId:
                 raise ValueError("invalid quota operation key")
             epoch, issued = parse_operation_id(key)
@@ -179,6 +200,28 @@ def state_document(state: QuotaState) -> dict:
     if size > MAX_STATE_BYTES:
         raise QuotaError("Hard quota coordination capacity is exhausted.")
     return doc
+
+
+def ensure_transition_capacity(state: QuotaState) -> None:
+    """Reserve wire space for ALL admitted work to finish, not only today's row."""
+    future = state_document(state)
+    future["observedAt"] = MAX_QUANTITY
+    future["replayFloor"] = MAX_QUANTITY
+    future["blocked"] = False  # 'false' is longer than 'true'.
+    for record in future["entries"].values():
+        if record["phase"] not in {"reserved", "dispatched"}:
+            continue
+        # This is a size envelope, never persisted as a behavioral state. The
+        # longest phase/outcome plus maximum legal timestamps/charges covers
+        # dispatch, release/expiry, unknown settlement and bound violations.
+        record.update(
+            phase="dispatched", dispatchedAt=MAX_QUANTITY, settledAt=MAX_QUANTITY,
+            outcome="cancelled", settlementDigest="f" * 64,
+        )
+        record["charged"]["tokens"] = MAX_QUANTITY
+        record["charged"]["microUsd"] = MAX_QUANTITY
+    if len(json.dumps(future, ensure_ascii=True).encode("utf-8")) > MAX_STATE_BYTES:
+        raise QuotaError("Hard quota coordination capacity is exhausted.")
 
 
 def operation_id(epoch: str, issued_at: int, key: str) -> str:
