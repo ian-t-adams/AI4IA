@@ -10,7 +10,7 @@ at **<https://ian-t-adams.github.io/AI4IA/>**.
 | Page | What it shows |
 | --- | --- |
 | `index.html` | Purpose, capabilities, technology stack and live environment facts. |
-| `status.html` | Twice-daily deployment snapshot: Azure resource health + public endpoint reachability. |
+| `status.html` | Twice-daily deployment snapshot: Azure resource health, ingress reachability and direct API liveness/readiness. |
 | `architecture.html` | Diagrams: request flow, deployment topology, identity/RBAC, MCP planes, chat-turn sequence. |
 | `services.html` | Every Azure service AI4IA deploys, why it exists, its IaC module and RBAC. |
 | `requirements.html` | IaC modules, the permissions/RBAC model, and package dependencies. |
@@ -54,6 +54,33 @@ site/
   ```powershell
   ./scripts/status-snapshot.ps1
   ```
+
+  Direct API checks use `AZURE_API_URL` from the selected azd environment or
+  `-ApiUrl https://<api-host>`. Without either, the same scoped Resource Graph
+  inventory must identify exactly one public Container App with
+  `azd-service-name=api`; a missing, ambiguous or private target is reported as
+  unobserved, never guessed from an app name. The URL must be a credential-free
+  HTTPS DNS origin. Pages uses this inventory discovery and needs no additional
+  identity, repository variable or Azure role.
+
+  `scripts/status-endpoints.ps1` performs anonymous GETs of `/health/live` and
+  `/health/ready`, with no cookies, default credentials or redirects. Each API
+  request has a 20-second total deadline and a 4 KiB UTF-8 JSON body limit.
+  Only the API's expected HTTP 200/status contract passes; readiness also requires
+  `stage=session_store`. An expected readiness 503 is a persistence failure;
+  auth challenges, redirects, malformed responses and transport failures have
+  distinct non-passing outcomes. Response bodies, headers and exception details
+  are never published. Each attempted probe records its time and elapsed
+  milliseconds; unresolved targets retain null timing instead of inventing an
+  observation. Endpoint failures produce a fresh snapshot of the failure, not a
+  republished healthy seed. Historical snapshots without API observations show
+  unknown coverage.
+
+  Liveness covers the process only. Readiness covers the API's cached canonical
+  session-store check (success cache up to 15 seconds), not Search, user
+  authentication or model/gateway traffic. These probes do not perform inference
+  or mutate user data. Scheduled authenticated chat, GA realtime canaries and
+  consecutive-failure alerting remain separate, approval-gated work in #412.
 
 - `docs.js` is **generated** by [`scripts/gen-docs-catalog.py`](../scripts/gen-docs-catalog.py)
   from [`data/docs.manifest.json`](data/docs.manifest.json) — the curated list of which repo

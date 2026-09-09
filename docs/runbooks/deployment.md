@@ -135,6 +135,53 @@ commit and a fresh provision, not a rollback.
 
 ## 2. Before a routine deployment
 
+### Read-only base image drift
+
+Inspect the current public base-tag indexes before proposing a pin refresh:
+
+```powershell
+python scripts/check-base-image-drift.py
+python scripts/check-base-image-drift.py --format json
+```
+
+This stdlib-only check derives owned Dockerfiles from Git using the same helper
+as the existing base-pin CI contract. It excludes only the pinned vendored proxy
+Dockerfile, resolves earlier build-stage aliases, and deduplicates repeated
+`FROM` references while retaining every file/line source. It does not require
+Docker, an Azure login, stored registry credentials or a running daemon.
+
+The check reads tag metadata from public Docker Hub and Microsoft Container
+Registry. It accepts only OCI indexes or Docker manifest lists with at least two
+distinct runnable platform identities; attestation entries do not inflate that
+count. The observed digest is SHA-256 over the exact index bytes, checked against
+the registry digest header when present. Platform-specific manifests,
+contradictory media/digest evidence, unsupported registries, malformed sources and
+network failures are unknown, not up-to-date. Docker Hub's anonymous token
+challenge is restricted to its official token endpoint and the exact repository's
+pull-only scope; redirects, stored credentials and image-layer downloads are not
+used.
+
+Exit codes are **0** for all pins current, **1** for observed drift, and **2**
+for incomplete/unknown coverage. Unknown takes precedence over drift, but healthy
+and changed rows remain in the report when a different observation fails. Each
+row records its attempted observation time, pinned/observed digest, platform
+coverage and safe failure category without publishing token responses or raw
+network errors.
+
+Limits are 32 owned Dockerfiles, 32 distinct base references, 128 reference
+locations, 128 KiB per Dockerfile, 1 MiB per manifest, 64 KiB per token response,
+256 index descriptors and 128 KiB per final report. A 30-second child-process
+deadline bounds each entire metadata/auth/body observation, including a peer that
+drips bytes; individual TLS operations also have a 10-second timeout. Public
+HTTPS connectivity to the named registries is required. Coverage failures remain
+nonzero rather than falling back to cached/private credentials.
+
+No new workflow or schedule is activated. A report never rewrites a Dockerfile,
+refreshes a pin, pushes an image or deploys the app. Review a proposed
+multi-platform pin update separately and run the existing image-build gates.
+This does not provide production SBOMs, signatures, provenance or their
+pre-deployment verification; those remaining requirements stay tracked in #414.
+
 ### 2.1 Confirm configuration and generated artifacts
 
 The deploy workflow runs the catalog, gateway-policy, and prerequisite checks
@@ -701,10 +748,10 @@ models-swedencentral  DeploymentFailed
   capacity 0. The current quota usage is 2 and the quota limit is 2.
 ```
 
-**Model quota is subscription-wide, not per-region — the usage API just reports it per
-region.** This is the single most misleading thing about diagnosing it. `az cognitiveservices
-usage list -l <region>` replicates one subscription-wide aggregate into *every* region's
-response, so the same counter reads identically everywhere:
+**In this MAI incident, quota was subscription-wide, not independent in each
+region.** This is not a universal rule for every model or publisher.
+`az cognitiveservices usage list -l <region>` returned the same counter in every
+queried region:
 
 ```powershell
 foreach ($r in 'eastus2','swedencentral','westus') {
@@ -722,15 +769,18 @@ of two regions is fine region-by-region (2 ≤ 2 twice) but it is 4 against a sh
 2. Whichever region ARM reaches first wins and the other dies. **This is deterministic —
 re-running only changes which region loses.**
 
-Enforcement is not uniform, and the difference matters:
+Enforcement is not uniform. These are specific observed examples, not a
+publisher-wide scope authority:
 
-| Publisher | Enforced | Evidence |
+| Observed model family | Enforced in this incident | Evidence |
 | --- | --- | --- |
-| `AIServices.*` (Microsoft) | subscription-wide | MAI-Image-2.5/-Flash/-Pro deployed in westus, then failed in swedencentral |
-| `OpenAI.*` | per region | `gpt-image-1.5` holds a full 9-capacity deployment in eastus2 **and** swedencentral — 18 against a limit of 9, both succeeded |
+| MAI image deployments (`AIServices` counters) | subscription-wide | MAI-Image-2.5/-Flash/-Pro deployed in westus, then failed in swedencentral |
+| `gpt-image-1.5` (`OpenAI` counter) | per region | Full 9-capacity deployment in eastus2 **and** swedencentral — 18 against a limit of 9, both succeeded |
 
-`check-model-availability.py` encodes exactly that: a multi-region overcommit is an **error**
-for non-OpenAI models and a **warning** for OpenAI ones. The azd `preprovision` hook runs
+`check-model-availability.py` uses a conservative publisher-based preflight:
+a multi-region overcommit is an **error** for non-OpenAI models and a **warning**
+for OpenAI ones. That heuristic is not fresh evidence of a pool's identity.
+The azd `preprovision` hook runs
 the full check without `--skip-quota`; missing Azure CLI credentials or a CLI subscription
 that differs from `AZURE_SUBSCRIPTION_ID` fails before resource creation.
 
@@ -746,9 +796,16 @@ that differs from `AZURE_SUBSCRIPTION_ID` fails before resource creation.
    are in case 1 and re-running will not help. Models whose `capacity` equals their `limit`
    have zero headroom and are the ones exposed to this; the preflight warns about each.
 
-Do **not** treat a saturated `currentValue` in one region as proof of anything by itself. It
-is a subscription-wide aggregate, it is clamped to the limit (`gpt-image-1.5` shows `9/9`
-while 18 units are deployed), and it moves during a provision.
+Do **not** treat a saturated `currentValue` in one region as proof of scope by
+itself. A replica or clamp can hide the allocation boundary (`gpt-image-1.5`
+showed `9/9` while 18 units were deployed), and counters move during provision.
+Equal regional values do not prove a shared global pool, either.
+
+For a dated, read-only allocation/usage review, use
+[capacity evidence collection](./deploy-to-azure.md#read-only-capacity-and-usage-evidence).
+That reporter keeps raw counter observations separate from operator-asserted
+pool arithmetic, includes quota usage outside matched catalog allocation, and
+never interprets missing metrics as permission to downsize or remove a model.
 
 Remember ARM aborts the whole `models-<region>` nested deployment at the first failure, so
 one error hides the rest. Re-running the preflight after a failure is the cheapest way to see

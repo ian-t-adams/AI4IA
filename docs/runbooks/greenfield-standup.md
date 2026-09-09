@@ -325,6 +325,32 @@ status before publishing. Its repository-variable check, Azure login, and status
 refresh are mandatory: any failure stops artifact upload rather than republishing
 an old snapshot.
 
+Pages has no workflow-wide token grants (`permissions: {}`). Its two jobs have
+different consumers and OIDC subjects:
+
+| Job | Job permissions | Responsibility and subject |
+| --- | --- | --- |
+| Build | `contents: read`, `id-token: write` | Checkout, regenerate docs, refresh Azure status, upload the static artifact. No environment; retains the main-ref Azure federated subject from section 2. No Pages access. |
+| Deploy | `pages: write`, `id-token: write` | Read Pages metadata and publish the completed artifact in the `github-pages` environment. No checkout or Azure login. |
+
+The pinned [`configure-pages` metadata client](https://github.com/actions/configure-pages/blob/45bfe0192ca1faeb007ade9deae92b16b8254a0d/src/api-client.js)
+calls the Pages API even when no static-site generator is configured. It runs
+**in deploy, before `deploy-pages`**, using that job's existing Pages grant.
+`enablement: false` prevents automatic site creation; with no generator input,
+its [entrypoint](https://github.com/actions/configure-pages/blob/45bfe0192ca1faeb007ade9deae92b16b8254a0d/src/index.js)
+does not need source files, and the plain static build consumes none of its
+metadata outputs. The pinned [`deploy-pages` client](https://github.com/actions/deploy-pages/blob/368f82528645a54fb793d4d04e342629a3f51346/src/internal/api-client.js)
+lists this run's artifacts through the Actions runtime service. Same-run
+artifact upload/listing does not require an `actions: read` or `actions: write`
+grant on `GITHUB_TOKEN`; the Pages deployment API and its OIDC proof need only
+the deploy grants shown above.
+
+Changing only the Pages workflow, its contract tests, and these docs does not
+match the application deployment workflow's push paths. It republishes the
+portal on `main`, not the Azure application. These source permissions do not
+change Azure RBAC or live GitHub environment/security policies; those remain
+separate approval and readback decisions.
+
 ## 4. Create the application Entra registrations
 
 The deployment identity provisions Azure resources. User sign-in requires two

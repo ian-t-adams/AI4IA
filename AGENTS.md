@@ -183,6 +183,27 @@ Plus the Cosmos migration script tests from the repo root:
 pytest -q scripts/tests/test_memory_cosmos_migration.py
 ```
 
+The same API job runs the development-only behavioral evaluation program from
+the repo root, using the already-installed API dev dependencies:
+
+```powershell
+python -m scripts.evaluations run --output <new-local-report.json>
+ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py
+pyright --project scripts/evaluations
+python -m pytest -q scripts/tests/test_behavioral_evaluations.py
+```
+
+`scripts/evaluations` drives real API, provider-adapter, orchestration, ownership,
+approval and receipt seams with committed synthetic fixtures, not live models.
+Every declared case stays in the report denominator, including worker failures,
+timeouts and unscored results. CI retains only the content-free report for seven
+days; it never uploads prompts, replies, tool payloads, grants or identities.
+Dataset/config/prompt/model/provider-fixture/evaluator versions must be compatible
+before comparison. Do not add production-trace input, a paid judge, live calls or
+a schedule under this offline gate. See
+[`docs/behavioral-evaluations.md`](docs/behavioral-evaluations.md) for commands,
+version rules, limits and the remaining approval boundaries.
+
 **Any edit to `app/api/pyproject.toml` must be followed by `uv lock` in the same
 commit.** `uv.lock` records the declared specifier alongside resolved versions, so
 even a change that moves no package desyncs it and fails the `uv lock --check`
@@ -275,6 +296,17 @@ architecture, failing with a platform mismatch that never mentions the pin.
 
 Do not assume Dependabot refreshes the digest — it can suppress a digest-only
 update of an unchanged floating tag. Treat it as a manual audit step.
+
+`python scripts/check-base-image-drift.py --format json` observes the current
+public Docker Hub/MCR tag indexes without editing a pin or pulling image layers.
+Source discovery is shared with `test_base_image_pins.py`; repeated stages are
+deduplicated with their file/line evidence retained. It checks raw-body SHA-256
+against any registry digest header and rejects platform manifests, contradictory
+metadata and incomplete multi-platform coverage. Exit 0 means all pins match,
+1 means observed drift, and 2 means coverage is unknown (even if other rows drift).
+Each observation runs in a 30-second bounded child process; no Docker/Azure
+credentials, new workflow, schedule or registry writes are involved. A drift
+report is not approval to refresh a base or deploy.
 
 ### Docker image builds
 
@@ -407,11 +439,13 @@ keeps endpoint and authentication configuration in the Foundry project connectio
 ```powershell
 python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/redaction rules
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
+python3 -m unittest scripts.tests.test_capacity_evidence        # read-only allocation/quota/aggregate metrics
 python3 -m unittest scripts.tests.test_postprovision_appconfig_sentinel scripts.tests.test_postprovision_cu_defaults scripts.tests.test_postprovision_hard_gates
 python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap
 python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deploy.yml's real block with `az` stubbed
 python3 -m unittest scripts.tests.test_pages_status_refresh     # status refresh targets live RG/URLs and fails closed
 python3 -m unittest scripts.tests.test_status_snapshot_labels   # live services have portal labels/cards
+python3 -m unittest scripts.tests.test_status_endpoints         # bounded anonymous API health probes
 python3 -m unittest scripts.tests.test_portal_contrast          # WCAG gate for site/assets/styles.css
 python3 -m unittest scripts.tests.test_brand_assets             # committed logos: coverage, palette, size
 python3 -m unittest scripts.tests.test_dependabot_config
@@ -425,12 +459,13 @@ python3 -m unittest scripts.tests.test_lean_azure_cleanup       # retained-resou
 python3 -m unittest scripts.tests.test_documented_paths_exist   # repo paths named in docs must resolve
 python3 -m unittest scripts.tests.test_markdown_anchors         # Markdown #fragment links must resolve
 python3 -m unittest scripts.tests.test_markdown_tables          # tables cannot silently swallow rows/columns
-python3 -m unittest scripts.tests.test_gating_workflows         # required PR checks always report
+python3 -m unittest scripts.tests.test_gating_workflows         # required checks, checkout and job-token boundaries
 python3 -m unittest scripts.tests.test_governance_contracts     # cross-file governance/Foundry/config invariants
 python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name reachable azd vars
 python3 -m unittest scripts.tests.test_foundry_assets_workflow  # Foundry handoff stays artifact-scoped
 python3 -m unittest scripts.tests.test_dockerignore_context
 python3 -m unittest scripts.tests.test_base_image_pins
+python3 -m unittest scripts.tests.test_base_image_drift
 python3 -m unittest scripts.tests.test_immutable_image_promotion
 ```
 
@@ -439,7 +474,11 @@ python3 -m unittest scripts.tests.test_immutable_image_promotion
 `test_base_image_pins`, `test_subscription_preflight`,
 `test_proxy_delivery_contracts`, and `test_immutable_image_promotion` need
 `PyYAML` (pinned in the workflow); `test_immutable_image_promotion` also needs
-`bash` and skips without it. The rest are stdlib-only.
+`bash` and skips without it. `test_capacity_evidence` also requires
+`jmespath==0.9.5`, pinned in quality to the inspected Azure CLI parser version:
+the raw ARM projection regressions must execute the real query, not skip it or
+test only already-projected data. The reporter itself remains stdlib-only.
+The rest are stdlib-only.
 
 Operational guards must distinguish a failed Azure read from a missing resource.
 The custom-domain preflight fails closed on inventory/query errors. Teardown
@@ -458,6 +497,14 @@ evidence-backed `Microsoft.ResourceHealth` operational dependency used by the
 status snapshot. The snapshot must publish provider/query failure as a source
 outage; it must never flatten that failure into zero healthy resources or a
 per-resource "no signal" result.
+
+The status snapshot discovers direct API health targets from `AZURE_API_URL` or
+exactly one public inventory row tagged `azd-service-name=api`. Keep anonymous
+`/health/live` and `/health/ready` observations distinct from ingress reachability
+and authenticated/model-path canaries. Auth challenges, redirects and malformed
+JSON cannot pass API health; unresolved targets and historical missing coverage
+remain unknown. API probes are bounded to 20 seconds and 4 KiB with no redirects,
+cookies or default credentials. Never publish response bodies or exception text.
 
 `security-scan` runs Trivy filesystem/config scans and gitleaks over the full
 proxy tree. `.trivyignore.yaml` suppresses only the untouched upstream Dockerfile
@@ -509,11 +556,29 @@ that would previously have skipped it, then require it. A required context that 
 never reported blocks every PR permanently.
 
 All current workflow checkouts use `persist-credentials: false`: they need source
-fetching, not a repository token left for later steps. An action that uploads
-artifacts or calls GitHub uses its explicit job token, not checkout credentials.
+fetching, not a repository token left for later steps. GitHub REST calls use the
+job's scoped `GITHUB_TOKEN`; same-run artifact uploads/listing and Actions caches
+use runner-scoped runtime credentials, not retained Git credentials.
 New authenticated Git writes need a separately reviewed, narrowly scoped path.
-`scripts/tests/test_gating_workflows.py` discovers every checkout so a new job
-cannot silently restore credential persistence.
+`scripts/tests/test_gating_workflows.py` discovers both `.yml` and `.yaml`
+workflows, their checkouts, and their action/REST/OIDC permission consumers.
+
+Workflow defaults are empty or `contents: read` for checkout-only jobs; all other
+grants are job-scoped. A new job without a repository-read consumer must opt out
+of a read default with `permissions: {}`. The discovery-based contract rejects
+unused/inherited grants, missing consumer grants, and unreviewed actions rather
+than pinning a copied workflow/job permission map.
+
+Pages defaults to `permissions: {}`. Its build gets only `contents: read` and
+Azure `id-token: write`, with **no environment** so the main-ref federated subject
+does not change. Its deploy gets only `pages: write` and `id-token: write`, under
+`github-pages`. The pinned `configure-pages` action reads Pages metadata even
+without a generator, so it runs in deploy before `deploy-pages`, with enablement
+explicitly false. Do not grant Pages access to the status build or add
+`actions: write` for its artifact. CodeQL retains job-scoped scanning writes and
+workflow-metadata reads; the Foundry handoff gate retains `actions: read` for
+exact-run job/artifact reads, without checkout or OIDC. Deployment admission
+stays permissionless. These source contracts do not configure live GitHub policy.
 
 ## Dependency updates and issue closeout
 
@@ -677,6 +742,45 @@ Model deployment `capacity` is the portable baseline. Optional `maxCapacity` val
 are subscription-specific output from `scripts/sync-model-capacity.py`; never
 hand-copy portal bars or set every regional deployment to the same global limit.
 Bicep uses them only when `AI4IA_MODEL_CAPACITY_PROFILE=maximum`.
+
+`scripts/report-model-capacity.py` is a separate **read-only evidence collector**,
+not another planner. It reuses the existing deployment naming function but never
+calls the maximum planner, its collectors, or its write path. Every Azure read
+names an explicit subscription; exact RG, environment tags, AIServices account
+naming and deployment resource IDs bind inventory and aggregate metrics. It uses
+fixed ARM GET operations with bounded process time, bytes, inventory, hourly
+series, samples and final serialization. No login, subscription selection,
+provider registration, model invocation, logs/traces, new workflow or Azure write
+is part of collection. The existing quality job runs only mocked/offline tests.
+
+Only account inventory may continue pages: validate exact HTTPS ARM host,
+subscription/RG/account-list path, unchanged API version and the observed
+`api-version`/`$skiptoken` query keys before rebuilding each request. Keep call,
+byte, time and total account-row bounds across pages; reject duplicate
+names/IDs/cursors and incomplete ownership. Until terminal-page validation,
+safe page observations are candidates, not a verified inventory. Never discard
+the partial flag merely because the first page contains all expected regions.
+
+Metric definitions advertise TitleCase dimension names, while ARM timeseries
+metadata also uses `modeldeploymentname`, `modelname`, `modelversion`, and
+`region`. The CLI projection and parser explicitly canonicalize only these
+evidenced aliases. Keep the original dimension count before filtering and reject
+canonical-key collisions/unknown extras; never lowercase identity values or
+remove deployment/model/version proof to accommodate a schema difference.
+
+Quota counter replicas and `modelCapacities` are observations, not pool identity.
+Never infer scope from equal numbers, publisher names, SKU processing geography,
+or catalog `maxCapacityPool`. Optional fresh, subscription-bound **operator
+assertions** enable separately labeled pool arithmetic only when counter/unit,
+all-version membership, regional coverage and live allocation evidence agree.
+Overlapping declarations cannot split one counter across versions; counter usage
+outside matched catalog allocation stays unattributed, never available quota.
+No headroom is emitted for missing, stale, warning/partial or contradictory pool
+evidence. A measured zero needs actual samples; absent series and null samples
+are unknown. Neither zero nor incomplete usage recommends removal or downsizing.
+Units stay raw, pricing is unknown, and production criticality/reserves/profile
+selection require separate approval. See the
+[capacity evidence runbook](docs/runbooks/deploy-to-azure.md#read-only-capacity-and-usage-evidence).
 
 ### Add a feature flag
 

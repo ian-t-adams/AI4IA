@@ -12,7 +12,7 @@
   the environment. Resource Graph's `resources` table returns all of them, and its
   `healthresources` table returns Azure Resource Health availability states in one call.
 
-  The script also probes the public web + proxy ingress URLs for reachability, then
+  The script also probes public web + proxy ingress and direct API liveness/readiness, then
   writes two browser-loadable data files (assigning `window.*` globals, so the static
   site needs no fetch/CORS and works from file:// as well as GitHub Pages):
     site/data/inventory.js  -> window.AI4IA_INVENTORY
@@ -29,10 +29,11 @@
 .PARAMETER ResourceGroup
   Target resource group. Defaults to the azd environment's AZURE_RESOURCE_GROUP.
 
-.PARAMETER WebUrl / ProxyUrl
+.PARAMETER WebUrl / ProxyUrl / ApiUrl
   Public ingress URLs probed for reachability. Default to the azd environment's
-  AZURE_WEB_URL / AZURE_PROXY_URL outputs (written by `azd provision`). An
-  endpoint with no resolvable URL is skipped rather than probed.
+  AZURE_WEB_URL / AZURE_PROXY_URL / AZURE_API_URL outputs (written by `azd provision`).
+  Without an API output, the inventory must identify exactly one public Container App
+  tagged azd-service-name=api. Unresolved targets remain explicitly unknown.
 
 .PARAMETER OutDir
   Where the .js data files are written (default: site/data next to this repo).
@@ -49,6 +50,7 @@ param(
     [string] $ResourceGroup = '',
     [string] $WebUrl        = '',
     [string] $ProxyUrl      = '',
+    [string] $ApiUrl        = '',
     [string] $OutDir        = ([System.IO.Path]::Combine(
         (Split-Path -Parent $PSScriptRoot), 'site', 'data'
     ))
@@ -56,11 +58,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $nowIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+. (Join-Path $PSScriptRoot 'status-endpoints.ps1')
 
 # --- Resolve the target environment ---------------------------------------
 # Every value below is discovered, never hardcoded. `azd provision` writes the
 # stack's own outputs (AZURE_SUBSCRIPTION_ID / AZURE_RESOURCE_GROUP /
-# AZURE_WEB_URL / AZURE_PROXY_URL) into the selected azd environment, so the
+# AZURE_WEB_URL / AZURE_PROXY_URL / AZURE_API_URL) into the selected azd environment, so the
 # azd env is the authoritative description of "the deployment this checkout
 # points at". That is what makes this script correct in a new tenant or
 # subscription with no edits -- and what stops it from quietly snapshotting a
@@ -100,6 +103,7 @@ if (-not $ResourceGroup) {
 
 if (-not $WebUrl)   { $WebUrl   = Get-AzdEnvValue 'AZURE_WEB_URL' }
 if (-not $ProxyUrl) { $ProxyUrl = Get-AzdEnvValue 'AZURE_PROXY_URL' }
+if (-not $ApiUrl)   { $ApiUrl   = Get-AzdEnvValue 'AZURE_API_URL' }
 
 Write-Host "Target: subscription $Subscription / resource group $ResourceGroup" -ForegroundColor Cyan
 
@@ -147,7 +151,7 @@ if (-not $graphExt) {
 Write-Host "Querying Resource Graph inventory for $ResourceGroup" -ForegroundColor Cyan
 # coalesce provisioningState with `state`: Postgres flexible servers (and a few other
 # providers) report readiness under properties.state, not properties.provisioningState.
-$invKql = "Resources | where resourceGroup =~ '$ResourceGroup' | project id, name, type, location, prov=tostring(coalesce(properties.provisioningState, properties.state))"
+$invKql = "Resources | where resourceGroup =~ '$ResourceGroup' | project id, name, type, location, prov=tostring(coalesce(properties.provisioningState, properties.state)), service=tostring(tags['azd-service-name']), ingressFqdn=tostring(properties.configuration.ingress.fqdn), ingressExternal=tostring(properties.configuration.ingress.external)"
 $invOutput = @(az graph query -q $invKql --subscriptions $Subscription --first 500 -o json --only-show-errors 2>&1)
 $invExitCode = $LASTEXITCODE
 if ($invExitCode -ne 0) {
@@ -287,19 +291,29 @@ $resources = @(
 
 # --- 4) Probe public endpoints for reachability ---
 function Test-Endpoint([string]$name, [string]$url) {
-    $obj = [ordered]@{ name = $name; url = $url; httpStatus = 0; ok = $false; state = 'down'; note = '' }
+    $obj = [ordered]@{
+        name = $name; kind = 'ingress'; url = $url; httpStatus = 0
+        ok = $false; state = 'down'; note = ''; outcome = 'http_error'
+        observedAt = $null; latencyMs = $null
+    }
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $resp = Invoke-WebRequest -Uri $url -Method Get -TimeoutSec 20 -MaximumRedirection 5 -SkipHttpErrorCheck -UseBasicParsing
         $obj.httpStatus = [int]$resp.StatusCode
         # 2xx/3xx, or a 401/403 (auth challenge) all prove the ingress is up and serving.
         $obj.ok = ($obj.httpStatus -ge 200 -and $obj.httpStatus -lt 400) -or ($obj.httpStatus -in 401,403)
-        if ($obj.ok) { $obj.state = 'up' } else { $obj.state = 'down' }
+        if ($obj.ok) { $obj.state = 'up'; $obj.outcome = 'reachable' } else { $obj.state = 'down' }
         if ($obj.httpStatus -in 401,403) { $obj.note = 'reachable (auth required)' }
     } catch {
         # No HTTP response at all (timeout / connection reset). For a scale-to-zero
         # ingress a cold-start timeout is inconclusive, not a confirmed outage.
         $obj.state = 'unknown'
+        $obj.outcome = 'network_unavailable'
         $obj.note  = 'no response (timeout or cold start)'
+    } finally {
+        $timer.Stop()
+        $obj.latencyMs = $timer.ElapsedMilliseconds
+        $obj.observedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
     }
     [pscustomobject]$obj
 }
@@ -308,13 +322,17 @@ Write-Host 'Probing public endpoints' -ForegroundColor Cyan
 # probed: a missing azd output is an unknown, not a confirmed outage.
 function Get-UnresolvedEndpoint([string]$name) {
     [pscustomobject][ordered]@{
-        name = $name; url = ''; httpStatus = 0; ok = $false; state = 'unknown'
+        name = $name; kind = 'ingress'; url = ''; httpStatus = 0; ok = $false; state = 'unknown'
         note = 'no URL resolved (set the azd env output or pass the parameter)'
+        outcome = 'target_unresolved'; observedAt = $null; latencyMs = $null
     }
 }
+$apiTarget = Resolve-ApiStatusTarget -Url $ApiUrl -Resources $invRaw.data
 $endpoints = @(
     $(if ($WebUrl)   { Test-Endpoint 'Web app'     $WebUrl }   else { Get-UnresolvedEndpoint 'Web app' }),
-    $(if ($ProxyUrl) { Test-Endpoint 'Model proxy' $ProxyUrl } else { Get-UnresolvedEndpoint 'Model proxy' })
+    $(if ($ProxyUrl) { Test-Endpoint 'Model proxy' $ProxyUrl } else { Get-UnresolvedEndpoint 'Model proxy' }),
+    (Test-ApiHealthEndpoint -Kind liveness -Target $apiTarget),
+    (Test-ApiHealthEndpoint -Kind readiness -Target $apiTarget)
 )
 
 # --- 5) Summaries ---
