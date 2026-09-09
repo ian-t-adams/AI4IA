@@ -23,9 +23,9 @@
           "description": { "type": "string" },
           "protocolVersion": {
             "type": "string",
-            "enum": ["2025-06-18", "2026-07-28"],
+            "enum": ["2025-06-18", "2025-11-25", "2026-07-28"],
             "default": "2025-06-18",
-            "description": "Explicit upstream MCP contract. Omitted entries retain the legacy initialize/session path. Opt into 2026-07-28 only after verifying that specific upstream; errors never trigger a protocol downgrade."
+            "description": "Explicit upstream MCP contract. Omitted entries retain 2025-06-18; 2025-11-25 also uses the stateful initialize/session path. Select either non-default version only after verifying that specific upstream; errors never trigger a protocol switch."
           },
           "upstreamUrl": {
             "type": "string",

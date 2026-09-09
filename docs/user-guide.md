@@ -268,8 +268,11 @@ discovery and again when invoked. Neither a remote server nor a retrieved page
 can grant itself permission.
 
 The MCP server builder's **MCP protocol** setting defaults to
-**2025-06-18 (legacy)**. Choose **2026-07-28 (stateless)** only after verifying
-that specific server supports it, then **Save & reconnect**. The API also accepts
+**2025-06-18 (legacy)**. **2025-11-25 (stateful)** is a separate explicit choice,
+not a switch to stateless. Choose it or **2026-07-28 (stateless)** only after
+verifying that specific server supports the selected version, then
+**Save & reconnect**. The curated Foundry Toolbox selects November independently;
+that does not change your servers' defaults. The API also accepts
 an explicit `protocolVersion` on create/update; older update clients that omit it
 preserve the saved selection. Protocol and routing-schema changes require renewed
 tool consent. A rejected request never automatically switches protocol, drops

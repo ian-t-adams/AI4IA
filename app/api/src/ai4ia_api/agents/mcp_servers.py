@@ -76,6 +76,7 @@ class McpProtocolVersion(str, Enum):
     """An explicit server contract, never an error-triggered downgrade policy."""
 
     legacy = "2025-06-18"
+    stateful_2025_11_25 = "2025-11-25"
     stateless = "2026-07-28"
 
 

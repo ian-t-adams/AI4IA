@@ -719,12 +719,16 @@ Four rules follow:
 
 - Official and BYO servers share `app/api/src/ai4ia_api/agents/mcp_client.py` and its
   bounded helpers in `app/api/src/ai4ia_api/agents/mcp_protocol.py`.
-  Keep `protocolVersion=2025-06-18` as the
-  record/catalog default; `2026-07-28` is an explicit per-server opt-in, not an
-  error-triggered downgrade/upgrade policy.
+  Keep `protocolVersion=2025-06-18` as the omitted-field record/catalog default.
+  Both `2025-06-18` and explicit `2025-11-25` use the stateful lifecycle; the
+  packaged Foundry Toolbox selects November after a live initialize response
+  reported that version. `2026-07-28` remains an explicit per-server stateless
+  opt-in, never an error-triggered downgrade/upgrade policy.
 - Verify wire contracts against the official versioned specification/schema.
-  Legacy initialization must confirm the selected version and retain its session;
-  stateless requests carry per-request metadata and no session. Never infer
+  Stateful initialization must confirm the exact selected version; subsequent
+  requests and notifications retain that version and session. The APIM stateful
+  guard must match the catalog's exact selection, not a list of accepted dates.
+  Stateless requests carry per-request metadata and no session. Never infer
   Foundry/APIM preview support from offline fixtures.
 - Derive routing mirrors from the exact RPC and consent-bound schema. Bound and
   encode them, reject sensitive annotations/values, and preserve the catalog-owned
@@ -736,7 +740,7 @@ Four rules follow:
   error, or replay a tool after a protocol/transport failure.
 - Keep `_call_with` and `_read_resource_with` as shared execution seams containing
   handshake plus RPC work under either version. Discovery cache hits do not run
-  those seams. Exercise both protocols through services, consent, SSRF/DNS pinning,
+  those seams. Exercise all supported versions through services, consent, SSRF/DNS pinning,
   redaction, cancellation and Streamable HTTP, not just framing helpers.
 
 ### Add a Foundry skill

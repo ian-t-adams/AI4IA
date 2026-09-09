@@ -1,10 +1,11 @@
-"""Dual-protocol service, execution, consent and progressive-disclosure seams."""
+"""Versioned service, execution, consent and progressive-disclosure seams."""
 from __future__ import annotations
 
 import asyncio
 import json
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -23,17 +24,76 @@ from ai4ia_api.agents.mcp_servers import (
 from ai4ia_api.agents.mcp_service import McpServerService
 from ai4ia_api.agents.mcp_skills import build_load_skill_definition
 from ai4ia_api.agents.mcp_store import InMemoryUserMcpServerStore
-from ai4ia_api.agents.official_mcp_service import OfficialMcpService
+from ai4ia_api.agents.official_mcp_service import OfficialMcpService, build_official_servers
 from ai4ia_api.agents.runtime import run_agent_turn
 from ai4ia_api.agents.tool_exec import ToolContext, ToolExecutionError, build_tools
-from ai4ia_api.official_mcp_catalog import OfficialMcpCatalog, OfficialMcpServer
+from ai4ia_api.official_mcp_catalog import (
+    OfficialMcpCatalog, OfficialMcpServer, _project_infra_catalog, load_official_mcp_catalog,
+)
 from tests.test_mcp_execution import ScriptedGateway, _assistant_text, _assistant_tool_calls, _messages
-from tests.test_mcp_protocol import CONTEXT, ENDPOINT, LEGACY, MODERN, URI, _result, _wire
+from tests.test_mcp_protocol import CONTEXT, ENDPOINT, LEGACY, MODERN, PROTOCOLS, URI, _result, _wire
 
 PUBLIC = lambda _host: ["93.184.216.34"]  # noqa: E731
 ROUTING_SCHEMA = {"type": "object", "properties": {
     "city": {"type": "string", "x-mcp-header": "Region"},
 }}
+
+
+@pytest.mark.parametrize("source", ["packaged", "infra"])
+async def test_foundry_catalog_matches_observed_stateful_initialize(source):
+    """The live mismatch was a November result without stateless metadata."""
+    catalog = load_official_mcp_catalog()
+    if source == "infra":
+        raw = json.loads(
+            (Path(__file__).resolve().parents[3] / "infra" / "mcp-servers.json")
+            .read_text(encoding="utf-8")
+        )
+        catalog = OfficialMcpCatalog(**_project_infra_catalog(raw))
+    [server] = build_official_servers(catalog, gateway_url="https://apim.example.com")
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append((request, body))
+        assert request.headers["Ocp-Apim-Subscription-Key"] == "synthetic-apim-key"
+        if body["method"] == "initialize":
+            return httpx.Response(200, json={
+                "jsonrpc": "2.0", "id": body["id"],
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"resources": {}, "tools": {}},
+                },
+            }, headers={"Mcp-Session-Id": "synthetic-session"})
+        assert request.headers["MCP-Protocol-Version"] == "2025-11-25"
+        assert request.headers["Mcp-Session-Id"] == "synthetic-session"
+        if body["method"] == "notifications/initialized":
+            return httpx.Response(202, headers={"MCP-Protocol-Version": "2025-11-25"})
+        assert body["method"] == "tools/list"
+        return httpx.Response(200, json={
+            "jsonrpc": "2.0", "id": body["id"],
+            "result": {"tools": [{"name": "fixture_tool", "inputSchema": {"type": "object"}}]},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tools = await HttpxMcpConnector(client=client).discover(
+            endpoint=server.endpoint,
+            auth=McpAuth(server.authMode, "synthetic-apim-key"),
+            context=McpRequestContext.for_server(server),
+        )
+    assert [tool.name for tool in tools] == ["fixture_tool"]
+    assert [body["method"] for _, body in seen] == [
+        "initialize", "notifications/initialized", "tools/list",
+    ]
+    assert seen[0][1]["params"] == {
+        "protocolVersion": "2025-11-25", "capabilities": {},
+        "clientInfo": {"name": "ai4ia", "version": "1.0"},
+    }
+    assert all("_meta" not in body.get("params", {}) for _, body in seen)
+    assert all(
+        not any(name in ("mcp-method", "mcp-name") or name.startswith("mcp-param-")
+                for name in request.headers)
+        for request, _ in seen
+    )
 
 
 def _server(protocol, plane="byo"):
@@ -52,7 +112,7 @@ class _Secrets:
         return None
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 @pytest.mark.parametrize("plane", ["byo", "official"])
 @pytest.mark.parametrize("gate", ["allowed", "scope", "approval", "arguments", "owner"])
 async def test_real_dispatch_keeps_owner_scopes_exact_approvals_and_routing_contract(protocol, plane, gate):
@@ -106,7 +166,7 @@ async def test_real_dispatch_keeps_owner_scopes_exact_approvals_and_routing_cont
         assert any(step.kind in ("tool_denied", "tool_error") for step in result.steps)
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 @pytest.mark.parametrize("change", [None, "protocol", "routing-schema", "owner"])
 async def test_mutation_during_credential_resolution_cannot_change_the_bound_call(protocol, change):
     seen = []
@@ -135,7 +195,7 @@ async def test_mutation_during_credential_resolution_cannot_change_the_bound_cal
             assert not seen
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 async def test_byo_reconnects_preserve_protocol_and_rotate_auth_without_cached_grants(protocol):
     seen = []
     async with httpx.AsyncClient(transport=httpx.MockTransport(_wire(protocol, seen))) as client:
@@ -183,7 +243,7 @@ def _official(connector, protocol, *, resources=True):
     )
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 async def test_official_progressive_resources_use_the_same_protocol_and_keep_instruction_opt_in(protocol):
     seen = []
     auth = McpAuth(McpAuthMode.apim_subscription, "official-key")
@@ -240,7 +300,7 @@ async def test_official_modern_cache_expires_and_invalidates_for_config_and_auth
         assert len(seen) == 15
 
 
-@pytest.mark.parametrize("protocol", [LEGACY, MODERN])
+@pytest.mark.parametrize("protocol", PROTOCOLS)
 async def test_official_resource_failure_is_visible_partial_and_retry_stays_in_protocol(protocol, caplog):
     seen = []
     failure = [False]

@@ -29,7 +29,7 @@ export interface CustomToolsConfig {
 
 export type McpAuthMode = "none" | "api_key" | "bearer";
 export type McpTransport = "streamable_http";
-export type McpProtocolVersion = "2025-06-18" | "2026-07-28";
+export type McpProtocolVersion = "2025-06-18" | "2025-11-25" | "2026-07-28";
 
 // Per-tool standing discovery/attachment posture, overriding the server-level
 // default. This decides whether the model is offered a discovered tool; it does
@@ -132,6 +132,7 @@ export const MCP_TOOL_NAME_PREFIX = "mcp";
 
 export const MCP_PROTOCOL_VERSIONS: { value: McpProtocolVersion; label: string }[] = [
   { value: "2025-06-18", label: "2025-06-18 (legacy, default)" },
+  { value: "2025-11-25", label: "2025-11-25 (stateful, opt-in)" },
   { value: "2026-07-28", label: "2026-07-28 (stateless, opt-in)" },
 ];
 

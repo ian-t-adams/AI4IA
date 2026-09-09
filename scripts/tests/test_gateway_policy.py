@@ -1735,6 +1735,19 @@ class GatewayPolicyTests(unittest.TestCase):
 
     def test_compiled_mcp_subscription_scrubs_precede_provider_policies(self) -> None:
         template = self._build_bicep_template(ROOT / "infra/modules/mcpgateway.bicep")
+        [inbound] = [
+            item for item in template["variables"]["copy"] if item["name"] == "serverInboundPolicies"
+        ]
+        selected = (
+            "coalesce(tryGet(parameters('servers')[copyIndex('serverInboundPolicies')], "
+            "'protocolVersion'), '2025-06-18')"
+        )
+        self.assertTrue(inbound["input"].startswith(
+            f"[join(concat(if(equals({selected}, '2026-07-28'), "
+            "createArray(variables('statelessProtocolPolicy')), "
+            "createArray(replace(variables('statefulProtocolPolicy'), "
+            f"'__MCP_PROTOCOL_VERSION__', {selected}))), "
+        ), "compiled stateful guard must bind the exact catalog version before provider policies")
         resources = self._collect_resources(template)
         apis = [
             r for r in resources if r["type"] == "Microsoft.ApiManagement/service/apis"
@@ -2196,7 +2209,7 @@ class SubscriptionCredentialPolicyTests(unittest.TestCase):
     def test_mcp_protocol_boundary_is_catalog_owned_not_header_selected(self) -> None:
         source = (ROOT / "infra/modules/mcpgateway.bicep").read_text(encoding="utf-8")
         policies = {}
-        for name in ("legacyProtocolPolicy", "statelessProtocolPolicy"):
+        for name in ("statefulProtocolPolicy", "statelessProtocolPolicy"):
             match = re.search(rf"var {name} = '''\n(.*?)\n'''", source, re.DOTALL)
             self.assertIsNotNone(match)
             assert match is not None
@@ -2204,19 +2217,22 @@ class SubscriptionCredentialPolicyTests(unittest.TestCase):
             self.assertEqual(policies[name].find(".//set-status").get("code"), "400")
         selection = (
             "(s.?protocolVersion ?? '2025-06-18') == '2026-07-28' ? [\n"
-            "    statelessProtocolPolicy\n  ] : [\n    legacyProtocolPolicy\n  ]"
+            "    statelessProtocolPolicy\n  ] : [\n"
+            "    replace(statefulProtocolPolicy, '__MCP_PROTOCOL_VERSION__', s.?protocolVersion ?? '2025-06-18')\n  ]"
         )
         self.assertIn(selection, source)
         self.assertLess(source.index(selection), source.index("s.upstreamAuthMode == 'managed_identity'"))
-        legacy = policies["legacyProtocolPolicy"].find("when").get("condition")
-        self.assertEqual(
-            legacy,
-            '@(context.Request.Headers.Any(h => h.Key.Equals("Mcp-Method", StringComparison.OrdinalIgnoreCase) '
-            '|| h.Key.Equals("Mcp-Name", StringComparison.OrdinalIgnoreCase) '
-            '|| h.Key.StartsWith("Mcp-Param-", StringComparison.OrdinalIgnoreCase)) '
-            '|| (context.Request.Headers.ContainsKey("MCP-Protocol-Version") '
-            '&& context.Request.Headers.GetValueOrDefault("MCP-Protocol-Version", "") != "2025-06-18"))',
-        )
+        stateful = policies["statefulProtocolPolicy"].find("when").get("condition")
+        for version in ("2025-06-18", "2025-11-25"):
+            with self.subTest(version=version):
+                self.assertEqual(
+                    stateful.replace("__MCP_PROTOCOL_VERSION__", version),
+                    '@(context.Request.Headers.Any(h => h.Key.Equals("Mcp-Method", StringComparison.OrdinalIgnoreCase) '
+                    '|| h.Key.Equals("Mcp-Name", StringComparison.OrdinalIgnoreCase) '
+                    '|| h.Key.StartsWith("Mcp-Param-", StringComparison.OrdinalIgnoreCase)) '
+                    '|| (context.Request.Headers.ContainsKey("MCP-Protocol-Version") '
+                    f'&& context.Request.Headers.GetValueOrDefault("MCP-Protocol-Version", "") != "{version}"))',
+                )
         modern = policies["statelessProtocolPolicy"].find("when").get("condition")
         self.assertEqual(
             modern,
@@ -2229,11 +2245,11 @@ class SubscriptionCredentialPolicyTests(unittest.TestCase):
         self.assertIn('<set-backend-service backend-id="${s.name}-backend" />', source)
         self.assertNotRegex(source, r'<set-backend-service[^>]*context\.Request')
         self.assertNotRegex(source, r'<authentication-managed-identity[^>]*context\.Request')
-        self.assertNotIn("context.Response.Body", source.split("var legacyProtocolPolicy", 1)[1].split("// Per-server", 1)[0])
+        self.assertNotIn("context.Response.Body", source.split("var statefulProtocolPolicy", 1)[1].split("// Per-server", 1)[0])
 
-    def test_mcp_legacy_boundary_covers_case_insensitive_mirrors_with_plain_controls(self) -> None:
+    def test_mcp_stateful_boundary_covers_case_insensitive_mirrors_with_plain_controls(self) -> None:
         source = (ROOT / "infra/modules/mcpgateway.bicep").read_text(encoding="utf-8")
-        match = re.search(r"var legacyProtocolPolicy = '''\n(.*?)\n'''", source, re.DOTALL)
+        match = re.search(r"var statefulProtocolPolicy = '''\n(.*?)\n'''", source, re.DOTALL)
         assert match is not None
         condition = ElementTree.fromstring(match.group(1)).find("when").get("condition")
         names = re.findall(r'h.Key.Equals\("([^"]+)", StringComparison.OrdinalIgnoreCase\)', condition)

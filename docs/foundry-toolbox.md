@@ -37,14 +37,28 @@ This adds one curated server to the existing official MCP plane. MCP calls go
 through APIM, not SimpleL7Proxy; the application keeps its existing agent runtime
 and execution-time governance.
 
-The packaged toolbox keeps MCP **2025-06-18** and its initialize/session flow.
-AI4IA also implements explicitly staged **2026-07-28** support in the same
-connector, but that is **not a claim that this live Foundry endpoint or APIM's
-preview MCP API supports it**. Leave the catalog's `protocolVersion` omitted
-(legacy default), or explicitly `2025-06-18`, until that specific upstream has
-been verified. Changing it requires regenerating the runtime catalog and the
-normal approved rollout; protocol errors never trigger an automatic fallback or
-tool replay. See [MCP compatibility](architecture.md#staged-mcp-protocol-compatibility).
+The packaged toolbox explicitly selects stateful MCP **2025-11-25**. A bounded
+read-only observation on 2026-09-09 through the deployed public APIM path found
+an initialize result with that version, `resources` and `tools` capabilities,
+and no stateless protocol metadata. The previous implicit June selection
+correctly rejected this mismatch before discovery. This selects the observed
+contract rather than accepting arbitrary negotiated dates.
+
+Both **2025-06-18** and **2025-11-25** retain initialize/session behavior, including
+exact version/session headers on follow-up requests and notifications. Omitted
+versions on other catalog entries and existing/BYO records still default to June.
+AI4IA's explicit **2026-07-28** stateless support remains **unverified for this
+live Foundry endpoint and APIM's preview MCP API**; November support does not
+enable it or add client capabilities.
+
+The generated API catalog and APIM's exact catalog-selected stateful guard must
+roll out together through the normal approved provision/deploy path. Updating
+only the client cannot make a deployed June-only APIM guard accept November
+follow-up headers. After rollout, confirm authenticated official tool/resource
+discovery independently; an initialize observation or offline fixture is not
+end-to-end production evidence. Protocol errors never trigger fallback, dropped
+authentication or tool replay. See
+[MCP compatibility](architecture.md#staged-mcp-protocol-compatibility).
 
 ### Foundry web search is not WebIQ
 

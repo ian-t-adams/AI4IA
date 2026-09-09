@@ -992,16 +992,19 @@ def _httpx_call_tool_connector(
     def handler(request: httpx.Request) -> httpx.Response:
         method = json.loads(request.content).get("method")
         if method == "initialize":
-            assert protocol is McpProtocolVersion.legacy
+            assert protocol is not McpProtocolVersion.stateless
+            assert json.loads(request.content)["params"]["protocolVersion"] == protocol.value
             return httpx.Response(
                 200,
                 json={
                     "jsonrpc": "2.0", "id": 1,
-                    "result": {"protocolVersion": "2025-06-18", "capabilities": {}},
+                    "result": {"protocolVersion": protocol.value, "capabilities": {}},
                 },
                 headers={"Mcp-Session-Id": "sess"},
             )
         if method == "notifications/initialized":
+            assert request.headers["MCP-Protocol-Version"] == protocol.value
+            assert request.headers["Mcp-Session-Id"] == "sess"
             return httpx.Response(202)
         if method == "tools/call":
             if protocol is McpProtocolVersion.stateless:
