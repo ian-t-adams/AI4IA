@@ -388,6 +388,12 @@ def main(*, require_deployment_attestation: bool = False) -> int:
                 "must run with the custom-domain variables EMPTY and bind them on a second pass."
             )
 
+    if truthy(parameter_value(parameters, "hardQuotaEnabled", False)):
+        errors.append(
+            "hardQuotaEnabled=true has no approved durable activation path. "
+            "Reviewed bootstrap, retention and fleet cutover are still required."
+        )
+
     profiles_enabled = truthy(parameter_value(parameters, "proxyProfilesEnabled", False))
     profile_projection = text(parameter_value(parameters, "proxyProfileProjectionJson"))
     if profiles_enabled:

@@ -598,10 +598,12 @@ def test_nonstream_cancellation_keeps_the_accepted_turn_receipt(content):
         assert saved["usage"]["cost"]["estCostMicroUsd"] is None
 
 
-def test_full_receipt_remains_bounded_with_all_evidence_lists_populated():
+@pytest.mark.parametrize("quota", [False, True])
+def test_full_receipt_remains_bounded_with_all_evidence_lists_populated(quota):
     from ai4ia_api.agents.runtime import AgentStep
     from ai4ia_api.model_evidence import MAX_RECORDED_MODEL_CALLS
     from ai4ia_api.receipts import ReceiptRuntime
+    from ai4ia_api.hard_quota.models import AdmissionEvidence, Amounts
 
     evidence = ModelCallRecorder(
         model_id="model", deployment="deployment",
@@ -611,6 +613,14 @@ def test_full_receipt_remains_bounded_with_all_evidence_lists_populated():
         call = evidence.start("deployment", "responses")
         call.request({"max_output_tokens": 16384, "reasoning": {"effort": "high"}})
         call.report_usage({"prompt_tokens": 1000, "completion_tokens": 250}, completed=True)
+        if quota:
+            for index in range(2):
+                call.report_admission(AdmissionEvidence(
+                    operationHash=f"{index + 1:064x}", surface="chat", phase="settled",
+                    reserved=Amounts(tokens=2**40, microUsd=2**40),
+                    charged=Amounts(tokens=1250, microUsd=4000),
+                    priceVersion="v" * 96, attemptVersion="a" * 96,
+                ))
     filler = "quoted text \u6c49\u5b57 \"\n" * 150
     messages = [{"role": "user", "content": filler} for _ in range(40)]
     draft = ReceiptDraft(
@@ -634,6 +644,8 @@ def test_full_receipt_remains_bounded_with_all_evidence_lists_populated():
     assert "model_calls_capped" in saved.notes
     assert saved.usage.cost.coverage == "partial"
     assert saved.usage.cost.priceVersions == ("bounds-v1",)
+    if quota:
+        assert saved.runtime.modelCalls[0].admissions
     small = ReceiptDraft(model_evidence=ModelCallRecorder()).build()
     assert len(small.model_dump_json()) < MAX_RECEIPT_BYTES
     assert not small.truncated

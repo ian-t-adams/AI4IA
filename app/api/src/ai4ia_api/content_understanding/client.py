@@ -19,6 +19,7 @@ azure libraries.
 """
 from __future__ import annotations
 
+import hashlib
 import asyncio
 import logging
 import time
@@ -26,6 +27,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 import httpx
+
+from ..hard_quota.dispatch import admitted_dispatch
 
 from ..config import GatewayAuthMode, Settings
 from ..http_retry import parse_retry_after, request_with_retry
@@ -142,6 +145,19 @@ class ContentUnderstandingClient:
         self._http = http_client
         self._token_provider = token_provider
         self._owns_token_provider = token_provider is None
+        self._hard_quota_enabled = settings.hard_quota_enabled
+
+    async def _post_document(
+        self, client: httpx.AsyncClient, url: str, *, headers: dict[str, str], data: bytes,
+    ) -> httpx.Response:
+        async with admitted_dispatch(
+            "document", {"operation": url, "dataDigest": hashlib.sha256(data).hexdigest()},
+            required=self._hard_quota_enabled,
+        ) as admission:
+            response = await client.post(url, headers=headers, content=data)
+            if 200 <= response.status_code < 300:
+                admission.report()
+            return response
 
     def analyzer_url(
         self,
@@ -218,7 +234,7 @@ class ContentUnderstandingClient:
     ) -> str:
         url = self.submit_url(analyzer_id, api_version=api_version)
         headers = await self._auth_headers(content_type or "application/octet-stream")
-        resp = await client.post(url, headers=headers, content=data)
+        resp = await self._post_document(client, url, headers=headers, data=data)
         if resp.status_code >= 400:
             raise ContentUnderstandingError(
                 resp.status_code, _http_error_detail(resp)
@@ -317,10 +333,11 @@ class ContentUnderstandingClient:
             headers = await self._auth_headers(
                 content_type or "application/octet-stream"
             )
-            resp = await client.post(
+            resp = await self._post_document(
+                client,
                 self.inline_url(analyzer_id, api_version=api_version),
                 headers=headers,
-                content=data,
+                data=data,
             )
             if resp.status_code >= 400:
                 raise ContentUnderstandingError(

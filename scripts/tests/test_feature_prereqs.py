@@ -144,6 +144,16 @@ class StagedRealtimeTests(unittest.TestCase):
 
 
 class CommittedParametersTests(unittest.TestCase):
+    def test_hard_quota_default_off_and_deployed_activation_refused(self) -> None:
+        for enabled in ("true", "false"):
+            with _environment(AI4IA_HARD_QUOTA_ENABLED=enabled):
+                code, _, err = _run(REAL_PARAMETERS)
+            if enabled == "true":
+                self.assertEqual(code, 1)
+                self.assertIn("hardQuotaEnabled=true has no approved durable activation", err)
+            else:
+                self.assertEqual(code, 0, err)
+
     def test_committed_parameters_validate_as_shipped(self) -> None:
         with _environment():
             code, _, err = _run(REAL_PARAMETERS)

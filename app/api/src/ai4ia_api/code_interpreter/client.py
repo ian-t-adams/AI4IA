@@ -29,6 +29,7 @@ azure libraries (a fake client is injected in unit tests).
 """
 from __future__ import annotations
 
+import hashlib
 import asyncio
 import logging
 import re
@@ -37,6 +38,9 @@ from collections.abc import Sequence
 from typing import Any, Protocol
 
 import httpx
+
+from ..hard_quota.dispatch import admitted_dispatch
+from ..hard_quota.models import Surface
 
 from ..config import GatewayAuthMode, Settings
 from .models import CodeInterpreterResult, parse_response
@@ -138,6 +142,21 @@ class CodeInterpreterClient:
         self._http = http_client
         self._token_provider = token_provider
         self._owns_token_provider = token_provider is None
+        self._hard_quota_enabled = settings.hard_quota_enabled
+
+    async def _post(
+        self, client: httpx.AsyncClient, url: str, *, surface: Surface,
+        payload: dict[str, Any], **kwargs: Any,
+    ) -> httpx.Response:
+        async with admitted_dispatch(
+            surface, payload, target=url, required=self._hard_quota_enabled,
+        ) as admission:
+            if "json" in kwargs:
+                kwargs["json"] = admission.payload
+            response = await client.post(url, **kwargs)
+            if 200 <= response.status_code < 300:
+                admission.report()
+            return response
 
     def responses_url(self) -> str:
         url = f"{self._base}/openai/v1/responses"
@@ -215,8 +234,9 @@ class CodeInterpreterClient:
         try:
             headers = await self._auth_headers(correlation_id=correlation_id)
             try:
-                resp = await client.post(
-                    self.responses_url(), headers=headers, json=payload
+                resp = await self._post(
+                    client, self.responses_url(), surface="compute", payload=payload,
+                    headers=headers, json=payload
                 )
             except httpx.HTTPError as exc:
                 raise CodeInterpreterError(0, str(exc)) from exc
@@ -268,8 +288,11 @@ class CodeInterpreterClient:
                 )
             }
             try:
-                resp = await client.post(
-                    self.files_url(),
+                resp = await self._post(
+                    client, self.files_url(), surface="external_tool",
+                    payload={"operation": "compute_file_upload", "filename": filename,
+                             "contentDigest": hashlib.sha256(content).hexdigest(),
+                             "contentType": content_type},
                     headers=headers,
                     files=files,
                     data={"purpose": _FILE_UPLOAD_PURPOSE},

@@ -29,6 +29,9 @@ from .entitlements.service import EntitlementService
 from .directory.factory import build_user_directory_repository
 from .directory.service import UserDirectoryService
 from .gateway.client import ModelGatewayClient
+from .hard_quota.dispatch import AdmissionController
+from .hard_quota.models import QuotaError
+from .hard_quota.store import LocalReservationStore
 from .images.artifacts import ImageArtifactStore, build_image_blob_store
 from .videos.artifacts import VideoArtifactStore, build_video_blob_store
 from .docprocessing.artifacts import (
@@ -178,7 +181,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # egress guard on every endpoint, and tool discovery via the MCP client.
         if settings.custom_tools_enabled:
             connector = HttpxMcpConnector(
-                timeout_s=settings.custom_tools_discovery_timeout_seconds
+                timeout_s=settings.custom_tools_discovery_timeout_seconds,
+                hard_quota_enabled=settings.hard_quota_enabled,
             )
             max_servers = (
                 settings.custom_tools_max_servers_per_user
@@ -207,7 +211,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 gateway_url=settings.official_mcp_gateway_url or "",
                 subscription_key=settings.official_mcp_subscription_key or "",
                 connector=HttpxMcpConnector(
-                    timeout_s=settings.official_mcp_discovery_timeout_seconds
+                    timeout_s=settings.official_mcp_discovery_timeout_seconds,
+                    hard_quota_enabled=settings.hard_quota_enabled,
                 ),
             )
         else:
@@ -248,6 +253,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             build_default_entitlement(settings),
             enabled=settings.entitlements_enabled,
             cache_ttl_seconds=settings.entitlement_cache_ttl_seconds,
+        )
+        # No automatic seed, including locally. Durable activation has a separate
+        # startup refusal; constructing the app never creates a quota balance.
+        app.state.hard_quota = AdmissionController(
+            entitlements=app.state.entitlements, catalog=app.state.catalog,
+            pricing=app.state.usage.pricing, enabled=settings.hard_quota_enabled,
+            store=LocalReservationStore() if settings.hard_quota_enabled else None,
         )
         # Admin user directory. Captures the display name + email already on the
         # token into an admin-only Cosmos 'userDirectory' (keyed by the hashed
@@ -452,6 +464,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if openapi_enabled else None,
     )
     register_error_handlers(app)
+
+    @app.exception_handler(QuotaError)
+    async def _quota_refused(_request: Request, exc: QuotaError):
+        return error_response(
+            status_code=exc.code, detail=str(exc), code="hard_quota_refused",
+            headers={"Retry-After": "60"} if exc.code == 429 else None,
+        )
 
     @app.middleware("http")
     async def correlation_middleware(request: Request, call_next):

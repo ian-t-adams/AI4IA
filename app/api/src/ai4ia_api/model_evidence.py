@@ -17,6 +17,7 @@ from typing import Any, Literal, TypeVar
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .agents.tools import redact
+from .hard_quota.models import AdmissionEvidence
 from .usage.models import TokenUsage
 from .usage.pricing import PricingBook
 
@@ -92,6 +93,7 @@ class ModelCallEvidence(_Evidence):
     promptTokens: int | None = Field(default=None, ge=0, le=_MAX_SAFE_INTEGER, strict=True)
     completionTokens: int | None = Field(default=None, ge=0, le=_MAX_SAFE_INTEGER, strict=True)
     cost: ModelCostEstimate = Field(default_factory=ModelCostEstimate)
+    admissions: tuple[AdmissionEvidence, ...] = Field(default=(), max_length=2)
 
 
 def _identifier(value: str | None) -> str | None:
@@ -198,6 +200,15 @@ class CapturedModelCall:
     attempts: int = 0
     completed: bool = False
     usage: TokenUsage = field(default_factory=lambda: TokenUsage.parse(None))
+    admissions: list[AdmissionEvidence] = field(default_factory=list)
+
+    def report_admission(self, value: AdmissionEvidence) -> None:
+        for index, previous in enumerate(self.admissions):
+            if previous.operationHash == value.operationHash:
+                self.admissions[index] = value
+                return
+        if len(self.admissions) < 2:
+            self.admissions.append(value)
 
     def request(self, body: dict[str, Any]) -> None:
         self.parameters, self.parameters_valid = _parameters(body)
@@ -236,6 +247,7 @@ class CapturedModelCall:
                 "partial" if self.parameters is not None else "unknown"
             ),
             parameters=self.parameters, httpAttempts=self.attempts,
+            admissions=tuple(self.admissions),
             providerCompleted=self.completed,
             usageKnown=self.usage.known, usageComplete=self.usage.known and self.usage.complete,
             promptTokens=self.usage.prompt if self.usage.known else None,

@@ -22,6 +22,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from pydantic import BaseModel, Field, model_validator
 
 from ..catalog import DeploymentOption
+from ..hard_quota.models import MAX_ADMISSION_EVIDENCE, AdmissionEvidence
 
 UsageStatus = Literal["complete", "cancelled", "error"]
 
@@ -242,6 +243,10 @@ class UsageRecord(BaseModel):
     priceVersion: str | None = None
 
     correlationId: str | None = None
+    # Safe references/quantities only. These are admission estimates, distinct
+    # from the observational usage/cost fields above, and never summed as spend.
+    hardQuota: tuple[AdmissionEvidence, ...] = Field(default=(), max_length=MAX_ADMISSION_EVIDENCE)
+    hardQuotaCount: int | None = Field(default=None, ge=0)
     createdAt: datetime = Field(default_factory=_now)
 
     @model_validator(mode="before")

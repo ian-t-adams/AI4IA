@@ -7,11 +7,10 @@ readable statement of where its Python dependencies actually come from.
 **This guard exists because the obvious gate does not cover it, and that was
 demonstrated rather than assumed.** `uv lock --check` (run by `app-ci`) only
 asserts that the lockfile agrees with `pyproject.toml`; it says nothing about
-which registry the artifacts resolve from. And nothing on the install path reads
-the lock at all -- `app/api/Dockerfile` runs `pip install .` and CI runs
-`pip install -e ".[dev,foundry]"`, both straight from `pyproject.toml`. So a
-lockfile can be rewritten to point at a completely different registry and every
-existing check still reports success.
+which registry the artifacts resolve from. When this guard was added, neither
+Docker nor CI installed from the lock. The API image now consumes it directly,
+making public artifact provenance an active build prerequisite rather than only
+a statement for auditors.
 
 That is not hypothetical. On 2026-08-06, commit `aad6889` ("retire PostgreSQL")
 committed a `uv.lock` in which **1,659 lines** pointed at an internal Microsoft
@@ -21,15 +20,15 @@ package-feed proxy (`packagefeedproxy.microsoft.io` /
 its `uv lock --check` step. The file was repaired two PRs later purely by
 coincidence, when a Dependabot PR regenerated it from PyPI.
 
-Why it matters even though nothing installs from the lock today:
+Why it matters:
 
 * It makes the lockfile **lie about provenance**. The lock is what a human or an
   agent reads to answer "where does this dependency come from"; an internal
   mirror URL answers that question wrongly, and the hashes alongside it lend the
   wrong answer false authority.
-* The internal feed is **credentialed and unreachable** from anywhere else. The
-  moment anything does read the lock -- `uv sync` in a Dockerfile, a vendoring
-  step, an SBOM generator -- it breaks for every contributor and every CI runner,
+* The internal feed is **credentialed and unreachable** from anywhere else. A
+  consumer -- the Dockerfile's frozen `uv sync`, a vendoring step, an SBOM
+  generator -- then breaks for contributors and CI runners,
   with an error that points at a host most readers will not recognise.
 * It leaks internal infrastructure identifiers (feed GUIDs, org names) into a
   public repository.

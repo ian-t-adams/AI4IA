@@ -62,11 +62,22 @@ async def test_disabled_user_is_forbidden():
     assert reader.calls == 0  # disabled short-circuits before any ledger read
 
 
-async def test_disabled_when_enforcement_disabled_allows():
+async def test_disabled_when_numeric_enforcement_disabled_still_denies():
     store = InMemoryEntitlementStore()
     await store.put(Entitlement(id="u", userId="u", disabled=True))
     svc = _service(store=store, enabled=False)
+    assert (await svc.check("u")).code == 403
+    assert (await svc.check("other")).allowed is True
+
+
+async def test_numeric_enforcement_off_does_not_enable_numeric_budgets():
+    store = InMemoryEntitlementStore()
+    await store.put(Entitlement(id="u", userId="u", tokensPerDay=0))
+    reader = CountingReader(WindowTotals(totalTokens=100))
+    svc = _service(store=store, reader=reader, enabled=False)
     assert (await svc.check("u")).allowed is True
+    assert (await svc.check("other")).allowed is True
+    assert reader.calls == 0
 
 
 async def test_rate_limit_denies_with_retry_after():
@@ -275,4 +286,3 @@ async def test_daily_token_and_cost_share_one_window_read():
     svc = _service(store=store, reader=calls)
     await svc.check("u")
     assert calls.calls == 1
-

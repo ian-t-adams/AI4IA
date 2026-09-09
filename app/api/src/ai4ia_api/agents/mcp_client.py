@@ -34,6 +34,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from ..hard_quota.dispatch import admitted_dispatch
 from .mcp_servers import (
     MAX_TOOL_DESCRIPTION_LEN,
     MAX_TOOLS_PER_SERVER,
@@ -221,11 +222,13 @@ class HttpxMcpConnector:
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         max_bytes: int = _DEFAULT_MAX_BYTES,
         resolver: Resolver | None = None,
+        hard_quota_enabled: bool = False,
     ) -> None:
         self._client = client
         self._timeout_s = timeout_s
         self._max_bytes = max_bytes
         self._resolver = resolver
+        self._hard_quota_enabled = hard_quota_enabled
         self._cache: OrderedDict[_CacheKey, _CacheEntry] = OrderedDict()
         self._cache_bytes = 0
         self._cache_generation = 0
@@ -498,18 +501,37 @@ class HttpxMcpConnector:
         input_schema: dict[str, Any] | None = None,
     ) -> _RpcResult:
         """Execution seam includes every handshake/RPC, independent of protocol."""
-        return await self._perform_request(
-            client, endpoint, auth, context, "tools/call",
-            {"name": tool, "arguments": arguments}, input_schema,
-        )
+        async with admitted_dispatch(
+            "mcp", {
+                "endpoint": endpoint, "tool": tool, "arguments": arguments,
+                "protocolVersion": context.protocol_version.value,
+            },
+            required=self._hard_quota_enabled,
+        ) as admission:
+            result = await self._perform_request(
+                client, endpoint, auth, context, "tools/call",
+                {"name": tool, "arguments": admission.payload["arguments"]}, input_schema,
+            )
+            admission.report()
+            return result
 
     async def _read_resource_with(
         self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth, uri: str, *,
         context: McpRequestContext = _LEGACY_CONTEXT,
     ) -> _RpcResult:
-        return await self._perform_request(
-            client, endpoint, auth, context, "resources/read", {"uri": uri},
-        )
+        async with admitted_dispatch(
+            "mcp", {
+                "endpoint": endpoint, "resource": uri,
+                "protocolVersion": context.protocol_version.value,
+            },
+            required=self._hard_quota_enabled,
+        ) as admission:
+            result = await self._perform_request(
+                client, endpoint, auth, context, "resources/read",
+                {"uri": admission.payload["resource"]},
+            )
+            admission.report()
+            return result
 
     async def _perform_request(
         self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth,

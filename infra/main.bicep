@@ -244,6 +244,9 @@ param webSearchMaxContentChars int = 6000
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
 
+@description('Source-only atomic application admission. Default OFF. Preprovision and API startup refuse deployed activation until a reviewed durable bootstrap and fleet cutover exist.')
+param hardQuotaEnabled bool = false
+
 @description('Shared secret for the entitlement-management API under spoofable dev auth. Empty => identity-only admin (fail-closed under dev auth in a deployed env).')
 @secure()
 param adminApiSecret string = ''
@@ -963,6 +966,7 @@ module api 'modules/api.bicep' = {
     entraTenantId: entraTenantId
     entraAudience: entraAudience
     adminSubjects: adminSubjects
+    hardQuotaEnabled: hardQuotaEnabled
     adminApiSecret: adminApiSecret
     claudeEnabled: claudeEnabled
     // The API stamps the priority band; the proxy reserves workers for it. Both

@@ -49,6 +49,7 @@ on:
       - "scripts/post-deploy-verify.py"
       - "scripts/check-resource-providers.py"
       - "scripts/check-model-availability.py"
+      - "scripts/_model_retirement.py"
       - "scripts/validate-feature-prereqs.py"
       - "scripts/provision-foundry-toolbox.py"
       - "scripts/gen-model-catalog.py"
@@ -247,6 +248,7 @@ jobs:
       AI4IA_CUSTOM_TOOLS_ENABLED: ${{ vars.AI4IA_CUSTOM_TOOLS_ENABLED }}
       # Allows explicit per-session/run consent; does not auto-approve by itself.
       AI4IA_TOOL_AUTO_APPROVE_ENABLED: ${{ vars.AI4IA_TOOL_AUTO_APPROVE_ENABLED }}
+      AI4IA_HARD_QUOTA_ENABLED: ${{ vars.AI4IA_HARD_QUOTA_ENABLED }}
       AI4IA_SESSION_DELETION_ENABLED: ${{ vars.AI4IA_SESSION_DELETION_ENABLED }}
       AI4IA_SESSION_DELETION_ROLLOUT_ID: ${{ vars.AI4IA_SESSION_DELETION_ROLLOUT_ID }}
       AI4IA_WEB_SEARCH_ENABLED: ${{ vars.AI4IA_WEB_SEARCH_ENABLED }}

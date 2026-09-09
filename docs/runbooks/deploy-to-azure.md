@@ -30,6 +30,26 @@ instead.
    greenfield guide, then verify the exact image digests and authenticated model
    canary.
 
+## API image dependency lock
+
+Both PR and release builds consume `app/api/uv.lock` for runtime dependencies.
+The API Dockerfile first checks it against `pyproject.toml` offline, then installs
+the frozen runtime without dev or Foundry provisioning extras. A missing lock
+fails the build context copy; a stale lock stops the build before installation.
+Neither failure authorizes a range-resolving fallback or an automatic lock update.
+
+Refresh a stale lock in a reviewed dependency change using public PyPI, following
+[the contributor guide](../../AGENTS.md#frozen-api-runtime-dependencies).
+Keep the Dockerfile's build-only uv pin aligned with `app-ci.yml`'s `UV_VERSION`.
+The Python 3.12 tag and OCI index digest are independent pins; a dependency-lock
+failure is not a reason to refresh them.
+
+Frozen runtime dependencies do not establish byte-for-byte image reproducibility
+or signed provenance. Isolated package build tooling is not in the runtime lock;
+production SBOM/signing and exact-subject verification before deployment remain
+separate delivery requirements. Read-only base-index drift reporting is available
+in the [deployment runbook](./deployment.md#read-only-base-image-drift).
+
 ## Read-only capacity and usage evidence
 
 Use `scripts/report-model-capacity.py` before making a sizing or reserve proposal.

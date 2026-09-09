@@ -2,8 +2,8 @@
 
 `app-ci` fails the `api` job when `uv lock --check` reports drift. That gate was
 added because the lock silently rotted four `pypdf` releases behind a live CVE
-fix -- nothing on the install path reads it (`Dockerfile` runs `pip install .`,
-CI runs `pip install -e ".[dev]"`), so nothing noticed.
+fix when neither Docker nor CI installed from it. Docker now consumes the frozen
+runtime lock; CI's dev/foundry environment still installs from pyproject.toml.
 
 The gate only works if whatever opens dependency PRs keeps the two files in
 step. Dependabot's `pip` ecosystem does not: it edits `pyproject.toml` and has
@@ -24,6 +24,7 @@ the configuration from drifting back into the broken combination.
 
 from __future__ import annotations
 
+import re
 import shlex
 import unittest
 from fnmatch import fnmatchcase
@@ -143,6 +144,17 @@ class DependabotNuGetLockCoupling(unittest.TestCase):
 
 
 class DependencyReviewBoundaries(unittest.TestCase):
+    def test_api_docker_installer_matches_the_ci_uv_pin(self) -> None:
+        document = yaml.safe_load(APP_CI.read_text(encoding="utf-8"))
+        version = str(document["jobs"]["api"]["env"]["UV_VERSION"])
+        dockerfile = (ROOT / "app/api/Dockerfile").read_text(encoding="utf-8")
+        self.assertEqual(
+            re.findall(r"^ARG UV_VERSION=(\S+)$", dockerfile, re.MULTILINE),
+            [version],
+            "Docker and app-ci must use the same reviewed uv installer version.",
+        )
+        self.assertIn('RUN python -m pip install "uv==${UV_VERSION}"', dockerfile)
+
     def matching_groups(self, package: str) -> list[str]:
         entry = _python_entries_for(API_DIR)[0]
         return [
