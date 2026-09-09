@@ -18,6 +18,7 @@ import {
   type VoiceSessionSettings,
 } from "./voiceLive";
 import { voiceProviderCatalog } from "./data/voice_provider_catalog";
+import protocolFixtures from "../../../api/tests/fixtures/realtime_protocol.json";
 
 // The exact session.update the relay has always received. Locked byte-for-byte so a
 // regression in the default payload (key order, extra fields) fails loudly.
@@ -103,6 +104,23 @@ describe("realtimeModels", () => {
 });
 
 describe("sessionUpdate defaults (byte-for-byte unchanged)", () => {
+  it("matches the application frames exercised by the API's GA adapter", () => {
+    const frames = buildInitialVoiceFrames({
+      providerId: "azure_openai",
+      voice: "alloy",
+      history: [
+        { role: "user", text: "Hello" },
+        { role: "assistant", text: "Hello" },
+      ],
+    }).map((frame) => JSON.parse(frame));
+    expect(frames).toEqual(
+      ["browser-default-session", "user-seed", "assistant-seed"].map((name) =>
+        protocolFixtures.client.find((fixture) => fixture.name === name)?.application,
+      ),
+    );
+    expect(frames).toHaveLength(3);
+  });
+
   it("matches the original payload with no settings argument", () => {
     expect(sessionUpdate("alloy")).toBe(DEFAULT_SESSION_UPDATE);
   });

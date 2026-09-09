@@ -194,6 +194,12 @@
     "voiceLiveEnabled": {
       "value": "${AI4IA_VOICE_LIVE_ENABLED=true}"
     },
+    "realtimeGaEnabled": {
+      "value": "${AI4IA_REALTIME_GA_ENABLED=false}"
+    },
+    "realtimeProtocol": {
+      "value": "${AI4IA_REALTIME_PROTOCOL=preview}"
+    },
     "realtimeAllowedOrigins": {
       "value": "${AI4IA_REALTIME_ALLOWED_ORIGINS=}"
     },

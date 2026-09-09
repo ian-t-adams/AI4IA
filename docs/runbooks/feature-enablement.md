@@ -23,6 +23,7 @@ feature posture.
 |---|---|---|---|---|
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | `voiceLiveEnabled` | Browser Origin allowlist outside local |
 | Voice Live tools | `AI4IA_REALTIME_TOOLS_ENABLED` | advertised by web env | `voiceLiveToolsEnabled` | Voice Live enabled |
+| Staged GA Realtime | `AI4IA_REALTIME_GA_ENABLED` + `AI4IA_REALTIME_PROTOCOL` | read-only `openaiRealtimeProtocol` from API config | `realtimeGaEnabled` + `realtimeProtocol` | Defaults `false` + `preview`; Voice Live, distinct GA APIM URL/key; approved canary before selection/cutover |
 | Speech Voice Live (2nd voice provider) | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | advertised by web env | `speechVoiceLiveEnabled` | Voice Live enabled; `speech_voice_live` in `AI4IA_VOICE_PROVIDER_ALLOWLIST`; distinct `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`; repeat the standing APIM and authenticated-canary checks after changes |
 | Document library + multimodal understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `DOCUMENT_LIBRARY_ENABLED` | `documentUnderstandingEnabled` | Cosmos session store, Blob, CU, Search endpoint and catalog-resolved embedding deployment outside local; preprovision requires `searchEnabled=true` |
 | CU synchronous/preview analyzers | `AI4IA_CU_PREVIEW_ENABLED` | analyzer selector | `cuPreviewEnabled` | Document understanding plus successful postprovision GETs for Read, Layout, and the five tax analyzers on `2026-06-01-preview`. Automatic stays GA. |
@@ -228,6 +229,58 @@ realtime subscription key is absent or malformed.
 Basic v2 capacity 1 has an approximately $150/month base cost before calls and is
 a single-region, single-unit production gateway. It is now the only APIM service in
 the environment — the prior Consumption service has been deleted.
+
+### Staged GA Realtime
+
+**Source-ready is not activation.** The GA adapter and conditional APIM objects
+ship with `realtimeGaEnabled=false` and `realtimeProtocol=preview`. Model catalog
+versions, capacities, deployment counts, the default realtime model and TTS are
+unchanged. All live work below requires separate approval under
+[`deploy-with-an-agent.md`](../deploy-with-an-agent.md).
+
+1. Reconfirm the intended catalog deployment's current offering, entitlement,
+   regional capacity and lifecycle evidence. The existing GA `gpt-realtime`
+   deployment can be the protocol canary target; staging does not require a
+   speculative replacement model. Do not infer a shared or duplicated
+   cross-region quota pool from equal availability counters.
+2. With approval, stage `AI4IA_REALTIME_GA_ENABLED=true` while leaving
+   `AI4IA_REALTIME_PROTOCOL=preview`. Provision and verify the separate
+   `openai-realtime-ga` WebSocket API, generated `onHandshake` policy, scoped
+   subscription and API secret before updating callers. Existing APIM identity
+   and account-scoped role assignments are reused. Check that legacy, model,
+   Speech and MCP credentials cannot authorize the GA API and vice versa.
+3. Use an approved isolated API environment/revision with
+   `AI4IA_REALTIME_PROTOCOL=ga` for a non-sensitive authenticated canary. Confirm
+   `/api/voice/live/config` reports `openaiRealtimeProtocol=ga`, then correlate
+   the run with the relay completion's `protocol=ga` and the GA APIM handshake.
+   The existing voice canary's provider name alone does **not** prove GA coverage:
+   both versions use `azure_openai`, and a browser `?protocol=ga` does not select
+   it. Exercise microphone/audio and transcript output, session/persona linkage,
+   governed tool opt-in and denial, interruption/truncation, close/error cleanup
+   and persisted conversation turns. Repeat the unaffected preview and Speech
+   controls. Offline fixtures and management-plane reads cannot satisfy this step.
+4. Only after approved live evidence and an explicit cutover decision, change
+   the intended callers' server selection to `ga`. Keep the preview API, URL/key
+   and last known-good application image for a bounded rollback window; record
+   owner, canary results, target and rollback conditions.
+
+**Rollback:** set the server selection back to `preview` and deploy the approved
+revision, keeping `realtimeGaEnabled=true` while its resources are retained.
+Selection is fixed when each connection is resolved: do not retry or replay an
+accepted response/tool/audio frame on another protocol. End affected sessions and
+start a new connection rather than silently downgrading an active one. Turning
+off the staging gate, deleting legacy resources, changing model versions or
+reallocating capacity are separate approval decisions, not automatic rollback.
+
+Issue [#413](https://github.com/ian-t-adams/AI4IA/issues/413) remains open until
+approved live protocol canaries, cutover/rollback evidence, the realtime-model
+lifecycle decision and the separately validated GA TTS migration are delivered.
+In particular, the TTS GA version cannot assume spare overlap capacity, and
+contradictory public versus subscription realtime-version observations must not
+be silently reconciled by editing the catalog. Regenerate projections only with
+an approved catalog change. The
+[configuration reference](../configuration-reference.md#staged-ga-realtime-protocol)
+documents the exact wire boundary and prerequisites.
 
 ### Speech Voice Live (second voice provider)
 

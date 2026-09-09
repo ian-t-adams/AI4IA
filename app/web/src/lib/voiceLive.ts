@@ -87,6 +87,8 @@ export interface VoiceLiveProviderCatalogResponse {
   defaultProviderId: VoiceProviderId;
   enabledProviderIds: VoiceProviderId[];
   providers: VoiceProvider[];
+  // Informational server selection, never a browser-selectable routing knob.
+  openaiRealtimeProtocol?: "preview" | "ga";
 }
 
 export interface AuthorizedVoiceProviders {
@@ -512,7 +514,7 @@ const MAX_SEED_CHARS = 6000;
 
 // Builds the conversation.item.create frames that seed a fresh live session with
 // recent text-chat history so voice continues the SAME conversation. These pass
-// through the relay verbatim (it only rewrites session.update). The newest turns
+// through the relay's protocol adapter (GA renames assistant content). The newest turns
 // are kept within the char budget, then emitted oldest-first to preserve order.
 // Seeded items are passive context — they do not trigger a model response (only
 // the user speaking does), so the session opens silently with memory of the chat.

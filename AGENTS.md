@@ -741,6 +741,41 @@ generator must be listed in `NON_BRAND_RASTERS`), colour (≥40% of saturated pi
 near the brand hue), and shape/weight against the portal's declared `og:image`
 dimensions and per-file size ceilings.
 
+## Staged GA Realtime protocol
+
+`AI4IA_REALTIME_GA_ENABLED=false` stages no GA infrastructure; enabling it only
+admits/provisions the separate APIM WebSocket API and scoped key.
+`AI4IA_REALTIME_PROTOCOL=preview` remains the independent server-only selector.
+`ga` requires the staging gate, Voice Live, same-APIM-host HTTPS/WSS
+`AI4IA_REALTIME_GA_BASE_URL` at `/openai/v1` and a distinct
+`AI4IA_REALTIME_GA_GATEWAY_API_KEY`. Keys remain secure module-to-module values
+and Container App secrets. Never expose a direct Foundry URL or broaden another
+API's subscription scope. APIM supplies one immutable `onHandshake` per
+WebSocket API: the second path is a second API, not an HTTP GET operation.
+
+`app/api/src/ai4ia_api/realtime_protocol.py` is the provider adapter, not a second
+browser protocol. It maps nested audio/session configuration, response overrides,
+assistant seed/output content and GA events to the existing application contract.
+The relay still owns model selection, tools and persona, including per-response
+and encoded event-type controls. An unoffered tool is never executable just
+because it exists in the registry. Keep execution-time authorization intact.
+GA temperature is omitted and disclosed as unavailable by the UI without
+discarding the saved preview preference. The safe runtime config field is
+`openaiRealtimeProtocol`; it is informational, never a browser routing knob.
+
+Preserve raw unaffected legacy/Speech frames, cancellation/truncation IDs,
+usage, error classification and cleanup. Do not retry/downgrade or replay a
+possibly accepted response/tool/audio frame. `gen-gateway-policy.py --check`
+covers both generated Realtime policies; `test_realtime_protocol.py`,
+`test_realtime_staged_api.py`, existing voice tests and the shared synthetic
+`app/api/tests/fixtures/realtime_protocol.json` cover both sides of the boundary.
+Run the targeted browser lifecycle/settings tests when changing that boundary.
+
+This is source staging only: no model/version/capacity or TTS change, live success
+claim, default cutover or legacy removal. Follow the approved
+[activation/rollback procedure](docs/runbooks/feature-enablement.md#staged-ga-realtime).
+Issue #413 stays open for its remaining live/model/TTS acceptance criteria.
+
 ## Auth model and `apiFetch` contract
 
 - Production auth is Entra bearer-token validation in the API (`aud`, `iss`,

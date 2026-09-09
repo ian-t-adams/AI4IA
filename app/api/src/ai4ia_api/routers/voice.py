@@ -127,6 +127,7 @@ async def get_live_voice_config(request: Request) -> VoiceLiveRuntimeConfig:
         defaultProviderId=settings.voice_default_provider_id,
         enabledProviderIds=enabled_provider_ids,
         providers=catalog.public_providers(enabled_provider_ids),
+        openaiRealtimeProtocol=settings.realtime_protocol.value,
     )
 
 

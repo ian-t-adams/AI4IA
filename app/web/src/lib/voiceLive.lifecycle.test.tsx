@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import protocolFixtures from "../../../api/tests/fixtures/realtime_protocol.json";
 
 import {
   microphoneConstraints,
@@ -202,6 +203,62 @@ afterEach(() => {
 });
 
 describe("useVoiceLive lifecycle", () => {
+  it("plays normalized GA audio, preserves transcripts, and suppresses barged-in output", async () => {
+    auth.getToken.mockResolvedValue("token");
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
+      },
+    });
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "azure_openai", "gpt-realtime", "eastus2", "alloy", vi.fn()),
+    );
+    act(() => {
+      result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    const context = FakeAudioContext.instances[0];
+    const emit = (event: object) =>
+      socket.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
+    const fixture = (name: string) => {
+      const found = protocolFixtures.server.find((item) => item.name === name);
+      if (!found) throw new Error(`Missing protocol fixture: ${name}`);
+      return found.application;
+    };
+    act(() => {
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onopen?.();
+      emit({ type: "response.created", response: { id: "resp_1" } });
+      emit(fixture("audio-delta"));
+      emit(fixture("transcript-delta"));
+    });
+    expect(context.createBuffer).toHaveBeenCalledTimes(1);
+    expect(result.current.assistantTranscript).toBe("Hello");
+    expect(result.current.turns.find((turn) => turn.role === "assistant")?.text).toBe("Hello");
+
+    act(() => {
+      context.currentTime = PLAYBACK_BUFFER_MS.balanced / 1000 + 0.05;
+      emit({ type: "input_audio_buffer.speech_started", item_id: "user_1" });
+      emit(fixture("audio-delta"));
+      emit(fixture("transcript-delta"));
+      emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "user_1", transcript: "Hi" });
+    });
+    expect(context.bufferSources[0].stop).toHaveBeenCalledTimes(1);
+    expect(context.createBuffer).toHaveBeenCalledTimes(1);
+    expect(result.current.assistantTranscript).toBe("Hello");
+    expect(result.current.turns.find((turn) => turn.role === "user")?.text).toBe("Hi");
+    const sent = socket.send.mock.calls.map(([frame]) => JSON.parse(frame));
+    expect(sent).toContainEqual({
+      type: "conversation.item.truncate", item_id: "item_1", content_index: 0, audio_end_ms: 50,
+    });
+    expect(sent.some((event) => event.type === "response.cancel")).toBe(false);
+    act(() => emit(fixture("response-done")));
+    expect(result.current.speaking).toBe(false);
+    expect(result.current.turns.find((turn) => turn.role === "assistant")?.streaming).toBe(false);
+  });
+
   it("does not request auth, microphone access, or an Azure OpenAI socket while disabled", () => {
     const getUserMedia = vi.fn();
     Object.defineProperty(navigator, "mediaDevices", {

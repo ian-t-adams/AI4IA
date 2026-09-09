@@ -62,6 +62,7 @@ PRIORITY_OUTPUT_PATHS = tuple(
     for fragment_id in PRIORITY_FRAGMENT_IDS
 )
 REALTIME_OUTPUT_PATH = ROOT / "infra" / "policies" / "realtime-routing.xml"
+REALTIME_GA_OUTPUT_PATH = ROOT / "infra" / "policies" / "realtime-ga-routing.xml"
 # Generated from infra/voice-providers.json by gen-voice-provider-catalog.py,
 # then independently validated here with the other gateway policies.
 SPEECH_VOICE_LIVE_POLICY_PATH = ROOT / "infra" / "policies" / "speech-voice-live.xml"
@@ -810,8 +811,10 @@ def generate() -> str:
     return setup_fragment
 
 
-def generate_realtime_policy(models: dict[str, Any]) -> str:
+def generate_realtime_policy(models: dict[str, Any], *, ga: bool = False) -> str:
     naming = models["naming"]
+    target_param = "model" if ga else "deployment"
+    path = "/openai/v1/realtime" if ga else "/openai/realtime"
     routes: list[str] = []
     for model in models["catalog"]:
         if model["category"] != "realtime":
@@ -828,17 +831,36 @@ def generate_realtime_policy(models: dict[str, Any]) -> str:
                 "      <when condition=\"@(&quot;"
                 + html.escape(name, quote=True)
                 + "&quot;.Equals(context.Request.Url.Query.GetValueOrDefault"
-                "(&quot;deployment&quot;, &quot;&quot;), "
+                f"(&quot;{target_param}&quot;, &quot;&quot;), "
                 "StringComparison.OrdinalIgnoreCase))\">\n"
                 "        <set-backend-service base-url=\"{{foundry-"
                 + deployment["region"]
-                + "-realtime-wss-endpoint}}/openai/realtime\" />\n"
-                "      </when>"
+                + f"-realtime-wss-endpoint}}}}{path}\" />\n"
+                + (
+                    "        <set-query-parameter name=\"model\" exists-action=\"override\">\n"
+                    f"          <value>{html.escape(name)}</value>\n"
+                    "        </set-query-parameter>\n"
+                    if ga else ""
+                )
+                + "      </when>"
             )
 
     if not routes:
         raise ValueError("infra/models.json contains no realtime deployments")
 
+    ga_strips = "".join(
+        f'    <{tag} name="{name}" exists-action="delete" />\n'
+        for tag, name in (
+            ("set-header", "OpenAI-Beta"),
+            ("set-header", "api-key"),
+            ("set-header", "x-api-key"),
+            ("set-header", "S7P-KEY"),
+            ("set-query-parameter", "api-version"),
+            ("set-query-parameter", "deployment"),
+            ("set-query-parameter", "api-key"),
+            ("set-query-parameter", "intent"),
+        )
+    ) if ga else ""
     return (
         "<policies>\n"
         "  <inbound>\n"
@@ -858,7 +880,8 @@ def generate_realtime_policy(models: dict[str, Any]) -> str:
         "    <set-header name=\"Ocp-Apim-Subscription-Key\" exists-action=\"delete\" />\n"
         "    <set-query-parameter name=\"subscription-key\" exists-action=\"delete\" />\n"
         "    <set-header name=\"Authorization\" exists-action=\"delete\" />\n"
-        "    <authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" />\n"
+        + ga_strips
+        + "    <authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" />\n"
         "  </inbound>\n"
         "  <backend><base /></backend>\n"
         "  <outbound><base /></outbound>\n"
@@ -867,7 +890,7 @@ def generate_realtime_policy(models: dict[str, Any]) -> str:
     )
 
 
-def validate_realtime_policy(policy: str, source: str) -> None:
+def validate_realtime_policy(policy: str, source: str, *, ga: bool = False) -> None:
     """Reject policies unsupported during an APIM WebSocket onHandshake phase."""
     root = ElementTree.fromstring(policy)
     allowed = {
@@ -880,10 +903,11 @@ def validate_realtime_policy(policy: str, source: str) -> None:
         raise ValueError(f"{source}: unsupported WebSocket handshake policy element(s): {sorted(unsupported)}")
     if root.findall(".//set-body"):
         raise ValueError(f"{source}: set-body is unsupported for WebSocket onHandshake")
+    path = "/openai/v1/realtime" if ga else "/openai/realtime"
     for backend in root.findall(".//set-backend-service"):
         url = backend.attrib.get("base-url", "")
-        if "-realtime-wss-endpoint}}/openai/realtime" not in url:
-            raise ValueError(f"{source}: realtime backend must use the WSS named value and exact /openai/realtime path")
+        if re.fullmatch(r"\{\{foundry-[a-z0-9-]+-realtime-wss-endpoint\}\}" + path, url) is None:
+            raise ValueError(f"{source}: realtime backend must use the WSS named value and exact {path} path")
 
     # Match the existing Speech/Code Interpreter trust boundary: remove the
     # caller's subscription credentials and bearer before establishing MI auth.
@@ -901,6 +925,17 @@ def validate_realtime_policy(policy: str, source: str) -> None:
         ("set-query-parameter", "subscription-key"),
         ("set-header", "Authorization"),
     )
+    if ga:
+        required_strips += (
+            ("set-header", "OpenAI-Beta"),
+            ("set-header", "api-key"),
+            ("set-header", "x-api-key"),
+            ("set-header", "S7P-KEY"),
+            ("set-query-parameter", "api-version"),
+            ("set-query-parameter", "deployment"),
+            ("set-query-parameter", "api-key"),
+            ("set-query-parameter", "intent"),
+        )
     for tag, name in required_strips:
         strips = inbound.findall(f"./{tag}[@name='{name}']")
         if (
@@ -1208,6 +1243,7 @@ def main() -> int:
     generated, catalog_fragments = generate_endpoint_policies()
     priority_generated, priority_fragments = generate_priority_policies()
     realtime_generated = generate_realtime_policy(models)
+    realtime_ga_generated = generate_realtime_policy(models, ga=True)
     fragments = (
         (OUTPUT_PATH, generated),
         *zip(CATALOG_OUTPUT_PATHS, catalog_fragments, strict=True),
@@ -1221,6 +1257,7 @@ def main() -> int:
         ),
         (PRIORITY_OUTPUT_PATH, priority_generated),
         (REALTIME_OUTPUT_PATH, realtime_generated),
+        (REALTIME_GA_OUTPUT_PATH, realtime_ga_generated),
     )
     try:
         for path, policy in fragments:
@@ -1228,6 +1265,9 @@ def main() -> int:
         for path, policy in policies[len(fragments) :]:
             validate_policy_expressions(policy, str(path.relative_to(ROOT)))
         validate_realtime_policy(realtime_generated, str(REALTIME_OUTPUT_PATH.relative_to(ROOT)))
+        validate_realtime_policy(
+            realtime_ga_generated, str(REALTIME_GA_OUTPUT_PATH.relative_to(ROOT)), ga=True
+        )
         speech_voice_live_policy = SPEECH_VOICE_LIVE_POLICY_PATH.read_text(encoding="utf-8")
         validate_policy_expressions(
             speech_voice_live_policy, str(SPEECH_VOICE_LIVE_POLICY_PATH.relative_to(ROOT))
@@ -1260,6 +1300,7 @@ def main() -> int:
             *fragments,
             (PRIORITY_OUTPUT_PATH, priority_generated),
             (REALTIME_OUTPUT_PATH, realtime_generated),
+            (REALTIME_GA_OUTPUT_PATH, realtime_ga_generated),
         )
         stale = any(
             not path.exists() or path.read_text(encoding="utf-8") != content
@@ -1278,6 +1319,7 @@ def main() -> int:
         *fragments,
         (PRIORITY_OUTPUT_PATH, priority_generated),
         (REALTIME_OUTPUT_PATH, realtime_generated),
+        (REALTIME_GA_OUTPUT_PATH, realtime_ga_generated),
     ):
         path.write_text(content, encoding="utf-8", newline="\n")
         print(f"Wrote {path.relative_to(ROOT)}")
