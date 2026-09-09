@@ -245,6 +245,17 @@ architecture, failing with a platform mismatch that never mentions the pin.
 Do not assume Dependabot refreshes the digest — it can suppress a digest-only
 update of an unchanged floating tag. Treat it as a manual audit step.
 
+`python scripts/check-base-image-drift.py --format json` observes the current
+public Docker Hub/MCR tag indexes without editing a pin or pulling image layers.
+Source discovery is shared with `test_base_image_pins.py`; repeated stages are
+deduplicated with their file/line evidence retained. It checks raw-body SHA-256
+against any registry digest header and rejects platform manifests, contradictory
+metadata and incomplete multi-platform coverage. Exit 0 means all pins match,
+1 means observed drift, and 2 means coverage is unknown (even if other rows drift).
+Each observation runs in a 30-second bounded child process; no Docker/Azure
+credentials, new workflow, schedule or registry writes are involved. A drift
+report is not approval to refresh a base or deploy.
+
 ### Docker image builds
 
 `docker-build` builds (never pushes) the `app/web`, `app/api`, and `proxy` images
@@ -401,6 +412,7 @@ python3 -m unittest scripts.tests.test_configuration_reference_reachability  # d
 python3 -m unittest scripts.tests.test_foundry_assets_workflow  # Foundry handoff stays artifact-scoped
 python3 -m unittest scripts.tests.test_dockerignore_context
 python3 -m unittest scripts.tests.test_base_image_pins
+python3 -m unittest scripts.tests.test_base_image_drift
 python3 -m unittest scripts.tests.test_immutable_image_promotion
 ```
 

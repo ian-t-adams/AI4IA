@@ -426,7 +426,7 @@ jobs:
           # dropped, if a multi-stage file desyncs its own stages, if the pinned
           # major stops tracking app-ci's toolchain version, or if a new
           # Dockerfile appears that is neither CI-built nor recorded as exempt.
-          python3 -m unittest scripts.tests.test_base_image_pins
+          python3 -m unittest scripts.tests.test_base_image_pins scripts.tests.test_base_image_drift
 
       - name: Run content-addressed deployment tests
         run: |
