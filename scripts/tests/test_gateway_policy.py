@@ -2193,6 +2193,63 @@ class SubscriptionCredentialPolicyTests(unittest.TestCase):
     HEADER = "Ocp-Apim-Subscription-Key"
     QUERY = "subscription-key"
 
+    def test_mcp_protocol_boundary_is_catalog_owned_not_header_selected(self) -> None:
+        source = (ROOT / "infra/modules/mcpgateway.bicep").read_text(encoding="utf-8")
+        policies = {}
+        for name in ("legacyProtocolPolicy", "statelessProtocolPolicy"):
+            match = re.search(rf"var {name} = '''\n(.*?)\n'''", source, re.DOTALL)
+            self.assertIsNotNone(match)
+            assert match is not None
+            policies[name] = ElementTree.fromstring(match.group(1))
+            self.assertEqual(policies[name].find(".//set-status").get("code"), "400")
+        selection = (
+            "(s.?protocolVersion ?? '2025-06-18') == '2026-07-28' ? [\n"
+            "    statelessProtocolPolicy\n  ] : [\n    legacyProtocolPolicy\n  ]"
+        )
+        self.assertIn(selection, source)
+        self.assertLess(source.index(selection), source.index("s.upstreamAuthMode == 'managed_identity'"))
+        legacy = policies["legacyProtocolPolicy"].find("when").get("condition")
+        self.assertEqual(
+            legacy,
+            '@(context.Request.Headers.Any(h => h.Key.Equals("Mcp-Method", StringComparison.OrdinalIgnoreCase) '
+            '|| h.Key.Equals("Mcp-Name", StringComparison.OrdinalIgnoreCase) '
+            '|| h.Key.StartsWith("Mcp-Param-", StringComparison.OrdinalIgnoreCase)) '
+            '|| (context.Request.Headers.ContainsKey("MCP-Protocol-Version") '
+            '&& context.Request.Headers.GetValueOrDefault("MCP-Protocol-Version", "") != "2025-06-18"))',
+        )
+        modern = policies["statelessProtocolPolicy"].find("when").get("condition")
+        self.assertEqual(
+            modern,
+            '@(context.Request.Headers.GetValueOrDefault("MCP-Protocol-Version", "") != "2026-07-28" '
+            '|| String.IsNullOrEmpty(context.Request.Headers.GetValueOrDefault("Mcp-Method", "")) '
+            '|| context.Request.Headers.ContainsKey("Mcp-Session-Id") '
+            '|| context.Request.Headers.ContainsKey("Last-Event-ID"))',
+        )
+        # Routing and upstream authentication remain independent of every mirror.
+        self.assertIn('<set-backend-service backend-id="${s.name}-backend" />', source)
+        self.assertNotRegex(source, r'<set-backend-service[^>]*context\.Request')
+        self.assertNotRegex(source, r'<authentication-managed-identity[^>]*context\.Request')
+        self.assertNotIn("context.Response.Body", source.split("var legacyProtocolPolicy", 1)[1].split("// Per-server", 1)[0])
+
+    def test_mcp_legacy_boundary_covers_case_insensitive_mirrors_with_plain_controls(self) -> None:
+        source = (ROOT / "infra/modules/mcpgateway.bicep").read_text(encoding="utf-8")
+        match = re.search(r"var legacyProtocolPolicy = '''\n(.*?)\n'''", source, re.DOTALL)
+        assert match is not None
+        condition = ElementTree.fromstring(match.group(1)).find("when").get("condition")
+        names = re.findall(r'h.Key.Equals\("([^"]+)", StringComparison.OrdinalIgnoreCase\)', condition)
+        prefixes = re.findall(r'h.Key.StartsWith\("([^"]+)", StringComparison.OrdinalIgnoreCase\)', condition)
+        self.assertEqual(set(names), {"Mcp-Method", "Mcp-Name"})
+        self.assertEqual(prefixes, ["Mcp-Param-"])
+        # Project only the literal mirror-name guard, not an APIM/C# emulator.
+        def is_mirror(header):
+            return header.lower() in {name.lower() for name in names} or any(
+                header.lower().startswith(prefix.lower()) for prefix in prefixes
+            )
+        for header in ("Mcp-Method", "mCP-nAME", "MCP-PARAM-Region"):
+            self.assertTrue(is_mirror(header))
+        for header in ("MCP-Protocol-Version", "Mcp-Session-Id", "Foundry-Features", self.HEADER):
+            self.assertFalse(is_mirror(header))
+
     def _model_parts(self):
         source = ElementTree.parse(gateway_generator.PRIORITY_POLICY_PATH).getroot()
         wrapper, fragments = gateway_generator.generate_priority_policies()

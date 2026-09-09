@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Collection, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol
@@ -53,9 +54,11 @@ from . import mcp_observability as obs
 from .approvals import ApprovalPolicy, ApprovalSink
 from .consent import ConsentChecker, ConsentRejected, contract_hash, tool_contract_hash
 from .mcp_client import McpAuth, McpConnector
+from .mcp_protocol import McpRequestContext
 from .mcp_health import is_quarantined, quarantine_reason
 from .mcp_servers import (
     DiscoveredTool,
+    McpAuthMode,
     UserMcpServer,
     discovered_tool_to_spec,
     is_mcp_tool_name,
@@ -142,6 +145,7 @@ def mcp_contract_metadata(server: UserMcpServer, tool: DiscoveredTool) -> dict:
     return {
         "server": server.name, "owner": server.userId, "endpoint": server.endpoint,
         "host": server.host, "transport": server.transport.value,
+        "protocolVersion": server.protocolVersion.value,
         "authMode": server.authMode.value, "revision": server.configurationRevision,
         "credentialRefHash": contract_hash(server.secretRef),
         "rawName": tool.raw_name, "trusted": server.trusted, "enabled": server.enabled,
@@ -188,27 +192,33 @@ def _make_handler(
     telemetry line.
     """
     endpoint = server.endpoint
+    tool_name = tool.name
+    description = tool.description
     raw_tool_name = tool.raw_name
+    request_context = McpRequestContext.for_server(server)
+    input_schema = deepcopy(tool.inputSchema)
     metadata = mcp_contract_metadata(server, tool)
     spec = replace(discovered_tool_to_spec(server, tool), name=alias)
     implemented_contract = tool_contract_hash(
         spec, tool.inputSchema or dict(_EMPTY_OBJECT_SCHEMA), metadata=metadata
     )
 
+    async def assert_current_contract() -> None:
+        current = await current_server(server.name) if current_server is not None else server
+        live_tool = next(
+            (item for item in current.discoveredTools if item.name == tool_name), None
+        ) if current is not None else None
+        if (
+            current is None or not current.enabled or is_quarantined(current)
+            or live_tool is None
+            or contract_hash(mcp_contract_metadata(current, live_tool)) != contract_hash(metadata)
+            or live_tool.inputSchema != input_schema
+            or live_tool.description != description
+        ):
+            raise ToolExecutionError("MCP configuration changed; refresh and renew approval.")
+
     async def handler(args: dict, ctx: ToolContext) -> dict:
-        if current_server is not None:
-            current = await current_server(server.name)
-            live_tool = next(
-                (item for item in current.discoveredTools if item.name == tool.name), None
-            ) if current is not None else None
-            if (
-                current is None or not current.enabled or is_quarantined(current)
-                or live_tool is None
-                or contract_hash(mcp_contract_metadata(current, live_tool)) != contract_hash(metadata)
-                or live_tool.inputSchema != tool.inputSchema
-                or live_tool.description != tool.description
-            ):
-                raise ToolExecutionError("MCP configuration changed; refresh and renew approval.")
+        await assert_current_contract()
         if budget["used"] >= max_calls:
             raise ToolExecutionError("MCP tool-call budget exhausted for this turn.")
         budget["used"] += 1
@@ -226,16 +236,21 @@ def _make_handler(
                 ) from exc
 
             secret = await secrets.secret_for(server)
+            if server.authMode is not McpAuthMode.none and not (secret and secret.strip()):
+                raise ToolExecutionError("MCP connection credential is unavailable.")
             auth = McpAuth(mode=server.authMode, secret=secret)
             if ctx.consent_checker is not None:
                 decision = await ctx.consent_checker(alias, implemented_contract)
                 if decision.reason is not None and decision.reason != "consent_not_granted":
                     raise ConsentRejected(decision.reason)
+            await assert_current_contract()
             result = await connector.call_tool(
                 endpoint=endpoint,
                 auth=auth,
                 tool=raw_tool_name,
                 arguments=args or {},
+                context=request_context,
+                input_schema=input_schema,
             )
         except ConsentRejected:
             raise
@@ -381,7 +396,7 @@ def _build_mcp_tool_bindings(
             seen_aliases.add(alias)
             definition = ToolDefinition(
                 spec=replace(discovered_tool_to_spec(server, tool), name=alias),
-                parameters=tool.inputSchema or dict(_EMPTY_OBJECT_SCHEMA),
+                parameters=deepcopy(tool.inputSchema) or dict(_EMPTY_OBJECT_SCHEMA),
                 handler=_make_handler(
                     server,
                     tool,

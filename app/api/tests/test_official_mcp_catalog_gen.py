@@ -81,6 +81,7 @@ def test_generator_projects_toolbox_to_runtime_shape_and_drops_infra_fields():
             "description": "Curated Foundry Agent Service toolbox via APIM.",
             "path": "foundry-toolbox/mcp",
             "resourcesEnabled": False,
+            "protocolVersion": "2025-06-18",
         }
     ]
     [item] = out["servers"]
@@ -105,6 +106,7 @@ def test_generator_accepts_portable_foundry_toolbox_without_upstream_url():
             "description": "AI4IA shared Foundry toolbox via APIM.",
             "path": "ai4ia-toolbox/mcp",
             "resourcesEnabled": True,
+            "protocolVersion": "2025-06-18",
         }
     ]
     [item] = out["servers"]
@@ -136,3 +138,41 @@ def test_schema_accepts_toolbox_entry_and_rejects_unknown_fields():
     jsonschema.validate({"servers": [_TOOLBOX_ENTRY]}, schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({"servers": [{**_TOOLBOX_ENTRY, "bogus": 1}]}, schema)
+
+
+@pytest.mark.parametrize("protocol", ["2025-06-18", "2026-07-28"])
+def test_generator_and_dev_projection_preserve_explicit_protocol(protocol):
+    from ai4ia_api.official_mcp_catalog import OfficialMcpCatalog, _project_infra_catalog
+
+    raw = {"servers": [{**_TOOLBOX_ENTRY, "protocolVersion": protocol}]}
+    generated = _build_catalog()(raw)
+    assert generated["servers"] == _project_infra_catalog(raw)["servers"]
+    assert OfficialMcpCatalog(**generated).servers[0].protocolVersion.value == protocol
+
+
+@pytest.mark.parametrize("protocol", ["auto", "2025-11-25", "2099-01-01"])
+def test_schema_and_generator_reject_unimplemented_protocol(protocol):
+    import jsonschema
+
+    raw = {"servers": [{**_TOOLBOX_ENTRY, "protocolVersion": protocol}]}
+    with pytest.raises(SystemExit, match="protocolVersion"):
+        _build_catalog()(raw)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(raw, json.loads(_SCHEMA.read_text(encoding="utf-8")))
+
+
+@pytest.mark.parametrize("header", [
+    "Mcp-Method", "mcp-name", "MCP-PROTOCOL-VERSION", "Mcp-Param-Region",
+    "mCp-SeSsIoN-Id", "last-event-ID",
+])
+def test_static_provider_headers_cannot_overwrite_body_derived_protocol_headers(header):
+    import jsonschema
+
+    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    jsonschema.validate({"servers": [_TOOLBOX_ENTRY]}, schema)
+    assert _build_catalog()({"servers": [_TOOLBOX_ENTRY]})["servers"]
+    raw = {"servers": [{**_TOOLBOX_ENTRY, "upstreamHeaders": {header: "spoofed"}}]}
+    with pytest.raises(SystemExit, match="override MCP"):
+        _build_catalog()(raw)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(raw, schema)

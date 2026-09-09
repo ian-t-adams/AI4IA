@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from ai4ia_api.agents.mcp_client import FakeMcpConnector, McpAuth, McpToolResult
+from ai4ia_api.agents.mcp_protocol import McpRequestContext
 from ai4ia_api.agents.mcp_execution import McpPlane, build_mcp_turn_tools_multi
 from ai4ia_api.agents.mcp_servers import (
     DiscoveredResource,
@@ -89,21 +90,22 @@ class _Secrets:
         return self._by_name.get(server.name)
 
 
-class _FlakyConnector:
+class _FlakyConnector(FakeMcpConnector):
     """Connector whose ``discover`` replays a script: an Exception raises, a list returns."""
 
     def __init__(self, script: list) -> None:
+        super().__init__()
         self._script = list(script)
         self.attempts = 0
 
-    async def discover(self, *, endpoint: str, auth: McpAuth) -> list[DiscoveredTool]:
+    async def discover(self, *, endpoint: str, auth: McpAuth, context=None) -> list[DiscoveredTool]:
         self.attempts += 1
         step = self._script.pop(0)
         if isinstance(step, Exception):
             raise step
         return list(step)
 
-    async def call_tool(self, *, endpoint, auth, tool, arguments):  # pragma: no cover
+    async def call_tool(self, **kwargs):  # pragma: no cover
         raise AssertionError("call_tool is not exercised by discovery tests")
 
 
@@ -112,7 +114,7 @@ class _FlakyResourceConnector(FakeMcpConnector):
         super().__init__(tools=[_tool("search")])
         self.resource_attempts = 0
 
-    async def list_resources(self, *, endpoint, auth):
+    async def list_resources(self, *, endpoint, auth, context=None):
         self.resource_attempts += 1
         if self.resource_attempts == 1:
             raise RuntimeError("resource list unavailable")
@@ -237,6 +239,19 @@ def test_build_official_servers_displayname_falls_back_to_id():
 
 def test_build_official_servers_empty_catalog():
     assert build_official_servers(OfficialMcpCatalog(), gateway_url="https://g") == []
+
+
+def test_official_config_identity_is_stable_across_replicas_and_discovery():
+    cat = _catalog({"id": "github", "displayName": "GitHub", "path": "github/mcp"})
+    [first] = build_official_servers(cat, gateway_url="https://g.example.net")
+    [replica] = build_official_servers(cat, gateway_url="https://g.example.net")
+    assert first.configurationRevision == replica.configurationRevision
+    assert McpRequestContext.for_server(first) == McpRequestContext.for_server(replica)
+    first.discoveredTools = [_tool("newly-discovered")]
+    first.lastConnectedAt = datetime.now(timezone.utc)
+    assert McpRequestContext.for_server(first) == McpRequestContext.for_server(replica)
+    [changed] = build_official_servers(cat, gateway_url="https://other.example.net")
+    assert changed.configurationRevision != first.configurationRevision
 
 
 # --- OfficialMcpService: discovery, caching, retry, key ----------------------
