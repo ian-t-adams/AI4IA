@@ -301,7 +301,8 @@ jobs:
           # bucket (Durable Task did exactly that).
           python3 -m unittest \
             scripts.tests.test_pages_status_refresh \
-            scripts.tests.test_status_snapshot_labels
+            scripts.tests.test_status_snapshot_labels \
+            scripts.tests.test_status_endpoints
 
       - name: Run post-deploy verification tests
         run: |
