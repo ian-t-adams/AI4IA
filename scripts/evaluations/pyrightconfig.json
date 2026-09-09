@@ -1,0 +1,7 @@
+{
+  "include": ["."],
+  "extraPaths": ["../..", "../../app/api/src"],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": false
+}

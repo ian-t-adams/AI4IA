@@ -90,6 +90,20 @@ is preserved rather than overwritten by the recovery snapshot.
 - Correlation ids may cross API, SimpleL7Proxy, APIM, and Foundry; they are not
   credentials.
 
+## Behavioral evaluations are not production telemetry
+
+The [offline behavioral evaluator](../behavioral-evaluations.md) exercises real
+application seams with synthetic HTTP/provider fixtures. It exports no spans or
+production traces. Its local/CI report contains version identifiers, check
+outcomes and synthetic counters only, not receipt payloads or identities.
+Fixture latency and token prices are not measured live model quality or billing.
+
+GenAI semantic-convention instrumentation, a paid judge, scheduled live evaluation,
+and production-content evaluation remain separate decisions. No `AppGenAIContent`
+routing, RBAC, retention or consent policy is established by running the offline
+suite. Keep the current telemetry dependency compatibility pair and no-content
+export contract intact.
+
 ## Diagnosing unavailable panels
 
 1. Confirm the feature or resource-metrics flag is enabled.

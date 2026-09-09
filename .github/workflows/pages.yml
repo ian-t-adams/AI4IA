@@ -40,11 +40,8 @@ on:
     # Twice daily: regenerate the timestamped status snapshot and republish.
     - cron: "0 6,18 * * *"
 
-# id-token: write covers BOTH the Azure OIDC login (status refresh) and Pages OIDC deploy.
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+# Azure status refresh and Pages publication use separate, explicit job grants.
+permissions: {}
 
 # Never run two Pages publishes at once; let an in-flight one finish.
 concurrency:
@@ -55,6 +52,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # Azure login keeps the main-branch subject (no environment).
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,9 +132,6 @@ jobs:
             }
           }
 
-      - name: Configure Pages
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
@@ -144,10 +141,20 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # This action reads Pages metadata even without a generator. Keep that API
+      # call under the deploy job's Pages grant; the static build uses no outputs.
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+        with:
+          enablement: false
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
