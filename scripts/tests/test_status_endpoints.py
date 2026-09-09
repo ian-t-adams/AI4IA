@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -240,6 +241,52 @@ class StatusEndpointTests(unittest.TestCase):
             self.assertNotIn("cookie", normalized)
             self.assertEqual(normalized["accept"], "application/json")
             self.assertEqual(normalized["cache-control"], "no-cache")
+
+    def test_total_deadline_also_bounds_a_body_that_stalls_after_headers(self) -> None:
+        release = threading.Event()
+        received = threading.Event()
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "32")
+                self.end_headers()
+                self.wfile.flush()
+                received.set()
+                release.wait(timeout=35)
+
+            def log_message(self, *_args):
+                pass
+
+        with HTTPServer(("127.0.0.1", 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            started = time.monotonic()
+            try:
+                port = server.server_address[1]
+                result = self.run_ps(f"""
+                    $script:realTransport = ${{function:Invoke-ApiHealthRequest}}
+                    function Invoke-ApiHealthRequest {{
+                        param([string] $Url)
+                        & $script:realTransport -Url 'http://127.0.0.1:{port}/stall'
+                    }}
+                    Test-ApiHealthEndpoint -Kind readiness -Target @{{
+                        url = 'https://api.example.test'; outcome = ''; note = ''
+                    }} | ConvertTo-Json
+                """)
+            finally:
+                release.set()
+                server.shutdown()
+                thread.join(timeout=5)
+        elapsed = time.monotonic() - started
+        self.assertTrue(received.is_set())
+        self.assertEqual(result["outcome"], "network_unavailable")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"], "unknown")
+        self.assertGreaterEqual(result["latencyMs"], 18_000)
+        self.assertLess(result["latencyMs"], 30_000)
+        self.assertLess(elapsed, 35)
 
 
 if __name__ == "__main__":
