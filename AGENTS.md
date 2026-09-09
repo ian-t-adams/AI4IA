@@ -380,6 +380,7 @@ python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app boot
 python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deploy.yml's real block with `az` stubbed
 python3 -m unittest scripts.tests.test_pages_status_refresh     # status refresh targets live RG/URLs and fails closed
 python3 -m unittest scripts.tests.test_status_snapshot_labels   # live services have portal labels/cards
+python3 -m unittest scripts.tests.test_status_endpoints         # bounded anonymous API health probes
 python3 -m unittest scripts.tests.test_portal_contrast          # WCAG gate for site/assets/styles.css
 python3 -m unittest scripts.tests.test_brand_assets             # committed logos: coverage, palette, size
 python3 -m unittest scripts.tests.test_dependabot_config
@@ -426,6 +427,14 @@ evidence-backed `Microsoft.ResourceHealth` operational dependency used by the
 status snapshot. The snapshot must publish provider/query failure as a source
 outage; it must never flatten that failure into zero healthy resources or a
 per-resource "no signal" result.
+
+The status snapshot discovers direct API health targets from `AZURE_API_URL` or
+exactly one public inventory row tagged `azd-service-name=api`. Keep anonymous
+`/health/live` and `/health/ready` observations distinct from ingress reachability
+and authenticated/model-path canaries. Auth challenges, redirects and malformed
+JSON cannot pass API health; unresolved targets and historical missing coverage
+remain unknown. API probes are bounded to 20 seconds and 4 KiB with no redirects,
+cookies or default credentials. Never publish response bodies or exception text.
 
 `security-scan` runs Trivy filesystem/config scans and gitleaks over the full
 proxy tree. `.trivyignore.yaml` suppresses only the untouched upstream Dockerfile

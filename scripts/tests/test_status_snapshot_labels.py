@@ -9,9 +9,9 @@ import textwrap
 import unittest
 from pathlib import Path
 
-
 REPO = Path(__file__).resolve().parents[2]
 SNAPSHOT = REPO / "scripts" / "status-snapshot.ps1"
+ENDPOINTS = REPO / "scripts" / "status-endpoints.ps1"
 SERVICES = REPO / "site" / "data" / "services.js"
 
 
@@ -69,6 +69,16 @@ class StatusSnapshotLabelTests(unittest.TestCase):
             ),
         }
         inventory_json = payloads.get(mode, payloads["valid"])
+        if mode.startswith("api-"):
+            inventory = json.loads(inventory_json)
+            inventory["data"].append({
+                "id": resource_id.replace("Microsoft.Storage/storageAccounts/sttest",
+                                          "Microsoft.App/containerApps/arbitrary-name"),
+                "name": "arbitrary-name", "type": "microsoft.app/containerapps",
+                "location": "eastus", "prov": "Succeeded", "service": "api",
+                "ingressFqdn": "api.example.test", "ingressExternal": "true",
+            })
+            inventory_json = json.dumps(inventory)
         health_json = json.dumps(
             {
                 "data": (
@@ -85,6 +95,33 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                 )
             }
         )
+        fixture_dir = out_dir / "fixture"
+        fixture_dir.mkdir()
+        fixture_script = fixture_dir / SNAPSHOT.name
+        shutil.copyfile(SNAPSHOT, fixture_script)
+        # Keep the entry point and classification code intact; replace only HTTP.
+        (fixture_dir / ENDPOINTS.name).write_text(
+            ENDPOINTS.read_text(encoding="utf-8") + """
+            function Invoke-ApiHealthRequest {
+                param([string] $Url)
+                $global:healthUrls += $Url
+                $ready = $Url.EndsWith('/health/ready')
+                $failed = $ready -and $mode -eq 'api-store-unavailable'
+                $body = if ($failed) {
+                    '{"status":"unavailable","stage":"session_store"}'
+                } elseif ($ready) {
+                    '{"status":"ok","stage":"session_store"}'
+                } else {
+                    '{"status":"ok"}'
+                }
+                return @{
+                    httpStatus = $(if ($failed) { 503 } else { 200 })
+                    body = $body; contentType = 'application/json'; bodyValid = $true
+                }
+            }
+            """,
+            encoding="utf-8",
+        )
         wrapper = textwrap.dedent(
             f"""
             $mode = {_ps_quote(mode)}
@@ -96,6 +133,8 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                 'Registered'
             }}
             $global:graphQueries = @()
+            $global:healthUrls = @()
+            function global:azd {{ $global:LASTEXITCODE = 1 }}
             function global:az {{
                 $joined = $args -join ' '
                 if ($joined -like 'account set*') {{
@@ -130,10 +169,12 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                 }}
                 throw "Unexpected az invocation: $joined"
             }}
-            & {_ps_quote(str(SNAPSHOT))} `
+            & {_ps_quote(str(fixture_script))} `
                 -Subscription 'sub-test' `
                 -ResourceGroup 'rg-test' `
                 -OutDir {_ps_quote(str(out_dir))}
+            ConvertTo-Json -InputObject @($global:healthUrls) |
+                Set-Content {_ps_quote(str(out_dir / "probes.json"))}
             if ($mode -eq 'valid') {{
                 if ($global:graphQueries.Count -ne 2) {{
                     throw "Expected inventory and health queries, got $($global:graphQueries.Count)."
@@ -264,6 +305,48 @@ class StatusSnapshotLabelTests(unittest.TestCase):
             self.assertEqual(inventory["resources"][0]["state"], "degraded")
             self.assertEqual(status["summary"]["degraded"], 1)
             self.assertEqual(status["summary"]["provisioned"], 0)
+
+    def test_tagged_api_health_is_published_without_inventory_metadata_or_response_content(self) -> None:
+        for mode, passing, outcome in (
+            ("api-healthy", 2, "healthy"),
+            ("api-store-unavailable", 1, "persistence_unavailable"),
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                out_dir = Path(tmp)
+                result = self._run_snapshot(mode, out_dir)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                status = _load_assignment(out_dir / "status.js", "AI4IA_STATUS")
+                inventory = _load_assignment(out_dir / "inventory.js", "AI4IA_INVENTORY")
+                self.assertEqual(status["summary"]["endpointsTot"], 4)
+                self.assertEqual(status["summary"]["endpointsUp"], passing)
+                self.assertEqual(status["endpoints"][2]["kind"], "liveness")
+                self.assertTrue(status["endpoints"][2]["ok"])
+                self.assertEqual(status["endpoints"][3]["kind"], "readiness")
+                self.assertEqual(status["endpoints"][3]["outcome"], outcome)
+                self.assertIsNotNone(status["endpoints"][3]["observedAt"])
+                self.assertEqual(
+                    json.loads((out_dir / "probes.json").read_text(encoding="utf-8-sig")),
+                    ["https://api.example.test/health/live", "https://api.example.test/health/ready"],
+                )
+                self.assertNotIn("ingressFqdn", json.dumps(inventory))
+                self.assertNotIn("ingressExternal", json.dumps(inventory))
+                self.assertNotIn("body", json.dumps(status))
+
+    def test_unresolved_api_is_unobserved_not_omitted_or_reported_healthy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            result = self._run_snapshot("valid", out_dir)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            status = _load_assignment(out_dir / "status.js", "AI4IA_STATUS")
+            self.assertEqual(status["summary"]["endpointsTot"], 4)
+            self.assertEqual(status["summary"]["endpointsUp"], 0)
+            for endpoint in status["endpoints"][2:]:
+                self.assertFalse(endpoint["ok"])
+                self.assertEqual(endpoint["outcome"], "target_unresolved")
+                self.assertIsNone(endpoint["observedAt"])
+            self.assertEqual(
+                json.loads((out_dir / "probes.json").read_text(encoding="utf-8-sig")), [],
+            )
 
 
 class StatusSnapshotCatalogTests(unittest.TestCase):
