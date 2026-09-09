@@ -81,6 +81,13 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    before the provider await through the shared pricing helper. Missing usage or
    prices remain unknown, and receipt reads never reprice history. New evidence
    must still fit the 32 KiB receipt budget under escaped durable serialization.
+8. **Hard admission is a separate, default-off source contract.** Do not turn
+   soft ledger checks into a distributed quota or bootstrap an empty hard
+   balance for an existing owner. Metered egress goes through the shared owner
+   admission seam; unknown/unpriced capped paths refuse. Dispatched/unknown
+   reservations never expire into free capacity. Deployed activation remains
+   blocked pending the boundaries in `docs/hard-quota-admission.md`; neither an
+   acknowledgement flag nor a local fake proves a Cosmos cutover or bill cap.
 
 ## CI build / test / lint commands
 

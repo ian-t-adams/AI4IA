@@ -126,6 +126,18 @@ class EntitlementService:
                 return entry.value
             return self._default
 
+    async def get_for_admission(self, user_id: str) -> Entitlement:
+        """Hard mode never inherits soft policy-read fallbacks or cached caps."""
+        # Preserve the established known-disabled fallback even during an outage.
+        effective = await self.get_effective(user_id)
+        if effective.disabled:
+            return effective
+        override = await self._store.get_strict(user_id)
+        if override is not None and (override.id != user_id or override.userId != user_id):
+            raise RuntimeError("Invalid entitlement owner.")
+        self._cache_put(user_id, override)
+        return override or self._default
+
     # ---- admin mutation (write-through cache) ----
 
     async def set(self, user_id: str, limits: EntitlementLimits, *, updated_by: str | None) -> Entitlement:
@@ -165,14 +177,8 @@ class EntitlementService:
         and is what the Code Interpreter capabilities call before each sandbox
         execution.
         """
-        if not self._enabled:
-            return EntitlementDecision.allow()
-
         ent = await self.get_effective(user_id)
 
-        # Unlimited fast path: the common case does no ledger IO.
-        if ent.is_unlimited:
-            return EntitlementDecision.allow()
         if ent.disabled:
             return EntitlementDecision(
                 allowed=False,
@@ -180,6 +186,11 @@ class EntitlementService:
                 reason="This account is not permitted to send chat messages.",
                 limit_kind="disabled",
             )
+
+        # Turning numeric soft enforcement off does not enable a disabled user.
+        # Unlimited remains the same zero-ledger-IO path.
+        if not self._enabled or ent.is_unlimited:
+            return EntitlementDecision.allow()
 
         try:
             return await self._check_budgets(user_id, ent, scope)

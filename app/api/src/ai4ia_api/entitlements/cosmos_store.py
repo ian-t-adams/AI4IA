@@ -40,6 +40,20 @@ class CosmosEntitlementStore:
     async def put(self, entitlement: Entitlement) -> None:
         await self._container.upsert_item(entitlement.model_dump(mode="json"))
 
+    async def get_strict(self, user_id: str) -> Entitlement | None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        try:
+            doc = await self._container.read_item(item=user_id, partition_key=user_id)
+        except CosmosResourceNotFoundError:
+            # A missing item may use the default; a missing container may not.
+            await self._container.read()
+            return None
+        ent = Entitlement.model_validate(doc)
+        if ent.id != user_id or ent.userId != user_id:
+            raise RuntimeError("Invalid entitlement owner.")
+        return ent
+
     async def delete(self, user_id: str) -> None:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 

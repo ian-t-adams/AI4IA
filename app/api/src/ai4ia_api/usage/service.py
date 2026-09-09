@@ -100,6 +100,9 @@ class UsageService:
         image_size: str | None = None,
         image_quality: str | None = None,
     ) -> UsageRecord:
+        from ..hard_quota.dispatch import current_admission_evidence
+
+        admissions, admission_count = current_admission_evidence(user_id)
         descriptor = self._normalize_target(target, deployment)
         completed = status == "complete" if provider_completed is None else provider_completed
         unit_billable = (
@@ -134,6 +137,7 @@ class UsageService:
             imageSize=image_size,
             imageQuality=image_quality,
             correlationId=correlation_id,
+            hardQuota=admissions, hardQuotaCount=admission_count,
         )
         if unit_count is not None and billing_unit == "image":
             operation_est = self._pricing.estimate_image(

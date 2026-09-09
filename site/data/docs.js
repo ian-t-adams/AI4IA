@@ -19,6 +19,7 @@ window.AI4IA_DOCS = {
       group: "Reference",
       docs: [
         { path: "docs/configuration-reference.md", title: "Configuration reference", desc: "Every feature/env/parameter mapping across bicep, params, workflow vars and app env." },
+        { path: "docs/hard-quota-admission.md", title: "Hard admission source contract", desc: "Default-off atomic reservations, metered dispatch coverage, conservative unknown holds, Cosmos isolation, and the blocked activation boundary." },
         { path: "docs/region-capability-matrix.md", title: "Region & capability map", desc: "Resource location versus inference residency, region strategy, shared quota pools, model capabilities and lifecycle discipline." },
         { path: "docs/naming-and-tagging.md", title: "Naming & tagging", desc: "Resource naming tokens and the tag scheme applied across the deployment." },
         { path: "docs/foundry-toolbox.md", title: "Foundry toolbox", desc: "The official MCP plane: toolbox tools, progressively disclosed Foundry skills, A2A, and the private tool catalog." },

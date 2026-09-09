@@ -27,6 +27,8 @@ client's ``session.update``. It never drives the turn-by-turn conversation shape
 """
 from __future__ import annotations
 
+from ..hard_quota.dispatch import admitted_dispatch, clear_admission_owner, set_admission_owner
+
 import base64
 import binascii
 import json
@@ -1798,6 +1800,7 @@ async def _finalize_relay(
 
 @router.websocket("/api/voice/live")
 async def voice_live(websocket: WebSocket) -> None:
+    clear_admission_owner()
     state = websocket.app.state
     settings: Settings = state.settings
 
@@ -1827,6 +1830,10 @@ async def voice_live(websocket: WebSocket) -> None:
     except AuthError:
         await _deny(websocket, WS_POLICY_VIOLATION, security_reason="auth_invalid")
         return
+
+    admission = getattr(state, "hard_quota", None)
+    if admission is not None:
+        set_admission_owner(admission, user.internal_user_id)
 
     session = None
     session_id = (websocket.query_params.get("session") or "").strip()
@@ -1902,16 +1909,20 @@ async def voice_live(websocket: WebSocket) -> None:
         return bridge.rewrite_client_frame(safe_frame)
 
     async def run_relay() -> RelayOutcome:
-        async with connector.connect(
-            url=url, headers=headers, timeout=settings.realtime_timeout_seconds
-        ) as upstream:
-            return await relay(
-                websocket,
-                upstream,
-                max_seconds=settings.realtime_max_session_seconds,
-                bridge=bridge,
-                rewrite_client_frame=rewrite_client_frame,
-            )
+        async with admitted_dispatch(
+            "realtime", {"operation": "session_open", "endpoint": url},
+            required=settings.hard_quota_enabled,
+        ) as quota:
+            async with connector.connect(
+                url=url, headers=headers, timeout=settings.realtime_timeout_seconds
+            ) as upstream:
+                outcome = await relay(
+                    websocket, upstream, max_seconds=settings.realtime_max_session_seconds,
+                    bridge=bridge, rewrite_client_frame=rewrite_client_frame,
+                )
+                if outcome.status == "complete":
+                    quota.report()
+                return outcome
 
     async def finalize_relay(outcome: RelayOutcome) -> None:
         await _finalize_relay(

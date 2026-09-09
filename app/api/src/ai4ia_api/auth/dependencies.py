@@ -6,6 +6,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..logging_setup import emit_security_block
 from ..gateway.priority import resolve_priority, set_request_priority
+from ..hard_quota.dispatch import clear_admission_owner, set_admission_owner
 from .base import AuthCredentials, AuthError, AuthenticatedUser
 
 # auto_error=False so dev auth (header-based) works without an Authorization header.
@@ -16,6 +17,7 @@ async def get_current_user(
     request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> AuthenticatedUser:
+    clear_admission_owner()
     provider = request.app.state.auth_provider
     credentials = AuthCredentials(
         token=creds.credentials if creds else None,
@@ -30,6 +32,9 @@ async def get_current_user(
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+    admission = getattr(request.app.state, "hard_quota", None)
+    if admission is not None:
+        set_admission_owner(admission, user.internal_user_id)
     # Best-effort: capture the token's display name/email into the admin-only
     # user directory so the hashed userId can be resolved to a name later. Guarded
     # (the service may be absent in tests), deduped + non-blocking inside capture(),

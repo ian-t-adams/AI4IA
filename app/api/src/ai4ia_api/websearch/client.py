@@ -13,6 +13,8 @@ capability bounds, redacts and nonce-fences them before returning to the model.
 """
 from __future__ import annotations
 
+from ..hard_quota.dispatch import admitted_dispatch
+
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -176,28 +178,34 @@ class WebSearchClient:
             self._validate_sdk_payload(name, payload)
         except (ValueError, TypeError, KeyError) as exc:
             raise WebSearchError(ERROR_BAD_REQUEST, "Invalid WebIQ request.") from exc
-        try:
-            if self._client is not None:
-                resource = {
-                    "web_search": "web", "news_search": "news", "video_search": "videos",
-                    "image_search": "images", "browse_url": "browse", "classic_search": "classic",
-                    "finance_search": "finance", "places_search": "places", "sports_search": "sports",
-                    "sonic_search": "sonic", "web_autosuggest": "autosuggest",
-                }[name]
-                argument = arguments.pop("url" if name == "browse_url" else "query")
-                if name in STRICT_SEARCH_TOOLS:
-                    arguments["safe_search"] = "strict"
-                method = "fetch" if name == "browse_url" else "search"
-                response = await getattr(getattr(self._client, resource), method)(argument, **arguments)
-                data = self._plain(response)
-            else:
-                data = await self._ensure_transport().request(
-                    method="POST", path=TOOL_PATHS[name], json=payload,
-                )
-        except WebSearchError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - normalize transport and credential failures
-            raise self._map_error(exc) from exc
+        async with admitted_dispatch(
+            "web_search", {"tool": name, "body": payload},
+            target=self._settings.webiq_base_url or "https://api.microsoft.ai/v3",
+            required=self._settings.hard_quota_enabled,
+        ) as admission:
+            try:
+                if self._client is not None:
+                    resource = {
+                        "web_search": "web", "news_search": "news", "video_search": "videos",
+                        "image_search": "images", "browse_url": "browse", "classic_search": "classic",
+                        "finance_search": "finance", "places_search": "places", "sports_search": "sports",
+                        "sonic_search": "sonic", "web_autosuggest": "autosuggest",
+                    }[name]
+                    argument = arguments.pop("url" if name == "browse_url" else "query")
+                    if name in STRICT_SEARCH_TOOLS:
+                        arguments["safe_search"] = "strict"
+                    method = "fetch" if name == "browse_url" else "search"
+                    response = await getattr(getattr(self._client, resource), method)(argument, **arguments)
+                    data = self._plain(response)
+                else:
+                    data = await self._ensure_transport().request(
+                        method="POST", path=TOOL_PATHS[name], json=admission.payload["body"],
+                    )
+            except WebSearchError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - normalize transport and credential failures
+                raise self._map_error(exc) from exc
+            admission.report()
         if data is None:
             return {}
         if isinstance(data, list):

@@ -19,6 +19,8 @@ a remote tool through the exact same registry/redaction machinery as the built-i
 """
 from __future__ import annotations
 
+from ..hard_quota.dispatch import admitted_dispatch
+
 import json
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -173,11 +175,13 @@ class HttpxMcpConnector:
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         max_bytes: int = _DEFAULT_MAX_BYTES,
         resolver: Resolver | None = None,
+        hard_quota_enabled: bool = False,
     ) -> None:
         self._client = client
         self._timeout_s = timeout_s
         self._max_bytes = max_bytes
         self._resolver = resolver
+        self._hard_quota_enabled = hard_quota_enabled
 
     def _new_client(self, pinned_ip: str) -> httpx.AsyncClient:
         """Build a short-lived client whose socket connects are pinned to ``pinned_ip``.
@@ -305,17 +309,19 @@ class HttpxMcpConnector:
         tool: str,
         arguments: dict[str, Any],
     ) -> McpToolResult:
-        post_init = await self._open_session(client, endpoint, auth)
-        called = await self._rpc(
-            client,
-            endpoint,
-            post_init,
-            rpc_id=2,
-            method="tools/call",
-            params={"name": tool, "arguments": arguments or {}},
-        )
-        self._raise_for_rpc_error(called.payload, "tools/call")
-        return self._parse_tool_result(called.payload, self._max_bytes)
+        async with admitted_dispatch(
+            "mcp", {"endpoint": endpoint, "tool": tool, "arguments": arguments},
+            required=self._hard_quota_enabled,
+        ) as admission:
+            post_init = await self._open_session(client, endpoint, auth)
+            called = await self._rpc(
+                client, endpoint, post_init, rpc_id=2, method="tools/call",
+                params={"name": tool, "arguments": admission.payload["arguments"] or {}},
+            )
+            self._raise_for_rpc_error(called.payload, "tools/call")
+            result = self._parse_tool_result(called.payload, self._max_bytes)
+            admission.report()
+            return result
 
     async def _list_resources_with(
         self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth
@@ -346,17 +352,18 @@ class HttpxMcpConnector:
             or any(ord(character) < 0x20 or ord(character) == 0x7F for character in uri)
         ):
             raise McpConnectionError("resources/read: invalid resource URI.")
-        post_init = await self._open_session(client, endpoint, auth)
-        read = await self._rpc(
-            client,
-            endpoint,
-            post_init,
-            rpc_id=2,
-            method="resources/read",
-            params={"uri": uri},
-        )
-        self._raise_for_rpc_error(read.payload, "resources/read")
-        return self._parse_resource_result(read.payload, uri)
+        async with admitted_dispatch(
+            "mcp", {"endpoint": endpoint, "resource": uri},
+            required=self._hard_quota_enabled,
+        ) as admission:
+            post_init = await self._open_session(client, endpoint, auth)
+            read = await self._rpc(
+                client, endpoint, post_init, rpc_id=2, method="resources/read", params={"uri": uri},
+            )
+            self._raise_for_rpc_error(read.payload, "resources/read")
+            result = self._parse_resource_result(read.payload, uri)
+            admission.report()
+            return result
 
     # --- transport helpers ----------------------------------------------------
 

@@ -39,6 +39,8 @@ execution off the request path changes *where the loop runs*, not its egress.
 """
 from __future__ import annotations
 
+from ..hard_quota.dispatch import admission_scope, clear_admission_owner
+
 import asyncio
 import hashlib
 import json
@@ -645,6 +647,40 @@ class DurableWorkflowService:
     # -- the async bodies the activities bridge to -------------------------
 
     async def _execute_step(
+        self, *, step, index: int, previous: str, context: dict[str, Any]
+    ) -> dict[str, Any]:
+        # A task/thread replay must establish its own owner, not inherit the
+        # request that happened to schedule a coroutine on the application loop.
+        clear_admission_owner()
+        admission = getattr(self._state, "hard_quota", None)
+        error = None
+        if admission is not None:
+            policy = await admission.entitlements.get_effective(context["userId"])
+            if policy.disabled:
+                error = "This account is disabled."
+        if error is None and getattr(
+            getattr(self._state, "settings", None), "hard_quota_enabled", False,
+        ):
+            error = (
+                "Hard quota durable execution is unsupported until immutable "
+                "per-operation replay identity and outcome recovery are available."
+            )
+        if error is not None:
+            return {
+                "result": {"agent": step.agent, "ok": False, "text": "", "error": error,
+                           "iterations": 0},
+                "usage": _usage_to_dict(TokenUsage.empty()), "fatal": True,
+            }
+        if admission is not None:
+            with admission_scope(admission, context["userId"]):
+                return await self._execute_step_owned(
+                    step=step, index=index, previous=previous, context=context,
+                )
+        return await self._execute_step_owned(
+            step=step, index=index, previous=previous, context=context,
+        )
+
+    async def _execute_step_owned(
         self, *, step, index: int, previous: str, context: dict[str, Any]
     ) -> dict[str, Any]:
         state = self._state

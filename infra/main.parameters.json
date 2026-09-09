@@ -44,6 +44,9 @@
     "adminSubjects": {
       "value": "${AI4IA_ADMIN_SUBJECTS=}"
     },
+    "hardQuotaEnabled": {
+      "value": "${AI4IA_HARD_QUOTA_ENABLED=false}"
+    },
     "adminApiSecret": {
       "value": "${AI4IA_ADMIN_API_SECRET=}"
     },

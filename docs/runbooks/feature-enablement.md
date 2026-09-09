@@ -21,6 +21,7 @@ feature posture.
 
 | Feature | API flag / setting | Web flag | IaC parameter | Deployed prerequisites |
 |---|---|---|---|---|
+| Atomic application admission (source only) | `AI4IA_HARD_QUOTA_ENABLED` | none | `hardQuotaEnabled` | Default `false`; deployed activation and local Cosmos are refused. Explicit local test seed only; reviewed durable bootstrap, reconciliation, replay recovery and fleet cutover remain unimplemented |
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | `voiceLiveEnabled` | Browser Origin allowlist outside local |
 | Voice Live tools | `AI4IA_REALTIME_TOOLS_ENABLED` | advertised by web env | `voiceLiveToolsEnabled` | Voice Live enabled |
 | Speech Voice Live (2nd voice provider) | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | advertised by web env | `speechVoiceLiveEnabled` | Voice Live enabled; `speech_voice_live` in `AI4IA_VOICE_PROVIDER_ALLOWLIST`; distinct `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`; repeat the standing APIM and authenticated-canary checks after changes |
@@ -51,6 +52,19 @@ feature posture.
 | Durable workflow execution | `AI4IA_DURABLE_WORKFLOWS_ENABLED` | none | `enableDurableWorkflows`, `durableTaskSkuName`, `durableWorkflowTimeoutSeconds` (`AI4IA_ENABLE_DURABLE_WORKFLOWS`, `AI4IA_DURABLE_TASK_SKU`, `AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS`) | **Provisions a paid Azure resource** (Durable Task Scheduler + task hub); the azd token allows a per-environment opt-out. Also requires `AI4IA_SESSION_STORE=cosmos`, a region that offers `Microsoft.DurableTask`, and that provider registered. See the note below |
 | Streamed tool loop | `AI4IA_GATEWAY_STREAM_TOOL_LOOP` | none (read server-side only) | none — API-only setting | None. **Default `true`, i.e. ON**, because OFF is the defect it fixes: a turn that calls a tool would again run every model round trip to completion before emitting anything. It is a kill switch, not a feature gate — it exists so a streaming regression in the one path every chat request takes can be rolled back by an env var instead of a deploy. Off restores the previous wire bytes exactly: the runtime takes the non-streaming `gateway.complete` path and the router emits a single terminal content delta |
 | Per-invocation tool approval | `AI4IA_TOOL_APPROVAL_MODE` (`always` \| `tainted` \| `off`) | none (prompt renders from the stream) | none — API-only setting | None. **Default `always`, i.e. ON**; this is the one row in this table that is a security control rather than a feature, so its safe default is *enabled*. See the note below |
+
+**Atomic application admission is not an enablement-ready switch.** The source
+implements bounded owner-scoped reservations and an existing-usage-partition
+Cosmos CAS adapter without a create/upsert path. No state is initialized merely
+because an owner authenticates. Token/dollar caps refuse the shipping gateway
+because final usage does not prove all proxy/APIM retry attempts; hard durable
+workers refuse rather than replay ambiguously. The local fake is not a distributed
+quota. See [the source contract and coverage matrix](../hard-quota-admission.md).
+
+Numeric soft enforcement remains unchanged. The deliberate exception is that
+`AI4IA_ENTITLEMENTS_ENABLED=false` no longer enables an explicitly disabled user:
+the known-disabled guard is authoritative in both modes. Existing soft usage
+summaries are not the hard admission balance.
 
 **Per-invocation tool approval** is the inverse of every
 other row here: leaving it alone is the secure choice, and changing it is what

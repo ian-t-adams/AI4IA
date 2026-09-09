@@ -19,11 +19,19 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from ..hard_quota.models import STATE_ID, STATE_KIND
 from .models import ROLLUP_FIELDS, UsageRecord, UsageRollupRow, UsageSummary, summarize_records
 
 #: Projected ``SELECT`` list for the admin rollup scan, derived from the field
 #: tuple the row type owns so the query and the parser can never drift.
 _ROLLUP_SELECT = ", ".join(f"c.{field}" for field in ROLLUP_FIELDS)
+
+# Legacy usage rows have no kind. Exclude both the reserved identity and kind,
+# including a damaged coordination document whose discriminator was lost.
+_USAGE_ONLY = (
+    f"c.id != '{STATE_ID}' AND "
+    f"(NOT IS_DEFINED(c.kind) OR c.kind != '{STATE_KIND}')"
+)
 
 
 class CosmosUsageRepository:
@@ -49,7 +57,7 @@ class CosmosUsageRepository:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
         query = (
-            "SELECT * FROM c WHERE c.userId = @uid AND c.createdAt >= @since "
+            f"SELECT * FROM c WHERE {_USAGE_ONLY} AND c.userId = @uid AND c.createdAt >= @since "
             "ORDER BY c.createdAt DESC"
         )
         params = [
@@ -80,7 +88,7 @@ class CosmosUsageRepository:
 
         query = (
             f"SELECT TOP {int(limit)} * FROM c "
-            "WHERE c.createdAt >= @since AND c.createdAt <= @now "
+            f"WHERE {_USAGE_ONLY} AND c.createdAt >= @since AND c.createdAt <= @now "
             "ORDER BY c.createdAt DESC"
         )
         params = [
@@ -111,7 +119,7 @@ class CosmosUsageRepository:
 
         query = (
             f"SELECT TOP {int(limit)} {_ROLLUP_SELECT} FROM c "
-            "WHERE c.createdAt >= @since AND c.createdAt <= @now "
+            f"WHERE {_USAGE_ONLY} AND c.createdAt >= @since AND c.createdAt <= @now "
             "ORDER BY c.createdAt DESC"
         )
         params = [
@@ -133,7 +141,7 @@ class CosmosUsageRepository:
 
         query = (
             f"SELECT TOP {max(1, int(limit))} * FROM c "
-            "WHERE c.userId = @uid AND c.sessionId = @sid "
+            f"WHERE {_USAGE_ONLY} AND c.userId = @uid AND c.sessionId = @sid "
             "ORDER BY c.createdAt DESC"
         )
         params = [
