@@ -267,6 +267,16 @@ live in Key Vault outside local development. Remote endpoints are checked before
 discovery and again when invoked. Neither a remote server nor a retrieved page
 can grant itself permission.
 
+The MCP server builder's **MCP protocol** setting defaults to
+**2025-06-18 (legacy)**. Choose **2026-07-28 (stateless)** only after verifying
+that specific server supports it, then **Save & reconnect**. The API also accepts
+an explicit `protocolVersion` on create/update; older update clients that omit it
+preserve the saved selection. Protocol and routing-schema changes require renewed
+tool consent. A rejected request never automatically switches protocol, drops
+authentication or replays a tool call; change the saved selection explicitly if
+you need to return to legacy. Official/Foundry protocol selection is catalog-owned,
+not editable through the BYO server builder.
+
 Ask for live information in chat, or use `/research <query>`. WebIQ is a tool
 provider, not an `@webiq` agent. The available model tools are:
 

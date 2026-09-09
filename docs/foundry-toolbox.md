@@ -37,6 +37,15 @@ This adds one curated server to the existing official MCP plane. MCP calls go
 through APIM, not SimpleL7Proxy; the application keeps its existing agent runtime
 and execution-time governance.
 
+The packaged toolbox keeps MCP **2025-06-18** and its initialize/session flow.
+AI4IA also implements explicitly staged **2026-07-28** support in the same
+connector, but that is **not a claim that this live Foundry endpoint or APIM's
+preview MCP API supports it**. Leave the catalog's `protocolVersion` omitted
+(legacy default), or explicitly `2025-06-18`, until that specific upstream has
+been verified. Changing it requires regenerating the runtime catalog and the
+normal approved rollout; protocol errors never trigger an automatic fallback or
+tool replay. See [MCP compatibility](architecture.md#staged-mcp-protocol-compatibility).
+
 ### Foundry web search is not WebIQ
 
 The Toolbox `web_search` tool and AI4IA's WebIQ integration are independent

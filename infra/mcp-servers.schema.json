@@ -21,10 +21,16 @@
           },
           "displayName": { "type": "string", "minLength": 1 },
           "description": { "type": "string" },
+          "protocolVersion": {
+            "type": "string",
+            "enum": ["2025-06-18", "2026-07-28"],
+            "default": "2025-06-18",
+            "description": "Explicit upstream MCP contract. Omitted entries retain the legacy initialize/session path. Opt into 2026-07-28 only after verifying that specific upstream; errors never trigger a protocol downgrade."
+          },
           "upstreamUrl": {
             "type": "string",
             "pattern": "^https://",
-            "description": "Full HTTPS Streamable-HTTP MCP endpoint of the upstream server; APIM routes to it as the backend target. The upstream must speak MCP version 2025-06-18 or later."
+            "description": "Full HTTPS Streamable-HTTP MCP endpoint of the upstream server; APIM routes to it as the backend target. The upstream must support the explicitly selected protocolVersion (2025-06-18 by default)."
           },
           "upstreamAuthMode": {
             "type": "string",
@@ -37,6 +43,9 @@
           },
           "upstreamHeaders": {
             "type": "object",
+            "propertyNames": {
+              "not": { "pattern": "^(?:[Mm][Cc][Pp]-|[Ll][Aa][Ss][Tt]-[Ee][Vv][Ee][Nn][Tt]-[Ii][Dd]$)" }
+            },
             "additionalProperties": { "type": "string" },
             "description": "Optional static request headers APIM injects OUTBOUND to the upstream on every call (set-header, override), layered on top of any managed-identity bearer. Values are non-secret, XML-safe constants baked into the policy; secrets belong in managed identity or named values. Example (Foundry toolbox): { \"Foundry-Features\": \"Toolboxes=V1Preview\" }."
           },

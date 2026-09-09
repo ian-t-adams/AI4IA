@@ -602,6 +602,30 @@ Four rules follow:
   must describe the same enabled tool surface. Optional endpoint access, including
   beta autosuggest, is an upstream entitlement, not a successful local-test claim.
 
+### Change MCP protocol behavior
+
+- Official and BYO servers share `app/api/src/ai4ia_api/agents/mcp_client.py` and its
+  bounded helpers in `app/api/src/ai4ia_api/agents/mcp_protocol.py`.
+  Keep `protocolVersion=2025-06-18` as the
+  record/catalog default; `2026-07-28` is an explicit per-server opt-in, not an
+  error-triggered downgrade/upgrade policy.
+- Verify wire contracts against the official versioned specification/schema.
+  Legacy initialization must confirm the selected version and retain its session;
+  stateless requests carry per-request metadata and no session. Never infer
+  Foundry/APIM preview support from offline fixtures.
+- Derive routing mirrors from the exact RPC and consent-bound schema. Bound and
+  encode them, reject sensitive annotations/values, and preserve the catalog-owned
+  APIM boundary. Neither caller headers nor server identity/cache hints authorize
+  tools.
+- Cache only bounded discovery/list responses, scoped by owner/auth/server/
+  endpoint/protocol/configuration and request parameters. Invalidate on changes;
+  never cache grants, tool results or skill contents, return stale success on an
+  error, or replay a tool after a protocol/transport failure.
+- Keep `_call_with` and `_read_resource_with` as shared execution seams containing
+  handshake plus RPC work under either version. Discovery cache hits do not run
+  those seams. Exercise both protocols through services, consent, SSRF/DNS pinning,
+  redaction, cancellation and Streamable HTTP, not just framing helpers.
+
 ### Add a Foundry skill
 
 - Author instruction-only skills at `foundry/skills/<name>/SKILL.md` using the

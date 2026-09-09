@@ -180,6 +180,7 @@ def build_load_skill_definition(
                         mode="json",
                         include={
                             "name", "userId", "endpoint", "host", "transport", "authMode",
+                            "protocolVersion",
                             "configurationRevision", "trusted", "enabled", "resourcesEnabled",
                         },
                     ),

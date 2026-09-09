@@ -8,6 +8,7 @@ live server.
 """
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ai4ia_api.agents.mcp_client import FakeMcpConnector
@@ -78,6 +79,7 @@ def test_create_list_get_delete():
     doc = created.json()
     assert doc["name"] == "weather"
     assert doc["host"] == "mcp.example.com"
+    assert doc["protocolVersion"] == "2025-06-18"
     assert [t["name"] for t in doc["discoveredTools"]] == ["get_forecast"]
     assert "secret" not in doc
 
@@ -111,6 +113,43 @@ def test_create_connection_failure_is_502():
     c = _enabled_client(error=McpConnectionError("down"))
     resp = c.post("/api/agents/mcp-servers", json=_body())
     assert resp.status_code == 502, resp.text
+
+
+@pytest.mark.parametrize("protocol", ["2025-06-18", "2026-07-28"])
+def test_protocol_selection_round_trips_and_old_updates_preserve_it(protocol):
+    c = _enabled_client()
+    try:
+        created = c.post("/api/agents/mcp-servers", json=_body(protocolVersion=protocol))
+        assert created.status_code == 201, created.text
+        assert created.json()["protocolVersion"] == protocol
+        assert c.get(
+            "/api/agents/mcp-servers/weather", headers={"X-Dev-User": "other-owner"}
+        ).status_code == 404
+        updated = c.put(
+            "/api/agents/mcp-servers/weather", json=_body(description="old client update")
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["protocolVersion"] == protocol
+        tested = c.post("/api/agents/mcp-servers/weather/test", json={})
+        assert tested.status_code == 200, tested.text
+        assert tested.json()["protocolVersion"] == protocol
+        connector = c.app.state.mcp_service.connector
+        assert all(context.protocol_version.value == protocol for _, context in connector.contexts)
+        assert bool(connector.server_discoveries) is (protocol == "2026-07-28")
+    finally:
+        c.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("protocol", ["auto", "2025-11-25", "2099-01-01", None, 20260728])
+def test_unsupported_protocol_is_rejected_before_discovery(protocol):
+    c = _enabled_client()
+    try:
+        response = c.post("/api/agents/mcp-servers", json=_body(protocolVersion=protocol))
+        assert response.status_code == 422, response.text
+        assert not c.app.state.mcp_service.connector.calls
+        assert not c.app.state.mcp_service.connector.server_discoveries
+    finally:
+        c.__exit__(None, None, None)
 
 
 def test_update_replaces_record():
