@@ -141,3 +141,55 @@ mode retains it. The postprovision topology gate rejects unexpected stale
 deployments. Model retirement therefore requires an explicit, reviewed
 live-resource cleanup as well as regenerated catalogs; it is not an automatic
 side effect of editing JSON.
+
+## Retirement evidence and reporting
+
+`scripts/check-model-availability.py` observes each catalog target and its actual
+deployed model/version, SKU, capacity and upgrade policy separately. Subscription
+`model.lifecycleStatus`, `model.skus[].deprecationDate` and
+`model.deprecation.inference` retain their own scope and observation timestamp.
+The SKU date is a SKU deprecation date, not a guessed universal inference-stop
+date; `deprecation.fineTune` is not used for these inference deployments.
+
+The [official Models API schema](https://learn.microsoft.com/rest/api/aiservices/accountmanagement/models/list?view=rest-aiservices-accountmanagement-2024-10-01)
+and [Foundry lifecycle policy](https://learn.microsoft.com/azure/foundry/openai/concepts/model-retirements)
+use different names from the portal: API `Deprecating` denotes the deprecated
+stage, and API `Deprecated` denotes retirement. General public dates do not
+establish this subscription's eligibility. AI4IA conservatively retains its
+existing admission block for both API states; a subscription's historical access
+does not establish that a changed deployment is safe.
+
+Policy **`retirement-admission-v1`** uses inclusive 90/30/7-day UTC warning
+windows and marks a date at or before the observation instant **expired**.
+New/changed desired targets are blocked when an applicable authoritative SKU or
+inference date is within seven days, including expired dates. The date of an old
+deployed version does not block an otherwise safe replacement target. Exact
+`Succeeded` reconciles remain warning-only even when expired: ARM state is not
+evidence of working inference, and `NoAutoUpgrade` is not a retirement extension.
+
+Date-only `YYYY-MM-DD` evidence means **00:00 UTC** on that day, an explicit
+conservative comparison policy, not an inferred end-of-day guarantee. Timestamps
+must include `Z` or a known numeric UTC offset; malformed, missing, offset-free,
+or unknown-offset (`-00:00`) values stay unknown. No date is calculated from a
+model version, release age or upgrade policy. Differing SKU/model/public dates
+remain separate, and public `not-before` dates remain lower bounds, not deadlines.
+Comparisons use microsecond precision; extra zero padding is accepted, but
+nonzero sub-microsecond digits stay explicitly unsupported/unknown rather than
+being silently rounded across a boundary.
+
+The [read-only reporting runbook](runbooks/deployment.md#read-only-model-retirement-reporting)
+describes the default-off scheduled path, explicit reader activation, report
+limits and exit codes. Each collection generates this section in an artifact
+copy of this page from the **same observations** as its JSON and Markdown report.
+It does not overwrite this source page, publish Pages, or commit a live snapshot.
+A human may promote the generated section in a reviewed documentation change.
+
+<!-- model-retirements:start -->
+## Model retirement observations
+
+**Unobserved: no live report has been promoted to this page.** This is not an
+empty or healthy retirement inventory. Read-only reporting remains default-off
+until its dedicated identity, target scope and activation are approved. Use a
+timestamped report artifact for current evidence; a source checkout cannot
+establish live model availability or retirement dates.
+<!-- model-retirements:end -->

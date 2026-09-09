@@ -675,6 +675,14 @@ If target identity is ambiguous or inventory fails, the check fails rather than 
 Run it directly for diagnosis ([greenfield preflight](./greenfield-standup.md#1-preflight-the-target)).
 It reports whether a deployable version exists to repin to, or that the model must be removed.
 
+The same preflight now emits typed retirement observations with dated 90/30/7-day
+warnings, including exact existing deployments. Under `retirement-admission-v1`,
+an authoritative desired-target SKU/inference date within seven days (or already
+expired) blocks additions/changes, not exact reconciles. Unknown dates warn but
+do not introduce a guessed retirement block. A preflight exit 0 means no blocking
+admission finding; it is **not** a clean retirement report or a serving-health
+claim. See the [evidence policy](../region-capability-matrix.md#retirement-evidence-and-reporting).
+
 Fix — if another version of the same model is `GenerallyAvailable`/`Preview`, repin
 `version` in `infra/models.json`. If not (the whole family may go at once, as GPT-4.1 did),
 remove the model and **migrate anything that referenced it by name**. That last step is the
@@ -691,6 +699,101 @@ python scripts/gen-model-catalog.py
 python scripts/gen-gateway-policy.py
 python scripts/validate-catalog.py
 ```
+
+### Read-only model retirement reporting
+
+`.github/workflows/model-retirements.yml` supports daily scheduled collection and
+manual dispatch on `main`, but both paths are **default-off**. A disabled run
+explicitly reports disabled/unobserved and performs no Azure authentication or
+reads. This monitoring job is not a required PR check; the existing full
+preprovision checks remain mandatory on Windows and POSIX.
+
+Activation requires separate human approval. Configure a **dedicated read-only**
+identity with the minimum management-plane read scope needed for subscription
+model offerings and the target resource group's Cognitive Services inventory,
+plus a main-branch OIDC credential. Confirm its actual grants do not include
+deployment, quota, registration or other write authority. No identity, RBAC,
+credential or repository setting is created by the workflow; it rejects the
+deployment client ID and never falls back to deploy credentials. Different
+client IDs alone do not prove read-only grants: the operator must verify them.
+
+| Repository variable | Required value before activation |
+| --- | --- |
+| `AI4IA_MODEL_RETIREMENT_REPORT_ENABLED` | Literal `true`, only after reader/scope approval; absent or any other value stays off |
+| `AI4IA_MODEL_RETIREMENT_CLIENT_ID` | Approved reader client ID, different from `AZURE_CLIENT_ID` |
+| `AI4IA_MODEL_RETIREMENT_TENANT_ID` | Reader's tenant |
+| `AI4IA_MODEL_RETIREMENT_SUBSCRIPTION_ID` | Explicit target subscription |
+| `AI4IA_MODEL_RETIREMENT_RESOURCE_GROUP` | Exact existing target resource group |
+| `AI4IA_MODEL_RETIREMENT_ENV_NAME` | Existing azd environment used with catalog naming to identify Foundry accounts |
+| `AI4IA_MODEL_RETIREMENT_CAPACITY_PROFILE` | Explicit `baseline` or `maximum`, matching the environment |
+| `AI4IA_MODEL_RETIREMENT_CLAUDE_ENABLED` | Explicit `true` or `false`, matching the environment's desired catalog scope |
+
+These are workflow-only settings, not new azd/app feature flags. No live
+activation is part of the code implementation. Desired Anthropic targets respect
+the flag; actual retained deployments inside the selected accounts remain
+observable even when absent from the desired catalog. Ambiguous accounts or
+failed inventory reads are unavailable, never evidence of missing deployments.
+Reports retain successfully read regions, including their old or out-of-catalog
+deployments, when another regional account fails. The full preprovision path
+still fails closed on any inventory error.
+
+With an already-approved local read-only login, collection is also available
+without provisioning or model calls:
+
+```powershell
+$env:AZURE_SUBSCRIPTION_ID = '<approved-subscription-id>'
+$out = Join-Path $env:TEMP 'ai4ia-model-retirements' # Must be outside the checkout.
+python scripts/check-model-availability.py `
+  --resource-group '<approved-resource-group>' `
+  --environment-name '<existing-environment>' `
+  --capacity-profile baseline `
+  --retirement-report $out
+```
+
+Select the correct capacity profile and Claude posture rather than copying the
+example blindly. The collector verifies the active subscription before any
+inventory/offering query; it never selects a different subscription on your
+behalf. It reads only account context, resource-group existence, Cognitive
+Services accounts/deployments and regional model offerings. It never runs the
+provider preflight, queries/changes quota, invokes inference, updates capacity,
+rewrites the catalog, registers providers or creates/updates/deletes deployments.
+
+| Report exit | Meaning |
+| --- | --- |
+| `0` | All observed target/deployed evidence is known, with no retirement-window, drift or conflicting-date finding |
+| `1` | Complete evidence needs attention; this includes warnings on exact existing deployments and safe migrations away from old versions |
+| `2` | Unknown/incomplete evidence, unavailable reads, empty coverage, or omitted records; inspect known findings too |
+
+JSON (`model-retirements.json`), Markdown (`model-retirements.md`) and a generated
+`region-capability-matrix.md` **preview** share the same observations. The workflow
+retains these three files for 30 days and publishes the Markdown in its job
+summary even on a finding/partial-read failure. Failed login is followed by an
+explicit incomplete report when collection can run; missing artifacts fail
+publication rather than passing with an old snapshot. Check source timestamps
+and catalog SHA-256 before using an artifact; a successful collection is not a
+standing permission to deploy or a guarantee about tomorrow.
+
+Reports are limited to eight catalog regions, 256 emitted observations, 512 KiB
+JSON and 256 KiB Markdown. Each Azure CLI read has a 30-second timeout and parsed
+responses are size/shape bounded. Omitted observations are counted and force
+incomplete status; the documentation preview has a 320 KiB ceiling. Only
+model/deployment identifiers, lifecycle/date/upgrade
+fields and drift field names are published: no subscription/tenant/account IDs
+or names, resource IDs, endpoints, tags, raw CLI errors, credentials or usage
+data. Malformed date payloads are labeled, not copied to the artifact.
+
+Public-vs-subscription comparison is explicitly **not supplied** by default.
+To compare documented public evidence, use `--public-evidence <path-to-json>`.
+The file is a JSON array (at most 256 rows / 128 KiB); each row must contain
+exactly `name`, `format`, `version`, `region`, `sku`, `source_url`, `observed_at`,
+`date`, and `qualifier`. Match identities to the catalog or actual deployment;
+use a public Azure Microsoft Learn HTTPS URL without query/credentials, a
+nonfuture offset-qualified source observation time, and an ISO date or timestamp.
+`qualifier` must be `exact` or `not-before`; never convert "no earlier than" prose
+to a guaranteed deadline. Missing/malformed dates remain unknown. Public
+observations retain their original source timestamp, remain advisory even when
+they disagree, and never replace subscription SKU/inference dates. The collector
+does not fetch those URLs or guess model/region/SKU applicability.
 
 ### 7.9 `InsufficientQuota` on a model deployment
 

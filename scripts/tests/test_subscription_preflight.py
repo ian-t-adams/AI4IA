@@ -166,10 +166,10 @@ class CatalogRequirementTests(unittest.TestCase):
         for raw, expected in (("false", False), ("true", True)):
             with self.subTest(raw=raw):
                 with (
-                    patch.dict(
-                        os.environ,
-                        {"AI4IA_CLAUDE_ENABLED": raw},
-                        clear=False,
+                    patch.object(
+                        os,
+                        "environ",
+                        {**os.environ, "AI4IA_CLAUDE_ENABLED": raw},
                     ),
                     patch.object(
                         sys,
@@ -1063,7 +1063,7 @@ class ModelPreflightLifecycleWiringTests(unittest.TestCase):
         )
         compact = " ".join(source.split())
         self.assertIn(
-            "required, index, index_lifecycle(offered), existing_deployments",
+            "required, index, index_lifecycle(scoped_offered), existing_deployments",
             compact,
         )
 

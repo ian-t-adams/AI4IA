@@ -375,6 +375,7 @@ keeps endpoint and authentication configuration in the Foundry project connectio
 ```powershell
 python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/redaction rules
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
+python3 -m unittest scripts.tests.test_model_retirement         # dates, read-only reports and activation contracts
 python3 -m unittest scripts.tests.test_postprovision_appconfig_sentinel scripts.tests.test_postprovision_cu_defaults scripts.tests.test_postprovision_hard_gates
 python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap
 python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deploy.yml's real block with `az` stubbed
@@ -405,6 +406,7 @@ python3 -m unittest scripts.tests.test_immutable_image_promotion
 `test_custom_domain_preflight`, `test_pages_status_refresh`,
 `test_dependabot_config`, `test_post_deploy_verify`, `test_gating_workflows`,
 `test_base_image_pins`, `test_subscription_preflight`,
+`test_model_retirement`,
 `test_proxy_delivery_contracts`, and `test_immutable_image_promotion` need
 `PyYAML` (pinned in the workflow); `test_immutable_image_promotion` also needs
 `bash` and skips without it. The rest are stdlib-only.
@@ -426,6 +428,21 @@ evidence-backed `Microsoft.ResourceHealth` operational dependency used by the
 status snapshot. The snapshot must publish provider/query failure as a source
 outage; it must never flatten that failure into zero healthy resources or a
 per-resource "no signal" result.
+
+Model retirement uses the typed observations in `scripts/_model_retirement.py`,
+not a second model catalog. The full preprovision path always checks the
+authoritative desired target: inclusive UTC 90/30/7-day warnings, expired at
+`date <= observed_at`, and a seven-day admission block for additions/changes.
+Exact Succeeded reconciles still warn, including expired deployments; a safe
+target is not blocked by an old deployed version. Date-only means 00:00 UTC;
+offset-free/malformed/missing evidence is unknown, not healthy or a guessed date.
+Keep SKU, model-inference and advisory public evidence distinct.
+`model-retirements.yml` is default-off and requires dedicated approved read-only
+configuration, never deployment authority. It retains bounded JSON/Markdown and
+a generated region-matrix preview, not source commits or Azure mutations.
+Report exit 2 means incomplete/unknown even if other known findings exist.
+See [the reporting runbook](docs/runbooks/deployment.md#read-only-model-retirement-reporting)
+before changing source authority, admission policy or activation.
 
 `security-scan` runs Trivy filesystem/config scans and gitleaks over the full
 proxy tree. `.trivyignore.yaml` suppresses only the untouched upstream Dockerfile

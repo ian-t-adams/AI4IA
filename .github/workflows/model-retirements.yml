@@ -1,0 +1,130 @@
+name: model-retirements
+
+# Inert until a human approves dedicated read-only credentials and enables it.
+# This job never reuses deploy authority, calls inference, or commits reports.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-retirements
+  cancel-in-progress: false
+
+jobs:
+  activation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      enabled: ${{ steps.configuration.outputs.enabled }}
+    steps:
+      - name: Validate read-only report activation
+        id: configuration
+        shell: bash
+        env:
+          REPORT_ENABLED: ${{ vars.AI4IA_MODEL_RETIREMENT_REPORT_ENABLED }}
+          REPORT_CLIENT_ID: ${{ vars.AI4IA_MODEL_RETIREMENT_CLIENT_ID }}
+          REPORT_TENANT_ID: ${{ vars.AI4IA_MODEL_RETIREMENT_TENANT_ID }}
+          REPORT_SUBSCRIPTION_ID: ${{ vars.AI4IA_MODEL_RETIREMENT_SUBSCRIPTION_ID }}
+          REPORT_RESOURCE_GROUP: ${{ vars.AI4IA_MODEL_RETIREMENT_RESOURCE_GROUP }}
+          REPORT_ENV_NAME: ${{ vars.AI4IA_MODEL_RETIREMENT_ENV_NAME }}
+          REPORT_CAPACITY_PROFILE: ${{ vars.AI4IA_MODEL_RETIREMENT_CAPACITY_PROFILE }}
+          REPORT_CLAUDE_ENABLED: ${{ vars.AI4IA_MODEL_RETIREMENT_CLAUDE_ENABLED }}
+          DEPLOY_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Retirement reporting is restricted to main."
+            exit 1
+          fi
+          if [[ "$REPORT_ENABLED" != "true" ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Retirement reporting is disabled/unobserved. No Azure reads or clean inventory were produced." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          for name in REPORT_CLIENT_ID REPORT_TENANT_ID REPORT_SUBSCRIPTION_ID REPORT_RESOURCE_GROUP REPORT_ENV_NAME REPORT_CAPACITY_PROFILE REPORT_CLAUDE_ENABLED; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Enabled retirement reporting requires dedicated variable $name."
+              exit 1
+            fi
+          done
+          if [[ "${REPORT_CLIENT_ID,,}" == "${DEPLOY_CLIENT_ID,,}" ]]; then
+            echo "::error::The retirement reader must not reuse the deployment identity."
+            exit 1
+          fi
+          if [[ "$REPORT_CAPACITY_PROFILE" != "baseline" && "$REPORT_CAPACITY_PROFILE" != "maximum" ]]; then
+            echo "::error::Report capacity profile must explicitly match baseline or maximum."
+            exit 1
+          fi
+          if [[ "$REPORT_CLAUDE_ENABLED" != "true" && "$REPORT_CLAUDE_ENABLED" != "false" ]]; then
+            echo "::error::Report Claude posture must explicitly be true or false."
+            exit 1
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+  report:
+    needs: activation
+    if: ${{ needs.activation.outputs.enabled == 'true' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AI4IA_MODEL_RETIREMENT_SUBSCRIPTION_ID }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AI4IA_MODEL_RETIREMENT_RESOURCE_GROUP }}
+      AZURE_ENV_NAME: ${{ vars.AI4IA_MODEL_RETIREMENT_ENV_NAME }}
+      AI4IA_MODEL_CAPACITY_PROFILE: ${{ vars.AI4IA_MODEL_RETIREMENT_CAPACITY_PROFILE }}
+      AI4IA_CLAUDE_ENABLED: ${{ vars.AI4IA_MODEL_RETIREMENT_CLAUDE_ENABLED }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Log in with approved read-only identity
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
+        with:
+          client-id: ${{ vars.AI4IA_MODEL_RETIREMENT_CLIENT_ID }}
+          tenant-id: ${{ vars.AI4IA_MODEL_RETIREMENT_TENANT_ID }}
+          subscription-id: ${{ vars.AI4IA_MODEL_RETIREMENT_SUBSCRIPTION_ID }}
+
+      - name: Collect retirement observations
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/check-model-availability.py \
+            --retirement-report "$RUNNER_TEMP/model-retirements"
+
+      - name: Publish report summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/model-retirements/model-retirements.md"
+          if [[ ! -f "$report" ]]; then
+            echo "Retirement report unavailable: collection did not produce an artifact. No clean inventory is claimed." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain bounded report and generated documentation preview
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: model-retirements-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/model-retirements/model-retirements.json
+            ${{ runner.temp }}/model-retirements/model-retirements.md
+            ${{ runner.temp }}/model-retirements/region-capability-matrix.md

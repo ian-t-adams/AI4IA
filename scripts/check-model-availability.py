@@ -14,6 +14,11 @@ things can be wrong, and a subscription can pass some while failing others:
   or model/version/SKU/capacity change fails with `ServiceModelDeprecating`. The
   preflight inventories the target resource group: exact Succeeded deployments
   warn and reconcile; absent or drifted desired deployments block.
+  Dated retirement observations additionally retain SKU and inference dates,
+  upgrade posture, and catalog/deployed drift. Under retirement-admission-v1,
+  authoritative desired-target dates within seven days block additions/changes;
+  exact existing deployments still warn. Unknown and public dates never become
+  authoritative retirement deadlines.
 * **Quota** -- is there capacity left to deploy it? A brand-new subscription is
   offered nearly everything but ships with small default quotas, and several
   image/realtime/audio models default to caps in the single digits. Availability
@@ -38,6 +43,12 @@ Usage:
     python scripts/check-model-availability.py
     python scripts/check-model-availability.py --region eastus2   # narrow it
     python scripts/check-model-availability.py --skip-quota       # availability only
+    python scripts/check-model-availability.py --retirement-report <output-directory>
+
+The report mode reads inventory and offerings only (not quota), emits bounded
+JSON/Markdown and a generated documentation preview, and never changes Azure or
+the catalog. It requires explicit subscription and target environment context.
+Its exit codes are 0 = complete/clear, 1 = attention, 2 = incomplete/unknown.
 """
 
 from __future__ import annotations
@@ -49,11 +60,19 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).parent))
+import _model_retirement as retirement
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_FILE = ROOT / "infra" / "models.json"
+MAX_AZURE_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_OFFERED_MODELS = 8192
+MAX_REPORT_REGIONS = 8
 
 
 def _az(*args: str) -> subprocess.CompletedProcess[str]:
@@ -65,9 +84,13 @@ def _az(*args: str) -> subprocess.CompletedProcess[str]:
             "ERROR: the Azure CLI (az) is not on PATH. Install it, run `az login`, "
             "and select the target subscription with `az account set --subscription <id>`."
         )
-    return subprocess.run(
-        [executable, *args], capture_output=True, text=True, check=False, encoding="utf-8"
-    )
+    try:
+        return subprocess.run(
+            [executable, *args], capture_output=True, text=True, check=False,
+            encoding="utf-8", timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit("ERROR: Azure CLI read timed out after 30 seconds; evidence is unavailable.") from exc
 
 
 def active_subscription(expected_subscription_id: str | None = None) -> dict[str, str]:
@@ -95,6 +118,8 @@ def active_subscription(expected_subscription_id: str | None = None) -> dict[str
             "ERROR: `az account show` returned invalid JSON; model availability/quota "
             f"cannot be evaluated safely: {exc.msg}."
         ) from exc
+    if not isinstance(account, dict):
+        raise SystemExit("ERROR: Azure CLI account context was not an object; subscription is unknown.")
     subscription_id = str(account.get("id") or "").strip()
     if not subscription_id:
         raise SystemExit(
@@ -176,8 +201,10 @@ def _json_result(result: subprocess.CompletedProcess[str], context: str) -> Any:
             f"ERROR: {context}; existing-state lifecycle safety cannot be evaluated.\n"
             f"Azure CLI: {detail}"
         )
+    if len((result.stdout or "").encode("utf-8")) > MAX_AZURE_RESPONSE_BYTES:
+        raise SystemExit(f"ERROR: {context}; Azure CLI response exceeded the 16 MiB read budget.")
     try:
-        return json.loads(result.stdout or "[]")
+        return json.loads(result.stdout or "")
     except json.JSONDecodeError as exc:
         raise SystemExit(
             f"ERROR: {context}; Azure CLI returned invalid JSON: {exc.msg}."
@@ -200,11 +227,13 @@ def _foundry_accounts_from_output(raw: str | None) -> dict[str, str]:
             f"accounts whose existing deployments would be reconciled: {exc.msg}."
         ) from exc
     found: dict[str, str] = {}
-    for entry in entries if isinstance(entries, list) else []:
+    if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+        raise SystemExit("ERROR: AZURE_FOUNDRY_ENDPOINTS must be an array of account/region objects.")
+    for entry in entries:
         region = _normal_location(entry.get("region"))
         account_name = str(entry.get("accountName") or "").strip()
         if not region or not account_name:
-            continue
+            raise SystemExit("ERROR: AZURE_FOUNDRY_ENDPOINTS has an incomplete account/region identity.")
         if region in found and found[region].casefold() != account_name.casefold():
             raise SystemExit(
                 f"ERROR: AZURE_FOUNDRY_ENDPOINTS names multiple accounts for {region}; "
@@ -220,13 +249,16 @@ def existing_deployment_inventory(
     resource_group: str | None,
     environment_name: str | None,
     foundry_endpoints_raw: str | None = None,
+    region_reads: dict[str, retirement.SourceRead] | None = None,
 ) -> tuple[dict[tuple[str, str], dict[str, Any]], list[str]]:
     """Inventory exact deployments azd would reconcile, or enter explicit addition mode.
 
     No context means a manual/greenfield check: every desired deployment is treated
     as an addition. In an azd hook the target resource group/environment are known;
     any Azure inventory error fails rather than incorrectly exempting a lifecycle
-    block. All operations are read-only.
+    block. A report caller may supply region_reads to retain successful regions
+    alongside explicit unavailable states; preprovision never opts into that
+    partial-read mode. All operations are read-only.
     """
     resource_group = (resource_group or "").strip()
     environment_name = (environment_name or "").strip()
@@ -235,10 +267,12 @@ def existing_deployment_inventory(
         resource_group = f"rg-{workload}-{environment_name}"
     if not resource_group:
         return {}, [
-            "No target resource group/environment was supplied; lifecycle checking "
-            "is in greenfield/addition mode, so deprecated or deprecating desired "
-            "deployments remain blocking. Set AZURE_ENV_NAME (or --resource-group "
-            "and --environment-name) to evaluate an existing routine reconcile."
+            (
+                "No target resource group/environment was supplied; lifecycle checking "
+                "is in greenfield/addition mode, so deprecated or deprecating desired "
+                "deployments remain blocking. Set AZURE_ENV_NAME (or --resource-group "
+                "and --environment-name) to evaluate an existing routine reconcile."
+            )
         ]
 
     exists_result = _az("group", "exists", "--name", resource_group, "-o", "json")
@@ -251,96 +285,142 @@ def existing_deployment_inventory(
             "refusing to guess existing lifecycle state."
         )
     if exists_text == "false":
+        if region_reads is not None:
+            for region in models.get("regions") or {}:
+                region_reads[region] = retirement.SourceRead(
+                    "deployment-inventory", region, "observed", retirement.timestamp(datetime.now(UTC)),
+                    "target-resource-group-absent",
+                )
         return {}, [
-            f"Target resource group {resource_group} does not exist; lifecycle checking "
-            "is in greenfield/addition mode."
+            (
+                f"Target resource group {resource_group} does not exist; lifecycle checking "
+                "is in greenfield/addition mode."
+            )
         ]
 
     accounts = _json_result(
         _az("cognitiveservices", "account", "list", "--resource-group", resource_group, "-o", "json"),
         f"could not list Cognitive Services accounts in {resource_group}",
     )
-    if not isinstance(accounts, list):
+    if (
+        not isinstance(accounts, list) or len(accounts) > 256
+        or any(not isinstance(account, dict) for account in accounts)
+    ):
         raise SystemExit(
-            f"ERROR: Cognitive Services account inventory for {resource_group} was not an array."
+            f"ERROR: Cognitive Services account inventory for {resource_group} was not a bounded object array."
         )
     explicit_accounts = _foundry_accounts_from_output(foundry_endpoints_raw)
     foundry_token = str((models.get("naming") or {}).get("foundryToken") or "")
     inventory: dict[tuple[str, str], dict[str, Any]] = {}
 
     for region in (models.get("regions") or {}):
-        normalized_region = _normal_location(region)
-        expected_name = explicit_accounts.get(normalized_region)
-        if expected_name:
-            candidates = [
-                account
-                for account in accounts
-                if str(account.get("name") or "").casefold() == expected_name.casefold()
-            ]
-        elif environment_name:
-            prefix = f"mf-{foundry_token}-{environment_name}-{region}-".casefold()
-            candidates = [
-                account
-                for account in accounts
-                if str(account.get("kind") or "").casefold() == "aiservices"
-                and _normal_location(account.get("location")) == normalized_region
-                and str(account.get("name") or "").casefold().startswith(prefix)
-            ]
-        else:
-            raise SystemExit(
-                "ERROR: the target resource group exists, but neither AZURE_ENV_NAME "
-                "nor AZURE_FOUNDRY_ENDPOINTS identifies the Foundry accounts. Refusing "
-                "to guess whether deprecated deployments would be changed."
+        try:
+            regional = _regional_deployment_inventory(
+                accounts, region=region, resource_group=resource_group,
+                expected_name=explicit_accounts.get(_normal_location(region)),
+                environment_name=environment_name, foundry_token=foundry_token,
             )
-
-        if len(candidates) > 1:
-            names = ", ".join(sorted(str(account.get("name")) for account in candidates))
-            raise SystemExit(
-                f"ERROR: multiple candidate Foundry accounts for {region} in "
-                f"{resource_group}: {names}. Refusing an ambiguous lifecycle exemption."
+        except (SystemExit, OSError):
+            if region_reads is None:
+                raise
+            region_reads[region] = retirement.SourceRead(
+                "deployment-inventory", region, "unavailable", retirement.timestamp(datetime.now(UTC)),
+                "inventory-read-failed-or-ambiguous",
             )
-        if not candidates:
             continue
-        account_name = str(candidates[0].get("name") or "")
-        deployments = _json_result(
-            _az(
-                "cognitiveservices",
-                "account",
-                "deployment",
-                "list",
-                "--resource-group",
-                resource_group,
-                "--name",
-                account_name,
-                "-o",
-                "json",
-            ),
-            f"could not list model deployments for {account_name}",
-        )
-        if not isinstance(deployments, list):
-            raise SystemExit(
-                f"ERROR: deployment inventory for {account_name} was not an array."
+        inventory.update(regional)
+        if region_reads is not None:
+            region_reads[region] = retirement.SourceRead(
+                "deployment-inventory", region, "observed", retirement.timestamp(datetime.now(UTC))
             )
-        for deployment in deployments:
-            deployment_name = str(deployment.get("name") or "").strip()
-            if not deployment_name:
-                continue
-            properties = deployment.get("properties") or {}
-            model = properties.get("model") or {}
-            sku = deployment.get("sku") or {}
-            inventory[(normalized_region, deployment_name.casefold())] = {
-                "accountName": account_name,
-                "deploymentName": deployment_name,
-                "region": region,
-                "modelName": str(model.get("name") or ""),
-                "format": str(model.get("format") or ""),
-                "version": str(model.get("version") or ""),
-                "sku": str(sku.get("name") or ""),
-                "capacity": sku.get("capacity"),
-                "versionUpgradeOption": str(properties.get("versionUpgradeOption") or ""),
-                "provisioningState": str(properties.get("provisioningState") or ""),
-            }
     return inventory, []
+
+
+def _regional_deployment_inventory(
+    accounts: list[dict[str, Any]],
+    *,
+    region: str,
+    resource_group: str,
+    expected_name: str | None,
+    environment_name: str,
+    foundry_token: str,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Read a whole account atomically so malformed rows cannot become partial absence."""
+    normalized_region = _normal_location(region)
+    if expected_name:
+        candidates = [
+            account for account in accounts
+            if str(account.get("name") or "").casefold() == expected_name.casefold()
+        ]
+    elif environment_name:
+        prefix = f"mf-{foundry_token}-{environment_name}-{region}-".casefold()
+        candidates = [
+            account for account in accounts
+            if str(account.get("kind") or "").casefold() == "aiservices"
+            and _normal_location(account.get("location")) == normalized_region
+            and str(account.get("name") or "").casefold().startswith(prefix)
+        ]
+    else:
+        raise SystemExit(
+            "ERROR: the target resource group exists, but neither AZURE_ENV_NAME "
+            "nor AZURE_FOUNDRY_ENDPOINTS identifies the Foundry accounts. Refusing "
+            "to guess whether deprecated deployments would be changed."
+        )
+    if len(candidates) > 1:
+        names = ", ".join(sorted(str(account.get("name")) for account in candidates))
+        raise SystemExit(
+            f"ERROR: multiple candidate Foundry accounts for {region} in "
+            f"{resource_group}: {names}. Refusing an ambiguous lifecycle exemption."
+        )
+    if not candidates:
+        return {}
+    if (
+        str(candidates[0].get("kind") or "").casefold() != "aiservices"
+        or _normal_location(candidates[0].get("location")) != normalized_region
+    ):
+        raise SystemExit("ERROR: the selected Foundry account has a different kind or region.")
+    account_name = str(candidates[0].get("name") or "")
+    deployments = _json_result(
+        _az(
+            "cognitiveservices", "account", "deployment", "list",
+            "--resource-group", resource_group, "--name", account_name, "-o", "json",
+        ),
+        f"could not list model deployments for {account_name}",
+    )
+    if (
+        not isinstance(deployments, list) or len(deployments) > 512
+        or any(not isinstance(deployment, dict) for deployment in deployments)
+    ):
+        raise SystemExit(
+            f"ERROR: deployment inventory for {account_name} was not a bounded object array."
+        )
+    inventory = {}
+    for deployment in deployments:
+        deployment_name = str(deployment.get("name") or "").strip()
+        if not deployment_name:
+            raise SystemExit("ERROR: deployment inventory contains a record without a name.")
+        properties = deployment.get("properties") or {}
+        if not isinstance(properties, dict):
+            raise SystemExit("ERROR: deployment inventory properties were not an object.")
+        model = properties.get("model") or {}
+        sku = deployment.get("sku") or {}
+        if not isinstance(model, dict) or not isinstance(sku, dict):
+            raise SystemExit("ERROR: deployment inventory model/SKU were not objects.")
+        if (normalized_region, deployment_name.casefold()) in inventory:
+            raise SystemExit("ERROR: deployment inventory contains duplicate deployment identities.")
+        inventory[(normalized_region, deployment_name.casefold())] = {
+            "accountName": account_name,
+            "deploymentName": deployment_name,
+            "region": region,
+            "modelName": str(model.get("name") or ""),
+            "format": str(model.get("format") or ""),
+            "version": str(model.get("version") or ""),
+            "sku": str(sku.get("name") or ""),
+            "capacity": sku.get("capacity"),
+            "versionUpgradeOption": str(properties.get("versionUpgradeOption") or ""),
+            "provisioningState": str(properties.get("provisioningState") or ""),
+        }
+    return inventory
 
 
 def existing_deployment_drift(
@@ -377,9 +457,8 @@ def existing_deployment_drift(
         )
         if not equal:
             differences.append(f"{label} is {actual_text or '<missing>'}, wants {desired_text}")
-    try:
-        actual_capacity = int(existing.get("capacity"))
-    except (TypeError, ValueError):
+    actual_capacity = existing.get("capacity")
+    if type(actual_capacity) is not int or actual_capacity < 0:
         actual_capacity = -1
     desired_capacity = int(required.get("capacity") or 0)
     if actual_capacity != desired_capacity:
@@ -404,13 +483,183 @@ def all_deployments_exact_existing(
 
 
 def offered_models(region: str) -> list[dict[str, Any]]:
-    result = _az("cognitiveservices", "model", "list", "--location", region, "-o", "json")
-    if result.returncode != 0:
-        raise SystemExit(
-            f"ERROR: could not list models in {region}. Run `az login` and "
-            f"`az account set --subscription <id>` first.\n{result.stderr.strip()}"
+    offered = _json_result(
+        _az("cognitiveservices", "model", "list", "--location", region, "-o", "json"),
+        f"could not list model offerings in {region}",
+    )
+    if not isinstance(offered, list) or len(offered) > MAX_OFFERED_MODELS:
+        raise SystemExit("ERROR: model offerings were not a bounded object array; coverage is unknown.")
+    for row in offered:
+        if not isinstance(row, dict) or not isinstance(row.get("model"), dict):
+            raise SystemExit("ERROR: model offering shape is invalid; coverage is unknown.")
+        model = row["model"]
+        if any(not isinstance(model.get(key), str) or not model[key] for key in ("name", "format", "version")):
+            raise SystemExit("ERROR: model offering identity is incomplete; coverage is unknown.")
+        skus = model.get("skus") or []
+        if not isinstance(skus, list) or any(not isinstance(sku, dict) for sku in skus):
+            raise SystemExit("ERROR: model offering SKU shape is invalid; coverage is unknown.")
+        if model.get("deprecation") is not None and not isinstance(model["deprecation"], dict):
+            raise SystemExit("ERROR: model deprecation shape is invalid; coverage is unknown.")
+    return offered
+
+
+def catalog_offerings(
+    required: list[dict[str, Any]], offered: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Availability/lifecycle must not borrow a same-named model from another format."""
+    identities = {
+        (item["name"].casefold(), item["format"].casefold()) for item in required
+    }
+    return [
+        row for row in offered
+        if (
+            str((row.get("model") or {}).get("name") or "").casefold(),
+            str((row.get("model") or {}).get("format") or "").casefold(),
+        ) in identities
+    ]
+
+
+def retirement_observations(
+    required: list[dict[str, Any]],
+    offered: list[dict[str, Any]] | None,
+    inventory: dict[tuple[str, str], dict[str, Any]],
+    *,
+    region: str,
+    now: datetime,
+    inventory_state: retirement.InventoryState,
+    inventory_observed_at: datetime | None,
+    public: tuple[retirement.PublicObservation, ...] = (),
+) -> list[retirement.RetirementObservation]:
+    observations = []
+    seen = set()
+    for item in required:
+        key = (_normal_location(region), str(item["deploymentName"]).casefold())
+        seen.add(key)
+        observations.append(retirement.observe_deployment(
+            item, inventory.get(key), existing_deployment_drift(item, inventory),
+            offered, now=now, inventory_state=inventory_state,
+            inventory_observed_at=inventory_observed_at, public=public,
+        ))
+    for key, deployed in sorted(inventory.items()):
+        if key[0] == _normal_location(region) and key not in seen:
+            observations.append(retirement.observe_deployment(
+                None, deployed, ["deployment is outside the catalog"], offered,
+                now=now, inventory_state=inventory_state,
+                inventory_observed_at=inventory_observed_at, public=public,
+            ))
+    return observations
+
+
+def run_retirement_report(
+    args: argparse.Namespace, models: dict[str, Any], catalog_bytes: bytes
+) -> int:
+    """A separate read-only path: no provisioning preflight, provider registration or quota."""
+    if args.retirement_report.resolve().is_relative_to(ROOT):
+        raise ValueError("Retirement report output must be outside the source checkout.")
+    started = datetime.now(UTC)
+    claude_enabled = (os.environ.get("AI4IA_CLAUDE_ENABLED") or "").strip().casefold() in {
+        "1", "true", "yes", "on"
+    }
+    by_region = catalog_requirements(
+        models, include_anthropic=claude_enabled, capacity_profile=args.capacity_profile
+    )
+    regions = sorted(set(args.region or by_region))
+    if not regions or len(regions) > MAX_REPORT_REGIONS or set(regions) - set(models["regions"]):
+        raise ValueError("Retirement reporting requires one to eight catalog regions.")
+    sources: list[retirement.SourceRead] = []
+    public: tuple[retirement.PublicObservation, ...] = ()
+    if args.public_evidence:
+        try:
+            public = retirement.load_public_observations(args.public_evidence, started)
+            sources.append(retirement.SourceRead("public-evidence-file", None, "observed", retirement.timestamp(started)))
+        except (OSError, ValueError):
+            sources.append(retirement.SourceRead(
+                "public-evidence-file", None, "unavailable", retirement.timestamp(started),
+                "invalid-or-unreadable-public-evidence",
+            ))
+    authenticated = False
+    inventory: dict[tuple[str, str], dict[str, Any]] = {}
+    inventory_reads: dict[str, retirement.SourceRead] = {}
+    environment = (args.environment_name or os.environ.get("AZURE_ENV_NAME") or "").strip()
+    resource_group = (args.resource_group or os.environ.get("AZURE_RESOURCE_GROUP") or "").strip()
+    endpoints = os.environ.get("AZURE_FOUNDRY_ENDPOINTS")
+    try:
+        expected = (os.environ.get("AZURE_SUBSCRIPTION_ID") or "").strip()
+        if not expected or not (resource_group or environment) or not (environment or endpoints):
+            raise SystemExit("Explicit report subscription and target account context are required.")
+        active_subscription(expected)
+        authenticated = True
+        sources.append(retirement.SourceRead(
+            "subscription-context", None, "observed", retirement.timestamp(datetime.now(UTC))
+        ))
+    except (SystemExit, OSError):
+        sources.append(retirement.SourceRead(
+            "subscription-context", None, "unavailable", retirement.timestamp(datetime.now(UTC)),
+            "missing-context-or-subscription-read-failed",
+        ))
+    if authenticated:
+        try:
+            inventory, _ = existing_deployment_inventory(
+                {**models, "regions": {region: models["regions"][region] for region in regions}},
+                resource_group=resource_group, environment_name=environment,
+                foundry_endpoints_raw=endpoints, region_reads=inventory_reads,
+            )
+        except (SystemExit, OSError):
+            for region in regions:
+                inventory_reads[region] = retirement.SourceRead(
+                    "deployment-inventory", region, "unavailable", retirement.timestamp(datetime.now(UTC)),
+                    "inventory-read-failed-or-ambiguous",
+                )
+    else:
+        for region in regions:
+            inventory_reads[region] = retirement.SourceRead(
+                "deployment-inventory", region, "unavailable", retirement.timestamp(datetime.now(UTC)),
+                "subscription-context-unavailable",
+            )
+    sources.extend(inventory_reads.values())
+    observations = []
+    for region in regions:
+        offered = None
+        if authenticated:
+            try:
+                offered = offered_models(region)
+                sources.append(retirement.SourceRead(
+                    "model-offerings", region, "observed", retirement.timestamp(datetime.now(UTC))
+                ))
+            except (SystemExit, OSError):
+                sources.append(retirement.SourceRead(
+                    "model-offerings", region, "unavailable", retirement.timestamp(datetime.now(UTC)),
+                    "offering-read-failed-or-invalid",
+                ))
+        else:
+            sources.append(retirement.SourceRead(
+                "model-offerings", region, "unavailable", retirement.timestamp(datetime.now(UTC)),
+                "subscription-context-unavailable",
+            ))
+        inventory_read = inventory_reads[region]
+        inventory_at = (
+            datetime.fromisoformat(inventory_read.observed_at)
+            if inventory_read.status == "observed" else None
         )
-    return json.loads(result.stdout or "[]")
+        observations.extend(retirement_observations(
+            by_region.get(region, []), offered, inventory, region=region, now=datetime.now(UTC),
+            inventory_state=inventory_read.status, inventory_observed_at=inventory_at, public=public,
+        ))
+    report = retirement.build_report(
+        observations, sources, now=datetime.now(UTC), catalog_bytes=catalog_bytes,
+        capacity_profile=args.capacity_profile, include_anthropic=claude_enabled,
+        public_count=len(public),
+    )
+    result = retirement.write_report(
+        args.retirement_report, report,
+        (ROOT / "docs" / "region-capability-matrix.md").read_text(encoding="utf-8"),
+    )
+    print(
+        f"Retirement report: {report['status']}; {report['total_observations']} observations, "
+        f"{report['unknown_observations']} unknown, {report['omitted_observations']} omitted. "
+        "No catalog or Azure state was changed."
+    )
+    return result
 
 
 def quota_usage(region: str) -> list[dict[str, Any]]:
@@ -767,7 +1016,11 @@ def index_lifecycle(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, str]]:
         status = model.get("lifecycleStatus")
         if not status:
             continue
-        index.setdefault(name.casefold(), {})[str(model.get("version", ""))] = str(status)
+        versions = index.setdefault(name.casefold(), {})
+        version = str(model.get("version", ""))
+        prior = versions.get(version, "").casefold()
+        if prior not in UNDEPLOYABLE_LIFECYCLE:
+            versions[version] = str(status)
     return index
 
 
@@ -874,7 +1127,7 @@ def evaluate(
             if folded not in DEPLOYABLE_LIFECYCLE:
                 warnings.append(
                     f"{name} ({version}): unrecognized lifecycle status {status!r}; "
-                    "treating as deployable. Check whether it blocks new deployments."
+                    "lifecycle safety is unknown; no authoritative lifecycle block was inferred."
                 )
 
         versions = skus[sku]
@@ -914,13 +1167,31 @@ def main() -> int:
         ).strip().casefold(),
         help="capacity profile to validate; defaults from AI4IA_MODEL_CAPACITY_PROFILE",
     )
+    parser.add_argument(
+        "--retirement-report",
+        type=Path,
+        help="read-only retirement report directory (JSON, Markdown, docs preview); skips quota",
+    )
+    parser.add_argument(
+        "--public-evidence",
+        type=Path,
+        help="optional bounded JSON array of explicitly scoped Microsoft Learn date observations",
+    )
     args = parser.parse_args()
 
+    catalog_bytes = MODELS_FILE.read_bytes()
+    models = json.loads(catalog_bytes)
+    if args.capacity_profile not in {"baseline", "maximum"}:
+        parser.error("capacity profile must be baseline or maximum")
+    if args.region and set(args.region) - set(models["regions"]):
+        parser.error("--region must name a region in infra/models.json")
+    if args.retirement_report:
+        return run_retirement_report(args, models, catalog_bytes)
+    public = retirement.load_public_observations(args.public_evidence, datetime.now(UTC))
     account = active_subscription(os.environ.get("AZURE_SUBSCRIPTION_ID"))
     account_label = f"{account['name']} ({account['id']})" if account["name"] else account["id"]
     print(f"Checking Azure subscription {account_label}.", flush=True)
 
-    models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
     claude_enabled = (
         os.environ.get("AI4IA_CLAUDE_ENABLED") or ""
     ).strip().casefold() in {"1", "true", "yes", "on"}
@@ -929,14 +1200,18 @@ def main() -> int:
         include_anthropic=claude_enabled,
         capacity_profile=args.capacity_profile,
     )
-    regions = args.region or sorted(by_region)
-    environment_name = args.environment_name or os.environ.get("AZURE_ENV_NAME")
-    resource_group = args.resource_group or os.environ.get("AZURE_RESOURCE_GROUP")
+    regions = sorted(set(args.region or by_region))
+    environment_name = (args.environment_name or os.environ.get("AZURE_ENV_NAME") or "").strip()
+    resource_group = (args.resource_group or os.environ.get("AZURE_RESOURCE_GROUP") or "").strip()
     existing_deployments, inventory_warnings = existing_deployment_inventory(
         models,
         resource_group=resource_group,
         environment_name=environment_name,
         foundry_endpoints_raw=os.environ.get("AZURE_FOUNDRY_ENDPOINTS"),
+    )
+    inventory_at = datetime.now(UTC)
+    inventory_state: retirement.InventoryState = (
+        "observed" if resource_group or environment_name else "not-requested"
     )
     for warning in inventory_warnings:
         print(f"WARNING: {warning}")
@@ -957,10 +1232,27 @@ def main() -> int:
             continue
         print(f"Checking {len(required)} deployments in {region} ...", flush=True)
         offered = offered_models(region)
-        index = index_offered(offered)
+        scoped_offered = catalog_offerings(required, offered)
+        index = index_offered(scoped_offered)
         errors, warnings = evaluate(
-            required, index, index_lifecycle(offered), existing_deployments
+            required, index, index_lifecycle(scoped_offered), existing_deployments
         )
+        observations = retirement_observations(
+            required, offered, existing_deployments, region=region, now=datetime.now(UTC),
+            inventory_state=inventory_state, inventory_observed_at=inventory_at, public=public,
+        )
+        for observation in observations:
+            detail = retirement.observation_summary(observation)
+            unsafe_date = any(
+                evidence.unsafe and evidence.field != "model.lifecycleStatus"
+                for evidence in observation.catalog_evidence
+            )
+            if unsafe_date and observation.decision == "block-addition-or-change":
+                errors.append(detail + " Authoritative desired-target date is within the 7-day admission horizon.")
+            elif observation.incomplete or observation.attention:
+                warnings.append(detail)
+            else:
+                print(f"  RETIREMENT: {detail}")
         if not args.skip_quota:
             quota_index = index_quota(quota_usage(region))
             # Counters are subscription-wide and identical in every region, so
