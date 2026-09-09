@@ -339,12 +339,14 @@ class CosmosDeletionMixin:
             if fence["closed"]:
                 raise SessionNotFoundError(session.id)
             try:
+                # The SDK consumes operation options while formatting a batch.
+                # Fence retries must retain each child's original precondition.
                 return await container.execute_item_batch(
                     partition_key=session.id,
                     batch_operations=[
                         ("replace", (FENCE_ID, body_only(fence)),
                          {"if_match_etag": require_etag(fence)}),
-                        *operations,
+                        *((operation, args, dict(options)) for operation, args, options in operations),
                     ],
                 )
             except CosmosBatchOperationError as exc:

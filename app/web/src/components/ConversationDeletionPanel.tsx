@@ -252,8 +252,9 @@ function DeletionRequests({ sessionId, isOpen, pendingIds, onResume, onDiscard, 
   );
 }
 
-export function ConversationDeletionPanel({ open = true, sessionId = null, onShowAll, onClose }: {
+export function ConversationDeletionPanel({ open = true, sessionId = null, onShowAll, onClose, onDiscardSession }: {
   open?: boolean; sessionId?: string | null; onShowAll: () => void; onClose: () => void;
+  onDiscardSession?: (id: string) => Promise<DeletionStatus | undefined>;
 }) {
   const owner = useCurrentOwner();
   const activeRef = useRef(open);
@@ -279,7 +280,8 @@ export function ConversationDeletionPanel({ open = true, sessionId = null, onSho
     requestsRef.current.set(key, request);
     setPending((current) => new Map(current).set(ownerKey, new Set([...(current.get(ownerKey) ?? []), id])));
     try {
-      return await (action === "discard" ? deleteSession(id) : reconcileSessionDeletion(id));
+      return await (action === "discard"
+        ? (onDiscardSession ?? deleteSession)(id) : reconcileSessionDeletion(id));
     } finally {
       if (mountedRef.current && requestsRef.current.get(key) === request) {
         requestsRef.current.delete(key);
@@ -293,7 +295,7 @@ export function ConversationDeletionPanel({ open = true, sessionId = null, onSho
         });
       }
     }
-  }, [isOpen, owner]);
+  }, [isOpen, onDiscardSession, owner]);
   if (!open || owner.key === null) return null;
 
   return (

@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   associateLibraryDocument: vi.fn(),
   deleteSession: vi.fn(),
   listSessionDeletions: vi.fn(),
+  listSessionInitializations: vi.fn(),
   getSessionDeletion: vi.fn(),
   reconcileSessionDeletion: vi.fn(),
   toolCatalog: [] as ToolCatalogItem[],
@@ -268,6 +269,9 @@ beforeEach(() => {
   mocks.deleteSession.mockReset().mockResolvedValue(undefined);
   mocks.listSessionDeletions.mockReset().mockResolvedValue({
     items: [PENDING_DELETION], hasMore: false, nextCursor: null,
+  });
+  mocks.listSessionInitializations.mockReset().mockResolvedValue({
+    items: [], hasMore: false, nextCursor: null, observation: "not_completion_evidence",
   });
   mocks.getSessionDeletion.mockReset().mockImplementation(async (sessionId: string) => ({ ...PENDING_DELETION, sessionId }));
   mocks.reconcileSessionDeletion.mockReset().mockImplementation(async (sessionId: string) => ({ ...PENDING_DELETION, sessionId }));
@@ -682,6 +686,106 @@ describe("ChatApp session state reliability", () => {
     expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "C");
     await user.click(screen.getByRole("button", { name: "Delete Session A" }));
     expect(mocks.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it.each(["A", "B"])("invalidates accepted published-reservation discard without disturbing active %s", async (active) => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    mocks.listSessionInitializations.mockResolvedValue({
+      items: [{ sessionId: "A", createdAt: "2026-09-09T12:00:00Z", state: "initializing" }],
+      hasMore: false, nextCursor: null, observation: "not_completion_evidence",
+    });
+    mocks.listMessages.mockImplementation(async (id: string) => [{
+      id: `message-${id}`, sessionId: id, userId: "u1", role: "assistant",
+      content: `Retained transcript ${id}`, status: "complete",
+      createdAt: "2026-09-09T12:00:00Z",
+    }]);
+    mocks.deleteSession.mockResolvedValue({ ...PENDING_DELETION, sessionId: "A" });
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: `Session ${active}` }));
+    await screen.findByText(`Retained transcript ${active}`);
+    await user.click(screen.getByRole("button", { name: "Deletion status" }));
+    await user.click(screen.getByText("Incomplete conversation creation"));
+    await user.click(await screen.findByRole("button", { name: "Discard incomplete creation A" }));
+    await screen.findByRole("heading", { name: "Conversation A" });
+    await user.click(screen.getByRole("button", { name: "Close deletion status" }));
+    expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Conversation")).toHaveAttribute(
+      "data-conversation-id", active === "A" ? "draft" : "B",
+    );
+    if (active === "A") expect(screen.queryByText("Retained transcript A")).not.toBeInTheDocument();
+    else expect(screen.getByText("Retained transcript B")).toBeInTheDocument();
+    // A later successful full-list read still contains the removed ID.
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    await screen.findByText("Retained transcript B");
+    expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])("rejects delayed publication only after accepted incomplete-creation discard (%s)", async (accepted) => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const creation = deferredDeletion<Session>();
+    mocks.createSession.mockReturnValueOnce(creation.promise);
+    mocks.listSessionInitializations.mockResolvedValue({
+      items: [{ sessionId: "C", createdAt: "2026-09-09T12:00:00Z", state: "initializing" }],
+      hasMore: false, nextCursor: null, observation: "not_completion_evidence",
+    });
+    if (accepted) mocks.deleteSession.mockResolvedValue({ ...PENDING_DELETION, sessionId: "C" });
+    else mocks.deleteSession.mockRejectedValue(new ApiError(409, "Discard was not accepted"));
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: "Deletion status" }));
+    await user.click(screen.getByText("Incomplete conversation creation"));
+    await user.click(await screen.findByRole("button", { name: "Discard incomplete creation C" }));
+    if (accepted) await screen.findByRole("heading", { name: "Conversation C" });
+    else await screen.findByText(/Discard was not accepted/);
+    await user.click(screen.getByRole("button", { name: "Close deletion status" }));
+    await act(async () => creation.resolve(session("C")));
+    if (accepted) {
+      expect(mocks.streamChat).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: "Session C" })).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "draft");
+    } else {
+      await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole("button", { name: "Session C" })).toBeInTheDocument();
+      expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "C");
+    }
+    expect(screen.getByRole("button", { name: "Session B" })).toBeInTheDocument();
+  });
+
+  it.each([false, true])("prevents an in-flight selected transcript from returning only after accepted discard (%s)", async (accepted) => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const messages = deferredDeletion<Awaited<ReturnType<typeof mocks.listMessages>>>();
+    mocks.listMessages.mockReturnValueOnce(messages.promise);
+    mocks.listSessionInitializations.mockResolvedValue({
+      items: [{ sessionId: "A", createdAt: "2026-09-09T12:00:00Z", state: "initializing" }],
+      hasMore: false, nextCursor: null, observation: "not_completion_evidence",
+    });
+    if (accepted) mocks.deleteSession.mockResolvedValue({ ...PENDING_DELETION, sessionId: "A" });
+    else mocks.deleteSession.mockRejectedValue(new ApiError(409, "Discard not accepted"));
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledWith("A"));
+    await user.click(screen.getByRole("button", { name: "Deletion status" }));
+    await user.click(screen.getByText("Incomplete conversation creation"));
+    await user.click(await screen.findByRole("button", { name: "Discard incomplete creation A" }));
+    if (accepted) await screen.findByRole("heading", { name: "Conversation A" });
+    else await screen.findByText(/Discard not accepted/);
+    await user.click(screen.getByRole("button", { name: "Close deletion status" }));
+    await act(async () => messages.resolve([{
+      id: "late-message", sessionId: "A", userId: "u1", role: "assistant",
+      content: "Late private transcript", status: "complete", createdAt: "2026-09-09T12:00:00Z",
+    }]));
+    if (accepted) {
+      expect(screen.queryByText("Late private transcript")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "draft");
+    } else {
+      expect(await screen.findByText("Late private transcript")).toBeInTheDocument();
+      expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "A");
+    }
+    expect(screen.getByRole("button", { name: "Session B" })).toBeInTheDocument();
   });
 
   it("restores the previous model and surfaces a failed persistence PATCH", async () => {

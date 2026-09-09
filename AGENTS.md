@@ -62,6 +62,8 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    Opt-in protocol-v1 conversation deletion retains minimal owner tombstones and
    closed sentinels in both child partitions. Every child mutation must CAS the
    active sentinel in the same Cosmos batch; a parent read is not a write fence.
+   Copy each operation's options for every batch attempt: the Cosmos SDK consumes
+   conditional options during serialization, so reusing them drops child CAS.
    Never expire unresolved Blob upload intents or infer completion from an empty
    scan. New deletion work is default-off and owner-resumed, never an automatic
    sweep; existing-record enrollment and rollout need separate approval. See
