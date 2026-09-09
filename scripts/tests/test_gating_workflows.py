@@ -26,9 +26,11 @@ and a required-check entry that no longer matches anything blocks every PR.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 import unittest
+from copy import deepcopy
 from fnmatch import fnmatchcase
 from pathlib import Path
 
@@ -51,6 +53,36 @@ GATING_WORKFLOWS: dict[str, set[str]] = {
     "infra-validate.yml": {"bicep-lint-build"},
     "docker-build.yml": {"web image", "api image", "dockerignore context boundary"},
 }
+
+# Audited action consumers, not a workflow/job allowlist. Moving an action must
+# move its grant; a new action needs its token use reviewed before joining here.
+ACTION_PERMISSIONS: dict[str, dict[str, str]] = {
+    "actions/checkout": {"contents": "read"},
+    "actions/configure-pages": {"pages": "read"},
+    "actions/deploy-pages": {"pages": "write", "id-token": "write"},
+    "azure/login": {"id-token": "write"},
+    # CodeQL reads its workflow/run metadata as well as writing code scanning.
+    "github/codeql-action/init": {"actions": "read", "security-events": "write"},
+    "github/codeql-action/analyze": {"actions": "read", "security-events": "write"},
+    "github/codeql-action/upload-sarif": {"security-events": "write"},
+}
+RUNNER_OR_PUBLIC_ACTIONS = {
+    "actions/download-artifact",  # Cross-run token input is handled separately.
+    "actions/setup-dotnet",
+    "actions/setup-node",
+    "actions/setup-python",
+    "actions/upload-artifact",
+    "actions/upload-pages-artifact",
+    "aquasecurity/trivy-action",
+    "azure/setup-azd",
+    "docker/build-push-action",
+    "docker/setup-buildx-action",
+    "gitleaks/gitleaks-action",
+}
+
+
+def workflow_paths() -> list[Path]:
+    return sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")])
 
 
 class GatingWorkflowsAlwaysReportTests(unittest.TestCase):
@@ -178,11 +210,11 @@ class GeneratorDependencyTriggerTests(unittest.TestCase):
 class WorkflowCheckoutCredentialTests(unittest.TestCase):
     def test_checkouts_do_not_retain_tokens_for_later_steps(self) -> None:
         checked = 0
-        for path in sorted(WORKFLOWS.glob("*.yml")):
+        for path in workflow_paths():
             document = yaml.safe_load(path.read_text(encoding="utf-8"))
             for job_name, job in document.get("jobs", {}).items():
                 for step in job.get("steps", []):
-                    if not step.get("uses", "").startswith("actions/checkout@"):
+                    if step.get("uses", "").split("@", 1)[0].lower() != "actions/checkout":
                         continue
                     checked += 1
                     with self.subTest(workflow=path.name, job=job_name):
@@ -192,6 +224,130 @@ class WorkflowCheckoutCredentialTests(unittest.TestCase):
                             "No current workflow needs a checkout credential after fetching source.",
                         )
         self.assertGreaterEqual(checked, 15, "checkout discovery is no longer exercising the workflows")
+
+
+class WorkflowPermissionBoundaryTests(unittest.TestCase):
+    def required_permissions(self, job: dict) -> dict[str, str]:
+        self.assertNotIn("uses", job, "Review token forwarding before adding a reusable workflow.")
+        required: dict[str, str] = {}
+
+        def require(permissions: dict[str, str]) -> None:
+            for scope, level in permissions.items():
+                if required.get(scope) != "write":
+                    required[scope] = level
+
+        for step in job.get("steps", []):
+            action = step.get("uses", "").split("@", 1)[0].lower()
+            inputs = step.get("with", {})
+            if action:
+                self.assertIn(
+                    action,
+                    ACTION_PERMISSIONS.keys() | RUNNER_OR_PUBLIC_ACTIONS,
+                    "Review the new action's token/API consumers before declaring its permissions.",
+                )
+                require(ACTION_PERMISSIONS.get(action, {}))
+            if action == "actions/configure-pages":
+                self.assertIn(inputs.get("enablement", False), (False, "false"))
+                self.assertNotIn("token", inputs, "Pages must use the scoped job token.")
+            if action == "azure/login":
+                self.assertNotIn("creds", inputs, "Keep the reviewed OIDC login path.")
+                self.assertEqual(inputs.get("auth-type", "SERVICE_PRINCIPAL"), "SERVICE_PRINCIPAL")
+            if action == "actions/download-artifact" and inputs.get("github-token"):
+                # Unlike same-run uploads/listing, findBy uses the Actions REST API.
+                require({"actions": "read"})
+            if action == "gitleaks/gitleaks-action":
+                self.assertEqual(step.get("env", {}).get("GITLEAKS_ENABLE_COMMENTS"), "false")
+
+            script = re.sub(r"(?m)^\s*#.*$", "", step.get("run", ""))
+            if re.search(r"\bazd\s+auth\s+login\b", script):
+                self.assertRegex(script, r"--federated-credential-provider\s+['\"]?github\b")
+                require({"id-token": "write"})
+            if re.search(r"\bgh\s+api\b", script):
+                self.assertIn("/actions/runs/", script, "Review the new GitHub REST consumer.")
+                self.assertNotRegex(
+                    script,
+                    r"(?:--method|--field|--raw-field)(?:[=\s])|(?:^|\s)-[XfF]",
+                    "Only the reviewed read-only Actions REST call is admitted.",
+                )
+                require({"actions": "read"})
+        return required
+
+    def assert_permission_boundary(self, document: dict) -> None:
+        # contents:read is sufficient for checkout-only workflows. A job without
+        # a checkout must explicitly opt out rather than inherit even that grant.
+        defaults = document["permissions"]
+        self.assertIn(defaults, ({}, {"contents": "read"}), "Privileged workflow default.")
+        self.assertTrue(document.get("jobs"), "No jobs discovered.")
+        for job_name, job in document["jobs"].items():
+            # A job map REPLACES workflow defaults; it does not merge with them.
+            effective = job.get("permissions", defaults)
+            self.assertEqual(
+                effective,
+                self.required_permissions(job),
+                f"{job_name}: permissions must match its actual action/REST/OIDC consumers.",
+            )
+
+    def test_all_workflow_jobs_have_only_the_permissions_their_steps_need(self) -> None:
+        paths = workflow_paths()
+        self.assertGreaterEqual(len(paths), 9, "Workflow discovery lost coverage.")
+        for path in paths:
+            with self.subTest(workflow=path.name):
+                self.assert_permission_boundary(yaml.safe_load(path.read_text(encoding="utf-8")))
+
+    def test_workflow_writes_are_rejected_even_when_jobs_override_them(self) -> None:
+        document = {
+            "permissions": {},
+            "jobs": {"validation": {"permissions": {}, "steps": [{"run": "true"}]}},
+        }
+        self.assert_permission_boundary(document)
+        for scope in ("contents", "pages", "id-token", "security-events", "actions"):
+            with self.subTest(scope=scope):
+                document["permissions"] = {scope: "write"}
+                with self.assertRaisesRegex(AssertionError, "Privileged workflow default"):
+                    self.assert_permission_boundary(document)
+
+    def test_tokenless_artifact_job_must_opt_out_of_checkout_defaults(self) -> None:
+        pages = yaml.safe_load((WORKFLOWS / "pages.yml").read_text(encoding="utf-8"))
+        upload = next(
+            step
+            for job in pages["jobs"].values()
+            for step in job["steps"]
+            if step.get("uses", "").startswith("actions/upload-pages-artifact@")
+        )
+        document = {
+            "permissions": {"contents": "read"},
+            "jobs": {"artifact-only": {"steps": [deepcopy(upload)]}},
+        }
+        with self.assertRaisesRegex(AssertionError, "artifact-only: permissions"):
+            self.assert_permission_boundary(document)
+        document["jobs"]["artifact-only"]["permissions"] = {}
+        self.assert_permission_boundary(document)
+
+    def test_oidc_permission_follows_the_consumer_when_jobs_change(self) -> None:
+        pages = yaml.safe_load((WORKFLOWS / "pages.yml").read_text(encoding="utf-8"))
+        login = next(
+            step
+            for job in pages["jobs"].values()
+            for step in job["steps"]
+            if step.get("uses", "").startswith("azure/login@")
+        )
+        document = {
+            "permissions": {},
+            "jobs": {
+                "original": {"permissions": {"id-token": "write"}, "steps": [deepcopy(login)]},
+                "new-name": {"permissions": {}, "steps": []},
+            },
+        }
+        self.assert_permission_boundary(document)
+        original, moved = document["jobs"].values()
+        moved["steps"], original["steps"] = original["steps"], []
+        with self.assertRaisesRegex(AssertionError, "original: permissions"):
+            self.assert_permission_boundary(document)
+        original["permissions"] = {}
+        with self.assertRaisesRegex(AssertionError, "new-name: permissions"):
+            self.assert_permission_boundary(document)
+        moved["permissions"] = {"id-token": "write"}
+        self.assert_permission_boundary(document)
 
 
 BASH = find_bash()
