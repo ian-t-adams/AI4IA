@@ -278,10 +278,9 @@ jobs:
         run: |
           set -euo pipefail
           # app-ci's `uv lock --check` only compares the lock to pyproject.toml;
-          # it never looks at WHERE the artifacts resolve from. And nothing on
-          # the install path reads the lock at all (Dockerfile and CI both
-          # `pip install` from pyproject.toml). So a lockfile rewritten to point
-          # at a different registry passes every other gate.
+          # it never looks at WHERE the artifacts resolve from. The Dockerfile
+          # now consumes the frozen lock, so public provenance is also a build
+          # prerequisite; a successful freshness check cannot establish it.
           #
           # Measured, not assumed: commit aad6889 committed a uv.lock with 1,659
           # lines pointing at an internal Microsoft package-feed proxy, because

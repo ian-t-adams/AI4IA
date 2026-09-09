@@ -28,20 +28,25 @@ This test closes that hole for the whole class rather than for the one package:
 it re-derives the lazy imports from the source on every run, so a new one is
 covered the day it is written.
 
-Scope note: this asserts *resolvability* in the environment CI installs
-(``pip install -e ".[dev]"``). That is what catches an undeclared module. It does
-not distinguish a runtime dependency from one that is only in the ``dev`` extra —
-the shipped image installs ``.`` without extras, and proving that property would
-need a second, extra-free environment.
+Pytest covers the dev/foundry environment. docker-build also runs this file with
+plain Python inside the shipping image, without installing pytest or mounting
+source over the installed package. That path exercises the extra-free runtime
+and rejects build/provisioning/test tools in it.
 """
 from __future__ import annotations
 
 import ast
+import importlib
+import importlib.metadata
 import importlib.util
+import os
+import re
 import sys
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "src"
+import ai4ia_api
+
+SRC = Path(ai4ia_api.__file__).resolve().parent
 FIRST_PARTY = "ai4ia_api"
 
 # The survey that motivated this test found 24 distinct modules. Assert a floor a
@@ -100,3 +105,30 @@ def test_every_lazily_imported_module_is_actually_installed() -> None:
         "add the distribution to [project.dependencies] in pyproject.toml:\n  "
         + "\n  ".join(unresolved)
     )
+
+
+def _assert_runtime_image() -> None:
+    assert sys.version_info[:2] == (3, 12), "runtime must use CI's Python 3.12"
+    assert SRC.is_relative_to(Path(sys.prefix)), "API must be installed, not imported from build source"
+    test_every_lazily_imported_module_is_actually_installed()
+    for module in sorted(_lazy_third_party_imports()):
+        importlib.import_module(module)
+
+    installed = {
+        re.sub(r"[-_.]+", "-", distribution.metadata["Name"]).lower()
+        for distribution in importlib.metadata.distributions()
+    }
+    excluded = {
+        "azure-ai-projects", "hatchling", "pyright", "pytest", "pytest-asyncio", "ruff", "uv",
+    }
+    assert not installed & excluded, f"non-runtime packages installed: {installed & excluded}"
+    if sys.platform == "linux":
+        assert os.getuid() == 10001, "API must run as the unchanged non-root user"
+        assert not os.access(sys.prefix, os.W_OK), "runtime user must not own the installed environment"
+        importlib.import_module("uvloop")
+        assert "colorama" not in installed, "Windows-only dependency leaked into Linux"
+    importlib.import_module("ai4ia_api.main")
+
+
+if __name__ == "__main__":
+    _assert_runtime_image()
