@@ -37,7 +37,7 @@
         <h1>Deployment snapshot</h1>
         <p class="lede">The deployed footprint of AI4IA in <span class="mono" id="status-resource-group">the configured resource group</span>, generated
           from Azure Resource Graph (the authoritative inventory), Azure Resource Health, and probes of the public
-          web and model-proxy endpoints.</p>
+          web and model-proxy endpoints plus direct API liveness and canonical session-store readiness.</p>
         <p class="updated" id="updated" aria-live="polite">Loading snapshot…</p>
       </div>
     </section>
@@ -51,16 +51,18 @@
           <span class="mono">status.js</span> and <span class="mono">inventory.js</span> using the deployment's federated
           (OIDC) identity, then republishes this
           page. A snapshot older than 24 hours is visibly marked stale. Health is derived from provisioning state,
-          Resource Health availability when that source is available, and endpoint reachability.
+          Resource Health availability when that source is available, and the explicitly scoped endpoint probes below.
         </div>
       </div>
     </section>
 
     <section style="padding-top:6px">
       <div class="container">
-        <h2 class="section-title">Public endpoints</h2>
-        <p class="section-sub">A 200/redirect or an auth challenge (401/403) both prove the ingress is serving.
-          The model proxy keeps at least one replica; “no response” is therefore a real degraded signal, not an expected scale-to-zero cold start.</p>
+        <h2 class="section-title">Public endpoint probes</h2>
+        <p class="section-sub">Web and proxy probes establish ingress reachability, including an auth challenge (401/403).
+          API liveness requires the expected successful health response; readiness additionally checks the cached canonical
+          session store. Redirects, auth challenges, invalid responses and unresolved targets never pass API health.
+          These probes do not authenticate a user, call a model, test Search or establish end-to-end chat health.</p>
         <div class="grid cols-2" id="endpoints"></div>
       </div>
     </section>

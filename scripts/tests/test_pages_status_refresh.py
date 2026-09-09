@@ -82,6 +82,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
         *,
         health_source: dict | None = None,
         resources: list[dict] | None = None,
+        endpoints: list[dict] | None = None,
     ) -> dict[str, str]:
         app_path = json.dumps(str(APP_JS))
         health_source_json = json.dumps(
@@ -107,6 +108,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
                 }
             ]
         )
+        endpoints_json = json.dumps(endpoints or [])
         harness = f"""
         const nodes = {{
           "status-stats": {{ innerHTML: "" }},
@@ -121,7 +123,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
             generatedAt: "2026-08-08T11:00:00Z",
             resourceGroup: "rg-test",
             summary: {{ total: 1, endpointsUp: 0, endpointsTot: 0 }},
-            endpoints: [],
+            endpoints: {endpoints_json},
             healthSource: {health_source_json}
           }},
           AI4IA_INVENTORY: {{
@@ -139,7 +141,8 @@ class PagesStatusRefreshTests(unittest.TestCase):
         process.stdout.write(JSON.stringify({{
           resources: nodes["resources-body"].innerHTML,
           stats: nodes["status-stats"].innerHTML,
-          healthSource: nodes["health-source"].innerHTML
+          healthSource: nodes["health-source"].innerHTML,
+          endpoints: nodes["endpoints"].innerHTML
         }}));
         """
         result = subprocess.run(
@@ -398,6 +401,56 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertIn("stateBadge(freshness.state, freshness.label)", app)
         self.assertIn("older than 24 hours is visibly marked stale", status.lower())
         self.assertIn('id="updated" aria-live="polite"', status)
+
+    def test_old_snapshots_do_not_imply_api_health_was_observed(self) -> None:
+        rendered = self._render_status(endpoints=[
+            {"name": "Web app", "state": "up", "httpStatus": 200},
+            {"name": "Model proxy", "state": "up", "httpStatus": 401},
+        ])
+        self.assertIn("2/4", rendered["stats"])
+        self.assertIn("Endpoint probes passing", rendered["stats"])
+        self.assertIn("API liveness", rendered["endpoints"])
+        self.assertIn("API readiness", rendered["endpoints"])
+        self.assertIn("does not contain a direct API", rendered["endpoints"])
+        self.assertIn("No observation recorded", rendered["endpoints"])
+        self.assertNotIn(">ready</span>", rendered["endpoints"])
+
+    def test_api_health_cards_require_positive_evidence_and_display_timing(self) -> None:
+        ready = {
+            "name": "API readiness", "kind": "readiness", "state": "up",
+            "httpStatus": 200, "outcome": "healthy",
+            "observedAt": "2026-08-08T11:00:00Z", "latencyMs": 42,
+            "note": "Cached session-store readiness; no model coverage.",
+        }
+        observed = self._render_status(endpoints=[ready])
+        self.assertIn(">ready</span>", observed["endpoints"])
+        self.assertIn("42 ms", observed["endpoints"])
+        self.assertIn("Checked", observed["endpoints"])
+        self.assertIn("no model coverage", observed["endpoints"])
+        self.assertIn("1/2", observed["stats"])
+        for invalid in (
+            {"httpStatus": 401}, {"outcome": "auth_required"},
+            {"observedAt": None}, {"observedAt": "not a date"},
+            {"state": "unknown"},
+        ):
+            with self.subTest(invalid=invalid):
+                rendered = self._render_status(endpoints=[{**ready, **invalid}])
+                self.assertNotIn(">ready</span>", rendered["endpoints"])
+                self.assertIn("0/2", rendered["stats"])
+        escaped = self._render_status(endpoints=[{
+            **ready, "note": "<script>unsafe()</script>",
+        }])
+        self.assertNotIn("<script>unsafe()", escaped["endpoints"])
+        self.assertIn("&lt;script&gt;", escaped["endpoints"])
+
+    def test_api_status_helper_changes_trigger_the_existing_pages_refresh(self) -> None:
+        document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        triggers = document.get("on", document.get(True))
+        self.assertIn("scripts/status-endpoints.ps1", triggers["push"]["paths"])
+        self.assertIn(
+            "scripts.tests.test_status_endpoints",
+            (REPO / ".github" / "workflows" / "quality.yml").read_text(encoding="utf-8"),
+        )
 
     def test_services_counts_use_the_shared_snapshot_freshness_state(self) -> None:
         current = self._render_services("2026-08-08T11:00:00Z")

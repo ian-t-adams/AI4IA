@@ -231,6 +231,24 @@
     var counts = { healthy: 0, provisioned: 0, degraded: 0, unavailable: 0 };
     resources.forEach(function (r) { counts[effectiveState(r)]++; });
 
+    var endpoints = Array.isArray(s.endpoints) ? s.endpoints.slice() : [];
+    ["liveness", "readiness"].forEach(function (kind) {
+      if (!endpoints.some(function (e) { return e.kind === kind; })) {
+        endpoints.push({
+          name: "API " + kind, kind: kind, state: "unknown",
+          note: "This snapshot does not contain a direct API " + kind + " observation."
+        });
+      }
+    });
+    function endpointState(e) {
+      if (e.state === "up" && (e.kind === "liveness" || e.kind === "readiness") &&
+          (e.httpStatus !== 200 || e.outcome !== "healthy" ||
+           !e.observedAt || isNaN(new Date(e.observedAt).getTime()))) {
+        return "unknown";
+      }
+      return e.state === "up" || e.state === "down" ? e.state : "unknown";
+    }
+
     var stats = el("status-stats");
     if (stats) {
       // "Health reported" is deliberately separate from "Provisioned": most Azure
@@ -249,16 +267,24 @@
         stat(resources.length || sum.total, "Azure resources") +
         stat(healthSourceValue, healthSourceLabel) +
         stat(counts.provisioned, provisionedLabel) +
-        stat(sum.endpointsUp + "/" + sum.endpointsTot, "Public endpoints up") +
+        stat(endpoints.filter(function (e) { return endpointState(e) === "up"; }).length +
+          "/" + endpoints.length, "Endpoint probes passing") +
         stat(counts.degraded + counts.unavailable, "Degraded / unavailable");
     }
 
     var eps = el("endpoints");
     if (eps) {
-      eps.innerHTML = s.endpoints.map(function (e) {
-        var b = stateBadge(e.state, e.state === "up" ? "reachable" : (e.state === "unknown" ? "no response" : "down"));
-        return '<div class="card"><h3>' + b + " " + esc(e.name) + '</h3><p class="mono">' + esc(e.url) +
-          "</p><p>HTTP " + esc(e.httpStatus || "—") + (e.note ? " · " + esc(e.note) : "") + "</p></div>";
+      eps.innerHTML = endpoints.map(function (e) {
+        var state = endpointState(e);
+        var passing = e.kind === "readiness" ? "ready" : (e.kind === "liveness" ? "live" : "reachable");
+        var b = stateBadge(state, state === "up" ? passing : (state === "unknown" ? "not established" : "down"));
+        var timing = e.observedAt ? "Checked " + fmtDate(e.observedAt) : "No observation recorded";
+        if (typeof e.latencyMs === "number" && isFinite(e.latencyMs) && e.latencyMs >= 0) {
+          timing += " · " + e.latencyMs + " ms";
+        }
+        return '<div class="card"><h3>' + b + " " + esc(e.name) + '</h3><p class="mono">' + esc(e.url || "") +
+          "</p><p>HTTP " + esc(e.httpStatus || "—") + (e.note ? " · " + esc(e.note) : "") +
+          '</p><p class="meta">' + esc(timing) + "</p></div>";
       }).join("");
     }
 
