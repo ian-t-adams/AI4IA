@@ -386,6 +386,7 @@ keeps endpoint and authentication configuration in the Foundry project connectio
 ```powershell
 python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/redaction rules
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
+python3 -m unittest scripts.tests.test_capacity_evidence        # read-only allocation/quota/aggregate metrics
 python3 -m unittest scripts.tests.test_postprovision_appconfig_sentinel scripts.tests.test_postprovision_cu_defaults scripts.tests.test_postprovision_hard_gates
 python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap
 python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deploy.yml's real block with `az` stubbed
@@ -683,6 +684,30 @@ Model deployment `capacity` is the portable baseline. Optional `maxCapacity` val
 are subscription-specific output from `scripts/sync-model-capacity.py`; never
 hand-copy portal bars or set every regional deployment to the same global limit.
 Bicep uses them only when `AI4IA_MODEL_CAPACITY_PROFILE=maximum`.
+
+`scripts/report-model-capacity.py` is a separate **read-only evidence collector**,
+not another planner. It reuses the existing deployment naming function but never
+calls the maximum planner, its collectors, or its write path. Every Azure read
+names an explicit subscription; exact RG, environment tags, AIServices account
+naming and deployment resource IDs bind inventory and aggregate metrics. It uses
+fixed ARM GET operations with bounded process time, bytes, inventory, hourly
+series, samples and final serialization. No login, subscription selection,
+provider registration, model invocation, logs/traces, new workflow or Azure write
+is part of collection. The existing quality job runs only mocked/offline tests.
+
+Quota counter replicas and `modelCapacities` are observations, not pool identity.
+Never infer scope from equal numbers, publisher names, SKU processing geography,
+or catalog `maxCapacityPool`. Optional fresh, subscription-bound **operator
+assertions** enable separately labeled pool arithmetic only when counter/unit,
+all-version membership, regional coverage and live allocation evidence agree.
+Overlapping declarations cannot split one counter across versions; counter usage
+outside matched catalog allocation stays unattributed, never available quota.
+No headroom is emitted for missing, stale, warning/partial or contradictory pool
+evidence. A measured zero needs actual samples; absent series and null samples
+are unknown. Neither zero nor incomplete usage recommends removal or downsizing.
+Units stay raw, pricing is unknown, and production criticality/reserves/profile
+selection require separate approval. See the
+[capacity evidence runbook](docs/runbooks/deploy-to-azure.md#read-only-capacity-and-usage-evidence).
 
 ### Add a feature flag
 

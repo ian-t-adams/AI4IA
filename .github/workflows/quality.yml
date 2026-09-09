@@ -199,6 +199,13 @@ jobs:
           # use the same job-pinned version as the other workflow-wiring tests.
           python3 -m unittest scripts.tests.test_subscription_preflight
 
+      - name: Run read-only capacity evidence tests
+        run: |
+          set -euo pipefail
+          # Mocked management/metric transport and bounded subprocess controls.
+          # No Azure login, live metrics, capacity changes or new dependencies.
+          python3 -m unittest scripts.tests.test_capacity_evidence
+
       - name: Run Entra app provisioning guard tests
         run: |
           set -euo pipefail
