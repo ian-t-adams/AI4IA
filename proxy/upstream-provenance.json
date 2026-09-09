@@ -18,7 +18,7 @@
   "patches": [
     {
       "path": "Shared-parser/Shared-parser.csproj",
-      "reason": "Remove unused runtime packages and retain the logging abstraction used by the parser."
+      "reason": "Remove unused runtime packages and update Microsoft.Extensions.Logging.Abstractions to 10.0.12 for the parser."
     },
     {
       "path": "Shared-parser/StreamProcessor/JsonStreamProcessor.cs",
@@ -91,7 +91,7 @@
   ],
   "files": {
     "Shared-parser/Shared-parser.csproj": {
-      "localCanonicalSha256": "fcf5dc2cce07b62a96b2d950960420a45d819773ddcca50bc6092a1dbcac8e2a",
+      "localCanonicalSha256": "427a8ec24ea669bc7221d90b71bbec037ed798d7e84c09966be661ce4d3e895e",
       "upstreamRawSha256": "8d81dc6920f493e0d5a425b7f73b5808d7c24f4103cd5b443832d710d88b6591",
       "upstreamCanonicalSha256": "8d81dc6920f493e0d5a425b7f73b5808d7c24f4103cd5b443832d710d88b6591",
       "disposition": "ai4ia-patched"
@@ -157,7 +157,7 @@
       "disposition": "upstream-equivalent"
     },
     "Shared-parser/packages.lock.json": {
-      "localCanonicalSha256": "12ce62f4a80c0d1552ea42221453352712761a72ece837eb7590d7597e71b345",
+      "localCanonicalSha256": "12c2d0e3073adcc826bf9f7bc9cc1c48e74b2cb9e1487764f0b363af0b8fa6fd",
       "disposition": "ai4ia-added"
     },
     "Shared/HealthProbe/HealthStatusEnum.cs": {
