@@ -78,22 +78,22 @@ def parse_pin(reference: str) -> Pin:
     if not match or len(reference) > 512 or not TAG.fullmatch(match.group("tag")):
         raise BaseSourceError("invalid_base_pin")
     name = match.group("name")
-    if name.startswith("mcr.microsoft.com/"):
+    component, separator, remainder = name.partition("/")
+    if separator and component == "mcr.microsoft.com":
         registry = "mcr.microsoft.com"
-        repository = name.removeprefix("mcr.microsoft.com/")
+        repository = remainder
         display = registry
     else:
         registry = "registry-1.docker.io"
         display = "docker.io"
-        explicitly_hub = name.startswith("docker.io/")
-        repository = name.removeprefix("docker.io/")
-        if "/" not in repository:
-            repository = f"library/{repository}"
-        elif not explicitly_hub and (
-            "." in repository.split("/", 1)[0] or ":" in repository
-            or repository.split("/", 1)[0] == "localhost"
+        explicitly_hub = bool(separator) and component == "docker.io"
+        if separator and not explicitly_hub and (
+            "." in component or ":" in component or component == "localhost"
         ):
             raise BaseSourceError("unsupported_public_registry")
+        repository = remainder if explicitly_hub else name
+        if "/" not in repository:
+            repository = f"library/{repository}"
     if not NAME.fullmatch(repository):
         raise BaseSourceError("invalid_base_pin")
     tag = match.group("tag")

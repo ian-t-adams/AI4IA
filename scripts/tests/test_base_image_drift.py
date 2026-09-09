@@ -92,13 +92,21 @@ class BaseImageDriftTests(unittest.TestCase):
             "user:private-secret@registry.example/image:v1@sha256:" + "a" * 64,
             "mcr.microsoft.com/../private:v1@sha256:" + "a" * 64,
             "mcr.microsoft.com/dotnet/sdk:v1?secret@sha256:" + "a" * 64,
+            "mcr.microsoft.com.attacker.example/dotnet/sdk:v1@sha256:" + "a" * 64,
+            "attacker.example/mcr.microsoft.com/dotnet/sdk:v1@sha256:" + "a" * 64,
+            "docker.io.attacker.example/library/node:v1@sha256:" + "a" * 64,
+            "attacker.example/docker.io/library/node:v1@sha256:" + "a" * 64,
         ):
-            with self.subTest(reference=reference), self.assertRaises(drift.BaseSourceError) as error:
-                drift.parse_pin(reference)
-            self.assertNotIn("private-secret", str(error.exception))
+            with self.subTest(reference=reference):
+                with self.assertRaises(drift.BaseSourceError) as error:
+                    drift.parse_pin(reference)
+                self.assertNotIn("private-secret", str(error.exception))
         normalized = drift.parse_pin("docker.io/library/node:22@sha256:" + "a" * 64)
         self.assertEqual(normalized.registry, "registry-1.docker.io")
         self.assertEqual(normalized.repository, "library/node")
+        microsoft = drift.parse_pin("mcr.microsoft.com/dotnet/sdk:10.0@sha256:" + "a" * 64)
+        self.assertEqual(microsoft.registry, "mcr.microsoft.com")
+        self.assertEqual(microsoft.repository, "dotnet/sdk")
 
     def test_dockerfile_read_limit_has_a_real_boundary_control(self):
         with tempfile.TemporaryDirectory() as directory:
