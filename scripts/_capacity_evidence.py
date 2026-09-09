@@ -31,6 +31,18 @@ DEFINITIONS_API = "2018-01-01"
 NAMESPACE = "Microsoft.CognitiveServices/accounts"
 METRICS = ("ModelRequests", "InputTokens", "OutputTokens", "TotalTokens")
 DIMENSIONS = ("ModelDeploymentName", "ModelName", "ModelVersion", "Region")
+# Definitions use TitleCase; ARM metric metadata also emits these exact lowercase keys.
+DIMENSION_ALIASES = {
+    **{name: name for name in DIMENSIONS},
+    "modeldeploymentname": "ModelDeploymentName",
+    "modelname": "ModelName",
+    "modelversion": "ModelVersion",
+    "region": "Region",
+}
+DIMENSION_KEY_EXPRESSION = " || ".join(
+    f"(name.value == '{alias}' && '{canonical}')"
+    for alias, canonical in DIMENSION_ALIASES.items() if alias != canonical
+) + " || name.value"
 MAX_REGIONS = 8
 MAX_ACCOUNTS = 64
 MAX_ACCOUNT_PAGES = 64
@@ -467,8 +479,8 @@ PROJECTIONS = {
                "unit:unit,errorCode:errorCode,hasErrorMessage:!!errorMessage,"
                "timeseries:timeseries[].{dimensionCount:length(metadatavalues || `[]`),"
                "metadatavalues:metadatavalues[?contains(`"
-               + json.dumps(list(DIMENSIONS), separators=(",", ":")) +
-               "`, name.value)].{name:{value:name.value},value:value},"
+               + json.dumps(list(DIMENSION_ALIASES), separators=(",", ":")) +
+               "`, name.value)].{name:{value:" + DIMENSION_KEY_EXPRESSION + "},value:value},"
                "data:data[].{timeStamp:timeStamp,total:total}}}}",
 }
 
@@ -890,8 +902,9 @@ def parse_metrics(
                 dimensions = {}
                 for item in metadata:
                     item = object_value(item)
-                    dimension = object_value(item.get("name")).get("value")
-                    if not isinstance(dimension, str) or dimension not in DIMENSIONS or dimension in dimensions:
+                    raw_dimension = object_value(item.get("name")).get("value")
+                    dimension = DIMENSION_ALIASES.get(raw_dimension) if isinstance(raw_dimension, str) else None
+                    if dimension is None or dimension in dimensions:
                         raise EvidenceError("metric_dimensions_mismatch")
                     dimensions[dimension] = token(item.get("value"))
                 name = dimensions["ModelDeploymentName"]

@@ -154,6 +154,7 @@ jobs:
     timeout-minutes: 10
     env:
       PYYAML_VERSION: 6.0.3
+      JMESPATH_VERSION: 0.9.5
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -164,7 +165,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install shared Python test dependencies
-        run: python3 -m pip install --user --quiet "PyYAML==${PYYAML_VERSION}"
+        run: |
+          python3 -m pip install --user --quiet \
+            "PyYAML==${PYYAML_VERSION}" "jmespath==${JMESPATH_VERSION}"
       - name: Run postprovision hard-gate tests
         run: |
           set -euo pipefail
@@ -203,7 +206,8 @@ jobs:
         run: |
           set -euo pipefail
           # Mocked management/metric transport and bounded subprocess controls.
-          # No Azure login, live metrics, capacity changes or new dependencies.
+          # JMESPath executes the actual CLI projections against raw ARM fixtures.
+          # No Azure login, live metrics, capacity changes or runtime dependencies.
           python3 -m unittest scripts.tests.test_capacity_evidence
 
       - name: Run Entra app provisioning guard tests

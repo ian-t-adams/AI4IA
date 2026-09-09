@@ -442,7 +442,11 @@ python3 -m unittest scripts.tests.test_immutable_image_promotion
 `test_base_image_pins`, `test_subscription_preflight`,
 `test_proxy_delivery_contracts`, and `test_immutable_image_promotion` need
 `PyYAML` (pinned in the workflow); `test_immutable_image_promotion` also needs
-`bash` and skips without it. The rest are stdlib-only.
+`bash` and skips without it. `test_capacity_evidence` also requires
+`jmespath==0.9.5`, pinned in quality to the inspected Azure CLI parser version:
+the raw ARM projection regressions must execute the real query, not skip it or
+test only already-projected data. The reporter itself remains stdlib-only.
+The rest are stdlib-only.
 
 Operational guards must distinguish a failed Azure read from a missing resource.
 The custom-domain preflight fails closed on inventory/query errors. Teardown
@@ -723,6 +727,13 @@ byte, time and total account-row bounds across pages; reject duplicate
 names/IDs/cursors and incomplete ownership. Until terminal-page validation,
 safe page observations are candidates, not a verified inventory. Never discard
 the partial flag merely because the first page contains all expected regions.
+
+Metric definitions advertise TitleCase dimension names, while ARM timeseries
+metadata also uses `modeldeploymentname`, `modelname`, `modelversion`, and
+`region`. The CLI projection and parser explicitly canonicalize only these
+evidenced aliases. Keep the original dimension count before filtering and reject
+canonical-key collisions/unknown extras; never lowercase identity values or
+remove deployment/model/version proof to accommodate a schema difference.
 
 Quota counter replicas and `modelCapacities` are observations, not pool identity.
 Never infer scope from equal numbers, publisher names, SKU processing geography,

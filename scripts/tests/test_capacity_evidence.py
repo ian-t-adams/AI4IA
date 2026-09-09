@@ -16,6 +16,8 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlsplit
 
+import jmespath
+
 from scripts.tests._loader import load_script
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -774,6 +776,215 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(report["platformAvailability"], [])
         self.assertEqual(report["quotaCounters"], [])
         self.assertEqual(report["recommendations"], [])
+
+
+class ProjectingMetricsFixture(Fixture):
+    """Run raw ARM metric responses through the production CLI's actual query."""
+
+    def runner(self, command, timeout, limit):
+        result = super().runner(command, timeout, limit)
+        uri = urlsplit(command[command.index("--url") + 1])
+        if not uri.path.endswith("/providers/Microsoft.Insights/metrics"):
+            return result
+        projection = command[command.index("--query") + 1]
+        return capacity.ProcessResult(
+            json.dumps(jmespath.search(projection, json.loads(result.body))).encode(),
+            result.warning,
+        )
+
+
+class MetricProjectionAliasTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        document = catalog_document()
+        template = document["catalog"][0]
+        document["catalog"] = [
+            {**copy.deepcopy(template), "name": f"model-{letter}"} for letter in "abcd"
+        ]
+        self.fixture = ProjectingMetricsFixture(self.directory, document)
+        for region in self.fixture.catalog.regions:
+            for metric in self.fixture.responses[f"metrics:{region}"]["value"]:
+                metric.pop("hasErrorMessage")
+                metric["errorMessage"] = None
+                if region != "eastus2":
+                    metric["timeseries"] = []
+                    continue
+                if metric["name"]["value"] == "OutputTokens":
+                    metric["timeseries"].pop()
+                for series in metric["timeseries"]:
+                    series.pop("dimensionCount")
+                    for point in series["data"]:
+                        point["total"] = 2
+        self.title_case = copy.deepcopy(self.fixture.responses["metrics:eastus2"])
+
+    def lowercase_keys(self) -> None:
+        # These are the four exact response keys observed in the parent diagnostic.
+        aliases = {
+            "ModelDeploymentName": "modeldeploymentname", "ModelName": "modelname",
+            "ModelVersion": "modelversion", "Region": "region",
+        }
+        for metric in self.fixture.responses["metrics:eastus2"]["value"]:
+            for series in metric["timeseries"]:
+                for item in series["metadatavalues"]:
+                    item["name"]["value"] = aliases[item["name"]["value"]]
+
+    def east_rows(self, report):
+        return [row for row in report["deployments"] if row["catalog"]["region"] == "eastus2"]
+
+    def request_usage(self, report):
+        return self.east_rows(report)[0]["usage"]["ModelRequests"]
+
+    def assert_measured_shape(self, report):
+        self.assertEqual(report["consumed"]["points"], 15 * 24)
+        self.assertEqual(sum(
+            value["samples"] for row in self.east_rows(report) for value in row["usage"].values()
+        ), 15 * 24)
+        source = next(s for s in report["sources"] if s["id"] == "metrics:eastus2")
+        self.assertNotIn("metric_dimensions_mismatch", source["codes"])
+        for index, row in enumerate(self.east_rows(report)):
+            for metric, value in row["usage"].items():
+                if index == 3 and metric == "OutputTokens":
+                    self.assertEqual(value["status"], "unknown")
+                    self.assertIn("no_series", value["codes"])
+                    self.assertIsNone(value["total"])
+                else:
+                    self.assertEqual(value["status"], "measured")
+                    self.assertEqual(value["total"], 48)
+        self.assertEqual(report["policy"], "not_evaluated")
+        self.assertEqual(report["recommendations"], [])
+
+    def test_raw_lowercase_arm_projection_matches_title_case_control(self):
+        title_report = self.fixture.report()
+        self.assert_measured_shape(title_report)
+        self.lowercase_keys()
+        raw = self.fixture.responses["metrics:eastus2"]
+        self.assertEqual([len(m["timeseries"]) for m in raw["value"]], [4, 4, 3, 4])
+        lower_report = self.fixture.report()
+        self.assert_measured_shape(lower_report)
+        projected = jmespath.search(capacity.PROJECTIONS["metrics"], raw)
+        for before_metric, after_metric in zip(raw["value"], projected["value"]):
+            for before, after in zip(before_metric["timeseries"], after_metric["timeseries"]):
+                self.assertEqual(after["dimensionCount"], 4)
+                self.assertEqual([m["name"]["value"] for m in after["metadatavalues"]], list(capacity.DIMENSIONS))
+                self.assertEqual([m["value"] for m in after["metadatavalues"]], [m["value"] for m in before["metadatavalues"]])
+        self.assertEqual(
+            [row["usage"] for row in self.east_rows(title_report)],
+            [row["usage"] for row in self.east_rows(lower_report)],
+        )
+
+    def test_parser_itself_accepts_only_the_evidenced_key_aliases(self):
+        self.lowercase_keys()
+        raw = copy.deepcopy(self.fixture.responses["metrics:eastus2"])
+        for metric in raw["value"]:
+            metric["hasErrorMessage"] = False
+            for series in metric["timeseries"]:
+                series["dimensionCount"] = 4
+        live = {
+            row["name"]: row for row in capacity.parse_deployments(
+                self.fixture.responses["deployments:eastus2"], self.fixture.scope, self.fixture.accounts["eastus2"],
+            )
+        }
+        budget = capacity.PointBudget()
+        values, codes, _excluded = capacity.parse_metrics(
+            raw, self.fixture.scope, "eastus2", self.fixture.accounts["eastus2"],
+            live, self.fixture.window, capacity.METRICS, budget,
+        )
+        first = self.fixture.catalog.deployments[0].name
+        self.assertEqual(values[first]["ModelRequests"]["total"], 48)
+        self.assertNotIn("metric_dimensions_mismatch", codes)
+        self.assertEqual(capacity.MAX_TOTAL_POINTS - budget.remaining, 360)
+        raw["value"][0]["timeseries"][0]["metadatavalues"][0]["name"]["value"] = "MODELDEPLOYMENTNAME"
+        values, codes, _excluded = capacity.parse_metrics(
+            raw, self.fixture.scope, "eastus2", self.fixture.accounts["eastus2"],
+            live, self.fixture.window, capacity.METRICS, capacity.PointBudget(),
+        )
+        self.assertIn("metric_dimensions_mismatch", codes)
+        self.assertIsNone(values[first]["ModelRequests"]["total"])
+
+    def test_projection_and_parser_reject_canonical_alias_collisions(self):
+        self.lowercase_keys()
+        baseline = copy.deepcopy(self.fixture.responses["metrics:eastus2"])
+        self.assert_measured_shape(self.fixture.report())
+        for conflicting_value in (False, True):
+            with self.subTest(conflicting_value=conflicting_value):
+                self.fixture.responses["metrics:eastus2"] = copy.deepcopy(baseline)
+                series = self.fixture.metric()["timeseries"][0]
+                duplicate = copy.deepcopy(series["metadatavalues"][0])
+                duplicate["name"]["value"] = "ModelDeploymentName"
+                if conflicting_value:
+                    duplicate["value"] = "different-deployment"
+                # Four entries are retained, but ModelName is replaced by a
+                # second spelling of ModelDeploymentName. Count alone cannot catch it.
+                series["metadatavalues"][1] = duplicate
+                report = self.fixture.report()
+                usage = self.request_usage(report)
+                self.assertIn("metric_dimensions_mismatch", usage["codes"])
+                self.assertIsNone(usage["total"])
+                self.assertEqual(usage["samples"], 0)
+                self.assertEqual(self.east_rows(report)[0]["usage"]["InputTokens"]["total"], 48)
+        self.fixture.responses["metrics:eastus2"] = copy.deepcopy(baseline)
+        self.fixture.metric()["timeseries"][0]["metadatavalues"].append(duplicate)
+        self.assertIsNone(self.request_usage(self.fixture.report())["total"])
+
+    def test_original_dimension_count_rejects_unknown_extras_after_filtering(self):
+        self.lowercase_keys()
+        self.assert_measured_shape(self.fixture.report())
+        series = self.fixture.metric()["timeseries"][0]
+        series["metadatavalues"].append({"name": {"value": "UserIdentifier"}, "value": SECRET})
+        report = self.fixture.report()
+        self.assertIn("metric_dimensions_mismatch", self.request_usage(report)["codes"])
+        self.assertIsNone(self.request_usage(report)["total"])
+        projected = jmespath.search(capacity.PROJECTIONS["metrics"], self.fixture.responses["metrics:eastus2"])
+        after = projected["value"][0]["timeseries"][0]
+        self.assertEqual(after["dimensionCount"], 5)
+        self.assertEqual(len(after["metadatavalues"]), 4)
+        self.assertNotIn(SECRET, json.dumps(projected))
+        self.assertNotIn(SECRET, capacity.render(report, "json"))
+
+    def test_case_variants_other_than_the_evidenced_aliases_remain_unknown(self):
+        self.lowercase_keys()
+        baseline = copy.deepcopy(self.fixture.responses["metrics:eastus2"])
+        self.assert_measured_shape(self.fixture.report())
+        for key in ("MODELNAME", "modelName", "model_name", "modelname "):
+            with self.subTest(key=key):
+                self.fixture.responses["metrics:eastus2"] = copy.deepcopy(baseline)
+                self.fixture.metric()["timeseries"][0]["metadatavalues"][1]["name"]["value"] = key
+                report = self.fixture.report()
+                self.assertIn("metric_dimensions_mismatch", self.request_usage(report)["codes"])
+                self.assertIsNone(self.request_usage(report)["total"])
+
+    def test_identity_values_and_metric_resource_scope_are_not_normalized_away(self):
+        self.lowercase_keys()
+        baseline = copy.deepcopy(self.fixture.responses["metrics:eastus2"])
+        self.assert_measured_shape(self.fixture.report())
+        for dimension, value in (
+            (0, self.fixture.catalog.deployments[0].name.upper()), (1, "MODEL-A"), (2, "other-version"),
+        ):
+            with self.subTest(dimension=dimension):
+                self.fixture.responses["metrics:eastus2"] = copy.deepcopy(baseline)
+                self.fixture.metric()["timeseries"][0]["metadatavalues"][dimension]["value"] = value
+                report = self.fixture.report()
+                self.assertIsNone(self.request_usage(report)["total"])
+                self.assertEqual(self.request_usage(report)["samples"], 0)
+        self.fixture.responses["metrics:eastus2"] = copy.deepcopy(baseline)
+        self.fixture.metric()["id"] = self.fixture.metric()["id"].replace(SUBSCRIPTION, OTHER_SUBSCRIPTION)
+        report = self.fixture.report()
+        self.assertIn("metric_identity_or_unit_mismatch", self.request_usage(report)["codes"])
+        self.assertIsNone(self.request_usage(report)["total"])
+
+    def test_title_lower_series_duplicates_are_not_double_counted(self):
+        self.lowercase_keys()
+        self.assert_measured_shape(self.fixture.report())
+        duplicate = copy.deepcopy(self.title_case["value"][0]["timeseries"][0])
+        self.fixture.metric()["timeseries"].append(duplicate)
+        report = self.fixture.report()
+        usage = self.request_usage(report)
+        self.assertIn("duplicate_metric_series", usage["codes"])
+        self.assertIsNone(usage["total"])
+        self.assertEqual(usage["observedTotal"], 48)
+        self.assertEqual(usage["samples"], 24)
 
 
 class AccountPaginationTests(unittest.TestCase):

@@ -125,6 +125,14 @@ also identifies those candidates. Other operations still do not follow
 continuations and retain `pagination_not_followed` partial coverage.
 
 Legacy Azure OpenAI metric aliases are not summed with the canonical family.
+Dimension **key** casing is handled separately: definitions use
+`ModelDeploymentName`, `ModelName`, `ModelVersion`, `Region`; ARM timeseries
+metadata can instead use exactly `modeldeploymentname`, `modelname`,
+`modelversion`, `region`. Both the CLI projection and parser explicitly map
+these aliases to the canonical names. The original unfiltered dimension count
+is retained, so unknown extra keys and duplicate/colliding aliases remain
+partial instead of being silently dropped. Identity **values** are never
+lowercased; model, deployment, version and resource-scope checks still apply.
 Voice Live/service-specific metrics lacking the required deployment identity are
 explicitly excluded, as are metrics for deleted or uncatalogued deployments.
 Unexpected deployments in verified accounts remain separate allocation
@@ -225,6 +233,11 @@ budgets have fixed per-source codes; healthy unrelated observations remain
 readable. Oversized final output becomes a small explicit unknown/error report,
 never a truncated successful report. No live collection runs on pull requests;
 the quality job uses fixtures and a mocked Azure read transport.
+
+The offline capacity tests require the pinned `jmespath==0.9.5` parser used by
+the inspected Azure CLI. They execute the real projection on raw ARM fixtures,
+including the 15-series/360-point lowercase-key case and its TitleCase control.
+The reporter gains no Python runtime dependency and CI makes no Azure calls.
 
 The byte budget counts stdout payload bytes on failed reads too. An overflow
 uses at most one detection byte beyond the remaining allowance; diagnostics have
