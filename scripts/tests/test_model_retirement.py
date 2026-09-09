@@ -857,7 +857,9 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(len(triggers["schedule"]), 1)
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
         jobs = self.workflow["jobs"]
-        self.assertNotIn("permissions", jobs["activation"])
+        self.assertEqual(
+            jobs["activation"].get("permissions", self.workflow["permissions"]), {},
+        )
         self.assertEqual(jobs["report"]["permissions"], {"contents": "read", "id-token": "write"})
         self.assertEqual(jobs["report"]["needs"], "activation")
         self.assertIn("needs.activation.outputs.enabled == 'true'", jobs["report"]["if"])
