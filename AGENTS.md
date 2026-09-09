@@ -183,6 +183,27 @@ Plus the Cosmos migration script tests from the repo root:
 pytest -q scripts/tests/test_memory_cosmos_migration.py
 ```
 
+The same API job runs the development-only behavioral evaluation program from
+the repo root, using the already-installed API dev dependencies:
+
+```powershell
+python -m scripts.evaluations run --output <new-local-report.json>
+ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py
+pyright --project scripts/evaluations
+python -m pytest -q scripts/tests/test_behavioral_evaluations.py
+```
+
+`scripts/evaluations` drives real API, provider-adapter, orchestration, ownership,
+approval and receipt seams with committed synthetic fixtures, not live models.
+Every declared case stays in the report denominator, including worker failures,
+timeouts and unscored results. CI retains only the content-free report for seven
+days; it never uploads prompts, replies, tool payloads, grants or identities.
+Dataset/config/prompt/model/provider-fixture/evaluator versions must be compatible
+before comparison. Do not add production-trace input, a paid judge, live calls or
+a schedule under this offline gate. See
+[`docs/behavioral-evaluations.md`](docs/behavioral-evaluations.md) for commands,
+version rules, limits and the remaining approval boundaries.
+
 **Any edit to `app/api/pyproject.toml` must be followed by `uv lock` in the same
 commit.** `uv.lock` records the declared specifier alongside resolved versions, so
 even a change that moves no package desyncs it and fails the `uv lock --check`
