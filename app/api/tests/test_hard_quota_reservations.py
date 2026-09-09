@@ -146,7 +146,9 @@ async def test_concurrent_admission_is_atomic_with_below_limit_control(contract,
             assert exc.code == 429
             return None
 
-    results = await asyncio.gather(*(attempt() for _ in range(24)))
+    # More contenders than capacity, but below the CAS retry bound: removing
+    # the budget guard must fail on over-admission, not a busy-store assertion.
+    results = await asyncio.gather(*(attempt() for _ in range(12)))
     accepted = [record for record in results if record is not None]
     assert len(accepted) == 7
     state = (await contract["store"].read("alice")).state
