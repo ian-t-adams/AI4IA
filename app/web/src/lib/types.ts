@@ -101,6 +101,46 @@ export interface Session {
   updatedAt: string;
 }
 
+export interface DeletionStatus {
+  sessionId: string;
+  state: "pending" | "retryable" | "cleanup_verified";
+  phase: "fences" | "messages" | "documents" | "attachments" | "uploads" | "complete";
+  requestedAt: string;
+  updatedAt: string;
+  lastVerifiedAt: string | null;
+  messagesVerified: boolean;
+  documentsVerified: boolean;
+  attachmentsVerified: boolean;
+  pendingUploads: { id: string; documentId: string; startedAt: string }[];
+  pendingUploadsTruncated: boolean;
+  retryReason: null | "storage_unavailable" | "cleanup_timeout" | "concurrent_change"
+    | "integrity_mismatch" | "uploads_unresolved" | "artifact_store_required";
+  attempts: number;
+  scope: "conversation_content_and_inline_originals";
+  backupsErased: false;
+  coordinationRetained: true;
+  autonomousCleanup: false;
+}
+
+export interface DeletionPage {
+  items: DeletionStatus[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+export interface SessionInitialization {
+  sessionId: string;
+  createdAt: string;
+  state: "initializing";
+}
+
+export interface InitializationPage {
+  items: SessionInitialization[];
+  hasMore: boolean;
+  nextCursor: string | null;
+  observation: "not_completion_evidence";
+}
+
 export interface ToolOverrides {
   added: string[];
   removed: string[];

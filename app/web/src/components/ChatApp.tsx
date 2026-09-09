@@ -22,6 +22,7 @@ import type {
   AttachmentCapabilities,
   ChatParams,
   ConversationDraftDefaults,
+  DeletionStatus,
   DocumentSummary,
   Message,
   ModelEntry,
@@ -36,6 +37,8 @@ import {
   type LibraryDocument,
 } from "@/lib/library";
 import { Sidebar } from "./Sidebar";
+import { ConversationDeletionNotice, ConversationDeletionPanel } from "./ConversationDeletionPanel";
+import { useCurrentOwner, type CurrentOwner } from "./MemoryPreferenceProvider";
 import { ConversationInspector } from "./ConversationInspector";
 import { SettingsPanel } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
@@ -162,6 +165,31 @@ function providerModelRegion(models: ModelEntry[], modelId: string | null): stri
 }
 
 export function ChatApp() {
+  const owner = useCurrentOwner();
+  const deletionOwnerRef = useRef(owner);
+  const removedSessionIdsRef = useRef(new Set<string>());
+  const filterRemovedSessions = useCallback(
+    (items: Session[]) => items.filter((item) => !removedSessionIdsRef.current.has(item.id)),
+    [],
+  );
+  const [deletionView, setDeletionView] = useState<{
+    owner: CurrentOwner; sessionId: string | null;
+  } | null>(null);
+  const [deletionNotice, setDeletionNotice] = useState<{
+    owner: CurrentOwner; status: DeletionStatus;
+  } | null>(null);
+  const [deleting, setDeleting] = useState<{
+    owner: CurrentOwner; ids: ReadonlySet<string>;
+  } | null>(null);
+  const deletionRequestsRef = useRef(new Map<string, symbol>());
+  const deletionNoticeRequestRef = useRef<symbol | null>(null);
+  const deletionPanelOpen = deletionView?.owner === owner;
+  useLayoutEffect(() => {
+    deletionOwnerRef.current = owner;
+    removedSessionIdsRef.current.clear();
+    const requests = deletionRequestsRef.current;
+    return () => { requests.clear(); };
+  }, [owner]);
   const voiceLiveConfig = useVoiceLiveConfig();
   const libraryConfig = useLibraryConfig();
   const customToolsConfig = useCustomToolsConfig();
@@ -490,6 +518,7 @@ export function ChatApp() {
   const voiceNavigationLockedRef = useRef(false);
   const voiceActiveRef = useRef(false);
   const voiceStopRef = useRef<() => void>(() => {});
+  const discardDeletedVoiceRef = useRef<(sessionId: string) => void>(() => {});
   const mountedRef = useRef(true);
   const sidebarOpenerRef = useRef<HTMLButtonElement>(null);
   const sidebarReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -688,7 +717,7 @@ export function ChatApp() {
             persistedModelsRef.current = new Map(
               sess.map((session) => [session.id, session.model]),
             );
-            setSessions(sess);
+            setSessions(filterRemovedSessions(sess));
           },
           (e) =>
             setError(
@@ -706,7 +735,7 @@ export function ChatApp() {
         /* non-fatal: no @-mention menu */
       }
     })();
-  }, [loadAttachmentCapabilities]);
+  }, [filterRemovedSessions, loadAttachmentCapabilities]);
 
   useEffect(() => {
     if (!voiceLiveConfig.enabled) return;
@@ -734,14 +763,18 @@ export function ChatApp() {
         sessionListGenerationRef.current !== myGeneration ||
         !isStillCurrent()
       ) return;
-      setSessions(all);
+      setSessions(filterRemovedSessions(all));
     } catch {
       /* non-fatal */
     }
-  }, []);
+  }, [filterRemovedSessions]);
 
   const selectSession = useCallback(
     async (id: string) => {
+      if (removedSessionIdsRef.current.has(id)) {
+        setError("This conversation was removed. Choose another conversation.");
+        return;
+      }
       if (streamingRef.current) return;
       if (voiceNavigationLockedRef.current) {
         setError(
@@ -819,7 +852,7 @@ export function ChatApp() {
         // sidebar back over a create/delete/rename that already landed from
         // that newer fetch.
         if (sessionListGenerationRef.current === mySessionListGeneration) {
-          setSessions(all);
+          setSessions(filterRemovedSessions(all));
         }
         // A completed, generation-gated navigation to a real, existing
         // conversation is immediately "committed" -- see consumedSessionIdRef
@@ -871,25 +904,14 @@ export function ChatApp() {
     },
     [
       clearReconciliationTimers,
+      filterRemovedSessions,
       libraryEnabled,
       markAssistantResolved,
       scheduleReconciliation,
     ],
   );
 
-  const newChat = useCallback(() => {
-    if (streamingRef.current) return;
-    if (voiceNavigationLockedRef.current) {
-      setError(
-        "Finish saving the voice transcript before starting a new conversation. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar to continue.",
-      );
-      return;
-    }
-    if (activeUploadCountRef.current > 0) {
-      setError("Wait for active attachments to finish before starting a new conversation.");
-      return;
-    }
-    if (voiceActiveRef.current) voiceStopRef.current();
+  const resetConversationView = useCallback(() => {
     clearReconciliationTimers();
     selectionGenerationRef.current += 1;
     sessionIdRef.current = null;
@@ -916,6 +938,46 @@ export function ChatApp() {
     setError(null);
   }, [clearReconciliationTimers, models]);
 
+  const newChat = useCallback(() => {
+    if (streamingRef.current) return;
+    if (voiceNavigationLockedRef.current) {
+      setError(
+        "Finish saving the voice transcript before starting a new conversation. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar to continue.",
+      );
+      return;
+    }
+    if (activeUploadCountRef.current > 0) {
+      setError("Wait for active attachments to finish before starting a new conversation.");
+      return;
+    }
+    if (voiceActiveRef.current) voiceStopRef.current();
+    resetConversationView();
+  }, [resetConversationView]);
+
+  const applyAcceptedDeletion = useCallback((id: string, status?: DeletionStatus) => {
+    if (!mountedRef.current || !owner.isCurrent() || deletionOwnerRef.current !== owner) return;
+    removedSessionIdsRef.current.add(id);
+    sessionListGenerationRef.current += 1;
+    pendingAssistantIdsRef.current.delete(id);
+    persistedModelsRef.current.delete(id);
+    setSessions((current) => current.filter((item) => item.id !== id));
+    if (sessionIdRef.current === id) {
+      // This is an accepted server mutation, not a navigation request. Invalidate
+      // its callbacks before aborting; navigation locks cannot retain deleted data.
+      turnGenerationRef.current += 1;
+      resetConversationView();
+      abortRef.current?.();
+      abortRef.current = null;
+      streamingRef.current = false;
+      streamingSessionIdRef.current = null;
+      setStreaming(false);
+      setLiveSteps([]);
+      setStreamingSources(null);
+      discardDeletedVoiceRef.current(id);
+    }
+    if (status) setDeletionNotice({ owner, status });
+  }, [owner, resetConversationView]);
+
   const refreshAgents = useCallback(async () => {
     try {
       setAgents(await api.listAgents());
@@ -932,55 +994,92 @@ export function ChatApp() {
     [closeStudio, selectSession],
   );
 
-  const deleteSession = useCallback(
-    async (id: string) => {
-      if (streamingRef.current) {
-        setError("Wait for the current response to finish before deleting a conversation.");
-        return;
+  const requestSessionDeletion = useCallback(
+    async (id: string, refreshList: boolean): Promise<DeletionStatus | undefined> => {
+      if (deletionRequestsRef.current.has(id)) {
+        throw new Error("Deletion for this conversation is already pending.");
       }
-      if (voiceNavigationLockedRef.current) {
-        setError(
-          "Finish saving the voice transcript before deleting this conversation. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar to continue.",
-        );
-        return;
-      }
-      if (activeUploadCountRef.current > 0) {
-        setError(
-          "Wait for active attachments to finish before deleting this conversation.",
-        );
-        return;
-      }
-      const title = sessions.find((session) => session.id === id)?.title || "this conversation";
-      if (
-        !window.confirm(
-          `Permanently delete "${title}"? This can't be undone.`,
-        )
-      ) {
-        return;
-      }
-      if (id === activeId && voiceActiveRef.current) voiceStopRef.current();
+      if (!owner.isCurrent() || deletionOwnerRef.current !== owner) return undefined;
+      const request = Symbol();
+      const signOutGeneration = signOutGenerationRef.current;
+      deletionRequestsRef.current.set(id, request);
+      deletionNoticeRequestRef.current = request;
+      setDeleting((current) => ({
+        owner, ids: new Set([...(current?.owner === owner ? current.ids : []), id]),
+      }));
+      const isCurrent = () => mountedRef.current && owner.isCurrent()
+        && deletionOwnerRef.current === owner
+        && signOutGenerationRef.current === signOutGeneration
+        && deletionRequestsRef.current.get(id) === request;
       try {
-        await api.deleteSession(id);
-        pendingAssistantIdsRef.current.delete(id);
-        const refreshGeneration = ++sessionListGenerationRef.current;
-        setSessions((current) => current.filter((session) => session.id !== id));
-        if (id === activeId) newChat();
+        const status = await api.deleteSession(id);
+        if (!isCurrent()) return;
+        if ((!refreshList && !status) || (status && status.sessionId !== id)) {
+          throw new Error("The server did not confirm deletion status for this conversation.");
+        }
+        applyAcceptedDeletion(
+          id, deletionNoticeRequestRef.current === request ? status : undefined,
+        );
+        if (!refreshList) return status;
+        const refreshGeneration = sessionListGenerationRef.current;
         try {
           const all = await api.listSessions();
-          if (sessionListGenerationRef.current === refreshGeneration) {
-            setSessions(all.filter((session) => session.id !== id));
+          if (isCurrent() && sessionListGenerationRef.current === refreshGeneration) {
+            setSessions(filterRemovedSessions(all));
           }
         } catch (refreshError) {
-          setError(
-            `Conversation deleted, but the conversation list couldn't refresh: ${(refreshError as Error).message}`,
-          );
+          if (isCurrent() && sessionListGenerationRef.current === refreshGeneration) {
+            setError(
+              `Conversation removed from chats, but the conversation list couldn't refresh: ${api.apiErrorDetail(refreshError)}`,
+            );
+          }
         }
+        return status;
       } catch (e) {
-        setError((e as Error).message);
+        if (isCurrent()) throw e;
+        return undefined;
+      } finally {
+        if (deletionRequestsRef.current.get(id) === request) {
+          deletionRequestsRef.current.delete(id);
+          if (mountedRef.current && owner.isCurrent()) {
+            setDeleting((current) => current?.owner === owner
+              ? { owner, ids: new Set([...current.ids].filter((value) => value !== id)) }
+              : current);
+          }
+        }
       }
     },
-    [activeId, newChat, sessions],
+    [applyAcceptedDeletion, filterRemovedSessions, owner],
   );
+
+  const deleteSession = useCallback(async (id: string) => {
+    if (deletionRequestsRef.current.has(id) || !owner.isCurrent()) return;
+    if (streamingRef.current) {
+      setError("Wait for the current response to finish before deleting a conversation.");
+      return;
+    }
+    if (voiceNavigationLockedRef.current) {
+      setError(
+        "Finish saving the voice transcript before deleting this conversation. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar to continue.",
+      );
+      return;
+    }
+    if (activeUploadCountRef.current > 0) {
+      setError("Wait for active attachments to finish before deleting this conversation.");
+      return;
+    }
+    const title = sessions.find((item) => item.id === id)?.title || "this conversation";
+    if (!window.confirm(
+      `Remove "${title}" from chats and request cleanup of its conversation content and inline originals? Cleanup may remain pending; check Deletion status for resumable requests. This does not erase backups, library documents, memories, or generated media.`,
+    )) return;
+    const generation = signOutGenerationRef.current;
+    try {
+      await requestSessionDeletion(id, true);
+    } catch (reason) {
+      if (owner.isCurrent() && deletionOwnerRef.current === owner
+        && signOutGenerationRef.current === generation) setError(api.apiErrorDetail(reason));
+    }
+  }, [owner, requestSessionDeletion, sessions]);
 
   const renameSession = useCallback(async (id: string, title: string) => {
     const updated = await api.updateSession(id, { title });
@@ -1203,6 +1302,12 @@ export function ChatApp() {
       // deliberately excluded everywhere here, for the same reason
       // documented at the activation branch below.
       const markConsumedIfOwning = (resolvedId: string): string => {
+        if (!owner.isCurrent() || deletionOwnerRef.current !== owner) {
+          throw new Error("Conversation creation no longer belongs to the current user.");
+        }
+        if (removedSessionIdsRef.current.has(resolvedId)) {
+          throw new Error("This conversation was removed. Start a new conversation.");
+        }
         if (isConsumer) {
           consumedSessionIdRef.current = resolvedId;
         }
@@ -1238,6 +1343,12 @@ export function ChatApp() {
             },
             controller.signal,
           );
+          if (!owner.isCurrent() || deletionOwnerRef.current !== owner) {
+            throw new Error("Conversation creation no longer belongs to the current user.");
+          }
+          if (removedSessionIdsRef.current.has(created.id)) {
+            throw new Error("This conversation was removed while creation was pending.");
+          }
           if (signOutGenerationRef.current === creationSignOutGeneration) {
             persistedModelsRef.current.set(created.id, created.model);
             sessionListGenerationRef.current += 1;
@@ -1315,6 +1426,9 @@ export function ChatApp() {
         if (voiceWaiterRef.current?.token === waiterToken) {
           voiceWaiterRef.current = null;
         }
+      }
+      if (removedSessionIdsRef.current.has(id)) {
+        throw new Error("This conversation was removed while creation was pending.");
       }
       const stillCurrentSelection =
         selectionGenerationRef.current === capturedGeneration;
@@ -1478,7 +1592,7 @@ export function ChatApp() {
       // here instead, via this fallback path.
       return markConsumedIfOwning(sessionIdRef.current ?? id);
     },
-    [computeSessionIntentKey, draftDefaults, selectedModel, systemPrompt],
+    [computeSessionIntentKey, draftDefaults, owner, selectedModel, systemPrompt],
   );
 
   // Lets voice's "Stop waiting" release its OWN pending session creation
@@ -1585,7 +1699,7 @@ export function ChatApp() {
               ),
             ),
         });
-        if (!result) {
+        if (!result || !isCurrent() || removedSessionIdsRef.current.has(sid)) {
           uploadTargetsRef.current.delete(uploadId);
           setUploads((current) => current.filter((item) => item.id !== uploadId));
           return;
@@ -1899,11 +2013,19 @@ export function ChatApp() {
       ? "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar below."
       : undefined;
   const headerLockReasonId = useId();
+  const deletedVoiceSessionId = inlineVoice.boundSessionId;
+  const stopDeletedVoice = inlineVoice.stop;
+  const discardDeletedVoice = inlineVoice.discardPersistence;
   useLayoutEffect(() => {
     voiceNavigationLockedRef.current = voiceExitLocked;
     voiceActiveRef.current = inlineVoice.active;
     voiceStopRef.current = inlineVoice.stop;
-  }, [inlineVoice.active, inlineVoice.stop, voiceExitLocked]);
+    discardDeletedVoiceRef.current = (id) => {
+      if (deletedVoiceSessionId !== id) return;
+      stopDeletedVoice();
+      discardDeletedVoice();
+    };
+  }, [deletedVoiceSessionId, discardDeletedVoice, inlineVoice.active, inlineVoice.stop, stopDeletedVoice, voiceExitLocked]);
   useEffect(() => {
     if (!voiceExitLocked) return;
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -1929,6 +2051,10 @@ export function ChatApp() {
       return false;
     }
     signOutGenerationRef.current += 1;
+    deletionRequestsRef.current.clear();
+    setDeletionView(null);
+    setDeletionNotice(null);
+    setDeleting(null);
     const pendingCreation = creatingRef.current;
     creatingRef.current = null;
     pendingCreation?.controller.abort();
@@ -2294,6 +2420,13 @@ export function ChatApp() {
         return;
       }
 
+      if (removedSessionIdsRef.current.has(sessionId)) {
+        streamingRef.current = false;
+        setStreaming(false);
+        setError("This conversation was removed. Start a new conversation.");
+        return;
+      }
+
       // sessionId is now a real, resolved id this call is about to actively
       // consume -- record it so a later-resolving, differently-keyed
       // ensureSession() call can detect a genuine in-flight consumer (see
@@ -2508,7 +2641,7 @@ export function ChatApp() {
               ownsTurn() &&
               sessionListGenerationRef.current === mySessionListGeneration
             ) {
-              setSessions(all);
+              setSessions(filterRemovedSessions(all));
             }
             const s = all.find((x) => x.id === sessionId);
             if (s && ownsTurn()) {
@@ -2601,6 +2734,7 @@ export function ChatApp() {
       activeId,
       clearReconciliationTimers,
       ensureSession,
+      filterRemovedSessions,
       markAssistantResolved,
       params,
       refreshSessions,
@@ -2678,8 +2812,8 @@ export function ChatApp() {
       ) : null}
       <div
         className="sidebar-slot"
-        inert={mobileInspectorOpen ? true : undefined}
-        aria-hidden={mobileInspectorOpen ? true : undefined}
+        inert={mobileInspectorOpen || deletionPanelOpen ? true : undefined}
+        aria-hidden={mobileInspectorOpen || deletionPanelOpen ? true : undefined}
       >
         {leftIsCollapsed ? (
           <div
@@ -2739,6 +2873,8 @@ export function ChatApp() {
           onNewChat={newChat}
           onDelete={deleteSession}
           onRename={renameSession}
+          deletingIds={deleting?.owner === owner ? deleting.ids : undefined}
+          onOpenDeletionStatus={() => setDeletionView({ owner, sessionId: null })}
           onOpenSettings={openSettings}
           onOpenStudio={openStudio}
           onOpenLibrary={libraryEnabled ? openLibrary : undefined}
@@ -2754,12 +2890,12 @@ export function ChatApp() {
       <main
         id="main"
         inert={
-          mobileSidebarOpen || mobileInspectorOpen
+          mobileSidebarOpen || mobileInspectorOpen || deletionPanelOpen
             ? true
             : undefined
         }
         aria-hidden={
-          mobileSidebarOpen || mobileInspectorOpen
+          mobileSidebarOpen || mobileInspectorOpen || deletionPanelOpen
             ? true
             : undefined
         }
@@ -2809,6 +2945,14 @@ export function ChatApp() {
             {streaming ? "Generating…" : "Ready"}
           </div>
         </header>
+
+        {deletionNotice?.owner === owner && (
+          <ConversationDeletionNotice
+            status={deletionNotice.status}
+            onOpen={() => setDeletionView({ owner, sessionId: deletionNotice.status.sessionId })}
+            onDismiss={() => setDeletionNotice(null)}
+          />
+        )}
 
         {error && (
           <div
@@ -2926,8 +3070,8 @@ export function ChatApp() {
       ) : null}
       <div
         className="inspector-slot"
-        inert={mobileSidebarOpen ? true : undefined}
-        aria-hidden={mobileSidebarOpen ? true : undefined}
+        inert={mobileSidebarOpen || deletionPanelOpen ? true : undefined}
+        aria-hidden={mobileSidebarOpen || deletionPanelOpen ? true : undefined}
       >
         <ConversationInspector
           key={activeId ?? "new-conversation"}
@@ -2993,6 +3137,13 @@ export function ChatApp() {
         />
       </div>
 
+      <ConversationDeletionPanel
+        open={deletionPanelOpen}
+        sessionId={deletionPanelOpen ? deletionView.sessionId : null}
+        onShowAll={() => setDeletionView({ owner, sessionId: null })}
+        onClose={() => setDeletionView(null)}
+        onDiscardSession={(id) => requestSessionDeletion(id, false)}
+      />
       {settingsOpen && (
         <SettingsPanel onClose={closeSettings} />
       )}

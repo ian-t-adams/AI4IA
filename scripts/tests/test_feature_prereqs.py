@@ -778,6 +778,29 @@ class FeaturePrerequisiteTests(unittest.TestCase):
         code, output = self.run_validator(parameters)
         self.assertEqual(code, 0, output)
 
+    def test_resumable_deletion_requires_explicit_cutover_and_entra(self) -> None:
+        parameters: dict[str, object] = {
+            "owner": "operator",
+            "apimPublisherEmail": "ops@contoso.test",
+            "appEnvironment": "dev",
+            "apiAuthProvider": "dev",
+            "sessionDeletionEnabled": False,
+        }
+        code, output = self.run_validator(parameters)
+        self.assertEqual(code, 0, output)
+        parameters["sessionDeletionEnabled"] = True
+        code, output = self.run_validator(parameters)
+        self.assertEqual(code, 1, output)
+        self.assertIn("requires apiAuthProvider=entra", output)
+        self.assertIn("requires sessionDeletionRolloutId", output)
+        parameters.update(
+            apiAuthProvider="entra", entraTenantId="tenant", entraAudience="api-client",
+            entraWebClientId="web-client", sessionDeletionRolloutId="reviewed-cutover",
+        )
+        code, output = self.run_validator(parameters)
+        self.assertEqual(code, 0, output)
+        self.assertIn("does not prove worker drain", output)
+
     def test_priorities_require_worker_reservations(self) -> None:
         result, output = self.run_validator(
             {

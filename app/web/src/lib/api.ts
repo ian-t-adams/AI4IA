@@ -4,9 +4,12 @@ import type {
   ActivityStep,
   AgentSummary,
   ChatParams,
+  DeletionPage,
+  DeletionStatus,
   DocumentSummary,
   ImageGenerationPreferences,
   ImageOptionsResponse,
+  InitializationPage,
   Message,
   ModelCatalog,
   PendingToolApprovalPrompt,
@@ -618,8 +621,61 @@ export async function disassociateLibraryDocument(
   );
 }
 
-export function deleteSession(id: string): Promise<void> {
-  return deleteOrThrow(`/api/sessions/${id}`, "session");
+export async function deleteSession(id: string): Promise<DeletionStatus | undefined> {
+  const response = await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (response.status === 204) return undefined;
+  return jsonOrThrow<DeletionStatus>(response);
+}
+
+export async function listSessionDeletions(cursor?: string | null): Promise<DeletionPage> {
+  const query = cursor ? `?${new URLSearchParams({ cursor })}` : "";
+  return jsonOrThrow(
+    await apiFetch(`/api/sessions/deletions${query}`, { cache: "no-store" }),
+  );
+}
+
+function isInitializationPage(value: unknown): value is InitializationPage {
+  return typeof value === "object" && value !== null
+    && "observation" in value && value.observation === "not_completion_evidence"
+    && "hasMore" in value && typeof value.hasMore === "boolean"
+    && "nextCursor" in value && (value.nextCursor === null || typeof value.nextCursor === "string")
+    && (!value.hasMore || (typeof value.nextCursor === "string" && value.nextCursor.length > 0))
+    && "items" in value && Array.isArray(value.items) && value.items.length <= 50
+    && value.items.every((item: unknown) => typeof item === "object" && item !== null
+      && "sessionId" in item && typeof item.sessionId === "string" && item.sessionId.length > 0
+      && "state" in item && item.state === "initializing"
+      && "createdAt" in item && typeof item.createdAt === "string"
+      && /^\d{4}-\d{2}-\d{2}T/.test(item.createdAt)
+      && Number.isFinite(Date.parse(item.createdAt)));
+}
+
+export async function listSessionInitializations(cursor?: string | null): Promise<InitializationPage> {
+  const query = cursor === undefined || cursor === null ? "" : `?${new URLSearchParams({ cursor })}`;
+  const page = await jsonOrThrow<unknown>(
+    await apiFetch(`/api/sessions/initializations${query}`, { cache: "no-store" }),
+  );
+  if (!isInitializationPage(page)) {
+    throw new Error("The server returned a malformed incomplete-creation response.");
+  }
+  return page;
+}
+
+export async function getSessionDeletion(id: string): Promise<DeletionStatus> {
+  return jsonOrThrow(
+    await apiFetch(`/api/sessions/${encodeURIComponent(id)}/deletion`, {
+      cache: "no-store",
+    }),
+  );
+}
+
+export async function reconcileSessionDeletion(id: string): Promise<DeletionStatus> {
+  return jsonOrThrow(
+    await apiFetch(`/api/sessions/${encodeURIComponent(id)}/deletion/reconcile`, {
+      method: "POST",
+    }),
+  );
 }
 
 export async function listMessages(sessionId: string, signal?: AbortSignal): Promise<Message[]> {

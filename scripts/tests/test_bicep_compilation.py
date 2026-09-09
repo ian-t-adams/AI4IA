@@ -108,6 +108,27 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             json.dumps(api["variables"]["apiEnv"]),
         )
 
+    def test_resumable_deletion_defaults_off_and_reaches_api(self) -> None:
+        module = self.template["resources"]["api"]["properties"]
+        api = module["template"]
+        for name, default in (
+            ("sessionDeletionEnabled", False), ("sessionDeletionRolloutId", "")
+        ):
+            self.assertEqual(self.template["parameters"][name]["defaultValue"], default)
+            self.assertEqual(api["parameters"][name]["defaultValue"], default)
+            self.assertEqual(module["parameters"][name]["value"], f"[parameters('{name}')]")
+        self.assertEqual(api["variables"]["sessionDeletionEnv"], [
+            {
+                "name": "AI4IA_SESSION_DELETION_ENABLED",
+                "value": "[string(parameters('sessionDeletionEnabled'))]",
+            },
+            {
+                "name": "AI4IA_SESSION_DELETION_ROLLOUT_ID",
+                "value": "[parameters('sessionDeletionRolloutId')]",
+            },
+        ])
+        self.assertIn("variables('sessionDeletionEnv')", json.dumps(api["variables"]["apiEnv"]))
+
     def test_webiq_limits_and_endpoint_reach_the_api_without_exposing_credentials(self) -> None:
         module = self.template["resources"]["api"]["properties"]
         api = module["template"]

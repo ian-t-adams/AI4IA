@@ -17,6 +17,8 @@ export function Sidebar({
   onNewChat,
   onDelete,
   onRename,
+  deletingIds,
+  onOpenDeletionStatus,
   onOpenSettings,
   onOpenStudio,
   onOpenLibrary,
@@ -32,6 +34,8 @@ export function Sidebar({
   onNewChat: () => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => Promise<void>;
+  deletingIds?: ReadonlySet<string>;
+  onOpenDeletionStatus: () => void;
   onOpenSettings: () => void;
   onOpenStudio: () => void;
   onOpenLibrary?: () => void;
@@ -176,6 +180,7 @@ export function Sidebar({
         )}
         {sessions.map((s) => {
           const active = s.id === activeId;
+          const deleting = deletingIds?.has(s.id) ?? false;
           return (
             <li key={s.id} style={{ display: "flex", alignItems: "center" }}>
               <div
@@ -200,10 +205,12 @@ export function Sidebar({
               </div>
               <button
                 onClick={() => {
-                  if (disabled) return;
+                  if (disabled || deleting) return;
                   onDelete(s.id);
                 }}
-                aria-disabled={disabled || undefined}
+                disabled={deleting}
+                aria-disabled={disabled || deleting || undefined}
+                aria-busy={deleting || undefined}
                 aria-label={`Delete ${s.title || "conversation"}`}
                 aria-describedby={describedBy}
                 title={disabled ? undefined : "Delete"}
@@ -223,6 +230,21 @@ export function Sidebar({
         })}
       </ul>
       <div className="sidebar-utility-region">
+        <button
+          type="button"
+          className="sidebar-utility-action"
+          onClick={onOpenDeletionStatus}
+          style={{
+            width: "100%",
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: "1px solid var(--border)",
+            background: "transparent",
+            color: "var(--sidebar-fg)",
+          }}
+        >
+          Deletion status
+        </button>
         <button
           className="sidebar-utility-action"
           onClick={() => {

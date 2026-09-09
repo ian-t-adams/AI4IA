@@ -36,6 +36,7 @@ window.AI4IA_DOCS = {
       docs: [
         { path: "docs/runbooks/deployment.md", title: "Routine deployment", desc: "Exact-digest promotion, capture-before-provision ordering, verification, rollback limits, and current deployment troubleshooting." },
         { path: "docs/runbooks/feature-enablement.md", title: "Feature enablement", desc: "The authoritative flag list and how to safely turn features on/off." },
+        { path: "docs/runbooks/conversation-deletion.md", title: "Resumable conversation deletion", desc: "Opt-in new-conversation lifecycle, transactional write fences, explicit owner resumptions, uncertain uploads, retention and approved rollout boundaries." },
         { path: "docs/runbooks/key-rotation.md", title: "Key rotation", desc: "Zero-downtime rotation of the proxy-ingress credential using the proxy's dual-key accept, with verification at every step." },
         { path: "docs/runbooks/telemetry.md", title: "Telemetry and admin diagnostics", desc: "Metric sources, privacy boundaries, freshness, unknown states, and diagnosis of unavailable panels." },
         { path: "docs/runbooks/teardown.md", title: "Teardown & rebuild", desc: "Inventory, teardown and soft-delete purge procedures." },

@@ -42,6 +42,7 @@ feature posture.
 | Private tool catalog (API Center) | admin/IaC only (no app-runtime env) | none | `enablePrivateToolCatalog` | Requires `enableOfficialMcp`; IaC registers each official MCP server with an APIM-fronted deployment. Preview. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
 | Web IQ search tools | `AI4IA_WEB_SEARCH_ENABLED` | none | `webSearchEnabled` | Web IQ API key or Entra managed identity outside local |
 | Session/run tool auto-approval | `AI4IA_TOOL_AUTO_APPROVE_ENABLED` | availability read from API | `toolAutoApproveEnabled` | Default `false`; explicit user consent plus Entra auth and Cosmos outside local. No new Azure resources. |
+| Resumable conversation deletion | `AI4IA_SESSION_DELETION_ENABLED` | owner deletion status / explicit resume | `sessionDeletionEnabled`, `sessionDeletionRolloutId` | Default `false`; new conversations only, approved rollout record selected by `AI4IA_SESSION_DELETION_ROLLOUT_ID`, Entra + single-write-region Cosmos + no-TTL layout. No background cleanup or automatic existing-record enrollment. |
 | Admin resource panels | `AI4IA_RESOURCE_METRICS_ENABLED` + resource ids | admin dashboard | resource-id env from modules | Monitoring Reader and ARM resource ids |
 | Proxy application profiles | proxy runtime only | none | `proxyProfilesEnabled` | Secret-mounted minimal projection **and verified identity-aware app header**; validator blocks enablement with shared-key ingress |
 | Proxy priority reservations | `AI4IA_PROXY_PRIORITIES_ENABLED` | none | `proxyPrioritiesEnabled`, `proxyPriorityWorkers` | Valid `priority:count` reservations; per-replica fairness only. The API and proxy read the **same** switch — see the note below the table |
@@ -198,6 +199,22 @@ deployed Container App env when you need the current answer; do not infer it fro
 the profile default.
 
 ## Enablement notes
+
+### Resumable conversation deletion
+
+Do not enable this as an ordinary convenience flag. The [deletion
+runbook](conversation-deletion.md) defines the separately approved cutover evidence,
+minimal retained coordination records, unresolved-upload recovery limits, and
+single-write-region/no-TTL startup checks. The template creates no approval record
+and merging source starts no reconciler.
+
+The enabled mode refuses unversioned conversations with `migration_required`.
+Only conversations created under the new protocol participate. Owners explicitly
+resume bounded cleanup; opening status or refreshing it never runs cleanup.
+Disabling the gate pauses new protocol work but does not remove v1 access/write
+guards, tombstones or fences. Rolling back to binaries that ignore the protocol
+is unsafe once v1 data exists. Existing-record migration, production retention
+approval and unattended reconciliation remain separate work.
 
 ### Applying runtime-contract changes
 

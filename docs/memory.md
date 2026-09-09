@@ -246,6 +246,10 @@ recreate orphaned memory after the source manifest is gone.
   deleted. A receipt may retain the redacted text previously supplied to a turn;
   it is separate from metadata-only telemetry and idempotency receipts.
 - The migration intentionally ignores replica-local SQLite history.
+- Conversation deletion is separate from forgetting memories. The opt-in
+  [resumable deletion protocol](runbooks/conversation-deletion.md) removes
+  conversation content and inline originals, not reusable library documents,
+  memories, or user-scoped generated media.
 
 ## Failure behavior
 

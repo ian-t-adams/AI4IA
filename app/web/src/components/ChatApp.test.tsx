@@ -12,7 +12,9 @@ function render(ui: ReactElement) {
 }
 import type { CitationTarget } from "./Markdown";
 import type { LibraryDocument } from "@/lib/library";
-import type { Session, ToolCatalogItem, ToolConsentStatus } from "@/lib/types";
+import type { DeletionStatus, Session, ToolCatalogItem, ToolConsentStatus } from "@/lib/types";
+import { ApiError } from "@/lib/api";
+import { PENDING_DELETION, VERIFIED_DELETION } from "@/lib/deletionTestFixtures";
 import {
   makeChatSession,
   makeInspectorSnapshot,
@@ -35,6 +37,10 @@ const mocks = vi.hoisted(() => ({
   uploadDocument: vi.fn(),
   associateLibraryDocument: vi.fn(),
   deleteSession: vi.fn(),
+  listSessionDeletions: vi.fn(),
+  listSessionInitializations: vi.fn(),
+  getSessionDeletion: vi.fn(),
+  reconcileSessionDeletion: vi.fn(),
   toolCatalog: [] as ToolCatalogItem[],
   getToolCatalog: vi.fn(),
   updateSession: vi.fn(),
@@ -53,7 +59,10 @@ const mocks = vi.hoisted(() => ({
   logout: vi.fn(),
 }));
 
-vi.mock("@/lib/api", () => mocks);
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return { ...mocks, ApiError: actual.ApiError, apiErrorDetail: actual.apiErrorDetail };
+});
 
 function mockToolCatalog(tools: ToolCatalogItem[]): void {
   mocks.toolCatalog = tools;
@@ -224,6 +233,13 @@ vi.mock("./StudioPanel", () => ({
 
 const session = (id: string): Session => makeChatSession(id);
 
+function deferredDeletion<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
 const libraryDocument = (id: string, filename: string) => ({
   id,
   userId: "u1",
@@ -250,7 +266,15 @@ beforeEach(() => {
       libraryDocumentIds: [documentId],
     }),
   );
-  mocks.deleteSession.mockResolvedValue(undefined);
+  mocks.deleteSession.mockReset().mockResolvedValue(undefined);
+  mocks.listSessionDeletions.mockReset().mockResolvedValue({
+    items: [PENDING_DELETION], hasMore: false, nextCursor: null,
+  });
+  mocks.listSessionInitializations.mockReset().mockResolvedValue({
+    items: [], hasMore: false, nextCursor: null, observation: "not_completion_evidence",
+  });
+  mocks.getSessionDeletion.mockReset().mockImplementation(async (sessionId: string) => ({ ...PENDING_DELETION, sessionId }));
+  mocks.reconcileSessionDeletion.mockReset().mockImplementation(async (sessionId: string) => ({ ...PENDING_DELETION, sessionId }));
   mocks.useInlineVoiceLive.mockReturnValue({
     messages: [],
     enabled: false,
@@ -479,7 +503,7 @@ describe("ChatApp session state reliability", () => {
     await user.click(await screen.findByRole("button", { name: "Delete Session A" }));
 
     expect(confirmSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/permanently delete "Session A".*can't be undone/i),
+      expect.stringMatching(/remove "Session A" from chats.*request cleanup.*may remain pending/i),
     );
     expect(mocks.deleteSession).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Session A" })).toBeInTheDocument();
@@ -503,8 +527,265 @@ describe("ChatApp session state reliability", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      /conversation deleted.*couldn't refresh.*refresh unavailable/i,
+      /conversation removed from chats.*couldn't refresh.*refresh unavailable/i,
     );
+  });
+
+  it("makes retained deletion status reachable after reload without affecting an active conversation", async () => {
+    const user = userEvent.setup();
+    const view = render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session B" }));
+    await waitFor(() => expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "B"));
+    expect(mocks.listSessionDeletions).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Deletion status" }));
+    await screen.findByRole("heading", { name: "Conversation removed/session" });
+    expect(document.querySelector("main")).toHaveAttribute("inert");
+    expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Close deletion status" }));
+    expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "B");
+    expect(screen.getByRole("button", { name: "Delete Session B" })).toBeEnabled();
+    view.unmount();
+    render(<ChatApp />);
+    expect(mocks.listSessionDeletions).toHaveBeenCalledTimes(1);
+    await user.click(await screen.findByRole("button", { name: "Deletion status" }));
+    await screen.findByRole("heading", { name: "Conversation removed/session" });
+    expect(mocks.listSessionDeletions).toHaveBeenCalledTimes(2);
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+    expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
+  });
+
+  it.each(["pending", "retryable", "cleanup_verified"] as const)("presents an accepted %s deletion as status, not failure, with a route to its exact record", async (state) => {
+    const status: DeletionStatus = { ...(state === "cleanup_verified" ? VERIFIED_DELETION : PENDING_DELETION), state, sessionId: "A" };
+    mocks.deleteSession.mockResolvedValue(status);
+    mocks.getSessionDeletion.mockResolvedValue(status);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
+    const notice = await screen.findByText(/Conversation removed from chats\./);
+    expect(notice).toHaveAttribute("role", "status");
+    expect(notice).toHaveTextContent(state === "cleanup_verified" ? "Cleanup last verified" : state === "retryable" ? "Retry needed" : "Cleanup pending");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Session B" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "draft");
+    expect(mocks.listSessionDeletions).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "View deletion status" }));
+    await screen.findByRole("heading", { name: "Conversation A" });
+    expect(mocks.getSessionDeletion).toHaveBeenCalledExactlyOnceWith("A");
+    expect(mocks.listSessionDeletions).not.toHaveBeenCalled();
+    expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "All deletion requests" }));
+    await screen.findByRole("heading", { name: "Conversation removed/session" });
+    expect(mocks.listSessionDeletions).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps migration rejection as the server's error instead of removing the chat or falling back", async () => {
+    const detail = "This legacy conversation requires approved migration before deletion.";
+    mocks.deleteSession.mockRejectedValue(new ApiError(409, detail));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    const reads = mocks.listSessions.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(detail);
+    expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "A");
+    expect(screen.getByRole("button", { name: "Delete Session A" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "View deletion status" })).not.toBeInTheDocument();
+    expect(mocks.deleteSession).toHaveBeenCalledExactlyOnceWith("A");
+    expect(mocks.listSessions).toHaveBeenCalledTimes(reads);
+    expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
+  });
+
+  it("blocks a duplicate deletion while preserving a different conversation selected during the request", async () => {
+    const pending = deferredDeletion<DeletionStatus>();
+    mocks.deleteSession.mockReturnValue(pending.promise);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    const deleting = screen.getByRole("button", { name: "Delete Session A" });
+    await user.click(deleting);
+    expect(deleting).toBeDisabled();
+    await user.click(deleting);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteSession).toHaveBeenCalledExactlyOnceWith("A");
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    await waitFor(() => expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "B"));
+    await act(async () => pending.resolve({ ...PENDING_DELETION, sessionId: "A" }));
+    await screen.findByRole("button", { name: "View deletion status" });
+    expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "B");
+    expect(screen.getByRole("button", { name: "Delete Session B" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Delete Session A" })).not.toBeInTheDocument();
+  });
+
+  it.each([[false, false], [true, false], [false, true], [true, true]])("applies a deletion refresh only when current (newer navigation=%s, failure=%s)", async (newer, fails) => {
+    mocks.deleteSession.mockResolvedValue({ ...PENDING_DELETION, sessionId: "A" });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    const old = deferredDeletion<Session[]>();
+    const inspection = deferredDeletion<ReturnType<typeof makeInspectorSnapshot>>();
+    // The inspector's consent snapshot also advances the list generation.
+    // Let navigation's newer list land first so this exercises both fetches.
+    mocks.getInspector.mockImplementation((id: string) => id === "B"
+      ? inspection.promise : Promise.resolve(makeInspectorSnapshot(id)));
+    mocks.listSessions.mockReturnValueOnce(old.promise).mockResolvedValue([{ ...session("B"), title: "Newer Session B" }]);
+    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
+    await screen.findByRole("button", { name: "View deletion status" });
+    if (newer) {
+      await user.click(screen.getByRole("button", { name: "Session B" }));
+      await screen.findByText("Newer Session B", { selector: ".chat-header .editable-session-title-text" });
+      await act(async () => inspection.resolve(makeInspectorSnapshot("B", { title: "Newer Session B" })));
+    }
+    expect(mocks.listSessions).toHaveBeenCalledTimes(newer ? 4 : 3);
+    await act(async () => {
+      if (fails) old.reject(new Error("Deletion refresh failed"));
+      else old.resolve([session("A"), { ...session("B"), title: "Deletion refresh B" }]);
+    });
+    const title = newer ? "Newer Session B" : fails ? "Session B" : "Deletion refresh B";
+    expect(screen.getByRole("button", { name: `Delete ${title}` })).toBeEnabled();
+    expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", newer ? "B" : "draft");
+    expect(screen.queryByRole("button", { name: "Delete Session A" })).not.toBeInTheDocument();
+    if (fails && !newer) expect(screen.getByRole("alert")).toHaveTextContent("Deletion refresh failed");
+    else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText(/Conversation removed from chats\./, { selector: '[role="status"]' })).toHaveTextContent("Cleanup pending");
+  });
+
+  it("does not publish a pending deletion or start its list refresh after sign-out", async () => {
+    const pending = deferredDeletion<DeletionStatus>();
+    mocks.deleteSession.mockReturnValue(pending.promise);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Delete Session A" }));
+    const reads = mocks.listSessions.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(mocks.logout).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve({ ...PENDING_DELETION, sessionId: "A" }));
+    expect(mocks.listSessions).toHaveBeenCalledTimes(reads);
+    expect(screen.queryByRole("button", { name: "View deletion status" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Session A" })).toBeInTheDocument();
+  });
+
+  it("allows read-only deletion status while streaming without unlocking chat navigation", async () => {
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: "Deletion status" }));
+    await screen.findByRole("heading", { name: "Conversation removed/session" });
+    expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Close deletion status" }));
+    const newChat = screen.getByRole("button", { name: "+ New chat" });
+    expect(newChat).toHaveAttribute("aria-disabled", "true");
+    await user.click(newChat);
+    expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "C");
+    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it.each(["A", "B"])("invalidates accepted published-reservation discard without disturbing active %s", async (active) => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    mocks.listSessionInitializations.mockResolvedValue({
+      items: [{ sessionId: "A", createdAt: "2026-09-09T12:00:00Z", state: "initializing" }],
+      hasMore: false, nextCursor: null, observation: "not_completion_evidence",
+    });
+    mocks.listMessages.mockImplementation(async (id: string) => [{
+      id: `message-${id}`, sessionId: id, userId: "u1", role: "assistant",
+      content: `Retained transcript ${id}`, status: "complete",
+      createdAt: "2026-09-09T12:00:00Z",
+    }]);
+    mocks.deleteSession.mockResolvedValue({ ...PENDING_DELETION, sessionId: "A" });
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: `Session ${active}` }));
+    await screen.findByText(`Retained transcript ${active}`);
+    await user.click(screen.getByRole("button", { name: "Deletion status" }));
+    await user.click(screen.getByText("Incomplete conversation creation"));
+    await user.click(await screen.findByRole("button", { name: "Discard incomplete creation A" }));
+    await screen.findByRole("heading", { name: "Conversation A" });
+    await user.click(screen.getByRole("button", { name: "Close deletion status" }));
+    expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Conversation")).toHaveAttribute(
+      "data-conversation-id", active === "A" ? "draft" : "B",
+    );
+    if (active === "A") expect(screen.queryByText("Retained transcript A")).not.toBeInTheDocument();
+    else expect(screen.getByText("Retained transcript B")).toBeInTheDocument();
+    // A later successful full-list read still contains the removed ID.
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    await screen.findByText("Retained transcript B");
+    expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])("rejects delayed publication only after accepted incomplete-creation discard (%s)", async (accepted) => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const creation = deferredDeletion<Session>();
+    mocks.createSession.mockReturnValueOnce(creation.promise);
+    mocks.listSessionInitializations.mockResolvedValue({
+      items: [{ sessionId: "C", createdAt: "2026-09-09T12:00:00Z", state: "initializing" }],
+      hasMore: false, nextCursor: null, observation: "not_completion_evidence",
+    });
+    if (accepted) mocks.deleteSession.mockResolvedValue({ ...PENDING_DELETION, sessionId: "C" });
+    else mocks.deleteSession.mockRejectedValue(new ApiError(409, "Discard was not accepted"));
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: "Deletion status" }));
+    await user.click(screen.getByText("Incomplete conversation creation"));
+    await user.click(await screen.findByRole("button", { name: "Discard incomplete creation C" }));
+    if (accepted) await screen.findByRole("heading", { name: "Conversation C" });
+    else await screen.findByText(/Discard was not accepted/);
+    await user.click(screen.getByRole("button", { name: "Close deletion status" }));
+    await act(async () => creation.resolve(session("C")));
+    if (accepted) {
+      expect(mocks.streamChat).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: "Session C" })).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "draft");
+    } else {
+      await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole("button", { name: "Session C" })).toBeInTheDocument();
+      expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "C");
+    }
+    expect(screen.getByRole("button", { name: "Session B" })).toBeInTheDocument();
+  });
+
+  it.each([false, true])("prevents an in-flight selected transcript from returning only after accepted discard (%s)", async (accepted) => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const messages = deferredDeletion<Awaited<ReturnType<typeof mocks.listMessages>>>();
+    mocks.listMessages.mockReturnValueOnce(messages.promise);
+    mocks.listSessionInitializations.mockResolvedValue({
+      items: [{ sessionId: "A", createdAt: "2026-09-09T12:00:00Z", state: "initializing" }],
+      hasMore: false, nextCursor: null, observation: "not_completion_evidence",
+    });
+    if (accepted) mocks.deleteSession.mockResolvedValue({ ...PENDING_DELETION, sessionId: "A" });
+    else mocks.deleteSession.mockRejectedValue(new ApiError(409, "Discard not accepted"));
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledWith("A"));
+    await user.click(screen.getByRole("button", { name: "Deletion status" }));
+    await user.click(screen.getByText("Incomplete conversation creation"));
+    await user.click(await screen.findByRole("button", { name: "Discard incomplete creation A" }));
+    if (accepted) await screen.findByRole("heading", { name: "Conversation A" });
+    else await screen.findByText(/Discard not accepted/);
+    await user.click(screen.getByRole("button", { name: "Close deletion status" }));
+    await act(async () => messages.resolve([{
+      id: "late-message", sessionId: "A", userId: "u1", role: "assistant",
+      content: "Late private transcript", status: "complete", createdAt: "2026-09-09T12:00:00Z",
+    }]));
+    if (accepted) {
+      expect(screen.queryByText("Late private transcript")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "draft");
+    } else {
+      expect(await screen.findByText("Late private transcript")).toBeInTheDocument();
+      expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "A");
+    }
+    expect(screen.getByRole("button", { name: "Session B" })).toBeInTheDocument();
   });
 
   it("restores the previous model and surfaces a failed persistence PATCH", async () => {

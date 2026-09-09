@@ -7,7 +7,7 @@ from hashlib import sha256
 from collections.abc import Mapping
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..auth.base import AuthenticatedUser
@@ -38,6 +38,13 @@ from ..sessions.repository import (
     SessionConflictError,
     SessionRepository,
 )
+from ..sessions.deletion_models import (
+    DeletionDisabledError,
+    DeletionPage,
+    DeletionStatus,
+    InitializationPage,
+)
+from ..sessions.deletion_service import ConversationDeletionService
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +353,61 @@ async def list_sessions(
     return await _repo(request).list_sessions(user.internal_user_id)
 
 
+@router.get("/initializations", response_model=InitializationPage)
+async def list_initializations(
+    request: Request,
+    response: Response,
+    cursor: str = Query(default="", max_length=172),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> InitializationPage:
+    response.headers["Cache-Control"] = "no-store"
+    return await _repo(request).list_initializations(user.internal_user_id, cursor)
+
+
+@router.get("/deletions", response_model=DeletionPage)
+async def list_deletions(
+    request: Request,
+    response: Response,
+    cursor: str = Query(default="", max_length=128),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> DeletionPage:
+    response.headers["Cache-Control"] = "no-store"
+    return await _repo(request).list_deletions(user.internal_user_id, cursor)
+
+
+@router.get("/{session_id}/deletion", response_model=DeletionStatus)
+async def deletion_status(
+    session_id: str,
+    request: Request,
+    response: Response,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> DeletionStatus:
+    response.headers["Cache-Control"] = "no-store"
+    return await _repo(request).get_deletion_status(user.internal_user_id, session_id)
+
+
+@router.post(
+    "/{session_id}/deletion/reconcile", response_model=DeletionStatus,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def reconcile_deletion(
+    session_id: str,
+    request: Request,
+    response: Response,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> DeletionStatus:
+    if not request.app.state.settings.session_deletion_enabled:
+        raise DeletionDisabledError()
+    service = ConversationDeletionService(
+        _repo(request), getattr(request.app.state, "inline_attachment_store", None)
+    )
+    result = await service.reconcile(user.internal_user_id, session_id)
+    response.headers["Cache-Control"] = "no-store"
+    if result.state == "cleanup_verified":
+        response.status_code = status.HTTP_200_OK
+    return result
+
+
 @router.get("/{session_id}", response_model=Session)
 async def get_session(
     session_id: str,
@@ -479,12 +541,23 @@ async def disassociate_library_document(
         ) from exc
 
 
-@router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{session_id}", response_model=DeletionStatus,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={204: {"description": "Legacy best-effort deletion"}},
+)
 async def delete_session(
     session_id: str,
     request: Request,
+    response: Response,
     user: AuthenticatedUser = Depends(get_current_user),
-) -> None:
+) -> DeletionStatus | Response:
+    if request.app.state.settings.session_deletion_enabled:
+        result = await _repo(request).begin_deletion(user.internal_user_id, session_id)
+        response.headers["Cache-Control"] = "no-store"
+        if result.state == "cleanup_verified":
+            response.status_code = status.HTTP_200_OK
+        return result
     await _repo(request).delete_session(user.internal_user_id, session_id)
     # Best-effort purge of any inline-attachment original bytes retained for this
     # session (inline code-interpreter feature). The store no-ops when nothing was
@@ -492,6 +565,7 @@ async def delete_session(
     store = getattr(request.app.state, "inline_attachment_store", None)
     if store is not None:
         await store.delete_session(user.internal_user_id, session_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{session_id}/messages", response_model=list[Message])

@@ -50,6 +50,24 @@ class ToolGovernanceTests(unittest.TestCase):
         )
 
 
+class ConversationDeletionContractTests(unittest.TestCase):
+    def test_opt_in_is_reachable_without_changing_existing_partition_or_retention(self) -> None:
+        parameters = json.loads(read("infra/main.parameters.json"))["parameters"]
+        for name, env, default in (
+            ("sessionDeletionEnabled", "AI4IA_SESSION_DELETION_ENABLED", "false"),
+            ("sessionDeletionRolloutId", "AI4IA_SESSION_DELETION_ROLLOUT_ID", ""),
+        ):
+            self.assertEqual(parameters[name]["value"], "${" + env + "=" + default + "}")
+            self.assertIn(env + ": ${{ vars." + env + " }}", read(".github/workflows/deploy.yml"))
+        data = read("infra/modules/data.bicep")
+        for container, path in (("sessions", "userId"), ("messages", "sessionId"), ("documents", "sessionId")):
+            self.assertRegex(data, rf"name: '{container}'\s+partitionKey: '/{path}'")
+        shared_containers = data.split("resource cosmosContainers ", 1)[1].split(
+            "resource cosmosMemoriesContainer ", 1
+        )[0]
+        self.assertNotIn("defaultTtl", shared_containers)
+
+
 class FoundryManifestContractTests(unittest.TestCase):
     """The Foundry manifests are a machine contract, not documentation."""
 

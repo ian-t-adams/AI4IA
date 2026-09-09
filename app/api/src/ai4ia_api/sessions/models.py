@@ -326,6 +326,10 @@ def normalize_session_patch_changes(
 class Session(BaseModel):
     id: str = Field(default_factory=_new_id)
     userId: str
+    deletionProtocol: Literal[1] | None = Field(default=None, exclude=True)
+    deletionEpoch: str | None = Field(default=None, exclude=True)
+    attachmentStorageRequired: bool = Field(default=False, exclude=True)
+    attachmentStorageId: str | None = Field(default=None, exclude=True)
     title: str = "New chat"
     titleSource: Literal["auto", "manual"] = "auto"
     model: str | None = None
@@ -418,7 +422,8 @@ class Document(BaseModel):
     # file (see routers/documents.py). ``None`` (the default) means no bytes were
     # retained — today's text-only behavior — so this also gates whether the
     # ``analyze_attachment`` tool is offered for the document. The bytes are
-    # session-scoped, ownership-checked, and purged on document/session delete; the
+    # session-scoped and ownership-checked. Conversation removal and verifiable
+    # original-byte cleanup are distinct in the opt-in deletion protocol; the
     # actual fetch path is recomposed from the authenticated identity, never from
     # this stored value.
     rawRef: str | None = None
