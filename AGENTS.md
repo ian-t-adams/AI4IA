@@ -807,7 +807,8 @@ usage, error classification and cleanup. Do not retry/downgrade or replay a
 possibly accepted response/tool/audio frame. `gen-gateway-policy.py --check`
 covers both generated Realtime policies; `test_realtime_protocol.py`,
 `test_realtime_staged_api.py`, existing voice tests and the shared synthetic
-`app/api/tests/fixtures/realtime_protocol.json` cover both sides of the boundary.
+`app/web/test-fixtures/realtime_protocol.json` cover both sides of the boundary.
+Keep shared browser fixtures inside the web Docker build context.
 Run the targeted browser lifecycle/settings tests when changing that boundary.
 
 This is source staging only: no model/version/capacity or TTS change, live success

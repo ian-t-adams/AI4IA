@@ -313,7 +313,7 @@ Contract sources are the
 [Microsoft GA migration guide](https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-preview-api-migration-guide),
 the [GA WebSocket examples](https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets),
 and [the referenced OpenAI generated schema snapshot](https://github.com/openai/openai-python/tree/41f0a2317759e8796ccfbde75536bd42e4aca7a2/src/openai/types/realtime).
-The shared offline fixture in `app/api/tests/fixtures/realtime_protocol.json`
+The shared offline fixture in `app/web/test-fixtures/realtime_protocol.json`
 is synthetic, not a live success record. Microsoft marks preview deprecated
 since April 30, 2026; retaining it here is a bounded staging/rollback choice, not
 a claim that it remains supported indefinitely. See the

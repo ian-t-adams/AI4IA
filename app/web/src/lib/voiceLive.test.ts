@@ -18,7 +18,7 @@ import {
   type VoiceSessionSettings,
 } from "./voiceLive";
 import { voiceProviderCatalog } from "./data/voice_provider_catalog";
-import protocolFixtures from "../../../api/tests/fixtures/realtime_protocol.json";
+import protocolFixtures from "../../test-fixtures/realtime_protocol.json";
 
 // The exact session.update the relay has always received. Locked byte-for-byte so a
 // regression in the default payload (key order, extra fields) fails loudly.

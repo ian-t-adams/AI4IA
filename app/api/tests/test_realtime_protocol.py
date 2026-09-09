@@ -18,7 +18,7 @@ from ai4ia_api.routers.realtime import inject_session_tools, reject_client_syste
 from tests.test_realtime_logic import _enabled_bridge
 
 FIXTURES = json.loads(
-    (Path(__file__).parent / "fixtures" / "realtime_protocol.json").read_text(encoding="utf-8")
+    (Path(__file__).parents[2] / "web" / "test-fixtures" / "realtime_protocol.json").read_text(encoding="utf-8")
 )
 
 

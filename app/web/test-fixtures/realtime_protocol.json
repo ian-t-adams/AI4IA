@@ -3,7 +3,7 @@
     "migration": "https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-preview-api-migration-guide",
     "websocket": "https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets",
     "schema": "https://github.com/openai/openai-python/tree/41f0a2317759e8796ccfbde75536bd42e4aca7a2/src/openai/types/realtime",
-    "note": "Synthetic offline examples of the documented schema, not recorded live success."
+    "note": "Synthetic offline examples shared by API and browser tests. Kept inside the web Docker build context; not recorded live success."
   },
   "deployment": "catalog-realtime-deployment",
   "client": [
