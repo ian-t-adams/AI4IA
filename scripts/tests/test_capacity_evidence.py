@@ -14,7 +14,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from scripts.tests._loader import load_script
 
@@ -50,6 +50,29 @@ def catalog_document(sku: str = "GlobalStandard") -> dict:
 
 def write_json(path: Path, document: object) -> None:
     path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def account_page(items: list[dict], next_link: object = None) -> dict:
+    """ARM account-list envelope, before the CLI's fixed metadata projection."""
+    return {"value": [
+        {
+            "id": item["id"], "name": item["name"], "kind": item["kind"], "location": item["location"],
+            "tags": {
+                "env": item["env"], "azd-env-name": item["azdEnv"], "managedBy": item["managedBy"],
+                "owner": SECRET,
+            },
+        }
+        for item in items
+    ], "nextLink": next_link}
+
+
+def projected_account_page(document: dict) -> dict:
+    document = copy.deepcopy(document)
+    for row in document["value"]:
+        if "tags" in row:
+            tags = row.pop("tags")
+            row.update(env=tags.get("env"), azdEnv=tags.get("azd-env-name"), managedBy=tags.get("managedBy"))
+    return document
 
 
 class Fixture:
@@ -190,7 +213,7 @@ class Fixture:
         if path == self.scope.group_path:
             key = "group"
         elif path == f"{self.scope.group_path}/providers/{capacity.NAMESPACE}":
-            key = "accounts"
+            key = "accounts:" + query["$skiptoken"][0] if "$skiptoken" in query else "accounts"
         elif path.endswith("/usages"):
             key = "quota:" + path.split("/")[-2]
         elif path.endswith("/modelCapacities"):
@@ -208,6 +231,10 @@ class Fixture:
         if key in self.failures:
             raise capacity.EvidenceError(self.failures[key])
         document = copy.deepcopy(self.responses[key])
+        if key == "accounts" or key.startswith("accounts:"):
+            if command[command.index("--query") + 1] != capacity.PROJECTIONS["accounts"]:
+                raise AssertionError("unexpected account metadata projection")
+            document = projected_account_page(document)
         if key.startswith("metrics:"):
             requested = query["metricnames"][0].split(",")
             document["value"] = [row for row in document["value"] if row["name"]["value"] in requested]
@@ -747,6 +774,292 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(report["platformAvailability"], [])
         self.assertEqual(report["quotaCounters"], [])
         self.assertEqual(report["recommendations"], [])
+
+
+class AccountPaginationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.fixture = Fixture(self.directory)
+        self.original = copy.deepcopy(self.fixture.responses["accounts"]["value"])
+        self.cursor = "fixture+cursor/with=padding%and&value"
+
+    def link(self, cursor: str | None = None, **overrides) -> str:
+        query = {"api-version": capacity.COGNITIVE_API, "$skiptoken": cursor or self.cursor}
+        query.update(overrides)
+        return f"{capacity.ARM}{self.fixture.scope.group_path}/providers/{capacity.NAMESPACE}?{urlencode(query, safe='$')}"
+
+    def paginate(self, first: list[dict] | None = None, second: list[dict] | None = None) -> None:
+        self.fixture.responses["accounts"] = account_page(
+            self.original[:1] if first is None else first, self.link(),
+        )
+        self.fixture.responses["accounts:" + self.cursor] = account_page(
+            self.original[1:] if second is None else second,
+        )
+
+    def source(self, report) -> dict:
+        return next(row for row in report["sources"] if row["id"] == "accounts")
+
+    def account_calls(self) -> list:
+        path = f"{self.fixture.scope.group_path}/providers/{capacity.NAMESPACE}"
+        return [command for command in self.fixture.calls if urlsplit(command[command.index("--url") + 1]).path == path]
+
+    def test_one_page_and_split_pages_both_reach_real_metric_collection(self):
+        self.fixture.responses["accounts"] = account_page(self.original)
+        one_page = self.fixture.report()
+        self.assertEqual(one_page["measurementCoverage"]["status"], "complete")
+        self.assertEqual(len(self.source(one_page)["pages"]), 1)
+        self.assertEqual(len(self.account_calls()), 1)
+        self.fixture.calls.clear()
+        self.paginate()
+        multiple = self.fixture.report()
+        self.assertEqual(self.source(multiple)["status"], "available")
+        self.assertEqual([p["rowCount"] for p in self.source(multiple)["pages"]], [1, 1])
+        self.assertEqual(multiple["measurementCoverage"]["status"], "complete")
+        self.assertGreater(multiple["consumed"]["points"], 0)
+        self.assertTrue(all(row["live"] is not None for row in multiple["deployments"]))
+        self.assertEqual(len(self.account_calls()), 2)
+        query = parse_qs(urlsplit(self.account_calls()[1][self.account_calls()[1].index("--url") + 1]).query)
+        self.assertEqual(query, {"api-version": [capacity.COGNITIVE_API], "$skiptoken": [self.cursor]})
+        self.assertNotIn(self.cursor, capacity.render(multiple, "json"))
+        self.assertNotIn(SUBSCRIPTION, capacity.render(multiple, "json"))
+        self.assertNotIn(SECRET, capacity.render(multiple, "json"))
+
+    def test_three_observed_accounts_may_need_an_empty_terminal_page(self):
+        raw = catalog_document()
+        raw["regions"]["westus"] = {"dataZone": "US"}
+        raw["catalog"][0]["deployments"].append({
+            "region": "westus", "sku": "GlobalStandard", "version": "1", "capacity": 10,
+        })
+        self.fixture = Fixture(self.directory, raw)
+        self.original = copy.deepcopy(self.fixture.responses["accounts"]["value"])
+        self.assertEqual(len(self.original), 3)
+        self.cursor = "c" * 498 + "=="
+        self.paginate(first=self.original, second=[])
+        report = self.fixture.report()
+        source = self.source(report)
+        self.assertEqual(source["status"], "available")
+        self.assertEqual([p["rowCount"] for p in source["pages"]], [3, 0])
+        self.assertEqual(source["rowCount"], 3)
+        self.assertEqual(report["measurementCoverage"]["status"], "complete")
+        self.assertEqual(report["consumed"]["points"], 3 * 4 * 24)
+        self.assertEqual(len(self.account_calls()), 2)
+        self.assertNotIn("pagination_not_followed", source["codes"])
+
+    def test_foreign_credentialed_and_broadened_continuations_never_dispatch(self):
+        self.paginate()
+        self.assertEqual(self.source(self.fixture.report())["status"], "available")
+        good = self.link()
+        path = f"{self.fixture.scope.group_path}/providers/{capacity.NAMESPACE}"
+        bad_links = [
+            good.replace("https:", "http:", 1),
+            good.replace("management.azure.com", "management.azure.com.evil.invalid", 1),
+            good.replace("management.azure.com", "user:password@management.azure.com", 1),
+            good.replace("management.azure.com", "management.azure.com:443", 1),
+            good.replace(SUBSCRIPTION, OTHER_SUBSCRIPTION),
+            good.replace(self.fixture.scope.resource_group, "other-group"),
+            good.replace(path, path + "/deployments"),
+            good.replace(path, path + "/../accounts"),
+            good.replace(path, path + "/"),
+            good.replace(path, path.replace("/resourceGroups/", "/resourceGroups%2f")),
+            good.removeprefix(capacity.ARM),
+            good + "#fragment",
+            good + "#",
+            " " + good,
+            good + "\n",
+            self.link(**{"api-version": "2023-05-01"}),
+            self.link(**{"$filter": "kind eq 'AIServices'"}),
+            good + "&api-version=" + capacity.COGNITIVE_API,
+            good + "&$skiptoken=duplicate",
+            capacity.ARM + path + "?" + urlencode({"api-version": capacity.COGNITIVE_API, "$skipToken": self.cursor}),
+            capacity.ARM + path + "?" + urlencode({"$skiptoken": self.cursor}),
+            capacity.ARM + path + "?api-version=" + capacity.COGNITIVE_API,
+        ]
+        for link in bad_links:
+            with self.subTest(link=link.replace(SUBSCRIPTION, "<subscription>")):
+                self.fixture.calls.clear()
+                self.fixture.responses["accounts"]["nextLink"] = link
+                report = self.fixture.report()
+                source = self.source(report)
+                self.assertEqual(source["status"], "partial")
+                self.assertTrue(source["codes"])
+                self.assertEqual(len(self.account_calls()), 1)
+                self.assertEqual(source["pages"][0]["rowCount"], 1)
+                self.assertEqual(source["pages"][0]["accounts"][0]["name"], self.original[0]["name"])
+                self.assertTrue(all(row["live"] is None for row in report["deployments"]))
+                public = capacity.render(report, "json")
+                self.assertNotIn(OTHER_SUBSCRIPTION, public)
+                self.assertNotIn("password", public)
+                self.assertNotIn("evil.invalid", public)
+
+    def test_casing_and_encoding_are_parsed_but_only_fixed_targets_are_sent(self):
+        self.paginate()
+        uri = urlsplit(self.link())
+        self.fixture.responses["accounts"]["nextLink"] = (
+            "https://MANAGEMENT.AZURE.COM" + uri.path.upper() + "?" + uri.query.replace("%2F", "%2f")
+        )
+        report = self.fixture.report()
+        self.assertEqual(self.source(report)["status"], "available")
+        second = self.account_calls()[1]
+        uri = urlsplit(second[second.index("--url") + 1])
+        self.assertEqual(uri.netloc, "management.azure.com")
+        self.assertEqual(uri.path, f"{self.fixture.scope.group_path}/providers/{capacity.NAMESPACE}")
+        self.assertEqual(parse_qs(uri.query)["$skiptoken"], [self.cursor])
+
+    def test_repeated_decoded_cursor_stops_before_third_page(self):
+        self.paginate(first=self.original, second=[])
+        self.assertEqual(self.source(self.fixture.report())["status"], "available")
+        self.fixture.calls.clear()
+        second = self.fixture.responses["accounts:" + self.cursor]
+        second["nextLink"] = self.link().replace("%2F", "%2f")
+        report = self.fixture.report()
+        source = self.source(report)
+        self.assertEqual(source["status"], "partial")
+        self.assertIn("repeated_account_cursor", source["codes"])
+        self.assertEqual(len(self.account_calls()), 2)
+        self.assertEqual([p["rowCount"] for p in source["pages"]], [2, 0])
+        self.assertTrue(all(row["live"] is None for row in report["deployments"]))
+        self.assertNotIn(self.cursor, capacity.render(report, "text"))
+
+    def test_cross_page_duplicate_ids_names_and_scope_fail_before_another_read(self):
+        self.paginate()
+        self.assertEqual(self.source(self.fixture.report())["status"], "available")
+        second = self.fixture.responses["accounts:" + self.cursor]
+        for change in ("same", "case_variant", "id_alias", "name_alias", "foreign_id"):
+            with self.subTest(change=change):
+                self.fixture.calls.clear()
+                row = copy.deepcopy(account_page([self.original[0]])["value"][0])
+                if change == "case_variant":
+                    row["id"], row["name"] = row["id"].upper(), row["name"].upper()
+                elif change == "id_alias":
+                    row["name"] = "other-name"
+                elif change == "name_alias":
+                    row["id"] = row["id"].rsplit("/", 1)[0] + "/other-name"
+                elif change == "foreign_id":
+                    row["id"] = row["id"].replace(SUBSCRIPTION, OTHER_SUBSCRIPTION)
+                second.update(value=[row], nextLink=self.link("never-follow-this"))
+                report = self.fixture.report()
+                source = self.source(report)
+                self.assertEqual(source["status"], "partial")
+                self.assertIn("account_inventory_scope_mismatch", source["codes"])
+                self.assertEqual(len(self.account_calls()), 2)
+                self.assertEqual(source["pages"][0]["rowCount"], 1)
+                self.assertEqual(source["pages"][1]["accounts"], [])
+                self.assertTrue(all(row["live"] is None for row in report["deployments"]))
+
+    def test_partial_page_failure_and_warning_preserve_only_candidate_evidence(self):
+        self.paginate()
+        self.assertEqual(self.source(self.fixture.report())["status"], "available")
+        self.fixture.failures["accounts:" + self.cursor] = "azure_read_failed"
+        report = self.fixture.report()
+        source = self.source(report)
+        self.assertEqual(source["status"], "partial")
+        self.assertEqual(source["pages"][0]["rowCount"], 1)
+        self.assertEqual(source["pages"][1]["status"], "unavailable")
+        self.assertIn("azure_read_failed", source["codes"])
+        self.assertIsNone(source["rowCount"])
+        self.fixture.failures.clear()
+        self.fixture.warnings.add("accounts:" + self.cursor)
+        report = self.fixture.report()
+        self.assertIn("azure_cli_warning", self.source(report)["codes"])
+        self.assertEqual(self.source(report)["status"], "partial")
+        self.assertEqual(len(self.source(report)["pages"]), 2)
+        self.assertTrue(all(row["live"] is None for row in report["deployments"]))
+
+    def test_existing_call_time_and_byte_limits_apply_between_pages(self):
+        self.paginate()
+        self.assertEqual(self.source(self.fixture.report())["status"], "available")
+        group_bytes = len(json.dumps(self.fixture.responses["group"]).encode())
+        first_bytes = len(json.dumps(projected_account_page(self.fixture.responses["accounts"])).encode())
+        for bound, value, code in (
+            ("MAX_CALLS", 2, "read_limit_exceeded"),
+            ("MAX_TOTAL_RESPONSE_BYTES", group_bytes + first_bytes, "response_budget_exceeded"),
+        ):
+            with self.subTest(bound=bound), patch.object(capacity, bound, value):
+                self.fixture.calls.clear()
+                report = self.fixture.report()
+                source = self.source(report)
+                self.assertIn(code, source["codes"])
+                self.assertEqual(source["status"], "partial")
+                self.assertEqual(source["pages"][0]["rowCount"], 1)
+                self.assertFalse(source["pages"][1]["attempted"])
+                self.assertEqual(len(self.account_calls()), 1)
+                self.assertTrue(all(row["live"] is None for row in report["deployments"]))
+        clock = [0.0]
+        self.fixture.calls.clear()
+
+        def expire_after_first_page(command, timeout, limit):
+            result = self.fixture.runner(command, timeout, limit)
+            if len(self.account_calls()) == 1:
+                clock[0] = capacity.COLLECTION_SECONDS
+            return result
+
+        reader = capacity.AzureReader(self.fixture.scope, runner=expire_after_first_page, clock=lambda: clock[0])
+        report = self.fixture.report(reader=reader)
+        source = self.source(report)
+        self.assertIn("collection_deadline_exceeded", source["codes"])
+        self.assertEqual(source["status"], "partial")
+        self.assertFalse(source["pages"][1]["attempted"])
+        self.assertEqual(len(self.account_calls()), 1)
+
+    def test_page_row_cursor_and_link_limits_have_valid_boundary_controls(self):
+        self.paginate()
+        with patch.object(capacity, "MAX_ACCOUNT_PAGES", 2):
+            self.assertEqual(self.source(self.fixture.report())["status"], "available")
+        self.fixture.calls.clear()
+        with patch.object(capacity, "MAX_ACCOUNT_PAGES", 1):
+            source = self.source(self.fixture.report())
+            self.assertIn("account_page_limit_exceeded", source["codes"])
+            self.assertEqual(source["pages"][0]["rowCount"], 1)
+            self.assertEqual(len(self.account_calls()), 1)
+        with patch.object(capacity, "MAX_ACCOUNTS", 2):
+            self.assertEqual(self.source(self.fixture.report())["status"], "available")
+            extra = copy.deepcopy(self.fixture.responses["accounts:" + self.cursor]["value"][0])
+            extra["name"] = "unowned-account"
+            extra["id"] = self.fixture.scope.account_path(extra["name"])
+            self.fixture.responses["accounts:" + self.cursor]["value"].append(extra)
+            source = self.source(self.fixture.report())
+            self.assertIn("row_limit_exceeded", source["codes"])
+            self.assertEqual(source["pages"][0]["rowCount"], 1)
+        self.fixture.responses["accounts:" + self.cursor]["value"].pop()
+        link = self.link()
+        with patch.object(capacity, "MAX_ACCOUNT_LINK_BYTES", len(link)):
+            self.assertEqual(self.source(self.fixture.report())["status"], "available")
+        with patch.object(capacity, "MAX_ACCOUNT_LINK_BYTES", len(link) - 1):
+            self.assertIn("invalid_account_continuation", self.source(self.fixture.report())["codes"])
+        with patch.object(capacity, "MAX_ACCOUNT_CURSOR_BYTES", len(self.cursor)):
+            self.assertEqual(self.source(self.fixture.report())["status"], "available")
+        with patch.object(capacity, "MAX_ACCOUNT_CURSOR_BYTES", len(self.cursor) - 1):
+            self.assertIn("invalid_account_cursor", self.source(self.fixture.report())["codes"])
+
+    def test_empty_terminal_is_valid_but_malformed_or_control_cursor_is_partial(self):
+        self.paginate(first=self.original, second=[])
+        self.assertEqual(self.source(self.fixture.report())["status"], "available")
+        for link in (
+            False, 0, [], {}, self.link(**{"$skiptoken": ""}),
+            self.link(**{"$skiptoken": "control\ncursor"}),
+            self.link(**{"$skiptoken": "unicode-\u00e9"}),
+            self.link() + "%GG",
+        ):
+            with self.subTest(link=link):
+                self.fixture.calls.clear()
+                self.fixture.responses["accounts"]["nextLink"] = link
+                source = self.source(self.fixture.report())
+                self.assertEqual(source["status"], "partial")
+                self.assertEqual(source["pages"][0]["rowCount"], 2)
+                self.assertEqual(len(self.account_calls()), 1)
+
+    def test_pagination_for_other_operations_is_still_refused(self):
+        self.paginate()
+        self.assertEqual(self.source(self.fixture.report())["status"], "available")
+        self.fixture.calls.clear()
+        self.fixture.responses["quota:eastus2"]["nextLink"] = self.link("not-account-operation")
+        report = self.fixture.report()
+        quota = next(row for row in report["sources"] if row["id"] == "quota:eastus2")
+        self.assertEqual(quota["status"], "partial")
+        self.assertIn("pagination_not_followed", quota["codes"])
+        self.assertEqual(len(self.account_calls()), 2)
 
 
 class BoundsAndCliTests(unittest.TestCase):

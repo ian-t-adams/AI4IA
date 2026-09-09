@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit
 from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +33,9 @@ METRICS = ("ModelRequests", "InputTokens", "OutputTokens", "TotalTokens")
 DIMENSIONS = ("ModelDeploymentName", "ModelName", "ModelVersion", "Region")
 MAX_REGIONS = 8
 MAX_ACCOUNTS = 64
+MAX_ACCOUNT_PAGES = 64
+MAX_ACCOUNT_LINK_BYTES = 8192
+MAX_ACCOUNT_CURSOR_BYTES = 4096
 MAX_DEPLOYMENTS = 256
 MAX_MODELS = 128
 MAX_ROWS = 2048
@@ -438,7 +441,9 @@ def run_bounded(command: list[str], timeout: float, limit: int) -> ProcessResult
 class ReadResult:
     document: object
     warning: bool
-    byte_count: int
+    byte_count: int | None
+    codes: tuple[str, ...] = ()
+    pages: tuple[dict, ...] = ()
 
 
 # Projection happens inside az as well as at the parser/report boundary. Account
@@ -489,7 +494,7 @@ class AzureReader:
             path = scope.group_path
             parameters["api-version"] = "2024-03-01"
         elif operation == "accounts":
-            path = f"{scope.group_path}/providers/{NAMESPACE}"
+            return self._accounts()
         elif operation == "quota":
             if region not in scope.catalog.regions:
                 raise EvidenceError("unapproved_read_region")
@@ -521,6 +526,9 @@ class AzureReader:
                     "$filter": " and ".join(f"{name} eq '*'" for name in DIMENSIONS),
                     "AutoAdjustTimegrain": "false", "ValidateDimensions": "true",
                 })
+        return self._read_page(operation, path, parameters)
+
+    def _read_page(self, operation: str, path: str, parameters: dict[str, str]) -> ReadResult:
         remaining = self.deadline - self.clock()
         if remaining <= 0:
             raise EvidenceError("collection_deadline_exceeded")
@@ -532,7 +540,7 @@ class AzureReader:
         self.calls += 1
         command = [
             *az_command(), "rest", "--method", "GET", "--url", f"{ARM}{path}?{urlencode(parameters)}",
-            "--subscription", scope.subscription, "--only-show-errors", "--output", "json",
+            "--subscription", self.scope.subscription, "--only-show-errors", "--output", "json",
             "--query", PROJECTIONS[operation],
         ]
         try:
@@ -552,6 +560,109 @@ class AzureReader:
             exc.response_bytes = len(result.body)
             raise
         return ReadResult(document, result.warning, len(result.body))
+
+    def _accounts(self) -> ReadResult:
+        path = f"{self.scope.group_path}/providers/{NAMESPACE}"
+        parameters = {"api-version": COGNITIVE_API}
+        combined: list[dict] = []
+        pages: list[dict] = []
+        cursors: set[str] = set()
+        byte_count: int | None = 0
+        warning = False
+
+        def incomplete(code: str) -> ReadResult:
+            return ReadResult(None, warning, byte_count, (code,), tuple(pages))
+
+        while True:
+            page = {
+                "page": len(pages) + 1, "startedAt": utc_text(datetime.now(UTC)), "finishedAt": None,
+                "status": "available", "codes": [], "rowCount": None, "accounts": [],
+                "responseBytes": None, "attempted": False,
+            }
+            pages.append(page)
+            result = None
+            calls_before = self.calls
+            try:
+                result = self._read_page("accounts", path, parameters)
+                page["responseBytes"] = result.byte_count
+                byte_count = byte_count + result.byte_count if byte_count is not None and result.byte_count is not None else None
+                warning = warning or result.warning
+                document = object_value(result.document)
+                items = rows(document, MAX_ACCOUNTS)
+                # The existing identity/unique-name contract also makes IDs
+                # unique and bounds the total rows across all pages.
+                candidates = parse_accounts({"value": [*combined, *items]}, self.scope)
+                combined.extend(items)
+                page_names = {item["name"] for item in items}
+                page["rowCount"] = len(items)
+                page["accounts"] = [
+                    {"region": region, "name": name}
+                    for region, name in sorted(candidates.items()) if name in page_names
+                ]
+                if result.warning:
+                    page["status"] = "partial"
+                    page["codes"] = ["azure_cli_warning"]
+            except EvidenceError as exc:
+                if result is None:
+                    received = exc.response_bytes if self.calls > calls_before else 0
+                    page["responseBytes"] = received
+                    byte_count = byte_count + received if byte_count is not None and received is not None else None
+                page["status"] = "unavailable"
+                page["codes"] = [exc.code]
+                return incomplete(exc.code)
+            finally:
+                page["attempted"] = self.calls > calls_before
+                page["finishedAt"] = utc_text(datetime.now(UTC))
+            next_link = document.get("nextLink")
+            if next_link is None or next_link == "":
+                return ReadResult({"value": combined}, warning, byte_count, pages=tuple(pages))
+            try:
+                parameters = account_continuation(next_link, self.scope)
+            except EvidenceError as exc:
+                return incomplete(exc.code)
+            cursor = parameters["$skiptoken"]
+            if cursor in cursors:
+                return incomplete("repeated_account_cursor")
+            cursors.add(cursor)
+            if len(pages) >= MAX_ACCOUNT_PAGES:
+                return incomplete("account_page_limit_exceeded")
+
+
+def account_continuation(link: object, scope: Scope) -> dict[str, str]:
+    """Accept only the observed account-list continuation contract, never its URL."""
+    if (
+        not isinstance(link, str) or len(link) > MAX_ACCOUNT_LINK_BYTES
+        or not re.fullmatch(r"[\x21-\x7e]+", link)
+        or "#" in link
+        or re.search(r"%(?![0-9A-Fa-f]{2})", link)
+    ):
+        raise EvidenceError("invalid_account_continuation")
+    try:
+        parsed = urlsplit(link)
+        pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True, errors="strict", max_num_fields=2)
+    except ValueError:
+        raise EvidenceError("invalid_account_continuation") from None
+    expected_path = f"{scope.group_path}/providers/{NAMESPACE}"
+    if (
+        parsed.scheme != "https" or parsed.netloc.casefold() != "management.azure.com"
+        or parsed.path.casefold() != expected_path.casefold() or parsed.fragment
+    ):
+        raise EvidenceError("unapproved_account_continuation")
+    parameters = dict(pairs)
+    if (
+        len(pairs) != 2 or set(parameters) != {"api-version", "$skiptoken"}
+        or parameters["api-version"] != COGNITIVE_API
+    ):
+        raise EvidenceError("unapproved_account_continuation_query")
+    cursor = parameters["$skiptoken"]
+    if (
+        not cursor or len(cursor) > MAX_ACCOUNT_CURSOR_BYTES
+        or not re.fullmatch(r"[\x20-\x7e]+", cursor)
+    ):
+        raise EvidenceError("invalid_account_cursor")
+    # The caller rebuilds the exact known host/path using these two parameters.
+    # No server URL, cursor value or subscription-bearing ID enters the report.
+    return parameters
 
 
 def owned_account_name(scope: Scope, region: str, name: object) -> bool:
@@ -1072,11 +1183,17 @@ def collect(
         try:
             result = reader.read(operation, **arguments)
             source["responseBytes"] = result.byte_count
+            if result.pages:
+                source["pages"] = list(result.pages)
+            source["codes"].extend(result.codes)
+            if result.warning:
+                source["codes"].append("azure_cli_warning")
+            if result.document is None and result.codes:
+                source["status"] = "partial" if any(p["status"] != "unavailable" for p in result.pages) else "unavailable"
+                return None
             document = object_value(result.document)
             if document.get("nextLink"):
                 source["codes"].append("pagination_not_followed")
-            if result.warning:
-                source["codes"].append("azure_cli_warning")
             parsed = parser(document)
             source["rowCount"] = len(parsed) if isinstance(parsed, (list, dict)) else None
             if source["codes"]:
@@ -1280,6 +1397,8 @@ def collect(
         "policy": "not_evaluated", "recommendations": [], "writes": "none",
         "limits": {
             "regions": MAX_REGIONS, "accountsInInventory": MAX_ACCOUNTS, "deployments": MAX_DEPLOYMENTS,
+            "accountPages": MAX_ACCOUNT_PAGES, "accountContinuationBytes": MAX_ACCOUNT_LINK_BYTES,
+            "accountCursorBytes": MAX_ACCOUNT_CURSOR_BYTES,
             "modelVersions": MAX_MODELS, "rowsPerMetadataSource": MAX_ROWS,
             "seriesPerMetric": MAX_SERIES, "pointsPerSeries": MAX_POINTS,
             "totalPoints": MAX_TOTAL_POINTS, "responseBytes": MAX_RESPONSE_BYTES,
@@ -1328,6 +1447,9 @@ def render(report: dict, output_format: str) -> str:
     lines.append("Source coverage (raw counter and platform observations are retained in --format json):")
     for source in report["sources"]:
         lines.append(f"  {source['id']}: {source['status']} ({', '.join(source['codes']) or 'observed'}) at {source['finishedAt']}")
+        for page in source.get("pages", []):
+            names = ", ".join(row["name"] for row in page["accounts"]) or "none"
+            lines.append(f"    page {page['page']}: {page['status']}; observed account candidates: {names}")
     lines.append("Pool coverage: " + (", ".join(report["poolCoverage"]["codes"]) or "consistent under operator assertions"))
     lines.extend(report["exclusions"])
     lines.append("Cost, production criticality, reserves and deployable headroom remain unknown/not evaluated.")

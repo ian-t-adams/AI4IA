@@ -716,6 +716,14 @@ series, samples and final serialization. No login, subscription selection,
 provider registration, model invocation, logs/traces, new workflow or Azure write
 is part of collection. The existing quality job runs only mocked/offline tests.
 
+Only account inventory may continue pages: validate exact HTTPS ARM host,
+subscription/RG/account-list path, unchanged API version and the observed
+`api-version`/`$skiptoken` query keys before rebuilding each request. Keep call,
+byte, time and total account-row bounds across pages; reject duplicate
+names/IDs/cursors and incomplete ownership. Until terminal-page validation,
+safe page observations are candidates, not a verified inventory. Never discard
+the partial flag merely because the first page contains all expected regions.
+
 Quota counter replicas and `modelCapacities` are observations, not pool identity.
 Never infer scope from equal numbers, publisher names, SKU processing geography,
 or catalog `maxCapacityPool`. Optional fresh, subscription-bound **operator

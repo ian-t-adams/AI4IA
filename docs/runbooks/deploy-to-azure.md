@@ -97,11 +97,32 @@ wrong model versions and metric-level failures.
 `total: 0` requires actual zero-valued samples covering all hourly buckets of
 the returned series. No series, no samples or null samples never becomes zero.
 Sparse observations retain `observedTotal`, sample/zero counts and observed
-peak-hour count, but `total` remains null. A CLI warning or paginated response is
-partial, even with usable rows. The tool does not follow continuation URLs.
+peak-hour count, but `total` remains null. A CLI warning or incomplete pagination
+is partial, even with usable rows.
 Metrics cover **returned series**, not proof of complete workload or billing
 coverage. Hourly counts do not establish peak-minute demand, token rate limits,
 production importance or spare throughput.
+
+**Account-list continuation is the only paging exception.** Even an ordinary
+three-account inventory can have a populated first page and an empty terminal
+page. The collector requires that terminal page before trusting inventory. Each
+continuation must use HTTPS `management.azure.com`, the exact expected
+subscription/resource-group account-list path (case-insensitive ARM identity),
+the same API version, and exactly `api-version` plus lowercase `$skiptoken`.
+These are the observed service query keys; alternate keys, duplicate parameters,
+credentials, ports, fragments, foreign paths, malformed encodings and oversized
+links/cursors are refused. The request URL is rebuilt from the fixed target and
+validated parameters, not forwarded from server metadata.
+
+Pages share the existing total call/byte/time budgets and the 64-account row
+ceiling. Repeated decoded cursors, duplicate account names/IDs, cross-page
+ownership ambiguity and page-limit exhaustion prevent a verified inventory.
+Only a complete, consistent page set can enable deployment/metric reads.
+On refusal or failure, `sources[].pages` retains bounded, non-authoritative
+account candidates, row counts, times and codes from safe pages; it never
+contains cursors, continuation URLs or subscription-bearing IDs. Text output
+also identifies those candidates. Other operations still do not follow
+continuations and retain `pagination_not_followed` partial coverage.
 
 Legacy Azure OpenAI metric aliases are not summed with the canonical family.
 Voice Live/service-specific metrics lacking the required deployment identity are
@@ -192,6 +213,7 @@ chooses replacement/workload reserves. Those remain separately approved work.
 | --- | --- |
 | Azure process / read-collection budget | 20 seconds per process; 300 seconds across reads, no retry loop |
 | Metadata scope | 8 catalog regions, 64 account inventory rows, 256 deployments total, 128 distinct model versions |
+| Account-list continuation | 64 pages, 8 KiB ASCII next-link and 4 KiB decoded ASCII cursor; existing total read budgets still apply |
 | Metadata rows / bytes | 2,048 rows per metadata source; 8 MiB per response, 64 MiB across responses |
 | Metric samples | 256 series per metric, 168 hourly points per series, 200,000 points across collection |
 | Local inputs / output | 2 MiB catalog, 128 KiB pool assertions, 2 MiB final escaped report |
