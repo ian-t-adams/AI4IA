@@ -20,6 +20,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .agents.approvals import ApprovalPolicy as ToolApprovalMode
 from .official_mcp_catalog import load_official_mcp_catalog
+from .realtime_protocol import RealtimeProtocol
 from .voice_provider_catalog import (
     EXPECTED_PROVIDER_IDS,
     SPEECH_VOICE_LIVE_PROVIDER_ID,
@@ -181,6 +182,12 @@ class Settings(BaseSettings):
     realtime_base_url: str | None = None
     # Scoped APIM realtime subscription. It must never reuse the proxy ingress key.
     realtime_gateway_api_key: str | None = None
+    # Staging provisions a separate, scoped APIM WebSocket API; it does NOT
+    # select GA. Selection is server-only and stays preview until approved.
+    realtime_ga_enabled: bool = False
+    realtime_protocol: RealtimeProtocol = RealtimeProtocol.preview
+    realtime_ga_base_url: str = ""
+    realtime_ga_gateway_api_key: str = ""
     # Upstream connect/handshake timeout (seconds).
     realtime_timeout_seconds: float = 30.0
     # Optional hard clamp on a single live session's total duration (seconds);
@@ -1053,6 +1060,57 @@ class Settings(BaseSettings):
                 "the library with AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false."
             )
 
+    def validate_realtime_ga(self) -> None:
+        """Validate the staged GA route at startup and before selecting it."""
+        if self.realtime_protocol == RealtimeProtocol.ga and not self.realtime_ga_enabled:
+            raise RuntimeError(
+                "AI4IA_REALTIME_PROTOCOL=ga requires AI4IA_REALTIME_GA_ENABLED=true."
+            )
+        if not self.realtime_ga_enabled:
+            return
+        if not self.realtime_enabled:
+            raise RuntimeError("GA realtime requires AI4IA_REALTIME_ENABLED=true.")
+        if not self.realtime_ga_base_url or not self.realtime_ga_gateway_api_key:
+            raise RuntimeError(
+                "GA realtime requires AI4IA_REALTIME_GA_BASE_URL and "
+                "AI4IA_REALTIME_GA_GATEWAY_API_KEY."
+            )
+        ga_url = urlparse(self.realtime_ga_base_url)
+        legacy_url = urlparse(self.realtime_base_url or "")
+        host = (ga_url.hostname or "").lower().rstrip(".")
+        if (
+            ga_url.scheme not in {"https", "wss"}
+            or not host
+            or ga_url.username is not None
+            or ga_url.password is not None
+            or ga_url.path.rstrip("/") != "/openai/v1"
+            or ga_url.params
+            or ga_url.query
+            or ga_url.fragment
+            or ga_url.netloc.lower() != legacy_url.netloc.lower()
+            or any(
+                host == suffix or host.endswith(f".{suffix}")
+                for suffix in _DIRECT_FOUNDRY_HOST_SUFFIXES
+            )
+        ):
+            raise RuntimeError(
+                "GA realtime requires the same shared active APIM host as "
+                "AI4IA_REALTIME_BASE_URL, at HTTPS/WSS /openai/v1 without "
+                "credentials, query or fragment; direct Foundry is not permitted."
+            )
+        for name, key in (
+            ("MODEL_GATEWAY_API_KEY", self.model_gateway_api_key),
+            ("REALTIME_GATEWAY_API_KEY", self.realtime_gateway_api_key),
+            ("SPEECH_VOICE_LIVE_GATEWAY_API_KEY", self.speech_voice_live_gateway_api_key),
+            ("OFFICIAL_MCP_SUBSCRIPTION_KEY", self.official_mcp_subscription_key),
+            ("CODE_INTERPRETER_API_KEY", self.code_interpreter_api_key),
+        ):
+            if key and key == self.realtime_ga_gateway_api_key:
+                raise RuntimeError(
+                    "GA realtime requires a distinct API-scoped gateway key; "
+                    f"do not reuse AI4IA_{name}."
+                )
+
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
         self._validate_data_residency()
@@ -1136,6 +1194,7 @@ class Settings(BaseSettings):
                     "Voice Live requires a WebSocket-capable shared active APIM /openai "
                     "gateway URL (https:// or wss://)."
                 )
+        self.validate_realtime_ga()
         voice_catalog = load_voice_provider_catalog()
         if tuple(voice_catalog.providerIds) != EXPECTED_PROVIDER_IDS:
             raise RuntimeError(
@@ -1398,6 +1457,10 @@ class Settings(BaseSettings):
                     (
                         "AI4IA_REALTIME_GATEWAY_API_KEY",
                         self.realtime_gateway_api_key,
+                    ),
+                    (
+                        "AI4IA_REALTIME_GA_GATEWAY_API_KEY",
+                        self.realtime_ga_gateway_api_key,
                     ),
                     (
                         "AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY",

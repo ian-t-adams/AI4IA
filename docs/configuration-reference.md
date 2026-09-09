@@ -110,6 +110,8 @@ the container — those names are *outputs*, not knobs you set.
 | --- | --- | --- | --- | --- |
 | Voice Live | `AI4IA_VOICE_LIVE_ENABLED` | `voiceLiveEnabled` | `AI4IA_REALTIME_ENABLED`, `VOICE_LIVE_ENABLED`, `API_PUBLIC_URL`, `AI4IA_REALTIME_ALLOWED_ORIGINS` | Profile default `true`. The Origin allowlist is derived in Bicep from the deployed web origins (ACA default FQDN + `webCustomDomain`); `AI4IA_REALTIME_ALLOWED_ORIGINS` is optional and only *adds* origins. |
 | Voice Live tools | `AI4IA_VOICE_LIVE_TOOLS_ENABLED` | `voiceLiveToolsEnabled` | `AI4IA_REALTIME_TOOLS_ENABLED`, `VOICE_LIVE_TOOLS_ENABLED` | Profile default `true`; requires Voice Live. |
+| Stage GA Realtime | `AI4IA_REALTIME_GA_ENABLED` | `realtimeGaEnabled` | `AI4IA_REALTIME_GA_ENABLED`, `AI4IA_REALTIME_GA_BASE_URL`, `AI4IA_REALTIME_GA_GATEWAY_API_KEY` | Default `false` in Bicep and the profile. Requires Voice Live; provisions a separate WebSocket API/key on the existing APIM. Does not select GA. |
+| Realtime protocol selection | `AI4IA_REALTIME_PROTOCOL` | `realtimeProtocol` | `AI4IA_REALTIME_PROTOCOL` | Default `preview`. Server-only; `ga` requires the staging gate and complete GA URL/key configuration. Speech Voice Live is unaffected. Approval and live canaries are required before any cutover. |
 | Speech Voice Live (second voice provider) | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. The six managed models and default are catalog-controlled. **Template default OFF** in both Bicep and `infra/main.parameters.json`; the default allowlist is only `azure_openai`. |
 | Voice provider allowlist / default | n/a (server-authoritative) | `voiceProviderAllowlist`, `voiceDefaultProvider` | `AI4IA_VOICE_PROVIDER_ALLOWLIST` (default `azure_openai`), `AI4IA_VOICE_DEFAULT_PROVIDER` (default `azure_openai`) | Allowlist must always include `azure_openai`; default provider must be an allowlist member. The browser may only select an advertised, allowlisted provider. |
 | Data residency | API-only setting; not mapped through azd/CI | n/a (API setting) | `AI4IA_DATA_RESIDENCY` (default `global`) | `global` \| `zonal` \| `us` \| `eu`. Restricts model routing by processing boundary. The available model set depends on the current catalog, not a fixed count; see [Data residency](#data-residency). |
@@ -255,6 +257,68 @@ path, bearer auth, a missing key, or a key reused by another gateway plane.
 The APIM plane is the shared `apim-mcp-*` Basic v2 service (capacity 1), and it is
 now the only APIM service in the environment; the prior Consumption APIM and all of
 its children have been deleted.
+
+### Staged GA Realtime protocol
+
+GA is implemented alongside preview, not enabled by this source change.
+`AI4IA_REALTIME_GA_ENABLED=false` and `AI4IA_REALTIME_PROTOCOL=preview` remain
+the template, deployment-profile and API defaults. Staging with the first flag
+does not change the second. Browsers cannot select the upstream protocol through
+a URL query or session payload.
+
+The GA route stays `FastAPI -> shared active APIM -> Foundry`. Its IaC-derived
+base is `AI4IA_REALTIME_GA_BASE_URL=https://<shared-active-apim>/openai/v1`.
+`AI4IA_REALTIME_GA_GATEWAY_API_KEY` is a separate API-scoped secret, passed only
+between secure Bicep module outputs/parameters and a Container App secret.
+Startup requires the same APIM host as the retained preview base, a clean
+HTTPS/WSS `/openai/v1` path, and a key distinct from preview, Speech, proxy
+ingress, MCP and Code Interpreter. No new APIM, Foundry resource, model deployment
+or role assignment is part of this staging surface.
+
+APIM creates one immutable `onHandshake` operation per WebSocket API, so the
+second path is a **separate WebSocket API**, `openai-realtime-ga`, with its own
+subscription, not an extra HTTP operation or a widened preview subscription.
+All its resources are gated by `realtimeGaEnabled`.
+[APIM's WebSocket contract](https://learn.microsoft.com/azure/api-management/websocket-api#onhandshake-operation)
+also limits which policies can run during that handshake.
+
+The relay adapter preserves the existing application/browser wire contract:
+
+| Application contract | GA provider contract |
+| --- | --- |
+| Catalog-selected handshake target | `/openai/v1/realtime?model=<deployment>`; no `api-version` or `OpenAI-Beta` |
+| Flat session audio controls | `session.type=realtime`, server-owned `session.model`, nested `audio.input` / `audio.output` |
+| PCM16, 24 kHz | `{"type":"audio/pcm","rate":24000}` |
+| `modalities=["text","audio"]` | `output_modalities=["audio"]` (includes transcript) |
+| `max_response_output_tokens` in session | `max_output_tokens` |
+| Assistant seed `text` / `audio` content | `output_text` / `output_audio` |
+| `response.text`, `response.audio`, `response.audio_transcript` delta/done events | Corresponding `response.output_*` events, normalized before browser delivery |
+| `conversation.item.created` | GA `conversation.item.added`; new `item.done` remains distinct, not a duplicate creation |
+
+Response-specific audio controls and assistant input/output items are translated
+as well. Tool schemas, persona instructions and per-response overrides stay
+server-governed; native MCP tools or hosted prompts cannot bypass that contract.
+The same authorization runs when a function call executes, including rejecting
+registered tools not offered in this session. Audio data, call/cancellation IDs,
+usage, errors and unrelated events are not recursively rewritten.
+
+GA has no temperature parameter. The relay omits saved preview temperature,
+and `/api/voice/live/config` advertises only the safe `openaiRealtimeProtocol`
+selection so the UI disables that control with an explanation. The saved
+preference is retained for preview rollback; Speech temperature is unchanged.
+There is no automatic retry, protocol downgrade or replay after a failed
+handshake, provider error or possibly accepted frame.
+
+Contract sources are the
+[Microsoft GA migration guide](https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-preview-api-migration-guide),
+the [GA WebSocket examples](https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets),
+and [the referenced OpenAI generated schema snapshot](https://github.com/openai/openai-python/tree/41f0a2317759e8796ccfbde75536bd42e4aca7a2/src/openai/types/realtime).
+The shared offline fixture in `app/web/test-fixtures/realtime_protocol.json`
+is synthetic, not a live success record. Microsoft marks preview deprecated
+since April 30, 2026; retaining it here is a bounded staging/rollback choice, not
+a claim that it remains supported indefinitely. See the
+[activation and rollback prerequisites](runbooks/feature-enablement.md#staged-ga-realtime)
+before changing any environment.
 
 ### Speech Voice Live (second voice provider)
 

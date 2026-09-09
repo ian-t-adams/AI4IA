@@ -1968,6 +1968,7 @@ export function ChatApp() {
             onProviderChange: (nextProvider: VoicePreferences["provider"]) =>
               updateVoicePrefs({ ...voicePrefsResolved, provider: nextProvider }),
             activeProvider: activeVoiceProvider,
+            openaiRealtimeProtocol: voiceProviderConfig?.openaiRealtimeProtocol,
             defaultAgentLabel: currentVoiceAgent
               ? `Current chat agent (${
                   agents.find((a) => a.name === currentVoiceAgent)?.displayName ??
@@ -2042,6 +2043,7 @@ export function ChatApp() {
       voicePrefsResolved,
       voiceProviders,
       voiceToolsAvailable,
+      voiceProviderConfig?.openaiRealtimeProtocol,
     ],
   );
 

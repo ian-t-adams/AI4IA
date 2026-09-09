@@ -116,6 +116,16 @@ param entraApiScope string = ''
 @description('Enable Voice Live end to end: the API realtime relay and the browser live-voice control. Default OFF (no behavior change).')
 param voiceLiveEnabled bool = false
 
+@description('Stage the separate GA Realtime APIM API/key. Default OFF. Requires voiceLiveEnabled and leaves preview selected until realtimeProtocol is explicitly changed with approval.')
+param realtimeGaEnabled bool = false
+
+@allowed([
+  'preview'
+  'ga'
+])
+@description('Server-authoritative Azure OpenAI Realtime wire protocol. Default preview; ga requires realtimeGaEnabled plus approved canary/cutover. Speech Voice Live is unaffected.')
+param realtimeProtocol string = 'preview'
+
 @description('Additional comma-separated browser Origin allowlist entries for the live-voice relay handshake. The deployed web app origins (the Container Apps default FQDN, plus webCustomDomain when set) are ALWAYS derived and included, so this is only needed for extra origins. Leave empty for a normal deployment; never hardcode an environment hostname here.')
 param realtimeAllowedOrigins string = ''
 
@@ -791,6 +801,7 @@ module gateway 'modules/gateway.bicep' = {
     managedCertificateName: proxyManagedCertName
     containerEnvName: platform.outputs.containerEnvName
     speechVoiceLiveEnabled: speechVoiceLiveEnabled
+    realtimeGaEnabled: realtimeGaEnabled
     // Speech Voice Live reuses the existing eastus2 AIServices account computed
     // above; no new AIServices account is provisioned for this capability.
     speechVoiceLiveAccountName: speechVoiceLiveAccountName
@@ -931,6 +942,8 @@ module api 'modules/api.bicep' = {
     // the normal APIM model API, so compatible traffic cannot bypass the proxy.
     realtimeBaseUrl: gateway.outputs.realtimeGatewayUrl
     realtimeGatewayApiKey: gateway.outputs.realtimeGatewayKey
+    realtimeGaBaseUrl: gateway.outputs.realtimeGaGatewayUrl
+    realtimeGaGatewayApiKey: gateway.outputs.realtimeGaGatewayKey
     cosmosEndpoint: data.outputs.cosmosEndpoint
     cosmosDatabase: data.outputs.cosmosDatabaseName
     // Cosmos is the canonical per-user memory store.
@@ -953,6 +966,8 @@ module api 'modules/api.bicep' = {
     // Voice Live realtime relay. Default OFF; the Origin allowlist is
     // required (non-empty) when enabling in a deployed env or the relay fails closed.
     realtimeEnabled: voiceLiveEnabled
+    realtimeGaEnabled: realtimeGaEnabled
+    realtimeProtocol: realtimeProtocol
     realtimeAllowedOrigins: effectiveRealtimeAllowedOrigins
     realtimeToolsEnabled: voiceLiveToolsEnabled
     // Speech Voice Live: a second, additive realtime provider. Default OFF; the
@@ -1169,6 +1184,7 @@ output AZURE_APIM_GATEWAY_URL string = gateway.outputs.apimGatewayUrl
 output AZURE_APIM_NAME string = apimcore.outputs.apimName
 output AZURE_APIM_RESOURCE_ID string = apimcore.outputs.apimId
 output AZURE_REALTIME_GATEWAY_URL string = gateway.outputs.realtimeGatewayUrl
+output AZURE_REALTIME_GA_GATEWAY_URL string = gateway.outputs.realtimeGaGatewayUrl
 output AZURE_PROXY_URL string = gateway.outputs.proxyUrl
 output AZURE_PROXY_APP_NAME string = gateway.outputs.proxyAppName
 // Empty unless enableOfficialMcp; subscription key is intentionally NOT output

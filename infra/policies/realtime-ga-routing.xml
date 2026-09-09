@@ -1,0 +1,60 @@
+<policies>
+  <inbound>
+    <base />
+    <choose>
+      <when condition="@(&quot;gpt-realtime-slurmfactory-eastus2-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;model&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
+        <set-backend-service base-url="{{foundry-eastus2-realtime-wss-endpoint}}/openai/v1/realtime" />
+        <set-query-parameter name="model" exists-action="override">
+          <value>gpt-realtime-slurmfactory-eastus2-glbl</value>
+        </set-query-parameter>
+      </when>
+      <when condition="@(&quot;gpt-realtime-slurmfactory-swedencentral-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;model&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
+        <set-backend-service base-url="{{foundry-swedencentral-realtime-wss-endpoint}}/openai/v1/realtime" />
+        <set-query-parameter name="model" exists-action="override">
+          <value>gpt-realtime-slurmfactory-swedencentral-glbl</value>
+        </set-query-parameter>
+      </when>
+      <when condition="@(&quot;gpt-realtime-2-slurmfactory-eastus2-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;model&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
+        <set-backend-service base-url="{{foundry-eastus2-realtime-wss-endpoint}}/openai/v1/realtime" />
+        <set-query-parameter name="model" exists-action="override">
+          <value>gpt-realtime-2-slurmfactory-eastus2-glbl</value>
+        </set-query-parameter>
+      </when>
+      <when condition="@(&quot;gpt-realtime-mini-slurmfactory-eastus2-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;model&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
+        <set-backend-service base-url="{{foundry-eastus2-realtime-wss-endpoint}}/openai/v1/realtime" />
+        <set-query-parameter name="model" exists-action="override">
+          <value>gpt-realtime-mini-slurmfactory-eastus2-glbl</value>
+        </set-query-parameter>
+      </when>
+      <when condition="@(&quot;gpt-realtime-mini-slurmfactory-swedencentral-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;model&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
+        <set-backend-service base-url="{{foundry-swedencentral-realtime-wss-endpoint}}/openai/v1/realtime" />
+        <set-query-parameter name="model" exists-action="override">
+          <value>gpt-realtime-mini-slurmfactory-swedencentral-glbl</value>
+        </set-query-parameter>
+      </when>
+      <otherwise>
+        <return-response>
+          <set-status code="404" reason="Realtime deployment is not in the AI4IA catalog" />
+        </return-response>
+      </otherwise>
+    </choose>
+    <set-header name="x-correlation-id" exists-action="override">
+      <value>@(context.RequestId.ToString())</value>
+    </set-header>
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-query-parameter name="subscription-key" exists-action="delete" />
+    <set-header name="Authorization" exists-action="delete" />
+    <set-header name="OpenAI-Beta" exists-action="delete" />
+    <set-header name="api-key" exists-action="delete" />
+    <set-header name="x-api-key" exists-action="delete" />
+    <set-header name="S7P-KEY" exists-action="delete" />
+    <set-query-parameter name="api-version" exists-action="delete" />
+    <set-query-parameter name="deployment" exists-action="delete" />
+    <set-query-parameter name="api-key" exists-action="delete" />
+    <set-query-parameter name="intent" exists-action="delete" />
+    <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+  </inbound>
+  <backend><base /></backend>
+  <outbound><base /></outbound>
+  <on-error><base /></on-error>
+</policies>

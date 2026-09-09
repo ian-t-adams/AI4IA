@@ -141,6 +141,14 @@ Finalized turns join the same conversation; a persistence failure cannot keep
 the microphone running.
 Turn-based transcription and text-to-speech remain ordinary gateway HTTP calls.
 
+GA Realtime is staged separately from selection: `AI4IA_REALTIME_GA_ENABLED`
+defaults off, while `AI4IA_REALTIME_PROTOCOL` stays `preview`. A gated second
+APIM WebSocket API/key serves `/openai/v1/realtime`; the backend adapter maps GA
+session/audio/content/event shapes to the existing browser contract. No client
+setting can select it, no failed call is downgraded/replayed, and Speech remains
+independent. The [operator staging procedure](runbooks/feature-enablement.md#staged-ga-realtime)
+requires approved live evidence before any default cutover or legacy removal.
+
 ### Code Interpreter
 
 Document/attachment compute uses a dedicated APIM API because Files and stateful
