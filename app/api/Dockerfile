@@ -73,13 +73,34 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install dependencies first for better layer caching.
-COPY pyproject.toml README.md ./
+FROM base AS build
+
+# Keep this default aligned with app-ci.yml's UV_VERSION; the coupling is tested.
+ARG UV_VERSION=0.12.10
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_PYTHON=/usr/local/bin/python \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_DEFAULT_INDEX=https://pypi.org/simple \
+    UV_NO_CONFIG=1 \
+    UV_NO_CACHE=1
+
+RUN python -m pip install "uv==${UV_VERSION}"
+
+# --frozen alone accepts a stale manifest. Check first without network resolution;
+# a missing lock also fails COPY. Neither path may regenerate the committed lock.
+COPY pyproject.toml uv.lock README.md ./
+RUN uv lock --check --offline \
+    && uv sync --frozen --no-dev --no-default-groups --no-install-project
+
 COPY src ./src
-# '.' is this repo's own package (its dependencies are pinned in pyproject.toml),
-# not a PyPI package to version-pin in the Dockerfile.
-# hadolint ignore=DL3013
-RUN pip install --upgrade pip && pip install .
+RUN uv sync --frozen --no-dev --no-default-groups --no-editable
+
+FROM base AS runtime
+
+ENV PATH="/opt/venv/bin:$PATH"
+# Copy only the installed, non-editable runtime, not uv, its cache, or build inputs.
+# Root ownership keeps the application user from rewriting installed dependencies.
+COPY --from=build /opt/venv /opt/venv
 
 EXPOSE 8080
 

@@ -123,6 +123,10 @@ jobs:
           cache-to: type=gha,mode=max,scope=docker-build-api
       - name: Smoke test - app package imports in the built image
         run: docker run --rm ai4ia-api:ci python -c "import ai4ia_api.main"
+      - name: Smoke test - locked runtime includes lazy imports without build or optional extras
+        run: |
+          docker run --rm --interactive ai4ia-api:ci python - \
+            < app/api/tests/test_lazy_imports_are_declared.py
 
       - name: Build proxy image (proxy/Dockerfile)
         id: proxy-build
