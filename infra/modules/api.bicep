@@ -262,6 +262,12 @@ param customToolsKeyVaultUri string = ''
 @description('Allow explicit user consent to auto-approve enabled tools for a session or workflow run. Default OFF; emitted as AI4IA_TOOL_AUTO_APPROVE_ENABLED. Ownership, scope, destination and budget checks plus activity/receipts remain mandatory.')
 param toolAutoApproveEnabled bool = false
 
+@description('Default-off resumable deletion for new conversations only. No autonomous cleanup or implicit existing-record enrollment.')
+param sessionDeletionEnabled bool = false
+
+@description('Separately approved deletion rollout record ID; startup validates evidence and storage layout, never initializes it.')
+param sessionDeletionRolloutId string = ''
+
 @description('Enable WebIQ web/news/video/image search, classic structured answers, finance, places, sports, Sonic, autosuggest and browsing. Default OFF. Uses a secret-backed API key or entitled managed identity, subject to endpoint-specific access.')
 param webSearchEnabled bool = false
 
@@ -828,6 +834,17 @@ var toolApprovalEnv = [
   }
 ]
 
+var sessionDeletionEnv = [
+  {
+    name: 'AI4IA_SESSION_DELETION_ENABLED'
+    value: string(sessionDeletionEnabled)
+  }
+  {
+    name: 'AI4IA_SESSION_DELETION_ROLLOUT_ID'
+    value: sessionDeletionRolloutId
+  }
+]
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -877,7 +894,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], openapiEnv, claudeEnv, toolApprovalEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], openapiEnv, claudeEnv, toolApprovalEnv, sessionDeletionEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

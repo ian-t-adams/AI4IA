@@ -202,9 +202,15 @@ async def upload_document(
         and ci_supports_file(document.filename)
         and len(data) <= max(1, settings.code_interpreter_max_raw_file_bytes)
     ):
+        # Reservation is outside the fail-soft PUT handler: a closed fence must
+        # deny the upload, not be mistaken for an optional retention outage.
+        intent = await repo.reserve_attachment_upload(
+            uid, session_id, document.id, storage_id=store.storage_id
+        )
         try:
             document.rawRef = await store.put(
-                uid, session_id, document.id, data, document.contentType
+                uid, session_id, document.id, data, document.contentType,
+                single_attempt=intent is not None,
             )
         except Exception:  # noqa: BLE001 - retention must never break an upload
             logger.warning(
@@ -212,6 +218,11 @@ async def upload_document(
                 session_id, document.id, exc_info=True,
             )
             document.rawRef = None
+        else:
+            if intent is not None:
+                # A timeout/cancellation never reaches this acknowledgement;
+                # its durable ticket remains unresolved even if bytes arrive later.
+                await repo.settle_attachment_upload(intent)
     await repo.add_document(uid, document)
     logger.info(
         "document uploaded session=%s id=%s chars=%s truncated=%s",

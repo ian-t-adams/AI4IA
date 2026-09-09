@@ -212,6 +212,22 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             if not text(parameter_value(parameters, name)):
                 errors.append(f"apiAuthProvider=entra requires {name}.")
 
+    if truthy(parameter_value(parameters, "sessionDeletionEnabled", False)):
+        if auth_provider != "entra":
+            errors.append("sessionDeletionEnabled=true requires apiAuthProvider=entra.")
+        rollout_id = text(parameter_value(parameters, "sessionDeletionRolloutId"))
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", rollout_id):
+            errors.append(
+                "sessionDeletionEnabled=true requires sessionDeletionRolloutId "
+                "identifying separately approved cutover/recovery evidence."
+            )
+        warnings.append(
+            "Resumable deletion is new-session-only. Offline preflight does not "
+            "prove worker drain: API startup requires the approved durable rollout "
+            "record, single-write-region Cosmos, and compatible no-TTL partitions. "
+            "No record initialization, legacy enrollment, or background cleanup is automatic."
+        )
+
     if truthy(parameter_value(parameters, "enablePrivateToolCatalog", False)) and not truthy(
         parameter_value(parameters, "enableOfficialMcp", False)
     ):

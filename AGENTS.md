@@ -59,6 +59,13 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    in-memory chunks. A transient Search failure is unavailable/partial, never a
    successful empty search or an automatic store/tenancy switch. Keep healthy
    canonical source reads and unrelated chat available.
+   Opt-in protocol-v1 conversation deletion retains minimal owner tombstones and
+   closed sentinels in both child partitions. Every child mutation must CAS the
+   active sentinel in the same Cosmos batch; a parent read is not a write fence.
+   Never expire unresolved Blob upload intents or infer completion from an empty
+   scan. New deletion work is default-off and owner-resumed, never an automatic
+   sweep; existing-record enrollment and rollout need separate approval. See
+   `docs/runbooks/conversation-deletion.md` before changing this contract.
 5. **Tools re-check at execution time.** Tool execution must re-validate scopes,
    approvals, target hosts, and SSRF/public-HTTPS rules when a call runs, not only
    when a tool/server is registered. User opt-in auto-approval is a bounded

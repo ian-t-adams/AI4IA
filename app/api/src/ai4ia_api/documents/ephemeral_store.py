@@ -20,18 +20,21 @@ Design (the lowest-risk mechanism that fits the codebase):
   stores). The fetch/delete path is ALWAYS recomposed from the *authenticated*
   user + session, never from a client-supplied string, so one user can never read
   another's retained file even by guessing an id.
-* Lifecycle: a single object is deleted when its document is deleted; the whole
-  ``{userId}/{sessionId}/`` prefix is purged when the session is deleted. A blob
-  lifecycle rule on the dedicated container is the durable TTL backstop.
+* Legacy cleanup is best-effort. Protocol-v1 conversation cleanup uses strict,
+  bounded passes and durable upload intents; an empty prefix cannot prove a
+  previously started PUT has finished. The configured Blob lifecycle remains a
+  separate retention policy, not a completion signal.
 
-Everything here is gated by the default-OFF ``inline_document_compute_enabled``
-flag at the call sites: when the flag is off nothing in this module is ever
-reached (no bytes retained, no store touched).
+New retention is gated by ``inline_document_compute_enabled``. Explicit deletion
+resumption can still clean previously retained bytes after that flag is disabled.
 """
 from __future__ import annotations
 
 import logging
 import os
+import re
+from hashlib import sha256
+from typing import TYPE_CHECKING
 
 from ..config import Environment, Settings
 from ..library.blob_store import (
@@ -42,6 +45,9 @@ from ..library.blob_store import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from ..sessions.repository import SessionRepository
 
 __all__ = [
     "BlobNotFoundError",
@@ -71,12 +77,28 @@ def ci_supports_file(filename: str) -> bool:
 
 def session_prefix(user_id: str, session_id: str) -> str:
     """Storage prefix for one session's retained originals (for prefix purges)."""
+    for component in (user_id, session_id):
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", component):
+            raise ValueError("Invalid owner/session storage component")
     return f"{user_id}/{session_id}/"
 
 
 def attachment_path(user_id: str, session_id: str, document_id: str) -> str:
     """Storage path for one retained original, scoped to its owner + session."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", document_id):
+        raise ValueError("Invalid attachment storage component")
     return f"{session_prefix(user_id, session_id)}{document_id}"
+
+
+def inline_attachment_storage_id(settings: Settings) -> str:
+    """Bind cleanup to the configured target without persisting its URL."""
+    if not settings.document_blob_account_url:
+        return "local"
+    target = (
+        settings.document_blob_account_url.rstrip("/").lower()
+        + "/" + settings.inline_attachment_blob_container
+    )
+    return "azure:" + sha256(target.encode("utf-8")).hexdigest()
 
 
 def build_inline_attachment_blob_store(settings: Settings) -> BlobStore:
@@ -108,14 +130,25 @@ def build_inline_attachment_blob_store(settings: Settings) -> BlobStore:
 class EphemeralAttachmentStore:
     """Retains/serves/purges inline-attachment original bytes, owner+session scoped.
 
-    All methods are best-effort at the call sites (retention must never break an
-    upload; cleanup must never break a delete), but the store itself surfaces
-    :class:`BlobNotFoundError` from :meth:`get` so the analyze tool can distinguish
-    "no retained bytes" from a transport failure.
+    Legacy purge methods are best-effort. ``reconcile_session`` is deliberately
+    strict and must not reuse their success-shaped fallback. Production reads
+    recheck the canonical attachment/parent even from an already-created tool
+    closure. Standalone stores without a repository are for isolated local tests.
     """
 
-    def __init__(self, blob: BlobStore) -> None:
+    def __init__(
+        self, blob: BlobStore, *, storage_id: str = "local",
+        session_repo: SessionRepository | None = None,
+    ) -> None:
         self._blob = blob
+        self.storage_id = storage_id
+        self._session_repo = session_repo
+
+    async def reconcile_session(self, user_id: str, session_id: str, *, limit: int) -> bool:
+        """Strict cleanup used only by an explicitly requested deletion pass."""
+        return await self._blob.delete_prefix_page(
+            session_prefix(user_id, session_id), limit=limit
+        )
 
     async def put(
         self,
@@ -124,8 +157,17 @@ class EphemeralAttachmentStore:
         document_id: str,
         data: bytes,
         content_type: str | None = None,
+        *,
+        single_attempt: bool = False,
     ) -> str:
         """Retain ``data`` as the original for one attachment; return its blob path."""
+        if single_attempt:
+            # Ticketed v1 uploads cannot acknowledge a retry while an earlier
+            # timed-out attempt may still land. Legacy retries remain unchanged.
+            return await self._blob.put(
+                attachment_path(user_id, session_id, document_id), data,
+                content_type or "application/octet-stream", single_attempt=True,
+            )
         return await self._blob.put(
             attachment_path(user_id, session_id, document_id),
             data,
@@ -135,7 +177,17 @@ class EphemeralAttachmentStore:
     async def get(self, user_id: str, session_id: str, document_id: str) -> bytes:
         """Read one attachment's retained bytes; raise :class:`BlobNotFoundError`
         when absent (e.g. already purged or never retained)."""
-        return await self._blob.get(attachment_path(user_id, session_id, document_id))
+        from ..sessions.repository import SessionNotFoundError
+
+        path = attachment_path(user_id, session_id, document_id)
+        if self._session_repo is not None:
+            try:
+                document = await self._session_repo.get_document(user_id, session_id, document_id)
+            except SessionNotFoundError as exc:
+                raise BlobNotFoundError(path) from exc
+            if document is None or not document.rawRef:
+                raise BlobNotFoundError(path)
+        return await self._blob.get(path)
 
     async def delete(self, user_id: str, session_id: str, document_id: str) -> None:
         """Purge one attachment's retained bytes. Best-effort; never raises."""

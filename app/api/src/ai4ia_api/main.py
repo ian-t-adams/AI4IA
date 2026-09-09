@@ -39,6 +39,7 @@ from .documents.analyze_factory import build_inline_attachment_analysis
 from .documents.ephemeral_store import (
     EphemeralAttachmentStore,
     build_inline_attachment_blob_store,
+    inline_attachment_storage_id,
 )
 from .routers.realtime import AiohttpRealtimeConnector
 from .voice_provider_catalog import load_voice_provider_catalog
@@ -78,6 +79,13 @@ from .routers import videos as videos_router
 from .routers import voice as voice_router
 from .sessions.factory import build_session_repository
 from .sessions.repository import SessionNotFoundError
+from .sessions.deletion_models import (
+    DeletionDisabledError,
+    DeletionIntegrityError,
+    DeletionMigrationRequiredError,
+    DeletionUnavailableError,
+    InitializationCursorError,
+)
 from .usage.aggregate import AdminUsageService
 from .usage.factory import build_usage_repository
 from .usage.pricing import load_pricing
@@ -117,6 +125,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = settings
         app.state.auth_provider = build_auth_provider(settings)
         app.state.session_repo = build_session_repository(settings)
+        if settings.session_deletion_enabled:
+            await app.state.session_repo.check_deletion_ready()
         app.state.session_readiness = SessionStoreReadiness(app.state.session_repo)
         # Per-user document library. Feature-flagged + default-OFF:
         # build_document_library returns None unless
@@ -316,7 +326,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # in-memory store. Retention into it only ever happens when the feature flag
         # is on (routers/documents.py), so when off NO bytes are ever written.
         app.state.inline_attachment_store = EphemeralAttachmentStore(
-            build_inline_attachment_blob_store(settings)
+            build_inline_attachment_blob_store(settings),
+            storage_id=inline_attachment_storage_id(settings),
+            session_repo=app.state.session_repo,
         )
         # Inline-attachment analysis service (default-OFF). None when the flag is
         # off, so the chat hot path never advertises the analyze_attachment tool and
@@ -456,6 +468,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def _session_not_found(_request: Request, _exc: SessionNotFoundError):
         return error_response(
             status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+        )
+
+    @app.exception_handler(DeletionUnavailableError)
+    @app.exception_handler(DeletionIntegrityError)
+    async def _deletion_unavailable(_request: Request, _exc: Exception):
+        return error_response(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Conversation deletion state is unavailable; retry without assuming cleanup.",
+            code="deletion_unavailable",
+        )
+
+    @app.exception_handler(DeletionMigrationRequiredError)
+    async def _deletion_migration_required(_request: Request, _exc: Exception):
+        return error_response(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This conversation requires an approved deletion migration; no cleanup was started.",
+            code="migration_required",
+        )
+
+    @app.exception_handler(DeletionDisabledError)
+    async def _deletion_disabled(_request: Request, _exc: Exception):
+        return error_response(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Resumable deletion is disabled. Retained deletion safeguards remain active.",
+            code="deletion_disabled",
+        )
+
+    @app.exception_handler(InitializationCursorError)
+    async def _initialization_cursor_invalid(_request: Request, _exc: Exception):
+        return error_response(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid incomplete-creation page cursor; refresh the list.",
+            code="initialization_cursor_invalid",
         )
 
     # Map unhandled Azure data-plane failures (Cosmos/Blob connectivity, throttling,

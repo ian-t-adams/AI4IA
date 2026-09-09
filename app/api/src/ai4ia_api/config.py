@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import Enum
 from functools import lru_cache
+import re
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -281,6 +282,8 @@ class Settings(BaseSettings):
     session_store: SessionStoreKind = SessionStoreKind.memory
     cosmos_endpoint: str | None = None
     cosmos_database: str = "ai4ia"
+    session_deletion_enabled: bool = False
+    session_deletion_rollout_id: str = ""
 
     # --- Document & multimodal understanding: per-user library ---
     # Feature-flagged and default-OFF. With document_understanding_enabled=False
@@ -1092,6 +1095,16 @@ class Settings(BaseSettings):
             raise RuntimeError("AI4IA_MODEL_GATEWAY_API_KEY is required for api_key auth mode.")
         if self.session_store == SessionStoreKind.cosmos and not self.cosmos_endpoint:
             raise RuntimeError("AI4IA_COSMOS_ENDPOINT is required for the cosmos session store.")
+        if self.session_deletion_enabled and self.env != Environment.local:
+            if self.session_store != SessionStoreKind.cosmos or self.auth_provider != AuthProviderKind.entra:
+                raise RuntimeError(
+                    "AI4IA_SESSION_DELETION_ENABLED requires Cosmos and Entra outside local."
+                )
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", self.session_deletion_rollout_id):
+                raise RuntimeError(
+                    "AI4IA_SESSION_DELETION_ROLLOUT_ID must identify an approved "
+                    "new-session cutover; runtime also checks its durable evidence and layout."
+                )
         if self.memory_store == MemoryStoreKind.cosmos and not self.cosmos_endpoint:
             raise RuntimeError("AI4IA_COSMOS_ENDPOINT is required for the cosmos memory store.")
         for media in ("image", "video"):

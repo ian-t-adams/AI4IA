@@ -20,6 +20,14 @@ from typing import Any
 from pydantic import BaseModel
 
 from ..agents.consent import ToolConsentState
+from .cosmos_deletion import CosmosDeletionMixin, batch_failed_at, require_etag
+from .deletion_models import (
+    CAS_ATTEMPTS,
+    DeletionDisabledError,
+    DeletionIntegrityError,
+    DeletionMigrationRequiredError,
+    DeletionUnavailableError,
+)
 from .models import (
     Document,
     Message,
@@ -30,8 +38,13 @@ from .models import (
 from .repository import SessionConflictError, SessionNotFoundError
 
 
-class CosmosSessionRepository:
-    def __init__(self, endpoint: str, database: str) -> None:
+class CosmosSessionRepository(CosmosDeletionMixin):
+    def __init__(
+        self, endpoint: str, database: str, *,
+        deletion_enabled: bool = False, deletion_rollout_id: str = "",
+        attachment_storage_required: bool = False,
+        attachment_storage_id: str | None = None,
+    ) -> None:
         from azure.cosmos.aio import CosmosClient
         from azure.identity.aio import DefaultAzureCredential
 
@@ -41,6 +54,10 @@ class CosmosSessionRepository:
         self._sessions = db.get_container_client("sessions")
         self._messages = db.get_container_client("messages")
         self._documents = db.get_container_client("documents")
+        self._deletion_enabled = deletion_enabled
+        self._deletion_rollout_id = deletion_rollout_id
+        self._attachment_storage_required = attachment_storage_required
+        self._attachment_storage_id = attachment_storage_id
 
     async def close(self) -> None:
         await self._client.close()
@@ -61,6 +78,14 @@ class CosmosSessionRepository:
                 if model.toolConsentState is not None else None
             )
             doc["toolConsentVersion"] = model.toolConsentVersion
+            if model.deletionProtocol is not None:
+                doc.update({
+                    "kind": "session_v1", "deletionProtocol": model.deletionProtocol,
+                    "deletionEpoch": model.deletionEpoch,
+                    "attachmentStorageRequired": model.attachmentStorageRequired,
+                    "attachmentStorageId": model.attachmentStorageId,
+                    "ttl": -1,
+                })
         elif isinstance(model, Message):
             doc["workflowToolConsentState"] = (
                 model.workflowToolConsentState.model_dump(mode="json")
@@ -69,13 +94,7 @@ class CosmosSessionRepository:
         return doc
 
     async def _owned_session(self, user_id: str, session_id: str) -> Session:
-        from azure.cosmos.exceptions import CosmosResourceNotFoundError
-
-        try:
-            doc = await self._sessions.read_item(item=session_id, partition_key=user_id)
-        except CosmosResourceNotFoundError as exc:
-            raise SessionNotFoundError(session_id) from exc
-        return Session.model_validate(doc)
+        return Session.model_validate(await self._active_raw(user_id, session_id))
 
     async def _patch_session_item(
         self,
@@ -98,6 +117,10 @@ class CosmosSessionRepository:
         """
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
+        raw = await self._read_session_raw(user_id, session_id)
+        self._assert_active(raw, user_id, session_id)
+        if raw.get("deletionProtocol") == 1 and etag is None:
+            etag = require_etag(raw)
         kwargs: dict[str, Any] = {}
         if etag is not None:
             from azure.core import MatchConditions
@@ -115,6 +138,10 @@ class CosmosSessionRepository:
             raise SessionNotFoundError(session_id) from exc
 
     async def create_session(self, session: Session) -> Session:
+        if self._deletion_enabled:
+            return await self._create_fenced_session(session, self._to_doc(session))
+        if session.deletionProtocol is not None:
+            raise DeletionDisabledError()
         await self._sessions.create_item(self._to_doc(session))
         return session
 
@@ -122,12 +149,23 @@ class CosmosSessionRepository:
         return await self._owned_session(user_id, session_id)
 
     async def list_sessions(self, user_id: str) -> list[Session]:
-        query = "SELECT * FROM c WHERE c.userId = @uid ORDER BY c.updatedAt DESC"
+        query = (
+            "SELECT * FROM c WHERE c.userId = @uid "
+            "AND (NOT IS_DEFINED(c.kind) OR c.kind = 'session_v1') ORDER BY c.updatedAt DESC"
+        )
         params = [{"name": "@uid", "value": user_id}]
-        items = [
-            Session.model_validate(doc)
-            async for doc in self._sessions.query_items(query=query, parameters=params)
-        ]
+        items = []
+        async for doc in self._sessions.query_items(query=query, parameters=params):
+            if doc.get("kind") in {"session_tombstone_v1", "session_initializing_v1"}:
+                continue
+            try:
+                self._assert_active(doc, user_id, doc["id"])
+                items.append(
+                    await self._owned_session(user_id, doc["id"])
+                    if doc.get("deletionProtocol") == 1 else Session.model_validate(doc)
+                )
+            except SessionNotFoundError:
+                continue
         return items
 
     async def patch_session(
@@ -178,6 +216,7 @@ class CosmosSessionRepository:
                 )
             except CosmosResourceNotFoundError as exc:
                 raise SessionNotFoundError(session_id) from exc
+            self._assert_active(raw, user_id, session_id)
             if raw.get("userId") != user_id:
                 raise SessionNotFoundError(session_id)
             version = raw.get("toolConsentVersion", 0)
@@ -225,6 +264,7 @@ class CosmosSessionRepository:
                 )
             except CosmosResourceNotFoundError as exc:
                 raise SessionNotFoundError(session_id) from exc
+            self._assert_active(raw, user_id, session_id)
             if raw.get("title", "New chat") != "New chat":
                 return False
             if raw.get("titleSource", "auto") == "manual":
@@ -273,6 +313,7 @@ class CosmosSessionRepository:
                 if isinstance(exc, CosmosResourceNotFoundError):
                     raise SessionNotFoundError(session_id) from exc
                 raise
+            self._assert_active(raw, user_id, session_id)
             current = raw.get("libraryDocumentIds")
             if current is None:
                 if add:
@@ -310,10 +351,11 @@ class CosmosSessionRepository:
         raise SessionConflictError(session_id)
 
     async def _delete_summary_replies_before(
-        self, session_id: str, version: int
+        self, session: Session, version: int
     ) -> None:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
+        session_id = session.id
         query = (
             "SELECT c.id FROM c WHERE c.sessionId = @sid "
             "AND IS_DEFINED(c.summaryVersion) AND c.summaryVersion < @version"
@@ -325,6 +367,9 @@ class CosmosSessionRepository:
         async for item in self._messages.query_items(
             query=query, parameters=params, partition_key=session_id
         ):
+            if session.deletionProtocol == 1:
+                await self._fenced_delete(self._messages, session, item["id"])
+                continue
             try:
                 await self._messages.delete_item(
                     item=item["id"], partition_key=session_id
@@ -383,6 +428,7 @@ class CosmosSessionRepository:
                 )
             except CosmosResourceNotFoundError as exc:
                 raise SessionNotFoundError(session_id) from exc
+            self._assert_active(raw, user_id, session_id)
             version = int(raw.get("summaryVersion") or 0)
             if expected_version is not None and version != expected_version:
                 return None
@@ -415,7 +461,7 @@ class CosmosSessionRepository:
                 )
                 committed = await self._owned_session(user_id, session_id)
                 await self._delete_summary_replies_before(
-                    session_id, committed.summaryVersion
+                    committed, committed.summaryVersion
                 )
                 return committed
             except CosmosAccessConditionFailedError:
@@ -432,29 +478,21 @@ class CosmosSessionRepository:
         )
 
     async def delete_session(self, user_id: str, session_id: str) -> None:
-        """Cascade-delete a session's messages and documents, then the session.
+        """Legacy best-effort cascade, available only for unversioned records.
 
-        RESIDUAL GAP (not fixed here): this method's own cascade is
-        idempotent against *itself* (every delete below tolerates a row
-        already being gone), but it is not a fence against a concurrent
-        writer. A ``add_message``/``add_document`` call that passes the
-        ownership check in another request between this method's cascade
-        query and its own write can still land afterwards, orphaning that
-        child forever. Earlier revisions of this method attempted to close
-        that race with a CAS "deletingAt" tombstone plus a bounded sweep-loop
-        and a delayed hard-delete; that machinery was reverted because a
-        single Cosmos read is not a durable cross-replica consistency
-        barrier, so the tombstone could not actually guarantee no in-flight
-        write is missed -- it just made the failure mode harder to reason
-        about while still not closing the race. Closing this properly needs
-        either a real distributed transaction (children + parent in one
-        atomic unit) or a background reconciliation/change-feed job that
-        finds and removes orphaned children after the fact; neither exists
-        today. Tracked as a known architectural limitation, not a bug to
-        chase with another timing-based mitigation.
+        This does NOT prove completeness against late writers. The opt-in v1
+        protocol uses begin_deletion and same-partition transactional fences;
+        a parent-only CAS plus delayed scans would not close this legacy race.
+        Enrollment of old records requires separately approved migration.
         """
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
+        raw = await self._read_session_raw(user_id, session_id)
+        if "deletionProtocol" in raw or "kind" in raw:
+            # Pausing the feature must never erase retained coordination state.
+            raise DeletionDisabledError()
+        if self._deletion_enabled:
+            raise DeletionMigrationRequiredError()
         await self._owned_session(user_id, session_id)
         # Delete child messages first (partition = sessionId).
         query = "SELECT c.id FROM c WHERE c.sessionId = @sid"
@@ -489,9 +527,15 @@ class CosmosSessionRepository:
             raise SessionNotFoundError(session_id) from exc
 
     async def add_message(self, user_id: str, message: Message) -> Message:
-        await self._owned_session(user_id, message.sessionId)
+        session = await self._owned_session(user_id, message.sessionId)
         message.userId = user_id
-        await self._messages.create_item(self._to_doc(message))
+        if session.deletionProtocol == 1:
+            self._assert_child_id(message.id)
+            await self._fenced_batch(
+                self._messages, session, [("create", (self._to_doc(message),), {})]
+            )
+        else:
+            await self._messages.create_item(self._to_doc(message))
         return message
 
     async def add_message_if_summary_version(
@@ -504,10 +548,19 @@ class CosmosSessionRepository:
             return False
         message.userId = user_id
         message.summaryVersion = expected_version
-        await self._messages.create_item(self._to_doc(message))
+        if session.deletionProtocol == 1:
+            self._assert_child_id(message.id)
+            await self._fenced_batch(
+                self._messages, session, [("create", (self._to_doc(message),), {})]
+            )
+        else:
+            await self._messages.create_item(self._to_doc(message))
         latest = await self._owned_session(user_id, message.sessionId)
         if latest.summaryVersion == expected_version:
             return True
+        if session.deletionProtocol == 1:
+            await self._fenced_delete(self._messages, session, message.id)
+            return False
         try:
             await self._messages.delete_item(
                 item=message.id, partition_key=message.sessionId
@@ -526,7 +579,7 @@ class CosmosSessionRepository:
 
         if user_message.sessionId != pending_assistant.sessionId:
             raise ValueError("workflow claim messages must share one session")
-        await self._owned_session(user_id, user_message.sessionId)
+        session = await self._owned_session(user_id, user_message.sessionId)
         user_message.userId = user_id
         pending_assistant.userId = user_id
         operations = [
@@ -534,10 +587,15 @@ class CosmosSessionRepository:
             ("create", (self._to_doc(pending_assistant),), {}),
         ]
         try:
-            await self._messages.execute_item_batch(
-                batch_operations=operations,
-                partition_key=user_message.sessionId,
-            )
+            if session.deletionProtocol == 1:
+                self._assert_child_id(user_message.id)
+                self._assert_child_id(pending_assistant.id)
+                await self._fenced_batch(self._messages, session, operations)
+            else:
+                await self._messages.execute_item_batch(
+                    batch_operations=operations,
+                    partition_key=user_message.sessionId,
+                )
         except CosmosBatchOperationError as exc:
             if getattr(exc, "status_code", None) == 409:
                 return False
@@ -563,10 +621,12 @@ class CosmosSessionRepository:
         from azure.core import MatchConditions
         from azure.cosmos.exceptions import (
             CosmosAccessConditionFailedError,
+            CosmosBatchOperationError,
             CosmosResourceNotFoundError,
         )
 
-        await self._owned_session(user_id, message.sessionId)
+        session = await self._owned_session(user_id, message.sessionId)
+        self._assert_child_id(message.id)
         try:
             current = await self._messages.read_item(
                 item=message.id, partition_key=message.sessionId
@@ -588,21 +648,57 @@ class CosmosSessionRepository:
             return False
         message.userId = user_id
         try:
-            await self._messages.replace_item(
-                item=message.id,
-                body=self._to_doc(message),
-                etag=current.get("_etag"),
-                match_condition=MatchConditions.IfNotModified,
-            )
+            if session.deletionProtocol == 1:
+                await self._fenced_batch(self._messages, session, [
+                    ("replace", (message.id, self._to_doc(message)),
+                     {"if_match_etag": require_etag(current)})
+                ])
+            else:
+                await self._messages.replace_item(
+                    item=message.id,
+                    body=self._to_doc(message),
+                    etag=current.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
         except (CosmosAccessConditionFailedError, CosmosResourceNotFoundError):
             return False
+        except CosmosBatchOperationError as exc:
+            if batch_failed_at(exc, 1, 404, 412):
+                return False
+            raise
         return True
 
     async def upsert_message(self, user_id: str, message: Message) -> Message:
-        await self._owned_session(user_id, message.sessionId)
+        from azure.cosmos.exceptions import CosmosBatchOperationError, CosmosResourceNotFoundError
+
+        session = await self._owned_session(user_id, message.sessionId)
         message.userId = user_id
-        await self._messages.upsert_item(self._to_doc(message))
-        return message
+        if session.deletionProtocol != 1:
+            await self._messages.upsert_item(self._to_doc(message))
+            return message
+        self._assert_child_id(message.id)
+        for _ in range(CAS_ATTEMPTS):
+            try:
+                raw = await self._messages.read_item(
+                    item=message.id, partition_key=message.sessionId
+                )
+            except CosmosResourceNotFoundError:
+                operation = ("create", (self._to_doc(message),), {})
+            else:
+                if raw.get("userId") != user_id or raw.get("sessionId") != session.id:
+                    raise DeletionIntegrityError("Message ownership mismatch")
+                operation = (
+                    "replace", (message.id, self._to_doc(message)),
+                    {"if_match_etag": require_etag(raw)},
+                )
+            try:
+                await self._fenced_batch(self._messages, session, [operation])
+                return message
+            except CosmosBatchOperationError as exc:
+                if batch_failed_at(exc, 1, 404, 409, 412):
+                    continue
+                raise
+        raise DeletionUnavailableError("Message write is contended")
 
     async def consume_tool_approval(
         self, user_id: str, session_id: str, message_id: str, request_id: str
@@ -627,16 +723,20 @@ class CosmosSessionRepository:
         from azure.core import MatchConditions
         from azure.cosmos.exceptions import (
             CosmosAccessConditionFailedError,
+            CosmosBatchOperationError,
             CosmosResourceNotFoundError,
         )
 
-        await self._owned_session(user_id, session_id)
+        session = await self._owned_session(user_id, session_id)
+        self._assert_child_id(message_id)
         for _attempt in range(3):
             try:
                 raw = await self._messages.read_item(
                     item=message_id, partition_key=session_id
                 )
             except CosmosResourceNotFoundError:
+                return False
+            if raw.get("userId") != user_id or raw.get("sessionId") != session_id:
                 return False
             approvals = raw.get("pendingApprovals") or []
             index = next(
@@ -652,6 +752,14 @@ class CosmosSessionRepository:
             if approvals[index].get("consumed") is True:
                 return False
             try:
+                patches = [
+                    {"op": "set", "path": f"/pendingApprovals/{index}/consumed", "value": True}
+                ]
+                if session.deletionProtocol == 1:
+                    await self._fenced_batch(self._messages, session, [
+                        ("patch", (message_id, patches), {"if_match_etag": require_etag(raw)})
+                    ])
+                    return True
                 await self._messages.patch_item(
                     item=message_id,
                     partition_key=session_id,
@@ -668,49 +776,78 @@ class CosmosSessionRepository:
                 return True
             except CosmosAccessConditionFailedError:
                 continue
+            except CosmosBatchOperationError as exc:
+                if batch_failed_at(exc, 1, 404):
+                    return False
+                if batch_failed_at(exc, 1, 412):
+                    continue
+                raise
         # Bounded retries exhausted under sustained contention: deny. An
         # approval we cannot prove we spent must not authorize a call.
         return False
 
     async def list_messages(self, user_id: str, session_id: str) -> list[Message]:
         await self._owned_session(user_id, session_id)
-        query = "SELECT * FROM c WHERE c.sessionId = @sid ORDER BY c.createdAt ASC"
+        query = (
+            "SELECT * FROM c WHERE c.sessionId = @sid "
+            "AND NOT IS_DEFINED(c.kind) ORDER BY c.createdAt ASC"
+        )
         params = [{"name": "@sid", "value": session_id}]
-        return [
-            Message.model_validate(doc)
-            async for doc in self._messages.query_items(query=query, parameters=params)
-        ]
+        items = []
+        async for doc in self._messages.query_items(
+            query=query, parameters=params, partition_key=session_id
+        ):
+            if doc.get("userId") != user_id or doc.get("sessionId") != session_id:
+                raise DeletionIntegrityError("Message ownership mismatch")
+            items.append(Message.model_validate(doc))
+        return items
 
     async def clear_messages(self, user_id: str, session_id: str) -> None:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
-        await self._owned_session(user_id, session_id)
-        query = "SELECT c.id FROM c WHERE c.sessionId = @sid"
+        session = await self._owned_session(user_id, session_id)
+        query = (
+            "SELECT c.id FROM c WHERE c.sessionId = @sid AND NOT IS_DEFINED(c.kind)"
+        )
         params = [{"name": "@sid", "value": session_id}]
         async for doc in self._messages.query_items(
             query=query, parameters=params, partition_key=session_id
         ):
+            if session.deletionProtocol == 1:
+                await self._fenced_delete(self._messages, session, doc["id"])
+                continue
             try:
                 await self._messages.delete_item(item=doc["id"], partition_key=session_id)
             except CosmosResourceNotFoundError:
                 continue  # already gone (concurrent clear/delete) -- idempotent
 
     async def add_document(self, user_id: str, document: Document) -> Document:
-        await self._owned_session(user_id, document.sessionId)
+        session = await self._owned_session(user_id, document.sessionId)
         document.userId = user_id
-        await self._documents.create_item(self._to_doc(document))
+        if session.deletionProtocol == 1:
+            self._assert_child_id(document.id)
+            await self._fenced_batch(
+                self._documents, session, [("create", (self._to_doc(document),), {})]
+            )
+        else:
+            await self._documents.create_item(self._to_doc(document))
         return document
 
     async def list_documents(self, user_id: str, session_id: str) -> list[Document]:
         await self._owned_session(user_id, session_id)
-        query = "SELECT * FROM c WHERE c.sessionId = @sid ORDER BY c.createdAt ASC"
+        query = (
+            "SELECT * FROM c WHERE c.sessionId = @sid "
+            "AND NOT IS_DEFINED(c.kind) ORDER BY c.createdAt ASC"
+        )
         params = [{"name": "@sid", "value": session_id}]
-        return [
-            Document.model_validate(doc)
-            async for doc in self._documents.query_items(
-                query=query, parameters=params, partition_key=session_id
-            )
-        ]
+        items = []
+        async for doc in self._documents.query_items(
+            query=query, parameters=params, partition_key=session_id
+        ):
+            if doc.get("userId") != user_id or doc.get("sessionId") != session_id:
+                raise DeletionIntegrityError("Document ownership mismatch")
+            items.append(Document.model_validate(doc))
+        return items
 
     async def get_document(
         self, user_id: str, session_id: str, document_id: str
@@ -718,6 +855,7 @@ class CosmosSessionRepository:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
         await self._owned_session(user_id, session_id)
+        self._assert_child_id(document_id)
         try:
             doc = await self._documents.read_item(
                 item=document_id, partition_key=session_id
@@ -736,7 +874,11 @@ class CosmosSessionRepository:
     ) -> None:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
-        await self._owned_session(user_id, session_id)
+        session = await self._owned_session(user_id, session_id)
+        self._assert_child_id(document_id)
+        if session.deletionProtocol == 1:
+            await self._fenced_delete(self._documents, session, document_id)
+            return
         try:
             await self._documents.delete_item(
                 item=document_id, partition_key=session_id

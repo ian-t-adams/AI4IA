@@ -6,9 +6,28 @@ identical across stores.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from ..agents.consent import ToolConsentState
+from .deletion_models import (
+    CLEANUP_ITEMS,
+    LEASE_SECONDS,
+    STATUS_ITEMS,
+    UPLOAD_ID_PREFIX,
+    DeletionDisabledError,
+    DeletionIntegrityError,
+    DeletionLease,
+    DeletionMigrationRequiredError,
+    DeletionPage,
+    DeletionRecord,
+    DeletionStatus,
+    DeletionUnavailableError,
+    InitializationPage,
+    UploadIntent,
+    initialization_after,
+    now_utc,
+)
 from .models import (
     Document,
     Message,
@@ -20,11 +39,19 @@ from .repository import SessionConflictError, SessionNotFoundError
 
 
 class InMemorySessionRepository:
-    def __init__(self) -> None:
+    def __init__(
+        self, *, deletion_enabled: bool = False, attachment_storage_required: bool = False,
+        attachment_storage_id: str | None = None,
+    ) -> None:
         self._sessions: dict[str, Session] = {}
         self._messages: dict[str, list[Message]] = {}
         self._documents: dict[str, list[Document]] = {}
         self._lock = asyncio.Lock()
+        self._deletion_enabled = deletion_enabled
+        self._attachment_storage_required = attachment_storage_required
+        self._attachment_storage_id = attachment_storage_id
+        self._deletions: dict[tuple[str, str], tuple[DeletionRecord, int]] = {}
+        self._uploads: dict[str, UploadIntent] = {}
 
     async def check_ready(self) -> None:
         return None
@@ -37,6 +64,19 @@ class InMemorySessionRepository:
 
     async def create_session(self, session: Session) -> Session:
         async with self._lock:
+            if any(sid == session.id for _, sid in self._deletions):
+                raise SessionConflictError(session.id)
+            if self._deletion_enabled:
+                if session.id in self._sessions:
+                    raise SessionConflictError(session.id)
+                session.deletionProtocol = 1
+                session.deletionEpoch = str(uuid4())
+                session.attachmentStorageRequired = self._attachment_storage_required
+                session.attachmentStorageId = (
+                    self._attachment_storage_id if self._attachment_storage_required else None
+                )
+            elif session.deletionProtocol is not None:
+                raise DeletionDisabledError()
             self._sessions[session.id] = session
             self._messages.setdefault(session.id, [])
             return session
@@ -170,7 +210,11 @@ class InMemorySessionRepository:
 
     async def delete_session(self, user_id: str, session_id: str) -> None:
         async with self._lock:
-            await self._owned_session(user_id, session_id)
+            session = await self._owned_session(user_id, session_id)
+            if session.deletionProtocol == 1:
+                raise DeletionDisabledError()
+            if self._deletion_enabled:
+                raise DeletionMigrationRequiredError()
             self._sessions.pop(session_id, None)
             self._messages.pop(session_id, None)
             self._documents.pop(session_id, None)
@@ -324,3 +368,182 @@ class InMemorySessionRepository:
             await self._owned_session(user_id, session_id)
             bucket = self._documents.get(session_id, [])
             self._documents[session_id] = [d for d in bucket if d.id != document_id]
+
+    async def check_deletion_ready(self) -> None:
+        # Local-only store. Distributed safety is exercised by transactional
+        # Cosmos fakes, not inferred from this process-local lock.
+        return None
+
+    async def list_initializations(self, user_id: str, cursor: str = "") -> InitializationPage:
+        initialization_after(cursor)
+        # Local creation is atomic under one lock and has no external awaits;
+        # distributed incomplete initialization is covered by the Cosmos fake.
+        return InitializationPage(items=[])
+
+    def _owned_deletion(self, user_id: str, session_id: str) -> tuple[DeletionRecord, int]:
+        value = self._deletions.get((user_id, session_id))
+        if value is None:
+            raise SessionNotFoundError(session_id)
+        return value
+
+    async def begin_deletion(self, user_id: str, session_id: str) -> DeletionStatus:
+        if not self._deletion_enabled:
+            raise DeletionDisabledError()
+        async with self._lock:
+            existing = self._deletions.get((user_id, session_id))
+            if existing is not None:
+                return existing[0].status.model_copy(deep=True)
+            session = await self._owned_session(user_id, session_id)
+            if session.deletionProtocol != 1:
+                raise DeletionMigrationRequiredError()
+            record = DeletionRecord(
+                id=session_id, userId=user_id, deletionEpoch=session.deletionEpoch or "",
+                attachmentStorageRequired=session.attachmentStorageRequired,
+                attachmentStorageId=session.attachmentStorageId,
+                status=DeletionStatus(sessionId=session_id),
+            )
+            self._deletions[(user_id, session_id)] = (record, 1)
+            del self._sessions[session_id]
+            return record.status.model_copy(deep=True)
+
+    async def get_deletion_status(self, user_id: str, session_id: str) -> DeletionStatus:
+        return self._owned_deletion(user_id, session_id)[0].status.model_copy(deep=True)
+
+    async def list_deletions(self, user_id: str, cursor: str = "") -> DeletionPage:
+        records = sorted(
+            (
+                record for (uid, sid), (record, _) in self._deletions.items()
+                if uid == user_id and sid > cursor
+            ),
+            key=lambda record: record.id,
+        )[:STATUS_ITEMS + 1]
+        more = len(records) > STATUS_ITEMS
+        return DeletionPage(
+            items=[record.status.model_copy(deep=True) for record in records[:STATUS_ITEMS]],
+            hasMore=more, nextCursor=records[STATUS_ITEMS - 1].id if more else None,
+        )
+
+    async def claim_deletion(self, user_id: str, session_id: str) -> DeletionLease | None:
+        if not self._deletion_enabled:
+            raise DeletionDisabledError()
+        async with self._lock:
+            stored, version = self._owned_deletion(user_id, session_id)
+            now = now_utc()
+            if stored.status.state == "cleanup_verified" or (
+                stored.leaseToken and stored.leaseExpiresAt and stored.leaseExpiresAt > now
+            ):
+                return None
+            record = stored.model_copy(deep=True)
+            token = str(uuid4())
+            record.leaseToken = token
+            record.leaseExpiresAt = now + timedelta(seconds=LEASE_SECONDS)
+            record.status.attempts += 1
+            record.status.state = "pending"
+            record.status.retryReason = None
+            record.status.updatedAt = now
+            self._deletions[(user_id, session_id)] = (record, version + 1)
+            return DeletionLease(
+                record=record.model_copy(deep=True), etag=str(version + 1), token=token
+            )
+
+    async def checkpoint_deletion(
+        self, lease: DeletionLease, status: DeletionStatus, *, release: bool
+    ) -> DeletionLease:
+        async with self._lock:
+            current, version = self._owned_deletion(lease.record.userId, lease.record.id)
+            if str(version) != lease.etag or current.leaseToken != lease.token:
+                raise DeletionUnavailableError("Deletion lease changed")
+            record = current.model_copy(deep=True)
+            record.status = status.model_copy(deep=True)
+            record.status.updatedAt = now_utc()
+            if release:
+                record.leaseToken = None
+                record.leaseExpiresAt = None
+            self._deletions[(record.userId, record.id)] = (record, version + 1)
+            return DeletionLease(
+                record=record.model_copy(deep=True), etag=str(version + 1), token=lease.token
+            )
+
+    async def close_deletion_fences(self, lease: DeletionLease) -> None:
+        self._owned_deletion(lease.record.userId, lease.record.id)
+
+    async def cleanup_child_page(
+        self, lease: DeletionLease, *, documents: bool
+    ) -> bool:
+        async with self._lock:
+            self._owned_deletion(lease.record.userId, lease.record.id)
+            if documents:
+                rows = self._documents.get(lease.record.id, [])[:CLEANUP_ITEMS]
+            else:
+                rows = self._messages.get(lease.record.id, [])[:CLEANUP_ITEMS]
+            if any(
+                row.userId != lease.record.userId or row.sessionId != lease.record.id
+                or row.id.startswith("__ai4ia_") for row in rows
+            ):
+                raise DeletionIntegrityError("Unexpected conversation child")
+            if documents:
+                self._documents[lease.record.id] = self._documents.get(
+                    lease.record.id, []
+                )[CLEANUP_ITEMS:]
+            else:
+                self._messages[lease.record.id] = self._messages.get(
+                    lease.record.id, []
+                )[CLEANUP_ITEMS:]
+            return not rows
+
+    async def deletion_uploads(
+        self, lease: DeletionLease, *, unsettled_only: bool
+    ) -> list[UploadIntent]:
+        self._owned_deletion(lease.record.userId, lease.record.id)
+        rows = [
+            intent.model_copy(deep=True) for intent in self._uploads.values()
+            if intent.sessionId == lease.record.id
+            and (not unsettled_only or not intent.settled)
+        ][:CLEANUP_ITEMS + 1]
+        if any(
+            intent.userId != lease.record.userId or intent.epoch != lease.record.deletionEpoch
+            for intent in rows
+        ):
+            raise DeletionIntegrityError("Upload intent does not match")
+        return rows
+
+    async def remove_settled_uploads(
+        self, lease: DeletionLease, intents: list[UploadIntent]
+    ) -> None:
+        async with self._lock:
+            self._owned_deletion(lease.record.userId, lease.record.id)
+            for intent in intents[:CLEANUP_ITEMS]:
+                if (
+                    not intent.settled or intent.userId != lease.record.userId
+                    or intent.sessionId != lease.record.id
+                    or intent.epoch != lease.record.deletionEpoch
+                ):
+                    raise DeletionIntegrityError("Unsettled upload cannot be forgotten")
+                self._uploads.pop(intent.id, None)
+
+    async def reserve_attachment_upload(
+        self, user_id: str, session_id: str, document_id: str, *, storage_id: str
+    ) -> UploadIntent | None:
+        async with self._lock:
+            session = await self._owned_session(user_id, session_id)
+            if session.deletionProtocol != 1:
+                return None
+            if session.attachmentStorageId not in (None, storage_id):
+                raise DeletionIntegrityError("Conversation attachment store changed")
+            session.attachmentStorageRequired = True
+            session.attachmentStorageId = storage_id
+            intent = UploadIntent(
+                id=UPLOAD_ID_PREFIX + str(uuid4()), sessionId=session_id, userId=user_id,
+                epoch=session.deletionEpoch or "", documentId=document_id,
+            )
+            self._uploads[intent.id] = intent.model_copy(deep=True)
+            return intent
+
+    async def settle_attachment_upload(self, intent: UploadIntent) -> None:
+        async with self._lock:
+            current = self._uploads.get(intent.id)
+            if current is None or current.model_copy(update={"settled": False}) != intent.model_copy(
+                update={"settled": False}
+            ):
+                raise DeletionIntegrityError("Upload completion does not match its intent")
+            current.settled = True

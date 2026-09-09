@@ -9,6 +9,13 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from ..agents.consent import ToolConsentState
+from .deletion_models import (
+    DeletionLease,
+    DeletionPage,
+    DeletionStatus,
+    InitializationPage,
+    UploadIntent,
+)
 from .models import Document, Message, Session
 
 
@@ -22,6 +29,42 @@ class SessionConflictError(Exception):
 
 @runtime_checkable
 class SessionRepository(Protocol):
+    async def list_initializations(self, user_id: str, cursor: str = "") -> InitializationPage: ...
+
+    async def check_deletion_ready(self) -> None: ...
+
+    async def begin_deletion(self, user_id: str, session_id: str) -> DeletionStatus: ...
+
+    async def get_deletion_status(self, user_id: str, session_id: str) -> DeletionStatus: ...
+
+    async def list_deletions(self, user_id: str, cursor: str = "") -> DeletionPage: ...
+
+    async def claim_deletion(self, user_id: str, session_id: str) -> DeletionLease | None: ...
+
+    async def checkpoint_deletion(
+        self, lease: DeletionLease, status: DeletionStatus, *, release: bool
+    ) -> DeletionLease: ...
+
+    async def close_deletion_fences(self, lease: DeletionLease) -> None: ...
+
+    async def cleanup_child_page(
+        self, lease: DeletionLease, *, documents: bool
+    ) -> bool: ...
+
+    async def deletion_uploads(
+        self, lease: DeletionLease, *, unsettled_only: bool
+    ) -> list[UploadIntent]: ...
+
+    async def remove_settled_uploads(
+        self, lease: DeletionLease, intents: list[UploadIntent]
+    ) -> None: ...
+
+    async def reserve_attachment_upload(
+        self, user_id: str, session_id: str, document_id: str, *, storage_id: str
+    ) -> UploadIntent | None: ...
+
+    async def settle_attachment_upload(self, intent: UploadIntent) -> None: ...
+
     async def check_ready(self) -> None:
         """Prove the backing store is reachable without reading user data."""
         ...

@@ -221,6 +221,12 @@
     "toolAutoApproveEnabled": {
       "value": "${AI4IA_TOOL_AUTO_APPROVE_ENABLED=false}"
     },
+    "sessionDeletionEnabled": {
+      "value": "${AI4IA_SESSION_DELETION_ENABLED=false}"
+    },
+    "sessionDeletionRolloutId": {
+      "value": "${AI4IA_SESSION_DELETION_ROLLOUT_ID=}"
+    },
     "webSearchEnabled": {
       "value": "${AI4IA_WEB_SEARCH_ENABLED=true}"
     },

@@ -77,11 +77,16 @@ def _log_safe_blob_name(name: str) -> str:
 
 @runtime_checkable
 class BlobStore(Protocol):
-    async def put(self, path: str, data: bytes, content_type: str | None = None) -> str: ...
+    async def put(
+        self, path: str, data: bytes, content_type: str | None = None, *,
+        single_attempt: bool = False,
+    ) -> str: ...
 
     async def get(self, path: str) -> bytes: ...
 
     async def delete_prefix(self, prefix: str) -> int: ...
+
+    async def delete_prefix_page(self, prefix: str, *, limit: int) -> bool: ...
 
     async def close(self) -> None: ...
 
@@ -93,7 +98,10 @@ class InMemoryBlobStore:
     def __init__(self) -> None:
         self._data: dict[str, bytes] = {}
 
-    async def put(self, path: str, data: bytes, content_type: str | None = None) -> str:
+    async def put(
+        self, path: str, data: bytes, content_type: str | None = None, *,
+        single_attempt: bool = False,
+    ) -> str:
         self._data[path] = bytes(data)
         return path
 
@@ -108,6 +116,16 @@ class InMemoryBlobStore:
         for k in keys:
             del self._data[k]
         return len(keys)
+
+    async def delete_prefix_page(self, prefix: str, *, limit: int) -> bool:
+        from itertools import islice
+
+        if not prefix or limit < 1 or limit > 100:
+            raise ValueError("A bounded, nonempty cleanup prefix is required")
+        keys = list(islice((key for key in self._data if key.startswith(prefix)), limit))
+        for key in keys:
+            del self._data[key]
+        return not keys
 
     async def close(self) -> None:
         return None
@@ -152,12 +170,16 @@ class AzureBlobStore:
     def _blob_client(self, path: str) -> Any:
         return self._service_client().get_blob_client(container=self._container, blob=path)
 
-    async def put(self, path: str, data: bytes, content_type: str | None = None) -> str:
+    async def put(
+        self, path: str, data: bytes, content_type: str | None = None, *,
+        single_attempt: bool = False,
+    ) -> str:
         from azure.storage.blob import ContentSettings
 
         settings = ContentSettings(content_type=content_type) if content_type else None
         blob = self._blob_client(path)
-        await blob.upload_blob(data, overwrite=True, content_settings=settings)
+        kwargs = {"retry_total": 0} if single_attempt else {}
+        await blob.upload_blob(data, overwrite=True, content_settings=settings, **kwargs)
         return path
 
     async def get(self, path: str) -> bytes:
@@ -189,6 +211,31 @@ class AzureBlobStore:
                     type(exc).__name__,
                 )
         return deleted
+
+    async def delete_prefix_page(self, prefix: str, *, limit: int) -> bool:
+        """Strict bounded cleanup, separate from the legacy best-effort purge.
+
+        True means this listing was empty. It says nothing about delayed PUTs;
+        the deletion coordinator must separately account for upload intents.
+        """
+        from azure.core.exceptions import ResourceNotFoundError
+
+        if not prefix or limit < 1 or limit > 100:
+            raise ValueError("A bounded, nonempty cleanup prefix is required")
+        container = self._service_client().get_container_client(self._container)
+        names: list[str] = []
+        async for blob in container.list_blobs(name_starts_with=prefix, results_per_page=limit):
+            if not isinstance(blob.name, str) or not blob.name.startswith(prefix):
+                raise ValueError("Blob listing escaped its cleanup prefix")
+            names.append(blob.name)
+            if len(names) == limit:
+                break
+        for name in names:
+            try:
+                await container.delete_blob(name)
+            except ResourceNotFoundError:
+                pass
+        return not names
 
     async def close(self) -> None:
         if self._owns_service and self._service is not None:
