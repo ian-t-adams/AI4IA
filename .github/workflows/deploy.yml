@@ -49,6 +49,7 @@ on:
       - "scripts/post-deploy-verify.py"
       - "scripts/check-resource-providers.py"
       - "scripts/check-model-availability.py"
+      - "scripts/_model_retirement.py"
       - "scripts/validate-feature-prereqs.py"
       - "scripts/provision-foundry-toolbox.py"
       - "scripts/gen-model-catalog.py"

@@ -102,11 +102,19 @@ independent axes:
 
 - **Availability:** limited-access models need approval; partner models can need
   a Marketplace offer.
-- **Lifecycle:** `Deprecating` or `Deprecated` versions can keep serving an
-  existing deployment while refusing a new one.
+- **Lifecycle/retirement:** API `Deprecating`/`Deprecated` blocks new/changed
+  desired deployments under AI4IA's conservative admission policy. Authoritative
+  SKU/inference dates within seven days also block those admissions; exact
+  reconciles warn at 90/30/7 days and expiry. API `Deprecated` means retired,
+  so ARM `Succeeded` must never be mistaken for serving health.
 - **Quota:** requested capacity is summed by the scope Azure actually enforces.
   Non-OpenAI publisher quota can be subscription-wide even though the usage API
   repeats the same counter under every region.
+
+Missing or malformed retirement dates remain visibly unknown. Public dates and
+an old deployed version cannot impose a guessed block on an otherwise safe
+desired replacement. See the [retirement evidence policy](../region-capability-matrix.md#retirement-evidence-and-reporting)
+and [default-off read-only report](./deployment.md#read-only-model-retirement-reporting).
 
 Quota counter names do not reliably match catalog model names. The script
 reconciles known publisher prefixes and spellings; an unmatched counter remains
