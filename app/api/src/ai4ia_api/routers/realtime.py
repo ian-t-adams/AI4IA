@@ -2118,7 +2118,7 @@ async def voice_live(websocket: WebSocket) -> None:
         open_payload.update({"protocol": "ga", "provider": AZURE_OPENAI_PROVIDER_ID})
     connected = False
 
-    async def run_relay() -> RelayOutcome:
+    async def dispatch_relay() -> RelayOutcome:
         nonlocal connected
         async with admitted_dispatch(
             "realtime", open_payload,
@@ -2141,6 +2141,18 @@ async def voice_live(websocket: WebSocket) -> None:
                 if outcome.status == "complete":
                     quota.report()
                 return outcome
+
+    async def run_relay() -> RelayOutcome:
+        if setup is None:
+            return await dispatch_relay()
+        remaining = setup.deadline - setup.clock()
+        if remaining <= 0:
+            raise RealtimeSetupRejected()
+        # The limit includes policy admission and connection establishment,
+        # not a new full window after a slow handshake. Final accounting and
+        # socket close remain outside this processing deadline.
+        with anyio.fail_after(remaining):
+            return await dispatch_relay()
 
     async def finalize_relay(outcome: RelayOutcome) -> None:
         await _finalize_relay(

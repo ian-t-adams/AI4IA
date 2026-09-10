@@ -723,6 +723,11 @@ the server reports GA. Its own authenticated catalog and
 `/api/canary/realtime-capabilities` observation must admit the setup-only
 operation before the socket opens. The monitor and evaluation identities remain
 chat-only. A client field or profile label cannot select the server actor policy.
+The operator policy's distinct `realtimeCanaryActor` marker selects
+`realtime-setup-canary`, requires the realtime-only model domain and current
+strict limits, and invokes the real one-open guard at provider dispatch. The
+same scope protects both shared relay pumps. Its 15-second processing deadline
+includes the connection handshake, not a second full interval afterward.
 
 Evidence is deliberately smaller than an execution receipt: allowlisted stages,
 outcomes, reason codes, counts, UTC observation times, latency, coverage,

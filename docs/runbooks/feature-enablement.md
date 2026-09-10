@@ -295,6 +295,28 @@ single-prompt profile and at most 256. Other model/tool/media paths are refused.
 `GET /api/execution-capabilities` is a current compatibility observation, never
 a bearer grant. Missing profile, policy, v1 readiness or real guard is not ready.
 
+The distinct optional `realtimeCanaryActor` marker uses the same exact
+`tenantId`/`subject` shape but selects only `realtime-setup-canary`. All three
+markers must differ. It requires a model domain restricted to `realtime`, empty
+tool/document permissions, current non-admin/non-publisher claims and applicable
+limits, plus the server's GA selection. Every non-realtime metered surface is
+denied. The real factory guard permits one resolved application-relay opening,
+one exact setup update, no audio/responses/tools/agent/session context, and only
+ordered setup acknowledgements within a 15-second processing deadline that also
+covers connection establishment. Current authority is rechecked before frames
+are sent or delivered. Socket close and accounting still finish after processing
+stops. This is not a provider bill cap.
+
+`GET /api/canary/realtime-capabilities` is the separate setup compatibility
+reader; a caller profile/query/header cannot select actor authority. An absent
+marker is inert, and pausing group evaluation with a marker still configured
+refuses the restricted actor rather than making it an ordinary caller. Keep
+explicit policy JSON valid while paused. Before removing an actor configuration
+entirely, revoke its API access or disable its individual entitlement and retire
+outstanding credentials; an application cannot infer an identity removed from
+its configuration after a restart. These are source contracts, not approval to
+create actors, change federation, select GA or run a paid canary.
+
 ### Resumable conversation deletion
 
 Do not enable this as an ordinary convenience flag. The [deletion

@@ -272,9 +272,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings, catalog=app.state.catalog, entitlements=app.state.entitlements,
             canary_guard_provider=lambda: getattr(app.state, "canary_dispatch_guard", None),
             evaluation_guard_provider=lambda: getattr(app.state, "evaluation_dispatch_guard", None),
+            realtime_guard_provider=lambda: getattr(app.state, "realtime_canary_dispatch_guard", None),
         )
         app.state.canary_policy_probe = app.state.policy.canary_probe
         app.state.evaluation_policy_probe = app.state.policy.evaluation_probe
+        app.state.realtime_canary_policy_probe = app.state.policy.realtime_canary_probe
         app.state.publications = PublicationService(
             app.state, agents=app.state.agent_service.record_store,
             workflows=app.state.workflow_service.record_store,

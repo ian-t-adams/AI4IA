@@ -20,7 +20,8 @@ MAX_POLICY_BYTES = 64 * 1024
 MAX_MAPPINGS = 128
 PolicyDomain = Literal["models", "zones", "tools", "documents", "publication", "admin"]
 PolicyOutcome = Literal["allow", "deny", "unavailable"]
-RestrictedProfile = Literal["monitor-canary", "authored-synthetic-evaluation"]
+ChatRestrictedProfile = Literal["monitor-canary", "authored-synthetic-evaluation"]
+RestrictedProfile = Literal["monitor-canary", "authored-synthetic-evaluation", "realtime-setup-canary"]
 PolicyReason = Literal[
     "allowed", "policy_denied", "policy_unavailable", "reauthentication_required",
     "claim_evidence_invalid", "owner_mismatch", "account_disabled", "feature_disabled",
@@ -139,11 +140,24 @@ class PolicyConfig(StrictRecord):
     adminCeiling: ValueSet = ()
     canaryActor: CanaryActor | None = None
     evaluationActor: CanaryActor | None = None
+    realtimeCanaryActor: CanaryActor | None = None
+
+    def actor_for(self, profile: RestrictedProfile) -> CanaryActor | None:
+        return {
+            "monitor-canary": self.canaryActor,
+            "authored-synthetic-evaluation": self.evaluationActor,
+            "realtime-setup-canary": self.realtimeCanaryActor,
+        }[profile]
 
     @model_validator(mode="after")
     def bounded_known_configuration(self) -> PolicyConfig:
-        if self.canaryActor is not None and self.canaryActor == self.evaluationActor:
-            raise ValueError("Monitor and evaluation actors must be distinct.")
+        markers = [
+            (actor.tenantId, actor.subject) for actor in
+            (self.canaryActor, self.evaluationActor, self.realtimeCanaryActor)
+            if actor is not None
+        ]
+        if len(set(markers)) != len(markers):
+            raise ValueError("Monitor, evaluation and realtime setup actors must be distinct.")
         count = sum(len(domain.mappings) for domain in self.domains.values())
         if self.spend is not None:
             count += len(self.spend.mappings)

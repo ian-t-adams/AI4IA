@@ -86,6 +86,12 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    The factory's canary dispatch guard additionally binds owner, claimed
    generation, actual adapted sentinel-only payload and one dispatch; only
    actor policy can require that guard, and the guard grants no authority.
+   The distinct default-absent realtime setup actor is selected only by
+   authenticated policy. Its one-open scope guards the shared relay writer and
+   receiver, allows one exact setup frame and ordered acknowledgements, and
+   refuses audio, response creation, tools and every other metered surface.
+   Keep its processing deadline across connection establishment and relay;
+   source/accounting/close cleanup must not become a new model permission.
 6. **No secret sprawl.** Do not log credentials, commit secrets, or put user MCP
    secrets in Cosmos; durable MCP secrets belong in Key Vault outside local.
 7. **Receipts show execution, never hidden reasoning.** Persist bounded,
