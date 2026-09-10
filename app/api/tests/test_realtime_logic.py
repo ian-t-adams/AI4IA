@@ -1410,9 +1410,15 @@ class _FakeAgentService:
     async def catalog_for(self, user_id: str, curated: AgentCatalog) -> AgentCatalog:
         return self._catalog
 
+    async def resolve_for(self, user_id: str, name: str, curated: AgentCatalog, *, mode="chat"):
+        return self._catalog.get(name)
+
 
 class _BrokenAgentService:
     async def catalog_for(self, user_id: str, curated: AgentCatalog) -> AgentCatalog:
+        raise RuntimeError("agent store down")
+
+    async def resolve_for(self, user_id: str, name: str, curated: AgentCatalog, *, mode="chat"):
         raise RuntimeError("agent store down")
 
 

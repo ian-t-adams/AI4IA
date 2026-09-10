@@ -23,7 +23,7 @@ from collections.abc import Collection
 from typing import TYPE_CHECKING
 
 from ..catalog import ModelCatalog
-from .agent_catalog import AgentCatalog
+from .agent_catalog import AgentCatalog, AgentSpec
 from .store import UserAgentStore
 from ..policy.context import current_binding
 from ..policy.models import PolicyDecision, PolicyError, PolicyRequest
@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..publishing.service import PublicationService
+    from ..publishing.models import PublicationExecutionMode
 
 
 class AgentService:
@@ -131,6 +132,31 @@ class AgentService:
     async def list_for(self, user_id: str) -> list[UserAgent]:
         """The user's own full agent records (management view)."""
         return await self._store.list(user_id)
+
+    async def resolve_for(
+        self, user_id: str, name: str, curated: AgentCatalog, *,
+        mode: PublicationExecutionMode | None = "chat",
+    ) -> AgentSpec | None:
+        key = (name or "").strip().lower()
+        spec = curated.get(key)
+        if spec is not None:
+            return spec
+        owned = await self._store.get(user_id, key)
+        publications = self.publications
+        if not key.startswith("pub.") or publications is None or not publications.enabled:
+            return owned.to_spec() if owned is not None else None
+        binding = current_binding()
+        if binding is None or binding.user is None or binding.owner_id != user_id:
+            raise PolicyError(PolicyDecision("unavailable", "reauthentication_required"))
+        published = await publications.resolve_handle(
+            await binding.resolve(), "agent", key, mode=mode,
+        )
+        if published is not None and owned is not None:
+            raise AgentConflictError("A published handle conflicts with an owned agent.")
+        return (
+            publications.agent_projection(published, key) if published is not None
+            else owned.to_spec() if owned is not None else None
+        )
 
     # --- Mutations ------------------------------------------------------------
 

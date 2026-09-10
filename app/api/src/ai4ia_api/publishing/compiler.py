@@ -84,7 +84,7 @@ class PublicationCompiler:
         bindings: list[PublishedModel] = []
         for identifier in ids:
             entry = self.state.catalog.get(identifier)
-            if entry is None:
+            if entry is None or getattr(entry, "runtimeEnabled", True) is not True:
                 raise PublicationError("publication_model_unavailable", 422)
             options = self.state.catalog.eligible_options(entry, policy_filter=check_policy)
             for option in options:
@@ -97,6 +97,7 @@ class PublicationCompiler:
                 bindings.append(PublishedModel(
                     modelId=identifier, api=entry.api, category=entry.category, option=option,
                     requiredRealtimeProtocol=getattr(entry, "requiredRealtimeProtocol", None),
+                    runtimeEnabled=getattr(entry, "runtimeEnabled", True),
                 ))
             if not any(binding.modelId == identifier for binding in bindings):
                 raise PublicationError("publication_model_unavailable", 422)
@@ -151,6 +152,8 @@ class PublicationCompiler:
                 raise PublicationError("publication_required_skill_excluded", 422)
             if mode == "voice":
                 names = [name for name in names if state.tool_executor.get(name) is not None]
+                if names and not getattr(state.settings, "realtime_tools_enabled", False):
+                    raise PublicationError("publication_voice_tools_unavailable", 422)
             if mode == "delegation" and any(
                 state.tool_executor.get(name) is None for name in names
             ):

@@ -107,6 +107,37 @@ def _write_parameters(tmpdir: str, overrides: dict[str, Any]) -> Path:
     return path
 
 
+class GroupPolicyPrerequisiteTests(unittest.TestCase):
+    def test_group_policy_and_publication_are_unconfigured_by_default(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        self.assertEqual(parameters["groupPolicyEnabled"]["value"], "${AI4IA_GROUP_POLICY_ENABLED=false}")
+        self.assertEqual(parameters["assetPublishingEnabled"]["value"], "${AI4IA_ASSET_PUBLISHING_ENABLED=false}")
+        self.assertEqual(parameters["groupPolicyJson"]["value"], "${AI4IA_GROUP_POLICY_JSON=}")
+
+    def test_same_enabled_policy_requires_entra_and_bounded_configuration(self) -> None:
+        good = {
+            "groupPolicyEnabled": True, "assetPublishingEnabled": True,
+            "apiAuthProvider": "entra", "entraTenantId": "tenant", "entraAudience": "api://app",
+            "entraWebClientId": "web", "groupPolicyJson": '{"version":1,"domains":{}}',
+        }
+        cases = [
+            ({"apiAuthProvider": "dev"}, "require apiAuthProvider=entra"),
+            ({"groupPolicyEnabled": False}, "requires groupPolicyEnabled=true"),
+            ({"groupPolicyJson": ""}, "nonempty groupPolicyJson"),
+            ({"groupPolicyJson": "not json"}, "valid JSON"),
+            ({"groupPolicyJson": '{"version":true}'}, "version-1 object"),
+            ({"groupPolicyJson": '{"version":1,"directoryLookup":true}'}, "unsupported top-level"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            code, _, err = _run(_write_parameters(tmp, good))
+            self.assertEqual(code, 0, err)
+            for change, expected in cases:
+                with self.subTest(change=change):
+                    code, _, err = _run(_write_parameters(tmp, {**good, **change}))
+                    self.assertEqual(code, 1)
+                    self.assertIn(expected, err)
+
+
 class StagedRealtimeTests(unittest.TestCase):
     def test_ga_staging_and_selection_require_their_parent_gate(self) -> None:
         cases = (

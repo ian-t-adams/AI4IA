@@ -207,6 +207,33 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             "user consent cannot be granted through spoofable development identity."
         )
 
+    group_policy = truthy(parameter_value(parameters, "groupPolicyEnabled", False))
+    publishing = truthy(parameter_value(parameters, "assetPublishingEnabled", False))
+    policy_json = text(parameter_value(parameters, "groupPolicyJson"))
+    if group_policy or publishing:
+        if auth_provider != "entra":
+            errors.append("Group policy and asset publishing require apiAuthProvider=entra.")
+        if publishing and not group_policy:
+            errors.append("assetPublishingEnabled=true requires groupPolicyEnabled=true.")
+        if not policy_json or len(policy_json.encode("utf-8")) > 65536:
+            errors.append("Enabled group policy requires bounded, nonempty groupPolicyJson.")
+        else:
+            try:
+                policy_config = json.loads(policy_json)
+            except (ValueError, RecursionError):
+                errors.append("groupPolicyJson must be valid JSON.")
+            else:
+                if not isinstance(policy_config, dict) or (
+                    type(policy_config.get("version", 1)) is not int
+                    or policy_config.get("version", 1) != 1
+                    or not isinstance(policy_config.get("domains", {}), dict)
+                ):
+                    errors.append("groupPolicyJson requires the version-1 object contract.")
+                elif set(policy_config) - {
+                    "version", "domains", "spend", "adminCeiling", "canaryActor", "evaluationActor",
+                }:
+                    errors.append("groupPolicyJson contains unsupported top-level policy fields.")
+
     if auth_provider == "entra":
         for name in ("entraTenantId", "entraAudience", "entraWebClientId"):
             if not text(parameter_value(parameters, name)):

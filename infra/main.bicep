@@ -215,6 +215,16 @@ param customToolsEnabled bool = false
 @description('Allow users to explicitly auto-approve enabled tools for one session or workflow run. Default OFF. Consent does not grant tools, scopes, destinations, or budget; execution checks and activity/receipts remain enforced. Uses existing per-user Cosmos state; creates no resources.')
 param toolAutoApproveEnabled bool = false
 
+@description('Apply bounded operator role/group policy after existing Entra validation. Default OFF; grants never widen individual/server ceilings.')
+param groupPolicyEnabled bool = false
+
+@description('Operator-owned policy JSON. No credentials, directory lookups or live assignments; empty is unconfigured.')
+@maxLength(65536)
+param groupPolicyJson string = ''
+
+@description('Enable independently reviewed user-asset publication using existing owner-partitioned Cosmos containers. Default OFF; requires group policy and Entra.')
+param assetPublishingEnabled bool = false
+
 @description('Opt in new conversations to resumable deletion. Default OFF; never enrolls existing records or runs background cleanup. Requires an approved single-write-region/no-TTL cutover record at API startup.')
 param sessionDeletionEnabled bool = false
 
@@ -1057,6 +1067,9 @@ module api 'modules/api.bicep' = {
     customToolsEnabled: customToolsEnabled
     customToolsKeyVaultUri: customToolsEnabled ? keyvault.outputs.keyVaultUri : ''
     toolAutoApproveEnabled: toolAutoApproveEnabled
+    groupPolicyEnabled: groupPolicyEnabled
+    groupPolicyJson: groupPolicyJson
+    assetPublishingEnabled: assetPublishingEnabled
     sessionDeletionEnabled: sessionDeletionEnabled
     sessionDeletionRolloutId: sessionDeletionRolloutId
     // Web IQ search tools (default OFF). The key is supplied externally (mirrors

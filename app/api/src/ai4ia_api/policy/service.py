@@ -16,7 +16,8 @@ from ..catalog import DeploymentOption, ModelCatalog
 from ..entitlements.models import Entitlement, EntitlementLimits
 from ..entitlements.service import EntitlementService
 from .models import (
-    ADMIN_OPERATIONS, LIMIT_FIELDS, ClaimRule, DomainPolicy, EffectivePolicy, PolicyConfig, PolicyDecision,
+    ADMIN_OPERATIONS, DOCUMENT_TOOL_FEATURES, LIMIT_FIELDS,
+    ClaimRule, DomainPolicy, EffectivePolicy, PolicyConfig, PolicyDecision,
     PolicyDomain, PolicyError, PolicyRequest, ResolvedDomain, SpendMapping,
     RestrictedProfile, parse_policy_config, policy_digest,
 )
@@ -60,7 +61,13 @@ def _matched(rule: ClaimRule | SpendMapping, user: AuthenticatedUser | None) -> 
 
 def _complete(rule: ClaimRule | SpendMapping, user: AuthenticatedUser | None) -> bool:
     evidence = user.policy_claims if user is not None and user.provider == "entra" else None
-    return evidence is not None and getattr(evidence, f"{rule.claim}_complete")
+    if evidence is None or not getattr(evidence, f"{rule.claim}_complete"):
+        return False
+    negative = (
+        rule.limits.disabled or rule.limits.has_any_limit
+        if isinstance(rule, SpendMapping) else bool(rule.deny) or rule.restrict is not None
+    )
+    return not negative or getattr(evidence, f"{rule.claim}_present")
 
 
 def _compose(name: str, domain: DomainPolicy, user: AuthenticatedUser | None) -> ResolvedDomain:
@@ -171,11 +178,18 @@ class PolicyService:
     def allows_tool_snapshot(self, user: AuthenticatedUser | None, name: str) -> bool:
         if not self.enabled:
             return True
-        configured = self._configuration().domains.get("tools")
-        if configured is None:
-            return True
-        domain = _compose("tools", configured, user)
-        return not domain.invalid and not domain.unavailable and name in domain.allowed
+        config = self._configuration()
+        configured = config.domains.get("tools")
+        if configured is not None:
+            domain = _compose("tools", configured, user)
+            if domain.invalid or domain.unavailable or name not in domain.allowed:
+                return False
+        feature = DOCUMENT_TOOL_FEATURES.get(name)
+        documents = config.domains.get("documents")
+        if feature is not None and documents is not None:
+            domain = _compose("documents", documents, user)
+            return not domain.invalid and not domain.unavailable and feature in domain.allowed
+        return True
 
     async def resolve(
         self, user: AuthenticatedUser, *, expected_owner: str | None = None,
@@ -298,6 +312,11 @@ class PolicyService:
             result = self._domain(policy, "tools", request.tool_name)
             if not result.allowed:
                 return result
+            feature = DOCUMENT_TOOL_FEATURES.get(request.tool_name)
+            if feature is not None:
+                result = self._domain(policy, "documents", feature)
+                if not result.allowed:
+                    return result
         if operation == "model.invoke":
             entry = self.catalog.get(request.model_id or "")
             deployment = request.deployment
