@@ -1,8 +1,8 @@
 """Exercise the real release gate and deployment commands with offline tool stubs.
 
-Fixtures follow actions/attest v4.2.2, Trivy 0.71.2 SPDX 2.3, and gh 2.100.0's
-Sigstore verification-result schema. Stubbed cryptography is not live signing
-evidence: these tests establish local policy, command, coverage and ordering.
+The verified-result fixture preserves a real gh 2.100.0 result's structure, with
+only release/subject identifiers sanitized. Bundles and small SPDX inventories
+remain synthetic: these tests establish local policy, not cryptographic proof.
 """
 
 from __future__ import annotations
@@ -65,6 +65,111 @@ PREPARE = "Bind production image subjects"
 GENERATE = "Generate production SPDX SBOMs"
 VERIFY = "Verify production image attestations"
 
+# Result-only capture from api/provenance in deployment run 34420622261/attempts/1.
+# gh 2.100.0 verified the original signed bundle against digest-identical manifest
+# bytes; original CLI output SHA-256:
+# 7e08fb781284471a493dd8a86d031b22e87ac1ea3fd1c073408e9cdf84d91d92.
+# Its pinned sigstore-go v1.3.0 certificate.Summary anonymously embeds Extensions:
+# https://github.com/sigstore/sigstore-go/blob/v1.3.0/pkg/fulcio/certificate/summarize.go
+# Keep this independent of the parser and preserve the matcher-shaped
+# verifiedIdentity too: that is verification policy, not certificate claims.
+CAPTURED_PROVENANCE_RESULT = json.loads(r"""
+{
+  "mediaType": "application/vnd.dev.sigstore.verificationresult+json;version=0.1",
+  "signature": {
+    "certificate": {
+      "certificateIssuer": "CN=sigstore-intermediate,O=sigstore.dev",
+      "subjectAlternativeName": "https://github.com/ian-t-adams/AI4IA/.github/workflows/deploy.yml@refs/heads/main",
+      "issuer": "https://token.actions.githubusercontent.com",
+      "githubWorkflowTrigger": "push",
+      "githubWorkflowSHA": "1234567890abcdef1234567890abcdef12345678",
+      "githubWorkflowName": "deploy",
+      "githubWorkflowRepository": "ian-t-adams/AI4IA",
+      "githubWorkflowRef": "refs/heads/main",
+      "buildSignerURI": "https://github.com/ian-t-adams/AI4IA/.github/workflows/deploy.yml@refs/heads/main",
+      "buildSignerDigest": "1234567890abcdef1234567890abcdef12345678",
+      "runnerEnvironment": "github-hosted",
+      "sourceRepositoryURI": "https://github.com/ian-t-adams/AI4IA",
+      "sourceRepositoryDigest": "1234567890abcdef1234567890abcdef12345678",
+      "sourceRepositoryRef": "refs/heads/main",
+      "sourceRepositoryIdentifier": "1234",
+      "sourceRepositoryOwnerURI": "https://github.com/ian-t-adams",
+      "sourceRepositoryOwnerIdentifier": "5678",
+      "buildConfigURI": "https://github.com/ian-t-adams/AI4IA/.github/workflows/deploy.yml@refs/heads/main",
+      "buildConfigDigest": "1234567890abcdef1234567890abcdef12345678",
+      "buildTrigger": "push",
+      "runInvocationURI": "https://github.com/ian-t-adams/AI4IA/actions/runs/123456789/attempts/1",
+      "sourceRepositoryVisibilityAtSigning": "public"
+    }
+  },
+  "verifiedTimestamps": [
+    {
+      "type": "Tlog",
+      "uri": "https://rekor.sigstore.dev",
+      "timestamp": "2026-09-09T19:21:27-05:00"
+    }
+  ],
+  "verifiedIdentity": {
+    "subjectAlternativeName": {
+      "subjectAlternativeName": "https://github.com/ian-t-adams/AI4IA/.github/workflows/deploy.yml@refs/heads/main"
+    },
+    "issuer": {
+      "issuer": "",
+      "regexp": ".*"
+    },
+    "runnerEnvironment": "github-hosted"
+  },
+  "statement": {
+    "_type": "https://in-toto.io/Statement/v1",
+    "subject": [
+      {
+        "name": "crai4ia1234.azurecr.io/ai4ia/api-prod",
+        "digest": {
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    ],
+    "predicateType": "https://slsa.dev/provenance/v1",
+    "predicate": {
+      "buildDefinition": {
+        "buildType": "https://actions.github.io/buildtypes/workflow/v1",
+        "externalParameters": {
+          "workflow": {
+            "path": ".github/workflows/deploy.yml",
+            "ref": "refs/heads/main",
+            "repository": "https://github.com/ian-t-adams/AI4IA"
+          }
+        },
+        "internalParameters": {
+          "github": {
+            "event_name": "push",
+            "repository_id": "1234",
+            "repository_owner_id": "5678",
+            "runner_environment": "github-hosted"
+          }
+        },
+        "resolvedDependencies": [
+          {
+            "digest": {
+              "gitCommit": "1234567890abcdef1234567890abcdef12345678"
+            },
+            "uri": "git+https://github.com/ian-t-adams/AI4IA@refs/heads/main"
+          }
+        ]
+      },
+      "runDetails": {
+        "builder": {
+          "id": "https://github.com/ian-t-adams/AI4IA/.github/workflows/deploy.yml@refs/heads/main"
+        },
+        "metadata": {
+          "invocationId": "https://github.com/ian-t-adams/AI4IA/actions/runs/123456789/attempts/1"
+        }
+      }
+    }
+  }
+}
+""")
+
 
 def spdx(image: str) -> dict:
     return {
@@ -105,31 +210,12 @@ def spdx(image: str) -> dict:
 
 def verified(image: str, kind: str, document: dict) -> list[dict]:
     name, digest = image.split("@sha256:")
-    predicate = {
-        "buildDefinition": {
-            "buildType": "https://actions.github.io/buildtypes/workflow/v1",
-            "externalParameters": {"workflow": {
-                "ref": "refs/heads/main", "repository": f"https://github.com/{REPOSITORY}",
-                "path": ".github/workflows/deploy.yml",
-            }},
-            "internalParameters": {"github": {
-                "event_name": "push", "repository_id": "1234",
-                "repository_owner_id": "5678", "runner_environment": "github-hosted",
-            }},
-            "resolvedDependencies": [{
-                "uri": f"git+https://github.com/{REPOSITORY}@refs/heads/main",
-                "digest": {"gitCommit": COMMIT},
-            }],
-        },
-        "runDetails": {"builder": {"id": WORKFLOW_ID}, "metadata": {"invocationId": INVOCATION}},
-    } if kind == "provenance" else document
-    statement = {
-        "_type": "https://in-toto.io/Statement/v1",
-        "subject": [{"name": name, "digest": {"sha256": digest}}],
-        "predicateType": "https://slsa.dev/provenance/v1" if kind == "provenance"
-        else "https://spdx.dev/Document/v2.3",
-        "predicate": predicate,
-    }
+    result = copy.deepcopy(CAPTURED_PROVENANCE_RESULT)
+    statement = result["statement"]
+    statement["subject"] = [{"name": name, "digest": {"sha256": digest}}]
+    if kind == "sbom":
+        statement["predicateType"] = "https://spdx.dev/Document/v2.3"
+        statement["predicate"] = document
     bundle = {
         "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
         "verificationMaterial": {"certificate": {"rawBytes": "U1lOVEhFVElDLUNFUlQ="}},
@@ -141,30 +227,7 @@ def verified(image: str, kind: str, document: dict) -> list[dict]:
     }
     return [{
         "attestation": {"bundle": bundle},
-        "verificationResult": {
-            "mediaType": "application/vnd.dev.sigstore.verificationresult+json;version=0.1",
-            "signature": {"certificate": {
-                "subjectAlternativeName": WORKFLOW_ID,
-                "extensions": {
-                    "issuer": "https://token.actions.githubusercontent.com",
-                    "sourceRepositoryURI": f"https://github.com/{REPOSITORY}",
-                    "sourceRepositoryDigest": COMMIT,
-                    "sourceRepositoryRef": "refs/heads/main",
-                    "buildSignerURI": WORKFLOW_ID,
-                    "buildSignerDigest": COMMIT,
-                    "buildConfigURI": WORKFLOW_ID,
-                    "buildConfigDigest": COMMIT,
-                    "runnerEnvironment": "github-hosted",
-                    "runInvocationURI": INVOCATION,
-                    "buildTrigger": "push",
-                },
-            }},
-            "verifiedTimestamps": [{
-                "type": "TransparencyLog", "uri": "https://rekor.sigstore.dev",
-                "timestamp": "2026-09-09T23:16:00Z",
-            }],
-            "statement": statement,
-        },
+        "verificationResult": result,
     }]
 
 
@@ -377,11 +440,11 @@ class ReleaseGateBehaviorTests(unittest.TestCase):
         for field, wrong in changes.items():
             for value in (wrong, None):
                 def change(fixture, _documents):
-                    extensions = fixture["proxy"]["sbom"][0]["verificationResult"]["signature"]["certificate"]["extensions"]
+                    certificate = fixture["proxy"]["sbom"][0]["verificationResult"]["signature"]["certificate"]
                     if value is None:
-                        del extensions[field]
+                        del certificate[field]
                     else:
-                        extensions[field] = value
+                        certificate[field] = value
                 with self.subTest(field=field, missing=value is None):
                     self.assert_denied(change=change)
 
@@ -493,6 +556,73 @@ class ReleaseGateBehaviorTests(unittest.TestCase):
                 self.assertFalse([call for call in calls if call["tool"] == "azd"])
 
 
+class VerifiedResultSchemaTests(unittest.TestCase):
+    def validate(self, response, kind="provenance"):
+        provenance.validate_verification(
+            response, IMAGES["api"], kind, provenance.identity(ENVIRONMENT), spdx(IMAGES["api"]),
+        )
+
+    def test_captured_pinned_cli_result_passes_complete_policy(self):
+        response = [{"verificationResult": copy.deepcopy(CAPTURED_PROVENANCE_RESULT)}]
+        self.assertNotIn("extensions", response[0]["verificationResult"]["signature"]["certificate"])
+        self.validate(response)
+
+    def test_matching_nested_claims_cannot_replace_wrong_or_missing_flat_claims(self):
+        fields = (
+            "subjectAlternativeName", "issuer", "sourceRepositoryURI",
+            "sourceRepositoryDigest", "sourceRepositoryRef",
+            "buildSignerURI", "buildSignerDigest", "buildConfigURI", "buildConfigDigest",
+            "runnerEnvironment", "runInvocationURI", "buildTrigger",
+        )
+        for kind in ("provenance", "sbom"):
+            original = verified(IMAGES["api"], kind, spdx(IMAGES["api"]))
+            self.validate(original, kind)
+            for field in fields:
+                for missing in (False, True):
+                    response = copy.deepcopy(original)
+                    result = response[0]["verificationResult"]
+                    certificate = result["signature"]["certificate"]
+                    certificate["extensions"] = copy.deepcopy(certificate)
+                    # Even perfect copies outside the verified certificate cannot
+                    # fill or override its required flat claims.
+                    result["verifiedIdentity"]["extensions"] = copy.deepcopy(certificate["extensions"])
+                    if missing:
+                        del certificate[field]
+                    else:
+                        certificate[field] = certificate[field].upper()
+                        self.assertNotEqual(certificate[field], certificate["extensions"][field])
+                    with self.subTest(kind=kind, field=field, missing=missing):
+                        with self.assertRaisesRegex(
+                            provenance.ProvenanceError,
+                            "wrong verified workflow identity" if field == "subjectAlternativeName"
+                            else "verified certificate does not belong to this release",
+                        ):
+                            self.validate(response, kind)
+
+    def test_raw_bundle_and_matcher_cannot_replace_verified_evidence(self):
+        original = verified(IMAGES["api"], "provenance", spdx(IMAGES["api"]))
+        self.validate(original)
+        for field, reason in (
+            ("signature", "missing verified signature"),
+            ("certificate", "missing verified certificate"),
+            ("statement", "missing verified statement"),
+            ("verificationResult", "missing cryptographic verification result"),
+        ):
+            response = copy.deepcopy(original)
+            result = response[0]["verificationResult"]
+            response[0]["attestation"]["verificationResult"] = copy.deepcopy(result)
+            result["verifiedIdentity"]["certificate"] = copy.deepcopy(result["signature"]["certificate"])
+            if field == "certificate":
+                del result["signature"]["certificate"]
+            elif field == "verificationResult":
+                del response[0][field]
+            else:
+                del result[field]
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(provenance.ProvenanceError, reason):
+                    self.validate(response)
+
+
 class EvidenceInputAndBoundsTests(unittest.TestCase):
     def test_release_reference_parser_is_strict_without_changing_legacy_rollout_parsing(self):
         values = [f"{service}={reference}" for service, reference in IMAGES.items()]
@@ -516,6 +646,7 @@ class EvidenceInputAndBoundsTests(unittest.TestCase):
     def test_json_and_file_bounds_do_not_accept_truncated_or_ambiguous_evidence(self):
         self.assertEqual(provenance.strict_json(b'{"n":1}'), {"n": 1})
         for invalid in (b'{"n":1,"n":2}', b'{"n":NaN}', b'{"n":Infinity}', b'{"n":1e999}', b"\xff",
+                        b'{"verificationResult":{"signature":{"certificate":{"issuer":"x","issuer":"y"}}}}',
                         b"[" * 60 + b"0" + b"]" * 60, b'{"n":'):
             with self.subTest(invalid=invalid):
                 with self.assertRaises(provenance.ProvenanceError):
