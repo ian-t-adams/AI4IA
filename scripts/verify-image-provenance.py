@@ -314,8 +314,8 @@ def validate_verification(value: object, image: str, kind: str, expected: dict, 
     require(isinstance(certificate, dict), "missing verified certificate")
     require(certificate.get("subjectAlternativeName") == expected["workflowIdentity"],
             "wrong verified workflow identity")
-    extensions = certificate.get("extensions")
-    require(isinstance(extensions, dict), "missing verified certificate extensions")
+    # gh 2.100.0's sigstore-go v1.3.0 Summary embeds Extensions, so its verified
+    # claims serialize directly on certificate, not in a nested extensions map.
     claims = {
         "issuer": ISSUER,
         "sourceRepositoryURI": f"https://github.com/{expected['repository']}",
@@ -329,7 +329,7 @@ def validate_verification(value: object, image: str, kind: str, expected: dict, 
         "runInvocationURI": expected["runInvocation"],
         "buildTrigger": expected["event"],
     }
-    require(all(extensions.get(key) == value for key, value in claims.items()),
+    require(all(certificate.get(key) == value for key, value in claims.items()),
             "verified certificate does not belong to this release")
     timestamps = result.get("verifiedTimestamps")
     require(isinstance(timestamps, list) and 1 <= len(timestamps) <= 16,

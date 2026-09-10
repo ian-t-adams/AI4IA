@@ -190,9 +190,16 @@ The fail-closed policy requires all of the following:
 | SLSA content | This workflow, main ref, source commit and run invocation |
 
 Identity comes from the verified certificate extensions, not merely from
-user-controllable SLSA predicate fields. Empty arrays, absent services, missing or
-contradictory claims, unsupported schemas, CLI errors and timeouts do not produce
-an authorization. The per-command deadline is 120 seconds; SPDX files are bounded
+user-controllable SLSA predicate fields. In pinned gh 2.100.0 (sigstore-go 1.3.0),
+those extensions serialize as **flat fields** of
+`verificationResult.signature.certificate`, not a nested `extensions` object.
+`verifiedIdentity` describes the supplied matchers, not the observed certificate
+claims. Missing claims must never be recovered from that policy object, a nested
+copy, or the raw attestation bundle.
+
+Empty arrays, absent services, missing or contradictory claims, unsupported
+schemas, CLI errors and timeouts do not produce an authorization. The per-command
+deadline is 120 seconds; SPDX files are bounded
 to 16 MiB, bundles to 24 MiB, CLI output to 64 MiB while it is read, and the final
 manifest to 64 KiB. JSON rejects duplicate keys, non-finite numbers, depth over 48
 and more than one million nodes.
