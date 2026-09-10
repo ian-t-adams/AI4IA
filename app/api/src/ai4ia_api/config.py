@@ -249,6 +249,9 @@ class Settings(BaseSettings):
     # admin sets a per-user limit to govern a specific user. Set false to bypass
     # numeric soft checks; an explicit disabled user remains blocked.
     entitlements_enabled: bool = True
+    group_policy_enabled: bool = False
+    group_policy_json: str | None = None
+    asset_publishing_enabled: bool = False
     # Source-only hard admission. Durable cutover/bootstrap is not implemented:
     # only explicitly seeded local/test coordination may be used.
     hard_quota_enabled: bool = False
@@ -1120,6 +1123,22 @@ class Settings(BaseSettings):
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
         self._validate_data_residency()
+        if self.group_policy_enabled or self.asset_publishing_enabled or self.group_policy_json:
+            from .policy.models import parse_policy_config
+
+            policy = parse_policy_config(self.group_policy_json or "")
+            if self.group_policy_enabled and self.env != Environment.local:
+                if self.auth_provider != AuthProviderKind.entra:
+                    raise RuntimeError("AI4IA_GROUP_POLICY_ENABLED requires Entra outside local.")
+            if self.asset_publishing_enabled:
+                if not self.group_policy_enabled or self.auth_provider != AuthProviderKind.entra:
+                    raise RuntimeError("AI4IA_ASSET_PUBLISHING_ENABLED requires group policy and Entra.")
+                if self.env != Environment.local and self.session_store != SessionStoreKind.cosmos:
+                    raise RuntimeError("AI4IA_ASSET_PUBLISHING_ENABLED requires Cosmos outside local.")
+            if self.group_policy_enabled and policy.spend is not None and (
+                not self.entitlements_enabled or not self.usage_metering_enabled
+            ):
+                raise RuntimeError("Group spend policy requires soft entitlements and metering.")
         if self.auth_provider == AuthProviderKind.dev and not self.dev_auth_permitted:
             raise RuntimeError(
                 "Dev auth is disabled outside local. Set AI4IA_AUTH_PROVIDER=entra "

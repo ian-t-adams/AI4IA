@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
 from ..agents.user_agents import NAME_RE  # reuse the @mention/Cosmos-id grammar
+from .record_types import WORKFLOW_DEFINITION_KIND
+from ..publishing.refs import AssetVersionRef
 
 MAX_WORKFLOWS_PER_USER = 50
 MAX_NAME_LEN = 32
@@ -133,6 +135,10 @@ class Workflow(BaseModel):
     enabled: bool = True
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
+    revision: int = Field(default=0, ge=0, strict=True)
+    incarnation: str | None = None
+    recordKind: str = WORKFLOW_DEFINITION_KIND
+    sourceVersion: AssetVersionRef | None = None
 
 
 class WorkflowCreate(BaseModel):
@@ -153,3 +159,4 @@ class WorkflowUpdate(BaseModel):
     description: str = Field(default="", max_length=MAX_DESCRIPTION_LEN)
     steps: list[WorkflowStep] = Field(default_factory=list)
     enabled: bool = True
+    expectedRevision: int | None = Field(default=None, ge=0, strict=True)

@@ -46,6 +46,7 @@ from ..library.access import (
     list_accessible_documents,
     normalize_principal,
     require_owner,
+    valid_grantee_email,
 )
 from ..library.chunking import chunk_markdown
 from ..library.compute_factory import DocumentComputeService
@@ -1255,10 +1256,7 @@ def _valid_email(value: str) -> bool:
     local part and a dotted domain. Intentionally permissive — the IdP is the real
     authority on who an email resolves to; this only rejects obvious junk so the
     ACL stays clean and a typo can't poison the grant list."""
-    if not value or " " in value or value.count("@") != 1:
-        return False
-    local, _, domain = value.partition("@")
-    return bool(local) and "." in domain and not domain.startswith(".") and not domain.endswith(".")
+    return valid_grantee_email(value)
 
 
 class ShareState(BaseModel):

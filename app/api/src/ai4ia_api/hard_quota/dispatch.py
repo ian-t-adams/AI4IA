@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import httpx
 
@@ -21,6 +21,9 @@ from .models import (
 )
 from .service import ReservationService
 from .store import ReservationStore
+
+if TYPE_CHECKING:
+    from ..policy.service import PolicyService
 
 @dataclass
 class AdmissionContext:
@@ -86,12 +89,14 @@ class AdmissionController:
         self, *, entitlements: EntitlementService, catalog: ModelCatalog,
         pricing: PricingBook, store: ReservationStore | None = None, enabled: bool = False,
         attempts: AttemptEnvelope | None = None,
+        policy: PolicyService | None = None,
     ) -> None:
         self.enabled = enabled
         self.entitlements = entitlements
         self.catalog = catalog
         self.pricing = pricing
         self.attempts = attempts
+        self.policy = policy
         self.reservations = ReservationService(store) if store is not None else None
 
     async def claim(
@@ -140,8 +145,16 @@ async def admitted_dispatch(
     surface: Surface, payload: dict[str, Any], *, deployment: str | None = None,
     target: str | None = None,
     required: bool = False, observe: Callable[[AdmissionEvidence], None] | None = None,
+    policy_required: bool = False,
 ) -> AsyncIterator[DispatchLease]:
+    from ..policy.dispatch import authorize_dispatch
+
     context = _current.get()
+    await authorize_dispatch(
+        surface, deployment=deployment, required=policy_required,
+        expected_owner=context.owner if context is not None else None,
+        service=context.controller.policy if context is not None else None,
+    )
     if context is None:
         if required:
             raise QuotaError("Hard quota dispatch has no authenticated owner.")

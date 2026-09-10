@@ -25,6 +25,8 @@ from typing import Any, Mapping
 from .approvals import ApprovalPolicy, ApprovalSink
 from .consent import ConsentChecker
 from .tools import ToolRegistry, ToolRisk, ToolSpec
+from ..policy.context import canonical_tool_name, require_policy, tool_allowed, tool_policy_scope
+from ..policy.models import PolicyRequest
 
 # A handler maps validated arguments + context to a JSON-serializable result. It
 # may be sync or async; :meth:`ToolExecutor.execute` awaits awaitables.
@@ -285,6 +287,7 @@ class ToolExecutor:
         registry: ToolRegistry,
         ctx: ToolContext,
         consented_names: Iterable[str] = (),
+        apply_policy: bool = True,
     ) -> list[dict[str, Any]]:
         """OpenAI ``tools`` array for ``names`` that are executable AND currently
         authorized for ``ctx`` — so the model never sees a tool it cannot use
@@ -292,6 +295,8 @@ class ToolExecutor:
         out: list[dict[str, Any]] = []
         consented = set(consented_names)
         for name in names:
+            if apply_policy and not tool_allowed(canonical_tool_name(name, ctx.tool_aliases)):
+                continue
             definition = self._defs.get(name)
             if definition is None:
                 continue
@@ -328,9 +333,12 @@ class ToolExecutor:
         errors = validate_args(definition.parameters, args)
         if errors:
             raise ToolValidationError("; ".join(errors))
-        result = definition.handler(args, ctx)
-        if inspect.isawaitable(result):
-            result = await result
+        canonical = canonical_tool_name(name, ctx.tool_aliases)
+        await require_policy(PolicyRequest("tool.invoke", tool_name=canonical))
+        with tool_policy_scope(canonical):
+            result = definition.handler(args, ctx)
+            if inspect.isawaitable(result):
+                result = await result
         return result
 
 

@@ -21,7 +21,8 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer
+from ..publishing.refs import AssetVersionRef
 
 _PACKAGED = Path(__file__).resolve().parent.parent / "data" / "agents.json"
 
@@ -39,6 +40,7 @@ class AgentSpec(BaseModel):
     # (supervisor / agent-as-tool pattern). Empty for a leaf agent.
     links: list[str] = []
     enabled: bool = True
+    sourceVersion: AssetVersionRef | None = None
 
     def summary(self) -> AgentSummary:
         return AgentSummary(
@@ -46,6 +48,7 @@ class AgentSpec(BaseModel):
             displayName=self.displayName,
             description=self.description,
             enabled=self.enabled,
+            sourceVersion=self.sourceVersion,
         )
 
 
@@ -56,6 +59,14 @@ class AgentSummary(BaseModel):
     displayName: str
     description: str
     enabled: bool = True
+    sourceVersion: AssetVersionRef | None = None
+
+    @model_serializer(mode="wrap")
+    def public_projection(self, handler: SerializerFunctionWrapHandler):
+        value = handler(self)
+        if self.sourceVersion is None:
+            value.pop("sourceVersion", None)
+        return value
 
 
 class AgentCatalog(BaseModel):
