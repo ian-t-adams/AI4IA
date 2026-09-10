@@ -244,10 +244,11 @@ digests and explicit narrowing provenance join the bounded execution receipt.
 Every consumer rechecks current owner, access, source version, model/tool/resource
 contracts and ordinary execution gates. Private MCP secrets, private dependencies
 and curated private prompts are not published as a side effect. Model-only
-monitor/evaluation actors are separate operator-bound profiles using the same
-policy core plus real reduction-only one-shot request guards, not alternative
-authentication systems. There is no live directory-freshness claim or implicit
-unattended grant.
+monitor/evaluation actors and the separate realtime-setup actor use the same
+policy core with real reduction-only one-shot or setup-only guards, not
+alternative authentication systems. Configured actors remain restricted while
+policy evaluation is paused. There is no live directory-freshness claim or
+implicit unattended grant.
 
 Built-ins, synthetic capabilities, BYO MCP, and official MCP share execution-time
 governance. Tool aliases retain plane/server identity so a remote name collision

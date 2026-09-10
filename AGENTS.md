@@ -1075,9 +1075,7 @@ claim, default cutover or legacy removal. Follow the approved
 [activation/rollback procedure](docs/runbooks/feature-enablement.md#staged-ga-realtime).
 Issue #413 stays open for its remaining live/model/TTS acceptance criteria.
 
-## Auth model and `apiFetch` contract
-
-### Group policy and publication source contract
+## Group policy and publication source contract
 
 - `policy` is the shared default-off application restriction layer; only
   post-verification exact Entra role values/group IDs may match operator JSON.
@@ -1100,9 +1098,13 @@ Issue #413 stays open for its remaining live/model/TTS acceptance criteria.
   skill profile is explicit, never an error fallback or removal of required skills.
 - Token expiry stops the next protected dispatch; it does not stop accepted-work
   receipts, accounting, cancellation or cleanup. Unattended work cannot construct
-  an authenticated user from queued claims. Monitor and authored-evaluation actor
-  markers are distinct, default absent, and must use their real bounded one-shot
-  request guards; capability reads never grant execution.
+  an authenticated user from queued claims. Monitor, authored-evaluation and
+  realtime-setup actor markers are distinct and default absent. Their real
+  bounded guards enforce one-shot requests or setup-only frames; capability reads
+  never grant execution. A configured actor stays restricted while policy
+  evaluation is paused.
+
+## Auth model and `apiFetch` contract
 
 - Production auth is Entra bearer-token validation in the API (`aud`, `iss`,
   tenant, signature, expiry). Internal user ids are derived at the API boundary and

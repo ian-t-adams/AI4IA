@@ -135,3 +135,34 @@ async def test_conditional_record_store_rejects_cross_owner_write():
             "owner", {"source": before},
             {"source": {"id": "source", "userId": "other"}},
         )
+
+
+def test_published_source_evidence_fits_escaped_receipt_budget():
+    import json
+
+    from ai4ia_api.publishing.refs import AssetVersionRef, PublicationEvidence
+    from ai4ia_api.receipts import (
+        MAX_RECEIPT_BYTES, ReceiptRuntime, ReceiptToolCall, build_receipt, json_payload,
+    )
+
+    source = PublicationEvidence(
+        source=AssetVersionRef(
+            kind="workflow", ownerId="owner", assetId="a" * 32, version=20, digest="b" * 64,
+        ),
+        approvedProfileDigest="c" * 64, effectiveSubsetDigest="d" * 64,
+        approvalDigest="e" * 64, mode="workflow", scope="step:5",
+        narrowing=("empty_document_scope",), exclusions=("skills_excluded_by_author",),
+    )
+    receipt = build_receipt(
+        runtime=ReceiptRuntime(publication=source),
+        prompt_messages=[{"role": "user", "content": "\u6f22" * 10000}] * 40,
+        calls=[ReceiptToolCall(
+            tool="calculator", outcome="result",
+            arguments=json_payload({"input": "\u6f22" * 10000}),
+            result=json_payload({"output": "\u6f22" * 10000}),
+        )] * 16,
+    )
+    encoded = json.dumps(receipt.model_dump(mode="json"), ensure_ascii=True).encode("ascii")
+    assert len(encoded) <= MAX_RECEIPT_BYTES
+    assert receipt.runtime.publication == source
+    assert receipt.truncated
