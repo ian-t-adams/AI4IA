@@ -9,14 +9,15 @@ export const voiceProviderCatalog = {
       "id": "azure_openai",
       "displayName": "Azure OpenAI Realtime",
       "displayLabel": "Azure OpenAI",
-      "description": "Deployment-catalog realtime voice provider backed by infra/models.json realtime deployments.",
+      "description": "Runtime-enabled realtime models from infra/models.json, filtered by the server-selected protocol.",
       "transport": "websocket",
       "selectionMode": "deployment_catalog",
       "endpointPath": "/openai/realtime",
       "modelCatalogRef": {
         "sourceJson": "infra/models.json",
         "filter": {
-          "category": "realtime"
+          "category": "realtime",
+          "runtimeEnabled": true
         },
         "defaultModelId": "gpt-realtime"
       },

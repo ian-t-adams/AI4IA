@@ -311,6 +311,17 @@ preference is retained for preview rollback; Speech temperature is unchanged.
 There is no automatic retry, protocol downgrade or replay after a failed
 handshake, provider error or possibly accepted frame.
 
+Catalog `runtimeEnabled=false` retains a desired deployment for inventory and
+quota reconciliation but removes it from new runtime selection and serving.
+`requiredRealtimeProtocol=ga` restricts a model to the server-selected GA surface;
+it never enables the GA flag or changes the selector. Both fields are enforced by
+the API, generated gateway routes and voice model picker. Retained Realtime 2 is
+operator-disabled; Realtime 1.5 is GA-only, not a new default or Speech managed
+model. Unavailable saved choices require an explicit replacement and never rewrite
+stored conversations. See the
+[two-phase model/TTS migration and speech canary](runbooks/feature-enablement.md#ga-voice-model-migration)
+for separate model/capacity, cutover, rollback and exact-resource cleanup approval.
+
 Contract sources are the
 [Microsoft GA migration guide](https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-preview-api-migration-guide),
 the [GA WebSocket examples](https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets),

@@ -105,6 +105,53 @@ def test_astra_uses_published_azure_short_context_estimate():
     assert estimate.micro_usd == 60_000_000
 
 
+def test_realtime_modality_reference_is_not_a_flat_azure_price():
+    root = Path(__file__).resolve().parents[3]
+    raw = json.loads(
+        (root / "app/api/src/ai4ia_api/data/pricing.json").read_text(encoding="utf-8")
+    )
+    source = json.loads((root / "infra/models.json").read_text(encoding="utf-8"))
+    references = raw["referenceModalityModels"]
+    # Every GA-only realtime addition needs an explicitly sourced schedule,
+    # even though the current mixed-modality ledger must remain cost-unknown.
+    required = [m for m in source["catalog"] if m.get("requiredRealtimeProtocol") == "ga"]
+    assert required
+    for model in required:
+        reference = references[model["name"]]
+        assert {d["version"] for d in model["deployments"]} == {reference["catalogVersion"]}
+        assert reference["provider"] == "OpenAI"
+        assert reference["currency"] == "USD"
+        assert reference["basis"] == "per_1m_modality_tokens"
+        assert reference["azureBillingVerified"] is False
+        assert reference["runtimeEstimate"] == "unknown"
+        assert model["name"] not in raw["models"]
+
+    reference = references["gpt-realtime-1.5"]
+    assert reference["sourceUrl"] == "https://developers.openai.com/api/docs/models/gpt-realtime-1.5"
+    assert reference["observedAt"] == "2026-09-10"
+    assert reference["text"] == {"inputPer1M": 4.0, "cachedInputPer1M": 0.4, "outputPer1M": 16.0}
+    assert reference["audio"] == {"inputPer1M": 32.0, "cachedInputPer1M": 0.4, "outputPer1M": 64.0}
+    assert reference["image"] == {"inputPer1M": 5.0, "cachedInputPer1M": 0.5}
+
+    # A known text-only fixture uses the real shared estimator. The same totals
+    # from an unspecified realtime modality mix may not inherit those rates.
+    text = reference["text"]
+    fixture = PricingBook(
+        {"text-only-fixture": PriceRate(text["inputPer1M"], text["outputPer1M"])},
+        currency="USD", version=raw["version"],
+    )
+    known = fixture.estimate(
+        "text-only-fixture", prompt_tokens=1_000_000, completion_tokens=1_000_000,
+    )
+    assert known.known and known.micro_usd == 20_000_000
+    for prompt, completion in ((1_000_000, 1_000_000), (None, None)):
+        unknown = load_pricing().estimate(
+            "gpt-realtime-1.5", prompt_tokens=prompt, completion_tokens=completion,
+        )
+        assert not unknown.known and unknown.micro_usd is None
+        assert unknown.input_per_1m is None and unknown.output_per_1m is None
+
+
 def test_quality_size_basis_is_supported_without_inventing_packaged_rates():
     book = PricingBook(
         {},

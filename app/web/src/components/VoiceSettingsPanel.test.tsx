@@ -73,6 +73,22 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
 }
 
 describe("VoiceSettingsPanel", () => {
+  it("keeps an unavailable saved model visible and requires an explicit replacement", async () => {
+    const { user, rerender, onModelChange } = setup({ explicitModel: "gpt-realtime-2" });
+    const model = screen.getByRole("combobox", { name: "Realtime model" });
+    expect(model).toHaveValue("gpt-realtime-2");
+    expect(model).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose an available model or Default");
+    expect(onModelChange).not.toHaveBeenCalled();
+
+    await user.selectOptions(model, "gpt-realtime-mini");
+    expect(onModelChange).toHaveBeenCalledWith("gpt-realtime-mini");
+    rerender({ explicitModel: "gpt-realtime-mini" });
+    expect(model).toHaveValue("gpt-realtime-mini");
+    expect(model).not.toHaveAttribute("aria-invalid");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("discloses GA temperature limits without changing saved preview or Speech settings", async () => {
     const { user, rerender, onSettingsChange } = setup({
       settings: { ...DEFAULT_VOICE_SETTINGS, temperature: 0.8 },

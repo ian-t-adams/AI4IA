@@ -172,26 +172,42 @@ class RealtimeResolutionError(Exception):
 
 
 def resolve_realtime_deployment(
-    catalog: ModelCatalog, model_id: str | None, region: str | None
+    catalog: ModelCatalog, model_id: str | None, region: str | None,
+    *, protocol: RealtimeProtocol = RealtimeProtocol.preview,
 ) -> tuple[str, DeploymentOption]:
     """Resolve ``(model_id, deployment)`` for the realtime relay.
 
-    Defaults to the first ``realtime`` catalog model when none is requested, and
-    rejects non-realtime / unknown / unavailable models.
+    Defaults to the first compatible ``realtime`` model when none is requested.
+    An explicit unavailable pick is never silently replaced.
     """
     if not model_id:
-        first = next((m for m in catalog.models if m.category in REALTIME_CATEGORIES), None)
+        first = next((
+            m for m in catalog.models
+            if m.category in REALTIME_CATEGORIES
+            and m.supports_realtime_protocol(protocol)
+            and catalog.available(m)
+        ), None)
         if first is None:
             raise RealtimeResolutionError("No realtime models are available.")
         model_id = first.id
     entry = catalog.get(model_id)
     if entry is None:
-        raise RealtimeResolutionError(f"Unknown model: {model_id}")
+        raise RealtimeResolutionError(
+            "Unknown or runtime-disabled realtime model. Choose an available model in Voice settings."
+        )
     if entry.category not in REALTIME_CATEGORIES:
-        raise RealtimeResolutionError(f"Model '{model_id}' is not a realtime model.")
+        raise RealtimeResolutionError(
+            "The selected model is not a realtime model. Choose one in Voice settings."
+        )
+    if not entry.supports_realtime_protocol(protocol):
+        raise RealtimeResolutionError(
+            "This realtime model requires the GA protocol. Choose an available model in Voice settings."
+        )
     deployment = catalog.resolve_deployment(model_id, region=region)
     if deployment is None:
-        raise RealtimeResolutionError(f"Unknown or unavailable model: {model_id}")
+        raise RealtimeResolutionError(
+            "Realtime model or region is unavailable. Choose an available model in Voice settings."
+        )
     return model_id, deployment
 
 
@@ -239,12 +255,13 @@ def _resolve_live_voice_provider(
     if requested == AZURE_OPENAI_PROVIDER_ID:
         if not isinstance(provider, AzureOpenAIVoiceProvider):
             raise LiveVoiceProviderError("Azure OpenAI voice catalog entry is invalid.")
+        protocol = settings.realtime_protocol
         model_id, deployment = resolve_realtime_deployment(
             state.catalog,
             model,
             region,
+            protocol=protocol,
         )
-        protocol = settings.realtime_protocol
         if protocol == RealtimeProtocol.ga:
             try:
                 settings.validate_realtime_ga()
@@ -1637,11 +1654,12 @@ async def _deny(
     code: int,
     *,
     security_reason: str | None = None,
+    close_reason: str = "",
 ) -> None:
     if security_reason:
         emit_security_block("realtime_auth", security_reason, "voice_live")
     try:
-        await client_ws.close(code=code)
+        await client_ws.close(code=code, reason=close_reason)
     except (RuntimeError, WebSocketDisconnect):
         # Already closed/disconnected; nothing to do.
         pass
@@ -1888,7 +1906,13 @@ async def voice_live(websocket: WebSocket) -> None:
             model=websocket.query_params.get("model"),
             region=websocket.query_params.get("region"),
         )
-    except (LiveVoiceProviderError, RealtimeResolutionError):
+    except RealtimeResolutionError as exc:
+        await _deny(
+            websocket, WS_POLICY_VIOLATION, security_reason="provider_unavailable",
+            close_reason=str(exc),
+        )
+        return
+    except LiveVoiceProviderError:
         await _deny(
             websocket, WS_POLICY_VIOLATION, security_reason="provider_unavailable"
         )

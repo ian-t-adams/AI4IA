@@ -853,11 +853,8 @@ class Settings(BaseSettings):
                 f"AI4IA_DATA_RESIDENCY={self.data_residency!r} is not a valid policy. "
                 f"Use one of: {', '.join(sorted(RESIDENCY_POLICIES))}."
             )
-        if policy == "global":
-            return
-
         catalog = load_catalog(self.model_catalog_path, policy, self.claude_enabled)
-        if not catalog.conversational_models():
+        if policy != "global" and not catalog.conversational_models():
             offered = sorted(
                 {
                     option.residency
@@ -913,6 +910,33 @@ class Settings(BaseSettings):
                     "document retrieval (library RAG)",
                 )
             )
+
+        disabled = {entry.id for entry in catalog.models if not entry.runtimeEnabled}
+        disabled_required = [
+            f"{feature} needs {model_id!r} ({env_var})"
+            for model_id, env_var, feature in required if model_id in disabled
+        ]
+        if disabled_required:
+            raise RuntimeError(
+                "Enabled features require runtime-disabled catalog models: "
+                + "; ".join(disabled_required)
+                + ". Re-enable the reviewed model or disable the dependent feature."
+            )
+        if (
+            self.realtime_enabled and "azure_openai" in self.voice_provider_allowlist_list
+            and not any(
+                entry.category == "realtime"
+                and entry.supports_realtime_protocol(self.realtime_protocol)
+                and catalog.available(entry)
+                for entry in catalog.models
+            )
+        ):
+            raise RuntimeError(
+                "Voice Live requires a runtime-enabled realtime model compatible with "
+                "the server-selected protocol and data-residency policy."
+            )
+        if policy == "global":
+            return
 
         unreachable = [
             (model_id, env_var, feature)

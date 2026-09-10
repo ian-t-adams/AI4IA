@@ -36,6 +36,12 @@ def main() -> int:
 
     for model in data["catalog"]:
         name = model["name"]
+        if type(model.get("runtimeEnabled", True)) is not bool:
+            errors.append(f"{name}: runtimeEnabled must be a Boolean")
+        if model.get("requiredRealtimeProtocol") not in (None, "ga") or (
+            "requiredRealtimeProtocol" in model and model["category"] != "realtime"
+        ):
+            errors.append(f"{name}: requiredRealtimeProtocol is only valid as 'ga' on realtime models")
         api = model.get("api", "chat")
         if api not in {
             "chat",
