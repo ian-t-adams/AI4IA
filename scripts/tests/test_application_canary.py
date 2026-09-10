@@ -33,7 +33,7 @@ from scripts.canaries.contracts import (
 )
 from scripts.canaries.github import artifact_name, locate
 from scripts.canaries.identity import acquire, validate_api_token
-from scripts.canaries.monitor import chat, realtime
+from scripts.canaries.monitor import Budget, chat, realtime
 from scripts.canaries.state import Counter, State, admit, finish
 from scripts.canaries.transport import PublicResolver, Response, Transport
 from scripts.tests import test_gating_workflows as gating
@@ -389,6 +389,11 @@ class StateTests(unittest.TestCase):
 
 
 class MonitorTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        clock = patch("scripts.canaries.monitor.utc_now", return_value=NOW)
+        clock.start()
+        self.addCleanup(clock.stop)
+
     async def test_valid_chat_uses_real_request_shapes_once_and_owned_cleanup(self):
         fake = FakeApp()
         report = Report(RUN, stamp(NOW))
@@ -528,6 +533,60 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(report.cleanup_safe)
         self.assertEqual(report.stages["cleanup"].code, "cleanup_pending")
         self.assertFalse(any(call[0] == "DELETE" for call in fake.calls))
+
+    async def test_cancelled_persistence_cannot_start_cleanup_after_run_or_approval_deadline(self):
+        for boundary in ("run", "approval", "allowed"):
+            clock = [0.0]
+            budget = Budget(
+                105 if boundary != "approval" else 999,
+                NOW + timedelta(seconds=121), lambda: clock[0],
+                lambda: NOW + timedelta(seconds=clock[0]),
+            )
+
+            class DeadlineApp(FakeApp):
+                async def request(self, method, url, **kwargs):
+                    if url.endswith("/messages"):
+                        clock[0] = 104 if boundary == "allowed" else 106 if boundary == "run" else 122
+                        if boundary != "allowed":
+                            self.calls.append((method, url, kwargs))
+                            raise asyncio.CancelledError()
+                    return await super().request(method, url, **kwargs)
+
+            fake = DeadlineApp()
+            report = Report(RUN, stamp(NOW))
+            if boundary == "allowed":
+                await chat(fake, CONFIG, "secret", SOURCE, report, pricing=BOOK, budget=budget)
+                self.assertTrue(report.cleanup_safe)
+                self.assertTrue(any(call[0] == "DELETE" for call in fake.calls))
+            else:
+                with self.assertRaises(asyncio.CancelledError):
+                    await chat(fake, CONFIG, "secret", SOURCE, report, pricing=BOOK, budget=budget)
+                self.assertFalse(report.cleanup_safe)
+                self.assertFalse(any(call[0] == "DELETE" or "reconcile" in call[1] for call in fake.calls))
+                self.assertEqual(report.stages["cleanup"].attempts, 0)
+                self.assertEqual(report.stages["cleanup"].code, "deadline" if boundary == "run" else "approval_expired")
+
+    async def test_expiry_between_cleanup_steps_refuses_the_next_mutation(self):
+        clock = [0.0]
+        budget = Budget(
+            999, NOW + timedelta(seconds=121), lambda: clock[0],
+            lambda: NOW + timedelta(seconds=clock[0]),
+        )
+
+        class ExpiringCleanup(FakeApp):
+            async def request(self, method, url, **kwargs):
+                result = await super().request(method, url, **kwargs)
+                if method == "DELETE":
+                    clock[0] = 122
+                return result
+
+        fake = ExpiringCleanup()
+        report = Report(RUN, stamp(NOW))
+        await chat(fake, CONFIG, "secret", SOURCE, report, pricing=BOOK, budget=budget)
+        self.assertTrue(any(call[0] == "DELETE" for call in fake.calls))
+        self.assertFalse(any("reconcile" in call[1] for call in fake.calls))
+        self.assertEqual(report.stages["cleanup"].attempts, 1)
+        self.assertFalse(report.cleanup_safe)
 
     async def test_ga_requires_both_server_selection_and_actual_handshake_protocol(self):
         for protocol, enabled, expected_sockets in (("preview", True, 0), ("ga", False, 0), ("ga", True, 1)):
@@ -868,6 +927,11 @@ class WorkflowAndCliTests(unittest.TestCase):
 
 
 class ObserveCliTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        clock = patch("scripts.canaries.monitor.utc_now", return_value=NOW)
+        clock.start()
+        self.addCleanup(clock.stop)
+
     async def test_actual_observe_entrypoint_uses_validated_handoff_and_cannot_reset_a_lost_one(self):
         for valid in (True, False):
             with self.subTest(valid=valid), tempfile.TemporaryDirectory() as temporary:
@@ -928,6 +992,41 @@ class ObserveCliTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state.blocked)
             self.assertIsNone(state.chat.failures)
             acquire_token.assert_not_awaited()
+
+    async def test_malformed_predecessor_metadata_is_never_promoted_to_trusted_state(self):
+        for field, value in (("artifact_id", None), ("created_at", "malformed"), ("run", None)):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                before = previous_state()
+                metadata = run_metadata(before.report.run)
+                predecessor = {
+                    "run": asdict(before.report.run), "artifact_id": 99,
+                    "created_at": metadata["created_at"], "updated_at": metadata["updated_at"],
+                }
+                if value is None:
+                    predecessor.pop(field)
+                else:
+                    predecessor[field] = value
+                cli.write_json(directory / "handoff.json", {
+                    "run": asdict(RUN), "prepared_at": stamp(NOW),
+                    "scope_digest": CONFIG.scope_digest,
+                    "previous": before.document(), "predecessor": predecessor,
+                })
+                acquire_token = AsyncMock()
+                with (
+                    patch.object(cli, "utc_now", return_value=NOW),
+                    patch("scripts.canaries.identity.acquire", acquire_token),
+                ):
+                    self.assertEqual(await cli.observe_command(directory, environment()), 0)
+                acquire_token.assert_not_awaited()
+                state = State.parse(cli.read_json(directory / "state.json"))
+                self.assertTrue(state.blocked)
+                self.assertFalse(state.report.cleanup_safe)
+                self.assertIsNone(state.previous_run_id)
+                with self.assertRaises(CanaryError):
+                    admit(CONFIG, replace(RUN, number=3, run_id=300), state, NOW, bootstrap=False)
+                with self.assertRaises(CanaryError):
+                    admit(CONFIG, replace(RUN, number=3, run_id=300), state, NOW, bootstrap=True)
 
 
 if __name__ == "__main__":

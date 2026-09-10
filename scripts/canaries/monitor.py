@@ -6,6 +6,7 @@ import asyncio
 import math
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -22,11 +23,32 @@ from scripts._canary_contract import (
 from .configuration import Configuration
 from .contracts import (
     CanaryError, IDENTIFIER, MAX_OUTPUT_TOKENS, Report, digest,
-    encoded, integer, obj, strict_json, utc_now,
+    encoded, integer, obj, strict_json, timestamp, utc_now,
 )
 from .transport import Response, Transport
 
 _SESSION_ID = re.compile(r"[0-9a-f]{32}\Z")
+
+
+@dataclass(frozen=True)
+class Budget:
+    ends_at: float
+    expires_at: datetime
+    clock: Callable[[], float]
+    wall_clock: Callable[[], datetime]
+
+    @classmethod
+    def start(cls, config: Configuration) -> Budget:
+        return cls(time.monotonic() + 105, timestamp(config.expires_at), time.monotonic, utc_now)
+
+    def timeout(self, ceiling: float) -> float:
+        approval_remaining = (self.expires_at - self.wall_clock()).total_seconds()
+        if approval_remaining <= 0:
+            raise CanaryError("approval_expired")
+        remaining = min(self.ends_at - self.clock(), approval_remaining)
+        if remaining <= 0:
+            raise CanaryError("deadline")
+        return min(ceiling, remaining)
 
 
 @dataclass(frozen=True)
@@ -245,31 +267,35 @@ def _verified_cleanup(status: dict[str, Any], session_id: str) -> bool:
 
 async def _cleanup(
     transport: Transport, config: Configuration, token: str,
-    session_id: str, report: Report, *, chat_settled: bool,
+    session_id: str, report: Report, *, chat_settled: bool, budget: Budget,
 ) -> None:
     if not chat_settled:
         report.mark("cleanup", "unknown", "cleanup_pending")
         return
     started = time.monotonic()
-    try:
-        deleted = await transport.request(
-            "DELETE", f"{config.web_origin}/api/sessions/{session_id}", token=token,
-            timeout=8, limit=8192,
+    calls = 0
+
+    async def send(method: str, suffix: str, ceiling: float) -> Response:
+        nonlocal calls
+        timeout = budget.timeout(ceiling)
+        calls += 1
+        return await transport.request(
+            method, f"{config.web_origin}/api/sessions/{session_id}{suffix}",
+            token=token, timeout=timeout, limit=8192,
         )
+
+    try:
+        deleted = await send("DELETE", "", 8)
         if deleted.status == 204 and deleted.body == b"":
-            readback = await transport.request(
-                "GET", f"{config.web_origin}/api/sessions/{session_id}", token=token,
-                timeout=5, limit=8192,
-            )
+            readback = await send("GET", "", 5)
             # A completed, exclusively owned, empty-attachment turn followed by
             # the ordinary cascade and an ownership-scoped not-found is a
             # logical deletion observation, not physical v1 cleanup proof.
             if readback.status == 404 and isinstance(readback.json(), dict):
-                report.mark("cleanup", "partial", "logical_deleted", elapsed=time.monotonic() - started, attempts=2)
+                report.mark("cleanup", "partial", "logical_deleted", elapsed=time.monotonic() - started, attempts=calls)
                 return
         elif deleted.status in (200, 202):
             status = deleted.object()
-            calls = 1
             for _ in range(2):
                 if _verified_cleanup(status, session_id):
                     break
@@ -278,20 +304,12 @@ async def _cleanup(
                 # Only the just-created, exact-owner v1 intent may be resumed.
                 # Two bounded passes suffice for this empty-attachment two-row
                 # fixture; anything still pending stops the next observation.
-                resumed = await transport.request(
-                    "POST", f"{config.web_origin}/api/sessions/{session_id}/deletion/reconcile",
-                    token=token, timeout=22, limit=8192,
-                )
-                calls += 1
+                resumed = await send("POST", "/deletion/reconcile", 22)
                 if resumed.status not in (200, 202):
                     raise CanaryError("cleanup_failed")
                 status = resumed.object()
             if _verified_cleanup(status, session_id):
-                readback = await transport.request(
-                    "GET", f"{config.web_origin}/api/sessions/{session_id}/deletion",
-                    token=token, timeout=5, limit=8192,
-                )
-                calls += 1
+                readback = await send("GET", "/deletion", 5)
                 if (
                     readback.status == 200 and readback.object() == status
                     and _verified_cleanup(readback.object(), session_id)
@@ -301,22 +319,26 @@ async def _cleanup(
                     return
             report.mark("cleanup", "partial", "cleanup_pending", elapsed=time.monotonic() - started, attempts=calls)
             return
-        report.mark("cleanup", "fail", "cleanup_failed", elapsed=time.monotonic() - started, attempts=1)
+        report.mark("cleanup", "fail", "cleanup_failed", elapsed=time.monotonic() - started, attempts=calls)
     except CanaryError as exc:
-        report.mark("cleanup", "unknown", exc.code, elapsed=time.monotonic() - started, attempts=1)
+        report.mark("cleanup", "unknown", exc.code, elapsed=time.monotonic() - started, attempts=calls)
 
 
 async def chat(
     transport: Transport, config: Configuration, token: str,
     source: dict[str, Any], report: Report, *, pricing: PricingBook | None = None,
+    budget: Budget | None = None,
 ) -> dict[str, Any] | None:
     stage = "platform"
     started = time.monotonic()
     session_id: str | None = None
     chat_settled = False
     advertised: dict[str, Any] | None = None
+    budget = budget or Budget.start(config)
     try:
-        response = await transport.request("GET", f"{config.web_origin}/api/models", token=token)
+        response = await transport.request(
+            "GET", f"{config.web_origin}/api/models", token=token, timeout=budget.timeout(15),
+        )
         if response.status in (401, 403):
             report.mark("platform", "pass", elapsed=response.elapsed, attempts=1)
             stage = "auth"
@@ -333,11 +355,12 @@ async def chat(
         stage = "posture"
         preflight = await transport.request(
             "GET", f"{config.web_origin}/api/canary/capabilities?{urlencode({'model': selected.model})}",
-            token=token, limit=8192,
+            token=token, limit=8192, timeout=budget.timeout(15),
         )
         region = capability(require_response(preflight), selected)
         report.mark("posture", "pass", elapsed=preflight.elapsed, attempts=1)
         stage = "session"
+        create_timeout = budget.timeout(15)
         report.cleanup_safe = False
         created = await transport.request(
             "POST", f"{config.web_origin}/api/sessions", token=token,
@@ -345,6 +368,7 @@ async def chat(
                 **session_payload(selected.model), "libraryDocumentIds": [],
                 "agentName": None, "toolOverrides": {"added": [], "removed": []},
             }),
+            timeout=create_timeout,
         )
         if created.status in (400, 401, 403, 422):
             report.cleanup_safe = True
@@ -366,6 +390,7 @@ async def chat(
         params: dict[str, Any] = {"max_tokens": MAX_OUTPUT_TOKENS}
         if selected.reasoning is not None:
             params["reasoning_effort"] = selected.reasoning
+        chat_timeout = budget.timeout(55)
         report.chat_attempts = 1
         chat_settled = False
         answer = await transport.request(
@@ -374,7 +399,7 @@ async def chat(
                 **chat_payload(session_id, selected.model), "region": region, "params": params,
                 "allowTools": False, "allowAutomaticMemory": False, "requireFreshSession": True,
             }),
-            timeout=55,
+            timeout=chat_timeout,
         )
         if answer.status != 200:
             if answer.status in (401, 403, 409, 422):
@@ -391,7 +416,7 @@ async def chat(
         stage = "persistence"
         stored = await transport.request(
             "GET", f"{config.web_origin}/api/sessions/{session_id}/messages",
-            token=token,
+            token=token, timeout=budget.timeout(15),
         )
         if stored.status != 200:
             raise CanaryError("persistence_failed")
@@ -419,7 +444,7 @@ async def chat(
     finally:
         if session_id is not None:
             await _cleanup(
-                transport, config, token, session_id, report, chat_settled=chat_settled,
+                transport, config, token, session_id, report, chat_settled=chat_settled, budget=budget,
             )
         elif not report.cleanup_safe:
             report.mark("cleanup", "unknown", "create_unknown")
@@ -429,6 +454,7 @@ async def chat(
 async def realtime(
     transport: Transport, config: Configuration, token: str,
     source: dict[str, Any], advertised: dict[str, Any] | None, report: Report,
+    *, budget: Budget | None = None,
 ) -> None:
     if not config.ga_enabled:
         report.mark("realtime", "not_run", "disabled")
@@ -440,8 +466,11 @@ async def realtime(
         report.mark("realtime", "not_run", "prior_stage")
         return
     started = time.monotonic()
+    budget = budget or Budget.start(config)
     try:
-        response = await transport.request("GET", f"{config.api_origin}/api/voice/live/config")
+        response = await transport.request(
+            "GET", f"{config.api_origin}/api/voice/live/config", timeout=budget.timeout(15),
+        )
         runtime = require_response(response)
         providers = runtime.get("enabledProviderIds")
         if (
@@ -467,7 +496,7 @@ async def realtime(
         state = SetupState()
         total_bytes = 0
         report.realtime_attempts = 1
-        async with asyncio.timeout(15):
+        async with asyncio.timeout(budget.timeout(15)):
             async with client.ws_connect(
                 url, protocols=("ai4ia-bearer", token), origin=config.web_origin,
                 autoping=True, max_msg_size=16 * 1024,

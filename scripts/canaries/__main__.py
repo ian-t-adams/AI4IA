@@ -142,7 +142,7 @@ def prepare_command(directory: Path, env: Mapping[str, str]) -> int:
 async def observe_command(directory: Path, env: Mapping[str, str]) -> int:
     from .github import Predecessor
     from .identity import acquire
-    from .monitor import chat, realtime
+    from .monitor import Budget, chat, realtime
     from .transport import Transport
 
     run = current_run(env)
@@ -159,26 +159,29 @@ async def observe_command(directory: Path, env: Mapping[str, str]) -> int:
         loop.add_signal_handler(signal.SIGTERM, task.cancel)
         installed_signal = True
     try:
-        config = Configuration.load(env, now)
-        if config is None:
-            raise CanaryError("disabled")
         handoff = obj(read_json(directory / "handoff.json"), {
             "run", "prepared_at", "scope_digest", "previous", "predecessor",
         })
         age = now - timestamp(handoff["prepared_at"])
         if (
-            Run.parse(handoff["run"]) != run or handoff["scope_digest"] != config.scope_digest
-            or not timedelta(0) <= age <= timedelta(minutes=10)
+            Run.parse(handoff["run"]) != run or not timedelta(0) <= age <= timedelta(minutes=10)
         ):
             raise CanaryError("state_invalid")
         if handoff["previous"] is not None:
-            previous = State.parse(handoff["previous"])
-            Predecessor.parse(handoff["predecessor"]).validate_state(previous, run, now)
+            candidate = State.parse(handoff["previous"])
+            Predecessor.parse(handoff["predecessor"]).validate_state(candidate, run, now)
+            previous = candidate
+        config = Configuration.load(env, now)
+        if config is None:
+            raise CanaryError("disabled")
+        if handoff["scope_digest"] != config.scope_digest:
+            raise CanaryError("state_invalid")
         admit(config, run, previous, now, bootstrap=False)
         source = obj(read_json(ROOT / "infra" / "models.json", limit=MAX_HTTP_BYTES))
         attempted = True
         control = "observe"
-        async with asyncio.timeout(105):
+        budget = Budget.start(config)
+        async with asyncio.timeout_at(budget.ends_at):
             token = await acquire(config, run, env, now)
             # The access token stays only in this process. Mask commands are
             # consumed by the runner, never included in retained reports.
@@ -188,8 +191,8 @@ async def observe_command(directory: Path, env: Mapping[str, str]) -> int:
                 {config.web_origin, config.api_origin},
                 correlation_id=f"application-canary-{run.run_id}-1",
             ) as transport:
-                advertised = await chat(transport, config, token, source, report)
-                await realtime(transport, config, token, source, advertised, report)
+                advertised = await chat(transport, config, token, source, report, budget=budget)
+                await realtime(transport, config, token, source, advertised, report, budget=budget)
     except CanaryError as exc:
         if attempted:
             report.mark("auth", "fail", exc.code, attempts=1)

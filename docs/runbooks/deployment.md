@@ -693,7 +693,10 @@ unresolved-upload coverage. It never enrolls legacy data, scans sessions,
 force-completes upload intents or runs an autonomous purge. Legacy 204 plus
 exact-id 404 is **logical deletion/partial only** and blocks further mutations.
 Ambiguous creation/dispatch, cancellation or incomplete cleanup also blocks the
-next observation. Tombstones, backups, service telemetry and independent usage
+next observation. One absolute 105-second application deadline and the UTC
+approval expiry are rechecked before each request, including cleanup in a
+cancellation `finally`; expiry cannot start another destructive pass. Tombstones,
+backups, service telemetry and independent usage
 ledger retention remain outside this scoped cleanup proof. See
 [conversation deletion](conversation-deletion.md) before approving its separate
 activation; enabling the canary cannot activate that protocol.
