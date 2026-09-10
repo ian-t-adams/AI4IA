@@ -395,6 +395,8 @@ class ProductionProfileTests(unittest.TestCase):
                     parent = parent[key]
                 del parent[path[-1]]
                 with self.assertRaises(evidence.EvidenceError):
+                    production.parse_policy(models, required=True)
+                with self.assertRaises(evidence.EvidenceError):
                     preflight.catalog_requirements(models, capacity_profile="production")
                 if path[0] != "productionCapacityPolicy" or len(path) > 1:
                     self.assertEqual(preflight.catalog_requirements(models)["eastus2"][0]["capacity"], 10)
@@ -622,6 +624,25 @@ class ProductionProfileTests(unittest.TestCase):
              patch.object(preflight, "_az", side_effect=AssertionError("Azure forbidden")), \
              contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(preflight.main(), 2)
+
+    def test_production_retirement_dispatch_never_enters_quota_preflight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            path.write_text(json.dumps(production_document()), encoding="utf-8")
+            env = {
+                "AI4IA_MODEL_CAPACITY_PROFILE": "production", "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION,
+                "AZURE_ENV_NAME": "example", "AI4IA_WORKLOAD": "demo",
+            }
+            with patch.dict(os.environ, env, clear=True), patch.object(preflight, "MODELS_FILE", path), \
+                 patch.object(sys, "argv", ["check-model-availability.py", "--retirement-report", str(Path(directory) / "report")]), \
+                 patch.object(preflight, "run_retirement_report", return_value=0) as report, \
+                 patch.object(preflight, "_az", side_effect=AssertionError("only report reader may read Azure")), \
+                 patch.object(preflight, "quota_usage", side_effect=AssertionError("retirement has no quota grant")):
+                self.assertEqual(preflight.main(), 0)
+            args, models, _bytes = report.call_args.args
+            self.assertEqual(args.capacity_profile, "production")
+            selected = preflight.catalog_requirements(models, capacity_profile=args.capacity_profile)
+            self.assertEqual([d["capacity"] for rows in selected.values() for d in rows], [40, 20])
 
 
 if __name__ == "__main__":

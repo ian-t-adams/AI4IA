@@ -200,6 +200,21 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(plan["status"], "partial")
         self.assertEqual([p["status"] for p in plan["pools"]], ["recommended", "unknown"])
 
+    def test_usage_accounts_match_inventory_not_just_the_owned_name_pattern(self):
+        self.fixture = self.make_fixture(production_document("Standard", ("region:eastus2", "region:swedencentral")))
+        good = self.report()
+        self.assertEqual(self.run_report(good)["status"], "complete")
+        for operation in ("metrics", "definitions"):
+            with self.subTest(operation=operation):
+                changed = copy.deepcopy(good)
+                source = next(s for s in changed["sources"] if s["id"] == f"{operation}:eastus2")
+                source["target"]["account"] = "mf-demo-example-eastus2-nopqrstuvwxyz"
+                plan = self.run_report(changed)
+                self.assertEqual(plan["status"], "partial")
+                self.assertEqual([p["status"] for p in plan["pools"]], ["unknown", "recommended"])
+                self.assertEqual(plan["pools"][0]["codes"], ["usage_account_mismatch"])
+                self.assertTrue(all(d["action"] == "hold" for d in plan["pools"][0]["deployments"]))
+
     def test_unlike_units_remain_separate_under_explicit_regional_assertions(self):
         document = production_document("Standard", ("region:eastus2", "region:swedencentral"))
         document["productionCapacityPolicy"]["pools"][1]["pool"]["unit"] = "Tokens"
@@ -302,6 +317,29 @@ class RecommendationTests(unittest.TestCase):
         denied = self.run_report(self.report())
         self.assertEqual(denied["status"], "partial")
         self.assertEqual(denied["pools"][0]["codes"], ["platform_headroom_insufficient"])
+
+    def test_mixed_increase_and_reduction_preserves_transitional_reserves(self):
+        document = production_document()
+        document["productionCapacityPolicy"]["pools"][0]["reserve"]["replacement"] = 80
+        for limit, expected in ((280, "complete"), (279, "partial")):
+            self.fixture = self.make_fixture(document)
+            for series in self.fixture.metric(region="swedencentral")["timeseries"]:
+                for point in series["data"]:
+                    point["total"] = 800
+            for key, response in self.fixture.responses.items():
+                if key.startswith("quota:"):
+                    response["value"][0]["limit"] = limit
+                if key.startswith("availability:"):
+                    for row in response["value"]:
+                        row["properties"]["availableCapacity"] = 100
+            with self.subTest(limit=limit):
+                plan = self.run_report(self.report())
+                self.assertEqual(plan["status"], expected)
+                if expected == "complete":
+                    self.assertEqual([r["recommendedCapacity"] for r in plan["pools"][0]["deployments"]], [30, 80])
+                    self.assertEqual(plan["pools"][0]["budget"]["unreservedHeadroomAfter"], 20)
+                else:
+                    self.assertEqual(plan["pools"][0]["codes"], ["replacement_order_headroom_insufficient"])
 
     def test_cli_has_no_output_or_apply_mode_and_is_bounded(self):
         report = self.report()

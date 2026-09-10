@@ -291,6 +291,8 @@ def _usage_target(member: DeploymentPolicy, pool: PoolPolicy, snapshot: Snapshot
         source = snapshot.sources.get(source_id, {})
         if source.get("status") != "available" or source.get("codes"):
             raise evidence.EvidenceError("incomplete_usage_sources")
+        if source.get("target", {}).get("account") != row["account"]:
+            raise evidence.EvidenceError("usage_account_mismatch")
     values = evidence.object_value(row.get("usage"))
     if values.keys() != set(evidence.METRICS):
         raise evidence.EvidenceError("incomplete_usage")
