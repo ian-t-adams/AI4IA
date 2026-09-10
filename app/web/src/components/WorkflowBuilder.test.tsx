@@ -201,7 +201,7 @@ describe("WorkflowBuilder", () => {
     await user.click(screen.getByRole("button", { name: "Submit for independent review" }));
     await waitFor(() => expect(mocks.submitPublication).toHaveBeenCalledWith("workflow", "summarize", expect.objectContaining({
       expectedRevision: 6, modes: ["workflow"], skillMode: "versioned",
-    }), { ownerId: WORKFLOWS[0].userId, sourceIncarnation: WORKFLOWS[0].incarnation, headRevision: 0 }, expect.any(AbortSignal)));
+    }), { ownerId: WORKFLOWS[0].userId, sourceIncarnation: WORKFLOWS[0].incarnation, previousHead: null }, expect.any(AbortSignal)));
     expect(mocks.createSession).not.toHaveBeenCalled();
     expect(mocks.runWorkflow).not.toHaveBeenCalled();
   });

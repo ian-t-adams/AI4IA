@@ -465,6 +465,45 @@ describe("PublicationControls", () => {
     expect(writes()).toHaveLength(0);
   });
 
+  it.each([
+    ["inbox", "approved"], ["inbox", "rejected"], ["detail", "approved"], ["detail", "rejected"],
+  ] as const)("retains a completed decision learned from %s (%s) across stale reads", async (from, decision) => {
+    capabilities = { enabled: true, actions: ["review"], operatorReviewAvailable: false };
+    const undecidedInbox = reviews;
+    const status = { reviewDecision: decision, reviewerId: "reviewer" };
+    if (from === "inbox") reviews = { ...reviews, items: [{ ...reviews.items[0], ...status }] };
+    else details.set(detailPath(publicationRef), { ...publicationReview, ...status });
+    const user = userEvent.setup();
+    render(controls({ saved: null, ownerId: "reviewer" }));
+    await user.click(await screen.findByText("Independent review inbox"));
+    await user.click(await screen.findByRole("button", { name: `${from === "inbox" ? "View reviewed" : "Review"} Helper (version 2)` }));
+    expect(await screen.findByText(new RegExp(`This version was ${decision}`))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve reviewed version" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reject version" })).not.toBeInTheDocument();
+
+    reviews = undecidedInbox;
+    details.set(detailPath(publicationRef), publicationReview);
+    await user.click(screen.getByRole("button", { name: "Reload review snapshot" }));
+    expect(await screen.findByText(new RegExp(`This version was ${decision}`))).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh review inbox" }));
+    await user.click(await screen.findByRole("button", { name: "View reviewed Helper (version 2)" }));
+    expect(await screen.findByText(new RegExp(`This version was ${decision}`))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve reviewed version" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reject version" })).not.toBeInTheDocument();
+    expect(writes()).toHaveLength(0);
+
+    const nextSource = { ...publicationRef, version: 3, digest: "9".repeat(64) };
+    reviews = { items: [{ source: nextSource, displayName: "Helper", headRevision: 15, reviewDecision: null, reviewerId: null }], truncated: false };
+    details.set(detailPath(nextSource), { ...publicationReview, headRevision: 15,
+      version: { ...publicationReview.version, version: 3, digest: nextSource.digest } });
+    await user.click(screen.getByRole("button", { name: "Refresh review inbox" }));
+    await user.click(await screen.findByRole("button", { name: "Review Helper (version 3)" }));
+    await user.click(await screen.findByRole("button", { name: "Reject version" }));
+    await screen.findByText(/Review recorded\. Owner activation/);
+    expect(posted("/decision")).toMatchObject({ source: nextSource, expectedHeadRevision: 15, decision: "rejected" });
+    expect(writes()).toHaveLength(1);
+  });
+
   it("renders escaped source and material audience, tool, model and skill evidence", async () => {
     capabilities = { enabled: true, actions: ["review"], operatorReviewAvailable: false };
     const sourceText = '<img src="x" onerror="alert(1)">';

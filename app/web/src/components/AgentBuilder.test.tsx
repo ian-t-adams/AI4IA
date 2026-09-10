@@ -167,7 +167,7 @@ describe("AgentBuilder", () => {
     await user.click(screen.getByRole("button", { name: "Submit for independent review" }));
     await waitFor(() => expect(mocks.submitPublication).toHaveBeenCalledWith(
       "agent", "helper", expect.objectContaining({ expectedRevision: 8 }),
-      { ownerId: MINE[0].userId, sourceIncarnation: MINE[0].incarnation, headRevision: 0 }, expect.any(AbortSignal),
+      { ownerId: MINE[0].userId, sourceIncarnation: MINE[0].incarnation, previousHead: null }, expect.any(AbortSignal),
     ));
   });
 

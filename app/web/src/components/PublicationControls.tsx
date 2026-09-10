@@ -200,7 +200,7 @@ function OwnerControls({ saved, kind, dirty, busy, canSubmit, models, defaultMod
       <SubmissionEditor kind={kind} saved={saved} models={models} defaultModelId={defaultModelId}
         blocked={blocked || savedBlocked} busy={busy || write.busy}
         submit={(input) => write.run((signal) => publishing.submitPublication(kind, saved.name, input, {
-          ownerId: saved.userId, sourceIncarnation: saved.incarnation ?? null, headRevision: head?.revision ?? 0,
+          ownerId: saved.userId, sourceIncarnation: saved.incarnation ?? null, previousHead: head,
         }, signal),
           "Submitted for independent review. Nothing is activated automatically.")} />
     </Disclosure> : <p style={hint}>Submission is not available to your account. You can still withdraw a known owned publication.</p>}
@@ -321,10 +321,20 @@ function SubmissionForm({ kind, saved, models, defaultModelId, blocked, busy, su
 }
 
 function ReviewInbox({ kind, ownerId }: { kind: publishing.PublicationKind; ownerId?: string }) {
-  const load = useCallback((signal: AbortSignal) => publishing.listPublicationReviews(kind, signal), [kind]);
-  const inbox = useRead(load);
   const [selected, setSelected] = useState<publishing.PublicationReviewSummary | null>(null);
-  const [acknowledged, setAcknowledged] = useState<publishing.PublicationReviewSummary[]>([]);
+  const [completedReviews, setCompletedReviews] = useState<publishing.PublicationReviewSummary[]>([]);
+  const remember = useCallback((...observations: publishing.PublicationReviewSummary[]) => {
+    const completed = observations.filter((review) => review.reviewDecision !== null);
+    if (completed.length === 0) return;
+    setCompletedReviews((current) => [...completed, ...current.filter((entry) =>
+      !completed.some((review) => publishing.sameAssetVersionRef(entry.source, review.source)))].slice(0, 100));
+  }, []);
+  const load = useCallback(async (signal: AbortSignal) => {
+    const result = await publishing.listPublicationReviews(kind, signal);
+    if (!signal.aborted) remember(...result.items);
+    return result;
+  }, [kind, remember]);
+  const inbox = useRead(load);
   const [message, setMessage] = useState<string | null>(null);
   return <div style={stack}>
     <p style={hint}>Only owner-consented submissions authorized for your independent review appear here. This is not private-draft access.</p>
@@ -335,7 +345,7 @@ function ReviewInbox({ kind, ownerId }: { kind: publishing.PublicationKind; owne
         <ul style={{ margin: 0, paddingLeft: 20 }}>
           {inbox.state.value.items.map((item) => {
             const review = item.reviewDecision !== null ? item :
-              acknowledged.find((entry) => publishing.sameAssetVersionRef(entry.source, item.source)) ?? item;
+              completedReviews.find((entry) => publishing.sameAssetVersionRef(entry.source, item.source)) ?? item;
             return <li key={JSON.stringify(item.source)} style={{ marginBottom: 8 }}>
               {item.source.ownerId === ownerId ? <span>Your submission: {item.displayName}. An independent reviewer is required.</span> :
                 <button type="button" style={secondaryBtn} onClick={() => { setMessage(null); setSelected(review); }}>
@@ -348,10 +358,11 @@ function ReviewInbox({ kind, ownerId }: { kind: publishing.PublicationKind; owne
       <button type="button" style={secondaryBtn} onClick={() => { setSelected(null); setMessage(null); inbox.refresh(); }}>Refresh review inbox</button>
     </>}
     {selected && selected.source.ownerId !== ownerId && <ReviewDetail key={JSON.stringify(selected.source)} source={selected.source}
-      acknowledged={selected.reviewDecision === null ? null : selected}
+      acknowledged={completedReviews.find((review) => publishing.sameAssetVersionRef(review.source, selected.source)) ??
+        (selected.reviewDecision === null ? null : selected)}
+      onObserved={remember}
       onDecided={(review) => {
-        setAcknowledged((current) => [review,
-          ...current.filter((entry) => !publishing.sameAssetVersionRef(entry.source, review.source))].slice(0, 100));
+        remember(review);
         setSelected(null);
         setMessage("Review recorded. Owner activation is still required; this is not execution consent.");
         inbox.refresh();
@@ -368,12 +379,20 @@ function Evidence({ title, value }: { title: string; value: unknown }) {
   </details>;
 }
 
-function ReviewDetail({ source, acknowledged, onDecided }: {
+function ReviewDetail({ source, acknowledged, onObserved, onDecided }: {
   source: AssetVersionRef;
   acknowledged: publishing.PublicationReviewSummary | null;
+  onObserved: (review: publishing.PublicationReviewSummary) => void;
   onDecided: (review: publishing.PublicationReviewSummary) => void;
 }) {
-  const load = useCallback((signal: AbortSignal) => publishing.getPublicationReview(source, signal), [source]);
+  const load = useCallback(async (signal: AbortSignal) => {
+    const result = await publishing.getPublicationReview(source, signal);
+    if (!signal.aborted) onObserved({
+      source, displayName: result.version.source.displayName, headRevision: result.headRevision,
+      reviewDecision: result.reviewDecision, reviewerId: result.reviewerId,
+    });
+    return result;
+  }, [source, onObserved]);
   const detail = useRead(load);
   const write = useWrite<publishing.PublicationReviewSummary>(onDecided);
   const [note, setNote] = useState("");

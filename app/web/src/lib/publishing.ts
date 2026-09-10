@@ -58,7 +58,7 @@ export interface OwnerPublicationState extends PublicationHead, PublicationRevie
 export interface PublicationSubmissionState {
   ownerId: string;
   sourceIncarnation: string | null;
-  headRevision: number;
+  previousHead: Pick<PublicationHead, "revision" | "assetId" | "versionCount" | "sourceIncarnation" | "deleted"> | null;
 }
 
 export interface PublicationSubmit {
@@ -286,11 +286,18 @@ export async function submitPublication(
   expected: PublicationSubmissionState, signal?: AbortSignal,
 ): Promise<OwnerPublicationState> {
   const value: unknown = await request(`${ownerPath(kind, name)}/submit`, signal, input);
-  const head = ownerAcknowledgement(value, kind, name, expected.ownerId, expected.headRevision + 1);
+  const previous = expected.previousHead;
+  const head = ownerAcknowledgement(value, kind, name, expected.ownerId, (previous?.revision ?? 0) + 1);
   if (head.deleted || head.sourceIncarnation !== expected.sourceIncarnation || head.pendingSource === null ||
     head.pendingDraftRevision !== input.expectedRevision || head.reviewConsent !== true ||
     head.operatorReviewConsent !== input.operatorReviewConsent || head.reviewerUserId !== (input.reviewerUserId ?? null)) {
     throw new Error("Publication acknowledgement does not match the submitted draft or review consent. Refresh before retrying.");
+  }
+  const nextVersion = previous && !previous.deleted && (previous.sourceIncarnation ?? null) === expected.sourceIncarnation
+    ? head.assetId === previous.assetId && head.versionCount === previous.versionCount + 1
+    : head.versionCount === 1 && (previous === null || head.assetId !== previous.assetId);
+  if (!nextVersion) {
+    throw new Error("Publication acknowledgement does not identify a newly submitted version. Refresh before retrying.");
   }
   return head;
 }

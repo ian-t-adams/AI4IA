@@ -9,7 +9,7 @@ const fetch = vi.mocked(apiFetch);
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 const submissionState = {
   ownerId: publicationAgent.userId, sourceIncarnation: publicationAgent.incarnation ?? null,
-  headRevision: publicationHead.revision,
+  previousHead: publicationHead,
 };
 const submission: publishing.PublicationSubmit = {
   expectedRevision: 7, audience: { visibility: "public", acl: [], groupAcl: [] },
@@ -106,6 +106,9 @@ describe("publication client", () => {
 
   it.each([
     null, {}, publicationHead,
+    { ...publicationHead, revision: 12, reviewDecision: "approved", reviewerId: "reviewer" },
+    { ...submitted, versionCount: 4, pendingVersion: 4, pendingSource: { ...publicationRef, version: 4 } },
+    { ...submitted, assetId: "0".repeat(32), pendingSource: { ...submitted.pendingSource, assetId: "0".repeat(32) } },
     { ...submitted, kind: "workflow" },
     { ...submitted, sourceName: "other" },
     { ...submitted, userId: "other", pendingSource: { ...submitted.pendingSource, ownerId: "other" } },
@@ -121,6 +124,22 @@ describe("publication client", () => {
     await expect(publishing.submitPublication("agent", "helper", submission, submissionState))
       .rejects.toThrow(/acknowledgement.*Refresh/i);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["first", "recreated", "deleted"] as const)("requires a new asset's first version for %s submission", async (scenario) => {
+    const first = { ...submitted, revision: scenario === "first" ? 1 : 12, assetId: "0".repeat(32), versionCount: 1, pendingVersion: 1,
+      pendingSource: { ...publicationRef, assetId: "0".repeat(32), version: 1 } };
+    const expected: publishing.PublicationSubmissionState = {
+      ...submissionState, previousHead: scenario === "first" ? null :
+        { ...publicationHead, ...(scenario === "deleted" ? { deleted: true } : { sourceIncarnation: "1".repeat(32) }) },
+    };
+    fetch.mockResolvedValueOnce(json(first)).mockResolvedValueOnce(json({
+      ...first, assetId: publicationHead.assetId,
+      pendingSource: { ...first.pendingSource, assetId: publicationHead.assetId },
+      ...(scenario === "first" ? { versionCount: 2, pendingVersion: 2, pendingSource: publicationRef } : {}),
+    }));
+    await expect(publishing.submitPublication("agent", "helper", submission, expected)).resolves.toEqual(first);
+    await expect(publishing.submitPublication("agent", "helper", submission, expected)).rejects.toThrow(/newly submitted version/i);
   });
 
   it.each([
