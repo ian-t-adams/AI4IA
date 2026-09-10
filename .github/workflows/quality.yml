@@ -213,7 +213,7 @@ jobs:
           # Mocked management/metric transport and bounded subprocess controls.
           # JMESPath executes the actual CLI projections against raw ARM fixtures.
           # No Azure login, live metrics, capacity changes or runtime dependencies.
-          python3 -m unittest scripts.tests.test_capacity_evidence
+          python3 -m unittest scripts.tests.test_capacity_evidence scripts.tests.test_capacity_recommendations
 
       - name: Run Entra app provisioning guard tests
         run: |
