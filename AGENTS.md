@@ -207,9 +207,9 @@ the repo root, using the already-installed API dev dependencies:
 
 ```powershell
 python -m scripts.evaluations run --output <new-local-report.json>
-ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py
+ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py
 pyright --project scripts/evaluations
-python -m pytest -q scripts/tests/test_behavioral_evaluations.py
+python -m pytest -q scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py
 ```
 
 `scripts/evaluations` drives real API, provider-adapter, orchestration, ownership,
@@ -222,6 +222,26 @@ before comparison. Do not add production-trace input, a paid judge, live calls o
 a schedule under this offline gate. See
 [`docs/behavioral-evaluations.md`](docs/behavioral-evaluations.md) for commands,
 version rules, limits and the remaining approval boundaries.
+
+`python -m scripts.evaluations.live` and `live-evaluations.yml` are separate,
+default-off authored-synthetic surfaces, never an escape from the offline worker's
+network/dotenv/credential/export isolation or a stochastic PR gate. A dedicated
+non-admin evaluation actor/policy capability (never the monitor's canaryActor),
+three request-reduction controls, priced supported caps and exact-owner cleanup
+proofs are prerequisites. All probes, four new fixtures and cleanup calls
+share one 48-request/240-second budget; cleanup retains eight requests/45 seconds.
+Unknown creation, cleanup or worker state stops later tasks and keeps every case
+in coverage. Client/request caps are not a proven Azure bill cap. No production
+trace input, judge, grants, resource changes or activation is implied.
+
+Content-free GenAI model spans reuse `logging_setup`'s exporter gate and observe
+post-admission adapted requests/native responses, including streamed Responses
+and Claude. Keep the pinned development-semantic contract and its fixed
+`gen_ai.system` exporter-compatibility alias; do not upgrade the telemetry pair.
+No payload, URL, identity, event, exception message or provider-internal reasoning
+belongs on these spans. Cumulative usage is recorded once per logical model call,
+not added across chunks or copied onto parent spans. The SDK/exporter capture
+controls and existing offline no-export controls must stay non-vacuous.
 
 **Any edit to `app/api/pyproject.toml` must be followed by `uv lock` in the same
 commit.** `uv.lock` records the declared specifier alongside resolved versions, so
@@ -520,6 +540,7 @@ python3 -m unittest scripts.tests.test_documented_paths_exist   # repo paths nam
 python3 -m unittest scripts.tests.test_markdown_anchors         # Markdown #fragment links must resolve
 python3 -m unittest scripts.tests.test_markdown_tables          # tables cannot silently swallow rows/columns
 python3 -m unittest scripts.tests.test_gating_workflows         # required checks, checkout and job-token boundaries
+python3 -m unittest scripts.tests.test_live_evaluation_workflow # default-off separate actor/schedule and report-only retention
 python3 -m unittest scripts.tests.test_governance_contracts     # cross-file governance/Foundry/config invariants
 python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name reachable azd vars
 python3 -m unittest scripts.tests.test_foundry_assets_workflow  # Foundry handoff stays artifact-scoped

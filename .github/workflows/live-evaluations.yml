@@ -1,0 +1,124 @@
+name: live-evaluations
+
+# Separate from all mandatory PR checks. Both activation variables are unset/off
+# by default; adding this source does not authorize an actor, model spend or data.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 7 * * 1"
+
+permissions: {}
+
+concurrency:
+  group: live-authored-evaluations
+  cancel-in-progress: false
+
+jobs:
+  activation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    outputs:
+      enabled: ${{ steps.activation.outputs.enabled }}
+    steps:
+      - name: Enforce separate live evaluation activation
+        id: activation
+        shell: bash
+        env:
+          LIVE_ENABLED: ${{ vars.AI4IA_LIVE_EVAL_ENABLED }}
+          SCHEDULE_ENABLED: ${{ vars.AI4IA_LIVE_EVAL_SCHEDULE_ENABLED }}
+          LIVE_CLIENT_ID: ${{ vars.AI4IA_LIVE_EVAL_CLIENT_ID }}
+          DEPLOY_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Live evaluations may run only from main."
+            exit 1
+          fi
+          if [[ "$LIVE_ENABLED" != "true" ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Live quality unmeasured: evaluation activation is disabled; no authenticated calls or fixtures." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" && "$SCHEDULE_ENABLED" != "true" ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Scheduled live quality unmeasured: separate schedule activation is disabled." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ -z "$LIVE_CLIENT_ID" || -z "$DEPLOY_CLIENT_ID" || "${LIVE_CLIENT_ID,,}" == "${DEPLOY_CLIENT_ID,,}" ]]; then
+            echo "::error::An approved dedicated synthetic actor, distinct from the known deploy identity, is required."
+            exit 1
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+  evaluate:
+    needs: activation
+    if: ${{ needs.activation.outputs.enabled == 'true' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AI4IA_LIVE_EVAL_ENABLED: ${{ vars.AI4IA_LIVE_EVAL_ENABLED }}
+      AI4IA_LIVE_EVAL_API_ORIGIN: ${{ vars.AI4IA_LIVE_EVAL_API_ORIGIN }}
+      AI4IA_LIVE_EVAL_API_AUDIENCE: ${{ vars.AI4IA_LIVE_EVAL_API_AUDIENCE }}
+      AI4IA_LIVE_EVAL_CLIENT_ID: ${{ vars.AI4IA_LIVE_EVAL_CLIENT_ID }}
+      AI4IA_LIVE_EVAL_TENANT_ID: ${{ vars.AI4IA_LIVE_EVAL_TENANT_ID }}
+      AI4IA_LIVE_EVAL_ACTOR_OBJECT_ID: ${{ vars.AI4IA_LIVE_EVAL_ACTOR_OBJECT_ID }}
+      AI4IA_LIVE_EVAL_DEPLOY_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AI4IA_LIVE_EVAL_MODEL_ID: ${{ vars.AI4IA_LIVE_EVAL_MODEL_ID }}
+      AI4IA_LIVE_EVAL_LIMITS_ACK: ${{ vars.AI4IA_LIVE_EVAL_LIMITS_ACK }}
+      AZURE_CORE_COLLECT_TELEMETRY: "no"
+      AZURE_EXTENSION_USE_DYNAMIC_INSTALL: "no"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install existing evaluator dependencies
+        run: python -m pip install -e "app/api[dev]"
+      - name: Authenticate the separately approved synthetic actor
+        id: login
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
+        env:
+          AZURE_CONFIG_DIR: ${{ runner.temp }}/live-evaluation-azure
+        with:
+          client-id: ${{ vars.AI4IA_LIVE_EVAL_CLIENT_ID }}
+          tenant-id: ${{ vars.AI4IA_LIVE_EVAL_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Run finite authored tasks or retain full unknown coverage
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          LOGIN_OUTCOME: ${{ steps.login.outcome }}
+          AZURE_CONFIG_DIR: ${{ runner.temp }}/live-evaluation-azure
+        run: |
+          set -euo pipefail
+          token=""
+          if [[ "$LOGIN_OUTCOME" == "success" ]]; then
+            if ! token="$(timeout 30s az account get-access-token \
+              --resource "$AI4IA_LIVE_EVAL_API_AUDIENCE" \
+              --query accessToken --output tsv 2>/dev/null)"; then
+              token=""
+              echo "::warning::Synthetic actor API token unavailable; quality remains unknown."
+            fi
+          fi
+          if [[ ${#token} -gt 8192 || ! "$token" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
+            token=""
+          fi
+          if [[ -n "$token" ]]; then
+            echo "::add-mask::$token"
+          fi
+          AI4IA_LIVE_EVAL_TOKEN="$token" python -m scripts.evaluations.live run \
+            --output "$RUNNER_TEMP/live-evaluation.json"
+      - name: Retain only the bounded content-free report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: live-authored-evaluation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/live-evaluation.json
+          retention-days: 7
+          if-no-files-found: error
