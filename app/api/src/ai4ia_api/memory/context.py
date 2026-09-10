@@ -8,6 +8,7 @@ from typing import Any
 
 from .preferences import MemoryPreference, MemoryPreferenceUnavailable
 from .service import MemoryServiceProtocol
+from ..request_constraints import automatic_memory_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,8 @@ class MemoryContextGuard:
         self.on_withheld: Callable[[list[dict[str, Any]]], None] | None = None
 
     async def allowed(self) -> bool:
-        if self._blocked:
+        if self._blocked or not automatic_memory_allowed():
+            self._blocked = True
             return False
         reader = getattr(self._memory, "get_preference", None)
         if self._memory is None or not getattr(self._memory, "enabled", False):

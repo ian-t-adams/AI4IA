@@ -296,6 +296,8 @@ def normalize_session_title(value: object) -> str:
 def normalize_session_patch_changes(
     changes: Mapping[str, object],
 ) -> dict[str, object]:
+    if "freshTurnClaimed" in changes:
+        raise ValueError("A fresh-turn claim is server-owned and cannot be reset.")
     if {"toolConsent", "toolConsentState", "toolConsentVersion"} & changes.keys():
         raise ValueError("Tool consent must be changed through the consent endpoint.")
     normalized = dict(changes)
@@ -338,6 +340,7 @@ def normalize_session_patch_changes(
 class Session(BaseModel):
     id: str = Field(default_factory=_new_id)
     userId: str
+    freshTurnClaimed: bool = Field(default=False, exclude=True, strict=True)
     deletionProtocol: Literal[1] | None = Field(default=None, exclude=True)
     deletionEpoch: str | None = Field(default=None, exclude=True)
     attachmentStorageRequired: bool = Field(default=False, exclude=True)

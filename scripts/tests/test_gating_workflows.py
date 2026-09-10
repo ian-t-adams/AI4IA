@@ -161,6 +161,167 @@ class GatingWorkflowsAlwaysReportTests(unittest.TestCase):
         )
 
 
+class CodeQLRequiredContextTests(unittest.TestCase):
+    """Matrix contexts need their own guard; CodeQL pushes have no path filter."""
+
+    def setUp(self) -> None:
+        self.document = yaml.safe_load((WORKFLOWS / "codeql.yml").read_text(encoding="utf-8"))
+
+    def assert_reporting_boundary(self, document: dict) -> None:
+        triggers = document.get("on", document.get(True, {}))
+        self.assertIn("pull_request", triggers, "CodeQL pull_request trigger is required.")
+        pull_request = triggers["pull_request"]
+        self.assertIsInstance(pull_request, dict, "CodeQL pull_request must target main.")
+        self.assertEqual(
+            pull_request.get("branches"), ["main"], "CodeQL pull_request must target main."
+        )
+        for key in ("paths", "paths-ignore", "branches-ignore"):
+            self.assertNotIn(key, pull_request, f"CodeQL pull_request cannot filter with {key}.")
+        self.assertTrue(
+            {"opened", "synchronize", "reopened"}.issubset(
+                pull_request.get("types", ["opened", "synchronize", "reopened"])
+            ),
+            "CodeQL pull_request must cover the default PR events.",
+        )
+
+        jobs = document.get("jobs", {})
+        self.assertIn("analyze", jobs, "CodeQL analyze job is required.")
+        job = jobs["analyze"]
+        for key in ("if", "needs"):
+            self.assertNotIn(key, job, f"CodeQL analyze cannot be skipped through {key}.")
+        self.assertIs(
+            job.get("continue-on-error", False), False, "CodeQL analysis must remain blocking."
+        )
+        strategy = job.get("strategy", {})
+        self.assertIs(
+            strategy.get("fail-fast"), False, "CodeQL fail-fast must not cancel sibling contexts."
+        )
+        matrix = strategy.get("matrix", {})
+        self.assertIsInstance(matrix, dict, "CodeQL matrix must use literal include rows.")
+        self.assertEqual(
+            set(matrix), {"include"}, "CodeQL matrix must not add axes or exclude language rows."
+        )
+        rows = matrix["include"]
+        self.assertIsInstance(rows, list, "CodeQL matrix must use literal include rows.")
+        name = job.get("name", "analyze")
+        self.assertIsInstance(name, str, "CodeQL context name must be a string.")
+        contexts = []
+        for row in rows:
+            self.assertIsInstance(row, dict, "CodeQL matrix rows must declare a language.")
+            language = row.get("language")
+            self.assertIsInstance(language, str, "CodeQL matrix rows must declare a language.")
+            contexts.append(re.sub(r"\$\{\{\s*matrix\.language\s*\}\}", language, name))
+        self.assertCountEqual(
+            contexts,
+            ["Analyze (python)", "Analyze (javascript-typescript)", "Analyze (csharp)"],
+            "CodeQL contexts must preserve the exact required language check names.",
+        )
+
+    def assert_rejected(self, document: dict, message: str) -> None:
+        self.assert_reporting_boundary(self.document)
+        with self.assertRaisesRegex(AssertionError, message):
+            self.assert_reporting_boundary(document)
+
+    def test_current_workflow_reports_every_required_language_context(self) -> None:
+        self.assert_reporting_boundary(self.document)
+
+    def test_missing_pull_request_trigger_is_rejected(self) -> None:
+        document = deepcopy(self.document)
+        del document.get("on", document.get(True))["pull_request"]
+        self.assert_rejected(document, "CodeQL pull_request trigger")
+
+    def test_main_pr_filters_and_event_omissions_are_rejected(self) -> None:
+        changes = [
+            ("paths", ["proxy/**"]),
+            ("paths-ignore", ["docs/**"]),
+            ("branches-ignore", ["main"]),
+            ("branches", ["release"]),
+            ("branches", ["main", "!main"]),
+            ("branches", []),
+            ("types", ["opened"]),
+            ("types", ["synchronize"]),
+        ]
+        for key, value in changes:
+            with self.subTest(key=key, value=value):
+                document = deepcopy(self.document)
+                document.get("on", document.get(True))["pull_request"][key] = value
+                self.assert_rejected(document, "CodeQL pull_request")
+
+    def test_explicit_default_events_and_expression_spacing_keep_contexts(self) -> None:
+        document = deepcopy(self.document)
+        document.get("on", document.get(True))["pull_request"]["types"] = [
+            "opened", "synchronize", "reopened",
+        ]
+        document["jobs"]["analyze"]["name"] = "Analyze (${{matrix.language}})"
+        self.assert_reporting_boundary(document)
+
+    def test_missing_analyze_job_is_rejected(self) -> None:
+        document = deepcopy(self.document)
+        del document["jobs"]["analyze"]
+        self.assert_rejected(document, "CodeQL analyze job")
+
+    def test_renamed_or_missing_context_name_is_rejected(self) -> None:
+        for name in ("Scan (${{ matrix.language }})", "Analyze", None):
+            with self.subTest(name=name):
+                document = deepcopy(self.document)
+                job = document["jobs"]["analyze"]
+                if name is None:
+                    del job["name"]
+                else:
+                    job["name"] = name
+                self.assert_rejected(document, "CodeQL contexts")
+
+    def test_removing_any_language_or_duplicating_csharp_is_rejected(self) -> None:
+        for language in ("python", "javascript-typescript", "csharp", None):
+            with self.subTest(language=language):
+                document = deepcopy(self.document)
+                rows = document["jobs"]["analyze"]["strategy"]["matrix"]["include"]
+                if language is None:
+                    rows.append({"language": "csharp", "build-mode": "manual"})
+                else:
+                    rows[:] = [row for row in rows if row["language"] != language]
+                self.assert_rejected(document, "CodeQL contexts")
+
+    def test_missing_language_field_is_rejected(self) -> None:
+        document = deepcopy(self.document)
+        rows = document["jobs"]["analyze"]["strategy"]["matrix"]["include"]
+        del next(row for row in rows if row["language"] == "csharp")["language"]
+        self.assert_rejected(document, "CodeQL matrix rows must declare a language")
+
+    def test_matrix_exclusions_or_dynamic_axes_are_rejected(self) -> None:
+        for key, value in (
+            ("exclude", [{"language": "csharp"}]),
+            ("language", ["python", "javascript-typescript"]),
+            ("include", "${{ fromJSON(needs.changes.outputs.languages) }}"),
+        ):
+            with self.subTest(key=key):
+                document = deepcopy(self.document)
+                document["jobs"]["analyze"]["strategy"]["matrix"][key] = value
+                self.assert_rejected(document, "CodeQL matrix")
+
+    def test_job_skips_or_nonblocking_analysis_are_rejected(self) -> None:
+        for key, value in (
+            ("if", "github.event_name == 'push'"),
+            ("needs", ["changes"]),
+            ("continue-on-error", True),
+        ):
+            with self.subTest(key=key):
+                document = deepcopy(self.document)
+                document["jobs"]["analyze"][key] = value
+                self.assert_rejected(document, "CodeQL analy")
+
+    def test_enabled_or_default_fail_fast_is_rejected(self) -> None:
+        for fail_fast in (True, None):
+            with self.subTest(fail_fast=fail_fast):
+                document = deepcopy(self.document)
+                strategy = document["jobs"]["analyze"]["strategy"]
+                if fail_fast is None:
+                    del strategy["fail-fast"]
+                else:
+                    strategy["fail-fast"] = fail_fast
+                self.assert_rejected(document, "CodeQL fail-fast")
+
+
 class DeployWorkflowOperationalScriptTriggers(unittest.TestCase):
     """A release-path change must exercise itself on main.
 

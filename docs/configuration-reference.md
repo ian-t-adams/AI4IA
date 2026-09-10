@@ -386,6 +386,41 @@ defaults to `gpt-realtime`. Azure OpenAI's deployment choice and Speech's manage
 model/settings are separate fields. Inline changes are applied only when the next
 Voice Live connection opens.
 
+### Request-only chat restrictions
+
+`POST /api/chat` accepts strict Boolean reduction controls. They are not
+environment variables, role assignments, or persisted user preferences.
+
+| Request field | Default | Effect |
+|---|---|---|
+| `allowTools` | `true` | `false` removes ambient offers and denies registry, synthetic, MCP and skill dispatch for the entire request, including SSE. A selected source that requires tools is refused rather than silently rewritten. Commands are incompatible with a tool-free request. |
+| `allowAutomaticMemory` | `true` | `false` denies automatic recall, embeddings and planner writes. `true` still respects the current server/user preference; it cannot re-enable disabled memory. |
+| `requireFreshSession` | `false` | `true` requires both reductions above, a new eligible v1 conversation, explicit `libraryDocumentIds: []`, and no agent, system prompt, summary, history or documents. The exact owner/session snapshot must win a one-shot claim before any model work. |
+
+Fresh-turn claims use the existing Cosmos session ETag CAS (the local repository
+uses its existing lock). Their server-owned marker survives saves, patches and
+`/clear`, is excluded from API JSON, and cannot be set or reset through browser
+input. A lost claim acknowledgement, post-claim failure or later empty scan does
+not restore eligibility. Legacy conversations are not enrolled by this path.
+Only the winning turn builds its prompt from its submitted plain text and empty
+context; late document/history writes are not subsequently loaded. This is not
+an atomic exclusion of all other child writers or a bill cap.
+
+The factory also registers a reduction-only canary dispatch guard. When required
+by a separately configured dedicated actor policy, it permits just one current
+owner-bound, claimed-generation Chat/Responses dispatch with the fixed sentinel,
+no tools or extra context, and at most 64 output tokens in the **adapted** body.
+It rechecks the active parent and consumes its request-local allowance before
+awaiting that read. This guard does not create an identity or permission, and
+does not bound retries inside APIM or the model proxy.
+
+A distinct evaluation guard reuses the same claim and the same one-dispatch
+allowance for an operator-selected authored-synthetic-evaluation actor: one plain
+user prompt of at most 4 KiB UTF-8 and at most 256 adapted output tokens. Policy,
+not a browser profile label, chooses that guard. It neither widens the fixed
+sentinel monitor nor creates a second allowance. These reductions do not attest
+that a prompt belongs to an approved dataset or authorize a live evaluation run.
+
 ### Authenticated Voice Live operator canary
 
 `scripts/voice-live-canary.py` is an operator-only diagnostic, not an API endpoint.
