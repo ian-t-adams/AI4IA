@@ -262,6 +262,13 @@ def test_paused_policy_at_startup_preserves_restricted_actor_identity(setup_clie
             "/api/canary/realtime-capabilities", headers={"Authorization": f"Bearer {bearer}"},
         )
         assert capability.json()["ready"] is False
+        headers = {"Authorization": f"Bearer {bearer}"}
+        session = paused.post("/api/sessions", json={"title": "Synthetic fixture"}, headers=headers).json()
+        documents = f"/api/sessions/{session['id']}/documents"
+        assert paused.post(
+            documents, files={"file": ("fixture.txt", b"synthetic", "text/plain")}, headers=headers,
+        ).status_code == 503
+        assert paused.get(documents, headers=headers).status_code == 503
         with pytest.raises(WebSocketDisconnect):
             with paused.websocket_connect(
                 "/api/voice/live?provider=azure_openai",
@@ -269,6 +276,39 @@ def test_paused_policy_at_startup_preserves_restricted_actor_identity(setup_clie
             ) as ws:
                 ws.receive_text()
         assert connector.calls == []
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_pausing_policy_does_not_restore_document_read_or_write_and_cleanup_stays_allowed(
+    setup_client, enabled,
+):
+    from ai4ia_api.sessions.models import Document
+
+    client, token, _connector, _ = setup_client
+    client.app.state.settings.group_policy_enabled = enabled
+    headers = {"Authorization": f"Bearer {token()}"}
+    session = client.post("/api/sessions", json={"title": "Synthetic fixture"}, headers=headers).json()
+    path = f"/api/sessions/{session['id']}/documents"
+    uploaded = client.post(path, files={"file": ("fixture.txt", b"synthetic fixture", "text/plain")}, headers=headers)
+    assert uploaded.status_code in (403, 503), uploaded.text
+    assert client.get(path, headers=headers).status_code in (403, 503)
+    document = Document(
+        userId=session["userId"], sessionId=session["id"], filename="owned-cleanup.txt", text="synthetic",
+    )
+    await client.app.state.session_repo.add_document(session["userId"], document)
+    assert client.delete(f"{path}/{document.id}", headers=headers).status_code == 204
+    assert client.get(f"/api/sessions/{session['id']}", headers=headers).status_code == 200
+
+
+def test_unmarked_ordinary_actor_keeps_flag_off_document_behavior(setup_client):
+    client, token, _connector, _ = setup_client
+    client.app.state.settings.group_policy_enabled = False
+    headers = {"Authorization": f"Bearer {token('00000000-0000-0000-0000-000000000099')}"}
+    session = client.post("/api/sessions", json={"title": "Synthetic fixture"}, headers=headers).json()
+    path = f"/api/sessions/{session['id']}/documents"
+    uploaded = client.post(path, files={"file": ("fixture.txt", b"synthetic fixture", "text/plain")}, headers=headers)
+    assert uploaded.status_code == 201, uploaded.text
+    assert len(client.get(path, headers=headers).json()) == 1
 
 
 def test_setup_lifetime_includes_slow_connection_and_still_closes_it(setup_client, monkeypatch):
