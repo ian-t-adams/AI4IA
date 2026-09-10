@@ -632,6 +632,17 @@ Adding a check is a three-step ordering: make it always-reported, prove it on a 
 that would previously have skipped it, then require it. A required context that is
 never reported blocks every PR permanently.
 
+CodeQL has a separate matrix-based guard in that file. Its unfiltered PR trigger
+must cover `main` and the default PR events; the literal include rows and job name
+must emit exactly `Analyze (python)`, `Analyze (javascript-typescript)`, and
+`Analyze (csharp)`, with no duplicates. Keep `fail-fast: false`, no matrix
+exclusions or job-level skip dependencies/conditions, and blocking analysis.
+Requiring C# must not remove the existing Python/JavaScript contexts. CodeQL's
+push trigger is also unfiltered: do not add it to `GATING_WORKFLOWS`, whose
+separate push-path assertion applies only to app/infra/image builds. These guards
+preserve reporting, not live ruleset configuration; require a new context only
+after a non-language-changing PR proves it reports.
+
 All current workflow checkouts use `persist-credentials: false`: they need source
 fetching, not a repository token left for later steps. GitHub REST calls use the
 job's scoped `GITHUB_TOKEN`; same-run artifact uploads/listing and Actions caches
