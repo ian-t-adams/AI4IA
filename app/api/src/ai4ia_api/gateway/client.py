@@ -22,6 +22,9 @@ from ..config import GatewayAuthMode, GatewayProviderStyle, Settings
 from ..chat_timing import current_chat_timing
 from ..genai_telemetry import ModelSpan, ModelTelemetry
 from ..model_evidence import CapturedModelCall, begin_model_call
+from ..request_constraints import (
+    constrain_tool_parameters, contains_tool_output, fresh_session_required, tools_allowed,
+)
 from ..http_retry import request_with_retry
 from ..hard_quota.dispatch import DispatchLease, admitted_dispatch
 from ..hard_quota.models import Surface
@@ -86,7 +89,7 @@ _SERVER_OWNED_BODY_KEYS = (
 
 def _without_server_owned(params: dict[str, Any] | None) -> dict[str, Any]:
     """Copy ``params`` without any field the gateway owns (see above)."""
-    out = dict(params or {})
+    out = constrain_tool_parameters(params)
     for key in _SERVER_OWNED_BODY_KEYS:
         out.pop(key, None)
     return out
@@ -251,7 +254,9 @@ def _normalize_params_for_responses(params: dict[str, Any] | None) -> dict[str, 
         floored = max(int(max_out), _RESPONSES_MIN_OUTPUT_TOKENS)
     except (TypeError, ValueError):
         floored = _RESPONSES_MIN_OUTPUT_TOKENS
-    out["max_output_tokens"] = floored
+    out["max_output_tokens"] = (
+        max_out if fresh_session_required() and type(max_out) is int and max_out > 0 else floored
+    )
 
     effort = out.pop("reasoning_effort", None)
     if effort:
@@ -645,7 +650,7 @@ class ModelGatewayClient:
             json=build_anthropic_payload(
                 deployment=deployment,
                 messages=messages,
-                params=params,
+                params=constrain_tool_parameters(params),
                 stream=stream,
             ),
         )
@@ -1215,6 +1220,8 @@ class ModelGatewayClient:
             if not isinstance(data, dict):
                 raise ModelGatewayError(502, _REQUEST_FAILED)
             telemetry.response_metadata(data)
+            if not tools_allowed() and contains_tool_output(data):
+                raise ModelGatewayError(502, "Provider returned a tool on a tool-free request.")
             if resolved_api == "responses":
                 if data.get("status") == "failed":
                     err = (data.get("error") or {}).get("message") or "responses failed"
@@ -1315,6 +1322,12 @@ class ModelGatewayClient:
                     )
                 ) as anthropic_stream:
                     async for chunk in anthropic_stream:
+                        if not tools_allowed() and chunk.raw:
+                            raw = json.loads(chunk.raw)
+                            if contains_tool_output(raw):
+                                raise ModelGatewayError(
+                                    502, "Provider returned a tool on a tool-free request."
+                                )
                         if evidence is not None:
                             evidence.report_usage(chunk.usage, completed=chunk.done)
                         telemetry.usage(chunk.usage, completed=chunk.done)
@@ -1529,6 +1542,8 @@ def parse_sse_line(line: str, *, telemetry: ModelSpan | None = None) -> ChatChun
         return ChatChunk(raw=payload)
     if telemetry is not None and isinstance(obj, dict):
         telemetry.response_metadata(obj)
+    if not tools_allowed() and contains_tool_output(obj):
+        raise ModelGatewayError(502, "Provider returned a tool on a tool-free request.")
     delta = ""
     for choice in obj.get("choices", []):
         piece = (choice.get("delta") or {}).get("content")
@@ -1568,6 +1583,8 @@ def _parse_responses_event(
         return None
     if telemetry is not None and isinstance(obj, dict):
         telemetry.response_metadata(obj)
+    if not tools_allowed() and contains_tool_output(obj):
+        raise ModelGatewayError(502, "Provider returned a tool on a tool-free request.")
     etype = obj.get("type")
     if etype in {"response.output_text.delta", "response.refusal.delta"}:
         piece = obj.get("delta") or ""

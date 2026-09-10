@@ -66,6 +66,7 @@ def test_real_relay_translates_browser_frames_and_owns_the_handshake(protocol_cl
         subprotocols=[DEV_SUBPROTOCOL, "owner"],
         headers={**_origin(), "OpenAI-Beta": "realtime=v1", "api-key": "browser-key"},
     ) as ws:
+        assert dict(ws.extra_headers)[b"x-ai4ia-realtime-protocol"] == protocol.value.encode("ascii")
         for case in FIXTURES["client"]:
             frame = json.dumps(case["application"], indent=2)
             ws.send_text(frame)

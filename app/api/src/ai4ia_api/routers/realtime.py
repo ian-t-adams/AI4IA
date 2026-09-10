@@ -1901,7 +1901,10 @@ async def voice_live(websocket: WebSocket) -> None:
         return
 
     # Handshake complete: echo the auth marker as the selected subprotocol.
-    await websocket.accept(subprotocol=auth.marker)
+    await websocket.accept(
+        subprotocol=auth.marker,
+        headers=[(b"x-ai4ia-realtime-protocol", provider_resolution.protocol.encode("ascii"))],
+    )
 
     correlation_id = new_correlation_id()
     set_correlation_id(correlation_id)
