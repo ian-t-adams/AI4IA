@@ -218,9 +218,9 @@ the repo root, using the already-installed API dev dependencies:
 
 ```powershell
 python -m scripts.evaluations run --output <new-local-report.json>
-ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py
+ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py scripts/tests/test_live_evaluation_api.py
 pyright --project scripts/evaluations
-python -m pytest -q scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py
+python -m pytest -q scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py scripts/tests/test_live_evaluation_api.py
 ```
 
 `scripts/evaluations` drives real API, provider-adapter, orchestration, ownership,

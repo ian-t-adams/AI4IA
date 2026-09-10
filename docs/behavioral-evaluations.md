@@ -24,8 +24,8 @@ python -m scripts.evaluations run --output candidate.json
 python -m scripts.evaluations compare baseline.json candidate.json
 
 # Regression controls and the same static gates used by app-ci.
-python -m pytest -q scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py
-ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py
+python -m pytest -q scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py scripts/tests/test_live_evaluation_api.py
+ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py scripts/tests/test_live_evaluation_api.py
 pyright --project scripts/evaluations
 ```
 
@@ -269,6 +269,13 @@ inventory is only schema compatibility, not execution enforcement. The separate
 versioned policy/factory declaration and real-API boundary controls remain
 necessary. Preflight cannot certify future provider behavior, fixture cleanup,
 spend or live quality, and it creates no session or fresh-turn claim.
+
+The integration controls use real signed JWT validation, the production policy
+and fresh-dispatch factories, actual session/receipt/deletion routes and the
+real gateway adapter with only its HTTP provider replaced. They exercise the
+complete driver, incompatible/expired/privileged actors, changed policy, absent
+factory callbacks, altered request reductions, one-shot replay and foreign-owner
+refusal. They are still offline fixtures, not live actor or rollout evidence.
 
 ### Finite work and cleanup
 

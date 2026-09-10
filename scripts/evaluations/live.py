@@ -170,7 +170,10 @@ def preflight_api(client: ApiClient, config: LiveConfig) -> tuple[str, Execution
     proof = client.request("POST", "/api/chat", {name: {} for name in REQUEST_CONTROLS})
     if proof.status != 422:
         raise LiveError("capability")
-    errors = object_value(proof.json()).get("detail")
+    validation = object_value(proof.json())
+    if validation.get("code") != "validation_error":
+        raise LiveError("capability")
+    errors = validation.get("errors")
     locations = [
         error.get("loc") for error in errors if isinstance(error, dict)
     ] if isinstance(errors, list) else []

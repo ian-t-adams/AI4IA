@@ -172,7 +172,10 @@ class SyntheticAPI:
             fields = ("content", "sessionId") if self.fault == "old_api" else (
                 "allowTools", "allowAutomaticMemory", "requireFreshSession", "content", "sessionId",
             )
-            return result(422, {"detail": [{"loc": ["body", field], "input": POISON} for field in fields]})
+            return result(422, {
+                "code": "validation_error", "detail": "Request validation failed.",
+                "errors": [{"loc": ["body", field], "input": POISON} for field in fields],
+            })
         if path == "/api/sessions":
             session = uuid.uuid4().hex
             self.sessions[session] = {"verified": False, "message": None}
