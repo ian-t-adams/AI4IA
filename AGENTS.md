@@ -286,8 +286,8 @@ python -m unittest scripts.tests.test_api_runtime_dependencies
 ```
 
 This freezes runtime distribution versions, not isolated Hatchling build tooling
-or byte-for-byte image output. Production SBOMs/signing, exact-subject
-attestation verification, and base-index drift reporting remain separate work.
+or byte-for-byte image output. Release SBOMs/signing and exact-subject verification
+are separate gates described below; base-index drift remains read-only.
 
 ### Base image pins
 
@@ -344,8 +344,8 @@ docker buildx build --file proxy/Dockerfile --load proxy
 
 The proxy's NuGet restore runs in locked mode, and the final image is blocked on
 HIGH/CRITICAL findings under the exact-CVE `proxy/.trivyignore` policy. The job
-retains an SPDX SBOM and unsigned build metadata; production signing remains open
-work.
+retains an SPDX SBOM and unsigned build metadata. These load-only PR artifacts are
+never signed or substituted for the production images built by `deploy.yml`.
 
 The `dockerignore-context` job builds throwaway probe images from each
 `.dockerignore` plus synthetic root- and nested-depth dotenv files, proving
@@ -403,9 +403,49 @@ image for greenfield creation, so an infrastructure reconciliation can create a
 placeholder revision before the image build starts. Capturing afterward would make
 that placeholder the rollback target.
 
+### Production image proofs
+
+Before the first `azd deploy`, `deploy.yml` scans all three exact ACR digests with
+Trivy 0.71.2 and publishes both SLSA v1 provenance and SPDX 2.3 attestations through
+the full-SHA-pinned `actions/attest` v4.2.2 action. Explicit subject names/digests
+come from the original build outputs, not automatic artifact discovery or PR
+artifacts. GitHub and the existing ACR receive the signed bundles. The deploy job
+alone adds `attestations: write`; its existing OIDC and ACR login are reused.
+`create-storage-record: false` is mandatory: no organization-only metadata API,
+`artifact-metadata` grant, `packages` grant, new key or Azure role is needed.
+
+`scripts/verify-image-provenance.py` runs checksum-pinned `gh` 2.100.0 against
+`oci://<exact-reference>` and each current action's local bundle, after successful
+publication. It requires cryptographic verification, GitHub's OIDC issuer,
+the exact repository/deploy workflow, main ref, source/signer commit, current run
+attempt and a GitHub-hosted runner. Certificate fields, not caller-written
+predicate claims, establish identity. Each statement must have exactly one
+matching image name/digest; both predicates must exist and the signed SPDX must
+equal the generated, nonempty image dependency inventory. Unknown/malformed,
+oversized, missing or mismatched evidence fails closed without a skip mode.
+
+The helper shares service/argument parsing with the rollout verifier through
+`scripts/_image_refs.py`; CI also binds that inventory to `azure.yaml`.
+Only complete verification emits a proof hash. Immediately before deployment,
+the helper rechecks that hash, the original image outputs, run identity and
+retained file hashes. Never replace this with a success-shaped empty result,
+mutable tag, unsigned JSON approval, registry-list heuristic or a rebuild.
+Same-run bundle selection avoids accepting an older signature for identical image
+bytes; it is not a readback of every registry referrer.
+
+The 30-day production evidence artifact contains SPDX documents, Sigstore
+bundles, CLI verification results and the small sealed image manifest, not runtime
+prompts, secrets or environment dumps. Partial evidence is retained on failure,
+but is not deployment authorization. Failures after provision preserve the
+pre-provision rollback policy; signing failure on a no-provision run never
+dispatches application deployment. See
+[the release runbook](docs/runbooks/deployment.md#production-image-attestations).
+This is workflow-origin provenance, not a byte-for-byte reproducibility claim or
+an isolated SLSA trusted builder. A green PR is not production signing evidence.
+
 ```powershell
 python -m unittest scripts.tests.test_base_image_pins
-python -m unittest scripts.tests.test_immutable_image_promotion
+python -m unittest scripts.tests.test_immutable_image_promotion scripts.tests.test_image_provenance
 ```
 
 ### Infra, manifests, and operational quality
@@ -487,6 +527,7 @@ python3 -m unittest scripts.tests.test_dockerignore_context
 python3 -m unittest scripts.tests.test_base_image_pins
 python3 -m unittest scripts.tests.test_base_image_drift
 python3 -m unittest scripts.tests.test_immutable_image_promotion
+python3 -m unittest scripts.tests.test_image_provenance
 ```
 
 `test_custom_domain_preflight`, `test_pages_status_refresh`,

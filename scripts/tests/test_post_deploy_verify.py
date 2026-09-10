@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -39,7 +40,8 @@ SCRIPT = ROOT / "scripts" / "post-deploy-verify.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "deploy.yml"
 
 
-pdv = load_script("post_deploy_verify", SCRIPT, register=True)
+with patch("sys.path", [str(SCRIPT.parent), *sys.path]):
+    pdv = load_script("post_deploy_verify", SCRIPT, register=True)
 
 STATE_FILE = "state.json"
 # The image a captured revision was running, and therefore the image the app must

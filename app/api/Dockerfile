@@ -8,9 +8,7 @@
 # resolves it when the PR runs and `azd deploy` resolves it again later, so the
 # image CI proved and the image production runs can be different builds of
 # different Python patch releases with no diff anywhere in the repo to show it.
-# This is not theoretical here -- `docker.io/library/python:3.12-slim` moved to
-# the digest below on 2026-08-05, one day before this pin was taken. With the
-# digest present, the two builds either use the same bytes or the pull fails.
+# With the digest present, the two builds use the same base bytes or the pull fails.
 #
 # The TAG is kept in the reference alongside the digest on purpose: it is what
 # Dependabot's docker ecosystem tracks (its `FROM_LINE` regex parses
@@ -24,9 +22,10 @@
 # never changes, so if that experiment is on, no PR is ever opened here.
 # Treat refreshing this digest as a manual audit step.
 #
-# Currently sha256:646fb0bc... = the multi-platform OCI image index for
-# python 3.12.13 (linux/amd64, arm64/v8, 386, arm/v5, arm/v7, ppc64le,
-# riscv64, s390x), published 2026-08-05 and pinned 2026-08-06.
+# Reviewed 2026-09-09: sha256:78387bc3... is the Python 3.12-slim OCI index
+# observed by scripts/check-base-image-drift.py at 23:16:00Z. Raw-body SHA-256
+# and the registry header agree; eight runnable platforms include linux/amd64,
+# arm64/v8, 386, arm/v5, arm/v7, ppc64le, riscv64 and s390x.
 #
 # To refresh:
 #   docker buildx imagetools inspect python:3.12-slim --format '{{json .Manifest.Digest}}'
@@ -46,8 +45,7 @@
 #      `docker inspect` is the more familiar command.
 #   2. Copying from the `Manifests:` block that bare
 #      `docker buildx imagetools inspect python:3.12-slim` prints underneath
-#      the index digest -- one entry per platform (linux/amd64 is currently
-#      sha256:d657ab0a..., which is NOT what is pinned above).
+#      the index digest -- one entry per platform, not the shared index.
 #
 # Either mistake makes the image unbuildable on every other architecture, and
 # it fails confusingly: a local `azd deploy` from an arm64 Mac reports a
@@ -64,7 +62,7 @@
 # Production warning reports prompted the review, but the audit did not
 # establish that Python 3.14 caused those warnings.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim@sha256:646fb0bca3dd3ea1bcc6feb72c17ed16eed6e10cffc732fcc1478bd3e7f02d7b AS base
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

@@ -47,6 +47,8 @@ on:
       - "scripts/postprovision.ps1"
       - "scripts/_generator.py"
       - "scripts/post-deploy-verify.py"
+      - "scripts/verify-image-provenance.py"
+      - "scripts/_image_refs.py"
       - "scripts/check-resource-providers.py"
       - "scripts/check-model-availability.py"
       - "scripts/_model_retirement.py"
@@ -195,6 +197,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      attestations: write
     runs-on: ubuntu-latest
     # 180, not the usual 60: a cancelled `azd provision` does not fail cleanly. GitHub marks a
     # timed-out job "cancelled" and kills azd mid-flight, but ARM keeps the in-flight deployment
@@ -435,6 +438,36 @@ jobs:
             echo "::error::Expected azd 1.29.0 because digest deployment behavior is verified against that release; found: $installed"
             exit 1
           fi
+
+      - name: Install pinned image evidence tools
+        timeout-minutes: 5
+        env:
+          GH_VERSION: 2.100.0
+          GH_ARCHIVE_SHA256: e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be
+          TRIVY_VERSION: 0.71.2
+          TRIVY_ARCHIVE_SHA256: 0510e71e2fd39bf863856d499c8dc19feb4e7336546394c502a8f5cc7ab27460
+        run: |
+          set -euo pipefail
+          tools="${RUNNER_TEMP}/ai4ia-image-tools"
+          mkdir "$tools"
+          # SHA-256 values are from the named official release checksum files,
+          # not a checksum obtained from the same untrusted download at run time.
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --silent --show-error --location --max-time 120 \
+            --output "$tools/gh.tar.gz" \
+            "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$GH_ARCHIVE_SHA256" "$tools/gh.tar.gz" | sha256sum --check --strict
+          tar -xzf "$tools/gh.tar.gz" -C "$tools" "gh_${GH_VERSION}_linux_amd64/bin/gh"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --silent --show-error --location --max-time 120 \
+            --output "$tools/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          printf '%s  %s\n' "$TRIVY_ARCHIVE_SHA256" "$tools/trivy.tar.gz" | sha256sum --check --strict
+          tar -xzf "$tools/trivy.tar.gz" -C "$tools" trivy
+          "$tools/gh_${GH_VERSION}_linux_amd64/bin/gh" --version
+          "$tools/trivy" --version | grep -Fx "Version: ${TRIVY_VERSION}"
+          echo "$tools/gh_${GH_VERSION}_linux_amd64/bin" >> "$GITHUB_PATH"
+          echo "$tools" >> "$GITHUB_PATH"
 
       - name: Log in to Azure (OIDC federated credentials)
         run: |
@@ -748,9 +781,9 @@ jobs:
           env_slug="$(printf '%s' "$AZURE_ENV_NAME" | tr '[:upper:]' '[:lower:]')"
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           {
-            echo "### Deployed image digests"
+            echo "### Built image digests"
             echo ""
-            echo "Built once from \`${GITHUB_SHA}\` and deployed by digest; no rebuild happens inside \`azd deploy\`."
+            echo "Built once from \`${GITHUB_SHA}\`; deployment requires signed image proofs and uses these digests without rebuilding."
             echo ""
             echo "| service | image |"
             echo "| --- | --- |"
@@ -774,20 +807,164 @@ jobs:
             # RepoDigests is populated by the push and is the digest the REGISTRY
             # computed, not a local guess. Filtered to this exact repository
             # because an image can carry several.
-            digest="$(docker image inspect "${ref}:${GITHUB_SHA}" \
-              --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-              | sed -n "s|^${ref}@||p" | head -n 1)" || digest=""
-            case "$digest" in
-              sha256:*) ;;
-              *)
-                echo "::error::Could not read a registry digest for ${ref}:${GITHUB_SHA} after pushing it. Falling back to the mutable tag would reintroduce the very ambiguity this change removes, so the run stops here."
-                exit 1
-                ;;
-            esac
+            if ! repo_digests="$(docker image inspect "${ref}:${GITHUB_SHA}" \
+              --format '{{range .RepoDigests}}{{println .}}{{end}}')"; then
+              echo "::error::Could not read a registry digest after pushing ${service}."
+              exit 1
+            fi
+            digest=""
+            while IFS= read -r candidate; do
+              if [[ "$candidate" == "${ref}@"* ]]; then
+                if [ -n "$digest" ]; then
+                  echo "::error::Ambiguous registry digests for ${service}."
+                  exit 1
+                fi
+                digest="${candidate#"${ref}@"}"
+              fi
+            done <<< "$repo_digests"
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Could not read a registry digest for ${ref}:${GITHUB_SHA} after pushing it. Falling back to the mutable tag would reintroduce the very ambiguity this change removes, so the run stops here."
+              exit 1
+            fi
             echo "${service}_image=${ref}@${digest}" >> "$GITHUB_OUTPUT"
             echo "${service} -> ${ref}@${digest}"
             echo "| ${service} | \`${ref}@${digest}\` |" >> "$summary"
           done
+
+      - name: Bind production image subjects
+        id: subjects
+        env:
+          WEB_IMAGE: ${{ steps.images.outputs.web_image }}
+          API_IMAGE: ${{ steps.images.outputs.api_image }}
+          PROXY_IMAGE: ${{ steps.images.outputs.proxy_image }}
+        run: |
+          set -euo pipefail
+          python scripts/verify-image-provenance.py prepare \
+            --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
+            --expect-image "web=${WEB_IMAGE}" \
+            --expect-image "api=${API_IMAGE}" \
+            --expect-image "proxy=${PROXY_IMAGE}"
+
+      - name: Generate production SPDX SBOMs
+        timeout-minutes: 35
+        env:
+          WEB_IMAGE: ${{ steps.images.outputs.web_image }}
+          API_IMAGE: ${{ steps.images.outputs.api_image }}
+          PROXY_IMAGE: ${{ steps.images.outputs.proxy_image }}
+        run: |
+          set -euo pipefail
+          # Scan registry bytes, not a tag, workspace, PR artifact or local image ID.
+          for pair in "web:$WEB_IMAGE" "api:$API_IMAGE" "proxy:$PROXY_IMAGE"; do
+            service="${pair%%:*}"
+            image="${pair#*:}"
+            trivy image --image-src remote --format spdx-json --list-all-pkgs \
+              --timeout 10m --output "${RUNNER_TEMP}/ai4ia-image-evidence/${service}.spdx.json" \
+              "$image"
+          done
+          python scripts/verify-image-provenance.py sboms \
+            --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
+            --expect-image "web=${WEB_IMAGE}" \
+            --expect-image "api=${API_IMAGE}" \
+            --expect-image "proxy=${PROXY_IMAGE}"
+
+      # Both predicates are signed by this admitted main workflow and uploaded to
+      # GitHub and the existing ACR. Explicit subjects prevent artifact discovery.
+      # Organization-only storage records are disabled: no artifact-metadata or
+      # packages token grant is needed for ACR's existing Docker credentials.
+      - name: Attest web build provenance
+        id: web_provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        env:
+          NODE_OPTIONS: --max-http-header-size=32768
+        with:
+          subject-name: ${{ steps.subjects.outputs.web_name }}
+          subject-digest: ${{ steps.subjects.outputs.web_digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest web SPDX SBOM
+        id: web_sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        env:
+          NODE_OPTIONS: --max-http-header-size=32768
+        with:
+          subject-name: ${{ steps.subjects.outputs.web_name }}
+          subject-digest: ${{ steps.subjects.outputs.web_digest }}
+          sbom-path: ${{ runner.temp }}/ai4ia-image-evidence/web.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest api build provenance
+        id: api_provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        env:
+          NODE_OPTIONS: --max-http-header-size=32768
+        with:
+          subject-name: ${{ steps.subjects.outputs.api_name }}
+          subject-digest: ${{ steps.subjects.outputs.api_digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest api SPDX SBOM
+        id: api_sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        env:
+          NODE_OPTIONS: --max-http-header-size=32768
+        with:
+          subject-name: ${{ steps.subjects.outputs.api_name }}
+          subject-digest: ${{ steps.subjects.outputs.api_digest }}
+          sbom-path: ${{ runner.temp }}/ai4ia-image-evidence/api.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest proxy build provenance
+        id: proxy_provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        env:
+          NODE_OPTIONS: --max-http-header-size=32768
+        with:
+          subject-name: ${{ steps.subjects.outputs.proxy_name }}
+          subject-digest: ${{ steps.subjects.outputs.proxy_digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest proxy SPDX SBOM
+        id: proxy_sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        env:
+          NODE_OPTIONS: --max-http-header-size=32768
+        with:
+          subject-name: ${{ steps.subjects.outputs.proxy_name }}
+          subject-digest: ${{ steps.subjects.outputs.proxy_digest }}
+          sbom-path: ${{ runner.temp }}/ai4ia-image-evidence/proxy.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Verify production image attestations
+        id: image_proofs
+        timeout-minutes: 15
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WEB_IMAGE: ${{ steps.images.outputs.web_image }}
+          API_IMAGE: ${{ steps.images.outputs.api_image }}
+          PROXY_IMAGE: ${{ steps.images.outputs.proxy_image }}
+          WEB_PROVENANCE_BUNDLE: ${{ steps.web_provenance.outputs.bundle-path }}
+          WEB_SBOM_BUNDLE: ${{ steps.web_sbom.outputs.bundle-path }}
+          API_PROVENANCE_BUNDLE: ${{ steps.api_provenance.outputs.bundle-path }}
+          API_SBOM_BUNDLE: ${{ steps.api_sbom.outputs.bundle-path }}
+          PROXY_PROVENANCE_BUNDLE: ${{ steps.proxy_provenance.outputs.bundle-path }}
+          PROXY_SBOM_BUNDLE: ${{ steps.proxy_sbom.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          python scripts/verify-image-provenance.py verify \
+            --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
+            --expect-image "web=${WEB_IMAGE}" \
+            --expect-image "api=${API_IMAGE}" \
+            --expect-image "proxy=${PROXY_IMAGE}"
+
+      - name: Retain production image evidence
+        if: ${{ always() && steps.subjects.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-image-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ai4ia-image-evidence/
+          if-no-files-found: error
+          retention-days: 30
 
       # ---------------------------------------------------------------------
       # Post-deploy proof and rollback (audit finding P1-6).
@@ -850,6 +1027,7 @@ jobs:
           WEB_IMAGE: ${{ steps.images.outputs.web_image }}
           API_IMAGE: ${{ steps.images.outputs.api_image }}
           PROXY_IMAGE: ${{ steps.images.outputs.proxy_image }}
+          IMAGE_PROOF_SHA256: ${{ steps.image_proofs.outputs.proof_sha256 }}
         run: |
           set -euo pipefail
           for pair in "web:$WEB_IMAGE" "api:$API_IMAGE" "proxy:$PROXY_IMAGE"; do
@@ -858,6 +1036,14 @@ jobs:
               exit 1
             fi
           done
+          # Re-bind the proof to the ORIGINAL image outputs and retained bytes,
+          # immediately before the first service can change.
+          python scripts/verify-image-provenance.py authorize \
+            --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
+            --proof-sha256 "$IMAGE_PROOF_SHA256" \
+            --expect-image "web=${WEB_IMAGE}" \
+            --expect-image "api=${API_IMAGE}" \
+            --expect-image "proxy=${PROXY_IMAGE}"
           azd deploy web --from-package "$WEB_IMAGE" --no-prompt
           azd deploy api --from-package "$API_IMAGE" --no-prompt
           azd deploy proxy --from-package "$PROXY_IMAGE" --no-prompt

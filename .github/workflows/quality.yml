@@ -449,4 +449,4 @@ jobs:
           # every azure.yaml service is deployed, nothing falls back to a
           # rebuild, and the P1-6 capture/preflight/deploy/verify/rollback
           # ordering still holds.
-          python3 -m unittest scripts.tests.test_immutable_image_promotion
+          python3 -m unittest scripts.tests.test_immutable_image_promotion scripts.tests.test_image_provenance

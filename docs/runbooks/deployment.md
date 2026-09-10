@@ -87,6 +87,15 @@ push to main (app/infra/proxy/azure.yaml)       manual dispatch on main
                   resolve and record registry digests
                                      |
                                      v
+                  scan all three digests as SPDX 2.3
+                                     |
+                                     v
+           sign provenance + SPDX; publish to GitHub and ACR
+                                     |
+                                     v
+             verify all six current-run image attestations
+                                     |
+                                     v
        azd deploy <service> --from-package <registry>@sha256:<digest>
                                      |
                                      v
@@ -132,6 +141,91 @@ fails CI on a duplicate `JObject` property — the specific defect class that ha
 complete model-plane outage here; any other runtime-only policy failure can still ship.
 Treat a policy change as higher risk than a code change: a broken policy requires a fix
 commit and a fresh provision, not a rollback.
+
+### Production image attestations
+
+The release workflow generates SPDX 2.3 inventories from the **exact registry
+digests** of web, API and proxy, then signs both an SPDX and a SLSA v1 provenance
+statement for each image. The scanner is Trivy 0.71.2, the same version used by
+the PR proxy image gate; these are production scans, not copied PR SBOMs.
+`actions/attest` v4.2.2 is pinned by full commit SHA. Its explicit subject inputs
+prevent automatic discovery from signing another job's artifact.
+
+The action uses short-lived Sigstore certificates issued from GitHub OIDC and
+uploads each signed bundle to GitHub's attestation API and the existing ACR as an
+OCI referrer. The public repository uses Sigstore's public-good infrastructure.
+Only the admitted deploy job receives `attestations: write`; `id-token: write`
+and the existing ACR login are reused. Organization-only artifact storage records
+are explicitly disabled, so neither `artifact-metadata: write` nor
+`packages: write` is granted. No long-lived signing secret or additional Azure
+role is created. A registry, signing service or GitHub plan that cannot perform
+these operations fails the release, rather than silently dropping signatures.
+
+Both Trivy and GitHub CLI 2.100.0 are installed from versioned official releases
+with committed SHA-256 checksums **before** unpacking or putting them on PATH.
+Tool installation runs before provision. No `latest` binary, cached substitute,
+anonymous retry or unsigned fallback is used.
+
+After all six publication actions succeed,
+`scripts/verify-image-provenance.py` invokes `gh attestation verify` for each exact
+`oci://` image and each action's **current-run local bundle**. The CLI reads the
+image through the authenticated registry connection and verifies the bundle's
+signature and trusted signing timestamps. Using explicit bundles, rather than a
+registry/API list of historical attestations, prevents an older signature for
+identical image bytes from satisfying this release. Publication success is
+required; this gate does not claim to enumerate/read back every OCI referrer.
+
+The fail-closed policy requires all of the following:
+
+| Evidence | Required value |
+| --- | --- |
+| Signed certificate issuer | `https://token.actions.githubusercontent.com` |
+| Repository and source ref | The running workflow's repository, `refs/heads/main` |
+| Signing and initiating workflow | Exact `.github/workflows/deploy.yml@refs/heads/main` identity |
+| Source, signer and workflow revisions | This run's `GITHUB_SHA` |
+| Execution identity | This run ID **and attempt**, on a GitHub-hosted runner |
+| Subject | Exactly one fully qualified expected image name and SHA-256 digest |
+| Predicates | SLSA `https://slsa.dev/provenance/v1` and SPDX `https://spdx.dev/Document/v2.3` for every service |
+| SPDX content | The same generated document, with the exact image root and reachable versioned dependencies |
+| SLSA content | This workflow, main ref, source commit and run invocation |
+
+Identity comes from the verified certificate extensions, not merely from
+user-controllable SLSA predicate fields. Empty arrays, absent services, missing or
+contradictory claims, unsupported schemas, CLI errors and timeouts do not produce
+an authorization. The per-command deadline is 120 seconds; SPDX files are bounded
+to 16 MiB, bundles to 24 MiB, CLI output to 64 MiB while it is read, and the final
+manifest to 64 KiB. JSON rejects duplicate keys, non-finite numbers, depth over 48
+and more than one million nodes.
+
+Only complete verification emits a proof hash. The deploy step immediately
+rechecks it against the sealed manifest, the original build-step image outputs,
+the run identity and every retained evidence file. All three images must pass
+before the **first** `azd deploy --from-package`; the existing post-deploy
+assertions then separately require those same three references to be running.
+There is no attestation skip flag.
+
+The workflow retains `production-image-evidence-<commit>-<run>-<attempt>` for
+30 days: three SPDX documents, six Sigstore bundles, six CLI verification results,
+the subject manifest and `verified-images.json`. The job summary links the
+signing run and names the verified digests/predicates. Retained files contain
+image/dependency/build metadata, not runtime prompts, environment dumps or
+credentials. Failed runs can retain partial evidence; its presence alone is not
+proof of verification or rollout. GitHub attestation links and ACR referrers are
+also available independently of the Actions artifact retention window.
+
+A signing or verification failure occurs before application deployment but may
+occur **after provision**. The existing rollback condition therefore restores
+pre-provision Container App revisions when appropriate; it does not undo ARM
+changes. A manual no-provision run leaves active revisions untouched if signing
+fails. The canary-token failure exclusions and cancellation limits remain as
+described in section 6.
+
+This proves the workflow origin and signed claims for the release bytes. It
+does not make release images the same artifacts built on a PR, freeze isolated
+Hatchling/build tooling, prove a scanner finds every dependency, or provide
+byte-for-byte reproducibility or an isolated SLSA trusted builder. Source tests
+exercise policy with offline fixtures; #414 needs actual merged production
+signing, verification and rollout evidence before closure.
 
 ## 2. Before a routine deployment
 
@@ -179,8 +273,9 @@ nonzero rather than falling back to cached/private credentials.
 No new workflow or schedule is activated. A report never rewrites a Dockerfile,
 refreshes a pin, pushes an image or deploys the app. Review a proposed
 multi-platform pin update separately and run the existing image-build gates.
-This does not provide production SBOMs, signatures, provenance or their
-pre-deployment verification; those remaining requirements stay tracked in #414.
+The report is independent of the
+[production image attestation gate](#production-image-attestations); it neither
+signs release artifacts nor authorizes deployment.
 
 ### 2.1 Confirm configuration and generated artifacts
 

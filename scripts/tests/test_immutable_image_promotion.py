@@ -106,13 +106,23 @@ if [ "$1 $2" = "image inspect" ]; then
   fi
   digest_file="$STUB_DIR/digest_for_$(basename "$ref")"
   if [ -f "$digest_file" ]; then
+    if [ -e "$STUB_DIR/lookalike_digest_only" ]; then
+      echo "${ref//./x}@sha256:$(cat "$digest_file")"
+      exit 0
+    fi
     echo "${ref}@sha256:$(cat "$digest_file")"
+    if [ -e "$STUB_DIR/duplicate_digest" ]; then
+      echo "${ref}@sha256:$(cat "$digest_file")"
+    fi
   fi
   exit 0
 fi
 
 if [ "$1" = "build" ] && [ -e "$STUB_DIR/build_fails" ]; then
   echo "build failed" >&2
+  exit 1
+fi
+if [ "$1" = "push" ] && [ -e "$STUB_DIR/push_fails" ]; then
   exit 1
 fi
 exit 0
@@ -308,6 +318,20 @@ class BuildAndPushStepTests(unittest.TestCase):
             outputs["web_image"],
             f"crai4ia1234.azurecr.io/ai4ia/web-prod@sha256:{'a' * 64}",
         )
+
+    def test_repository_matching_is_literal_and_unambiguous(self) -> None:
+        for flag in ("lookalike_digest_only", "duplicate_digest", "push_fails"):
+            with self.subTest(flag=flag):
+                result, outputs, _, _, _ = self.run_step(flags=(flag,))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(outputs, {})
+
+    def test_only_a_complete_lowercase_sha256_digest_is_published(self) -> None:
+        for digest in ("a" * 63, "a" * 65, "A" * 64, "not-a-digest"):
+            with self.subTest(digest=digest):
+                result, outputs, _, _, _ = self.run_step(digests={"web-prod": digest})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(outputs, {})
 
     def test_the_repository_path_is_lowercased_like_azd_does(self) -> None:
         """azd's DefaultImageName lowercases the environment name."""
