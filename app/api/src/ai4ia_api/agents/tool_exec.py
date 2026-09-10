@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .approvals import ApprovalPolicy, ApprovalSink
-from .consent import ConsentChecker
+from .consent import ConsentChecker, tool_contract_hash
 from .tools import ToolRegistry, ToolRisk, ToolSpec
 from ..policy.context import canonical_tool_name, require_policy, tool_allowed, tool_policy_scope
 from ..policy.models import PolicyRequest
@@ -334,7 +334,13 @@ class ToolExecutor:
         if errors:
             raise ToolValidationError("; ".join(errors))
         canonical = canonical_tool_name(name, ctx.tool_aliases)
-        await require_policy(PolicyRequest("tool.invoke", tool_name=canonical))
+        await require_policy(PolicyRequest(
+            "tool.invoke", tool_name=canonical,
+            tool_contract_digest=tool_contract_hash(
+                definition.spec, definition.parameters, description=definition.spec.description,
+                metadata=definition.consent_metadata,
+            ),
+        ))
         with tool_policy_scope(canonical):
             result = definition.handler(args, ctx)
             if inspect.isawaitable(result):

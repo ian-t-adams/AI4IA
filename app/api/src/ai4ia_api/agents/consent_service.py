@@ -168,17 +168,34 @@ async def describe_contracts(
     names = [ctx.tool_aliases.get(name, name) for name in tool_names]
     result: dict[str, ToolContractDescription] = {}
     canonical = {alias: name for name, alias in ctx.tool_aliases.items()}
-    for schema in executor.schema_for(
-        names, registry=registry, ctx=ctx, consented_names=names,
-        apply_policy=not publication_metadata,
-    ):
+    if publication_metadata:
+        # Reviewing a declaration is not execution authority. In particular,
+        # request-only denial and the reviewer's scopes must not erase metadata.
+        real_schemas = [
+            {"function": {
+                "name": name, "parameters": definition.parameters,
+                "description": definition.spec.description,
+            }}
+            for name in names
+            if (definition := executor.get(name)) is not None
+            and (spec := registry.get(name)) is not None
+            and spec.enabled and registry.is_allowlisted(name)
+        ]
+    else:
+        real_schemas = executor.schema_for(
+            names, registry=registry, ctx=ctx, consented_names=names,
+        )
+    for schema in real_schemas:
         fn = schema["function"]
-        definition = executor.get(fn["name"])
-        spec = registry.get(fn["name"])
+        name = fn.get("name")
+        if not isinstance(name, str):
+            continue
+        definition = executor.get(name)
+        spec = registry.get(name)
         if definition is not None and spec is not None:
-            result[fn["name"]] = ToolContractDescription(
+            result[name] = ToolContractDescription(
                 spec, fn["parameters"], fn.get("description"), definition.consent_metadata,
-                canonical.get(fn["name"], fn["name"]),
+                canonical.get(name, name),
             )
     for schema in schemas:
         fn = schema.get("function") or {}
@@ -186,7 +203,7 @@ async def describe_contracts(
         if not isinstance(name, str):
             continue
         spec = synthetic_spec(name)
-        if spec is not None and spec.enabled and not spec.scopes:
+        if spec is not None and spec.enabled and (publication_metadata or not spec.scopes):
             result[name] = ToolContractDescription(
                 spec, fn.get("parameters") or {}, fn.get("description"), {}, name,
             )

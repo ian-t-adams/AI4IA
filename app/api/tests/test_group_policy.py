@@ -28,6 +28,7 @@ def user(*, roles=(), groups=(), expiry=None, **claims):
     return AuthenticatedUser(
         internal_user_id="owner", subject="subject", issuer="issuer",
         tenant_id=TENANT, provider="entra",
+        claims={"roles": list(roles)},
         policy_claims=verified_policy_claims({
             "roles": list(roles), "groups": list(groups),
             "exp": expiry if expiry is not None else int(time.time()) + 3600, **claims,
@@ -181,3 +182,56 @@ def test_legacy_definition_control_record_filters_are_nonvacuous():
         {**draft, "userId": "other"}, {**draft, "recordKind": None},
     ):
         assert not is_definition(value, user_id="owner", kind=WORKFLOW_DEFINITION_KIND)
+
+
+async def test_canary_hook_requires_exact_actor_restrictive_policy_and_current_limits():
+    catalog = load_catalog()
+    entry = next(item for item in catalog.models if item.supportsTools)
+    config = {
+        "canaryActor": {"tenantId": TENANT, "subject": "subject"},
+        "domains": {
+            "models": {"default": {"allow": [entry.category]}},
+            "tools": {"default": {"allow": []}},
+            "documents": {"default": {"allow": []}},
+        },
+        "spend": {"default": {"requestsPerMinute": 2}},
+    }
+    policy, store = service(config)
+    principal = user().model_copy(update={"internal_user_id": policy.canary_owner()})
+    option = entry.options[0]
+    assert (await policy.canary_probe(principal, entry.id, option)).allowed
+    other = principal.model_copy(update={"subject": "not-the-dedicated-actor"})
+    assert not (await policy.canary_probe(other, entry.id, option)).allowed
+    await store.put(Entitlement(
+        id=principal.internal_user_id, userId=principal.internal_user_id, disabled=True,
+    ))
+    assert (await policy.canary_probe(principal, entry.id, option)).reason == "account_disabled"
+    await policy.entitlements.clear(principal.internal_user_id)
+    for domain, value in (("tools", "calculator"), ("documents", "read")):
+        changed = json.loads(json.dumps(config))
+        changed["domains"][domain]["default"]["allow"] = [value]
+        policy.settings.group_policy_json = json.dumps(changed)
+        assert not (await policy.canary_probe(principal, entry.id, option)).allowed
+    policy.settings.group_policy_json = json.dumps(config)
+    assert (await policy.canary_probe(principal, entry.id, option)).allowed
+    policy.settings.admin_subjects = "subject"
+    assert not (await policy.canary_probe(principal, entry.id, option)).allowed
+
+
+async def test_canary_missing_marker_compute_only_limit_and_off_policy_are_not_ready():
+    entry = next(item for item in load_catalog().models if item.supportsTools)
+    config = {
+        "domains": {
+            "models": {"default": {"allow": [entry.category]}},
+            "tools": {"default": {"allow": []}},
+            "documents": {"default": {"allow": []}},
+        },
+        "spend": {"default": {"computeExecutionsPerDay": 1}},
+    }
+    policy, _ = service(config)
+    assert not (await policy.canary_probe(user(), entry.id, entry.options[0])).allowed
+    config["canaryActor"] = {"tenantId": TENANT, "subject": "subject"}
+    policy.settings.group_policy_json = json.dumps(config)
+    assert not (await policy.canary_probe(user(), entry.id, entry.options[0])).allowed
+    policy.settings.group_policy_enabled = False
+    assert (await policy.canary_probe(user(), entry.id, entry.options[0])).outcome == "unavailable"

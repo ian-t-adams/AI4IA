@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING
 
 from ..auth.base import AuthenticatedUser
 from ..catalog import DeploymentOption
-from .models import EffectivePolicy, PolicyDecision, PolicyError, PolicyRequest
+from .models import (
+    EffectivePolicy, PolicyDecision, PolicyError, PolicyRequest, RestrictedProfile, policy_digest,
+)
 
 if TYPE_CHECKING:
     from .service import PolicyService
@@ -20,6 +22,8 @@ class PolicyBinding:
     service: PolicyService
     owner_id: str
     user: AuthenticatedUser | None = None
+    canary_required: bool = False
+    restricted_profile: RestrictedProfile | None = None
 
     async def resolve(self) -> EffectivePolicy:
         if self.user is not None:
@@ -38,15 +42,29 @@ def clear_policy_context() -> None:
     _current.set(None)
     _source_check.set(None)
     _tool.set(None)
+    from ..publishing.execution import clear_publication_execution
+
+    clear_publication_execution()
 
 
 def bind_authenticated(service: PolicyService, user: AuthenticatedUser) -> None:
-    _current.set(PolicyBinding(service, user.internal_user_id, user.model_copy(deep=True)))
+    _current.set(PolicyBinding(
+        service, user.internal_user_id, user.model_copy(deep=True),
+        canary_required=user.internal_user_id == service.canary_owner(cached=True),
+        restricted_profile=service.restricted_profile(user.internal_user_id, cached=True),
+    ))
+
+
+def bind_publication_check(check: Callable[[], Awaitable[None]]) -> None:
+    _source_check.set(check)
 
 
 @contextmanager
 def unattended_policy_scope(service: PolicyService, owner_id: str) -> Iterator[None]:
-    token = _current.set(PolicyBinding(service, owner_id))
+    token = _current.set(PolicyBinding(
+        service, owner_id, canary_required=owner_id == service.canary_owner(),
+        restricted_profile=service.restricted_profile(owner_id),
+    ))
     source = _source_check.set(None)
     try:
         yield
@@ -106,11 +124,22 @@ async def require_policy(request: PolicyRequest, *, owner_id: str | None = None)
         return
     if owner_id is not None and binding.owner_id != owner_id:
         raise PolicyError(PolicyDecision("deny", "owner_mismatch"))
+    effective = None
     if binding.service.enabled:
-        await binding.service.require(await binding.resolve(), request)
+        effective = await binding.resolve()
+        await binding.service.require(effective, request)
     check = _source_check.get()
     if check is not None:
         await check()
+    if effective is not None:
+        if not binding.service.enabled or effective.digest != policy_digest(binding.service._configuration()):
+            raise PolicyError(PolicyDecision("unavailable", "policy_unavailable"))
+        identity = binding.service.identity_decision(effective)
+        if identity is not None:
+            raise PolicyError(identity)
+    from ..publishing.execution import check_publication_request
+
+    check_publication_request(request)
 
 
 async def require_bound_policy(service: PolicyService, request: PolicyRequest) -> None:

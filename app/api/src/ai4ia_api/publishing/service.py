@@ -22,7 +22,7 @@ from .models import (
     MAX_PUBLICATION_BYTES, MAX_VERSIONS_PER_ASSET, MAX_VERSIONS_PER_OWNER,
     ActivationRequest, AssetKind, AssetVersionRef, PublicationError, PublicationExecutionMode,
     PublicationHead, PublicationSubmit, PublicationVersion, ResolvedPublication,
-    ReviewDecision, ReviewRequest, exact_digest,
+    EffectiveSubset, NarrowingReason, ReviewDecision, ReviewRequest, ToolBundle, exact_digest,
 )
 from .refs import publication_handle
 from .store import RecordQuery, RecordSnapshot, RecordStore, publication_head_id
@@ -173,6 +173,7 @@ class PublicationService:
             raise PublicationError("publication_owner_version_limit")
         models, profiles, dependencies = await self.compiler.compile(
             actor, source, model_ids=request.modelIds, modes=request.modes,
+            skill_mode=request.skillMode,
         )
         number = head.versionCount + 1
         version = PublicationVersion(
@@ -183,6 +184,7 @@ class PublicationService:
             dependencies=dependencies, reviewConsent=request.reviewConsent,
             operatorReviewConsent=request.operatorReviewConsent,
             reviewerUserId=request.reviewerUserId, policyDigest=actor.digest,
+            skillMode=request.skillMode,
         )
         version = version.model_copy(update={"digest": version.computed_digest()})
         # Reserve room for the bounded head/decision metadata at subsequent transitions.
@@ -215,6 +217,31 @@ class PublicationService:
             PUBLICATION_HEAD_KIND, owner_id=actor.owner_id, limit=101,
         ))
         return [self._head(row) for row in rows]
+
+    async def head_reference(
+        self, head: PublicationHead, *, pending: bool = False,
+    ) -> AssetVersionRef:
+        number = head.pendingVersion if pending else head.activeVersion
+        if number is None:
+            raise PublicationError("publication_not_found", 404)
+        row = await self._store(head.kind).read(head.userId, _version_id(head.assetId, number))
+        if row is None:
+            raise PublicationError("publication_unavailable", 503)
+        reference = PublicationVersion.model_validate(row.body).reference()
+        await self._version(reference)
+        return reference
+
+    async def owner_head(
+        self, actor: EffectivePolicy, kind: AssetKind, name: str,
+    ) -> PublicationHead | None:
+        actor = await self._actor(actor)
+        row = await self._store(kind).read(actor.owner_id, publication_head_id(name))
+        if row is None:
+            return None
+        head = self._head(row)
+        if head.tenantId != self._tenant(actor):
+            raise PublicationError("publication_not_found", 404)
+        return head
 
     async def catalog(
         self, actor: EffectivePolicy, kind: AssetKind, *, handle: str | None = None,
@@ -276,6 +303,7 @@ class PublicationService:
             actor, version.source,
             model_ids=list(dict.fromkeys(item.modelId for item in version.modelBindings)),
             modes=list(version.profiles), check_policy=check_policy,
+            skill_mode=version.skillMode,
         )
         if (
             any(binding not in models for binding in version.modelBindings)
@@ -463,6 +491,7 @@ class PublicationService:
             raise PublicationError("publication_kind_mismatch")
         return source.to_spec().model_copy(update={
             "name": handle, "sourceVersion": resolved.version.reference(),
+            "publishedModes": list(resolved.version.profiles),
         })
 
     async def dependency_catalog(
@@ -482,3 +511,41 @@ class PublicationService:
                     raise PublicationError("publication_dependency_changed")
                 agents.append(current)
         return AgentCatalog(agents=agents)
+
+    @staticmethod
+    def validate_subset(
+        bundle: ToolBundle, scope: str, contracts: dict[str, str], *,
+        empty_document_scope: bool = False,
+        tools_disabled: bool = False,
+    ) -> EffectiveSubset:
+        requirements = bundle.requirements.get(scope)
+        if requirements is None:
+            raise PublicationError("publication_mode_not_reviewed")
+        expected = {tool.alias: tool.contractDigest for tool in bundle.tools}
+        allowed = set(requirements.required) | requirements.optional.keys()
+        if (
+            contracts.keys() - allowed
+            or any(expected.get(name) != digest for name, digest in contracts.items())
+            or set(requirements.required) - contracts.keys()
+        ):
+            raise PublicationError("publication_contract_changed")
+        removed = requirements.optional.keys() - contracts.keys()
+        supported: set[NarrowingReason] = set()
+        if empty_document_scope:
+            supported.add("empty_document_scope")
+        if tools_disabled:
+            supported.add("request_tools_disabled")
+        narrowing: list[NarrowingReason] = []
+        for name in sorted(removed):
+            reasons = set(requirements.optional[name]) & supported
+            if not reasons:
+                raise PublicationError("publication_optional_contract_unavailable", 503)
+            narrowing.extend(reason for reason in sorted(reasons) if reason not in narrowing)
+        return EffectiveSubset(
+            profileDigest=bundle.digest, scope=scope, contracts=contracts,
+            narrowing=narrowing, exclusions=bundle.exclusions,
+            effectiveDigest=exact_digest({
+                "profile": bundle.digest, "scope": scope, "contracts": contracts,
+                "narrowing": narrowing, "exclusions": bundle.exclusions,
+            }),
+        )

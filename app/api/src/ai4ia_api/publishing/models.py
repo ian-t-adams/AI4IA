@@ -21,6 +21,9 @@ from .refs import AssetVersionRef
 
 AssetKind = Literal["agent", "workflow"]
 PublicationExecutionMode = Literal["chat", "delegation", "workflow", "workflow_tool", "voice"]
+SkillMode = Literal["versioned", "excluded"]
+NarrowingReason = Literal["empty_document_scope", "request_tools_disabled"]
+ProfileExclusion = Literal["skills_excluded_by_author"]
 MAX_PUBLICATION_BYTES = 128 * 1024
 MAX_VERSIONS_PER_ASSET = 20
 MAX_VERSIONS_PER_OWNER = 1000
@@ -85,6 +88,7 @@ class PublicationSubmit(PublicationRecord):
     reviewConsent: bool = Field(strict=True)
     operatorReviewConsent: bool = Field(default=False, strict=True)
     reviewerUserId: str | None = Field(default=None, min_length=1, max_length=256)
+    skillMode: SkillMode = "versioned"
 
     @model_validator(mode="after")
     def explicit_review(self) -> PublicationSubmit:
@@ -103,16 +107,40 @@ class PublishedTool(PublicationRecord):
     contractDigest: str = Field(pattern=r"^[0-9a-f]{64}$")
     parametersDigest: str = Field(pattern=r"^[0-9a-f]{64}$")
     description: str = Field(default="", max_length=2000)
+    descriptionTruncated: bool = False
     risk: str = Field(max_length=32)
     scopes: list[str] = Field(default_factory=list, max_length=32)
     egress: list[str] = Field(default_factory=list, max_length=32)
     resources: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
 
 
+class BundleRequirements(PublicationRecord):
+    required: list[str] = Field(default_factory=list, max_length=128)
+    optional: dict[str, list[NarrowingReason]] = Field(default_factory=dict, max_length=128)
+
+    @model_validator(mode="after")
+    def disjoint(self) -> BundleRequirements:
+        if len(set(self.required)) != len(self.required) or set(self.required) & self.optional.keys():
+            raise ValueError("A contract cannot be both required and optional.")
+        return self
+
+
 class ToolBundle(PublicationRecord):
     mode: PublicationExecutionMode
     tools: list[PublishedTool] = Field(default_factory=list, max_length=128)
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    environmentDigest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    requirements: dict[str, BundleRequirements] = Field(default_factory=dict, max_length=6)
+    exclusions: list[ProfileExclusion] = Field(default_factory=list, max_length=1)
+
+
+class EffectiveSubset(PublicationRecord):
+    profileDigest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    effectiveDigest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scope: str = Field(min_length=1, max_length=64)
+    contracts: dict[str, str] = Field(max_length=128)
+    narrowing: list[NarrowingReason] = Field(default_factory=list, max_length=2)
+    exclusions: list[ProfileExclusion] = Field(default_factory=list, max_length=1)
 
 
 class PublishedModel(PublicationRecord):
@@ -120,6 +148,7 @@ class PublishedModel(PublicationRecord):
     api: str = Field(min_length=1, max_length=32)
     category: str = Field(min_length=1, max_length=64)
     option: DeploymentOption
+    requiredRealtimeProtocol: Literal["ga"] | None = None
 
     @model_validator(mode="after")
     def declared_version(self) -> PublishedModel:
@@ -160,6 +189,7 @@ class PublicationVersion(PublicationRecord):
     reviewerUserId: str | None = None
     submittedAt: datetime = Field(default_factory=utc_now)
     policyDigest: str
+    skillMode: SkillMode = "versioned"
 
     def reference(self) -> AssetVersionRef:
         return AssetVersionRef(

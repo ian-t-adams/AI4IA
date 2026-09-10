@@ -19,6 +19,11 @@ aborts the create rather than letting the cap be bypassed).
 from __future__ import annotations
 
 from uuid import uuid4
+from typing import TYPE_CHECKING
+
+from ..policy.context import current_binding
+from ..policy.models import PolicyDecision, PolicyError, PolicyRequest
+from ..publishing.store import RecordStore
 
 from .models import (
     INPUT_TOKEN,
@@ -41,6 +46,9 @@ from .models import (
 )
 from .store import WorkflowStore
 
+if TYPE_CHECKING:
+    from ..publishing.service import PublicationService
+
 
 class WorkflowService:
     def __init__(
@@ -48,6 +56,11 @@ class WorkflowService:
     ) -> None:
         self._store = store
         self._attachable = attachable_tools
+        self.publications: PublicationService | None = None
+
+    @property
+    def record_store(self) -> RecordStore:
+        return self._store.records
 
     @property
     def attachable_tools(self) -> frozenset[str]:
@@ -68,6 +81,36 @@ class WorkflowService:
 
     async def get(self, user_id: str, name: str) -> Workflow | None:
         return await self._store.get(user_id, (name or "").strip().lower())
+
+    async def available_for(self, user_id: str) -> list[Workflow]:
+        owned = await self.list_for(user_id)
+        binding = current_binding()
+        if self.publications is None or not self.publications.enabled or binding is None or binding.user is None:
+            return owned
+        if binding.owner_id != user_id:
+            raise PolicyError(PolicyDecision("deny", "owner_mismatch"))
+        actor = await binding.resolve()
+        decision = await binding.service.authorize(actor, PolicyRequest("publication.consume"))
+        if decision.outcome == "unavailable":
+            raise PolicyError(decision)
+        if not decision.allowed:
+            return owned
+        names = {item.name for item in owned}
+        for head in (await self.publications.catalog(actor, "workflow"))[:100]:
+            if head.handle in names:
+                raise WorkflowConflictError("A published workflow handle conflicts with an owned name.")
+            ref = await self.publications.head_reference(head)
+            _, version = await self.publications._version(ref)
+            if not isinstance(version.source, Workflow):
+                raise PolicyError(PolicyDecision("unavailable", "policy_unavailable"))
+            owned.append(version.source.model_copy(update={
+                "id": head.handle, "name": head.handle, "sourceVersion": ref,
+            }))
+        return owned
+
+    async def resolve_for(self, user_id: str, name: str) -> Workflow | None:
+        key = (name or "").strip().lower()
+        return next((item for item in await self.available_for(user_id) if item.name == key), None)
 
     async def create(self, user_id: str, req: WorkflowCreate) -> Workflow:
         name = (req.name or "").strip().lower()

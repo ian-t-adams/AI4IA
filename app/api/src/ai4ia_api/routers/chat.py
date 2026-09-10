@@ -82,6 +82,10 @@ from ..agents.approvals import (
     consume_grant,
     invocation_approvals_for,
 )
+from ..publishing.execution import (
+    bind_execution, current_execution, prepare_execution, skill_loader_excluded,
+)
+from ..publishing.models import PublicationError
 from ..agents.summarization import SummarizationService
 from ..agents.mcp_execution import McpPlane, build_mcp_turn_tools_multi
 from ..agents.mcp_skills import (
@@ -1040,6 +1044,12 @@ async def chat(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown or unavailable model: {model_id}",
         )
+    if agent is not None and agent.sourceVersion is not None:
+        bind_execution(await prepare_execution(
+            request.app.state, agent.sourceVersion, mode="chat",
+            model_id=model_id, deployment=deployment, session=session,
+            tools_disabled=getattr(body, "allowTools", True) is False,
+        ))
 
     # Which Azure surface serves this model (chat completions vs Responses API).
     entry = catalog.get(model_id)
@@ -1146,6 +1156,23 @@ async def chat(
     turn_timing = ChatTiming(stream=body.stream)
     bind_chat_timing(turn_timing)
     prior = await repo.list_messages(user.internal_user_id, body.sessionId)
+    publication_run = current_execution()
+    if body.approvals:
+        decision_ids = {decision.requestId for decision in body.approvals}
+        for message in prior:
+            if not any(item.id in decision_ids for item in message.pendingApprovals or []):
+                continue
+            receipt = message.executionReceipt
+            evidence = receipt.runtime.publication if receipt is not None else None
+            if evidence is not None or publication_run is not None:
+                if (
+                    publication_run is None or evidence is None or receipt is None
+                    or publication_run.ref != evidence.source or evidence.effectiveSubsetDigest is None
+                    or receipt.runtime.modelId != publication_run.model_id
+                    or receipt.runtime.deployment != publication_run.deployment.deploymentName
+                ):
+                    raise PublicationError("publication_approval_source_changed")
+                publication_run.expected_subset_digest = evidence.effectiveSubsetDigest
     # Redeem any per-invocation tool approvals the user granted for a prompt this
     # session raised earlier. Done here because it needs ``prior`` (the ownership-
     # checked transcript that *is* the user+session binding) and must burn each
@@ -1596,7 +1623,9 @@ async def chat(
         "official_mcp_service",
         None,
     )
-    skills_eligible = official_mcp_service is not None and tool_agent is None
+    skills_eligible = (
+        official_mcp_service is not None and tool_agent is None and not skill_loader_excluded()
+    )
     official_servers = []
     official_discovery_succeeded = False
     skill_definition = None

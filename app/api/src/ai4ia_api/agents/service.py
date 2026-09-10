@@ -20,10 +20,14 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 from collections.abc import Collection
+from typing import TYPE_CHECKING
 
 from ..catalog import ModelCatalog
 from .agent_catalog import AgentCatalog
 from .store import UserAgentStore
+from ..policy.context import current_binding
+from ..policy.models import PolicyDecision, PolicyError, PolicyRequest
+from ..publishing.store import RecordStore
 from .user_agents import (
     MAX_AGENTS_PER_USER,
     MAX_DESCRIPTION_LEN,
@@ -43,6 +47,9 @@ from .user_agents import (
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from ..publishing.service import PublicationService
+
 
 class AgentService:
     def __init__(
@@ -55,6 +62,11 @@ class AgentService:
         self._store = store
         self._catalog = catalog
         self._attachable = attachable_tools
+        self.publications: PublicationService | None = None
+
+    @property
+    def record_store(self) -> RecordStore:
+        return self._store.records
 
     @property
     def attachable_tools(self) -> frozenset[str]:
@@ -79,9 +91,6 @@ class AgentService:
             logger.warning("user-agent list failed; serving curated only", exc_info=True)
             return curated
 
-        if not user_agents:
-            return curated
-
         by_name = {a.name.lower(): a for a in curated.agents}
         merged = list(curated.agents)
         for ua in user_agents:
@@ -90,7 +99,34 @@ class AgentService:
             spec = ua.to_spec()
             by_name[ua.name.lower()] = spec
             merged.append(spec)
-        return AgentCatalog(agents=merged)
+        conflicts = list(curated.conflicts)
+        binding = current_binding()
+        if self.publications is not None and self.publications.enabled and binding is not None:
+            if binding.owner_id != user_id:
+                raise PolicyError(PolicyDecision("deny", "owner_mismatch"))
+            if binding.user is not None:
+                actor = await binding.resolve()
+                decision = await binding.service.authorize(
+                    actor, PolicyRequest("publication.consume"),
+                )
+                if decision.allowed:
+                    for head in (await self.publications.catalog(actor, "agent"))[:100]:
+                        if head.handle.lower() in by_name:
+                            conflicts.append(head.handle.lower())
+                            continue
+                        ref = await self.publications.head_reference(head)
+                        _, version = await self.publications._version(ref)
+                        if not isinstance(version.source, UserAgent):
+                            raise PolicyError(PolicyDecision("unavailable", "policy_unavailable"))
+                        spec = version.source.to_spec().model_copy(update={
+                            "name": head.handle, "sourceVersion": ref,
+                            "publishedModes": list(version.profiles),
+                        })
+                        by_name[head.handle.lower()] = spec
+                        merged.append(spec)
+                elif decision.outcome == "unavailable":
+                    raise PolicyError(decision)
+        return AgentCatalog(agents=merged, conflicts=conflicts)
 
     async def list_for(self, user_id: str) -> list[UserAgent]:
         """The user's own full agent records (management view)."""
