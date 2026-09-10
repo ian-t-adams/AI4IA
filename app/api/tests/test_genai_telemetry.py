@@ -328,6 +328,40 @@ async def test_terminal_chunk_close_preserves_completed_provider_usage(capture, 
     assert spans[0].attributes["ai4ia.gen_ai.usage.coverage"] == "known"
 
 
+@pytest.mark.parametrize("provider_error", [False, True])
+async def test_chat_in_band_error_is_provider_failure_not_consumer_cancellation(capture, provider_error):
+    exporter, _ = capture
+    model, deployment = _model()
+    event = {
+        "model": model.id, "choices": [],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 3},
+        "error": {"code": "backend_failure", "message": POISON} if provider_error else None,
+    }
+    wire = (
+        'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+        + f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n"
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, text=wire),
+    )) as http:
+        stream = _gateway(http).stream(deployment=deployment, messages=[])
+        assert (await anext(stream)).delta == "partial"
+        async for chunk in stream:
+            if chunk.raw and chunk.raw != "[DONE]" and json.loads(chunk.raw).get("error"):
+                assert json.loads(chunk.raw) == event
+                break
+        await stream.aclose()
+    span = exporter.get_finished_spans()[0]
+    _assert_clean(span)
+    if provider_error:
+        assert span.attributes["error.type"] == "provider"
+        assert span.status.status_code == trace.StatusCode.ERROR
+        assert span.attributes["ai4ia.gen_ai.usage.coverage"] == "unknown"
+    else:
+        assert "error.type" not in span.attributes
+        assert span.attributes["gen_ai.usage.output_tokens"] == 3
+
+
 async def test_each_child_model_call_owns_its_tokens_and_parameters(capture):
     exporter, _ = capture
     model, deployment = _model()

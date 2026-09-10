@@ -79,14 +79,29 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self.tls_context = ssl.create_default_context()
         super().__init__(host, port=443, timeout=timeout, context=self.tls_context)
         self.address = address
+        self.read_socket: socket.socket | None = None
 
     def connect(self) -> None:
         connection = socket.create_connection((self.address, 443), timeout=self.timeout)
+        self.read_socket = connection
         try:
             self.sock = self.tls_context.wrap_socket(connection, server_hostname=self.host)
+            self.read_socket = self.sock
         except BaseException:
             connection.close()
             raise
+
+    def interrupt_read(self) -> bool:
+        # close() may wait for HTTPResponse's buffered-reader lock. Shutdown
+        # interrupts the socket without acquiring that lock; its own thread
+        # retains responsibility for closing response buffers.
+        if self.read_socket is None:
+            return False
+        try:
+            self.read_socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            return False
+        return True
 
 
 def public_address(host: str) -> str:
@@ -115,7 +130,7 @@ class HTTPS:
         self, method: str, path: str, body: bytes | None, *, timeout: float, cleanup: bool,
     ) -> HttpResult:
         # Socket timeouts alone do not bound DNS or a peer trickling headers.
-        # A daemon performs this one attempt; cancellation closes its connection
+        # A daemon performs this one attempt; cancellation interrupts its socket
         # and the bounded worker process owns its remaining lifetime. No retry.
         result: queue.Queue[HttpResult | LiveError] = queue.Queue(maxsize=1)
         cancelled = threading.Event()
@@ -136,7 +151,7 @@ class HTTPS:
         except queue.Empty:
             cancelled.set()
             for connection in active:
-                connection.close()
+                connection.interrupt_read()
             raise LiveError("timeout") from None
         if isinstance(value, LiveError):
             raise value

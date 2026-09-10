@@ -549,6 +549,67 @@ def test_https_keeps_tls_host_while_connecting_to_validated_ip(monkeypatch):
     assert seen == [("tcp", ("8.8.8.8", 443)), ("tls", "api.synthetic.invalid")]
 
 
+def test_timeout_never_closes_a_buffered_response_on_the_waiting_thread(config, monkeypatch):
+    waiting_thread = threading.get_ident()
+    released = threading.Event()
+    worker_closed = threading.Event()
+    blocking_close = []
+    interrupted = []
+
+    class Response:
+        status = 200
+
+        def getheader(self, _name, default=None):
+            return default
+
+        def read1(self, _amount):
+            released.wait(timeout=2)
+            return b""
+
+    class Connection:
+        sock = None
+
+        def __init__(self, *_args):
+            pass
+
+        def request(self, *_args, **_kwargs):
+            pass
+
+        def getresponse(self):
+            return Response()
+
+        def interrupt_read(self):
+            interrupted.append(threading.get_ident())
+            released.set()
+
+        def close(self):
+            if threading.get_ident() == waiting_thread:
+                blocking_close.append(True)
+                released.wait(timeout=0.1)
+            else:
+                worker_closed.set()
+
+    monkeypatch.setattr(live_http, "public_address", lambda _host: "8.8.8.8")
+    monkeypatch.setattr(live_http, "_PinnedHTTPSConnection", Connection)
+    released.set()
+    assert live_http.HTTPS(config, "synthetic-token", Budget())(
+        "GET", "/api/models", None, timeout=0.1, cleanup=False,
+    ).status == 200
+    assert worker_closed.wait(timeout=1)
+    worker_closed.clear()
+    released.clear()
+    try:
+        with pytest.raises(LiveError, match="timeout"):
+            live_http.HTTPS(config, "synthetic-token", Budget())(
+                "GET", "/api/models", None, timeout=0.1, cleanup=False,
+            )
+        assert blocking_close == []
+        assert interrupted == [waiting_thread]
+    finally:
+        released.set()
+        assert worker_closed.wait(timeout=1)
+
+
 def test_disabled_cli_and_unapproved_inputs_never_start_worker(monkeypatch, capsys):
     monkeypatch.delenv(ENV_FIELDS["enabled"], raising=False)
     calls = []

@@ -140,6 +140,8 @@ class ModelSpan:
             response = body["response"]
         elif self.api == "anthropic" and isinstance(body.get("message"), dict):
             response = body["message"]
+        if isinstance(response.get("error"), dict) and response["error"]:
+            self._fail("provider")
         model = response.get("model")
         if model is not None:
             if not isinstance(model, str) or model not in self.models:
@@ -184,7 +186,7 @@ class ModelSpan:
             self.counts = (raw["prompt_tokens"], raw["completion_tokens"])
 
     def error(self, exc: BaseException) -> None:
-        if self.span is None:
+        if self.span is None or self.failed:
             return
         if self.completed and isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
             # Consumers normally close on the terminal chunk instead of asking
