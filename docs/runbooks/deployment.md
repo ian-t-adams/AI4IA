@@ -900,7 +900,7 @@ client IDs alone do not prove read-only grants: the operator must verify them.
 | `AI4IA_MODEL_RETIREMENT_SUBSCRIPTION_ID` | Explicit target subscription |
 | `AI4IA_MODEL_RETIREMENT_RESOURCE_GROUP` | Exact existing target resource group |
 | `AI4IA_MODEL_RETIREMENT_ENV_NAME` | Existing azd environment used with catalog naming to identify Foundry accounts |
-| `AI4IA_MODEL_RETIREMENT_CAPACITY_PROFILE` | Explicit `baseline` or `maximum`, matching the environment |
+| `AI4IA_MODEL_RETIREMENT_CAPACITY_PROFILE` | Explicit `baseline`, `production` or `maximum`, matching the environment; production requires the reviewed catalog policy but report mode remains inventory/offerings-only, never quota collection or activation |
 | `AI4IA_MODEL_RETIREMENT_CLAUDE_ENABLED` | Explicit `true` or `false`, matching the environment's desired catalog scope |
 
 These are workflow-only settings, not new azd/app feature flags. No live

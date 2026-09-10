@@ -504,7 +504,7 @@ python3 -m unittest scripts.tests.test_speech_canary scripts.tests.test_voice_mi
 python3 scripts/gen-voice-migration-docs.py --check              # public dates, never live proof
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
 python3 -m unittest scripts.tests.test_model_retirement         # dates, read-only reports and activation contracts
-python3 -m unittest scripts.tests.test_capacity_evidence        # read-only allocation/quota/aggregate metrics
+python3 -m unittest scripts.tests.test_capacity_evidence scripts.tests.test_capacity_recommendations  # read-only collection and offline policy
 python3 -m unittest scripts.tests.test_postprovision_appconfig_sentinel scripts.tests.test_postprovision_cu_defaults scripts.tests.test_postprovision_hard_gates
 python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap
 python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deploy.yml's real block with `az` stubbed
@@ -541,7 +541,8 @@ python3 -m unittest scripts.tests.test_image_provenance
 `test_model_retirement`,
 `test_proxy_delivery_contracts`, and `test_immutable_image_promotion` need
 `PyYAML` (pinned in the workflow); `test_immutable_image_promotion` also needs
-`bash` and skips without it. `test_capacity_evidence` also requires
+`bash` and skips without it. `test_capacity_evidence` and its reused
+`test_capacity_recommendations` fixtures also require
 `jmespath==0.9.5`, pinned in quality to the inspected Azure CLI parser version:
 the raw ARM projection regressions must execute the real query, not skip it or
 test only already-projected data. The reporter itself remains stdlib-only.
@@ -869,6 +870,28 @@ Model deployment `capacity` is the portable baseline. Optional `maxCapacity` val
 are subscription-specific output from `scripts/sync-model-capacity.py`; never
 hand-copy portal bars or set every regional deployment to the same global limit.
 Bicep uses them only when `AI4IA_MODEL_CAPACITY_PROFILE=maximum`.
+
+The optional `productionCapacityPolicy` and per-deployment `production` fields
+are owner decisions, not generated defaults. `production-capacity-v1` requires
+explicit critical minima, ceilings, pool membership, replacement/retry/other-workload
+reserves and sizing assumptions. Selection requires reviewed source hashes and
+every enabled deployment's capacity; missing metadata refuses before Azure/ARM,
+never falls back. `infra/capacity.bicep` must preserve that strict selection.
+The normal preflight rechecks exact asserted counters and all-version allocations
+without using maximum's pool heuristics. Keep the shipped profile at baseline and
+the catalog unconfigured until the owner accepts actual values.
+
+`scripts/recommend-model-capacity.py` is an **offline**, stdout-only consumer of
+the bounded evidence report and current catalog. Reuse typed evidence parsing and
+pool arithmetic; reject stale/cross-scope/hash-mismatched inputs, and hold current
+with unknown coverage for incomplete/insufficient usage. All sizing conversions
+and pool identities remain operator assertions, not Azure authority. Preserve
+outside allocation and all explicit reserves; an increase cannot spend an
+unapplied reduction. No apply/output writer, collector, schedule or automatic
+profile/criticality/region/SKU/version choice belongs here. Review hashes describe
+the pre-adoption inputs; adoption changes the catalog hash and future reports must
+match it anew. See the
+[production policy runbook](docs/runbooks/deploy-to-azure.md#production-capacity-policy-and-offline-recommendations).
 
 `scripts/report-model-capacity.py` is a separate **read-only evidence collector**,
 not another planner. It reuses the existing deployment naming function but never
