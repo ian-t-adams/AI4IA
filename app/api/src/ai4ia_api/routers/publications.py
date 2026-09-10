@@ -1,7 +1,7 @@
 """Owner-only publication changes and consent-scoped independent review."""
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field
@@ -11,8 +11,8 @@ from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..policy.models import PolicyOperation, PolicyRequest
 from ..publishing.models import (
-    ActivationRequest, AssetKind, AssetVersionRef, PublicationHead, PublicationSubmit,
-    PublicationVersion, ReviewRequest, WithdrawalRequest,
+    ActivationRequest, AssetKind, AssetVersionRef, PublicationError, PublicationHead,
+    PublicationSubmit, PublicationVersion, ReviewRequest, WithdrawalRequest,
 )
 from ..publishing.service import PublicationService
 
@@ -48,12 +48,18 @@ class OwnerPublicationList(BaseModel):
 
 class OwnerPublicationState(PublicationHead):
     pendingSource: AssetVersionRef | None = None
+    pendingDraftRevision: int | None = None
     activeSource: AssetVersionRef | None = None
-    reviewDecision: str | None = None
+    reviewDecision: Literal["approved", "rejected"] | None = None
     reviewerId: str | None = None
 
 
-class ReviewSummary(BaseModel):
+class ReviewStatus(BaseModel):
+    reviewDecision: Literal["approved", "rejected"] | None = None
+    reviewerId: str | None = None
+
+
+class ReviewSummary(ReviewStatus):
     source: AssetVersionRef
     displayName: str
     headRevision: int
@@ -64,7 +70,7 @@ class ReviewList(BaseModel):
     truncated: bool = False
 
 
-class ReviewDetail(BaseModel):
+class ReviewDetail(ReviewStatus):
     version: PublicationVersion
     headRevision: int
 
@@ -75,6 +81,31 @@ def _service(request: Request) -> PublicationService:
 
 def _operator(request: Request, user: AuthenticatedUser) -> bool:
     return evaluate_admin(user, request.app.state.settings, request.headers.get("X-Admin-Secret"))
+
+
+async def _review_status(service: PublicationService, source: AssetVersionRef) -> ReviewStatus:
+    try:
+        review = await service._review(source)
+    except PublicationError as exc:
+        if exc.reason != "publication_not_reviewed":
+            raise
+        return ReviewStatus()
+    return ReviewStatus(reviewDecision=review.decision, reviewerId=review.reviewerId)
+
+
+async def _owner_state(service: PublicationService, head: PublicationHead) -> OwnerPublicationState:
+    pending = await service.head_reference(head, pending=True) if head.pendingVersion is not None else None
+    active = await service.head_reference(head) if head.activeVersion is not None else None
+    pending_revision = None
+    review = ReviewStatus()
+    if pending is not None:
+        _, version = await service._version(pending)
+        pending_revision = version.source.revision
+        review = await _review_status(service, pending)
+    return OwnerPublicationState(
+        **head.model_dump(), pendingSource=pending, pendingDraftRevision=pending_revision,
+        activeSource=active, **review.model_dump(),
+    )
 
 
 @router.get("/publications/capabilities", response_model=PublicationCapabilities)
@@ -132,56 +163,47 @@ async def get_my_publication(
     kind: AssetKind, name: str, request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> OwnerPublicationState | None:
-    from ..publishing.models import PublicationError
-
     service = _service(request)
     head = await service.owner_head(await request.app.state.policy.resolve(user), kind, name)
     if head is None:
         return None
-    pending = await service.head_reference(head, pending=True) if head.pendingVersion is not None else None
-    active = await service.head_reference(head) if head.activeVersion is not None else None
-    review = None
-    if pending is not None:
-        try:
-            review = await service._review(pending)
-        except PublicationError as exc:
-            if exc.reason != "publication_not_reviewed":
-                raise
-    return OwnerPublicationState(
-        **head.model_dump(), pendingSource=pending, activeSource=active,
-        reviewDecision=review.decision if review is not None else None,
-        reviewerId=review.reviewerId if review is not None else None,
-    )
+    return await _owner_state(service, head)
 
 
-@router.post("/publications/{kind}/{name}/submit", response_model=PublicationHead)
+@router.post("/publications/{kind}/{name}/submit", response_model=OwnerPublicationState)
 async def submit_publication(
     kind: AssetKind, name: str, payload: PublicationSubmit, request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
-) -> PublicationHead:
-    return await _service(request).submit(
+) -> OwnerPublicationState:
+    service = _service(request)
+    head = await service.submit(
         await request.app.state.policy.resolve(user), kind, name, payload,
     )
+    return await _owner_state(service, head)
 
 
-@router.post("/publications/{kind}/{name}/activate", response_model=PublicationHead)
+@router.post("/publications/{kind}/{name}/activate", response_model=OwnerPublicationState)
 async def activate_publication(
     kind: AssetKind, name: str, payload: ActivationRequest, request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
-) -> PublicationHead:
-    return await _service(request).activate(
+) -> OwnerPublicationState:
+    service = _service(request)
+    head = await service.activate(
         await request.app.state.policy.resolve(user), kind, name, payload,
     )
+    return await _owner_state(service, head)
 
 
-@router.post("/publications/{kind}/{name}/withdraw", response_model=PublicationHead)
+@router.post("/publications/{kind}/{name}/withdraw", response_model=OwnerPublicationState)
 async def withdraw_publication(
     kind: AssetKind, name: str, payload: WithdrawalRequest, request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
-) -> PublicationHead:
-    return await _service(request).withdraw(
+) -> OwnerPublicationState:
+    service = _service(request)
+    head = await service.withdraw(
         await request.app.state.policy.resolve(user), kind, name, payload.expectedHeadRevision,
     )
+    return await _owner_state(service, head)
 
 
 @router.get("/publication-reviews", response_model=ReviewList)
@@ -195,8 +217,10 @@ async def publication_reviews(
     for head in heads[:100]:
         ref = await service.head_reference(head, pending=True)
         _, version, _ = await service.review_source(actor, ref, operator_authorized=_operator(request, user))
+        status = await _review_status(service, ref)
         items.append(ReviewSummary(
             source=ref, displayName=version.source.displayName, headRevision=head.revision,
+            **status.model_dump(),
         ))
     return ReviewList(items=items, truncated=len(heads) > 100)
 
@@ -210,10 +234,12 @@ async def publication_review_detail(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ReviewDetail:
     source = AssetVersionRef(kind=kind, ownerId=owner, assetId=asset, version=version, digest=digest)
-    head, snapshot, _ = await _service(request).review_source(
+    service = _service(request)
+    head, snapshot, _ = await service.review_source(
         await request.app.state.policy.resolve(user), source, operator_authorized=_operator(request, user),
     )
-    return ReviewDetail(version=snapshot, headRevision=head.revision)
+    status = await _review_status(service, source)
+    return ReviewDetail(version=snapshot, headRevision=head.revision, **status.model_dump())
 
 
 @router.post("/publication-reviews/decision", response_model=ReviewSummary)
@@ -226,6 +252,8 @@ async def decide_publication_review(
         operator_authorized=_operator(request, user),
     )
     _, version = await service._version(payload.source)
+    review = await service._review(payload.source)
     return ReviewSummary(
         source=payload.source, displayName=version.source.displayName, headRevision=head.revision,
+        reviewDecision=review.decision, reviewerId=review.reviewerId,
     )

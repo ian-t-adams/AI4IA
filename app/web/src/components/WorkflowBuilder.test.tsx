@@ -4,6 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 
 import type { AgentSummary, ExecutionReceipt, Message, Workflow, WorkflowRunOutcome } from "@/lib/types";
+import { publicationHead, publicationModels } from "@/lib/publishingTestFixtures";
 import { WorkflowBuilder } from "./WorkflowBuilder";
 
 // The factory returns ONLY what is listed here, so every api.* the component
@@ -23,27 +24,44 @@ const mocks = vi.hoisted(() => ({
   createWorkflow: vi.fn(),
   updateWorkflow: vi.fn(),
   deleteWorkflow: vi.fn(),
+  listModels: vi.fn(),
+  getPublicationCapabilities: vi.fn(),
+  getOwnerPublication: vi.fn(),
+  submitPublication: vi.fn(),
 }));
 
-vi.mock("@/lib/api", () => ({
-  listWorkflows: mocks.listWorkflows,
-  createSession: mocks.createSession,
-  runWorkflow: mocks.runWorkflow,
-  newWorkflowRunIdempotencyKey: mocks.newWorkflowRunIdempotencyKey,
-  getWorkflowRun: mocks.getWorkflowRun,
-  listMessages: mocks.listMessages,
-  cancelWorkflowRun: mocks.cancelWorkflowRun,
-  cancelWorkflowRunByKey: mocks.cancelWorkflowRunByKey,
-  getToolCatalog: mocks.getToolCatalog,
-  listLibraryDocuments: mocks.listLibraryDocuments,
-  createWorkflow: mocks.createWorkflow,
-  updateWorkflow: mocks.updateWorkflow,
-  deleteWorkflow: mocks.deleteWorkflow,
-  // Not mocked: the real terminal-state predicate is the contract under test.
-  // Stubbing it would let the component "poll to completion" against a fake
-  // rule and pass while disagreeing with the API's actual statuses.
-  isTerminalRunStatus: (status: string) =>
-    ["COMPLETED", "FAILED", "TERMINATED"].includes(status.trim().toUpperCase()),
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ApiError: actual.ApiError,
+    apiErrorDetail: actual.apiErrorDetail,
+    listModels: mocks.listModels,
+    listWorkflows: mocks.listWorkflows,
+    createSession: mocks.createSession,
+    runWorkflow: mocks.runWorkflow,
+    newWorkflowRunIdempotencyKey: mocks.newWorkflowRunIdempotencyKey,
+    getWorkflowRun: mocks.getWorkflowRun,
+    listMessages: mocks.listMessages,
+    cancelWorkflowRun: mocks.cancelWorkflowRun,
+    cancelWorkflowRunByKey: mocks.cancelWorkflowRunByKey,
+    getToolCatalog: mocks.getToolCatalog,
+    listLibraryDocuments: mocks.listLibraryDocuments,
+    createWorkflow: mocks.createWorkflow,
+    updateWorkflow: mocks.updateWorkflow,
+    deleteWorkflow: mocks.deleteWorkflow,
+    // Not mocked: the real terminal-state predicate is the contract under test.
+    // Stubbing it would let the component "poll to completion" against a fake
+    // rule and pass while disagreeing with the API's actual statuses.
+    isTerminalRunStatus: (status: string) =>
+      ["COMPLETED", "FAILED", "TERMINATED"].includes(status.trim().toUpperCase()),
+  };
+});
+
+vi.mock("@/lib/publishing", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/publishing")>(),
+  getPublicationCapabilities: mocks.getPublicationCapabilities,
+  getOwnerPublication: mocks.getOwnerPublication,
+  submitPublication: mocks.submitPublication,
 }));
 
 const AGENTS: AgentSummary[] = [
@@ -63,6 +81,8 @@ const WORKFLOWS: Workflow[] = [
     name: "summarize",
     displayName: "Summarize",
     description: "Summarizes the input",
+    revision: 5,
+    incarnation: "a".repeat(32),
     steps: [{ agent: "helper", instruction: "Summarize: {input}" }],
     enabled: true,
     createdAt: "2024-01-01T00:00:00Z",
@@ -85,6 +105,11 @@ const WORKFLOWS: Workflow[] = [
 ];
 
 beforeEach(() => {
+  mocks.getPublicationCapabilities.mockResolvedValue({ enabled: false, actions: [], operatorReviewAvailable: false });
+  mocks.getOwnerPublication.mockResolvedValue(null);
+  mocks.submitPublication.mockResolvedValue({ ...publicationHead, userId: "u1", kind: "workflow", sourceName: "summarize" });
+  mocks.listModels.mockResolvedValue({ models: publicationModels, residencyPolicy: "global" });
+  mocks.updateWorkflow.mockResolvedValue(WORKFLOWS[0]);
   mocks.listWorkflows.mockResolvedValue({
     workflows: WORKFLOWS,
     durableAvailable: false,
@@ -118,6 +143,69 @@ async function openRunTab(
 }
 
 describe("WorkflowBuilder", () => {
+  it("saves with the latest returned draft revision, not a stale list revision", async () => {
+    mocks.updateWorkflow.mockResolvedValueOnce({ ...WORKFLOWS[0], revision: 6 }).mockResolvedValueOnce({ ...WORKFLOWS[0], revision: 7 });
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel={null} onRun={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "Summarize" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByRole("button", { name: "Save changes" });
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(mocks.updateWorkflow).toHaveBeenCalledTimes(2));
+    expect(mocks.updateWorkflow.mock.calls.map(([, body]) => body.expectedRevision)).toEqual([5, 6]);
+    expect(mocks.updateWorkflow.mock.calls[0][1]).not.toHaveProperty("userId");
+    expect(mocks.runWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("keeps publication controls in BUILD only and never starts a run from them", async () => {
+    mocks.getPublicationCapabilities.mockResolvedValue({ enabled: true, actions: ["submit", "review", "consume"], operatorReviewAvailable: false });
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel={null} onRun={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "Summarize" }));
+    expect(await screen.findByRole("region", { name: "Publication" })).toBeInTheDocument();
+    const reads = mocks.getPublicationCapabilities.mock.calls.length;
+    await user.click(screen.getByRole("tab", { name: "Run & test" }));
+    expect(screen.queryByRole("region", { name: "Publication" })).not.toBeInTheDocument();
+    expect(mocks.getPublicationCapabilities).toHaveBeenCalledTimes(reads);
+    expect(mocks.submitPublication).not.toHaveBeenCalled();
+    expect(mocks.runWorkflow).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("tab", { name: "Build" }));
+    expect(await screen.findByRole("region", { name: "Publication" })).toBeInTheDocument();
+  });
+
+  it("treats step-tool edits as dirty and submits the saved revision with workflow-only modes", async () => {
+    mocks.getPublicationCapabilities.mockResolvedValue({ enabled: true, actions: ["submit"], operatorReviewAvailable: false });
+    mocks.updateWorkflow.mockResolvedValue({ ...WORKFLOWS[0], revision: 6,
+      steps: [{ ...WORKFLOWS[0].steps[0], extraTools: ["remember_memory"] }] });
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel={null} onRun={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "Summarize" }));
+    const fillPublication = async () => {
+      await user.click(await screen.findByText("Submit a saved version for review"));
+      await user.type(await screen.findByLabelText("Recipient emails"), "reader@example.com");
+      await user.selectOptions(screen.getByLabelText("Publication models"), "fixture-text");
+      await user.click(screen.getByLabelText("I consent to independent review of this submitted source"));
+    };
+    await fillPublication();
+    expect(screen.getByRole("checkbox", { name: "workflow" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Workflow tool" })).not.toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: "chat" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit for independent review" })).toBeEnabled();
+    await user.click(screen.getByRole("checkbox", { name: "Save memory" }));
+    expect(screen.getByRole("button", { name: "Submit for independent review" })).toBeDisabled();
+    expect(mocks.submitPublication).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByRole("button", { name: "Save changes" });
+    expect(mocks.updateWorkflow.mock.calls[0][1].expectedRevision).toBe(5);
+    await fillPublication();
+    await user.click(screen.getByRole("button", { name: "Submit for independent review" }));
+    await waitFor(() => expect(mocks.submitPublication).toHaveBeenCalledWith("workflow", "summarize", expect.objectContaining({
+      expectedRevision: 6, modes: ["workflow"], skillMode: "versioned",
+    }), { ownerId: WORKFLOWS[0].userId, sourceIncarnation: WORKFLOWS[0].incarnation, headRevision: 0 }, expect.any(AbortSignal)));
+    expect(mocks.createSession).not.toHaveBeenCalled();
+    expect(mocks.runWorkflow).not.toHaveBeenCalled();
+  });
+
   it("requires irreversible confirmation before deleting a workflow", async () => {
     const confirmSpy = vi
       .spyOn(window, "confirm")

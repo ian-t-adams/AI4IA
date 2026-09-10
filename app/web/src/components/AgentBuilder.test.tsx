@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 
 import type { AgentSummary, ModelEntry, UserAgent } from "@/lib/types";
 import type { UserMcpServer } from "@/lib/customTools";
+import { publicationHead, publicationModels } from "@/lib/publishingTestFixtures";
 import { AgentBuilder } from "./AgentBuilder";
 
 const mocks = vi.hoisted(() => ({
@@ -12,13 +13,32 @@ const mocks = vi.hoisted(() => ({
   listMcpServers: vi.fn(),
   listOfficialMcpServers: vi.fn(),
   deleteAgent: vi.fn(),
+  createAgent: vi.fn(),
+  updateAgent: vi.fn(),
+  getPublicationCapabilities: vi.fn(),
+  getOwnerPublication: vi.fn(),
+  submitPublication: vi.fn(),
 }));
 
-vi.mock("@/lib/api", () => ({
-  listMyAgents: mocks.listMyAgents,
-  listMcpServers: mocks.listMcpServers,
-  listOfficialMcpServers: mocks.listOfficialMcpServers,
-  deleteAgent: mocks.deleteAgent,
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ApiError: actual.ApiError,
+    apiErrorDetail: actual.apiErrorDetail,
+    listMyAgents: mocks.listMyAgents,
+    listMcpServers: mocks.listMcpServers,
+    listOfficialMcpServers: mocks.listOfficialMcpServers,
+    deleteAgent: mocks.deleteAgent,
+    createAgent: mocks.createAgent,
+    updateAgent: mocks.updateAgent,
+  };
+});
+
+vi.mock("@/lib/publishing", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/publishing")>(),
+  getPublicationCapabilities: mocks.getPublicationCapabilities,
+  getOwnerPublication: mocks.getOwnerPublication,
+  submitPublication: mocks.submitPublication,
 }));
 
 const AGENTS: AgentSummary[] = [
@@ -38,6 +58,8 @@ const MINE: UserAgent[] = [
     name: "helper",
     displayName: "Helper",
     description: "Helps with quick tasks.",
+    revision: 7,
+    incarnation: "a".repeat(32),
     systemPrompt: "Be helpful.",
     defaultModel: null,
     tools: [],
@@ -79,6 +101,11 @@ beforeEach(() => {
   mocks.listMyAgents.mockResolvedValue(MINE);
   mocks.listMcpServers.mockResolvedValue([]);
   mocks.listOfficialMcpServers.mockResolvedValue([]);
+  mocks.getPublicationCapabilities.mockResolvedValue({ enabled: false, actions: [], operatorReviewAvailable: false });
+  mocks.getOwnerPublication.mockResolvedValue(null);
+  mocks.submitPublication.mockResolvedValue({ ...publicationHead, userId: "u1" });
+  mocks.createAgent.mockResolvedValue(MINE[0]);
+  mocks.updateAgent.mockResolvedValue(MINE[0]);
 });
 
 afterEach(() => {
@@ -87,6 +114,63 @@ afterEach(() => {
 });
 
 describe("AgentBuilder", () => {
+  it("saves with the last server revision even when the follow-up list is older", async () => {
+    mocks.updateAgent.mockResolvedValueOnce({ ...MINE[0], revision: 8 }).mockResolvedValueOnce({ ...MINE[0], revision: 9 });
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={async () => {}} />);
+    await user.click(await screen.findByRole("button", { name: "Helper" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByRole("button", { name: "Save changes" });
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(mocks.updateAgent).toHaveBeenCalledTimes(2));
+    expect(mocks.updateAgent.mock.calls.map(([, body]) => body.expectedRevision)).toEqual([7, 8]);
+    expect(mocks.updateAgent.mock.calls[0][1]).not.toHaveProperty("userId");
+    expect(mocks.updateAgent.mock.calls[0][1]).not.toHaveProperty("incarnation");
+  });
+
+  it("does not invent revision zero for a legacy private agent", async () => {
+    mocks.listMyAgents.mockResolvedValue([{ ...MINE[0], revision: undefined }]);
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={async () => {}} />);
+    await user.click(await screen.findByRole("button", { name: "Helper" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(mocks.updateAgent).toHaveBeenCalled());
+    expect(mocks.updateAgent.mock.calls[0][1].expectedRevision).toBeUndefined();
+  });
+
+  it("publishes only after edits are saved and consent is renewed for the returned revision", async () => {
+    mocks.getPublicationCapabilities.mockResolvedValue({ enabled: true, actions: ["submit"], operatorReviewAvailable: false });
+    mocks.updateAgent.mockResolvedValue({ ...MINE[0], systemPrompt: "Be helpful. More detail.", revision: 8 });
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={AGENTS} models={publicationModels} onChanged={async () => {}} />);
+    await user.click(await screen.findByRole("button", { name: "Helper" }));
+    const fillPublication = async () => {
+      await user.click(await screen.findByText("Submit a saved version for review"));
+      await user.type(await screen.findByLabelText("Recipient emails"), "reader@example.com");
+      await user.selectOptions(screen.getByLabelText("Publication models"), "fixture-text");
+      await user.click(screen.getByLabelText("I consent to independent review of this submitted source"));
+    };
+    await fillPublication();
+    expect(screen.getByRole("button", { name: "Submit for independent review" })).toBeEnabled();
+    await user.type(screen.getByLabelText("System prompt"), " More detail.");
+    expect(screen.getByRole("button", { name: "Submit for independent review" })).toBeDisabled();
+    expect(screen.getByText(/Unsaved edits\. Save changes first/)).toBeInTheDocument();
+    expect(mocks.submitPublication).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByRole("button", { name: "Save changes" });
+    expect(mocks.updateAgent.mock.calls[0][1].expectedRevision).toBe(7);
+    await user.click(await screen.findByText("Submit a saved version for review"));
+    expect(await screen.findByLabelText("I consent to independent review of this submitted source")).not.toBeChecked();
+    await user.type(screen.getByLabelText("Recipient emails"), "reader@example.com");
+    await user.selectOptions(screen.getByLabelText("Publication models"), "fixture-text");
+    await user.click(screen.getByLabelText("I consent to independent review of this submitted source"));
+    await user.click(screen.getByRole("button", { name: "Submit for independent review" }));
+    await waitFor(() => expect(mocks.submitPublication).toHaveBeenCalledWith(
+      "agent", "helper", expect.objectContaining({ expectedRevision: 8 }),
+      { ownerId: MINE[0].userId, sourceIncarnation: MINE[0].incarnation, headRevision: 0 }, expect.any(AbortSignal),
+    ));
+  });
+
   it("requires irreversible confirmation before deleting an agent", async () => {
     const confirmSpy = vi
       .spyOn(window, "confirm")

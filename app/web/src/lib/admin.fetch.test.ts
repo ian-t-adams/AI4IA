@@ -3,22 +3,50 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // Mock the same-origin proxy so the typed fetchers can be tested without a network.
 vi.mock("./auth", () => ({ apiFetch: vi.fn() }));
 
-import { fetchOverview, fetchWebSearchHealth } from "./admin";
+import { ADMIN_OPERATIONS, fetchOfficialMcpHealth, fetchOverview, fetchUsageSummary, fetchWebSearchHealth, fetchWhoAmI } from "./admin";
 import { apiFetch } from "./auth";
 
 const mockApiFetch = vi.mocked(apiFetch);
 
 function jsonResponse(body: unknown): Response {
-  return {
-    ok: true,
-    status: 200,
-    statusText: "OK",
-    json: async () => body,
-  } as unknown as Response;
+  return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
 afterEach(() => {
   mockApiFetch.mockReset();
+});
+
+describe("fetchWhoAmI operation evidence", () => {
+  it.each([
+    { subject: "legacy-admin", isAdmin: true, adminOperations: [...ADMIN_OPERATIONS] },
+    { subject: "mapped-reader", isAdmin: true, adminOperations: ["admin.metrics.security.read"] },
+    { subject: "publication-reviewer", isAdmin: false, adminOperations: [] },
+  ])("preserves the exact server operation list for $subject", async (who) => {
+    mockApiFetch.mockResolvedValue(jsonResponse(who));
+    await expect(fetchWhoAmI()).resolves.toEqual(who);
+    expect(mockApiFetch).toHaveBeenCalledExactlyOnceWith("/api/admin/whoami", { cache: "no-store", signal: undefined });
+  });
+
+  it.each([
+    null,
+    { subject: "legacy", isAdmin: true },
+    { subject: "a", isAdmin: "true", adminOperations: ["admin.usage.read"] },
+    { subject: "a", isAdmin: true, adminOperations: "admin.usage.read" },
+    { subject: "a", isAdmin: true, adminOperations: ["admin.usage.read", 1] },
+  ])("leaves incomplete or non-Boolean access evidence unavailable", async (who) => {
+    mockApiFetch.mockResolvedValue(jsonResponse(who));
+    await expect(fetchWhoAmI()).rejects.toThrow(/operation availability is unknown/i);
+  });
+});
+
+describe("fetchUsageSummary", () => {
+  it("uses the unenriched summary route without identify or entitlement queries", async () => {
+    mockApiFetch.mockResolvedValue(jsonResponse({ sinceDays: 7, activeUsers: 2 }));
+    const signal = new AbortController().signal;
+    const result = await fetchUsageSummary(7, signal);
+    expect(result.activeUsers).toBe(2);
+    expect(mockApiFetch).toHaveBeenCalledExactlyOnceWith("/api/admin/usage/summary?days=7", { cache: "no-store", signal });
+  });
 });
 
 describe("fetchOverview", () => {
@@ -131,6 +159,40 @@ describe("fetchOverview", () => {
     } as unknown as Response);
 
     await expect(fetchOverview(30)).rejects.toMatchObject({ status: 403 });
+  });
+});
+
+describe("fetchOfficialMcpHealth", () => {
+  const report = { enabled: true, gatewayConfigured: true, servers: [], generatedAt: "2026-09-10T00:00:00Z" };
+
+  it.each([false, true])("sends the explicit refresh=%s selection with cancellation", async (refresh) => {
+    mockApiFetch.mockResolvedValue(jsonResponse(report));
+    const signal = new AbortController().signal;
+    await expect(fetchOfficialMcpHealth(refresh, signal)).resolves.toEqual(report);
+    expect(mockApiFetch).toHaveBeenCalledExactlyOnceWith(`/api/admin/metrics/official-mcp?refresh=${refresh}`, { cache: "no-store", signal });
+  });
+
+  it("defaults to inspection without dropping the cache", async () => {
+    mockApiFetch.mockResolvedValue(jsonResponse(report));
+    await fetchOfficialMcpHealth();
+    expect(mockApiFetch.mock.calls[0][0]).toBe("/api/admin/metrics/official-mcp?refresh=false");
+  });
+
+  it.each([
+    { ...report, enabled: "true" },
+    { ...report, gatewayConfigured: "false" },
+    { ...report, servers: null },
+    { ...report, servers: [{ name: "server", displayName: "Server", toolCount: -1 }] },
+  ])("does not label malformed MCP evidence as a healthy empty catalog", async (value) => {
+    mockApiFetch.mockResolvedValue(jsonResponse(value));
+    await expect(fetchOfficialMcpHealth()).rejects.toThrow(/inspection is unavailable/i);
+  });
+
+  it("surfaces denial without escalating inspection to refresh", async () => {
+    mockApiFetch.mockResolvedValue(new Response(JSON.stringify({ detail: "admin operation denied" }), { status: 403 }));
+    await expect(fetchOfficialMcpHealth()).rejects.toMatchObject({ status: 403 });
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    expect(mockApiFetch.mock.calls[0][0]).toBe("/api/admin/metrics/official-mcp?refresh=false");
   });
 });
 

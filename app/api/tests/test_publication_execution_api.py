@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+from urllib.parse import quote
 
 import httpx
 import jwt
@@ -107,6 +108,86 @@ def publish(client, model, headers, kind, name, *, tools=True, modes=None):
     }, headers=headers("Author"))
     assert activated.status_code == 200, activated.text
     return activated.json(), source
+
+
+@pytest.mark.parametrize("decision", ["approved", "rejected"])
+def test_review_reads_and_mutation_acknowledgements_keep_immutable_status(published_api, decision):
+    client, model, headers, calls = published_api
+    created = client.post("/api/agents", json={
+        "name": "review-status", "systemPrompt": "Use this reviewed source.", "tools": [],
+    }, headers=headers("Author"))
+    assert created.status_code == 201
+    path = "/api/publications/agent/review-status"
+    submitted = client.post(f"{path}/submit", json={
+        "expectedRevision": created.json()["revision"], "audience": {"visibility": "public"},
+        "modelIds": [model], "modes": ["chat"], "reviewConsent": True, "skillMode": "excluded",
+    }, headers=headers("Author"))
+    assert submitted.status_code == 200, submitted.text
+    head = submitted.json()
+    source = head["pendingSource"]
+    assert head["pendingDraftRevision"] == created.json()["revision"]
+    assert source["ownerId"] == created.json()["userId"]
+    assert source["assetId"] == head["assetId"]
+    assert source["version"] == head["pendingVersion"] == head["versionCount"]
+    assert head["reviewDecision"] is None and head["reviewerId"] is None
+    detail_path = (
+        f"/api/publication-reviews/agent/{quote(source['ownerId'], safe='')}/"
+        f"{source['assetId']}/{source['version']}"
+    )
+
+    def read_reviews():
+        inbox = client.get("/api/publication-reviews?kind=agent", headers=headers("Reviewer"))
+        detail = client.get(detail_path, params={"digest": source["digest"]}, headers=headers("Reviewer"))
+        assert inbox.status_code == detail.status_code == 200
+        assert len(inbox.json()["items"]) == 1
+        return inbox.json()["items"][0], detail.json()
+
+    before_inbox, before_detail = read_reviews()
+    assert before_inbox["reviewDecision"] is None and before_detail["reviewDecision"] is None
+    assert client.get(
+        detail_path, params={"digest": source["digest"]}, headers=headers("Consumer"),
+    ).status_code == 404
+    reviewed = client.post("/api/publication-reviews/decision", json={
+        "source": source, "expectedHeadRevision": head["revision"], "decision": decision,
+    }, headers=headers("Reviewer"))
+    assert reviewed.status_code == 200, reviewed.text
+    acknowledged = reviewed.json()
+    assert acknowledged["source"] == source
+    assert acknowledged["headRevision"] == head["revision"] + 1
+    assert acknowledged["reviewDecision"] == decision
+    assert acknowledged["reviewerId"] and acknowledged["reviewerId"] != source["ownerId"]
+    for read in (*read_reviews(), client.get(path, headers=headers("Author")).json()):
+        assert read["reviewDecision"] == decision
+        assert read["reviewerId"] == acknowledged["reviewerId"]
+    repeated = client.post("/api/publication-reviews/decision", json={
+        "source": source, "expectedHeadRevision": acknowledged["headRevision"],
+        "decision": "rejected" if decision == "approved" else "approved",
+    }, headers=headers("Reviewer"))
+    assert repeated.status_code == 409
+
+    activated = client.post(f"{path}/activate", json={
+        "source": source, "expectedHeadRevision": acknowledged["headRevision"],
+    }, headers=headers("Author"))
+    if decision == "approved":
+        assert activated.status_code == 200, activated.text
+        current = activated.json()
+        assert current["activeSource"] == source and current["pendingSource"] is None
+        assert current["pendingDraftRevision"] is None
+        assert current["revision"] == acknowledged["headRevision"] + 1
+    else:
+        assert activated.status_code == 409
+        current = client.get(path, headers=headers("Author")).json()
+    withdrawn = client.post(f"{path}/withdraw", json={
+        "expectedHeadRevision": current["revision"],
+    }, headers=headers("Author"))
+    assert withdrawn.status_code == 200, withdrawn.text
+    final = withdrawn.json()
+    assert final["revision"] == current["revision"] + 1
+    assert final["assetId"] == source["assetId"]
+    assert final["activeSource"] is None and final["pendingSource"] is None
+    assert final["pendingDraftRevision"] is None and final["reviewDecision"] is None
+    assert final["visibility"] == "private" and final["acl"] == [] and final["groupAcl"] == []
+    assert calls == []
 
 
 @pytest.mark.parametrize("tools", [False, True])
