@@ -242,6 +242,7 @@ class SpeechCanaryTests(unittest.TestCase):
         for bad in (
             b'{"error":"not audio"}', b"RIFF\0\0\0\0WAVEfake",
             wav()[:-1], wav() + b"\0", wav(frames=0), wav(frames=2399),
+            wav()[:4] + struct.pack("<I", len(wav()) - 9) + wav()[8:],
             wav(frames=120001, rate=8000), wav(channels=3),
             wav()[:20] + struct.pack("<H", 3) + wav()[22:],
             wav()[:32] + struct.pack("<H", 100) + wav()[34:],
