@@ -32,6 +32,7 @@ import {
   ModelCategoryNote,
 } from "./ModelPicker";
 import { Pill } from "./Pill";
+import { PublicationControls } from "./PublicationControls";
 import {
   checkRow,
   fieldset,
@@ -96,6 +97,7 @@ export function AgentBuilder({
     [],
   );
   const [editing, setEditing] = useState<string | null>(null); // name, or null = new
+  const [savedAgent, setSavedAgent] = useState<UserAgent | null>(null);
   const [form, setForm] = useState<AgentForm>(blankForm);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -197,12 +199,14 @@ export function AgentBuilder({
 
   const startNew = useCallback(() => {
     setEditing(null);
+    setSavedAgent(null);
     setForm(blankForm());
     setError(null);
   }, []);
 
   const startEdit = useCallback((a: UserAgent) => {
     setEditing(a.name);
+    setSavedAgent(a);
     setForm(formFrom(a));
     setError(null);
   }, []);
@@ -241,18 +245,19 @@ export function AgentBuilder({
     setBusy(true);
     try {
       const saved = editing
-        ? await api.updateAgent(editing, body)
+        ? await api.updateAgent(editing, { ...body, expectedRevision: savedAgent?.revision })
         : await api.createAgent({ name: form.name, ...body });
-      await refreshMine();
-      await onChanged(); // keep the @-mention menu + link pickers fresh
+      setSavedAgent(saved);
       setEditing(saved.name);
       setForm(formFrom(saved)); // reflect server-sanitized links
+      await refreshMine();
+      await onChanged(); // keep the @-mention menu + link pickers fresh
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [editing, form, refreshMine, onChanged]);
+  }, [editing, form, savedAgent, refreshMine, onChanged]);
 
   const remove = useCallback(
     async (name: string) => {
@@ -296,6 +301,7 @@ export function AgentBuilder({
             <li key={a.id} style={{ display: "flex", alignItems: "center" }}>
               <button
                 onClick={() => startEdit(a)}
+                disabled={busy}
                 aria-current={editing === a.name ? "true" : undefined}
                 style={{
                   flex: 1,
@@ -636,6 +642,15 @@ export function AgentBuilder({
             {busy ? "Saving…" : editing ? "Save changes" : "Create agent"}
           </button>
         </div>
+        <PublicationControls
+          kind="agent"
+          saved={savedAgent}
+          ownerId={mine[0]?.userId}
+          dirty={savedAgent === null || JSON.stringify(form) !== JSON.stringify(formFrom(savedAgent))}
+          busy={busy}
+          models={models}
+          defaultModelId={savedAgent?.defaultModel}
+        />
       </div>
     </div>
   );

@@ -9,9 +9,24 @@ import { apiFetch } from "./auth";
 export interface WhoAmI {
   subject: string;
   isAdmin: boolean;
+  adminOperations?: string[];
   email?: string | null;
   name?: string | null;
 }
+
+export const ADMIN_OPERATIONS = [
+  "admin.usage.read",
+  "admin.directory.read",
+  "admin.entitlements.read",
+  "admin.entitlements.write",
+  "admin.metrics.resources.read",
+  "admin.metrics.operations.read",
+  "admin.metrics.security.read",
+  "admin.metrics.websearch.read",
+  "admin.mcp.inspect",
+  "admin.mcp.refresh",
+] as const;
+export type AdminOperation = (typeof ADMIN_OPERATIONS)[number];
 
 export interface AdminUsageSummary {
   sinceDays: number;
@@ -256,6 +271,19 @@ export interface WebSearchHealthReport {
   recent: WebSearchFailure[];
 }
 
+export interface OfficialMcpHealthReport {
+  enabled: boolean;
+  gatewayConfigured: boolean;
+  generatedAt: string;
+  servers: {
+    name: string;
+    displayName: string;
+    toolCount: number;
+    lastConnectedAt: string | null;
+    lastError: string | null;
+  }[];
+}
+
 // ---- API client ----
 
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -277,12 +305,22 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   return (await resp.json()) as T;
 }
 
-export function fetchWhoAmI(): Promise<WhoAmI> {
-  return getJson<WhoAmI>("/api/admin/whoami");
+export async function fetchWhoAmI(): Promise<WhoAmI> {
+  const who = await getJson<WhoAmI>("/api/admin/whoami");
+  if (!who || typeof who.isAdmin !== "boolean" || !Array.isArray(who.adminOperations) ||
+    !who.adminOperations.every((operation) => typeof operation === "string")) {
+    throw new Error("Admin operation availability is unknown: invalid access response.");
+  }
+  return who;
 }
 
-// One request for every usage panel. The legacy per-panel fetchers were removed
-// so a future caller cannot accidentally restore seven full ledger scans.
+// Usage-only access cannot read entitlement-enriched overview/by-user. Keep a
+// single unenriched summary read rather than restoring seven ledger scans.
+export function fetchUsageSummary(days: number, signal?: AbortSignal): Promise<AdminUsageSummary> {
+  return getJson<AdminUsageSummary>(`/api/admin/usage/summary?days=${days}`, signal);
+}
+
+// Requires usage.read + entitlements.read. identify additionally needs directory.read.
 export function fetchOverview(
   days: number,
   limit = 20,
@@ -291,7 +329,7 @@ export function fetchOverview(
   signal?: AbortSignal,
 ): Promise<AdminUsageOverviewReport> {
   return getJson<AdminUsageOverviewReport>(
-    `/api/admin/usage/overview?days=${days}&limit=${limit}&offset=${offset}&identify=${identify ? "true" : "false"}`,
+    `/api/admin/usage/overview?days=${days}&limit=${limit}&offset=${offset}&identify=${identify === true ? "true" : "false"}`,
     signal,
   );
 }
@@ -321,12 +359,62 @@ export function fetchSecurityMetrics(
   );
 }
 
+export async function fetchOfficialMcpHealth(refresh = false, signal?: AbortSignal): Promise<OfficialMcpHealthReport> {
+  const report = await getJson<OfficialMcpHealthReport>(
+    `/api/admin/metrics/official-mcp?refresh=${refresh === true ? "true" : "false"}`, signal,
+  );
+  if (!report || typeof report.enabled !== "boolean" || typeof report.gatewayConfigured !== "boolean" ||
+    !Array.isArray(report.servers) || report.servers.some((server) => !server ||
+      typeof server.name !== "string" || typeof server.displayName !== "string" ||
+      !Number.isSafeInteger(server.toolCount) || server.toolCount < 0)) {
+    throw new Error("Official MCP inspection is unavailable: invalid report.");
+  }
+  return report;
+}
+
 // ---- pure transforms / formatters (unit-tested) ----
 
-// The cosmetic gate for showing the admin nav entry / dashboard body. The server
-// `require_admin` is the real boundary; this only decides UI visibility.
+// UI/request selection only; the API rechecks every operation. An admin badge,
+// a role name, or a publication-review grant never substitutes for this list.
+export function hasAdminOperation(whoami: WhoAmI | null | undefined, operation: AdminOperation): boolean {
+  return whoami?.isAdmin === true && Array.isArray(whoami.adminOperations) &&
+    whoami.adminOperations.every((value) => typeof value === "string") && whoami.adminOperations.includes(operation);
+}
+
 export function canShowAdmin(whoami: WhoAmI | null | undefined): boolean {
-  return !!whoami && whoami.isAdmin === true;
+  return ADMIN_OPERATIONS.some((operation) => hasAdminOperation(whoami, operation));
+}
+
+export interface AdminDashboardAccess {
+  usage: boolean;
+  overview: boolean;
+  identify: boolean;
+  entitlementsWrite: boolean;
+  resources: boolean;
+  operations: boolean;
+  security: boolean;
+  webSearch: boolean;
+  officialMcp: boolean;
+  refreshOfficialMcp: boolean;
+}
+
+export function adminDashboardAccess(whoami: WhoAmI | null | undefined): AdminDashboardAccess {
+  const allowed = (operation: AdminOperation) => hasAdminOperation(whoami, operation);
+  const usage = allowed("admin.usage.read");
+  const overview = usage && allowed("admin.entitlements.read");
+  const officialMcp = allowed("admin.mcp.inspect");
+  return {
+    usage,
+    overview,
+    identify: overview && allowed("admin.directory.read"),
+    entitlementsWrite: allowed("admin.entitlements.write"),
+    resources: allowed("admin.metrics.resources.read"),
+    operations: allowed("admin.metrics.operations.read"),
+    security: allowed("admin.metrics.security.read"),
+    webSearch: allowed("admin.metrics.websearch.read"),
+    officialMcp,
+    refreshOfficialMcp: officialMcp && allowed("admin.mcp.refresh"),
+  };
 }
 
 // Compact human counts: 950 -> "950", 1234 -> "1.2K", 3_400_000 -> "3.4M".

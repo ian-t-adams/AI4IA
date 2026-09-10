@@ -75,6 +75,23 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    contract scope before dispatch, and never grant new tools or permissions.
    Include automatically injected registry tools such as `load_skill` and their
    meaningful resource metadata in those snapshots.
+   `ChatRequest.allowTools=false` and `allowAutomaticMemory=false` are
+   request-only denials, not grants or durable preference edits. Keep their
+   nested-AND context alive through SSE, tool dispatch and automatic memory IO.
+   The optional `requireFreshSession` path consumes an API-hidden v1 session
+   claim with the existing owner/ETag CAS before constructing its empty-context
+   prompt. Preserve `freshTurnClaimed` in durable serialization and every
+   patch/clear path; never reset it after errors or lost acknowledgements.
+   This is one-shot model admission, not a child-write or deletion fence.
+   The factory's canary dispatch guard additionally binds owner, claimed
+   generation, actual adapted sentinel-only payload and one dispatch; only
+   actor policy can require that guard, and the guard grants no authority.
+   The distinct default-absent realtime setup actor is selected only by
+   authenticated policy. Its one-open scope guards the shared relay writer and
+   receiver, allows one exact setup frame and ordered acknowledgements, and
+   refuses audio, response creation, tools and every other metered surface.
+   Keep its processing deadline across connection establishment and relay;
+   source/accounting/close cleanup must not become a new model permission.
 6. **No secret sprawl.** Do not log credentials, commit secrets, or put user MCP
    secrets in Cosmos; durable MCP secrets belong in Key Vault outside local.
 7. **Receipts show execution, never hidden reasoning.** Persist bounded,
@@ -497,6 +514,7 @@ keeps endpoint and authentication configuration in the Foundry project connectio
 
 ```powershell
 python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/redaction rules
+python3 -m unittest scripts.tests.test_application_canary       # offline continuous monitor/state/identity controls
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
 python3 -m unittest scripts.tests.test_model_retirement         # dates, read-only reports and activation contracts
 python3 -m unittest scripts.tests.test_capacity_evidence scripts.tests.test_capacity_recommendations  # read-only collection and offline policy
@@ -583,6 +601,25 @@ and authenticated/model-path canaries. Auth challenges, redirects and malformed
 JSON cannot pass API health; unresolved targets and historical missing coverage
 remain unknown. API probes are bounded to 20 seconds and 4 KiB with no redirects,
 cookies or default credentials. Never publish response bodies or exception text.
+
+`application-canaries.yml` is operational scheduling, default-off for all app and
+model traffic, and independent of the anonymous portal snapshot. Its prepare
+job reads only this repository's exact predecessor run/artifact; its separately
+gated observation job alone exchanges dedicated OIDC for an API token. No ARM
+login, deploy identity, Graph, new resource, live test or settings mutation belongs
+in source validation. `scripts/canaries` shares the sentinel/catalog candidates
+and ordered Voice Live setup primitive with existing operator helpers, but uses
+strict bounded JSON, public DNS pinning, no redirects/cookies/default credentials,
+one application chat attempt, a finite lease and strict v1 owner cleanup.
+Missing state, ambiguous writes and partial cleanup never reset the failure
+count to a healthy zero or authorize another mutation. Retain only allowlisted
+content-free state; API sessions/receipts, private configuration and raw errors
+must never be uploaded. GA config/header alone is not an event canary, and an
+operator actor policy must admit the setup-only path separately. See
+`docs/runbooks/deployment.md#continuous-application-canaries` for the activation
+and notification boundaries. Its existing quality job installs the same pinned
+aiohttp transport for offline fixtures; app-ci also runs Ruff and Pyright over
+the monitor package.
 
 `security-scan` runs Trivy filesystem/config scans and gitleaks over the full
 proxy tree. `.trivyignore.yaml` suppresses only the untouched upstream Dockerfile
@@ -1037,6 +1074,35 @@ This is source staging only: no model/version/capacity or TTS change, live succe
 claim, default cutover or legacy removal. Follow the approved
 [activation/rollback procedure](docs/runbooks/feature-enablement.md#staged-ga-realtime).
 Issue #413 stays open for its remaining live/model/TTS acceptance criteria.
+
+## Group policy and publication source contract
+
+- `policy` is the shared default-off application restriction layer; only
+  post-verification exact Entra role values/group IDs may match operator JSON.
+  Do not add Graph lookups, writable user grant fields, or user-ID-only authority
+  caches. Keep unavailable distinct from deny; limits remain per-user soft
+  restrictions, never a group pool or Azure bill cap.
+- `publishing` keeps private owner/name drafts and immutable reviewed versions
+  in existing owner partitions. Independent review requires explicit owner
+  submission consent; fresh owner activation is separate. Review grants are not
+  global admin or consumer execution grants. Do not copy BYO credentials,
+  unreviewed private dependencies or curated private prompt bodies.
+- `workflows/record_types.py` owns `recordKind` and the `:ai4ia:` control namespace,
+  including automation owner/schedule and publication records. Both definition
+  stores exclude control IDs even with malformed/missing kinds, reject unknown
+  definition kinds, and retain legacy positive controls.
+- Published source references, model-declared versions, `runtimeEnabled` and
+  `requiredRealtimeProtocol` when present, exact tool/schema/resource bindings,
+  required/optional profiles and actual subset digests must survive all consumers.
+  Missing required metadata is not a permitted narrowing. A reviewed excluded
+  skill profile is explicit, never an error fallback or removal of required skills.
+- Token expiry stops the next protected dispatch; it does not stop accepted-work
+  receipts, accounting, cancellation or cleanup. Unattended work cannot construct
+  an authenticated user from queued claims. Monitor, authored-evaluation and
+  realtime-setup actor markers are distinct and default absent. Their real
+  bounded guards enforce one-shot requests or setup-only frames; capability reads
+  never grant execution. A configured actor stays restricted while policy
+  evaluation is paused.
 
 ## Auth model and `apiFetch` contract
 

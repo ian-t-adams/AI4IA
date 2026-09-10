@@ -57,6 +57,7 @@ from ..safety import MessageSafety, attributed_safety, provider_for_api
 from ..sessions.models import ActivityStep
 from ..usage.models import TokenUsage
 from ..usage.pricing import PricingBook
+from ..publishing.execution import WorkflowPublicationBuilder, run_with_publication
 from .models import INPUT_TOKEN, PREVIOUS_TOKEN, Workflow, WorkflowStep
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,7 @@ async def run_workflow_step(
     api: str = "chat",
     model_id: str | None = None,
     pricing: PricingBook | None = None,
+    publication_builder: WorkflowPublicationBuilder | None = None,
 ) -> StepOutcome:
     """Execute a single workflow step. Total: never raises.
 
@@ -305,6 +307,7 @@ async def run_workflow_step(
                 instructionSource="agent",
                 instructionSha256=text_payload(target.systemPrompt).sha256,
                 agentConfigSha256=json_payload(target.model_dump(mode="json")).sha256,
+                publication=run.publication,
             ),
             prompt_messages=messages,
             tool_consent=tool_consent,
@@ -324,7 +327,8 @@ async def run_workflow_step(
         )
 
     try:
-        run = await run_agent_turn(
+        publication = await publication_builder(target, index) if publication_builder is not None else None
+        run = await run_with_publication(publication, run_agent_turn(
             deployment=deployment,
             messages=messages,
             tool_names=effective_tools,
@@ -339,7 +343,7 @@ async def run_workflow_step(
             api=api,
             retain_failed_request=True,
             model_evidence=evidence,
-        )
+        ))
     except AgentRunCancelled as exc:
         return StepOutcome(
             result=finished(
@@ -433,6 +437,7 @@ async def run_workflow(
     api: str = "chat",
     model_id: str | None = None,
     pricing: PricingBook | None = None,
+    publication_builder: WorkflowPublicationBuilder | None = None,
 ) -> WorkflowRunResult:
     """Run ``workflow`` end-to-end and return a total, never-raising result.
 
@@ -465,6 +470,7 @@ async def run_workflow(
             tool_builder=tool_builder,
             api=api,
             model_id=model_id, pricing=pricing,
+            publication_builder=publication_builder,
         )
         usage = usage.add(outcome.usage)
         trace.append(outcome.result)

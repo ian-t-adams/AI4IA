@@ -49,6 +49,7 @@ def build_catalog(models: dict) -> dict:
                     "region": region,
                     "dataZone": region_meta.get("dataZone"),
                     "sku": sku,
+                    "modelVersion": dep["version"],
                     "deploymentName": (
                         f"{model['name']}-{subscription_token}-{region}-{sku_short[sku]}"
                     ),

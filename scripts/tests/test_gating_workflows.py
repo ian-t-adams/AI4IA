@@ -432,6 +432,13 @@ class WorkflowPermissionBoundaryTests(unittest.TestCase):
             if re.search(r"\bazd\s+auth\s+login\b", script):
                 self.assertRegex(script, r"--federated-credential-provider\s+['\"]?github\b")
                 require({"id-token": "write"})
+            # The canary CLI's only GitHub REST consumer reads an exact prior
+            # workflow/run/artifact. Its observe command exchanges runner OIDC
+            # directly for the dedicated API audience, with no ARM login.
+            if re.search(r"\bpython(?:3)?\s+-m\s+scripts\.canaries\s+locate\b", script):
+                require({"actions": "read"})
+            if re.search(r"\bpython(?:3)?\s+-m\s+scripts\.canaries\s+observe\b", script):
+                require({"id-token": "write"})
             if re.search(r"\bgh\s+api\b", script):
                 self.assertIn("/actions/runs/", script, "Review the new GitHub REST consumer.")
                 self.assertNotRegex(

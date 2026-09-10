@@ -35,6 +35,8 @@ on:
       - "scripts/provision-foundry-a2a.py"
       - "scripts/tests/test_memory_cosmos_migration.py"
       - "scripts/evaluations/**"
+      - "scripts/canaries/**"
+      - "scripts/_canary_contract.py"
       - "scripts/tests/test_behavioral_evaluations.py"
       - ".github/workflows/app-ci.yml"
 
@@ -142,3 +144,8 @@ jobs:
       - name: Memory migration script tests
         working-directory: .
         run: pytest -q scripts/tests/test_memory_cosmos_migration.py
+      - name: Operational canary static controls
+        working-directory: .
+        run: |
+          ruff check --config app/api/pyproject.toml scripts/canaries scripts/_canary_contract.py scripts/tests/test_application_canary.py
+          pyright --project scripts/canaries

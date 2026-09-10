@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  ADMIN_OPERATIONS,
+  adminDashboardAccess,
+  hasAdminOperation,
   barScale,
   rankModelBuckets,
   canShowAdmin,
@@ -24,13 +27,55 @@ import {
 } from "./admin";
 
 describe("canShowAdmin", () => {
-  it("is true only for an explicit admin identity", () => {
-    expect(canShowAdmin({ subject: "a", isAdmin: true })).toBe(true);
+  it("requires an exact server admin operation, not only an admin identity", () => {
+    expect(canShowAdmin({ subject: "a", isAdmin: true, adminOperations: ["admin.usage.read"] })).toBe(true);
+    expect(canShowAdmin({ subject: "a", isAdmin: true })).toBe(false);
+    expect(canShowAdmin({ subject: "a", isAdmin: true, adminOperations: [] })).toBe(false);
   });
   it("is false for a non-admin, null, or undefined", () => {
-    expect(canShowAdmin({ subject: "a", isAdmin: false })).toBe(false);
+    expect(canShowAdmin({ subject: "a", isAdmin: false, adminOperations: [...ADMIN_OPERATIONS] })).toBe(false);
     expect(canShowAdmin(null)).toBe(false);
     expect(canShowAdmin(undefined)).toBe(false);
+  });
+  it("never infers admin operations from role names or publication-review permission", () => {
+    const who = { subject: "reviewer", isAdmin: true, adminOperations: ["publication.review", "admin", "Admin.Usage.Read"], roles: ["admin"] };
+    expect(canShowAdmin(who)).toBe(false);
+    expect(Object.values(adminDashboardAccess(who)).every((allowed) => allowed === false)).toBe(true);
+  });
+  it.each(ADMIN_OPERATIONS)("admits exactly %s without granting sibling operations", (operation) => {
+    const who = { subject: "mapped", isAdmin: true, adminOperations: [operation] };
+    expect(canShowAdmin(who)).toBe(true);
+    for (const candidate of ADMIN_OPERATIONS) {
+      expect(hasAdminOperation(who, candidate)).toBe(candidate === operation);
+    }
+  });
+});
+
+describe("adminDashboardAccess", () => {
+  const access = (adminOperations: string[]) => adminDashboardAccess({ subject: "a", isAdmin: true, adminOperations });
+
+  it("keeps legacy full access only when the server explicitly reports every operation", () => {
+    expect(Object.values(access([...ADMIN_OPERATIONS])).every((allowed) => allowed === true)).toBe(true);
+    expect(Object.values(access([])).every((allowed) => allowed === false)).toBe(true);
+  });
+
+  it("requires entitlement read for enriched usage, and a separate directory read for identified views", () => {
+    expect(access(["admin.usage.read"])).toMatchObject({ usage: true, overview: false, identify: false });
+    expect(access(["admin.usage.read", "admin.entitlements.read"])).toMatchObject({ usage: true, overview: true, identify: false });
+    expect(access(["admin.usage.read", "admin.entitlements.read", "admin.directory.read"])).toMatchObject({ overview: true, identify: true });
+    expect(access(["admin.usage.read", "admin.directory.read"])).toMatchObject({ overview: false, identify: false });
+    expect(access(["admin.entitlements.read"])).toMatchObject({ usage: false, overview: false });
+  });
+
+  it("does not treat entitlement write as read, or read as write", () => {
+    expect(access(["admin.usage.read", "admin.entitlements.write"])).toMatchObject({ overview: false, entitlementsWrite: true });
+    expect(access(["admin.usage.read", "admin.entitlements.read"])).toMatchObject({ overview: true, entitlementsWrite: false });
+  });
+
+  it("requires both MCP inspection and refresh operations before offering a cache refresh", () => {
+    expect(access(["admin.mcp.inspect"])).toMatchObject({ officialMcp: true, refreshOfficialMcp: false });
+    expect(access(["admin.mcp.refresh"])).toMatchObject({ officialMcp: false, refreshOfficialMcp: false });
+    expect(access(["admin.mcp.inspect", "admin.mcp.refresh"])).toMatchObject({ officialMcp: true, refreshOfficialMcp: true });
   });
 });
 

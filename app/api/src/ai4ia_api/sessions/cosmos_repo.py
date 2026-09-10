@@ -73,6 +73,8 @@ class CosmosSessionRepository(CosmosDeletionMixin):
     def _to_doc(model: Session | Message | Document) -> dict[str, Any]:
         doc = model.model_dump(mode="json")
         if isinstance(model, Session):
+            if model.freshTurnClaimed:
+                doc["freshTurnClaimed"] = True
             doc["toolConsentState"] = (
                 model.toolConsentState.model_dump(mode="json")
                 if model.toolConsentState is not None else None
@@ -147,6 +149,28 @@ class CosmosSessionRepository(CosmosDeletionMixin):
 
     async def get_session(self, user_id: str, session_id: str) -> Session:
         return await self._owned_session(user_id, session_id)
+
+    async def claim_fresh_session(self, user_id: str, expected: Session) -> Session | None:
+        from azure.cosmos.exceptions import CosmosAccessConditionFailedError
+
+        raw = await self._read_session_raw(user_id, expected.id)
+        self._assert_active(raw, user_id, expected.id)
+        if (
+            not self._deletion_enabled or raw.get("deletionProtocol") != 1
+            or "freshTurnClaimed" in raw or Session.model_validate(raw) != expected
+        ):
+            return None
+        try:
+            await self._patch_session_item(
+                user_id, expected.id,
+                [{"op": "set", "path": "/freshTurnClaimed", "value": True}],
+                etag=require_etag(raw),
+            )
+        except CosmosAccessConditionFailedError:
+            return None
+        # A lost acknowledgement never reaches this return. Its durable marker
+        # stays consumed; neither a retry nor an empty child scan can reopen it.
+        return expected.model_copy(update={"freshTurnClaimed": True}, deep=True)
 
     async def list_sessions(self, user_id: str) -> list[Session]:
         query = (

@@ -14,6 +14,7 @@ import httpx
 import jwt
 
 from .base import AuthCredentials, AuthError, AuthenticatedUser
+from .policy_claims import verified_policy_claims
 from .userid import InternalUserIdProvider
 
 _PROVIDER = "entra"
@@ -172,4 +173,5 @@ class EntraAuthProvider:
             name=claims.get("name"),
             email=claims.get("preferred_username") or claims.get("email"),
             claims={k: claims.get(k) for k in ("roles", "scp") if k in claims},
+            policy_claims=verified_policy_claims(claims),
         )

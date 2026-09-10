@@ -230,6 +230,15 @@
     "toolAutoApproveEnabled": {
       "value": "${AI4IA_TOOL_AUTO_APPROVE_ENABLED=false}"
     },
+    "groupPolicyEnabled": {
+      "value": "${AI4IA_GROUP_POLICY_ENABLED=false}"
+    },
+    "groupPolicyJson": {
+      "value": "${AI4IA_GROUP_POLICY_JSON=}"
+    },
+    "assetPublishingEnabled": {
+      "value": "${AI4IA_ASSET_PUBLISHING_ENABLED=false}"
+    },
     "sessionDeletionEnabled": {
       "value": "${AI4IA_SESSION_DELETION_ENABLED=false}"
     },

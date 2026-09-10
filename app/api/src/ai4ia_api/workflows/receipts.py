@@ -13,6 +13,7 @@ from ..receipts import (
 from ..safety import MessageSafety, merge_safety
 from ..sessions.models import ActivityStep
 from .runner import WorkflowRunResult, WorkflowStepResult
+from ..publishing.models import exact_digest
 
 
 def step_to_dict(step: WorkflowStepResult) -> dict[str, Any]:
@@ -71,6 +72,20 @@ def workflow_receipt(
         status="cancelled" if result.cancelled else ("complete" if result.ok else "error"),
         partial=not result.ok,
     )
+    if receipt.runtime.publication is not None:
+        evidence = receipt.runtime.publication
+        effective = [
+            child.runtime.publication.effectiveSubsetDigest for child in children
+            if child.runtime.publication is not None
+        ]
+        receipt.runtime.publication = evidence.model_copy(update={
+            "scope": "run",
+            "effectiveSubsetDigest": exact_digest(effective) if effective and all(effective) else None,
+            "narrowing": tuple(sorted({
+                reason for child in children if child.runtime.publication is not None
+                for reason in child.runtime.publication.narrowing
+            })),
+        })
     receipt.toolCallCount = sum(child.toolCallCount for child in children)
     receipt.autoApprovedToolCalls = sum(child.autoApprovedToolCalls for child in children)
     receipt.usage.cost = combine_costs(
