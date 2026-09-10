@@ -15,20 +15,21 @@ import copy
 import json
 import logging
 import secrets
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..catalog import ModelCatalog, ModelEntry
 from ..config import Settings
 from ..chat_timing import ChatTiming, bind_chat_timing
+from ..request_constraints import arm_fresh_dispatch, constrain_request, tools_allowed
 from ..citations import RetrievedSource, attest_message
 from ..conversations.policy import resolve_conversation_policy
 from ..gateway.client import TOOL_CALLING_APIS, ModelGatewayClient, ModelGatewayError
@@ -212,11 +213,23 @@ class ChatRequest(BaseModel):
     region: str | None = Field(default=None, max_length=64)
     dataZone: str | None = Field(default=None, max_length=64)
     stream: bool = True
+    allowTools: StrictBool = True
+    allowAutomaticMemory: StrictBool = True
+    requireFreshSession: StrictBool = False
     params: ChatParams = ChatParams()
     # Per-invocation tool approvals the user granted in response to a prompt
     # raised by an earlier turn in THIS session. Bounded so a caller cannot make
     # the redemption pass unbounded work.
     approvals: list[ToolApprovalDecision] = Field(default_factory=list, max_length=8)
+
+
+async def _request_constraints(body: ChatRequest) -> AsyncIterator[None]:
+    # Request-scoped yield dependencies remain active until SSE has finished.
+    with constrain_request(
+        tools=body.allowTools, automatic_memory=body.allowAutomaticMemory,
+        require_fresh_session=body.requireFreshSession,
+    ):
+        yield
 
 
 # Injected when a plain turn has ambient capabilities but its selected model
@@ -743,7 +756,7 @@ def _ephemeral_tool_agent(name: str) -> AgentSpec:
     )
 
 
-@router.post("/chat")
+@router.post("/chat", dependencies=[Depends(_request_constraints, scope="request")])
 async def chat(
     body: ChatRequest,
     request: Request,
@@ -810,8 +823,36 @@ async def chat(
     )
 
     session = await repo.get_session(user.internal_user_id, body.sessionId)
+    if body.requireFreshSession and (
+        body.allowTools or body.allowAutomaticMemory
+        or session.deletionProtocol != 1 or session.freshTurnClaimed
+        or session.agentName is not None or session.systemPrompt is not None
+        or session.summary is not None or session.summarizedThroughMessageId is not None
+        or session.libraryDocumentIds != []
+        or session.toolOverrides.added or session.toolOverrides.removed
+        or await repo.list_messages(user.internal_user_id, body.sessionId)
+        or await repo.list_documents(user.internal_user_id, body.sessionId)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This request requires a fresh session without agents, history or documents.",
+        )
 
     parsed = parse_input(body.content)
+    if body.requireFreshSession and (parsed.agent is not None or parsed.command is not None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A fresh constrained turn cannot select an agent or command.",
+        )
+    if not tools_allowed() and parsed.command is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Tool-free requests accept a plain chat turn, not commands.",
+        )
+    if not tools_allowed():
+        web_search = None
+        compute = None
+        inline_analysis = None
 
     # A slash command may name a *tool* (e.g. /calculator, /generate_image)
     # rather than a built-in action command (/help, /clear, ...). Tools split
@@ -981,6 +1022,13 @@ async def chat(
         session,
         explicit_agent=parsed.agent,
     )
+    if not tools_allowed() and (
+        policy.effective_tools or (policy.agent is not None and policy.agent.links)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="The selected source requires tools and cannot run tool-free.",
+        )
     if tool_agent is None and policy.agent is not None:
         agent = policy.agent.model_copy(update={"tools": list(policy.effective_tools)})
     elif tool_agent is None and policy.effective_tools:
@@ -1145,7 +1193,26 @@ async def chat(
 
     turn_timing = ChatTiming(stream=body.stream)
     bind_chat_timing(turn_timing)
+    if body.requireFreshSession:
+        claimed = await repo.claim_fresh_session(user.internal_user_id, session)
+        if claimed is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The fresh-turn claim is unavailable or already consumed.",
+            )
+        session = claimed
     prior = await repo.list_messages(user.internal_user_id, body.sessionId)
+    if body.requireFreshSession and (
+        prior or await repo.list_documents(user.internal_user_id, body.sessionId)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Fresh-session context changed; its claim remains consumed.",
+        )
+    if body.requireFreshSession:
+        arm_fresh_dispatch(
+            user.internal_user_id, session, deployment.deploymentName, api, content_for_model,
+        )
     # Redeem any per-invocation tool approvals the user granted for a prompt this
     # session raised earlier. Done here because it needs ``prior`` (the ownership-
     # checked transcript that *is* the user+session binding) and must burn each
@@ -1181,7 +1248,7 @@ async def chat(
     # full history. When the flag is off this whole branch is skipped, so the turn
     # is byte-for-byte identical to before.
     summary_block = ""
-    if summarizer.enabled:
+    if summarizer.enabled and not body.requireFreshSession:
         try:
             history_messages, rolling_summary = await summarizer.apply(
                 gateway=gateway,
@@ -1227,12 +1294,14 @@ async def chat(
     # (content_for_model); docs are re-supplied per turn. The char budget scales
     # from the model's context window (fixed fallback when metadata is absent).
     session_context_documents: list[Document] = []
-    doc_block = await _document_context(
-        repo,
-        user.internal_user_id,
-        body.sessionId,
-        budget=_doc_budget_for(entry),
-        source_sink=session_context_documents,
+    doc_block = (
+        "" if body.requireFreshSession else await _document_context(
+            repo,
+            user.internal_user_id,
+            body.sessionId,
+            budget=_doc_budget_for(entry),
+            source_sink=session_context_documents,
+        )
     )
 
     # Per-user document-library context (best-effort, flag-gated).
@@ -1596,7 +1665,7 @@ async def chat(
         "official_mcp_service",
         None,
     )
-    skills_eligible = official_mcp_service is not None and tool_agent is None
+    skills_eligible = tools_allowed() and official_mcp_service is not None and tool_agent is None
     official_servers = []
     official_discovery_succeeded = False
     skill_definition = None

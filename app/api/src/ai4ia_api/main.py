@@ -101,6 +101,7 @@ from .workflows.factory import build_workflow_store
 from .workflows.service import WorkflowService
 from .routers import workflows as workflows_router
 from .routers.health import SessionStoreReadiness
+from .request_constraints import build_canary_dispatch_guard
 
 _CORRELATION_HEADER = "x-correlation-id"
 
@@ -128,6 +129,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = settings
         app.state.auth_provider = build_auth_provider(settings)
         app.state.session_repo = build_session_repository(settings)
+        app.state.canary_dispatch_guard = build_canary_dispatch_guard(app.state.session_repo)
         if settings.session_deletion_enabled:
             await app.state.session_repo.check_deletion_ready()
         app.state.session_readiness = SessionStoreReadiness(app.state.session_repo)

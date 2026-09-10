@@ -75,6 +75,17 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    contract scope before dispatch, and never grant new tools or permissions.
    Include automatically injected registry tools such as `load_skill` and their
    meaningful resource metadata in those snapshots.
+   `ChatRequest.allowTools=false` and `allowAutomaticMemory=false` are
+   request-only denials, not grants or durable preference edits. Keep their
+   nested-AND context alive through SSE, tool dispatch and automatic memory IO.
+   The optional `requireFreshSession` path consumes an API-hidden v1 session
+   claim with the existing owner/ETag CAS before constructing its empty-context
+   prompt. Preserve `freshTurnClaimed` in durable serialization and every
+   patch/clear path; never reset it after errors or lost acknowledgements.
+   This is one-shot model admission, not a child-write or deletion fence.
+   The factory's canary dispatch guard additionally binds owner, claimed
+   generation, actual adapted sentinel-only payload and one dispatch; only
+   actor policy can require that guard, and the guard grants no authority.
 6. **No secret sprawl.** Do not log credentials, commit secrets, or put user MCP
    secrets in Cosmos; durable MCP secrets belong in Key Vault outside local.
 7. **Receipts show execution, never hidden reasoning.** Persist bounded,

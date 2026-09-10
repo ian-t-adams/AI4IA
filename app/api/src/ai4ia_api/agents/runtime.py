@@ -51,6 +51,7 @@ import copy
 import json
 import logging
 import time
+from ..request_constraints import tools_allowed
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -378,7 +379,7 @@ async def run_agent_turn(
             raise ValueError(
                 f"extra_handlers collide with executor tool names: {sorted(collisions)}"
             )
-    schema = copy.deepcopy([*real_schema, *(extra_tools or [])])
+    schema = copy.deepcopy([*real_schema, *(extra_tools or [])]) if tools_allowed() else []
     contracts: dict[str, str] = {}
     for offered in schema:
         fn = offered.get("function") or {}

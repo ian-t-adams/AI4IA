@@ -25,6 +25,7 @@ from typing import Any, Mapping
 from .approvals import ApprovalPolicy, ApprovalSink
 from .consent import ConsentChecker
 from .tools import ToolRegistry, ToolRisk, ToolSpec
+from ..request_constraints import tools_allowed
 
 # A handler maps validated arguments + context to a JSON-serializable result. It
 # may be sync or async; :meth:`ToolExecutor.execute` awaits awaitables.
@@ -322,6 +323,8 @@ class ToolExecutor:
         :class:`ToolExecutionError` (or whatever the handler raises) on failure;
         the runtime turns both into a structured tool result for the model.
         """
+        if not tools_allowed():
+            raise ToolExecutionError("Tools are disabled for this request.")
         definition = self._defs.get(name)
         if definition is None:
             raise ToolExecutionError(f"unknown tool: {name}")
