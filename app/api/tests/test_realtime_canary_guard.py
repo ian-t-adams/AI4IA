@@ -3,6 +3,7 @@
 import json
 from unittest.mock import AsyncMock
 
+import anyio
 import pytest
 
 from ai4ia_api.realtime_canary import (
@@ -114,3 +115,53 @@ async def test_revocation_and_deadline_are_rechecked_at_frame_delivery():
             assert await realtime_canary_dispatch_guard("owner", "catalog-deployment", OPEN)
             fresh.client_frame(SETUP_INPUT)
             await fresh.before_send(text=UPDATE, data=None)
+
+
+async def test_shared_upstream_writer_enforces_no_audio_or_response_and_one_actual_send():
+    from ai4ia_api.routers.realtime import _send_upstream
+    from tests.test_realtime_api import FakeUpstream
+
+    upstream = FakeUpstream()
+    guard = setup()
+    with realtime_setup_scope(guard):
+        assert await realtime_canary_dispatch_guard("owner", "catalog-deployment", OPEN)
+        with pytest.raises(RealtimeSetupRejected):
+            await _send_upstream(upstream, anyio.Lock(), data=b"audio")
+        with pytest.raises(RealtimeSetupRejected):
+            await _send_upstream(upstream, anyio.Lock(), text='{"type":"response.create"}')
+        assert not upstream.sent_text and not upstream.sent_bytes
+        guard.client_frame(SETUP_INPUT)
+        await _send_upstream(upstream, anyio.Lock(), text=UPDATE)
+        assert upstream.sent_text == [UPDATE]
+        with pytest.raises(RealtimeSetupRejected):
+            await _send_upstream(upstream, anyio.Lock(), text=UPDATE)
+        assert upstream.sent_text == [UPDATE]
+    # The identical shared transport remains transparent outside this scope.
+    await _send_upstream(upstream, anyio.Lock(), data=b"ordinary-audio")
+    assert upstream.sent_bytes == [b"ordinary-audio"]
+
+
+async def test_updated_event_cannot_pass_while_send_authority_is_still_unconfirmed():
+    import asyncio
+
+    gate = asyncio.Event()
+    checks = [0]
+
+    async def authority():
+        checks[0] += 1
+        if checks[0] == 2:
+            await gate.wait()
+        return True
+
+    guard = setup(authority)
+    with realtime_setup_scope(guard):
+        assert await realtime_canary_dispatch_guard("owner", "catalog-deployment", OPEN)
+        guard.client_frame(SETUP_INPUT)
+        pending = asyncio.create_task(guard.before_send(text=UPDATE, data=None))
+        await asyncio.sleep(0)
+        assert not await guard.server_frame(text='{"type":"session.created"}', data=None)
+        with pytest.raises(RealtimeSetupRejected):
+            await guard.server_frame(text='{"type":"session.updated"}', data=None)
+        gate.set()
+        await pending
+        assert await guard.server_frame(text='{"type":"session.updated"}', data=None)

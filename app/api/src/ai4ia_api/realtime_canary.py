@@ -80,6 +80,7 @@ class RealtimeSetup:
     deadline: float = field(init=False)
     opened: bool = False
     received_update: bool = False
+    send_started: bool = False
     sent_update: bool = False
     server_phase: int = 0
     server_bytes: int = 0
@@ -126,13 +127,14 @@ class RealtimeSetup:
 
     async def before_send(self, *, text: str | None, data: bytes | None) -> None:
         if (
-            not self.opened or not self.received_update or self.sent_update
+            not self.opened or not self.received_update or self.send_started
             or data is not None or text is None
             or _canonical(text) != _canonical(self.rewritten_update)
         ):
             raise RealtimeSetupRejected()
-        self.sent_update = True
+        self.send_started = True
         await self.check_current()
+        self.sent_update = True
 
     async def server_frame(self, *, text: str | None, data: bytes | None) -> bool:
         if not self.opened or data is not None or text is None:

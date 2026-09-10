@@ -1059,6 +1059,62 @@ class ObserveCliTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(CanaryError):
                     admit(CONFIG, replace(RUN, number=3, run_id=300), state, NOW, bootstrap=True)
 
+    async def test_ga_uses_a_distinct_token_only_after_reported_ga_and_its_own_preflight(self):
+        actor = RealtimeActor(
+            "88888888-8888-8888-8888-888888888888",
+            "99999999-9999-9999-9999-999999999999",
+        )
+        config = replace(CONFIG, ga_enabled=True, realtime_actor=actor)
+        for protocol in ("preview", "ga"):
+            with self.subTest(protocol=protocol), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                before = previous_state(config=config)
+                metadata = run_metadata(before.report.run)
+                cli.write_json(directory / "handoff.json", {
+                    "run": asdict(RUN), "prepared_at": stamp(NOW), "scope_digest": config.scope_digest,
+                    "previous": before.document(),
+                    "predecessor": {
+                        "run": asdict(before.report.run), "artifact_id": 99,
+                        "created_at": metadata["created_at"], "updated_at": metadata["updated_at"],
+                    },
+                })
+                app = FakeApp()
+                app.overrides["GET", "/api/voice/live/config"] = response({
+                    "openaiRealtimeProtocol": protocol, "enabledProviderIds": ["azure_openai"],
+                })
+                selected_clients = []
+
+                async def token(selected, *_args, **_kwargs):
+                    selected_clients.append(selected.client_id)
+                    return "ga-token" if selected.client_id == actor.client_id else "monitor-token"
+
+                original_read = cli.read_json
+
+                def read_source(path, **kwargs):
+                    return copy.deepcopy(SOURCE) if path == cli.ROOT / "infra" / "models.json" else original_read(path, **kwargs)
+
+                with (
+                    patch.object(cli, "read_json", side_effect=read_source),
+                    patch.object(cli, "utc_now", return_value=NOW),
+                    patch("scripts.canaries.identity.acquire", side_effect=token),
+                    patch("scripts.canaries.transport.Transport", return_value=app),
+                    patch("scripts.canaries.monitor.load_pricing", return_value=BOOK),
+                ):
+                    self.assertEqual(await cli.observe_command(directory, environment(config=config)), 0)
+                self.assertEqual(selected_clients, [CONFIG.client_id] + ([actor.client_id] if protocol == "ga" else []))
+                self.assertEqual(len(app.sockets), int(protocol == "ga"))
+                if protocol == "ga":
+                    self.assertEqual(app.sockets[0][1]["protocols"], ("ai4ia-bearer", "ga-token"))
+                    ga_requests = [
+                        call for call in app.calls
+                        if call[1].startswith(CONFIG.api_origin) and "/voice/live/config" not in call[1]
+                    ]
+                    self.assertTrue(ga_requests)
+                    self.assertTrue(all(call[2]["token"] == "ga-token" for call in ga_requests))
+                state = State.parse(original_read(directory / "state.json"))
+                self.assertNotIn("ga-token", encoded(state.document()).decode())
+                self.assertNotIn("monitor-token", encoded(state.document()).decode())
+
 
 if __name__ == "__main__":
     unittest.main()
