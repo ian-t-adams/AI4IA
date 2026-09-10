@@ -494,6 +494,7 @@ class ModelGatewayClient:
         self._http = http_client
         self._hard_quota_enabled = settings.hard_quota_enabled
         self._model_telemetry = ModelTelemetry(settings)
+        self._group_policy_enabled = settings.group_policy_enabled
 
     async def _post(
         self, client: httpx.AsyncClient, url: str, *, surface: Surface,
@@ -504,6 +505,7 @@ class ModelGatewayClient:
         async with admitted_dispatch(
             surface, payload, deployment=deployment, target=url, required=self._hard_quota_enabled,
             observe=evidence.report_admission if evidence is not None else None,
+            policy_required=self._group_policy_enabled,
         ) as admission:
             if "json" in kwargs:
                 kwargs["json"] = admission.payload
@@ -541,6 +543,7 @@ class ModelGatewayClient:
         async with admitted_dispatch(
             "chat", req.json, deployment=deployment, target=req.url, required=self._hard_quota_enabled,
             observe=evidence.report_admission if evidence is not None else None,
+            policy_required=self._group_policy_enabled,
         ) as admission:
             if telemetry is not None:
                 telemetry.request(admission.payload)

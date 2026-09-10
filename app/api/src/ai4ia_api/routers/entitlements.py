@@ -22,6 +22,7 @@ from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..entitlements.models import Entitlement, EntitlementLimits
 from ..entitlements.service import EntitlementService
+from ..policy.models import PolicyDecision, PolicyError
 
 self_router = APIRouter(prefix="/api/entitlement", tags=["entitlements"])
 admin_router = APIRouter(prefix="/api/admin/entitlements", tags=["entitlements-admin"])
@@ -76,8 +77,15 @@ async def get_my_entitlement(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> EntitlementView:
     svc = _service(request)
-    ent = await svc.get_effective(user.internal_user_id)
-    return EntitlementView.of(user.internal_user_id, ent)
+    policy = getattr(request.app.state, "policy", None)
+    if policy is not None and policy.enabled:
+        effective = await policy.resolve(user)
+        if effective.limits_unavailable or effective.spend_invalid:
+            raise PolicyError(PolicyDecision("unavailable", "policy_unavailable"))
+        view = EntitlementView.of(user.internal_user_id, effective.limits)
+        view.source = "policy"
+        return view
+    return EntitlementView.of(user.internal_user_id, await svc.get_effective(user.internal_user_id))
 
 
 @admin_router.get("", response_model=list[Entitlement])

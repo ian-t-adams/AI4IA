@@ -7,6 +7,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
+from .policy_claims import ValidatedPolicyClaims
+
 
 class AuthError(Exception):
     """Raised when a request cannot be authenticated."""
@@ -40,6 +42,7 @@ class AuthenticatedUser(BaseModel):
     name: str | None = None
     email: str | None = None
     claims: dict[str, Any] = Field(default_factory=dict)
+    policy_claims: ValidatedPolicyClaims | None = Field(default=None, exclude=True, repr=False)
 
 
 @runtime_checkable

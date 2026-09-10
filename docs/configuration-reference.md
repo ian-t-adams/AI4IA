@@ -414,6 +414,13 @@ It rechecks the active parent and consumes its request-local allowance before
 awaiting that read. This guard does not create an identity or permission, and
 does not bound retries inside APIM or the model proxy.
 
+A distinct evaluation guard reuses the same claim and the same one-dispatch
+allowance for an operator-selected authored-synthetic-evaluation actor: one plain
+user prompt of at most 4 KiB UTF-8 and at most 256 adapted output tokens. Policy,
+not a browser profile label, chooses that guard. It neither widens the fixed
+sentinel monitor nor creates a second allowance. These reductions do not attest
+that a prompt belongs to an approved dataset or authorize a live evaluation run.
+
 ### Authenticated Voice Live operator canary
 
 `scripts/voice-live-canary.py` is an operator-only diagnostic, not an API endpoint.
