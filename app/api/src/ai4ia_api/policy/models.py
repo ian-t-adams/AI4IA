@@ -31,6 +31,10 @@ DOCUMENT_FEATURES = frozenset({
     "read", "upload", "process", "compute", "export", "share", "annotate",
     "memory", "analyzers", "index",
 })
+DOCUMENT_TOOL_FEATURES = {
+    "fetch_document": "read", "run_code": "compute", "export_document": "export",
+    "analyze_attachment": "compute", "process_document": "process",
+}
 PUBLICATION_ACTIONS = frozenset({"submit", "review", "consume"})
 ADMIN_OPERATIONS: frozenset[PolicyOperation] = frozenset({
     "admin.usage.read", "admin.directory.read", "admin.entitlements.read",

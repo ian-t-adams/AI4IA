@@ -46,6 +46,13 @@ class OwnerPublicationList(BaseModel):
     truncated: bool = False
 
 
+class OwnerPublicationState(PublicationHead):
+    pendingSource: AssetVersionRef | None = None
+    activeSource: AssetVersionRef | None = None
+    reviewDecision: str | None = None
+    reviewerId: str | None = None
+
+
 class ReviewSummary(BaseModel):
     source: AssetVersionRef
     displayName: str
@@ -120,12 +127,31 @@ async def list_my_publications(
     return OwnerPublicationList(items=heads[:100], truncated=len(heads) > 100)
 
 
-@router.get("/publications/{kind}/{name}", response_model=PublicationHead | None)
+@router.get("/publications/{kind}/{name}", response_model=OwnerPublicationState | None)
 async def get_my_publication(
     kind: AssetKind, name: str, request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
-) -> PublicationHead | None:
-    return await _service(request).owner_head(await request.app.state.policy.resolve(user), kind, name)
+) -> OwnerPublicationState | None:
+    from ..publishing.models import PublicationError
+
+    service = _service(request)
+    head = await service.owner_head(await request.app.state.policy.resolve(user), kind, name)
+    if head is None:
+        return None
+    pending = await service.head_reference(head, pending=True) if head.pendingVersion is not None else None
+    active = await service.head_reference(head) if head.activeVersion is not None else None
+    review = None
+    if pending is not None:
+        try:
+            review = await service._review(pending)
+        except PublicationError as exc:
+            if exc.reason != "publication_not_reviewed":
+                raise
+    return OwnerPublicationState(
+        **head.model_dump(), pendingSource=pending, activeSource=active,
+        reviewDecision=review.decision if review is not None else None,
+        reviewerId=review.reviewerId if review is not None else None,
+    )
 
 
 @router.post("/publications/{kind}/{name}/submit", response_model=PublicationHead)

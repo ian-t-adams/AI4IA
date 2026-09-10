@@ -1,11 +1,11 @@
 """Run-bound publication checks and truthful approved/effective subset evidence."""
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ..catalog import DeploymentOption
 from ..policy.context import (
@@ -16,6 +16,12 @@ from .models import (
     EffectiveSubset, PublicationError, PublicationExecutionMode, ResolvedPublication,
 )
 from .refs import AssetVersionRef, PublicationEvidence
+
+if TYPE_CHECKING:
+    from ..agents.agent_catalog import AgentSpec
+    from ..agents.runtime import AgentRunResult
+
+WorkflowPublicationBuilder = Callable[["AgentSpec", int], Awaitable["PublicationExecution | None"]]
 
 
 @dataclass
@@ -186,3 +192,34 @@ def check_publication_request(request: PolicyRequest) -> None:
     current = _current.get()
     if current is not None:
         current.check_request(request)
+
+
+async def run_with_publication(
+    execution: PublicationExecution | None, run: Awaitable[AgentRunResult],
+) -> AgentRunResult:
+    from ..agents.runtime import AgentRunCancelled, AgentRunFailed
+
+    with execution_scope(execution):
+        try:
+            result = await run
+        except (AgentRunCancelled, AgentRunFailed) as exc:
+            exc.partial.publication = execution.evidence() if execution is not None else None
+            raise
+        result.publication = execution.evidence() if execution is not None else None
+        return result
+
+
+def workflow_publication_builder(
+    state: Any, *, model_id: str, deployment: DeploymentOption, session,
+) -> WorkflowPublicationBuilder:
+    async def build(agent: AgentSpec, index: int) -> PublicationExecution | None:
+        root = current_execution()
+        if root is not None and root.ref.kind == "workflow":
+            return root.derive(f"step:{index}")
+        if agent.sourceVersion is not None:
+            return await prepare_execution(
+                state, agent.sourceVersion, mode="workflow", model_id=model_id,
+                deployment=deployment, session=session,
+            )
+        return None
+    return build

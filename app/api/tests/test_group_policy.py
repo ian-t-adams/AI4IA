@@ -94,6 +94,40 @@ async def test_denies_and_intersecting_constraints_win_over_multiple_grants():
     assert not (await policy.authorize(both, PolicyRequest("document.upload"))).allowed
 
 
+async def test_absent_negative_group_evidence_cannot_restore_the_default_allow():
+    policy, _ = service({"domains": {"documents": {
+        "default": {"allow": ["read"]},
+        "mappings": [{"claim": "groups", "value": GROUP, "deny": ["read"]}],
+    }}})
+    complete_empty = user(groups=[])
+    assert (await policy.authorize(
+        await policy.resolve(complete_empty), PolicyRequest("document.read"),
+    )).allowed
+    absent = complete_empty.model_copy(update={
+        "policy_claims": verified_policy_claims({"roles": [], "exp": int(time.time()) + 3600}),
+    })
+    decision = await policy.authorize(await policy.resolve(absent), PolicyRequest("document.read"))
+    assert decision.outcome == "deny"
+    assert decision.reason == "claim_evidence_invalid"
+
+
+@pytest.mark.parametrize("feature,tool", [
+    ("read", "fetch_document"), ("compute", "run_code"), ("compute", "analyze_attachment"),
+    ("export", "export_document"), ("process", "process_document"),
+])
+async def test_document_feature_restrictions_cover_tool_advertisement_and_dispatch(feature, tool):
+    config = {"domains": {"documents": {"default": {"allow": [feature]}}}}
+    policy, _ = service(config)
+    principal = user()
+    request = PolicyRequest("tool.invoke", tool_name=tool)
+    assert policy.allows_tool_snapshot(principal, tool)
+    assert (await policy.authorize(await policy.resolve(principal), request)).allowed
+    config["domains"]["documents"]["default"]["allow"] = []
+    policy.settings.group_policy_json = json.dumps(config)
+    assert not policy.allows_tool_snapshot(principal, tool)
+    assert not (await policy.authorize(await policy.resolve(principal), request)).allowed
+
+
 async def test_latest_individual_limit_is_a_ceiling_not_replaced_by_group_grant():
     policy, store = service({"spend": {
         "default": {"tokensPerDay": 100},

@@ -1071,6 +1071,33 @@ Issue #413 stays open for its remaining live/model/TTS acceptance criteria.
 
 ## Auth model and `apiFetch` contract
 
+### Group policy and publication source contract
+
+- `policy` is the shared default-off application restriction layer; only
+  post-verification exact Entra role values/group IDs may match operator JSON.
+  Do not add Graph lookups, writable user grant fields, or user-ID-only authority
+  caches. Keep unavailable distinct from deny; limits remain per-user soft
+  restrictions, never a group pool or Azure bill cap.
+- `publishing` keeps private owner/name drafts and immutable reviewed versions
+  in existing owner partitions. Independent review requires explicit owner
+  submission consent; fresh owner activation is separate. Review grants are not
+  global admin or consumer execution grants. Do not copy BYO credentials,
+  unreviewed private dependencies or curated private prompt bodies.
+- `workflows/record_types.py` owns `recordKind` and the `:ai4ia:` control namespace,
+  including automation owner/schedule and publication records. Both definition
+  stores exclude control IDs even with malformed/missing kinds, reject unknown
+  definition kinds, and retain legacy positive controls.
+- Published source references, model-declared versions, `runtimeEnabled` and
+  `requiredRealtimeProtocol` when present, exact tool/schema/resource bindings,
+  required/optional profiles and actual subset digests must survive all consumers.
+  Missing required metadata is not a permitted narrowing. A reviewed excluded
+  skill profile is explicit, never an error fallback or removal of required skills.
+- Token expiry stops the next protected dispatch; it does not stop accepted-work
+  receipts, accounting, cancellation or cleanup. Unattended work cannot construct
+  an authenticated user from queued claims. Monitor and authored-evaluation actor
+  markers are distinct, default absent, and must use their real bounded one-shot
+  request guards; capability reads never grant execution.
+
 - Production auth is Entra bearer-token validation in the API (`aud`, `iss`,
   tenant, signature, expiry). Internal user ids are derived at the API boundary and
   decoupled from the identity provider.

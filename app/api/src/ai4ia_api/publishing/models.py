@@ -149,6 +149,7 @@ class PublishedModel(PublicationRecord):
     category: str = Field(min_length=1, max_length=64)
     option: DeploymentOption
     requiredRealtimeProtocol: Literal["ga"] | None = None
+    runtimeEnabled: bool = Field(default=True, strict=True)
 
     @model_validator(mode="after")
     def declared_version(self) -> PublishedModel:

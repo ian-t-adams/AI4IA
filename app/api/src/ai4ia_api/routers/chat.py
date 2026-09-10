@@ -85,6 +85,7 @@ from ..agents.approvals import (
 )
 from ..publishing.execution import (
     bind_execution, current_execution, prepare_execution, skill_loader_excluded,
+    observe_publication_offers,
 )
 from ..publishing.models import PublicationError
 from ..agents.summarization import SummarizationService
@@ -1747,6 +1748,7 @@ async def chat(
             deployment=deployment.deploymentName,
             api=api,
             model_id=model_id, pricing=metering.pricing,
+            state=request.app.state, session=session,
         )
         # Tier 3 + Web IQ + memory come from the SHARED builder, so a tool-enabled
         # agent turn, a plain turn, and a workflow step all offer the same
@@ -1803,6 +1805,7 @@ async def chat(
                     )
                     w_tools, w_handlers = build_workflow_capability(
                         workflows=available_workflows,
+                        state=request.app.state,
                         workflow_service=workflow_service,
                         composed=agents,
                         deployment=deployment,
@@ -2444,6 +2447,7 @@ async def chat(
                         bool,
                     ]:
                         await memory_guard.prepare(payload_messages)
+                        await observe_publication_offers({}, [])
                         res = await model_evidence.observe(gateway.complete(
                             deployment=deployment.deploymentName,
                             messages=payload_messages,
@@ -2650,6 +2654,7 @@ async def chat(
             insert_at, {"role": "system", "content": _TOOLS_UNAVAILABLE_NOTICE}
         )
 
+    await observe_publication_offers({}, [])
     if not body.stream:
         try:
             await memory_guard.prepare(payload_messages)

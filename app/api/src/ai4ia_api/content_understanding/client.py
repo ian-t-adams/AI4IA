@@ -146,6 +146,7 @@ class ContentUnderstandingClient:
         self._token_provider = token_provider
         self._owns_token_provider = token_provider is None
         self._hard_quota_enabled = settings.hard_quota_enabled
+        self._group_policy_enabled = settings.group_policy_enabled
 
     async def _post_document(
         self, client: httpx.AsyncClient, url: str, *, headers: dict[str, str], data: bytes,
@@ -153,6 +154,7 @@ class ContentUnderstandingClient:
         async with admitted_dispatch(
             "document", {"operation": url, "dataDigest": hashlib.sha256(data).hexdigest()},
             required=self._hard_quota_enabled,
+            policy_required=self._group_policy_enabled,
         ) as admission:
             response = await client.post(url, headers=headers, content=data)
             if 200 <= response.status_code < 300:

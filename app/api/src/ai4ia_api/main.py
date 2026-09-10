@@ -195,6 +195,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             connector = HttpxMcpConnector(
                 timeout_s=settings.custom_tools_discovery_timeout_seconds,
                 hard_quota_enabled=settings.hard_quota_enabled,
+                group_policy_enabled=settings.group_policy_enabled,
             )
             max_servers = (
                 settings.custom_tools_max_servers_per_user
@@ -225,6 +226,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 connector=HttpxMcpConnector(
                     timeout_s=settings.official_mcp_discovery_timeout_seconds,
                     hard_quota_enabled=settings.hard_quota_enabled,
+                    group_policy_enabled=settings.group_policy_enabled,
                 ),
             )
         else:

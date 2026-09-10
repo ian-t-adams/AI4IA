@@ -182,6 +182,7 @@ class WebSearchClient:
             "web_search", {"tool": name, "body": payload},
             target=self._settings.webiq_base_url or "https://api.microsoft.ai/v3",
             required=self._settings.hard_quota_enabled,
+            policy_required=self._settings.group_policy_enabled,
         ) as admission:
             try:
                 if self._client is not None:
