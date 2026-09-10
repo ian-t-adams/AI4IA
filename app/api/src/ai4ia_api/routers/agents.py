@@ -156,6 +156,8 @@ async def update_my_agent(
         ) from exc
     except AgentNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except AgentConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.delete("/agents/{name}", status_code=status.HTTP_204_NO_CONTENT)
@@ -164,5 +166,8 @@ async def delete_my_agent(
     name: str,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Response:
-    await _service(request).delete(user.internal_user_id, name)
+    try:
+        await _service(request).delete(user.internal_user_id, name)
+    except AgentConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

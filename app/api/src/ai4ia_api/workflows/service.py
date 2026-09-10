@@ -18,6 +18,8 @@ aborts the create rather than letting the cap be bypassed).
 """
 from __future__ import annotations
 
+from uuid import uuid4
+
 from .models import (
     INPUT_TOKEN,
     MAX_DESCRIPTION_LEN,
@@ -88,7 +90,9 @@ class WorkflowService:
             steps=req.steps,
             enabled=req.enabled,
         )
-        await self._store.put(workflow)
+        workflow = workflow.model_copy(update={"revision": 1, "incarnation": uuid4().hex})
+        if not await self._store.create_if_absent(workflow):
+            raise WorkflowConflictError(f"You already have a workflow named '{name}'.")
         return workflow
 
     async def update(self, user_id: str, name: str, req: WorkflowUpdate) -> Workflow:
@@ -96,6 +100,8 @@ class WorkflowService:
         current = await self._store.get(user_id, key)
         if current is None:
             raise WorkflowNotFoundError(key)
+        if req.expectedRevision is not None and req.expectedRevision != current.revision:
+            raise WorkflowConflictError("Workflow changed; refresh before saving.")
         workflow = self._build(
             user_id=user_id,
             name=current.name,
@@ -105,7 +111,11 @@ class WorkflowService:
             enabled=req.enabled,
             created_at=current.createdAt,
         )
-        await self._store.put(workflow)
+        workflow = workflow.model_copy(update={
+            "revision": current.revision + 1, "incarnation": current.incarnation,
+        })
+        if not await self._store.replace_if_revision(workflow, current.revision):
+            raise WorkflowConflictError("Workflow changed; refresh before saving.")
         return workflow
 
     async def delete(self, user_id: str, name: str) -> None:

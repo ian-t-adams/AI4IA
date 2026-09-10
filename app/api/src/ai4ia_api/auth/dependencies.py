@@ -7,6 +7,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from ..logging_setup import emit_security_block
 from ..gateway.priority import resolve_priority, set_request_priority
 from ..hard_quota.dispatch import clear_admission_owner, set_admission_owner
+from ..policy.context import bind_authenticated, clear_policy_context
+from ..policy.routes import authorize_http_operation
 from .base import AuthCredentials, AuthError, AuthenticatedUser
 
 # auto_error=False so dev auth (header-based) works without an Authorization header.
@@ -18,6 +20,7 @@ async def get_current_user(
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> AuthenticatedUser:
     clear_admission_owner()
+    clear_policy_context()
     provider = request.app.state.auth_provider
     credentials = AuthCredentials(
         token=creds.credentials if creds else None,
@@ -35,6 +38,10 @@ async def get_current_user(
     admission = getattr(request.app.state, "hard_quota", None)
     if admission is not None:
         set_admission_owner(admission, user.internal_user_id)
+    policy = getattr(request.app.state, "policy", None)
+    if policy is not None:
+        bind_authenticated(policy, user)
+        await authorize_http_operation(request)
     # Best-effort: capture the token's display name/email into the admin-only
     # user directory so the hashed userId can be resolved to a name later. Guarded
     # (the service may be absent in tests), deduped + non-blocking inside capture(),

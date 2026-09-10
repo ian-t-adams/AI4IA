@@ -74,6 +74,21 @@ def tool_contract_hash(
     })
 
 
+@dataclass(frozen=True)
+class ToolContractDescription:
+    spec: ToolSpec
+    parameters: Mapping[str, Any]
+    description: str | None
+    metadata: Mapping[str, Any]
+    canonical_name: str
+
+    @property
+    def digest(self) -> str:
+        return tool_contract_hash(
+            self.spec, self.parameters, description=self.description, metadata=self.metadata,
+        )
+
+
 class ToolConsentSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

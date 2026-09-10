@@ -32,6 +32,8 @@ from .gateway.client import ModelGatewayClient
 from .hard_quota.dispatch import AdmissionController
 from .hard_quota.models import QuotaError
 from .hard_quota.store import LocalReservationStore
+from .policy.models import PolicyError
+from .policy.service import PolicyService
 from .images.artifacts import ImageArtifactStore, build_image_blob_store
 from .videos.artifacts import VideoArtifactStore, build_video_blob_store
 from .docprocessing.artifacts import (
@@ -254,12 +256,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             enabled=settings.entitlements_enabled,
             cache_ttl_seconds=settings.entitlement_cache_ttl_seconds,
         )
+        app.state.policy = PolicyService(
+            settings, catalog=app.state.catalog, entitlements=app.state.entitlements,
+        )
         # No automatic seed, including locally. Durable activation has a separate
         # startup refusal; constructing the app never creates a quota balance.
         app.state.hard_quota = AdmissionController(
             entitlements=app.state.entitlements, catalog=app.state.catalog,
             pricing=app.state.usage.pricing, enabled=settings.hard_quota_enabled,
             store=LocalReservationStore() if settings.hard_quota_enabled else None,
+            policy=app.state.policy,
         )
         # Admin user directory. Captures the display name + email already on the
         # token into an admin-only Cosmos 'userDirectory' (keyed by the hashed
@@ -464,6 +470,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if openapi_enabled else None,
     )
     register_error_handlers(app)
+
+    @app.exception_handler(PolicyError)
+    async def _policy_refused(_request: Request, exc: PolicyError):
+        return error_response(
+            status_code=exc.status_code, detail=str(exc), code=exc.decision.reason,
+            headers=(
+                {"Retry-After": str(exc.decision.retry_after_seconds)}
+                if exc.decision.retry_after_seconds is not None else None
+            ),
+        )
 
     @app.exception_handler(QuotaError)
     async def _quota_refused(_request: Request, exc: QuotaError):

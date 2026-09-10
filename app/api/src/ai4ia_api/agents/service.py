@@ -18,6 +18,7 @@ break chat — but *writes* surface errors to the caller.
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 from collections.abc import Collection
 
 from ..catalog import ModelCatalog
@@ -136,7 +137,9 @@ class AgentService:
             enabled=req.enabled,
             mcp_tool_names=mcp_tool_names,
         )
-        await self._store.put(agent)
+        agent = agent.model_copy(update={"revision": 1, "incarnation": uuid4().hex})
+        if not await self._store.create_if_absent(agent):
+            raise AgentConflictError(f"You already have an agent named '{name}'.")
         return agent
 
     async def update(
@@ -151,6 +154,8 @@ class AgentService:
         current = await self._store.get(user_id, key)
         if current is None:
             raise AgentNotFoundError(key)
+        if req.expectedRevision is not None and req.expectedRevision != current.revision:
+            raise AgentConflictError("Agent changed; refresh before saving.")
         agent = self._build(
             user_id=user_id,
             name=current.name,
@@ -164,7 +169,11 @@ class AgentService:
             created_at=current.createdAt,
             mcp_tool_names=mcp_tool_names,
         )
-        await self._store.put(agent)
+        agent = agent.model_copy(update={
+            "revision": current.revision + 1, "incarnation": current.incarnation,
+        })
+        if not await self._store.replace_if_revision(agent, current.revision):
+            raise AgentConflictError("Agent changed; refresh before saving.")
         return agent
 
     async def delete(self, user_id: str, name: str) -> None:

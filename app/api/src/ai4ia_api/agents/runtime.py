@@ -61,6 +61,8 @@ from ..model_evidence import ModelCallRecorder
 from ..receipts import ExecutionReceipt, ReceiptRuntime
 from ..safety import MessageSafety, merge_safety, parse_safety
 from ..logging_setup import emit_custom_event, emit_security_block
+from ..policy.context import canonical_tool_name, require_policy, tool_allowed, tool_policy_scope
+from ..policy.models import PolicyError, PolicyRequest
 from .prompt_budget import (
     TOOL_CONTEXT_RESERVE_TOKENS,
     bound_agent_context,
@@ -379,6 +381,12 @@ async def run_agent_turn(
                 f"extra_handlers collide with executor tool names: {sorted(collisions)}"
             )
     schema = copy.deepcopy([*real_schema, *(extra_tools or [])])
+    schema = [
+        offered for offered in schema
+        if tool_allowed(canonical_tool_name(
+            (offered.get("function") or {}).get("name", ""), ctx.tool_aliases,
+        ))
+    ]
     contracts: dict[str, str] = {}
     for offered in schema:
         fn = offered.get("function") or {}
@@ -1033,7 +1041,18 @@ async def run_agent_turn(
                 if invocation_approved:
                     unspent_approvals.discard(approval_token)
                 try:
-                    raw_result = await handlers[name](parsed, ctx)
+                    canonical = canonical_tool_name(name, ctx.tool_aliases)
+                    await require_policy(PolicyRequest(
+                        "tool.invoke", tool_name=canonical, tool_contract_digest=contracts.get(name),
+                    ))
+                    with tool_policy_scope(canonical):
+                        raw_result = await handlers[name](parsed, ctx)
+                except PolicyError as exc:
+                    if await deny(
+                        name=name, safe_name=safe_name, call_id=call_id, reason=exc.decision.reason,
+                    ):
+                        force_final = True
+                    continue
                 except asyncio.CancelledError as exc:
                     if isinstance(exc, DelegatedAgentRunCancelled):
                         delegated_runs.append(exc.trace)
@@ -1189,6 +1208,12 @@ async def run_agent_turn(
             started = time.monotonic()
             try:
                 raw_result = await executor.execute(name, parsed, ctx)
+            except PolicyError as exc:
+                if await deny(
+                    name=name, safe_name=safe_name, call_id=call_id, reason=exc.decision.reason,
+                ):
+                    force_final = True
+                continue
             except ConsentRejected as exc:
                 if await deny(
                     name=name, safe_name=safe_name, call_id=call_id, reason=exc.reason,
