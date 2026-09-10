@@ -177,8 +177,8 @@ class Target:
     identity_resource_id: str | None
 
     def __post_init__(self) -> None:
-        guid(self.subscription)
-        guid(self.tenant)
+        object.__setattr__(self, "subscription", guid(self.subscription))
+        object.__setattr__(self, "tenant", guid(self.tenant))
         for value in (self.environment, self.workload):
             require(
                 re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,18}[a-z0-9])?", value) is not None,
@@ -299,6 +299,9 @@ def source_contract(cli: Cli, target: Target) -> tuple[dict, dict, dict]:
         sources[path] = hashlib.sha256(text.encode()).hexdigest()
         bodies[path] = text
     sources["setup"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    sources["scripts/_capacity_evidence.py"] = hashlib.sha256(
+        (ROOT / "scripts" / "_capacity_evidence.py").read_bytes()
+    ).hexdigest()
     workflow = bodies[WORKFLOW]
     matches = re.findall(r"(?m)^          (\w+): \$\{\{ vars\.(\w+) \}\}$", workflow)
     variables = dict(matches)

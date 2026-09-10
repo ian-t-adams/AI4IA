@@ -5,11 +5,13 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -317,6 +319,21 @@ class ReaderSetupExecutionTests(unittest.TestCase):
                 self.assert_blocked(result, calls, "approval" if "--apply" not in extra else "--apply")
                 self.assertEqual(calls, [])
 
+    def test_writer_gate_has_a_same_request_allowed_control(self) -> None:
+        intent = self.fixture.intents["identity"]
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), patch.object(setup.Cli, "call", return_value={}) as call:
+                cli = setup.Cli(SUB, enabled)
+                if enabled:
+                    cli.create(intent["id"], intent["api"], intent["body"])
+                    self.assertEqual(call.call_count, 1)
+                    self.assertEqual(call.call_args.args[0], "az")
+                    self.assertIn("PUT", call.call_args.args[1])
+                else:
+                    with self.assertRaisesRegex(setup.SetupError, "Writes require --apply"):
+                        cli.create(intent["id"], intent["api"], intent["body"])
+                    call.assert_not_called()
+
     def test_apply_creates_only_five_exact_resources_and_is_idempotent(self) -> None:
         result, calls = self.fixture.apply()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -429,6 +446,22 @@ class ReaderSetupExecutionTests(unittest.TestCase):
                     extra = ["--capacity-profile", "guessed-profile"]
                 result, calls = self.fixture.run(*extra)
                 self.assert_blocked(result, calls)
+
+    def test_every_current_workflow_profile_reaches_the_same_read_only_plan(self) -> None:
+        workflow = yaml.safe_load(self.fixture.state["sources"][setup.WORKFLOW])
+        guard = workflow["jobs"]["activation"]["steps"][0]["run"]
+        condition = next(line for line in guard.splitlines() if '"$REPORT_CAPACITY_PROFILE" !=' in line)
+        tokens = shlex.split(condition)
+        profiles = [tokens[index + 1] for index, token in enumerate(tokens) if token == "!="]
+        self.assertGreater(len(profiles), 1)
+        for profile in profiles:
+            with self.subTest(profile=profile):
+                result, calls = self.fixture.run("--capacity-profile", profile)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assert_no_mutations(calls)
+                plan = json.loads(result.stdout)
+                self.assertEqual(plan["target"]["capacity_profile"], profile)
+                self.assertIn("scripts/_capacity_evidence.py", plan["sources"])
 
     def test_existing_identity_requires_owned_tags_and_exact_ids(self) -> None:
         self.fixture.complete()
@@ -668,6 +701,12 @@ class ReaderSetupSourceContracts(unittest.TestCase):
         self.assertEqual(first.identity, copy.copy(first).identity)
         self.assertNotEqual(first.role_id.rsplit("/", 1)[1], second.role_id.rsplit("/", 1)[1])
         self.assertNotEqual(first.identity.rsplit("/", 1)[1], second.identity.rsplit("/", 1)[1])
+        lower = setup.Target("abcdefab-cdef-4bcd-abcd-abcdefabcdef", TENANT, "rg-demo-example",
+                             "example", "demo", REPO, "baseline", "false", None)
+        upper = setup.Target(lower.subscription.upper(), TENANT, "rg-demo-example", "example",
+                             "demo", REPO, "baseline", "false", None)
+        self.assertEqual(lower.identity, upper.identity)
+        self.assertEqual(lower.role_id, upper.role_id)
 
 
 if __name__ == "__main__":
