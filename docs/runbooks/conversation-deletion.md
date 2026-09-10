@@ -91,6 +91,172 @@ An existing-record cutover additionally requires a separate dry-run inventory,
 reviewed recovery/retention policy, and approved enrollment procedure. None is
 performed by this source change. Do not close #435 on source tests alone.
 
+## Read-only selected-cohort assessment
+
+`scripts/assess-conversation-deletion.py` supplies bounded dry-run inventory for
+human review. It has **no apply, approval, enrollment, repair, cleanup, or flag
+option**. It does not call application repositories: even their ordinary v1
+parent reads can write CAS barriers. Only the explicit `collect` subcommand
+constructs `DefaultAzureCredential` and an SDK worker. Imports, help, saved-report
+checks, and synthetic rehearsal do not authenticate.
+
+Use the existing API development dependencies and Python 3.12. From the repo
+root, these commands are entirely offline:
+
+```powershell
+python scripts\assess-conversation-deletion.py --help
+python scripts\assess-conversation-deletion.py rehearse `
+  --fixture scripts\fixtures\conversation-deletion-assessment.json `
+  --output .\deletion-rehearsal.json
+python scripts\assess-conversation-deletion.py check --report .\deletion-rehearsal.json
+python -m pytest -q scripts\tests\test_conversation_deletion_assessment.py
+```
+
+Output files must be new; an existing file, including a symlink, is never
+overwritten. Keep private cohort/reference files and real reports outside the
+repository. Treat even hashed identifiers as correlatable operational evidence,
+not anonymous data or automatically approved publication.
+
+### Explicit live scope, only after operator approval
+
+Prepare a private JSON file with **known internal owner ids and session ids**.
+Replace the placeholders; do not paste titles, prompts, message/document content,
+credentials, approval records, or grants into it.
+
+```json
+{
+  "schemaVersion": 1,
+  "accountResourceId": "/subscriptions/<subscription-guid>/resourceGroups/<exact-rg>/providers/Microsoft.DocumentDB/databaseAccounts/<exact-account>",
+  "database": "ai4ia",
+  "cohort": [
+    {"ownerId": "<internal-owner-id>", "sessionId": "<known-session-id>"}
+  ]
+}
+```
+
+The cohort is limited to 12 distinct sessions. Wildcards, control-partition ids,
+owner aliases for the same session id, arbitrary endpoints/queries, and extra
+fields are refused before credential construction. This is commercial Azure
+only: the Cosmos endpoint is derived from the exact account resource id and
+bound by its ARM response. Alternate clouds/endpoints need a separate reviewed
+adapter, not a URL override. There is no owner enumeration or cross-partition
+query. Each parent query selects one id within its explicit owner partition;
+each child query selects only that known session partition. A missing or invalid
+parent does not authorize child reads.
+
+Optionally add `inlineBlobContainerResourceId`, naming one exact
+`Microsoft.Storage/storageAccounts/<account>/blobServices/default/containers/<container>`
+resource in the same subscription and resource group. Its configuration hash
+must match each selected v1 parent's recorded attachment target when inline
+storage is required. The tool reads only that Blob service/container's ARM
+configuration, **never Blob contents, listings, versions, or deletion APIs**.
+No supplied Blob target, missing configuration, or an old target mismatch means
+unknown retention coverage, not an empty or clean store.
+
+The following command is **live read access and is not authorized by this
+runbook or by a successful rehearsal**:
+
+```powershell
+python scripts\assess-conversation-deletion.py collect `
+  --cohort C:\private\deletion-cohort.json `
+  --output C:\private\deletion-observation-01.json
+```
+
+It uses the operator's existing default credential, without login, key retrieval,
+RBAC creation, subscription selection, or runtime configuration changes. Existing
+access must permit the exact account/optional Blob ARM reads and the selected
+Cosmos metadata/query operations. A denied read remains unavailable; do not add
+roles merely to make the report green. The source pins Cosmos ARM `2024-11-15`,
+Storage ARM `2023-05-01`, and the SDK's Cosmos data API `2020-07-15`. The report
+records the installed Cosmos SDK version, reviewed protocol source revision,
+assessor source digest, and fixed projection digest.
+
+Optional `--references C:\private\deletion-review-references.json` accepts:
+
+```json
+{
+  "schemaVersion": 1,
+  "accountResourceId": "<same exact account resource id as the cohort file>",
+  "database": "ai4ia",
+  "observedAt": "2026-09-10T12:00:00Z",
+  "references": [
+    {"kind": "writer_fleet", "reference": "https://example.invalid/reviews/writer-fleet"},
+    {"kind": "recovery_retention", "reference": "https://example.invalid/reviews/retention"}
+  ]
+}
+```
+
+References are not fetched. Credential-bearing URLs, query strings and fragments
+are refused; the report contains only reference hashes and an observation time.
+Even a reference less than 24 hours old has
+`basis="human_reference_not_verified"`. It does not attest deployment state,
+drain writers, clear an unknown, or become a rollout approval record.
+
+### What the report can and cannot establish
+
+The machine contract is
+`scripts/conversation-deletion-assessment.schema.json`. Every declared cohort
+member stays in its denominator, including unavailable, malformed, and partial
+members. A row records `legacy`, `v1_active`, `initializing`, `deleting`,
+`verified`, `malformed`, or `unavailable`, together with the last parent
+observation, fence agreement, child counts and unresolved upload evidence.
+`verified` means **last recorded scoped `cleanup_verified` metadata**, not a new
+cleanup verification by this reader. Conflicting children, owner/generation
+mismatches, missing fences, expiring coordination, and failed reads cannot pass
+as clean. A missing parent is unavailable, never an inferred completed delete.
+
+The collector checks single-write Session consistency, exact container partition
+paths, nonexpiring container TTL, and disabled analytical storage before reading
+selected records. It also reports the observed Cosmos backup configuration and,
+when explicitly supplied, Blob versioning, soft-delete, legal-hold and
+immutability-policy configuration. Missing values stay unknown. These settings
+are not a retention-policy review or a promise about physical deletion.
+
+Parent metadata is read again after the child observations. Matching metadata
+and ETags are only **observed stability**, not a write fence, atomic snapshot,
+writer drain, or proof of future absence. Empty child pages never make legacy
+enrollment safe. Unsettled upload tickets remain unresolved regardless of age;
+previously recorded pending-upload evidence is not cleared by a current empty
+scan. No missing sentinel is created and no ticket is force-settled.
+
+Each scan permits at most four pages of 25 rows, with a 100-row limit. Each
+response is bounded to 128 KiB; collection permits at most 160 read operations,
+4 MiB of received metadata, and 120 seconds. Each SDK/credential operation is
+supervised by a 15-second subprocess deadline. Transport-level limits also cover
+implicit SDK metadata requests, redirects are refused, and retries cannot replay
+a query. Exhausted aggregate byte budgets refuse subsequent HTTP and facade
+reads before dispatch, keeping unobserved cohort members in the denominator.
+Partial continuations and exhausted budgets remain unknown. The report
+retains collection start/end times, counts and a metadata digest chain, with at
+most eight hashed identity samples per child surface (fences and unresolved
+tickets take priority); it never emits raw owners/session ids, payload fields,
+ETags, full URLs, continuation tokens, or exception text. A final report is capped
+at 256 KiB.
+
+Exit 0 means the requested metadata observations completed without integrity or
+coverage issues, **not rollout readiness**. Exit 2 means refused, incomplete,
+malformed, or unknown evidence, including unresolved uploads. `check` verifies a
+saved report's schema, current assessor source, digest and cohort accounting;
+unknown reports still exit 2. It does not query Azure or rewrite the report.
+Input/report hashes detect mismatches, not authenticity or human approval.
+Rehearsal reports are labeled `synthetic` and cannot stand in for live evidence.
+
+Before any pre-existing-record cleanup, the operator must still:
+
+1. Review a fresh, complete, explicitly selected live cohort and all unknowns.
+   A sample is not an inventory of unselected owners or sessions.
+2. Establish and independently review the actual compatible-writer fleet and
+   conclusively drained old replicas, callbacks, voice/workflow workers and
+   delayed external requests. An observed marker or elapsed time is insufficient.
+3. Review recovery and retention, including restoring tombstones/fences together,
+   unresolved PUT recovery, backups, Blob versions and retained exclusions.
+4. Obtain separate approval and an implemented, reviewed enrollment procedure.
+   No legacy enrollment implementation is provided here; the existing rollout
+   approval scope remains `new_sessions_only`.
+
+The source assessment removes a missing dry-run capability. It does not authorize
+live collection, activation, existing-record migration, or closure of #435.
+
 ## Why the fences close the Cosmos race
 
 Initialization conditionally creates a minimal, non-readable owner reservation
