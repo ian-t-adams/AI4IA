@@ -56,8 +56,8 @@ jobs:
             echo "::error::The retirement reader must not reuse the deployment identity."
             exit 1
           fi
-          if [[ "$REPORT_CAPACITY_PROFILE" != "baseline" && "$REPORT_CAPACITY_PROFILE" != "maximum" ]]; then
-            echo "::error::Report capacity profile must explicitly match baseline or maximum."
+          if [[ "$REPORT_CAPACITY_PROFILE" != "baseline" && "$REPORT_CAPACITY_PROFILE" != "production" && "$REPORT_CAPACITY_PROFILE" != "maximum" ]]; then
+            echo "::error::Report capacity profile must explicitly match baseline, production or maximum."
             exit 1
           fi
           if [[ "$REPORT_CLAUDE_ENABLED" != "true" && "$REPORT_CLAUDE_ENABLED" != "false" ]]; then
