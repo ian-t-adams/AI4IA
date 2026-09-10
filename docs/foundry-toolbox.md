@@ -51,6 +51,16 @@ AI4IA's explicit **2026-07-28** stateless support remains **unverified for this
 live Foundry endpoint and APIM's preview MCP API**; November support does not
 enable it or add client capabilities.
 
+The official public APIM path was also observed returning **204 No Content** for
+`notifications/initialized`; the evidence does not identify whether Foundry or
+APIM generated that response. The
+[November transport specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server)
+requires **202 Accepted** with no body. AI4IA additionally tolerates strictly
+empty 204 acknowledgements only in explicit November mode, retaining version and
+session checks and rejecting content-bearing headers/body bytes under the existing
+timeout. This notification-only compatibility rule does not rewrite APIM responses,
+accept an empty RPC result, retry a request or change tool/resource authorization.
+
 The generated API catalog and APIM's exact catalog-selected stateful guard must
 roll out together through the normal approved provision/deploy path. Updating
 only the client cannot make a deployed June-only APIM guard accept November

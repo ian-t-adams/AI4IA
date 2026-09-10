@@ -776,13 +776,34 @@ class HttpxMcpConnector:
                 async with client.stream(
                     "POST", endpoint, headers=headers, json=body, follow_redirects=False
                 ) as resp:
-                    if resp.status_code != 202:
+                    # MCP requires 202; the observed November APIM path uses empty 204.
+                    no_content_ack = (
+                        resp.status_code == 204
+                        and context.protocol_version is McpProtocolVersion.stateful_2025_11_25
+                    )
+                    if resp.status_code != 202 and not no_content_ack:
                         raise McpConnectionError(
                             f"{method}: server returned HTTP {resp.status_code}."
                         )
                     self._validate_response_headers(
                         resp.headers, context, method, headers.get("Mcp-Session-Id")
                     )
+                    if no_content_ack:
+                        if (
+                            resp.headers.get("content-length") not in (None, "0")
+                            or any(name in resp.headers for name in (
+                                "transfer-encoding", "content-encoding", "content-range", "trailer",
+                            ))
+                        ):
+                            raise McpConnectionError(
+                                f"{method}: HTTP 204 acknowledgement has content headers."
+                            )
+                        chunks = _single_chunk(resp.content) if resp.is_stream_consumed else resp.aiter_raw()
+                        async for chunk in chunks:
+                            if chunk:
+                                raise McpConnectionError(
+                                    f"{method}: HTTP 204 acknowledgement must be empty."
+                                )
         except SsrfError as exc:
             # Defense in depth: the pinned transport refused the target. The primary
             # rebind rejection happens up front in _pin_for; a notification must still

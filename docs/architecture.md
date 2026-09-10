@@ -250,6 +250,17 @@ request IDs; cursors never cross sessions. Reaching a list cap closes that clien
 Neither stateful version sends the stateless metadata/routing mirrors or
 advertises tasks, sampling, elicitation or other extra client capabilities.
 
+The November HTTP transport normatively requires an empty **202 Accepted**
+notification acknowledgement. Only explicit **2025-11-25** also accepts an empty
+**204 No Content**, observed on the official APIM path; this is bounded client
+interoperability, not protocol fallback or an APIM response rewrite. The 204
+exception requires absent or exactly `0` Content-Length, no Transfer-Encoding,
+Content-Encoding, Content-Range or Trailer headers, and no raw body bytes.
+The existing timeout bounds the emptiness check without buffering or decompressing
+a body. Accepted acknowledgements still validate the selected version and session.
+This applies to initialized and cancellation notifications, never JSON-RPC
+responses; June and July behavior, 202 handling and no-replay rules are unchanged.
+
 Opting one server into **`2026-07-28`** uses self-contained POST requests with
 `params._meta` protocol version, client identity and empty client capabilities.
 There is no initialize handshake, session ID, GET stream or automatic replay.
