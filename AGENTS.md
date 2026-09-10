@@ -75,6 +75,17 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    contract scope before dispatch, and never grant new tools or permissions.
    Include automatically injected registry tools such as `load_skill` and their
    meaningful resource metadata in those snapshots.
+   `ChatRequest.allowTools=false` and `allowAutomaticMemory=false` are
+   request-only denials, not grants or durable preference edits. Keep their
+   nested-AND context alive through SSE, tool dispatch and automatic memory IO.
+   The optional `requireFreshSession` path consumes an API-hidden v1 session
+   claim with the existing owner/ETag CAS before constructing its empty-context
+   prompt. Preserve `freshTurnClaimed` in durable serialization and every
+   patch/clear path; never reset it after errors or lost acknowledgements.
+   This is one-shot model admission, not a child-write or deletion fence.
+   The factory's canary dispatch guard additionally binds owner, claimed
+   generation, actual adapted sentinel-only payload and one dispatch; only
+   actor policy can require that guard, and the guard grants no authority.
 6. **No secret sprawl.** Do not log credentials, commit secrets, or put user MCP
    secrets in Cosmos; durable MCP secrets belong in Key Vault outside local.
 7. **Receipts show execution, never hidden reasoning.** Persist bounded,
@@ -631,6 +642,17 @@ docs-only PR.
 Adding a check is a three-step ordering: make it always-reported, prove it on a PR
 that would previously have skipped it, then require it. A required context that is
 never reported blocks every PR permanently.
+
+CodeQL has a separate matrix-based guard in that file. Its unfiltered PR trigger
+must cover `main` and the default PR events; the literal include rows and job name
+must emit exactly `Analyze (python)`, `Analyze (javascript-typescript)`, and
+`Analyze (csharp)`, with no duplicates. Keep `fail-fast: false`, no matrix
+exclusions or job-level skip dependencies/conditions, and blocking analysis.
+Requiring C# must not remove the existing Python/JavaScript contexts. CodeQL's
+push trigger is also unfiltered: do not add it to `GATING_WORKFLOWS`, whose
+separate push-path assertion applies only to app/infra/image builds. These guards
+preserve reporting, not live ruleset configuration; require a new context only
+after a non-language-changing PR proves it reports.
 
 All current workflow checkouts use `persist-credentials: false`: they need source
 fetching, not a repository token left for later steps. GitHub REST calls use the

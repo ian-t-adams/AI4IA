@@ -73,6 +73,15 @@ class SessionRepository(Protocol):
 
     async def get_session(self, user_id: str, session_id: str) -> Session: ...
 
+    async def claim_fresh_session(self, user_id: str, expected: Session) -> Session | None:
+        """Consume one v1 session's fresh-turn slot on the exact owner/snapshot.
+
+        Only a successful atomic claim may build the constrained prompt. The
+        marker never expires or resets, including after failure or /clear.
+        This is not a fence against child mutations; v1 deletion owns those.
+        """
+        ...
+
     async def list_sessions(self, user_id: str) -> list[Session]: ...
 
     async def patch_session(

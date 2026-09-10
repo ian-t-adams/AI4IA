@@ -32,8 +32,34 @@ target must declare that posture with `AI4IA_DEPLOYMENT_ENABLED=false`.
 
 This source guard does not replace the independently configured `production`
 environment branch policy. An operator must still restrict that environment as
-described in the standup guide; changing workflow source alone does not update
+described in the standup guide: allow only an exact **branch** rule named `main`,
+not a tag rule or a wildcard. Changing workflow source alone does not update
 live GitHub environment/security settings.
+
+### Repository policy is configured separately
+
+Configure and read back the live controls independently of a source PR. The
+`main` ruleset should require `Analyze (csharp)` alongside the existing
+`Analyze (python)` and `Analyze (javascript-typescript)` contexts, but only after
+a PR without C# changes proves the C# check reports. Keep required approving
+reviews at **0**, no bypass actors, and the existing allowed merge methods.
+`scripts/tests/test_gating_workflows.py` separately guards CodeQL's PR events,
+matrix-derived context names, and non-skipping/non-cancelling job configuration;
+it neither reads nor changes the live required-check list.
+
+Repository Actions full-length SHA enforcement, private vulnerability reporting,
+and supported secret-scanning validity/non-provider checks also need explicit
+configuration and readback. Committed SHA pins, checkout credential suppression,
+and the job-permission consumer inventory are source contracts, not proof that
+those live settings are enabled.
+
+Keep strict up-to-date checks, merge queue, and the publisher allowlist unchanged
+unless separately approved. Strictness adds full-suite rerun/rebase churn for a
+solo maintainer; a queue first needs merge-group check coverage to avoid blocked
+merges. Release provenance binds the actual merged commit, but does not prove an
+untested merge combination safe. Full-SHA enforcement and reviewed action
+consumers do not replace publisher trust review; a publisher allowlist adds
+ongoing maintenance and a separate approval step for each new publisher.
 
 ## Moved setup sections
 
