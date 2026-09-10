@@ -63,6 +63,8 @@ class Wire:
         self.received = 0
 
     def request(self, method: str, url: str, headers: Mapping[str, str], body: bytes | None = None) -> tuple[bytes, dict[str, str]]:
+        if self.received >= MAX_TOTAL_BYTES:
+            raise AssessmentError("response_byte_limit")
         if self.calls >= MAX_CALLS:
             raise AssessmentError("transport_call_limit")
         remaining = COLLECTION_SECONDS - (self.clock() - self.started)
@@ -83,7 +85,10 @@ class Wire:
                 if response.headers.get("content-encoding", "identity").lower() != "identity":
                     raise AssessmentError("encoded_response_refused")
                 length = response.headers.get("content-length")
-                if length is not None and (not length.isascii() or not length.isdecimal() or int(length) > MAX_PAGE_BYTES):
+                if length is not None and (
+                    not length.isascii() or not length.isdecimal()
+                    or int(length) > min(MAX_PAGE_BYTES, MAX_TOTAL_BYTES - self.received)
+                ):
                     raise AssessmentError("response_byte_limit")
                 chunks = []
                 size = 0

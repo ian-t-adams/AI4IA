@@ -507,6 +507,20 @@ class AssessmentTests(unittest.TestCase):
         self.assertEqual([], reader.calls)
         self.assertEqual(2, report["summary"]["declared"])
 
+    def test_exhausted_facade_bytes_stop_later_reads_and_retain_the_cohort(self):
+        self.assert_complete(observe(RecordingReader(fixture())))
+        reader = RecordingReader(fixture())
+        account_bytes = len(assessment.canonical(reader.sources["account"]))
+        budget = assessment.Budget(received_bytes=assessment.MAX_TOTAL_BYTES - account_bytes)
+        report = observe(reader, budget=budget)
+        self.assertEqual([("metadata", "account")], reader.calls)
+        self.assertEqual(1, budget.calls)
+        self.assertEqual(assessment.MAX_TOTAL_BYTES, budget.received_bytes)
+        self.assertEqual("unknown", report["status"])
+        self.assertEqual({"unavailable": 2}, report["summary"]["classifications"])
+        self.assertEqual(2, report["summary"]["declared"])
+        self.assertEqual([], reader.writes)
+
     def test_report_rejects_modified_identity_version_claims_digest_and_coverage(self):
         report = observe(RecordingReader(fixture()))
         self.assert_complete(report)
@@ -897,6 +911,54 @@ class SdkTransportTests(unittest.TestCase):
         with httpx.Client(transport=httpx.MockTransport(lambda r: CosmosTransportFixture.response({"ok": True}))) as client:
             wire = sdk.Wire(client)
             self.assertEqual({"ok": True}, json.loads(wire.request("GET", "https://example.invalid/fixture", {})[0]))
+
+    def test_exhausted_wire_bytes_stop_actual_http_requests(self):
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            return httpx.Response(200, stream=httpx.ByteStream(b" " * assessment.MAX_PAGE_BYTES))
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+            wire = sdk.Wire(client)
+            allowed = assessment.MAX_TOTAL_BYTES // assessment.MAX_PAGE_BYTES
+            for _ in range(allowed):
+                body, _ = wire.request("GET", "https://example.invalid/fixture", {})
+                self.assertEqual(assessment.MAX_PAGE_BYTES, len(body))
+            self.assertEqual(assessment.MAX_TOTAL_BYTES, wire.received)
+            self.assertEqual(allowed, len(requests))
+            for _ in range(3):
+                with self.assertRaisesRegex(assessment.AssessmentError, "response_byte_limit"):
+                    wire.request("GET", "https://example.invalid/fixture", {})
+            self.assertEqual(allowed, len(requests))
+            self.assertEqual(allowed, wire.calls)
+            self.assertEqual(assessment.MAX_TOTAL_BYTES, wire.received)
+
+    def test_declared_response_larger_than_remaining_bytes_is_not_consumed(self):
+        class Body(httpx.SyncByteStream):
+            def __init__(self):
+                self.consumed = False
+
+            def __iter__(self):
+                self.consumed = True
+                yield b"abc"
+
+        for remaining in (3, 2):
+            body = Body()
+            with httpx.Client(transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, headers={"content-length": "3"}, stream=body)
+            )) as client:
+                wire = sdk.Wire(client)
+                wire.received = assessment.MAX_TOTAL_BYTES - remaining
+                if remaining == 3:
+                    self.assertEqual(b"abc", wire.request("GET", "https://example.invalid/fixture", {})[0])
+                    self.assertTrue(body.consumed)
+                    self.assertEqual(assessment.MAX_TOTAL_BYTES, wire.received)
+                else:
+                    with self.assertRaisesRegex(assessment.AssessmentError, "response_byte_limit"):
+                        wire.request("GET", "https://example.invalid/fixture", {})
+                    self.assertFalse(body.consumed)
+                    self.assertEqual(assessment.MAX_TOTAL_BYTES - remaining, wire.received)
 
     def test_isolated_timeout_terminates_only_its_worker_and_retains_prior_rows(self):
         class Process:

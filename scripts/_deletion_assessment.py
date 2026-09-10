@@ -322,6 +322,8 @@ class Budget:
     def before(self) -> None:
         if self.clock() - self.started >= COLLECTION_SECONDS:
             raise AssessmentError("collection_timeout")
+        if self.received_bytes >= MAX_TOTAL_BYTES:
+            raise AssessmentError("response_byte_limit")
         if self.calls >= MAX_CALLS:
             raise AssessmentError("call_limit")
         self.calls += 1

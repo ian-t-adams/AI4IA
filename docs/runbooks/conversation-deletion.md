@@ -224,7 +224,9 @@ response is bounded to 128 KiB; collection permits at most 160 read operations,
 4 MiB of received metadata, and 120 seconds. Each SDK/credential operation is
 supervised by a 15-second subprocess deadline. Transport-level limits also cover
 implicit SDK metadata requests, redirects are refused, and retries cannot replay
-a query. Partial continuations and exhausted budgets remain unknown. The report
+a query. Exhausted aggregate byte budgets refuse subsequent HTTP and facade
+reads before dispatch, keeping unobserved cohort members in the denominator.
+Partial continuations and exhausted budgets remain unknown. The report
 retains collection start/end times, counts and a metadata digest chain, with at
 most eight hashed identity samples per child surface (fences and unresolved
 tickets take priority); it never emits raw owners/session ids, payload fields,
