@@ -30,6 +30,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _model_naming import deployment_name
+
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_FILE = ROOT / "infra" / "models.json"
 
@@ -87,16 +90,6 @@ def index_quota(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         for key in _quota_keys(sku, model):
             index.setdefault(key, entry)
     return index
-
-
-def deployment_name(models: dict[str, Any], model: str, deployment: dict[str, Any]) -> str:
-    naming = models["naming"]
-    return str(naming.get("pattern") or "{model}-{subscriptionToken}-{region}-{skuShort}").format(
-        model=model,
-        subscriptionToken=naming["subscriptionToken"],
-        region=deployment["region"],
-        skuShort=naming["skuShort"][deployment["sku"]],
-    )
 
 
 def _platform_index(raw: dict[str, Any]) -> dict[tuple[str, str], int]:

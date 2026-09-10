@@ -274,6 +274,161 @@ API references:
 [quota and raw capacity units](https://learn.microsoft.com/azure/ai-foundry/openai/how-to/quota),
 [bounded metric filters and aggregation](https://learn.microsoft.com/rest/api/monitor/metrics/list?view=rest-monitor-2023-10-01).
 
+## Production capacity policy and offline recommendations
+
+`AI4IA_MODEL_CAPACITY_PROFILE=production` is an explicit, catalog-owned
+alternative to the portable `baseline` and operator-only `maximum`. Neither the
+default nor the shipped allocations change. **The shipped catalog deliberately
+has no production assignments.** Selecting production without a complete policy,
+review provenance and capacities fails before Azure reads; it never substitutes
+baseline, maximum, zero, or a computed recommendation.
+
+Production policy belongs in `infra/models.json`, not a parallel model list or
+an environment JSON override. `infra/models.schema.json` defines its strict shape,
+and `scripts/validate-catalog.py` checks cross-field identities and bounds.
+The runnable fixture in `scripts/tests/_production_fixture.py` is entirely
+synthetic, not a proposal for the current subscription.
+
+| Catalog field | Operator decision or contract |
+| --- | --- |
+| `productionCapacityPolicy.version` / `id` | Fixed protocol `production-capacity-v1` and a bounded, versioned review identifier |
+| `subscriptionId`, `resourceGroup`, `environment` | Exact intended subscription and azd stack; provisioning checks these against its target |
+| `pools[].id` / `pools[].pool` | Stable policy ID plus the exact pool-assertion shape above: counter, unit, scope, complete regions, model format/name/SKU, every catalog version, and conversion factor 1 |
+| `pools[].reserve` | Explicit nonnegative integer `replacement`, `retry`, and `otherWorkloads` units; no percentage or omitted-field defaults; their total must be positive |
+| `pools[].usage` | An explicitly chosen canonical metric, positive `countPerCapacityHour`, `minimumHours` (24-168), and positive `minimumTotal` before sizing is considered |
+| Each deployment's `production` | `poolId`, Boolean `critical`, integer `criticalMinimum`, positive `ceiling`, and an optional draft / mandatory selected `capacity` |
+| `productionCapacityPolicy.review` | Required for selection: `reference`, UTC `reviewedAt`, and the reviewed recommendation's `reportSha256`, `catalogSha256`, `poolEvidenceSha256` |
+
+A critical deployment needs a positive minimum; a noncritical deployment uses
+`criticalMinimum: 0`. Every selected capacity must be at least both the portable
+baseline and the critical minimum, and at most its explicit ceiling. The
+replacement reserve must cover the largest proposed/selected deployment in its
+pool. Retry and other-workload reservations are additional, not overlapping
+labels for the same headroom. Explicit zero values remain visible policy
+decisions; this code does not decide which workloads can forgo a reserve.
+Maximum's historical heuristics and `maxCapacityPool` cannot establish a
+production pool or set a production ceiling.
+
+### Prepare, recommend, review, then select
+
+1. Obtain owner decisions for criticality, bounds, reserve units and sizing
+   assumptions. Add that **draft** policy to the existing catalog, leaving
+   production `capacity` and `review` absent until reviewed. Keep the selected
+   profile unchanged. Draft metadata does not change deployed capacity.
+2. Separately obtain the approved read-only report described above, using this
+   exact draft catalog and fresh, reviewed pool assertions. The reporter still
+   neither evaluates policy nor writes capacities.
+3. Run the offline recommender. It reads the catalog and saved report only,
+   prints to stdout, and has no Azure, `--apply`, or output-file writer mode:
+
+```powershell
+python scripts\recommend-model-capacity.py `
+  --report .azure\capacity-evidence-<utc-date>.json `
+  --subscription <expected-subscription-guid> `
+  --resource-group <exact-resource-group> `
+  --environment-name <azd-environment> `
+  --format json
+```
+
+4. Review each proposal, its pool basis, coverage, outside allocation, and all
+   reserve components. An owner may then manually adopt approved capacities
+   into the existing deployment records and record the three source hashes,
+   review reference and UTC time under `review`. This is a reviewed source
+   change, not a report side effect. The source-catalog hash identifies the
+   **pre-adoption** input, avoiding a self-referential catalog hash.
+5. Regenerate/check the normal catalogs and validate the source. Only after
+   separate deployment approval select `production` through the existing
+   profile variable and run the normal provisioning workflow. Every provision
+   re-reads allocation and quota before ARM; the recorded review is provenance,
+   not a credential, a live allocation guarantee or deployment authorization.
+
+Changing the catalog, including draft policy or adopted capacities, changes its
+file hash. Old reports then fail the recommender's exact catalog-hash check:
+collect new approved evidence before another recommendation. No profile,
+criticality, reserve, region, SKU, version or capacity is chosen automatically.
+Source capability, owner acceptance, profile activation and rollout are separate
+states; this feature alone does not close the production-capacity issue.
+
+### Recommendation arithmetic and refusal behavior
+
+The input report and catalog are each bounded to 2 MiB; escaped output is also
+bounded to 2 MiB. Duplicate JSON keys, nonfinite numbers and unsupported schemas
+are rejected. Collection and pool assertion timestamps must be UTC, not future,
+and no more than 24 hours old. The report's subscription fingerprint, RG,
+environment, catalog hash, deployment identities, source references and
+closed-hour window must match. Quota and platform observations are re-parsed
+with the evidence collector's validators, and pool rollups are recomputed rather
+than trusting claimed headroom.
+
+For every pool, every catalog version and region must have consistent allocation,
+quota and platform evidence, plus complete returned-series usage. Null or missing
+samples, no series, warnings, partial source reads, unasserted pools, mismatched
+units, contradictory replicas, or insufficient observation hours/volume yield
+**unknown / hold current**, not a reduction or removal recommendation. A v1 report
+does not retain uncatalogued provisioning states; a relevant uncatalogued row
+therefore also prevents sizing rather than inventing `Succeeded`. Unattributed
+counter allocation stays occupied. A healthy independent pool can still receive
+a recommendation; overall status remains partial while any coverage is unknown.
+
+The proposed target is the integer ceiling of observed peak hourly metric count
+divided by the operator's `countPerCapacityHour`, raised to the baseline/critical
+floor. Demand above the explicit ceiling is unknown/hold, not silently capped.
+This conversion is labeled **operator sizing assumption**, not TPM, billing,
+Azure pool discovery, or a conclusion that one low-volume week sets durable
+capacity. Even a complete recommendation still requires owner review.
+
+For each asserted pool, separately:
+
+```text
+outside allocation = counter current - matched catalog allocation
+proposed allocation = outside allocation + sum(proposed deployment capacities)
+headroom after = counter limit - proposed allocation
+unreserved headroom after = headroom after - replacement - retry - otherWorkloads
+```
+
+All terms are bounded integers in the one asserted comparable unit. Replicated
+counters are counted once across versions/regions. There is no grand total over
+unlike pools. A negative unreserved balance refuses the entire pool proposal.
+Increases must also fit current headroom plus the reserved amount **before**
+any reductions execute; they cannot spend an unapplied reduction. Aggregate
+increases must fit the smallest observed platform-availability value, never the
+sum of replicas. That conservative observation is not a promise of deployability.
+
+Exit 0 means all requested recommendations are complete **for review**, not
+approved. Exit 2 means partial/unknown or invalid input. The JSON retains
+per-pool fixed reason codes, hold actions, provenance hashes and
+`authority: operator_asserted`; no success-shaped zero replaces missing evidence.
+
+### Production preflight and unchanged routing
+
+The normal Windows and POSIX azd preprovision hooks validate selected production
+metadata and target scope before ARM. The availability preflight refuses
+`--skip-quota` and `--region` narrowing for production provisioning, reads the
+whole declared scope, and uses exact asserted counters/units rather than the
+maximum planner's publisher or equal-number heuristics. It requires matched,
+successful existing model/version/SKU inventories and rejects unknown or
+unreviewed versions. Start a greenfield deployment on baseline; do not bypass
+this gate to enroll an unobserved addition or version transition.
+
+Current counters, all-version allocation, outside allocation and the selected
+reserve budget are rechecked even for an otherwise exact reconciliation.
+Inventory failures are not absence or zero. Current platform availability and
+concurrent reservations remain Azure decisions; this is not distributed hard
+admission or an atomic quota reservation.
+
+The Claude gate still defines the desired provisioning surface. Disabled
+deployments need no production selection, but an existing disabled member of an
+enabled pool still consumes its observed allocation: omission does not delete it.
+The raw evidence collector continues to report its full catalog denominator;
+do not equate that with a Claude-disabled preflight denominator.
+
+`infra/capacity.bicep` supplies the actual selected capacity to model deployment
+records. Missing production fields cause property-access failure, not a numeric
+fallback. The API/runtime catalog never projected allocation capacities and still
+does not: model names, versions, regions, SKUs and routing remain catalog-driven
+and allocation-independent. Baseline and maximum selection/fallback behavior is
+unchanged, and maximum remains an explicit operator-only choice.
+
 ## Use all available model capacity
 
 After the baseline deployment exists, generate a maximum profile for that
