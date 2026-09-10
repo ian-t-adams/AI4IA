@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import binascii
 import ipaddress
+import json
 import math
 import os
 import re
@@ -48,7 +49,7 @@ class LiveError(EvaluationError):
 class LiveCase(StrictModel):
     id: Identifier
     profile: Literal["no-tools-no-memory"]
-    system_prompt: str = Field(min_length=1, max_length=1024)
+    instructions: str = Field(min_length=1, max_length=1024)
     input: str = Field(min_length=1, max_length=1024)
     output_schema: dict | None = None
     exact_text: str | None = Field(default=None, min_length=1, max_length=256)
@@ -64,7 +65,16 @@ class LiveCase(StrictModel):
             output_schema=self.output_schema, max_model_calls=1,
             max_latency_ms=45_000, max_cost_micro_usd=MAX_ESTIMATE_MICRO_USD,
         )
+        if len(authored_prompt(self).encode("utf-8")) > 4096:
+            raise ValueError("authored_prompt_too_large")
         return self
+
+
+def authored_prompt(case: LiveCase) -> str:
+    return (
+        f"Task specification:\n{case.instructions}\n\n"
+        f"Quoted task data:\n{json.dumps(case.input, ensure_ascii=True)}"
+    )
 
 
 class LiveDataset(StrictModel):

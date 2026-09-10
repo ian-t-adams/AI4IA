@@ -169,11 +169,14 @@ weakened to reuse it for live calls.
 
 `python -m scripts.evaluations.live` is a separate CLI and worker. The committed
 `live-synthetic-v1.json` contains exactly three no-tool tasks: a small arithmetic
-JSON object, a fixed instruction-boundary response, and an unavailable-source
+JSON object, a fixed quoted-task-instruction response, and an unavailable-source
 JSON format. The server is asked for `allowTools=false`,
 `allowAutomaticMemory=false`, and `requireFreshSession=true` on **every** turn.
 These are request reductions, not authority to override identity, entitlements,
-model policy, tool approvals, or memory preferences.
+model policy, tool approvals, or memory preferences. Dataset/prompt version 1.1.0
+encodes each authored task specification and quoted data in **one user message**,
+leaving the session's system prompt unset. It does not relax the fresh-session
+guard or test system-versus-user role obedience.
 
 The live suite measures only those deterministic authored outcomes. Tool choice,
 tool feedback, citation grounding, approvals, broad safety and workflow quality

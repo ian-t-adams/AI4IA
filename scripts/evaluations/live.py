@@ -26,7 +26,8 @@ from .live_contracts import (
     MAX_RECONCILES, MAX_RUN_SECONDS, TOKEN_ENV, FailureCode, LiveCase, LiveConfig,
     ExecutionCapabilities, LifecycleObservation, LiveDataset, LiveError, LiveIdentity,
     LiveReport, LiveResult, bind_token,
-    config_from_environment, limits, load_live_dataset, source_documents, source_model, unknown_live,
+    authored_prompt, config_from_environment, limits, load_live_dataset,
+    source_documents, source_model, unknown_live,
 )
 from .live_http import HTTPS, ApiClient, Budget
 from .live_oracles import object_value, score_live, with_cleanup
@@ -277,18 +278,19 @@ def execute_live_case(
     try:
         created = object_value(_expect(client, "POST", "/api/sessions", {
             "title": "authored synthetic evaluation", "model": config.model_id,
-            "systemPrompt": case.system_prompt, "agentName": None,
+            "agentName": None,
             "libraryDocumentIds": [], "toolOverrides": {"added": [], "removed": []},
         }, status=201))
         session_id = client.created(created.get("id"))
         if (
             created.get("model") != config.model_id
-            or created.get("agentName") is not None or created.get("libraryDocumentIds") not in (None, [])
+            or created.get("agentName") is not None or created.get("systemPrompt") is not None
+            or created.get("libraryDocumentIds") != []
         ):
             raise LiveError("capability")
         started = client.budget.clock()
         answer = object_value(_expect(client, "POST", "/api/chat", {
-            "sessionId": session_id, "content": case.input, "model": config.model_id,
+            "sessionId": session_id, "content": authored_prompt(case), "model": config.model_id,
             "region": capabilities.region,
             "stream": False, "params": {"max_tokens": MAX_OUTPUT_TOKENS},
             **REQUEST_CONTROLS,
