@@ -192,7 +192,18 @@ async def observe_command(directory: Path, env: Mapping[str, str]) -> int:
                 correlation_id=f"application-canary-{run.run_id}-1",
             ) as transport:
                 advertised = await chat(transport, config, token, source, report, budget=budget)
-                await realtime(transport, config, token, source, advertised, report, budget=budget)
+
+                async def realtime_token() -> str:
+                    budget.timeout(1)
+                    selected = await acquire(config.for_realtime(), run, env, utc_now())
+                    if env.get("GITHUB_ACTIONS") == "true":
+                        print(f"::add-mask::{selected}", flush=True)
+                    return selected
+
+                await realtime(
+                    transport, config, "", source, advertised, report,
+                    budget=budget, token_provider=realtime_token,
+                )
     except CanaryError as exc:
         if attempted:
             report.mark("auth", "fail", exc.code, attempts=1)

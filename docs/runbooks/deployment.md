@@ -661,7 +661,8 @@ copyable activation configuration**:
   "acknowledge_no_hard_bill_cap": true,
   "actor_ready": true,
   "cleanup_approved": true,
-  "ga_enabled": false
+  "ga_enabled": false,
+  "realtime_actor": null
 }
 ```
 
@@ -676,7 +677,10 @@ changing a JSON field is not a way to reset its count.
 
 The chat probe intersects the API catalog with the source catalog, requires a
 known price and a compatible non-reasoning/`none`-effort conversational path,
-then asks the policy-owned capability reader about that exact model. It never
+then requests the explicit `least_estimated_cost` operation from the
+policy-owned capability reader. The server selects the cheapest compatible
+**currently policy-allowed** option, and the client verifies that choice against
+both catalogs and its pre-dispatch price snapshot. It never
 hardcodes a deployment or switches to a more expensive model after dispatch.
 One new, exact-owner, empty-scope session sends the shared non-sensitive
 sentinel through **web -> API -> SimpleL7Proxy -> APIM -> Foundry**, with tools
@@ -711,6 +715,14 @@ creation, tools, or voice persistence is covered. The setup needs its own
 approved server actor envelope and can consume provider resources even without
 audio. Preview, Speech, missing authority and unknown protocol remain unscored
 or failed; the monitor never selects or activates the server protocol.
+
+When `ga_enabled` is true, `realtime_actor` must contain distinct, approved
+`client_id` and `object_id` GUIDs. Neither the sentinel, deployment nor API
+application identity may be reused. The second OIDC exchange happens only after
+the server reports GA. Its own authenticated catalog and
+`/api/canary/realtime-capabilities` observation must admit the setup-only
+operation before the socket opens. The monitor and evaluation identities remain
+chat-only. A client field or profile label cannot select the server actor policy.
 
 Evidence is deliberately smaller than an execution receipt: allowlisted stages,
 outcomes, reason codes, counts, UTC observation times, latency, coverage,

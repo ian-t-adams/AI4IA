@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from typing import Mapping
 
@@ -46,6 +46,12 @@ def current_run(env: Mapping[str, str]) -> Run:
 
 
 @dataclass(frozen=True)
+class RealtimeActor:
+    client_id: str
+    object_id: str
+
+
+@dataclass(frozen=True)
 class Configuration:
     tenant_id: str
     client_id: str
@@ -61,6 +67,7 @@ class Configuration:
     actor_ready: bool
     cleanup_approved: bool
     ga_enabled: bool
+    realtime_actor: RealtimeActor | None = None
 
     @classmethod
     def load(cls, env: Mapping[str, str], now: datetime) -> Configuration | None:
@@ -71,10 +78,15 @@ class Configuration:
             raise CanaryError("invalid_configuration")
         if env.get("AI4IA_CANARY_HARD_USD_CAP"):
             raise CanaryError("hard_bill_cap_unsupported")
-        raw = obj(
-            strict_json(env.get("AI4IA_CANARY_CONFIG", "").encode("utf-8"), limit=4096),
-            set(cls.__dataclass_fields__),
-        )
+        raw = obj(strict_json(env.get("AI4IA_CANARY_CONFIG", "").encode("utf-8"), limit=4096))
+        if set(raw) not in (
+            set(cls.__dataclass_fields__), set(cls.__dataclass_fields__) - {"realtime_actor"},
+        ):
+            raise CanaryError("invalid_configuration")
+        raw = raw.copy()
+        if raw.get("realtime_actor") is not None:
+            actor = obj(raw["realtime_actor"], {"client_id", "object_id"})
+            raw["realtime_actor"] = RealtimeActor(guid(actor["client_id"]), guid(actor["object_id"]))
         result = cls(**raw)
         for key in ("tenant_id", "client_id", "object_id", "approval_id"):
             guid(getattr(result, key))
@@ -91,6 +103,13 @@ class Configuration:
                 raise CanaryError("not_ready")
         if type(result.ga_enabled) is not bool:
             raise CanaryError("invalid_configuration")
+        if result.ga_enabled and result.realtime_actor is None:
+            raise CanaryError("not_ready")
+        if result.realtime_actor is not None and (
+            result.realtime_actor.client_id in (result.client_id, deploy_client, audience_id)
+            or result.realtime_actor.object_id in (result.object_id, result.realtime_actor.client_id)
+        ):
+            raise CanaryError("identity_rejected")
         integer(result.approved_runs, 1, MAX_RUNS)
         integer(result.interval_seconds, INTERVAL_SECONDS, INTERVAL_SECONDS)
         expiration = timestamp(result.expires_at)
@@ -109,3 +128,11 @@ class Configuration:
     @property
     def approval_digest(self) -> str:
         return digest(self.approval_id)
+
+    def for_realtime(self) -> Configuration:
+        if not self.ga_enabled or self.realtime_actor is None:
+            raise CanaryError("not_ready")
+        return replace(
+            self, client_id=self.realtime_actor.client_id, object_id=self.realtime_actor.object_id,
+            ga_enabled=False, realtime_actor=None,
+        )

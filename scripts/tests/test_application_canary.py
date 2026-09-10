@@ -26,7 +26,7 @@ import yaml
 
 from app.api.src.ai4ia_api.usage.pricing import PriceRate, PricingBook
 from scripts.canaries import __main__ as cli
-from scripts.canaries.configuration import Configuration, current_run
+from scripts.canaries.configuration import Configuration, RealtimeActor, current_run
 from scripts.canaries.contracts import (
     CanaryError, INTERVAL_SECONDS, MAX_HTTP_BYTES, MAX_OUTPUT_TOKENS,
     Report, Run, STAGES, encoded, public_origin, stamp, strict_json,
@@ -71,7 +71,9 @@ ADVERTISED = {"models": [
         "supportsSampling": True, "reasoningEffortOptions": [], "maxOutputTokens": 1024,
         "options": [{"deploymentName": "test-deployment", "region": "eastus2"}],
     },
-    {"id": "test-realtime", "category": "realtime"},
+    {"id": "test-realtime", "category": "realtime", "options": [
+        {"deploymentName": "test-realtime-deployment", "region": "eastus2"},
+    ]},
 ]}
 BOOK = PricingBook(
     {"test-chat": PriceRate(1, 2)}, currency="USD", version="synthetic-v1",
@@ -151,6 +153,16 @@ def deletion_status(*, complete=True):
     }
 
 
+def realtime_capability():
+    return {
+        "version": 1, "ready": True, "model": "test-realtime", "region": "eastus2",
+        "constraints": {
+            "provider": "azure_openai", "protocol": "ga", "setupOnly": True,
+            "allowAudio": False, "allowResponses": False, "allowTools": False, "maxSeconds": 15,
+        },
+    }
+
+
 def previous_state(*, report=None, config=CONFIG):
     if report is None:
         report = Report(replace(RUN, run_id=100, number=1), stamp(NOW - timedelta(hours=6)))
@@ -185,6 +197,8 @@ class FakeApp:
             return response(copy.deepcopy(ADVERTISED))
         if key == ("GET", "/api/canary/capabilities"):
             return response(ready_capability())
+        if key == ("GET", "/api/canary/realtime-capabilities"):
+            return response(realtime_capability())
         if key == ("POST", "/api/sessions"):
             return response({
                 "id": SID, "model": "test-chat", "agentName": None, "libraryDocumentIds": [],
@@ -272,6 +286,23 @@ class StrictContractTests(unittest.TestCase):
         env["AI4IA_CANARY_HARD_USD_CAP"] = "1.00"
         with self.assertRaisesRegex(CanaryError, "hard_bill_cap_unsupported"):
             Configuration.load(env, NOW)
+
+    def test_ga_never_reuses_monitor_or_deployment_identity(self):
+        distinct = RealtimeActor(
+            "88888888-8888-8888-8888-888888888888",
+            "99999999-9999-9999-9999-999999999999",
+        )
+        configured = replace(CONFIG, ga_enabled=True, realtime_actor=distinct)
+        parsed = Configuration.load(environment(config=configured), NOW)
+        self.assertEqual(parsed.for_realtime().client_id, distinct.client_id)
+        self.assertEqual(parsed.for_realtime().object_id, distinct.object_id)
+        for actor in (
+            None, RealtimeActor(CONFIG.client_id, distinct.object_id),
+            RealtimeActor(distinct.client_id, CONFIG.object_id),
+            RealtimeActor(environment()["DEPLOY_CLIENT_ID"], distinct.object_id),
+        ):
+            with self.subTest(actor=actor), self.assertRaises(CanaryError):
+                Configuration.load(environment(config=replace(CONFIG, ga_enabled=True, realtime_actor=actor)), NOW)
 
     def test_main_first_attempt_and_exact_workflow_are_required(self):
         self.assertEqual(current_run(environment()), RUN)

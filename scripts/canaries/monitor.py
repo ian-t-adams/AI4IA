@@ -6,8 +6,8 @@ import asyncio
 import math
 import re
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
@@ -19,6 +19,7 @@ from scripts._canary_contract import (
     SetupOrderError, SetupState, acknowledge_setup, catalog_model_preferences,
     chat_payload, session_payload,
 )
+from ai4ia_api.realtime_canary import SETUP_INPUT
 
 from .configuration import Configuration
 from .contracts import (
@@ -347,17 +348,33 @@ async def chat(
         report.mark("auth", "pass", elapsed=response.elapsed, attempts=1)
         stage = "catalog"
         book = pricing or load_pricing()
-        selected = select_chat(source, advertised, book)
-        book = book.snapshot_token_prices(selected.model)
+        select_chat(source, advertised, book)
         report.catalog_version = digest(source)
-        report.protocol = selected.api
         report.mark("catalog", "pass")
         stage = "posture"
         preflight = await transport.request(
-            "GET", f"{config.web_origin}/api/canary/capabilities?{urlencode({'model': selected.model})}",
+            "GET", f"{config.web_origin}/api/canary/capabilities?selection=least_estimated_cost",
             token=token, limit=8192, timeout=budget.timeout(15),
         )
-        region = capability(require_response(preflight), selected)
+        chosen = require_response(preflight)
+        if chosen.get("ready") is not True:
+            raise CanaryError("posture_unavailable")
+        matches = [row for row in advertised["models"] if row["id"] == chosen.get("model")]
+        if len(matches) != 1:
+            raise CanaryError("invalid_response")
+        stage = "catalog"
+        selected = select_chat(source, {"models": matches}, book)
+        book = book.snapshot_token_prices(selected.model)
+        report.protocol = selected.api
+        stage = "posture"
+        region = capability(chosen, selected)
+        deployments = frozenset(
+            option["deploymentName"] for option in matches[0]["options"]
+            if option.get("region") == region
+        )
+        if not deployments:
+            raise CanaryError("invalid_response")
+        selected = replace(selected, deployments=deployments)
         report.mark("posture", "pass", elapsed=preflight.elapsed, attempts=1)
         stage = "session"
         create_timeout = budget.timeout(15)
@@ -455,6 +472,7 @@ async def realtime(
     transport: Transport, config: Configuration, token: str,
     source: dict[str, Any], advertised: dict[str, Any] | None, report: Report,
     *, budget: Budget | None = None,
+    token_provider: Callable[[], Awaitable[str]] | None = None,
 ) -> None:
     if not config.ga_enabled:
         report.mark("realtime", "not_run", "disabled")
@@ -479,18 +497,49 @@ async def realtime(
         ):
             report.mark("realtime", "not_run", "ga_not_selected", elapsed=response.elapsed, attempts=1)
             return
+        if token_provider is not None:
+            token = await token_provider()
+        if not token:
+            raise CanaryError("identity_rejected")
+        models_response = await transport.request(
+            "GET", f"{config.api_origin}/api/models", token=token, timeout=budget.timeout(15),
+        )
+        own_catalog = require_response(models_response)
+        rows = own_catalog.get("models")
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 128:
+            raise CanaryError("invalid_response")
+        preflight = await transport.request(
+            "GET", f"{config.api_origin}/api/canary/realtime-capabilities",
+            token=token, timeout=budget.timeout(15), limit=8192,
+        )
+        capability = require_response(preflight)
+        if capability.get("ready") is not True:
+            report.mark("realtime", "not_run", "ga_unavailable", elapsed=preflight.elapsed)
+            return
+        integer(capability.get("version"), 1, 1)
+        if capability.get("constraints") != {
+            "provider": "azure_openai", "protocol": "ga", "setupOnly": True,
+            "allowAudio": False, "allowResponses": False, "allowTools": False, "maxSeconds": 15,
+        }:
+            raise CanaryError("posture_unavailable")
         source_ids = {
             row.get("name") for row in source.get("catalog", [])
             if obj(row).get("category") == "realtime"
         }
-        models = sorted(
-            row["id"] for row in advertised.get("models", [])
-            if obj(row).get("category") == "realtime" and row.get("id") in source_ids
-        )
-        if not models:
+        matches = [
+            row for row in rows if obj(row).get("category") == "realtime"
+            and isinstance(row.get("id"), str) and row["id"] in source_ids
+            and row["id"] == capability.get("model")
+        ]
+        if len(matches) != 1:
             raise CanaryError("ga_unavailable")
-        model = models[0]
-        query = urlencode({"provider": "azure_openai", "model": model})
+        region = capability.get("region")
+        if not isinstance(region, str) or not IDENTIFIER.fullmatch(region):
+            raise CanaryError("invalid_response")
+        if not any(obj(option).get("region") == region for option in matches[0].get("options", [])):
+            raise CanaryError("ga_unavailable")
+        model = matches[0]["id"]
+        query = urlencode({"provider": "azure_openai", "model": model, "region": region})
         url = f"{config.api_origin.replace('https://', 'wss://', 1)}/api/voice/live?{query}"
         client = transport.client(url, websocket=True)
         state = SetupState()
@@ -503,10 +552,7 @@ async def realtime(
             ) as ws:
                 if ws.protocol != "ai4ia-bearer" or transport.handshake_protocol != "ga":
                     raise CanaryError("protocol_mismatch")
-                await ws.send_str(encoded({
-                    "type": "session.update",
-                    "session": {"turn_detection": None, "modalities": ["text"], "max_response_output_tokens": 64},
-                }).decode("ascii"))
+                await ws.send_str(SETUP_INPUT)
                 async for event in ws:
                     state.received_frames += 1
                     if state.received_frames > 32:
