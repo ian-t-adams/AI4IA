@@ -109,6 +109,7 @@ from .routers import publications as publications_router
 from .routers import policy as policy_router
 from .routers.health import SessionStoreReadiness
 from .request_constraints import build_canary_dispatch_guard, build_evaluation_dispatch_guard
+from .realtime_canary import realtime_canary_dispatch_guard
 
 _CORRELATION_HEADER = "x-correlation-id"
 
@@ -138,6 +139,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.session_repo = build_session_repository(settings)
         app.state.canary_dispatch_guard = build_canary_dispatch_guard(app.state.session_repo)
         app.state.evaluation_dispatch_guard = build_evaluation_dispatch_guard(app.state.session_repo)
+        app.state.realtime_canary_dispatch_guard = realtime_canary_dispatch_guard
         if settings.session_deletion_enabled:
             await app.state.session_repo.check_deletion_ready()
         app.state.session_readiness = SessionStoreReadiness(app.state.session_repo)
@@ -270,9 +272,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings, catalog=app.state.catalog, entitlements=app.state.entitlements,
             canary_guard_provider=lambda: getattr(app.state, "canary_dispatch_guard", None),
             evaluation_guard_provider=lambda: getattr(app.state, "evaluation_dispatch_guard", None),
+            realtime_guard_provider=lambda: getattr(app.state, "realtime_canary_dispatch_guard", None),
         )
         app.state.canary_policy_probe = app.state.policy.canary_probe
         app.state.evaluation_policy_probe = app.state.policy.evaluation_probe
+        app.state.realtime_canary_policy_probe = app.state.policy.realtime_canary_probe
         app.state.publications = PublicationService(
             app.state, agents=app.state.agent_service.record_store,
             workflows=app.state.workflow_service.record_store,

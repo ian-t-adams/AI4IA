@@ -86,6 +86,12 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    The factory's canary dispatch guard additionally binds owner, claimed
    generation, actual adapted sentinel-only payload and one dispatch; only
    actor policy can require that guard, and the guard grants no authority.
+   The distinct default-absent realtime setup actor is selected only by
+   authenticated policy. Its one-open scope guards the shared relay writer and
+   receiver, allows one exact setup frame and ordered acknowledgements, and
+   refuses audio, response creation, tools and every other metered surface.
+   Keep its processing deadline across connection establishment and relay;
+   source/accounting/close cleanup must not become a new model permission.
 6. **No secret sprawl.** Do not log credentials, commit secrets, or put user MCP
    secrets in Cosmos; durable MCP secrets belong in Key Vault outside local.
 7. **Receipts show execution, never hidden reasoning.** Persist bounded,
@@ -508,9 +514,10 @@ keeps endpoint and authentication configuration in the Foundry project connectio
 
 ```powershell
 python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/redaction rules
+python3 -m unittest scripts.tests.test_application_canary       # offline continuous monitor/state/identity controls
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
 python3 -m unittest scripts.tests.test_model_retirement         # dates, read-only reports and activation contracts
-python3 -m unittest scripts.tests.test_capacity_evidence        # read-only allocation/quota/aggregate metrics
+python3 -m unittest scripts.tests.test_capacity_evidence scripts.tests.test_capacity_recommendations  # read-only collection and offline policy
 python3 -m unittest scripts.tests.test_postprovision_appconfig_sentinel scripts.tests.test_postprovision_cu_defaults scripts.tests.test_postprovision_hard_gates
 python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap
 python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deploy.yml's real block with `az` stubbed
@@ -547,7 +554,8 @@ python3 -m unittest scripts.tests.test_image_provenance
 `test_model_retirement`,
 `test_proxy_delivery_contracts`, and `test_immutable_image_promotion` need
 `PyYAML` (pinned in the workflow); `test_immutable_image_promotion` also needs
-`bash` and skips without it. `test_capacity_evidence` also requires
+`bash` and skips without it. `test_capacity_evidence` and its reused
+`test_capacity_recommendations` fixtures also require
 `jmespath==0.9.5`, pinned in quality to the inspected Azure CLI parser version:
 the raw ARM projection regressions must execute the real query, not skip it or
 test only already-projected data. The reporter itself remains stdlib-only.
@@ -593,6 +601,25 @@ and authenticated/model-path canaries. Auth challenges, redirects and malformed
 JSON cannot pass API health; unresolved targets and historical missing coverage
 remain unknown. API probes are bounded to 20 seconds and 4 KiB with no redirects,
 cookies or default credentials. Never publish response bodies or exception text.
+
+`application-canaries.yml` is operational scheduling, default-off for all app and
+model traffic, and independent of the anonymous portal snapshot. Its prepare
+job reads only this repository's exact predecessor run/artifact; its separately
+gated observation job alone exchanges dedicated OIDC for an API token. No ARM
+login, deploy identity, Graph, new resource, live test or settings mutation belongs
+in source validation. `scripts/canaries` shares the sentinel/catalog candidates
+and ordered Voice Live setup primitive with existing operator helpers, but uses
+strict bounded JSON, public DNS pinning, no redirects/cookies/default credentials,
+one application chat attempt, a finite lease and strict v1 owner cleanup.
+Missing state, ambiguous writes and partial cleanup never reset the failure
+count to a healthy zero or authorize another mutation. Retain only allowlisted
+content-free state; API sessions/receipts, private configuration and raw errors
+must never be uploaded. GA config/header alone is not an event canary, and an
+operator actor policy must admit the setup-only path separately. See
+`docs/runbooks/deployment.md#continuous-application-canaries` for the activation
+and notification boundaries. Its existing quality job installs the same pinned
+aiohttp transport for offline fixtures; app-ci also runs Ruff and Pyright over
+the monitor package.
 
 `security-scan` runs Trivy filesystem/config scans and gitleaks over the full
 proxy tree. `.trivyignore.yaml` suppresses only the untouched upstream Dockerfile
@@ -875,6 +902,28 @@ Model deployment `capacity` is the portable baseline. Optional `maxCapacity` val
 are subscription-specific output from `scripts/sync-model-capacity.py`; never
 hand-copy portal bars or set every regional deployment to the same global limit.
 Bicep uses them only when `AI4IA_MODEL_CAPACITY_PROFILE=maximum`.
+
+The optional `productionCapacityPolicy` and per-deployment `production` fields
+are owner decisions, not generated defaults. `production-capacity-v1` requires
+explicit critical minima, ceilings, pool membership, replacement/retry/other-workload
+reserves and sizing assumptions. Selection requires reviewed source hashes and
+every enabled deployment's capacity; missing metadata refuses before Azure/ARM,
+never falls back. `infra/capacity.bicep` must preserve that strict selection.
+The normal preflight rechecks exact asserted counters and all-version allocations
+without using maximum's pool heuristics. Keep the shipped profile at baseline and
+the catalog unconfigured until the owner accepts actual values.
+
+`scripts/recommend-model-capacity.py` is an **offline**, stdout-only consumer of
+the bounded evidence report and current catalog. Reuse typed evidence parsing and
+pool arithmetic; reject stale/cross-scope/hash-mismatched inputs, and hold current
+with unknown coverage for incomplete/insufficient usage. All sizing conversions
+and pool identities remain operator assertions, not Azure authority. Preserve
+outside allocation and all explicit reserves; an increase cannot spend an
+unapplied reduction. No apply/output writer, collector, schedule or automatic
+profile/criticality/region/SKU/version choice belongs here. Review hashes describe
+the pre-adoption inputs; adoption changes the catalog hash and future reports must
+match it anew. See the
+[production policy runbook](docs/runbooks/deploy-to-azure.md#production-capacity-policy-and-offline-recommendations).
 
 `scripts/report-model-capacity.py` is a separate **read-only evidence collector**,
 not another planner. It reuses the existing deployment naming function but never

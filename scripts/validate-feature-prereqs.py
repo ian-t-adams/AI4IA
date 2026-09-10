@@ -17,6 +17,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _capacity_evidence import EvidenceError
+from _production_capacity import PROFILES, bind_scope, effective_capacity, parse_policy
+
 ROOT = Path(__file__).resolve().parents[1]
 PARAMETERS_FILE = ROOT / "infra" / "main.parameters.json"
 MODELS_FILE = ROOT / "infra" / "models.json"
@@ -64,8 +68,25 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     model_capacity_profile = text(
         parameter_value(parameters, "modelCapacityProfile", "baseline")
     ).lower()
-    if model_capacity_profile not in {"baseline", "maximum"}:
-        errors.append("modelCapacityProfile must be baseline or maximum.")
+    capacity_policy_valid = True
+    if model_capacity_profile not in PROFILES:
+        errors.append("modelCapacityProfile must be baseline, production or maximum.")
+        capacity_policy_valid = False
+    try:
+        policy = parse_policy(
+            models, required=model_capacity_profile == "production",
+            include_anthropic=truthy(parameter_value(parameters, "claudeEnabled", False)),
+        )
+        if policy is not None and model_capacity_profile == "production" and require_deployment_attestation:
+            environment = text(parameter_value(parameters, "environmentName"))
+            workload_token = text(parameter_value(parameters, "workload", "ai4ia"))
+            bind_scope(
+                policy, os.environ.get("AZURE_SUBSCRIPTION_ID", ""),
+                f"rg-{workload_token}-{environment}", environment,
+            )
+    except EvidenceError as exc:
+        errors.append(f"production capacity policy: {exc.code}")
+        capacity_policy_valid = False
 
     workload = text(parameter_value(parameters, "workload", "ai4ia"))
     environment_name = text(parameter_value(parameters, "environmentName"))
@@ -372,20 +393,13 @@ def main(*, require_deployment_attestation: bool = False) -> int:
                 "cuAgenticAnalyzerId must be a valid Content Understanding analyzer id."
             )
         capacities = [
-            int(
-                (
-                    deployment.get("maxCapacity", deployment.get("capacity"))
-                    if model_capacity_profile == "maximum"
-                    else deployment.get("capacity")
-                )
-                or 0
-            )
+            int(effective_capacity(deployment, model_capacity_profile) or 0)
             for model in models.get("catalog", [])
             if model.get("name") == "gpt-5.2"
             for deployment in model.get("deployments", [])
             if deployment.get("region") == location
             and deployment.get("sku") == "GlobalStandard"
-        ]
+        ] if capacity_policy_valid else []
         if not capacities or max(capacities) < 400:
             errors.append(
                 "cuAgenticAnalyzerId requires at least 400K TPM on the primary "

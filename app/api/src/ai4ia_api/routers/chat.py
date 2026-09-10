@@ -88,6 +88,8 @@ from ..publishing.execution import (
     observe_publication_offers,
 )
 from ..publishing.models import PublicationError
+from ..policy.context import current_binding
+from ..policy.models import PolicyRequest
 from ..agents.summarization import SummarizationService
 from ..agents.mcp_execution import McpPlane, build_mcp_turn_tools_multi
 from ..agents.mcp_skills import (
@@ -414,6 +416,12 @@ async def _document_context(
     documents, bounded by ``budget`` (defaults to :data:`DOC_CONTEXT_BUDGET`;
     callers scale it from the model's context window). Best-effort: any store
     error (e.g. a missing container) yields no context and never breaks chat."""
+    binding = current_binding()
+    if binding is not None and binding.service.enabled:
+        decision = await binding.service.authorize(await binding.resolve(), PolicyRequest("document.read"))
+        if binding.owner_id != user_id or not decision.allowed:
+            emit_security_block("document_policy", "context_not_permitted", "chat_router")
+            return "Session document context is unavailable under the current application policy."
     try:
         docs = await repo.list_documents(user_id, session_id)
     except Exception:  # noqa: BLE001 - document context must never break a turn

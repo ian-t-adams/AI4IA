@@ -291,3 +291,93 @@ def test_publication_changes_refuse_before_real_model_dispatch(published_api, mo
     else:
         assert response.status_code >= 400, response.text
         assert calls == []
+
+
+@pytest.mark.parametrize("value", ["t", "y", "T", "Y", "true", "1", "on", "yes"])
+def test_admin_boolean_aliases_require_the_same_additional_operation(published_api, value):
+    client, _, headers, _ = published_api
+    state = client.app.state
+    config = json.loads(state.settings.group_policy_json)
+    operations = ["admin.usage.read", "admin.mcp.inspect"]
+    config["domains"]["admin"] = {"default": {"allow": operations}}
+    config["adminCeiling"] = operations
+    state.settings.group_policy_json = json.dumps(config)
+
+    class Official:
+        refreshes = 0
+
+        def refresh(self):
+            self.refreshes += 1
+
+        async def list_all(self):
+            return []
+
+        async def close(self):
+            return None
+
+    official = Official()
+    state.official_mcp_service = official
+    auth = headers("Consumer")
+    assert client.get("/api/admin/usage/user-agents?identify=false", headers=auth).status_code == 200
+    assert client.get(f"/api/admin/usage/user-agents?identify={value}", headers=auth).status_code == 403
+    assert client.get("/api/admin/metrics/official-mcp?refresh=false", headers=auth).status_code == 200
+    assert client.get(f"/api/admin/metrics/official-mcp?refresh={value}", headers=auth).status_code == 403
+    assert official.refreshes == 0
+    config["adminCeiling"] = [*operations, "admin.mcp.refresh", "admin.directory.read"]
+    config["domains"]["admin"]["default"]["allow"] = list(config["adminCeiling"])
+    state.settings.group_policy_json = json.dumps(config)
+    assert client.get(f"/api/admin/metrics/official-mcp?refresh={value}", headers=auth).status_code == 200
+    assert official.refreshes == 1
+    assert client.get(f"/api/admin/usage/user-agents?identify={value}", headers=auth).status_code == 200
+
+
+def test_session_document_context_cannot_bypass_current_document_policy(published_api):
+    client, model, headers, calls = published_api
+    auth = headers("Consumer")
+    sid = client.post("/api/sessions", json={"model": model}, headers=auth).json()["id"]
+    marker = "synthetic-document-marker-not-in-the-request"
+    uploaded = client.post(
+        f"/api/sessions/{sid}/documents", headers=auth,
+        files={"file": ("source.txt", marker.encode(), "text/plain")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    body = {"sessionId": sid, "content": "Read the attached source.", "stream": False,
+            "params": {"max_tokens": 64}}
+    first = client.post("/api/chat", json=body, headers=auth)
+    assert first.status_code == 200, first.text
+    assert marker in json.dumps(calls)
+    calls.clear()
+    config = json.loads(client.app.state.settings.group_policy_json)
+    config["domains"]["documents"] = {"default": {"allow": []}}
+    client.app.state.settings.group_policy_json = json.dumps(config)
+    assert client.get(f"/api/sessions/{sid}/documents", headers=auth).status_code == 403
+    second = client.post("/api/chat", json=body, headers=auth)
+    assert second.status_code == 200, second.text
+    assert len(calls) == 1
+    assert marker not in json.dumps(calls)
+    assert "document context is unavailable" in json.dumps(calls)
+
+
+def test_voice_profile_never_drops_an_unsupported_declared_tool(published_api):
+    client, _, headers, _ = published_api
+    model = next(entry.id for entry in client.app.state.catalog.models if entry.category == "realtime")
+    created = client.post("/api/agents", headers=headers("Author"), json={
+        "name": "voice-required", "systemPrompt": "Use the declared document tool.",
+        "tools": ["process_document"],
+    })
+    assert created.status_code == 201, created.text
+    body = {
+        "expectedRevision": created.json()["revision"], "audience": {"visibility": "public"},
+        "modelIds": [model], "modes": ["voice"], "reviewConsent": True, "skillMode": "excluded",
+    }
+    refused = client.post("/api/publications/agent/voice-required/submit", headers=headers("Author"), json=body)
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["code"] == "publication_voice_required_tool_unavailable"
+    updated = client.put("/api/agents/voice-required", headers=headers("Author"), json={
+        "systemPrompt": "Use the declared document tool.", "tools": [],
+        "expectedRevision": created.json()["revision"],
+    })
+    assert updated.status_code == 200
+    body["expectedRevision"] = updated.json()["revision"]
+    allowed = client.post("/api/publications/agent/voice-required/submit", headers=headers("Author"), json=body)
+    assert allowed.status_code == 200, allowed.text

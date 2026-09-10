@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
-from ..policy.models import PolicyError, RestrictedProfile
+from ..policy.models import ChatRestrictedProfile, PolicyError
 from ..sessions.deletion_models import DeletionIntegrityError, DeletionUnavailableError
 
 router = APIRouter(prefix="/api", tags=["policy"])
@@ -27,7 +27,7 @@ class ExecutionCapabilities(BaseModel):
     version: Literal[1] = 1
     ready: bool = False
     ownerBound: bool = False
-    profile: RestrictedProfile
+    profile: ChatRestrictedProfile
     model: str
     api: str | None = None
     region: str | None = None
@@ -38,7 +38,7 @@ class ExecutionCapabilities(BaseModel):
 
 @router.get("/execution-capabilities", response_model=ExecutionCapabilities, response_model_exclude_none=True)
 async def execution_capabilities(
-    profile: RestrictedProfile, model: str, request: Request,
+    profile: ChatRestrictedProfile, model: str, request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ExecutionCapabilities:
     state = request.app.state

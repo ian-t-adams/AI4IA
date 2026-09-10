@@ -1,10 +1,23 @@
 """Explicit operation inventory; route identity never comes from client fields."""
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import HTTPException, Request
+from pydantic import TypeAdapter, ValidationError
 
 from .context import current_binding, require_policy
 from .models import PolicyDecision, PolicyError, PolicyOperation, PolicyRequest
+
+_BOOLEAN = TypeAdapter(bool)
+
+
+def _query_boolean(request: Request, name: str) -> bool:
+    value = request.query_params.get(name)
+    if value is None:
+        return False
+    try:
+        return _BOOLEAN.validate_python(value)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid Boolean parameter: {name}.") from exc
 
 LIBRARY_OPERATIONS: dict[str, tuple[PolicyOperation, ...]] = {
     "library_summary": ("document.read",),
@@ -68,13 +81,9 @@ def admin_operations(request: Request) -> tuple[PolicyOperation, ...]:
     if module not in {"admin_usage", "entitlements"} or name not in ADMIN_ROUTE_OPERATIONS:
         raise PolicyError(PolicyDecision("deny", "policy_surface_unsupported"))
     operations = list(ADMIN_ROUTE_OPERATIONS[name])
-    # Let FastAPI validate malformed Boolean query values; any true spelling
-    # accepted by its Boolean parser needs the extra authority before enrichment.
-    if request.query_params.get("identify", "").lower() in {"1", "true", "on", "yes"}:
+    if _query_boolean(request, "identify"):
         operations.append("admin.directory.read")
-    if name == "metrics_official_mcp" and request.query_params.get("refresh", "").lower() in {
-        "1", "true", "on", "yes",
-    }:
+    if name == "metrics_official_mcp" and _query_boolean(request, "refresh"):
         operations.append("admin.mcp.refresh")
     return tuple(operations)
 

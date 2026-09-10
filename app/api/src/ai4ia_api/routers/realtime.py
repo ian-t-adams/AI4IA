@@ -58,6 +58,10 @@ from ..catalog import DeploymentOption, ModelCatalog
 from ..config import Environment, GatewayAuthMode, Settings
 from ..conversations.policy import resolve_conversation_policy
 from ..logging_setup import emit_custom_event, emit_security_block, new_correlation_id, set_correlation_id
+from ..realtime_canary import (
+    SETUP_INPUT, SETUP_MAX_SECONDS, RealtimeSetup, RealtimeSetupRejected,
+    current_realtime_setup, realtime_setup_scope,
+)
 from ..realtime_protocol import (
     RealtimeProtocol,
     rewrite_ga_upstream_frame,
@@ -1481,6 +1485,9 @@ async def _send_upstream(
             "response.cancel", "conversation.item.truncate", "input_audio_buffer.clear",
         }:
             await guard()
+        setup = current_realtime_setup()
+        if setup is not None:
+            await setup.before_send(text=text, data=data)
         if text is not None:
             await upstream.send_text(text)
         elif data is not None:
@@ -1513,6 +1520,9 @@ async def _pump_client_to_upstream(
                 return
             text = message.get("text")
             if text is not None:
+                setup = current_realtime_setup()
+                if setup is not None:
+                    setup.client_frame(text)
                 event_type, _ = inspect_realtime_text_frame(
                     text, include_protocol_error=False
                 )
@@ -1576,6 +1586,10 @@ async def _pump_upstream_to_client(
                 )
                 return
             if msg.kind == "text" and msg.text is not None:
+                setup = current_realtime_setup()
+                setup_complete = False
+                if setup is not None:
+                    setup_complete = await setup.server_frame(text=msg.text, data=None)
                 event_type, protocol_error = inspect_realtime_text_frame(
                     msg.text, include_protocol_error=True
                 )
@@ -1589,6 +1603,9 @@ async def _pump_upstream_to_client(
                 except (WebSocketDisconnect, RuntimeError) as exc:
                     state.stop(_client_termination_from_exception(exc))
                     return
+                if setup_complete:
+                    state.stop(_RelayTermination(status="complete", source_event="setup_complete"))
+                    return
                 # Governed tool calling: a function-call event is executed in-process
                 # and its result returned upstream. No-op (and no JSON parse) for
                 # every other frame, and entirely skipped when tools are disabled.
@@ -1596,6 +1613,9 @@ async def _pump_upstream_to_client(
                     for frame in await bridge.handle_upstream_frame(msg.text):
                         await _send_upstream(upstream, lock, text=frame)
             elif msg.kind == "binary" and msg.data is not None:
+                setup = current_realtime_setup()
+                if setup is not None:
+                    await setup.server_frame(text=None, data=msg.data)
                 state.upstream_stats.observe(text=False)
                 try:
                     await client_ws.send_bytes(msg.data)
@@ -1627,6 +1647,8 @@ async def relay(
     """Pump frames both ways and return a content-free, typed terminal outcome."""
 
     send_lock = anyio.Lock()
+    if current_realtime_setup() is not None:
+        max_seconds = min(max_seconds or SETUP_MAX_SECONDS, SETUP_MAX_SECONDS)
     rewrite = rewrite_client_frame or bridge.rewrite_client_frame
     state = _RelayState(stopped=anyio.Event())
 
@@ -1879,6 +1901,52 @@ async def _finalize_relay(
     await _deny(websocket, close_code)
 
 
+async def _realtime_setup_for_actor(
+    state, user: AuthenticatedUser, resolution: LiveVoiceProviderResolution,
+    query, bridge: ToolBridge, url: str,
+    rewrite: Callable[[str], str | None],
+) -> RealtimeSetup | None:
+    from ..policy.context import current_binding
+
+    policy = getattr(state, "policy", None)
+    if policy is None:
+        return None
+    binding = current_binding()
+    profile = (
+        binding.restricted_profile if binding is not None else None
+    ) or policy.restricted_profile(user.internal_user_id, cached=True)
+    if profile is None:
+        return None
+    if (
+        profile != "realtime-setup-canary" or resolution.provider.id != AZURE_OPENAI_PROVIDER_ID
+        or resolution.protocol != "ga" or resolution.deployment is None
+        or any(name in query for name in ("agent", "session", "tools"))
+        or bridge.enabled
+    ):
+        raise RealtimeSetupRejected()
+    probe = getattr(state, "realtime_canary_policy_probe", None)
+    if not callable(probe) or not callable(getattr(state, "realtime_canary_dispatch_guard", None)):
+        raise RealtimeSetupRejected()
+    expected = rewrite(SETUP_INPUT)
+    if expected is None:
+        raise RealtimeSetupRejected()
+
+    async def current_authority() -> bool:
+        settings = state.settings
+        if not settings.realtime_enabled or settings.realtime_protocol.value != "ga":
+            return False
+        decision = await state.realtime_canary_policy_probe(
+            user, resolution.model_id, resolution.deployment,
+        )
+        return decision.outcome == "allow"
+
+    setup = RealtimeSetup(
+        user.internal_user_id, resolution.deployment.deploymentName, url, expected, current_authority,
+    )
+    await setup.check_current()
+    return setup
+
+
 @router.websocket("/api/voice/live")
 async def voice_live(websocket: WebSocket) -> None:
     clear_admission_owner()
@@ -2037,12 +2105,23 @@ async def voice_live(websocket: WebSocket) -> None:
             return None
         return bridge.rewrite_client_frame(safe_frame)
 
+    try:
+        setup = await _realtime_setup_for_actor(
+            state, user, provider_resolution, websocket.query_params,
+            bridge, url, rewrite_client_frame,
+        )
+    except RealtimeSetupRejected:
+        await _deny(websocket, WS_POLICY_VIOLATION, security_reason="canary_policy_denied")
+        return
+    open_payload = {"operation": "session_open", "endpoint": url}
+    if setup is not None:
+        open_payload.update({"protocol": "ga", "provider": AZURE_OPENAI_PROVIDER_ID})
     connected = False
 
-    async def run_relay() -> RelayOutcome:
+    async def dispatch_relay() -> RelayOutcome:
         nonlocal connected
         async with admitted_dispatch(
-            "realtime", {"operation": "session_open", "endpoint": url},
+            "realtime", open_payload,
             deployment=(
                 provider_resolution.deployment.deploymentName
                 if provider_resolution.deployment is not None else None
@@ -2062,6 +2141,18 @@ async def voice_live(websocket: WebSocket) -> None:
                 if outcome.status == "complete":
                     quota.report()
                 return outcome
+
+    async def run_relay() -> RelayOutcome:
+        if setup is None:
+            return await dispatch_relay()
+        remaining = setup.deadline - setup.clock()
+        if remaining <= 0:
+            raise RealtimeSetupRejected()
+        # The limit includes policy admission and connection establishment,
+        # not a new full window after a slow handshake. Final accounting and
+        # socket close remain outside this processing deadline.
+        with anyio.fail_after(remaining):
+            return await dispatch_relay()
 
     async def finalize_relay(outcome: RelayOutcome) -> None:
         await _finalize_relay(
@@ -2098,7 +2189,8 @@ async def voice_live(websocket: WebSocket) -> None:
                 executionReceipt=enforce_receipt_budget(receipt),
             ))
 
-    await _run_relay_with_finalization(
-        run_relay=run_relay,
-        finalize_relay=finalize_relay,
-    )
+    with realtime_setup_scope(setup):
+        await _run_relay_with_finalization(
+            run_relay=run_relay,
+            finalize_relay=finalize_relay,
+        )

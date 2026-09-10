@@ -151,7 +151,8 @@ class PublicationCompiler:
             if skill_mode == "excluded" and "load_skill" in names:
                 raise PublicationError("publication_required_skill_excluded", 422)
             if mode == "voice":
-                names = [name for name in names if state.tool_executor.get(name) is not None]
+                if any(state.tool_executor.get(name) is None for name in names):
+                    raise PublicationError("publication_voice_required_tool_unavailable", 422)
                 if names and not getattr(state.settings, "realtime_tools_enabled", False):
                     raise PublicationError("publication_voice_tools_unavailable", 422)
             if mode == "delegation" and any(

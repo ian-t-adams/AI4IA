@@ -608,6 +608,162 @@ media, or realtime. It is one identity and cannot detect per-user entitlement or
 ownership defects. Rollback does not run after manual cancellation or the
 180-minute job timeout because the runner is terminated.
 
+### Continuous application canaries
+
+`.github/workflows/application-canaries.yml` is a separate **default-off**
+operational monitor, not deployment verification, user workflow scheduling, or
+a quality evaluator. `python -m scripts.canaries` implements its bounded
+`locate`, `prepare`, `observe` and `notify` steps. The existing anonymous API
+liveness/readiness observations in portal snapshots remain independent.
+
+The six-hour schedule does not authorize inference. Without explicit enablement,
+the preparation job records disabled/unscored coverage and maintains its
+content-free state chain using only repository/Actions read permissions.
+Only an admitted main-ref, first-attempt observation job can request OIDC. It
+exchanges the current workflow assertion directly for the configured API
+audience; there is no Azure CLI login, ARM token, Graph/userinfo request, saved
+credential, new identity, Azure resource, or repository creation.
+
+Before enabling, the owner must approve the dedicated Entra application/subject,
+its exact API audience and main-ref federation, restrictive operator actor
+policy, finite observation lease, expenditure context, and scoped v1 cleanup.
+The actor must not be the deployment identity, API application, administrator
+or publisher. The API capability endpoint must observe actual policy-factory
+wiring and eligible v1 new-session deletion support. A readiness flag, HTTP
+catalog response, or configured identity is not a lasting dispatch grant.
+The actual guard consumes one claimed-turn allowance at model egress and
+rechecks owner, generation, reductions, deployment and adapted payload.
+
+These are **workflow-only repository variables**, not azd/Bicep inputs:
+
+| Variable | Meaning |
+|---|---|
+| `AI4IA_CANARY_ENABLED` | Exactly `true` opts in; absent or `false` is disabled. |
+| `AI4IA_CANARY_CONFIG` | Strict, non-secret JSON shown below. Unknown/missing fields and non-Boolean postures are rejected. |
+| `AI4IA_CANARY_HARD_USD_CAP` | Must be absent. Any asserted hard-dollar cap refuses activation because the provider/proxy retry envelope is not proven. |
+| `AZURE_CLIENT_ID` | Read only to reject reuse of the existing deployment principal; never used to acquire the canary token. |
+
+The placeholders below are a schema illustration, **not an approval or a
+copyable activation configuration**:
+
+```json
+{
+  "tenant_id": "<approved-lowercase-tenant-guid>",
+  "client_id": "<dedicated-application-client-guid>",
+  "object_id": "<dedicated-service-principal-object-guid>",
+  "audience": "api://<API-application-guid>",
+  "web_origin": "https://<exact-public-web-host>",
+  "api_origin": "https://<exact-public-API-host>",
+  "approval_id": "<new-reviewed-lease-guid>",
+  "expires_at": "<UTC-YYYY-MM-DDTHH:MM:SSZ>",
+  "approved_runs": 4,
+  "interval_seconds": 21600,
+  "acknowledge_no_hard_bill_cap": true,
+  "actor_ready": true,
+  "cleanup_approved": true,
+  "ga_enabled": false,
+  "realtime_actor": null
+}
+```
+
+A lease is at most seven days and 28 observations, with six hours between
+attempted observations, including failed authentication attempts. The remaining
+approval lifetime must cover the bounded run. After configuration is approved,
+an explicit main-ref **bootstrap** dispatch records an unscored control, not
+health or cleanup success. Subsequent **observe** runs may execute. Bootstrap
+cannot reset a used approval, erase an unresolved write, or shorten the
+inter-attempt delay. Renewing a finite lease requires a new reviewed approval;
+changing a JSON field is not a way to reset its count.
+
+The chat probe intersects the API catalog with the source catalog, requires a
+known price and a compatible non-reasoning/`none`-effort conversational path,
+then requests the explicit `least_estimated_cost` operation from the
+policy-owned capability reader. The server selects the cheapest compatible
+**currently policy-allowed** option, and the client verifies that choice against
+both catalogs and its pre-dispatch price snapshot. It never
+hardcodes a deployment or switches to a more expensive model after dispatch.
+One new, exact-owner, empty-scope session sends the shared non-sensitive
+sentinel through **web -> API -> SimpleL7Proxy -> APIM -> Foundry**, with tools
+and automatic memory denied and a one-winner fresh v1 claim. At most one
+application chat POST is sent; neither ambiguous creation nor chat is replayed.
+The adapted output limit, receipt, provider usage and price-version evidence
+must agree. Missing or mismatched evidence is unknown, not free or successful.
+The monitor reads back the exact persisted exchange before cleanup.
+
+Cleanup uses only that invocation's server-created id. It records the v1 delete
+intent, allows at most two explicitly approved owner-resume passes, and requires
+exact-id terminal status/readback with message, document, attachment and
+unresolved-upload coverage. It never enrolls legacy data, scans sessions,
+force-completes upload intents or runs an autonomous purge. Legacy 204 plus
+exact-id 404 is **logical deletion/partial only** and blocks further mutations.
+Ambiguous creation/dispatch, cancellation or incomplete cleanup also blocks the
+next observation. One absolute 105-second application deadline and the UTC
+approval expiry are rechecked before each request, including cleanup in a
+cancellation `finally`; expiry cannot start another destructive pass. Tombstones,
+backups, service telemetry and independent usage
+ledger retention remain outside this scoped cleanup proof. See
+[conversation deletion](conversation-deletion.md) before approving its separate
+activation; enabling the canary cannot activate that protocol.
+
+Optional GA setup uses only the application's direct
+`wss://<API-host>/api/voice/live` relay. It requires server config `ga`, the
+resolved connection's `X-AI4IA-Realtime-Protocol: ga`, the bearer subprotocol,
+and ordered `session.created`/`session.updated` events. Neither a caller query
+nor the header alone is a GA pass. The only sent frame is a bounded
+`session.update` with turn detection off; no audio, history seed, response
+creation, tools, or voice persistence is covered. The setup needs its own
+approved server actor envelope and can consume provider resources even without
+audio. Preview, Speech, missing authority and unknown protocol remain unscored
+or failed; the monitor never selects or activates the server protocol.
+
+When `ga_enabled` is true, `realtime_actor` must contain distinct, approved
+`client_id` and `object_id` GUIDs. Neither the sentinel, deployment nor API
+application identity may be reused. The second OIDC exchange happens only after
+the server reports GA. Its own authenticated catalog and
+`/api/canary/realtime-capabilities` observation must admit the setup-only
+operation before the socket opens. The monitor and evaluation identities remain
+chat-only. A client field or profile label cannot select the server actor policy.
+The operator policy's distinct `realtimeCanaryActor` marker selects
+`realtime-setup-canary`, requires the realtime-only model domain and current
+strict limits, and invokes the real one-open guard at provider dispatch. The
+same scope protects both shared relay pumps. Its 15-second processing deadline
+includes the connection handshake, not a second full interval afterward.
+
+Evidence is deliberately smaller than an execution receipt: allowlisted stages,
+outcomes, reason codes, counts, UTC observation times, latency, coverage,
+public catalog/price versions and workflow lineage. It contains no prompt,
+reply, tool payload, owner/session id, token, URL, private configuration or raw
+exception. Only opaque scope/approval digests bind private configuration.
+The API request correlation is `application-canary-<workflow-run-id>-1`, which
+lets an authorized incident responder find the run without publishing session
+ids or copying runtime traces into GitHub.
+
+Each run reads the **immediately preceding** main workflow run, validates its
+repository/workflow/branch/attempt/SHA and exact artifact identity, then checks
+the strict state schema and timestamps. An older successful artifact cannot
+substitute for a missing, cancelled, malformed, expired or out-of-sequence
+predecessor. More than 18 hours of missing coverage is stale. The seven-day
+artifacts retain only the bounded handoff and final state, not local inputs or
+the checkout. A killed runner may publish no final state; that is an unknown
+stop on the next tick, never a new zero-failure baseline.
+
+Three consecutive scored failures fire an alert transition. An observed pass
+records recovery; unknown/unscored coverage interrupts the failure streak but
+does not clear an active alert. The final state is uploaded **before** the alert
+step fails the workflow. Alerts use existing GitHub annotations, job summaries
+and configured workflow-failure notifications only, not new email/webhooks.
+Collection success is not application health: early failures and unscored
+observations may have a successful collection job. Continued active alerts are
+warnings, not repeated firing transitions; GitHub's own delivery/subscription
+semantics are not a promised exactly-once notification channel. A blocked state
+is an operational error requiring owner investigation, not permission to retry
+or clean other data.
+
+Source tests are entirely offline. Identity provisioning, actor-policy mapping,
+v1 writer cutover/cleanup approval, GA capability and protocol activation,
+frequency/spend approval, a live run and demonstrated alert/recovery remain
+separate operator acceptance. Do not close #412 based only on this source.
+
 ### Automatic and manual rollback
 
 For each app whose active revision moved, rollback restores the captured revision
@@ -900,7 +1056,7 @@ client IDs alone do not prove read-only grants: the operator must verify them.
 | `AI4IA_MODEL_RETIREMENT_SUBSCRIPTION_ID` | Explicit target subscription |
 | `AI4IA_MODEL_RETIREMENT_RESOURCE_GROUP` | Exact existing target resource group |
 | `AI4IA_MODEL_RETIREMENT_ENV_NAME` | Existing azd environment used with catalog naming to identify Foundry accounts |
-| `AI4IA_MODEL_RETIREMENT_CAPACITY_PROFILE` | Explicit `baseline` or `maximum`, matching the environment |
+| `AI4IA_MODEL_RETIREMENT_CAPACITY_PROFILE` | Explicit `baseline`, `production` or `maximum`, matching the environment; production requires the reviewed catalog policy but report mode remains inventory/offerings-only, never quota collection or activation |
 | `AI4IA_MODEL_RETIREMENT_CLAUDE_ENABLED` | Explicit `true` or `false`, matching the environment's desired catalog scope |
 
 These are workflow-only settings, not new azd/app feature flags. No live
