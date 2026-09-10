@@ -80,6 +80,8 @@ from .tool_exec import (
     build_tools,
 )
 from .tools import ToolRegistry
+from ..policy.context import canonical_tool_name, require_policy
+from ..policy.models import PolicyError, PolicyRequest
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +246,10 @@ def _make_handler(
                 if decision.reason is not None and decision.reason != "consent_not_granted":
                     raise ConsentRejected(decision.reason)
             await assert_current_contract()
+            await require_policy(PolicyRequest(
+                "tool.invoke", tool_name=canonical_tool_name(alias, ctx.tool_aliases),
+                tool_contract_digest=implemented_contract,
+            ))
             result = await connector.call_tool(
                 endpoint=endpoint,
                 auth=auth,
@@ -252,7 +258,7 @@ def _make_handler(
                 context=request_context,
                 input_schema=input_schema,
             )
-        except ConsentRejected:
+        except (ConsentRejected, PolicyError):
             raise
         except DnsCapacityError as exc:
             obs.emit(

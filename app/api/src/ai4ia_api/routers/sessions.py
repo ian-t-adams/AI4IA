@@ -45,6 +45,7 @@ from ..sessions.deletion_models import (
     InitializationPage,
 )
 from ..sessions.deletion_service import ConversationDeletionService
+from ..publishing.refs import AssetVersionRef
 
 logger = logging.getLogger(__name__)
 
@@ -249,8 +250,9 @@ async def _validate_policy_fields(
     validate_agent: bool = True,
     validate_tools: bool = True,
     validate_documents: bool = True,
-) -> tuple[str | None, ToolOverrides, list[str] | None]:
+) -> tuple[str | None, ToolOverrides, list[str] | None, AssetVersionRef | None]:
     selected = (agent_name or "").strip() or None
+    source_version = None
     if selected and validate_agent:
         catalog = await request.app.state.agent_service.catalog_for(
             user.internal_user_id, request.app.state.agents
@@ -262,6 +264,11 @@ async def _validate_policy_fields(
                 detail=f"Unknown or disabled agent: {selected}",
             )
         selected = agent.name
+        if agent.sourceVersion is not None:
+            await request.app.state.publications.resolve_for_execution(
+                await request.app.state.policy.resolve(user), agent.sourceVersion, mode="chat",
+            )
+            source_version = agent.sourceVersion
 
     try:
         normalized_overrides = normalize_tool_overrides(overrides)
@@ -315,7 +322,7 @@ async def _validate_policy_fields(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Library document is unavailable: {document_id}",
                 ) from exc
-    return selected, ToolOverrides(added=added, removed=removed), document_ids
+    return selected, ToolOverrides(added=added, removed=removed), document_ids, source_version
 
 
 @router.post("", response_model=Session, status_code=status.HTTP_201_CREATED)
@@ -324,7 +331,7 @@ async def create_session(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Session:
-    agent_name, overrides, document_ids = await _validate_policy_fields(
+    agent_name, overrides, document_ids, agent_version = await _validate_policy_fields(
         request,
         user,
         agent_name=body.agentName,
@@ -338,6 +345,7 @@ async def create_session(
         model=body.model,
         systemPrompt=body.systemPrompt,
         agentName=agent_name,
+        agentVersion=agent_version,
         toolOverrides=overrides,
         imagePreferences=_validate_image_preferences(request, body.imagePreferences),
         libraryDocumentIds=document_ids,
@@ -433,7 +441,7 @@ async def update_session(
     next_image_preferences = data.get(
         "imagePreferences", session.imagePreferences
     )
-    next_agent, next_overrides, next_document_ids = await _validate_policy_fields(
+    next_agent, next_overrides, next_document_ids, next_version = await _validate_policy_fields(
         request,
         user,
         agent_name=next_agent,
@@ -446,6 +454,7 @@ async def update_session(
     changes = dict(data)
     if "agentName" in data:
         changes["agentName"] = next_agent
+        changes["agentVersion"] = next_version
     if "toolOverrides" in data:
         changes["toolOverrides"] = next_overrides
     if "libraryDocumentIds" in data:

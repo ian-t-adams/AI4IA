@@ -20,6 +20,7 @@ from .consent import (
     ConsentSnapshot,
     ConsentStatus,
     ToolConsentState,
+    ToolContractDescription,
     check_consent,
     contract_hash,
     tool_contract_hash,
@@ -147,21 +148,54 @@ async def _contracts(
     tool_names: Sequence[str],
     schemas: Sequence[dict[str, Any]],
 ) -> dict[str, str]:
+    return {
+        name: contract.digest for name, contract in (
+            await describe_contracts(
+                state, user_id=user_id, tool_names=tool_names, schemas=schemas,
+            )
+        ).items()
+    }
+
+
+async def describe_contracts(
+    state: Any, *, user_id: str, tool_names: Sequence[str],
+    schemas: Sequence[dict[str, Any]],
+    publication_metadata: bool = False,
+) -> dict[str, ToolContractDescription]:
     registry, executor, ctx = await execution_tools_for_state(
         state, user_id=user_id, tool_names=tool_names, ctx=ToolContext()
     )
     names = [ctx.tool_aliases.get(name, name) for name in tool_names]
-    result: dict[str, str] = {}
-    for schema in executor.schema_for(
-        names, registry=registry, ctx=ctx, consented_names=names,
-    ):
+    result: dict[str, ToolContractDescription] = {}
+    canonical = {alias: name for name, alias in ctx.tool_aliases.items()}
+    if publication_metadata:
+        # Reviewing a declaration is not execution authority. In particular,
+        # request-only denial and the reviewer's scopes must not erase metadata.
+        real_schemas = [
+            {"function": {
+                "name": name, "parameters": definition.parameters,
+                "description": definition.spec.description,
+            }}
+            for name in names
+            if (definition := executor.get(name)) is not None
+            and (spec := registry.get(name)) is not None
+            and spec.enabled and registry.is_allowlisted(name)
+        ]
+    else:
+        real_schemas = executor.schema_for(
+            names, registry=registry, ctx=ctx, consented_names=names,
+        )
+    for schema in real_schemas:
         fn = schema["function"]
-        definition = executor.get(fn["name"])
-        spec = registry.get(fn["name"])
+        name = fn.get("name")
+        if not isinstance(name, str):
+            continue
+        definition = executor.get(name)
+        spec = registry.get(name)
         if definition is not None and spec is not None:
-            result[fn["name"]] = tool_contract_hash(
-                spec, fn["parameters"], description=fn.get("description"),
-                metadata=definition.consent_metadata,
+            result[name] = ToolContractDescription(
+                spec, fn["parameters"], fn.get("description"), definition.consent_metadata,
+                canonical.get(name, name),
             )
     for schema in schemas:
         fn = schema.get("function") or {}
@@ -169,16 +203,17 @@ async def _contracts(
         if not isinstance(name, str):
             continue
         spec = synthetic_spec(name)
-        if spec is not None and spec.enabled and not spec.scopes:
-            result[name] = tool_contract_hash(
-                spec, fn.get("parameters") or {}, description=fn.get("description"),
+        if spec is not None and spec.enabled and (publication_metadata or not spec.scopes):
+            result[name] = ToolContractDescription(
+                spec, fn.get("parameters") or {}, fn.get("description"), {}, name,
             )
     return result
 
 
 async def _chat_schemas(
     state: Any, *, user_id: str, session: Session,
-    tool_names: Sequence[str], email: str | None,
+    tool_names: Sequence[str], email: str | None, include_attachments: bool = True,
+    publication_metadata: bool = False,
 ) -> list[dict[str, Any]]:
     schemas, _ = capability_builder_for_state(
         state, user_id=user_id, session_id=session.id, email=email,
@@ -197,7 +232,7 @@ async def _chat_schemas(
         )
         schemas.extend(extra)
     analysis = getattr(state, "inline_attachment_analysis", None)
-    if analysis is not None:
+    if analysis is not None and include_attachments:
         documents = await state.session_repo.list_documents(user_id, session.id)
         attachments = [
             {"id": doc.id, "filename": doc.filename} for doc in documents if doc.rawRef
@@ -245,7 +280,9 @@ async def _chat_schemas(
         from ..docprocessing.capability import build_document_processing_capability
         from ..docprocessing.service import DocumentProcessingService
 
-        deployment = state.catalog.resolve_deployment(session.model)
+        deployment = state.catalog.resolve_deployment(
+            session.model, policy_filter=not publication_metadata,
+        )
         if deployment is not None:
             extra, _ = build_document_processing_capability(
                 processing_service=DocumentProcessingService(
