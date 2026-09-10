@@ -162,7 +162,10 @@ class ImageGenerationService:
 
         model_id = model
         if not model_id:
-            first = next((m for m in self._catalog.models if m.category == "image"), None)
+            first = next((
+                m for m in self._catalog.models
+                if m.category == "image" and self._catalog.available(m)
+            ), None)
             if first is None:
                 raise ImageGenerationError(400, "No image models are available.")
             model_id = first.id
