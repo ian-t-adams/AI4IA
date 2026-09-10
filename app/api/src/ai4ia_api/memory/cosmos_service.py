@@ -23,6 +23,7 @@ from .planner import MemoryPlan, MemoryPlanner
 from .preferences import MemoryPreference, MemoryPreferenceConflict
 from .service import MemoryWriteOutcome
 from .telemetry import emit_memory_operation
+from ..request_constraints import automatic_memory_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,8 @@ class CosmosMemoryService:
     async def _check_automatic_state(self, state: MemoryState) -> None:
         current = await self._store.capture_state(state.user_id)
         if (
-            not state.preference.automatic_enabled
+            not automatic_memory_allowed()
+            or not state.preference.automatic_enabled
             or current.preference != state.preference
         ):
             raise MemoryPreferenceConflict("Automatic memory preference changed.")
@@ -84,12 +86,15 @@ class CosmosMemoryService:
 
     async def recall(self, user_id: str, query: str) -> list[MemoryRecord]:
         started = time.monotonic()
+        if not automatic_memory_allowed():
+            emit_memory_operation("recall", "disabled", "cosmos", started, count=0)
+            return []
         if not query or not query.strip():
             emit_memory_operation("recall", "skipped", "cosmos", started, count=0)
             return []
         try:
             state = await self._store.capture_state(user_id)
-            if not state.preference.automatic_enabled:
+            if not automatic_memory_allowed() or not state.preference.automatic_enabled:
                 emit_memory_operation("recall", "disabled", "cosmos", started, count=0)
                 return []
             vector = await self._embedder.embed_one(query)
@@ -125,13 +130,16 @@ class CosmosMemoryService:
         confidently repeat to the user.
         """
         started = time.monotonic()
+        if not automatic_memory_allowed():
+            emit_memory_operation("save", "disabled", "cosmos", started, count=0)
+            return "disabled"
         cleaned = (text or "").strip()
         if len(cleaned) < self._min_chars_to_store:
             emit_memory_operation("save", "skipped", "cosmos", started, count=0)
             return "noop"
         try:
             state = await self._store.capture_state(user_id)
-            if not state.preference.automatic_enabled:
+            if not automatic_memory_allowed() or not state.preference.automatic_enabled:
                 emit_memory_operation("save", "disabled", "cosmos", started, count=0)
                 return "disabled"
             query_vector = await self._embedder.embed_one(cleaned)

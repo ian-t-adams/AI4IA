@@ -32,6 +32,10 @@ from .gateway.client import ModelGatewayClient
 from .hard_quota.dispatch import AdmissionController
 from .hard_quota.models import QuotaError
 from .hard_quota.store import LocalReservationStore
+from .policy.models import PolicyError
+from .policy.service import PolicyService
+from .publishing.models import PublicationError
+from .publishing.service import PublicationService
 from .images.artifacts import ImageArtifactStore, build_image_blob_store
 from .videos.artifacts import VideoArtifactStore, build_video_blob_store
 from .docprocessing.artifacts import (
@@ -62,6 +66,7 @@ from .routers import agents as agents_router
 from .routers import attachments as attachments_router
 from .routers import admin_usage as admin_usage_router
 from .routers import catalog as catalog_router
+from .routers import canary as canary_router
 from .routers import chat as chat_router
 from .routers import client_events as client_events_router
 from .routers import docprocessing as docprocessing_router
@@ -100,7 +105,11 @@ from .websearch.health import WebSearchHealth
 from .workflows.factory import build_workflow_store
 from .workflows.service import WorkflowService
 from .routers import workflows as workflows_router
+from .routers import publications as publications_router
+from .routers import policy as policy_router
 from .routers.health import SessionStoreReadiness
+from .request_constraints import build_canary_dispatch_guard, build_evaluation_dispatch_guard
+from .realtime_canary import realtime_canary_dispatch_guard
 
 _CORRELATION_HEADER = "x-correlation-id"
 
@@ -128,6 +137,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = settings
         app.state.auth_provider = build_auth_provider(settings)
         app.state.session_repo = build_session_repository(settings)
+        app.state.canary_dispatch_guard = build_canary_dispatch_guard(app.state.session_repo)
+        app.state.evaluation_dispatch_guard = build_evaluation_dispatch_guard(app.state.session_repo)
+        app.state.realtime_canary_dispatch_guard = realtime_canary_dispatch_guard
         if settings.session_deletion_enabled:
             await app.state.session_repo.check_deletion_ready()
         app.state.session_readiness = SessionStoreReadiness(app.state.session_repo)
@@ -183,6 +195,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             connector = HttpxMcpConnector(
                 timeout_s=settings.custom_tools_discovery_timeout_seconds,
                 hard_quota_enabled=settings.hard_quota_enabled,
+                group_policy_enabled=settings.group_policy_enabled,
             )
             max_servers = (
                 settings.custom_tools_max_servers_per_user
@@ -213,6 +226,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 connector=HttpxMcpConnector(
                     timeout_s=settings.official_mcp_discovery_timeout_seconds,
                     hard_quota_enabled=settings.hard_quota_enabled,
+                    group_policy_enabled=settings.group_policy_enabled,
                 ),
             )
         else:
@@ -254,12 +268,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             enabled=settings.entitlements_enabled,
             cache_ttl_seconds=settings.entitlement_cache_ttl_seconds,
         )
+        app.state.policy = PolicyService(
+            settings, catalog=app.state.catalog, entitlements=app.state.entitlements,
+            canary_guard_provider=lambda: getattr(app.state, "canary_dispatch_guard", None),
+            evaluation_guard_provider=lambda: getattr(app.state, "evaluation_dispatch_guard", None),
+            realtime_guard_provider=lambda: getattr(app.state, "realtime_canary_dispatch_guard", None),
+        )
+        app.state.canary_policy_probe = app.state.policy.canary_probe
+        app.state.evaluation_policy_probe = app.state.policy.evaluation_probe
+        app.state.realtime_canary_policy_probe = app.state.policy.realtime_canary_probe
+        app.state.publications = PublicationService(
+            app.state, agents=app.state.agent_service.record_store,
+            workflows=app.state.workflow_service.record_store,
+        )
+        app.state.agent_service.publications = app.state.publications
+        app.state.workflow_service.publications = app.state.publications
         # No automatic seed, including locally. Durable activation has a separate
         # startup refusal; constructing the app never creates a quota balance.
         app.state.hard_quota = AdmissionController(
             entitlements=app.state.entitlements, catalog=app.state.catalog,
             pricing=app.state.usage.pricing, enabled=settings.hard_quota_enabled,
             store=LocalReservationStore() if settings.hard_quota_enabled else None,
+            policy=app.state.policy,
         )
         # Admin user directory. Captures the display name + email already on the
         # token into an admin-only Cosmos 'userDirectory' (keyed by the hashed
@@ -465,6 +495,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     register_error_handlers(app)
 
+    @app.exception_handler(PublicationError)
+    async def _publication_refused(_request: Request, exc: PublicationError):
+        return error_response(status_code=exc.code, detail=exc.reason, code=exc.reason)
+
+    @app.exception_handler(PolicyError)
+    async def _policy_refused(_request: Request, exc: PolicyError):
+        return error_response(
+            status_code=exc.status_code, detail=str(exc), code=exc.decision.reason,
+            headers=(
+                {"Retry-After": str(exc.decision.retry_after_seconds)}
+                if exc.decision.retry_after_seconds is not None else None
+            ),
+        )
+
     @app.exception_handler(QuotaError)
     async def _quota_refused(_request: Request, exc: QuotaError):
         return error_response(
@@ -570,6 +614,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health_router.router)
     app.include_router(catalog_router.router)
+    app.include_router(canary_router.router)
     app.include_router(agents_router.router)
     app.include_router(attachments_router.router)
     app.include_router(mcp_servers_router.router)
@@ -591,6 +636,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(usage_router.router)
     app.include_router(entitlements_router.self_router)
     app.include_router(entitlements_router.admin_router)
+    app.include_router(publications_router.router)
+    app.include_router(policy_router.router)
     app.include_router(admin_usage_router.whoami_router)
     app.include_router(admin_usage_router.router)
     return app

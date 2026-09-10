@@ -17,9 +17,10 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
 from .agent_catalog import AgentSpec
+from ..workflows.record_types import AGENT_DEFINITION_KIND
 
 # A user agent name must be a strict subset of the @mention grammar
 # (``commands._MENTION_RE``) that is also a valid Cosmos item id: it must start
@@ -76,6 +77,20 @@ class UserAgent(BaseModel):
     enabled: bool = True
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
+    revision: int = Field(default=0, ge=0, strict=True)
+    incarnation: str | None = None
+    recordKind: str = AGENT_DEFINITION_KIND
+
+    @model_serializer(mode="wrap")
+    def compatible_record(self, handler: SerializerFunctionWrapHandler):
+        value = handler(self)
+        if self.revision == 0:
+            value.pop("revision", None)
+            if "recordKind" not in self.model_fields_set:
+                value.pop("recordKind", None)
+        if self.incarnation is None:
+            value.pop("incarnation", None)
+        return value
 
     def to_spec(self) -> AgentSpec:
         """Project to the curated-catalog shape so the resolution/routing path
@@ -116,3 +131,4 @@ class UserAgentUpdate(BaseModel):
     tools: list[str] = Field(default_factory=list)
     links: list[str] = Field(default_factory=list)
     enabled: bool = True
+    expectedRevision: int | None = Field(default=None, ge=0, strict=True)

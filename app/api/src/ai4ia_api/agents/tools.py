@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from ..request_constraints import tools_allowed
+
 
 class ToolRisk(str, Enum):
     safe = "safe"  # read-only, no external egress
@@ -39,6 +41,7 @@ class DenyReason(str, Enum):
     # callable, and refused precisely *because* its risk is unknown. See
     # :mod:`ai4ia_api.agents.synthetic_governance`.
     ungoverned = "ungoverned"
+    request_restricted = "request_restricted"
 
 
 @dataclass(frozen=True)
@@ -130,6 +133,8 @@ class ToolRegistry:
         allowlist (only enforced when the tool declares one and hosts are given),
         and human-approval gating.
         """
+        if not tools_allowed():
+            return AuthorizationDecision(False, name, DenyReason.request_restricted)
         spec = self._tools.get(name)
         if spec is None:
             return AuthorizationDecision(False, name, DenyReason.unknown_tool)

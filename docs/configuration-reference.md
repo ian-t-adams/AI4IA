@@ -128,6 +128,9 @@ the container — those names are *outputs*, not knobs you set.
 | Video generation | `AI4IA_VIDEO_GENERATION_ENABLED` | `videoGenerationEnabled` | `AI4IA_VIDEO_GENERATION_ENABLED` plus `AI4IA_VIDEO_BLOB_ACCOUNT_URL` when provisioned | Raw API/module default `false`; profile default `true`. Generation is explicitly gated and requires durable storage outside local. Sora 2 uses the governed v1 create/status/content contract; supported lengths are 4, 8, or 12 seconds. |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | `AI4IA_CUSTOM_TOOLS_ENABLED`, `CUSTOM_TOOLS_ENABLED` | Profile default `true`; requires Cosmos + Key Vault and Entra auth outside local/dev. |
 | Session/run tool auto-approval | `AI4IA_TOOL_AUTO_APPROVE_ENABLED` | `toolAutoApproveEnabled` | `AI4IA_TOOL_AUTO_APPROVE_ENABLED`; availability read from the API | Default `false` in code, Bicep, and the profile. Allows explicit user consent; does not itself approve calls. Requires Entra auth and Cosmos outside local, preserves execution authorization and receipts, and creates no new Azure resources. |
+| Application group policy | `AI4IA_GROUP_POLICY_ENABLED` | `groupPolicyEnabled` | `AI4IA_GROUP_POLICY_ENABLED` | Default `false`. Applies operator mappings to already-validated Entra role/group claims. Numeric restrictions remain per-user soft limits, not a pooled quota or Azure bill cap. |
+| Operator policy mapping | `AI4IA_GROUP_POLICY_JSON` | `groupPolicyJson` | `AI4IA_GROUP_POLICY_JSON` | Empty/unconfigured by default; at most 64 KiB. Version-1 strict JSON with domain defaults, exact claim mappings, optional spend limits, and a default-empty mapped-admin ceiling. No credentials or directory lookups. |
+| Reviewed asset publishing | `AI4IA_ASSET_PUBLISHING_ENABLED` | `assetPublishingEnabled` | `AI4IA_ASSET_PUBLISHING_ENABLED`; availability read from the API | Default `false`. Requires group policy, Entra, one tenant, and Cosmos outside local. Uses existing owner partitions; no migration, container, role assignment or publication is created by enabling the source gate. |
 | Resumable conversation deletion | `AI4IA_SESSION_DELETION_ENABLED`, `AI4IA_SESSION_DELETION_ROLLOUT_ID` | `sessionDeletionEnabled`, `sessionDeletionRolloutId` | Same API env names; status read from the API | Defaults `false` and empty. New conversations only; no automatic enrollment or background cleanup. Outside local requires Entra, Cosmos, an approved durable cutover/recovery record, single-write-region semantics and compatible no-TTL partitions. A flag/id is not proof that old workers drained. See the [deletion runbook](runbooks/conversation-deletion.md) before activation. |
 | Official MCP plane (APIM-fronted) | `AI4IA_ENABLE_OFFICIAL_MCP` | `enableOfficialMcp` | `AI4IA_OFFICIAL_MCP_ENABLED`, `AI4IA_OFFICIAL_MCP_GATEWAY_URL`, `AI4IA_OFFICIAL_MCP_SUBSCRIPTION_KEY` (secret) | Profile default `true`. Requires the MCP-only product/subscription on shared APIM plus at least one `infra/mcp-servers.json` entry; enabled-without-gateway config fails closed at startup. |
 | Foundry toolbox (bridge) | `AI4IA_ENABLE_FOUNDRY_TOOLBOX` | `enableFoundryToolbox` (+ `enableOfficialMcp`) | consumed via the official MCP plane; `AZURE_FOUNDRY_PROJECT_ENDPOINT` output feeds `scripts/provision-foundry-toolbox.py` | Profile default `true`, but the toolbox asset itself is provisioned separately. The flag grants project-scoped Foundry User to the MCP APIM identity and deployment principal. See [`foundry-toolbox.md`](foundry-toolbox.md). |
@@ -386,7 +389,48 @@ defaults to `gpt-realtime`. Azure OpenAI's deployment choice and Speech's manage
 model/settings are separate fields. Inline changes are applied only when the next
 Voice Live connection opens.
 
+### Request-only chat restrictions
+
+`POST /api/chat` accepts strict Boolean reduction controls. They are not
+environment variables, role assignments, or persisted user preferences.
+
+| Request field | Default | Effect |
+|---|---|---|
+| `allowTools` | `true` | `false` removes ambient offers and denies registry, synthetic, MCP and skill dispatch for the entire request, including SSE. A selected source that requires tools is refused rather than silently rewritten. Commands are incompatible with a tool-free request. |
+| `allowAutomaticMemory` | `true` | `false` denies automatic recall, embeddings and planner writes. `true` still respects the current server/user preference; it cannot re-enable disabled memory. |
+| `requireFreshSession` | `false` | `true` requires both reductions above, a new eligible v1 conversation, explicit `libraryDocumentIds: []`, and no agent, system prompt, summary, history or documents. The exact owner/session snapshot must win a one-shot claim before any model work. |
+
+Fresh-turn claims use the existing Cosmos session ETag CAS (the local repository
+uses its existing lock). Their server-owned marker survives saves, patches and
+`/clear`, is excluded from API JSON, and cannot be set or reset through browser
+input. A lost claim acknowledgement, post-claim failure or later empty scan does
+not restore eligibility. Legacy conversations are not enrolled by this path.
+Only the winning turn builds its prompt from its submitted plain text and empty
+context; late document/history writes are not subsequently loaded. This is not
+an atomic exclusion of all other child writers or a bill cap.
+
+The factory also registers a reduction-only canary dispatch guard. When required
+by a separately configured dedicated actor policy, it permits just one current
+owner-bound, claimed-generation Chat/Responses dispatch with the fixed sentinel,
+no tools or extra context, and at most 64 output tokens in the **adapted** body.
+It rechecks the active parent and consumes its request-local allowance before
+awaiting that read. This guard does not create an identity or permission, and
+does not bound retries inside APIM or the model proxy.
+
+A distinct evaluation guard reuses the same claim and the same one-dispatch
+allowance for an operator-selected authored-synthetic-evaluation actor: one plain
+user prompt of at most 4 KiB UTF-8 and at most 256 adapted output tokens. Policy,
+not a browser profile label, chooses that guard. It neither widens the fixed
+sentinel monitor nor creates a second allowance. These reductions do not attest
+that a prompt belongs to an approved dataset or authorize a live evaluation run.
+
 ### Authenticated Voice Live operator canary
+
+Scheduled monitoring is a separate, default-off
+[continuous application canary](runbooks/deployment.md#continuous-application-canaries)
+with workflow-only identity/lease variables, server-enforced reductions and
+strict v1 cleanup. The operator diagnostic below keeps its existing preview and
+Speech behavior and does not by itself prove GA selection or repeatable cleanup.
 
 `scripts/voice-live-canary.py` is an operator-only diagnostic, not an API endpoint.
 It requires the FastAPI app's exact secure `wss://.../api/voice/live` URL, an
