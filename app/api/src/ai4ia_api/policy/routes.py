@@ -81,7 +81,10 @@ def admin_operations(request: Request) -> tuple[PolicyOperation, ...]:
 
 async def authorize_http_operation(request: Request) -> None:
     binding = current_binding()
-    if binding is None or not binding.service.enabled:
+    if binding is None:
+        return
+    profile = binding.restricted_profile or binding.service.restricted_profile(binding.owner_id, cached=True)
+    if not binding.service.enabled and profile is None:
         return
     module, name = route_identity(request)
     operations: tuple[PolicyOperation, ...] = ()

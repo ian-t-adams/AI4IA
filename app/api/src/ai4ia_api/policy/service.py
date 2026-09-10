@@ -285,6 +285,8 @@ class PolicyService:
         if policy.binding is not self._binding:
             return PolicyDecision("unavailable", "policy_unavailable")
         if not self.enabled:
+            if self.restricted_profile(policy.owner_id, cached=True) is not None:
+                return PolicyDecision("unavailable", "canary_policy_unconfigured")
             return PolicyDecision("allow", "allowed")
         identity = self.identity_decision(policy)
         if identity is not None:
