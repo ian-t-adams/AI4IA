@@ -142,6 +142,13 @@ def timeout_seconds(category: str) -> int:
     return 120
 
 
+def runtime_enabled(model: dict[str, Any]) -> bool:
+    enabled = model.get("runtimeEnabled", True)
+    if type(enabled) is not bool:
+        raise ValueError("runtimeEnabled must be a Boolean in the model catalog")
+    return enabled
+
+
 def backend_row(
     *,
     label: str,
@@ -192,6 +199,8 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                 "real provider path and add the category to ROUTABLE_CATEGORIES, "
                 "or remove the model from infra/models.json."
             )
+        if not runtime_enabled(model):
+            continue
         timeout = timeout_seconds(category)
         api = model.get("api", "chat")
         provider_path = {
@@ -818,6 +827,13 @@ def generate_realtime_policy(models: dict[str, Any], *, ga: bool = False) -> str
     routes: list[str] = []
     for model in models["catalog"]:
         if model["category"] != "realtime":
+            continue
+        if not runtime_enabled(model):
+            continue
+        required_protocol = model.get("requiredRealtimeProtocol")
+        if required_protocol not in (None, "ga"):
+            raise ValueError("Unsupported requiredRealtimeProtocol in the model catalog")
+        if required_protocol == "ga" and not ga:
             continue
         for deployment in model["deployments"]:
             name = deployment_name(

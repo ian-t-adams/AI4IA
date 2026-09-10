@@ -179,7 +179,10 @@ class VideoGenerationService:
 
         model_id = model
         if not model_id:
-            first = next((m for m in self._catalog.models if m.category == "video"), None)
+            first = next((
+                m for m in self._catalog.models
+                if m.category == "video" and self._catalog.available(m)
+            ), None)
             if first is None:
                 raise VideoGenerationError(400, "No video models are available.")
             model_id = first.id

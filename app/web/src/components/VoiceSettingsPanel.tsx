@@ -115,6 +115,8 @@ export function VoiceSettingsPanel({
   const idPrefix = useId();
   const isSpeechProvider = provider === "speech_voice_live";
   const isGaRealtime = !isSpeechProvider && openaiRealtimeProtocol === "ga";
+  const unavailableModel =
+    explicitModel !== null && !models.some((model) => model.id === explicitModel);
   const selectedProvider = providers.find((entry) => entry.id === provider);
   const speechProvider = isSpeechVoiceProvider(activeProvider) ? activeProvider : undefined;
   const voiceOptions: readonly string[] = activeProvider.capabilities.voices.options;
@@ -210,11 +212,13 @@ export function VoiceSettingsPanel({
             )}
           </>
         ) : (
-          <label style={FIELD_STYLE} htmlFor={`${idPrefix}-model`}>
-            Realtime model
+          <div style={FIELD_STYLE}>
+            <label htmlFor={`${idPrefix}-model`}>Realtime model</label>
             <select
               id={`${idPrefix}-model`}
               value={explicitModel ?? DEFAULT_OPTION_VALUE}
+              aria-invalid={unavailableModel || undefined}
+              aria-describedby={unavailableModel ? `${idPrefix}-model-error` : undefined}
               disabled={locked}
               onChange={(e) =>
                 onModelChange(e.target.value === DEFAULT_OPTION_VALUE ? null : e.target.value)
@@ -222,13 +226,25 @@ export function VoiceSettingsPanel({
               style={CONTROL_STYLE}
             >
               <option value={DEFAULT_OPTION_VALUE}>{defaultModelLabel}</option>
+              {unavailableModel && (
+                <option value={explicitModel ?? ""} disabled>
+                  Saved model unavailable ({explicitModel})
+                </option>
+              )}
               {models.map((model) => (
                 <option key={model.id} value={model.id}>
                   {model.displayName}
                 </option>
               ))}
             </select>
-          </label>
+            {unavailableModel && (
+              <span id={`${idPrefix}-model-error`} role="alert" style={{ maxWidth: 300 }}>
+                The saved realtime model is unavailable under the current server
+                configuration. Choose an available model or Default; it will not
+                be replaced automatically.
+              </span>
+            )}
+          </div>
         )}
 
         <label style={FIELD_STYLE} htmlFor={`${idPrefix}-voice`}>

@@ -265,11 +265,11 @@
                 ))
             )),
 
-            new JProperty(&quot;gpt-realtime-2-slurmfactory-eastus2-glbl&quot;, new JObject(
+            new JProperty(&quot;gpt-realtime-1.5-slurmfactory-eastus2-glbl&quot;, new JObject(
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-realtime-2-slurmfactory-eastus2-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-realtime-1.5-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),

@@ -188,7 +188,8 @@ jobs:
           # stdlib-only (aiohttp is imported lazily and mocked in tests), so no
           # dependency install is needed. It isn't run by app-ci or
           # infra-validate, so it's exercised here instead of going untested.
-          python3 -m unittest scripts.tests.test_voice_live_canary
+          python3 scripts/gen-voice-migration-docs.py --check
+          python3 -m unittest scripts.tests.test_voice_live_canary scripts.tests.test_speech_canary scripts.tests.test_voice_migration_docs
 
       - name: Run subscription preflight unit tests
         run: |

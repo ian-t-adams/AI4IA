@@ -217,7 +217,7 @@ def _validate_azure_openai(errors: list[str], provider: dict[str, Any]) -> None:
     _exact_keys(
         errors,
         model_ref.get("filter", {}),
-        allowed=("category",),
+        allowed=("category", "runtimeEnabled"),
         label="azure_openai.modelCatalogRef.filter",
     )
     _require(
@@ -229,6 +229,11 @@ def _validate_azure_openai(errors: list[str], provider: dict[str, Any]) -> None:
         errors,
         model_ref.get("filter", {}).get("category") == "realtime",
         "azure_openai: modelCatalogRef.filter.category must be realtime",
+    )
+    _require(
+        errors,
+        model_ref.get("filter", {}).get("runtimeEnabled") is True,
+        "azure_openai: modelCatalogRef.filter.runtimeEnabled must be true",
     )
     _require(
         errors,
