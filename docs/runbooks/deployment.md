@@ -995,7 +995,9 @@ missing step, then strict readback. The only writes are creation of the dedicate
 UAMI, the one custom role, the two assignments, and its one federation. Role
 assignments use the UAMI's **`principalId`** from ARM; only its different
 **`clientId`** is emitted for GitHub login. Verification uses literal IDs at the
-scope, never an assignee-name/directory lookup. Each create requests
+scope, never an assignee-name/directory lookup. Role references accept the
+documented provider-root or same-subscription spelling of the **same exact**
+role UUID, never another subscription or role. Each create requests
 `If-None-Match: *`; there is no replace/update fallback when a provider refuses a
 condition or a collision. This is not a cross-resource transaction or a lock on
 another administrator: do not perform concurrent identity/RBAC/configuration
@@ -1021,10 +1023,12 @@ inventories to 4,096 rows. GitHub variable inventory is bounded to eight pages
 and excludes unrelated values from the plan. A paginated ARM inventory needs a
 separately reviewed collection change, not an operator skip flag.
 
-On interruption or failure, keep the exact attempted resource IDs printed on
+On Ctrl+C interruption or failure, keep the exact attempted resource IDs printed on
 stderr. A timed-out write may have succeeded. **Do not automatically retry,
 delete, revoke, or activate.** After resolving the read/propagation issue, obtain
 a fresh plan: it classifies each exact existing resource and each missing step.
+After a forced process termination that cannot emit recovery output, use the
+reviewed plan's exact target IDs and the same fresh-plan procedure.
 Review and approve that new digest to resume only the missing steps. If rollback
 is chosen, obtain fresh scope-specific deletion approval; inspect the exact
 assignment IDs and federation first, and remove only this reader's grants/trust,

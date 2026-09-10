@@ -28,6 +28,7 @@ REPO = "ian-t-adams/AI4IA"
 
 RUNNER = """
 import importlib.util
+import os
 import sys
 from pathlib import Path
 script, stub, *arguments = sys.argv[1:]
@@ -37,6 +38,12 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 module.cli_command = lambda tool: [sys.executable, stub, tool]
+if os.environ.get("READER_STUB_INTERRUPT") == "after-create":
+    original = module.Cli.create
+    def interrupt(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        raise KeyboardInterrupt()
+    module.Cli.create = interrupt
 sys.argv = [script, *arguments]
 raise SystemExit(module.main())
 """
@@ -118,6 +125,8 @@ if method == "PUT":
     elif "/roleAssignments/" in path:
         row = {"id": path, "name": name, "type": "Microsoft.Authorization/roleAssignments", **body}
         row["properties"]["scope"] = path.split("/providers/Microsoft.Authorization/roleAssignments/")[0]
+        role = row["properties"]["roleDefinitionId"].rsplit("/", 1)[1]
+        row["properties"]["roleDefinitionId"] = "/providers/Microsoft.Authorization/roleDefinitions/" + role
         if state.get("assign_client"):
             row["properties"]["principalId"] = state["client"]
     else:
@@ -217,7 +226,8 @@ class Fixture:
         result = subprocess.run(
             [sys.executable, str(self.directory / "runner.py"), str(ROOT / "scripts" / "setup-retirement-reader.py"),
              str(self.directory / "cli.py"), *self.arguments, *extra],
-            env={**os.environ, "READER_STUB_DIRECTORY": str(self.directory)},
+            env={**os.environ, "READER_STUB_DIRECTORY": str(self.directory),
+                 "READER_STUB_INTERRUPT": "after-create" if self.state.get("interrupt") else ""},
             cwd=ROOT, text=True, capture_output=True, timeout=120, check=False,
         )
         self.state = json.loads(store.read_text(encoding="utf-8"))
@@ -506,6 +516,42 @@ class ReaderSetupExecutionTests(unittest.TestCase):
         self.assertIn("Assignment scope/principal/role mismatch", result.stderr)
         self.assertEqual(len([c for c in calls if "PUT" in c]), 3)
         self.assertNotIn("--body 'true'", result.stdout)
+
+    def test_role_reference_equivalence_does_not_accept_different_role_or_subscription(self) -> None:
+        self.fixture.complete()
+        row = self.fixture.row("group_reader")
+        qualified = self.fixture.intents["group_reader"]["body"]["properties"]["roleDefinitionId"]
+        for reference in (
+            qualified.replace(SUB, TENANT),
+            "/providers/Microsoft.Authorization/roleDefinitions/" + TENANT,
+            "/providers/other/roleDefinitions/" + setup.READER,
+        ):
+            with self.subTest(reference=reference):
+                row["properties"]["roleDefinitionId"] = reference
+                result, calls = self.fixture.run()
+                self.assert_blocked(result, calls, "role reference mismatch")
+                row = self.fixture.row("group_reader")
+        row["properties"]["roleDefinitionId"] = qualified
+        result, calls = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_no_mutations(calls)
+
+    def test_ctrl_c_after_create_reports_attempted_ids_and_can_be_replanned(self) -> None:
+        plan = self.fixture.plan()
+        self.fixture.state["interrupt"] = True
+        result, calls = self.fixture.run("--apply", "--approve-plan", plan["plan_sha256"])
+        self.assertEqual(result.returncode, 2, result.stdout)
+        report = json.loads(result.stderr)
+        self.assertIn("Interrupted", report["error"])
+        self.assertEqual(report["attempted_resource_ids"], [self.fixture.target.identity])
+        self.assertIsNone(report["activation_command"])
+        self.assertEqual(len([c for c in calls if "PUT" in c]), 1)
+        self.fixture.state["interrupt"] = False
+        resumed = self.fixture.plan()
+        self.assertEqual([s["state"] for s in resumed["steps"]], ["verified", "create", "create", "create", "create"])
+        result, calls = self.fixture.run("--apply", "--approve-plan", resumed["plan_sha256"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len([c for c in calls if "PUT" in c]), 4)
 
     def test_wrong_federation_or_extra_credential_is_never_replaced(self) -> None:
         self.fixture.complete()

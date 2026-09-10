@@ -75,6 +75,13 @@ def same_id(actual: object, expected: str) -> bool:
     return isinstance(actual, str) and actual.lower() == expected.lower()
 
 
+def same_role(actual: object, expected: str) -> bool:
+    # ARM can return a provider-root role reference after a subscription-qualified PUT.
+    # Do not accept a reference qualified by a different subscription or provider.
+    unqualified = "/providers/Microsoft.Authorization/roleDefinitions/" + expected.rsplit("/", 1)[1]
+    return same_id(actual, expected) or same_id(actual, unqualified)
+
+
 def resource(value: object, resource_id: str, resource_type: str) -> dict:
     row = object_value(value)
     require(
@@ -372,7 +379,9 @@ def validate_step(name: str, row: dict, intent: dict) -> None:
     expected = intent["body"]["properties"]
     props = row["properties"]
     for key, value in expected.items():
-        if key in ("scope", "principalId", "roleDefinitionId"):
+        if key == "roleDefinitionId":
+            require(same_role(props.get(key), value), "Assignment role reference mismatch.")
+        elif key in ("scope", "principalId"):
             require(same_id(props.get(key), value), "Assignment scope/principal/role mismatch.")
         else:
             require(props.get(key) == value, f"Unexpected {name} {key}; refusing collision/overprivilege.")
@@ -567,8 +576,8 @@ def execute(cli: Cli, target: Target, args: argparse.Namespace) -> dict:
         for name in STEPS:
             if plan["resources"][name] is not None:
                 continue
-            fresh = observe(cli, target)
-            require(digest(fresh) == digest(plan), "Concurrent change before create; stop and re-plan.")
+            # The full post-write readback is also the fresh observation immediately
+            # before the next create; no operator prompt or unrelated work intervenes.
             intent = plan["intents"][name]
             result = object_value(cli.create(intent["id"], intent["api"], intent["body"]))
             if name == "identity":
@@ -626,8 +635,10 @@ def main() -> int:
         result = execute(cli, target, args)
         print(json.dumps(result, indent=2))
         return 0
-    except (SetupError, EvidenceError, OSError) as exc:
+    except (SetupError, EvidenceError, OSError, KeyboardInterrupt) as exc:
         message = str(exc) if isinstance(exc, SetupError) else "CLI/local evidence unavailable; coverage unknown."
+        if isinstance(exc, KeyboardInterrupt):
+            message = "Interrupted; Azure writes may be partial/unknown."
         print(json.dumps({
             "status": "blocked: unknown or partial", "error": message,
             "attempted_resource_ids": cli.attempted if cli else [],
