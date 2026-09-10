@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from ai4ia_api.gateway.client import ModelGatewayClient, ModelGatewayError
 from ai4ia_api.main import create_app
 from ai4ia_api.request_constraints import (
-    CANARY_SENTINEL, arm_fresh_dispatch, build_canary_dispatch_guard,
+    CANARY_SENTINEL, arm_fresh_dispatch, build_canary_dispatch_guard, build_evaluation_dispatch_guard,
     constrain_request, fresh_session_required,
 )
 from ai4ia_api.sessions.memory_repo import InMemorySessionRepository
@@ -129,3 +129,43 @@ def test_default_responses_floor_is_unchanged_without_fresh_constraint():
         deployment="deployment", messages=[], params={"max_tokens": 64},
     ).json
     assert default["max_output_tokens"] > 64
+
+
+@pytest.mark.parametrize("prompt_size,output,expected", [
+    (4096, 256, True), (4097, 256, False), (4096, 257, False),
+])
+async def test_separate_evaluation_guard_uses_same_claim_and_bounded_single_prompt(prompt_size, output, expected):
+    repo = InMemorySessionRepository(deletion_enabled=True)
+    session = await claimed(repo)
+    prompt = "x" * prompt_size
+    guard = build_evaluation_dispatch_guard(repo)
+    with constrain_request(tools=False, automatic_memory=False, require_fresh_session=True):
+        arm_fresh_dispatch("owner", session, "deployment", "chat", prompt)
+        payload = {"messages": [{"role": "user", "content": prompt}], "max_tokens": output}
+        assert await guard("owner", "deployment", payload) is expected
+        assert not await guard("owner", "deployment", payload)
+
+
+async def test_guard_profiles_do_not_create_separate_allowances_or_widen_the_monitor():
+    repo = InMemorySessionRepository(deletion_enabled=True)
+    session = await claimed(repo)
+    canary = build_canary_dispatch_guard(repo)
+    evaluation = build_evaluation_dispatch_guard(repo)
+    with constrain_request(tools=False, automatic_memory=False, require_fresh_session=True):
+        arm_fresh_dispatch("owner", session, "deployment", "chat", "Authored synthetic case")
+        payload = {"messages": [{"role": "user", "content": "Authored synthetic case"}], "max_tokens": 64}
+        assert not await canary("owner", "deployment", payload)
+        assert not await evaluation("owner", "deployment", payload)
+    session = await claimed(repo)
+    with constrain_request(tools=False, automatic_memory=False, require_fresh_session=True):
+        arm_fresh_dispatch("owner", session, "deployment", "chat", CANARY_SENTINEL)
+        payload = {"messages": [{"role": "user", "content": CANARY_SENTINEL}], "max_tokens": 64}
+        assert await evaluation("owner", "deployment", payload)
+        assert not await canary("owner", "deployment", payload)
+
+
+def test_both_guards_are_registered_by_the_real_factory():
+    app = create_app(make_settings())
+    with TestClient(app):
+        assert callable(app.state.canary_dispatch_guard)
+        assert callable(app.state.evaluation_dispatch_guard)

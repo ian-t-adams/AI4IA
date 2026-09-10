@@ -87,10 +87,20 @@ def arm_fresh_dispatch(
     ))
 
 
-def _canary_payload(slot: _FreshDispatch, payload: dict[str, Any]) -> bool:
-    if slot.content != CANARY_SENTINEL or payload.get("model", slot.deployment) != slot.deployment:
+def _bounded_payload(
+    slot: _FreshDispatch, payload: dict[str, Any], *, sentinel_only: bool, max_output: int,
+) -> bool:
+    try:
+        content_size = len(slot.content.encode("utf-8"))
+    except UnicodeError:
         return False
-    messages = [{"role": "user", "content": CANARY_SENTINEL}]
+    if (
+        not 1 <= content_size <= 4096
+        or (sentinel_only and slot.content != CANARY_SENTINEL)
+        or payload.get("model", slot.deployment) != slot.deployment
+    ):
+        return False
+    messages = [{"role": "user", "content": slot.content}]
     if slot.api == "responses":
         keys = {"model", "input", "max_output_tokens", "store", "reasoning", "stream"}
         if (
@@ -117,13 +127,13 @@ def _canary_payload(slot: _FreshDispatch, payload: dict[str, Any]) -> bool:
         return False
     return (
         set(payload) <= keys and type(maximum) is int
-        and 1 <= maximum <= CANARY_MAX_OUTPUT_TOKENS
+        and 1 <= maximum <= max_output
         and type(payload.get("stream", False)) is bool
     )
 
 
-def build_canary_dispatch_guard(
-    repo: SessionRepository,
+def _build_dispatch_guard(
+    repo: SessionRepository, *, sentinel_only: bool, max_output: int,
 ) -> Callable[[str, str, dict[str, Any]], Awaitable[bool]]:
     async def guard(owner_id: str, deployment: str, payload: dict[str, Any]) -> bool:
         from .sessions.repository import SessionNotFoundError
@@ -137,7 +147,7 @@ def build_canary_dispatch_guard(
         # Consume before any await. A denied/ambiguous attempt cannot retry with
         # a different body, and child tasks share this request-local allowance.
         slot.consumed = True
-        if not _canary_payload(slot, payload):
+        if not _bounded_payload(slot, payload, sentinel_only=sentinel_only, max_output=max_output):
             return False
         try:
             current = await repo.get_session(owner_id, slot.session_id)
@@ -153,6 +163,18 @@ def build_canary_dispatch_guard(
         )
 
     return guard
+
+
+def build_canary_dispatch_guard(
+    repo: SessionRepository,
+) -> Callable[[str, str, dict[str, Any]], Awaitable[bool]]:
+    return _build_dispatch_guard(repo, sentinel_only=True, max_output=CANARY_MAX_OUTPUT_TOKENS)
+
+
+def build_evaluation_dispatch_guard(
+    repo: SessionRepository,
+) -> Callable[[str, str, dict[str, Any]], Awaitable[bool]]:
+    return _build_dispatch_guard(repo, sentinel_only=False, max_output=256)
 
 
 def constrain_tool_parameters(params: dict[str, Any] | None) -> dict[str, Any]:

@@ -62,6 +62,7 @@ from .routers import agents as agents_router
 from .routers import attachments as attachments_router
 from .routers import admin_usage as admin_usage_router
 from .routers import catalog as catalog_router
+from .routers import canary as canary_router
 from .routers import chat as chat_router
 from .routers import client_events as client_events_router
 from .routers import docprocessing as docprocessing_router
@@ -101,7 +102,7 @@ from .workflows.factory import build_workflow_store
 from .workflows.service import WorkflowService
 from .routers import workflows as workflows_router
 from .routers.health import SessionStoreReadiness
-from .request_constraints import build_canary_dispatch_guard
+from .request_constraints import build_canary_dispatch_guard, build_evaluation_dispatch_guard
 
 _CORRELATION_HEADER = "x-correlation-id"
 
@@ -130,6 +131,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.auth_provider = build_auth_provider(settings)
         app.state.session_repo = build_session_repository(settings)
         app.state.canary_dispatch_guard = build_canary_dispatch_guard(app.state.session_repo)
+        app.state.evaluation_dispatch_guard = build_evaluation_dispatch_guard(app.state.session_repo)
         if settings.session_deletion_enabled:
             await app.state.session_repo.check_deletion_ready()
         app.state.session_readiness = SessionStoreReadiness(app.state.session_repo)
@@ -572,6 +574,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health_router.router)
     app.include_router(catalog_router.router)
+    app.include_router(canary_router.router)
     app.include_router(agents_router.router)
     app.include_router(attachments_router.router)
     app.include_router(mcp_servers_router.router)
