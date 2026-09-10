@@ -508,6 +508,7 @@ keeps endpoint and authentication configuration in the Foundry project connectio
 
 ```powershell
 python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/redaction rules
+python3 -m unittest scripts.tests.test_application_canary       # offline continuous monitor/state/identity controls
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
 python3 -m unittest scripts.tests.test_model_retirement         # dates, read-only reports and activation contracts
 python3 -m unittest scripts.tests.test_capacity_evidence        # read-only allocation/quota/aggregate metrics
@@ -593,6 +594,25 @@ and authenticated/model-path canaries. Auth challenges, redirects and malformed
 JSON cannot pass API health; unresolved targets and historical missing coverage
 remain unknown. API probes are bounded to 20 seconds and 4 KiB with no redirects,
 cookies or default credentials. Never publish response bodies or exception text.
+
+`application-canaries.yml` is operational scheduling, default-off for all app and
+model traffic, and independent of the anonymous portal snapshot. Its prepare
+job reads only this repository's exact predecessor run/artifact; its separately
+gated observation job alone exchanges dedicated OIDC for an API token. No ARM
+login, deploy identity, Graph, new resource, live test or settings mutation belongs
+in source validation. `scripts/canaries` shares the sentinel/catalog candidates
+and ordered Voice Live setup primitive with existing operator helpers, but uses
+strict bounded JSON, public DNS pinning, no redirects/cookies/default credentials,
+one application chat attempt, a finite lease and strict v1 owner cleanup.
+Missing state, ambiguous writes and partial cleanup never reset the failure
+count to a healthy zero or authorize another mutation. Retain only allowlisted
+content-free state; API sessions/receipts, private configuration and raw errors
+must never be uploaded. GA config/header alone is not an event canary, and an
+operator actor policy must admit the setup-only path separately. See
+`docs/runbooks/deployment.md#continuous-application-canaries` for the activation
+and notification boundaries. Its existing quality job installs the same pinned
+aiohttp transport for offline fixtures; app-ci also runs Ruff and Pyright over
+the monitor package.
 
 `security-scan` runs Trivy filesystem/config scans and gitleaks over the full
 proxy tree. `.trivyignore.yaml` suppresses only the untouched upstream Dockerfile

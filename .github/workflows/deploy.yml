@@ -47,6 +47,7 @@ on:
       - "scripts/postprovision.ps1"
       - "scripts/_generator.py"
       - "scripts/post-deploy-verify.py"
+      - "scripts/_canary_contract.py"
       - "scripts/verify-image-provenance.py"
       - "scripts/_image_refs.py"
       - "scripts/check-resource-providers.py"

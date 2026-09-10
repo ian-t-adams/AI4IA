@@ -269,6 +269,12 @@ versions, capacities, deployment counts, the default realtime model and TTS are
 unchanged. All live work below requires separate approval under
 [`deploy-with-an-agent.md`](../deploy-with-an-agent.md).
 
+The separate [continuous application canary](deployment.md#continuous-application-canaries)
+is default-off and cannot enable this gate or select `ga`. Its setup-only
+observation requires both the resolved protocol header and ordered server
+acknowledgements under separately approved actor/spend scope. It does not replace
+the audio, tools, interruption, persistence, cutover or rollback acceptance below.
+
 1. Reconfirm the intended catalog deployment's current offering, entitlement,
    regional capacity and lifecycle evidence. The existing GA `gpt-realtime`
    deployment can be the protocol canary target; staging does not require a

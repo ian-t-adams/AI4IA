@@ -423,6 +423,12 @@ that a prompt belongs to an approved dataset or authorize a live evaluation run.
 
 ### Authenticated Voice Live operator canary
 
+Scheduled monitoring is a separate, default-off
+[continuous application canary](runbooks/deployment.md#continuous-application-canaries)
+with workflow-only identity/lease variables, server-enforced reductions and
+strict v1 cleanup. The operator diagnostic below keeps its existing preview and
+Speech behavior and does not by itself prove GA selection or repeatable cleanup.
+
 `scripts/voice-live-canary.py` is an operator-only diagnostic, not an API endpoint.
 It requires the FastAPI app's exact secure `wss://.../api/voice/live` URL, an
 allowed HTTPS Origin, provider, model, and an Entra API token read from a named

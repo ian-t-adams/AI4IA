@@ -17,6 +17,11 @@ import sys
 from typing import Any, Sequence
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
+if __name__ == "__main__":
+    from _canary_contract import SetupOrderError, SetupState, acknowledge_setup
+else:
+    from scripts._canary_contract import SetupOrderError, SetupState, acknowledge_setup
+
 BEARER_SUBPROTOCOL = "ai4ia-bearer"
 DEFAULT_TOKEN_ENV = "AI4IA_VOICE_CANARY_TOKEN"
 VOICE_LIVE_PATH = "/api/voice/live"
@@ -114,14 +119,7 @@ class CanaryCloseError(RuntimeError):
         self.correlation = correlation
 
 
-class EventState:
-    def __init__(self, expected_history_item_ids: Sequence[str] = ()) -> None:
-        self.created = False
-        self.updated = False
-        self.correlation: str | None = None
-        self.received_frames = 0
-        self.expected_history_item_ids = tuple(expected_history_item_ids)
-        self.acknowledged_history_item_ids: set[str] = set()
+EventState = SetupState
 
 
 def compact_json(value: object) -> str:
@@ -387,33 +385,10 @@ def inspect_event(frame: str, state: EventState, *, token: str) -> bool:
             or "Live voice reported an error.",
         }
         raise CanaryProtocolError(fields, state.correlation)
-    if event_type == "session.created":
-        if state.updated:
-            raise CanaryOrderError(
-                "session.created arrived after session.updated.", state.correlation
-            )
-        state.created = True
-    elif event_type == "session.updated":
-        if not state.created:
-            raise CanaryOrderError(
-                "session.updated arrived before session.created.", state.correlation
-            )
-        state.updated = True
-    elif event_type == "conversation.item.created":
-        raw_item = payload.get("item")
-        item = raw_item if isinstance(raw_item, dict) else {}
-        item_id = item.get("id")
-        if (
-            isinstance(item_id, str)
-            and item_id in state.expected_history_item_ids
-        ):
-            state.acknowledged_history_item_ids.add(item_id)
-    return (
-        state.created
-        and state.updated
-        and state.acknowledged_history_item_ids
-        == set(state.expected_history_item_ids)
-    )
+    try:
+        return acknowledge_setup(payload, state)
+    except SetupOrderError as exc:
+        raise CanaryOrderError(str(exc), state.correlation) from exc
 
 
 def _emit(
