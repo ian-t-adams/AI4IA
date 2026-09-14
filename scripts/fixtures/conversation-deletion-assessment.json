@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "synthetic": true,
+  "scope": {
+    "schemaVersion": 1,
+    "accountResourceId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-deletion-fixture/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-deletion-fixture",
+    "database": "ai4ia",
+    "cohort": [
+      {"ownerId": "fixture-owner-a", "sessionId": "fixture-session-a"},
+      {"ownerId": "fixture-owner-b", "sessionId": "fixture-session-b"}
+    ]
+  },
+  "observations": {
+    "metadata": {
+      "account": {
+        "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-deletion-fixture/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-deletion-fixture",
+        "properties": {
+          "documentEndpoint": "https://cosmos-deletion-fixture.documents.azure.com/",
+          "writeLocations": [{"locationName": "West US"}],
+          "enableMultipleWriteLocations": false,
+          "consistencyPolicy": {"defaultConsistencyLevel": "Session"},
+          "backupPolicy": {"type": "Continuous", "continuousModeProperties": {"tier": "Continuous7Days"}}
+        }
+      },
+      "sessions": {"id": "sessions", "partitionKey": {"paths": ["/userId"], "kind": "Hash", "version": 2}},
+      "messages": {"id": "messages", "partitionKey": {"paths": ["/sessionId"], "kind": "Hash", "version": 2}},
+      "documents": {"id": "documents", "partitionKey": {"paths": ["/sessionId"], "kind": "Hash", "version": 2}}
+    },
+    "partitions": [
+      {
+        "ownerId": "fixture-owner-a",
+        "sessionId": "fixture-session-a",
+        "sessions": [{
+          "id": "fixture-session-a", "userId": "fixture-owner-a",
+          "kind": "session_v1", "deletionProtocol": 1, "deletionEpoch": "fixture-generation-a",
+          "_etag": "\"fixture-parent-a\"", "_ts": 1789000000, "ttl": -1,
+          "attachmentStorageRequired": false, "attachmentStorageId": null
+        }],
+        "messages": [
+          {
+            "id": "__ai4ia_session_fence_v1__", "userId": "fixture-owner-a", "sessionId": "fixture-session-a",
+            "kind": "session_fence_v1", "epoch": "fixture-generation-a", "closed": false,
+            "_etag": "\"fixture-message-fence-a\"", "_ts": 1789000000, "ttl": -1
+          },
+          {
+            "id": "fixture-message-a", "userId": "fixture-owner-a", "sessionId": "fixture-session-a",
+            "_etag": "\"fixture-message-a\"", "_ts": 1789000000
+          }
+        ],
+        "documents": [
+          {
+            "id": "__ai4ia_session_fence_v1__", "userId": "fixture-owner-a", "sessionId": "fixture-session-a",
+            "kind": "session_fence_v1", "epoch": "fixture-generation-a", "closed": false,
+            "_etag": "\"fixture-document-fence-a\"", "_ts": 1789000000, "ttl": -1
+          },
+          {
+            "id": "fixture-document-a", "userId": "fixture-owner-a", "sessionId": "fixture-session-a",
+            "_etag": "\"fixture-document-a\"", "_ts": 1789000000
+          }
+        ]
+      },
+      {
+        "ownerId": "fixture-owner-b",
+        "sessionId": "fixture-session-b",
+        "sessions": [{
+          "id": "fixture-session-b", "userId": "fixture-owner-b",
+          "_etag": "\"fixture-parent-b\"", "_ts": 1789000000
+        }],
+        "messages": [{
+          "id": "fixture-message-b", "userId": "fixture-owner-b", "sessionId": "fixture-session-b",
+          "_etag": "\"fixture-message-b\"", "_ts": 1789000000
+        }],
+        "documents": []
+      }
+    ]
+  }
+}
