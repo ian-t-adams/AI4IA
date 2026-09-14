@@ -602,6 +602,20 @@ timeout. The canary intersects `infra/models.json` with the models the live API
 advertises, never hardcodes a deployment, never prints its bearer token or model
 reply, and logs successful replies only as a character count.
 
+Each `rollout` event also records `cutover` evidence from the same stable app and
+revision reads, without another Azure call. In Single mode this distinguishes
+`latestMatchesServing`, `appProvisioningSucceeded`, and an equal, different,
+invalid, or unavailable writable-template comparison. A difference reports at
+most twelve fixed area labels, such as `containers.env` or `scale.maxReplicas`,
+plus an explicit truncation flag. The difference summary never logs template
+values, environment-variable names, custom field names, or template hashes.
+Multiple mode does not claim these Single-mode checks passed.
+
+Inspect this evidence before retrying a failed release. A healthy serving image
+alone does not clear a pending cutover, and an app read after rollback cannot
+reconstruct the historical desired template. Missing historical evidence remains
+unknown; the diagnostics do not relax verification or authorize a restore.
+
 The same proof can run independently of a deployment or rollback state file:
 
 ```powershell
