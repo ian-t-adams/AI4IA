@@ -285,6 +285,34 @@ class SpeechCanaryTests(unittest.TestCase):
         with patch.object(canary.subprocess, "run", return_value=completed):
             self.assertEqual(canary.run_bounded(args, self.target), valid)
 
+    def test_worker_report_reuses_strict_canary_json_instead_of_last_duplicate_wins(self):
+        args = SimpleNamespace(url=URL, token_env=canary.TOKEN_ENV, timeout=30)
+        valid = canary.result(self.target, "success", http_status=200, audio=canary.inspect_wav(wav()))
+        raw = json.dumps(valid).encode()
+        duplicate = raw.replace(b'"outcome": "success"', b'"outcome": "http_error", "outcome": "success"')
+        self.assertNotEqual(raw, duplicate)
+        for document, expected in ((duplicate, "worker_error"), (raw, "success")):
+            with patch.object(canary.subprocess, "run", return_value=SimpleNamespace(
+                stdout=document, returncode=0,
+            )):
+                self.assertEqual(canary.run_bounded(args, self.target)["outcome"], expected)
+
+    def test_catalog_runtime_marker_rejects_duplicate_or_deep_json_with_same_valid_control(self):
+        model = {"name": MODEL, "category": "tts", "runtimeEnabled": True,
+                 "deployments": [{"region": "eastus2", "version": "2025-12-15"}]}
+        raw = json.dumps({"catalog": [model]})
+        duplicate = raw.replace('"runtimeEnabled": true', '"runtimeEnabled": false, "runtimeEnabled": true')
+        self.assertNotEqual(raw, duplicate)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "models.json"
+            with patch.object(canary, "CATALOG", path):
+                for malformed in (duplicate, "[" * 20 + raw + "]" * 20):
+                    path.write_text(malformed, encoding="utf-8")
+                    with self.assertRaisesRegex(canary.CanaryInputError, "strict JSON"):
+                        canary.resolve_target(MODEL, "eastus2")
+                path.write_text(raw, encoding="utf-8")
+                self.assertEqual(canary.resolve_target(MODEL, "eastus2").model, MODEL)
+
     def test_ci_runs_only_offline_speech_tests(self):
         quality = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
         self.assertIn("scripts.tests.test_speech_canary", quality)

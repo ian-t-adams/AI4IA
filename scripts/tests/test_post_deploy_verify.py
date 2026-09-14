@@ -932,6 +932,22 @@ class CanaryModelSelectionTests(unittest.TestCase):
         self.assertNotIn("a-picture", preferences)
         self.assertNotIn("undeployed", preferences)
 
+    def test_runtime_disabled_inventory_is_not_a_canary_candidate(self) -> None:
+        source = deepcopy(self.CATALOG)
+        first = next(entry for entry in source["catalog"] if entry["name"] == "tiny-fast")
+        for disabled in (False, "true", 1, None):
+            with self.subTest(runtimeEnabled=disabled):
+                first["runtimeEnabled"] = disabled
+                self.assertEqual(pdv.catalog_model_preferences(source), ["a-chat", "big-chat"])
+                self.assertEqual(
+                    pdv.select_canary_model(source, ["tiny-fast", "a-chat"]), "a-chat",
+                )
+        first["runtimeEnabled"] = True
+        self.assertEqual(pdv.catalog_model_preferences(source)[0], "tiny-fast")
+        self.assertEqual(pdv.select_canary_model(source, ["tiny-fast", "a-chat"]), "tiny-fast")
+        del first["runtimeEnabled"]
+        self.assertEqual(pdv.catalog_model_preferences(source)[0], "tiny-fast")
+
     def test_selection_takes_the_first_model_the_live_api_advertises(self) -> None:
         """The API filters by data-residency policy, so the catalog alone is not enough."""
         self.assertEqual(

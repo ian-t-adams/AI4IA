@@ -10,7 +10,6 @@ import argparse
 import asyncio
 import hashlib
 import ipaddress
-import json
 import os
 import re
 import struct
@@ -21,6 +20,9 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from canaries.contracts import CanaryError, encoded, strict_json
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "infra" / "models.json"
@@ -96,7 +98,10 @@ def resolve_target(model: str, region: str) -> Target:
         data = stream.read(MAX_CATALOG_BYTES + 1)
     if len(data) > MAX_CATALOG_BYTES:
         raise CanaryInputError("Model catalog exceeds the input bound.")
-    source = json.loads(data)
+    try:
+        source = strict_json(data, limit=MAX_CATALOG_BYTES)
+    except CanaryError as exc:
+        raise CanaryInputError("Model catalog must contain bounded strict JSON.") from exc
     matches = [
         deployment for entry in source["catalog"]
         if entry["name"] == model and entry["category"] == "tts"
@@ -267,8 +272,8 @@ def run_bounded(args: argparse.Namespace, target: Target) -> dict:
     if len(completed.stdout) > MAX_REPORT_BYTES:
         return result(target, "worker_error")
     try:
-        reported = json.loads(completed.stdout)
-    except (ValueError, UnicodeError):
+        reported = strict_json(completed.stdout, limit=MAX_REPORT_BYTES)
+    except CanaryError:
         return result(target, "worker_error")
     if (
         not isinstance(reported, dict)
@@ -332,7 +337,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = asyncio.run(run_canary(args.url, target, token, args.timeout))
     else:
         report = run_bounded(args, target)
-    print(json.dumps(report, separators=(",", ":"), ensure_ascii=True))
+    print(encoded(report, limit=MAX_REPORT_BYTES).decode("ascii"))
     return 0 if report["outcome"] == "success" else 2
 
 

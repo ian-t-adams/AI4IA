@@ -223,7 +223,7 @@ class ModelCatalog(BaseModel):
     def eligible_options(
         self, entry: ModelEntry, *, policy_filter: bool = True,
     ) -> list[DeploymentOption]:
-        """This model's deployments that are usable under the active policy."""
+        """Runtime-enabled, residency-compliant options, optionally filtered by actor."""
         from .policy.context import model_allowed
 
         return [

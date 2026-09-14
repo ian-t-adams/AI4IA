@@ -28,6 +28,8 @@ def catalog_model_preferences(catalog_doc: Any) -> list[str]:
     for entry in catalog:
         if not isinstance(entry, dict):
             continue
+        if entry.get("runtimeEnabled", True) is not True:
+            continue
         name = entry.get("name")
         category = entry.get("category")
         if not isinstance(name, str) or not _MODEL_ID_RE.fullmatch(name):

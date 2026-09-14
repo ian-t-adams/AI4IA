@@ -558,6 +558,13 @@ billable app request using fixed synthetic text, `alloy` and WAV; it never
 acquires credentials, calls APIM/Foundry directly, plays or saves audio, changes
 resources, or retries.
 
+Use a separately authorized speech caller, not the continuous monitor's
+sentinel-chat actor or its setup-only realtime actor. Their fixed request
+profiles reject REST speech even when a broader model category is allowed.
+`--execute` grants no API permission and does not relax that boundary. This
+command reuses the published canary contracts for strict, bounded catalog/report
+JSON; it does not join the scheduled monitor or inherit its actor authority.
+
 The request deadline is at most 30 seconds and the outer worker deadline is at
 most 35 seconds, including DNS/shutdown. Responses are bounded to 1,000,000 bytes,
 64 headers/8 KiB, and 32 RIFF chunks. Success requires HTTP 200, `audio/wav`,
