@@ -546,8 +546,15 @@ class WorkflowAutomationService:
         if state.bundle is None:
             raise AutomationError("context_revoked", "The frozen run context is unavailable.")
         try:
-            await self.access.recheck(state.bundle, user=user)
+            actor = await self.access.recheck(state.bundle, user=user)
             await self.access.check_context(state)
+            surface = await self.access.surface(
+                actor, state.bundle.workflow, state.bundle.agents, state.step,
+                session_id=state.sessionId, documents=state.bundle.selectedDocuments,
+                nonce=state.bundle.nonce, safe_only=state.bundle.safeOnly,
+            )
+            if surface.contracts != state.bundle.stepContracts[state.step]:
+                raise AutomationError("policy_revoked", "The effective tool subset no longer matches.")
         except PolicyError as exc:
             status: RunStatus = "reauthentication_required" if exc.decision.reason == "reauthentication_required" else "policy_revoked"
             state = await self.set_status(owner, run_id, status, exc.decision.reason)

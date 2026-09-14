@@ -16,6 +16,7 @@ from ..agents.tool_exec import CHAT_ONLY_SYNTHETIC_TOOL_NAMES
 from ..agents.tools import ToolRisk, is_safe_tool_name
 from ..auth.base import AuthenticatedUser
 from ..library.models import DocumentStatus
+from ..memory.preferences import MemoryPreferenceConflict, MemoryPreferenceUnavailable
 from ..policy.models import EffectivePolicy, PolicyRequest
 from ..publishing.models import AssetVersionRef, ToolBundle
 from ..publishing.service import PublicationService
@@ -322,9 +323,12 @@ class WorkflowAccess:
         if state.memoryContext is not None:
             if not automatic_memory_allowed():
                 raise AutomationError("context_revoked", "Current request restrictions withhold remembered context.")
-            await self.state.memory.validate_context_references(
-                state.userId, state.memoryContext.preference, state.memoryContext.references,
-            )
+            try:
+                await self.state.memory.validate_context_references(
+                    state.userId, state.memoryContext.preference, state.memoryContext.references,
+                )
+            except (MemoryPreferenceConflict, MemoryPreferenceUnavailable) as exc:
+                raise AutomationError("context_revoked", "Previously supplied memory is no longer available.") from exc
 
     @staticmethod
     def destination(bundle: FrozenWorkflow, tool: str, arguments: dict[str, Any]) -> str | None:

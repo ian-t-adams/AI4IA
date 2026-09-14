@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -243,6 +242,7 @@ async def test_missing_or_invalid_usage_and_poisoned_metadata_stay_unknown(captu
 
 async def test_span_uses_post_admission_payload_not_request_draft(capture, monkeypatch):
     from ai4ia_api.gateway import client as module
+    from ai4ia_api.hard_quota.dispatch import DispatchLease
 
     exporter, _ = capture
     model, deployment = _model()
@@ -253,7 +253,7 @@ async def test_span_uses_post_admission_payload_not_request_draft(capture, monke
         for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
             if key in adapted:
                 adapted[key] = 13
-        yield SimpleNamespace(payload=adapted, reservation=None)
+        yield DispatchLease(payload=adapted)
 
     monkeypatch.setattr(module, "admitted_dispatch", admit)
     requests = []
