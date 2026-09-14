@@ -9,6 +9,7 @@ import { UserMenu } from "./UserMenu";
 import { useMediaQuery } from "./useMediaQuery";
 import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 import { EditableSessionTitle } from "./EditableSessionTitle";
+import { WorkflowApprovalInboxEntry } from "./WorkflowApprovalInbox";
 
 export function Sidebar({
   sessions,
@@ -230,6 +231,7 @@ export function Sidebar({
         })}
       </ul>
       <div className="sidebar-utility-region">
+        <WorkflowApprovalInboxEntry disabled={disabled} />
         <button
           type="button"
           className="sidebar-utility-action"

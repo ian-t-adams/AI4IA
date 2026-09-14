@@ -237,6 +237,12 @@ param durableTaskHubName string = ''
 @description('Upper bound in seconds on a single durable workflow run.')
 param durableWorkflowTimeoutSeconds int = 1800
 
+@description('Enable owner-reviewed exact-call durable workflow approvals. Default OFF.')
+param workflowApprovalsEnabled bool = false
+
+@description('Enable finite safe-only schedules on the existing durable worker. Default OFF.')
+param workflowSchedulingEnabled bool = false
+
 @description('Enable the agent-callable generate_image tool. Default OFF. When on (and an image blob account is provisioned) any agent may attach generate_image; produced images persist to dedicated blob storage and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 
@@ -692,6 +698,17 @@ var computeRawFilesEnv = (codeInterpreterRawFilesEnabled && documentUnderstandin
 // endpoint would fail startup validation, which is correct but a worse failure
 // than simply not claiming the feature is on. The task hub is the isolation
 // boundary, so both values must travel together.
+var workflowAutomationEnv = [
+  {
+    name: 'AI4IA_WORKFLOW_APPROVALS_ENABLED'
+    value: string(workflowApprovalsEnabled)
+  }
+  {
+    name: 'AI4IA_WORKFLOW_SCHEDULING_ENABLED'
+    value: string(workflowSchedulingEnabled)
+  }
+]
+
 var durableWorkflowsEnv = (durableWorkflowsEnabled && !empty(durableTaskEndpoint)) ? [
   {
     name: 'AI4IA_DURABLE_WORKFLOWS_ENABLED'
@@ -974,7 +991,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], openapiEnv, claudeEnv, toolApprovalEnv, groupPolicyEnv, hardQuotaEnv, sessionDeletionEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], openapiEnv, claudeEnv, toolApprovalEnv, groupPolicyEnv, hardQuotaEnv, sessionDeletionEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, workflowAutomationEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

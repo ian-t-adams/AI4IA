@@ -308,6 +308,49 @@ class CosmosMemoryStore:
             raise MemoryNotFoundError(memory_id)
         return record
 
+    async def validate_context_references(self, user_id, preference, references) -> None:
+        from azure.cosmos.exceptions import CosmosBatchOperationError, CosmosResourceNotFoundError
+
+        from .context_refs import MemoryReference
+
+        if len(references) > 128:
+            raise MemoryPreferenceUnavailable("Too many durable memory references.")
+        for reference in references:
+            for attempt in range(3):
+                try:
+                    raw_state = await self._container.read_item(item=_STATE_ID, partition_key=user_id)
+                    state = self._state_from_document(user_id, raw_state)
+                    raw = await self._container.read_item(item=reference.id, partition_key=user_id)
+                except CosmosResourceNotFoundError as exc:
+                    raise MemoryPreferenceConflict("Previously supplied memory is unavailable.") from exc
+                record = self._record_from_document(user_id, raw)
+                if (
+                    state.preference != preference or not state.preference.automatic_enabled
+                    or MemoryReference.from_record(record) != reference
+                    or any(cutoff.applies(record) for cutoff in state.cutoffs)
+                ):
+                    raise MemoryPreferenceConflict("Previously supplied memory is no longer current.")
+                if not state.etag or not record.etag:
+                    raise MemoryPreferenceUnavailable("Memory context lacks concurrency evidence.")
+                # A stale Session-consistency read is not permission. No-op CAS
+                # both existing records without changing text, version or dates.
+                operations = [
+                    ("replace", (_STATE_ID, {k: v for k, v in raw_state.items() if not k.startswith("_")}),
+                     {"if_match_etag": state.etag}),
+                    ("replace", (reference.id, {k: v for k, v in raw.items() if not k.startswith("_")}),
+                     {"if_match_etag": record.etag}),
+                ]
+                try:
+                    await self._container.execute_item_batch(
+                        partition_key=user_id,
+                        batch_operations=[(op, args, dict(options)) for op, args, options in operations],
+                    )
+                    break
+                except CosmosBatchOperationError as exc:
+                    code, _ = _batch_failure(exc)
+                    if code not in (404, 412) or attempt == 2:
+                        raise MemoryPreferenceUnavailable("Memory context could not be confirmed.") from exc
+
     async def list_memories(
         self, user_id: str, *, limit: int = 100
     ) -> list[MemoryRecord]:

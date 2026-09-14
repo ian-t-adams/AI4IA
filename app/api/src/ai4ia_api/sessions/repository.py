@@ -6,7 +6,10 @@ message operation first proves the parent session belongs to the user.
 """
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from ..workflows.automation_models import WorkflowCheckpoint
 
 from ..agents.consent import ToolConsentState
 from .deletion_models import (
@@ -29,6 +32,20 @@ class SessionConflictError(Exception):
 
 @runtime_checkable
 class SessionRepository(Protocol):
+    async def read_workflow_checkpoint(
+        self, user_id: str, session_id: str, checkpoint_id: str,
+    ) -> WorkflowCheckpoint | None: ...
+
+    async def claim_workflow_checkpoint(
+        self, user_id: str, user_message: Message, assistant: Message,
+        checkpoint: WorkflowCheckpoint,
+    ) -> bool: ...
+
+    async def replace_workflow_checkpoint(
+        self, user_id: str, checkpoint: WorkflowCheckpoint, assistant: Message, *,
+        expected: WorkflowCheckpoint, expected_assistant: Message,
+    ) -> bool: ...
+
     async def list_initializations(self, user_id: str, cursor: str = "") -> InitializationPage: ...
 
     async def check_deletion_ready(self) -> None: ...

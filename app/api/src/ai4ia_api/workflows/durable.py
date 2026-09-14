@@ -301,8 +301,16 @@ class DurableWorkflowService:
         worker.add_orchestrator(self._build_orchestrator())
         worker.add_activity(self._build_step_activity())
         worker.add_activity(self._build_persist_activity())
+        automation = getattr(self._state, "workflow_automation", None)
+        automation_host = None
+        if automation is not None:
+            from .durable_automation import register_automation
+
+            automation_host = register_automation(worker, self, automation)
         worker.start()
         self._worker = worker
+        if automation is not None:
+            automation.host = automation_host
         logger.info(
             "durable workflows started (taskHub=%s)",
             self._task_hub,
@@ -340,6 +348,8 @@ class DurableWorkflowService:
         *,
         user_id: str,
         run_id: str | None = None,
+        orchestrator_name: str = ORCHESTRATOR_NAME,
+        prevent_reuse: bool = False,
     ) -> str:
         """Start a durable run and return its id. Raises if not running.
 
@@ -357,10 +367,18 @@ class DurableWorkflowService:
         if not remainder or owner != user_id:
             raise ValueError("run_id must be owned by user_id")
         try:
+            options: dict[str, Any] = {}
+            if prevent_reuse:
+                from durabletask.internal import orchestrator_service_pb2
+
+                options["reuse_id_policy"] = orchestrator_service_pb2.OrchestrationIdReusePolicy(
+                    replaceableStatus=[],
+                )
             await self._client.schedule_new_orchestration(
-                ORCHESTRATOR_NAME,
+                orchestrator_name,
                 input=payload,
                 instance_id=instance_id,
+                **options,
             )
         except Exception as exc:
             code = _schedule_error_code(exc)
@@ -383,6 +401,15 @@ class DurableWorkflowService:
                     "Durable workflow acceptance is unknown."
                 ) from exc
         return instance_id
+
+    async def wake_automation(self, owner: str, run_id: str, revision: int) -> None:
+        if self._client is None:
+            raise DurableWorkflowsUnavailableError("Durable workflows are not running.")
+        if run_id.partition(_RUN_ID_SEPARATOR)[0] != owner or not 0 <= revision <= 2**53 - 1:
+            raise ValueError("Invalid workflow wake identity")
+        await self._client.raise_orchestration_event(
+            run_id, "workflow_control_v3", data={"revision": revision},
+        )
 
     async def get_status(self, run_id: str, *, user_id: str) -> DurableRunStatus | None:
         """Read a run's current state, or None when the id is unknown.

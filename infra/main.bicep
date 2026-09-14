@@ -187,6 +187,12 @@ param durableTaskSkuName string = 'Consumption'
 @description('Upper bound in seconds on how long a single durable workflow run may take before it is treated as stuck. Only used when enableDurableWorkflows is true.')
 param durableWorkflowTimeoutSeconds int = 1800
 
+@description('Enable exact-call resumable workflow approvals on the existing durable host. Default OFF; requires approved protocol-v1 session readiness and does not grant standing consent.')
+param workflowApprovalsEnabled bool = false
+
+@description('Enable finite safe-only workflow schedules on the existing durable host. Default OFF; requires workflowApprovalsEnabled and never supplies tool approval or a hard dollar cap.')
+param workflowSchedulingEnabled bool = false
+
 @description('Enable the agent-callable generate_image tool. Default OFF. When on, a dedicated image blob storage account is provisioned and any agent may attach generate_image; produced images persist durably and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 @description('Enable the agent-callable generate_video tool. Default OFF. When on, a videos container is provisioned on the shared generated-media account and any agent may attach generate_video; produced clips persist durably and serve through an authenticated endpoint.')
@@ -1042,6 +1048,8 @@ module api 'modules/api.bicep' = {
     durableTaskEndpoint: enableDurableWorkflows ? durabletask!.outputs.endpoint : ''
     durableTaskHubName: enableDurableWorkflows ? durabletask!.outputs.taskHubName : ''
     durableWorkflowTimeoutSeconds: durableWorkflowTimeoutSeconds
+    workflowApprovalsEnabled: workflowApprovalsEnabled
+    workflowSchedulingEnabled: workflowSchedulingEnabled
     // Explicit creation gates are independent of storage wiring. Enabled
     // deployed media must have durable storage; disabled media cannot fall back
     // to creating process-local artifacts.

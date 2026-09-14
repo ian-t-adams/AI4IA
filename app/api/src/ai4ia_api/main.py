@@ -107,6 +107,9 @@ from .workflows.service import WorkflowService
 from .routers import workflows as workflows_router
 from .routers import publications as publications_router
 from .routers import policy as policy_router
+from .routers import workflow_automation as workflow_automation_router
+from .workflows.automation_common import AutomationError
+from .workflows.automation_factory import build_workflow_automation, check_workflow_automation_ready
 from .routers.health import SessionStoreReadiness
 from .request_constraints import build_canary_dispatch_guard, build_evaluation_dispatch_guard
 from .realtime_canary import realtime_canary_dispatch_guard
@@ -412,6 +415,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # A start failure must not take the app down: every other surface still
         # works, and the run endpoint refuses `durable: true` with a clear 422
         # rather than accepting work nothing will execute.
+        app.state.workflow_automation = build_workflow_automation(app.state)
+        await check_workflow_automation_ready(app.state)
         app.state.durable_workflows = None
         if settings.durable_workflows_enabled:
             from .workflows.durable import DurableWorkflowService
@@ -498,6 +503,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(PublicationError)
     async def _publication_refused(_request: Request, exc: PublicationError):
         return error_response(status_code=exc.code, detail=exc.reason, code=exc.reason)
+
+    @app.exception_handler(AutomationError)
+    async def _automation_refused(_request: Request, exc: AutomationError):
+        return error_response(status_code=exc.status, detail=exc.detail, code=exc.code)
 
     @app.exception_handler(PolicyError)
     async def _policy_refused(_request: Request, exc: PolicyError):
@@ -621,6 +630,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(memories_router.router)
     app.include_router(official_mcp_servers_router.router)
     app.include_router(workflows_router.router)
+    app.include_router(workflow_automation_router.router)
     app.include_router(sessions_router.router)
     app.include_router(tools_router.router)
     app.include_router(chat_router.router)

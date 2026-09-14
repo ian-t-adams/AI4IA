@@ -138,6 +138,40 @@ class GroupPolicyPrerequisiteTests(unittest.TestCase):
                     self.assertIn(expected, err)
 
 
+class WorkflowAutomationPrerequisites(unittest.TestCase):
+    def test_default_off_values_are_reachable(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        self.assertEqual(
+            parameters["workflowApprovalsEnabled"]["value"],
+            "${AI4IA_WORKFLOW_APPROVALS_ENABLED=false}",
+        )
+        self.assertEqual(
+            parameters["workflowSchedulingEnabled"]["value"],
+            "${AI4IA_WORKFLOW_SCHEDULING_ENABLED=false}",
+        )
+
+    def test_each_prerequisite_has_a_reachable_allowed_control(self) -> None:
+        enabled = {
+            "workflowApprovalsEnabled": True, "workflowSchedulingEnabled": True,
+            "enableDurableWorkflows": True, "sessionDeletionEnabled": True,
+            "sessionDeletionRolloutId": "reviewed-workflow-test",
+            "durableWorkflowTimeoutSeconds": 1800,
+        }
+        cases = (
+            ({"workflowApprovalsEnabled": False}, "requires workflowApprovalsEnabled"),
+            ({"enableDurableWorkflows": False}, "requires the existing durable workflow host"),
+            ({"sessionDeletionEnabled": False}, "requires protocol-v1 session deletion readiness"),
+            ({"durableWorkflowTimeoutSeconds": 0}, "finite positive runtime"),
+        )
+        for denied, message in cases:
+            with self.subTest(denied=denied), tempfile.TemporaryDirectory() as tmp, _environment(**PROD_ENV):
+                code, _, err = _run(_write_parameters(tmp, {**enabled, **denied}))
+                self.assertEqual(code, 1, err)
+                self.assertIn(message, err)
+                code, _, err = _run(_write_parameters(tmp, enabled))
+                self.assertEqual(code, 0, err)
+
+
 class StagedRealtimeTests(unittest.TestCase):
     def test_ga_staging_and_selection_require_their_parent_gate(self) -> None:
         cases = (

@@ -132,11 +132,16 @@ def build_web_search_capability(
                 argument_key: echoed_argument, "note": fence_note, "truncated": True,
             })) + len(nonce) * 2 + 512
             async with lock:
+                if ctx is not None and ctx.turn_budgets is not None:
+                    used_calls = ctx.turn_budgets["web_calls"]
+                    used_chars = ctx.turn_budgets["web_chars"]
                 if used_calls >= MAX_WEB_SEARCHES_PER_TURN:
                     return {"error": "web search budget exhausted for this turn."}
                 if MAX_OUTPUT_CHARS_PER_TURN - used_chars < minimum_output + 512:
                     return {"error": "web search output budget exhausted for this turn."}
                 used_calls += 1
+                if ctx is not None and ctx.turn_budgets is not None:
+                    ctx.turn_budgets["web_calls"] = used_calls
                 try:
                     decision = await entitlements.check(user_id)
                     if not decision.allowed:
@@ -177,6 +182,8 @@ def build_web_search_capability(
                         if wait is not None:
                             pending["retry_after_seconds"] = wait
                         used_chars += len(json.dumps(pending))
+                        if ctx is not None and ctx.turn_budgets is not None:
+                            ctx.turn_budgets["web_chars"] = used_chars
                         return pending
                 result_key = "content" if name == BROWSE_TOOL_NAME else "results"
                 result_limit = min(results_cap, arguments.get("max_results", results_cap))
@@ -209,6 +216,8 @@ def build_web_search_capability(
                 output[result_key] = fenced
                 output["truncated"] = truncated
                 used_chars += len(json.dumps(output))
+                if ctx is not None and ctx.turn_budgets is not None:
+                    ctx.turn_budgets["web_chars"] = used_chars
                 return output
         return handler
 

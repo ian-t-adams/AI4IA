@@ -47,7 +47,10 @@ from ..agents.activity import persisted_trace
 from ..agents.capabilities import CapabilityBuilder, Handler
 from ..agents.consent import ConsentChecker, ToolConsentSummary
 from ..agents.receipt import ReceiptDraft
-from ..agents.runtime import AgentRunCancelled, AgentRunFailed, AgentRunResult, run_agent_turn
+from ..agents.runtime import (
+    AgentRunCancelled, AgentRunFailed, AgentRunPaused, AgentRunResult, run_agent_turn,
+)
+from ..agents.turn_checkpoint import TurnCheckpoint, TurnCheckpointController
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
@@ -135,6 +138,9 @@ class StepOutcome:
     result: WorkflowStepResult
     usage: TokenUsage = field(default_factory=TokenUsage.empty)
     fatal: bool = False
+    paused: bool = False
+    continuation: TurnCheckpoint | None = None
+    failure_code: str | None = None
 
 
 async def run_workflow_step(
@@ -159,6 +165,9 @@ async def run_workflow_step(
     model_id: str | None = None,
     pricing: PricingBook | None = None,
     publication_builder: WorkflowPublicationBuilder | None = None,
+    checkpoint: TurnCheckpointController | None = None,
+    invocation_approvals: frozenset[str] = frozenset(),
+    model_params: dict[str, Any] | None = None,
 ) -> StepOutcome:
     """Execute a single workflow step. Total: never raises.
 
@@ -285,6 +294,8 @@ async def run_workflow_step(
         # step. A clean original user input can retain injection-only ergonomics.
         untrusted_context=bool(previous),
         approval_sink=sink, consent_checker=consent_checker,
+        invocation_approvals=invocation_approvals,
+        turn_budgets={} if checkpoint is not None else None,
     )
     if tool_builder is not None:
         try:
@@ -311,7 +322,8 @@ async def run_workflow_step(
             ),
             prompt_messages=messages,
             tool_consent=tool_consent,
-            model_evidence=evidence,
+            model_evidence=run.model_evidence or evidence,
+            approvals_granted=len(invocation_approvals),
         )
         return WorkflowStepResult(
             agent=step.agent, ok=error is None, text=run.text, error=error,
@@ -336,14 +348,23 @@ async def run_workflow_step(
             registry=registry,
             executor=executor,
             ctx=ctx,
-            params=None,
+            params=model_params,
             max_iters=_STEP_MAX_ITERS,
             extra_tools=extra_tools,
             extra_handlers=extra_handlers,
             api=api,
             retain_failed_request=True,
             model_evidence=evidence,
+            checkpoint=checkpoint,
         ))
+    except AgentRunPaused as exc:
+        partial = finished(exc.partial, state="incomplete")
+        partial.ok = False
+        if partial.receipt is not None:
+            partial.receipt.partial = True
+        return StepOutcome(
+            result=partial, usage=exc.partial.usage, paused=True, continuation=exc.state,
+        )
     except AgentRunCancelled as exc:
         return StepOutcome(
             result=finished(
@@ -366,6 +387,7 @@ async def run_workflow_step(
         outcome.usage = TokenUsage.parse(None)
         return outcome
     except AgentRunFailed as exc:
+        from .automation_common import AutomationError
         if isinstance(exc.cause, ModelGatewayError):
             logger.warning(
                 "workflow '%s' step %d (agent=%s) gateway failed status=%d",
@@ -381,6 +403,7 @@ async def run_workflow_step(
             result=finished(exc.partial, error=err, state="error"),
             usage=exc.partial.usage,
             fatal=True,
+            failure_code=exc.cause.code if isinstance(exc.cause, AutomationError) else None,
         )
     except Exception:  # noqa: BLE001 — total runner: never propagate.
         logger.warning(

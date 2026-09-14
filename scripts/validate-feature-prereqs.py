@@ -212,6 +212,23 @@ def main(*, require_deployment_attestation: bool = False) -> int:
 
     app_environment = text(parameter_value(parameters, "appEnvironment", "dev")).lower()
     auth_provider = text(parameter_value(parameters, "apiAuthProvider", "dev")).lower()
+    approvals = truthy(parameter_value(parameters, "workflowApprovalsEnabled", False))
+    scheduling = truthy(parameter_value(parameters, "workflowSchedulingEnabled", False))
+    if scheduling and not approvals:
+        errors.append("workflowSchedulingEnabled=true requires workflowApprovalsEnabled=true.")
+    if approvals:
+        if not truthy(parameter_value(parameters, "enableDurableWorkflows", False)):
+            errors.append("workflowApprovalsEnabled=true requires the existing durable workflow host.")
+        if not truthy(parameter_value(parameters, "sessionDeletionEnabled", False)):
+            errors.append("workflowApprovalsEnabled=true requires protocol-v1 session deletion readiness.")
+        if app_environment != "local" and auth_provider != "entra":
+            errors.append("workflowApprovalsEnabled=true requires Entra authentication outside local.")
+        try:
+            timeout = int(text(parameter_value(parameters, "durableWorkflowTimeoutSeconds", 1800)))
+        except (ValueError, TypeError):
+            timeout = 0
+        if not 1 <= timeout <= 86400:
+            errors.append("Workflow automation requires a finite positive runtime of at most 86400 seconds.")
     if app_environment not in {"dev", "prod"}:
         errors.append("appEnvironment must be dev or prod.")
     if auth_provider not in {"dev", "entra"}:

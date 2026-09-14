@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ..agents.tool_exec import ToolContext
+from ..agents.tool_exec import ToolContext, take_turn_budget
 from .retrieval import DocumentRetrievalService
 
 FETCH_TOOL_NAME = "fetch_document"
@@ -91,14 +91,13 @@ def build_document_capability(
     }
 
     async def _handler(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        if budget["used"] >= MAX_FETCHES_PER_TURN:
-            return {"error": "document read budget exhausted for this turn."}
         document_id = str(args.get("document_id") or "").strip()
         if not document_id:
             return {"error": "document_id must be a non-empty string."}
         if allowed_document_ids is not None and document_id not in allowed_document_ids:
             return {"error": "document is not selected for this conversation."}
-        budget["used"] += 1
+        if not take_turn_budget(ctx, "document", MAX_FETCHES_PER_TURN, budget):
+            return {"error": "document read budget exhausted for this turn."}
         result = await service.fetch_document(
             user_id,
             document_id,
