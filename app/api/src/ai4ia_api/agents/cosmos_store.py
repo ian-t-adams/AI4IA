@@ -18,6 +18,10 @@ path. ``get`` returns ``None`` when the item/container is absent; ``list`` retur
 from __future__ import annotations
 
 from .user_agents import UserAgent
+from ..publishing.store import CosmosRecordStore, delete_definition, replace_definition
+from ..workflows.record_types import (
+    AGENT_DEFINITION_KIND, CONTROL_RECORD_PREFIX, DEFINITION_QUERY, is_definition,
+)
 
 
 class CosmosUserAgentStore:
@@ -29,6 +33,7 @@ class CosmosUserAgentStore:
         self._client = CosmosClient(endpoint, credential=self._credential)
         db = self._client.get_database_client(database)
         self._container = db.get_container_client("agents")
+        self.records = CosmosRecordStore(self._container)
 
     async def close(self) -> None:
         await self._client.close()
@@ -37,14 +42,19 @@ class CosmosUserAgentStore:
     async def list(self, user_id: str) -> list[UserAgent]:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
-        query = "SELECT * FROM c WHERE c.userId = @uid"
-        params = [{"name": "@uid", "value": user_id}]
+        query = DEFINITION_QUERY
+        params = [
+            {"name": "@uid", "value": user_id},
+            {"name": "@controlPrefix", "value": CONTROL_RECORD_PREFIX},
+            {"name": "@definitionKind", "value": AGENT_DEFINITION_KIND},
+        ]
         try:
             return [
                 UserAgent.model_validate(doc)
                 async for doc in self._container.query_items(
                     query=query, parameters=params, partition_key=user_id
                 )
+                if is_definition(doc, user_id=user_id, kind=AGENT_DEFINITION_KIND)
             ]
         except CosmosResourceNotFoundError:
             return []
@@ -56,6 +66,8 @@ class CosmosUserAgentStore:
             doc = await self._container.read_item(item=name, partition_key=user_id)
         except CosmosResourceNotFoundError:
             return None
+        if not is_definition(doc, user_id=user_id, kind=AGENT_DEFINITION_KIND, name=name):
+            return None
         agent = UserAgent.model_validate(doc)
         # Defense in depth: the partition already scopes to the user, but never
         # return a record whose denormalized owner doesn't match.
@@ -66,10 +78,20 @@ class CosmosUserAgentStore:
     async def put(self, agent: UserAgent) -> None:
         await self._container.upsert_item(agent.model_dump(mode="json"))
 
-    async def delete(self, user_id: str, name: str) -> None:
-        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+    async def create_if_absent(self, agent: UserAgent) -> bool:
+        return await replace_definition(
+            self.records, agent.model_dump(mode="json"), expected_revision=None, create=True,
+        )
 
-        try:
-            await self._container.delete_item(item=name, partition_key=user_id)
-        except CosmosResourceNotFoundError:
-            return None
+    async def replace_if_revision(self, agent: UserAgent, expected_revision: int) -> bool:
+        return await replace_definition(
+            self.records, agent.model_dump(mode="json"), expected_revision=expected_revision,
+        )
+
+    async def delete(self, user_id: str, name: str) -> None:
+        from .user_agents import AgentConflictError
+
+        if await self.get(user_id, name) is not None and not await delete_definition(
+            self.records, user_id, name,
+        ):
+            raise AgentConflictError("Agent changed before deletion; refresh and retry.")

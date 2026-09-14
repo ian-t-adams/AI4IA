@@ -224,12 +224,14 @@ class HttpxMcpConnector:
         max_bytes: int = _DEFAULT_MAX_BYTES,
         resolver: Resolver | None = None,
         hard_quota_enabled: bool = False,
+        group_policy_enabled: bool = False,
     ) -> None:
         self._client = client
         self._timeout_s = timeout_s
         self._max_bytes = max_bytes
         self._resolver = resolver
         self._hard_quota_enabled = hard_quota_enabled
+        self._group_policy_enabled = group_policy_enabled
         self._cache: OrderedDict[_CacheKey, _CacheEntry] = OrderedDict()
         self._cache_bytes = 0
         self._cache_generation = 0
@@ -508,6 +510,7 @@ class HttpxMcpConnector:
                 "protocolVersion": context.protocol_version.value,
             },
             required=self._hard_quota_enabled,
+            policy_required=self._group_policy_enabled,
         ) as admission:
             result = await self._perform_request(
                 client, endpoint, auth, context, "tools/call",
@@ -526,6 +529,7 @@ class HttpxMcpConnector:
                 "protocolVersion": context.protocol_version.value,
             },
             required=self._hard_quota_enabled,
+            policy_required=self._group_policy_enabled,
         ) as admission:
             result = await self._perform_request(
                 client, endpoint, auth, context, "resources/read",

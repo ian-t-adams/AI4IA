@@ -177,7 +177,31 @@ class EntitlementService:
         and is what the Code Interpreter capabilities call before each sandbox
         execution.
         """
-        ent = await self.get_effective(user_id)
+        from ..policy.context import current_binding
+
+        binding = current_binding()
+        policy_enabled = binding is not None and binding.service.enabled
+        if policy_enabled and binding is not None:
+            if binding.owner_id != user_id:
+                return EntitlementDecision(False, 403, "Policy owner mismatch.")
+            effective = await binding.resolve()
+            policy = binding.service.consumption_state(effective)
+            if not policy.allowed:
+                return EntitlementDecision(
+                    False, 503 if policy.outcome == "unavailable" else 403, policy.reason,
+                )
+            ent = effective.limits
+        else:
+            ent = await self.get_effective(user_id)
+        return await self.check_limits(
+            user_id, ent, scope=scope, failure_unavailable=policy_enabled,
+        )
+
+    async def check_limits(
+        self, user_id: str, ent: Entitlement, *, scope: EntitlementScope = "chat",
+        failure_unavailable: bool = False,
+    ) -> EntitlementDecision:
+        """Apply rolling soft limits without resolving identity or changing balances."""
 
         if ent.disabled:
             return EntitlementDecision(
@@ -195,6 +219,9 @@ class EntitlementService:
         try:
             return await self._check_budgets(user_id, ent, scope)
         except Exception:  # noqa: BLE001 - ledger failure fails OPEN (availability)
+            if failure_unavailable:
+                logger.warning("policy usage check unavailable (user=%s)", user_id)
+                return EntitlementDecision(False, 503, "Usage limits are temporarily unavailable.")
             logger.warning(
                 "entitlement budget check failed; allowing (user=%s)", user_id, exc_info=True
             )

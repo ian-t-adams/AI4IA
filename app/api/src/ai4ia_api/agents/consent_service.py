@@ -20,6 +20,7 @@ from .consent import (
     ConsentSnapshot,
     ConsentStatus,
     ToolConsentState,
+    ToolContractDescription,
     check_consent,
     contract_hash,
     tool_contract_hash,
@@ -30,6 +31,9 @@ from .mcp_skills import build_load_skill_definition
 from .synthetic_governance import synthetic_spec
 from .tool_exec import ToolContext, ToolExecutor
 from .tools import ToolRegistry
+from ..policy.context import current_binding
+from ..policy.models import PolicyDecision, PolicyError
+from ..request_constraints import tools_allowed
 
 _CREDENTIAL_FIELD = re.compile(
     r"(?:^|_)(?:key|secret|password|credential|credentials|connection_string|authorization|token)$",
@@ -147,21 +151,54 @@ async def _contracts(
     tool_names: Sequence[str],
     schemas: Sequence[dict[str, Any]],
 ) -> dict[str, str]:
+    return {
+        name: contract.digest for name, contract in (
+            await describe_contracts(
+                state, user_id=user_id, tool_names=tool_names, schemas=schemas,
+            )
+        ).items()
+    }
+
+
+async def describe_contracts(
+    state: Any, *, user_id: str, tool_names: Sequence[str],
+    schemas: Sequence[dict[str, Any]],
+    publication_metadata: bool = False,
+) -> dict[str, ToolContractDescription]:
     registry, executor, ctx = await execution_tools_for_state(
         state, user_id=user_id, tool_names=tool_names, ctx=ToolContext()
     )
     names = [ctx.tool_aliases.get(name, name) for name in tool_names]
-    result: dict[str, str] = {}
-    for schema in executor.schema_for(
-        names, registry=registry, ctx=ctx, consented_names=names,
-    ):
+    result: dict[str, ToolContractDescription] = {}
+    canonical = {alias: name for name, alias in ctx.tool_aliases.items()}
+    if publication_metadata:
+        # Reviewing a declaration is not execution authority. In particular,
+        # request-only denial and the reviewer's scopes must not erase metadata.
+        real_schemas = [
+            {"function": {
+                "name": name, "parameters": definition.parameters,
+                "description": definition.spec.description,
+            }}
+            for name in names
+            if (definition := executor.get(name)) is not None
+            and (spec := registry.get(name)) is not None
+            and spec.enabled and registry.is_allowlisted(name)
+        ]
+    else:
+        real_schemas = executor.schema_for(
+            names, registry=registry, ctx=ctx, consented_names=names,
+        )
+    for schema in real_schemas:
         fn = schema["function"]
-        definition = executor.get(fn["name"])
-        spec = registry.get(fn["name"])
+        name = fn.get("name")
+        if not isinstance(name, str):
+            continue
+        definition = executor.get(name)
+        spec = registry.get(name)
         if definition is not None and spec is not None:
-            result[fn["name"]] = tool_contract_hash(
-                spec, fn["parameters"], description=fn.get("description"),
-                metadata=definition.consent_metadata,
+            result[name] = ToolContractDescription(
+                spec, fn["parameters"], fn.get("description"), definition.consent_metadata,
+                canonical.get(name, name),
             )
     for schema in schemas:
         fn = schema.get("function") or {}
@@ -169,17 +206,20 @@ async def _contracts(
         if not isinstance(name, str):
             continue
         spec = synthetic_spec(name)
-        if spec is not None and spec.enabled and not spec.scopes:
-            result[name] = tool_contract_hash(
-                spec, fn.get("parameters") or {}, description=fn.get("description"),
+        if spec is not None and spec.enabled and (publication_metadata or not spec.scopes):
+            result[name] = ToolContractDescription(
+                spec, fn.get("parameters") or {}, fn.get("description"), {}, name,
             )
     return result
 
 
 async def _chat_schemas(
     state: Any, *, user_id: str, session: Session,
-    tool_names: Sequence[str], email: str | None,
+    tool_names: Sequence[str], email: str | None, include_attachments: bool = True,
+    publication_metadata: bool = False,
 ) -> list[dict[str, Any]]:
+    if not publication_metadata and not tools_allowed():
+        return []
     schemas, _ = capability_builder_for_state(
         state, user_id=user_id, session_id=session.id, email=email,
         allowed_document_ids=(
@@ -197,7 +237,7 @@ async def _chat_schemas(
         )
         schemas.extend(extra)
     analysis = getattr(state, "inline_attachment_analysis", None)
-    if analysis is not None:
+    if analysis is not None and include_attachments:
         documents = await state.session_repo.list_documents(user_id, session.id)
         attachments = [
             {"id": doc.id, "filename": doc.filename} for doc in documents if doc.rawRef
@@ -245,7 +285,9 @@ async def _chat_schemas(
         from ..docprocessing.capability import build_document_processing_capability
         from ..docprocessing.service import DocumentProcessingService
 
-        deployment = state.catalog.resolve_deployment(session.model)
+        deployment = state.catalog.resolve_deployment(
+            session.model, policy_filter=not publication_metadata,
+        )
         if deployment is not None:
             extra, _ = build_document_processing_capability(
                 processing_service=DocumentProcessingService(
@@ -270,6 +312,14 @@ async def session_snapshot(
     policy = await resolve_conversation_policy(
         state, user_id, session, explicit_agent=explicit_agent,
     )
+    publication = None
+    binding = current_binding()
+    if policy.agent is not None and policy.agent.sourceVersion is not None:
+        if binding is None or binding.owner_id != user_id:
+            raise PolicyError(PolicyDecision("unavailable", "reauthentication_required"))
+        publication = await state.publications.resolve_for_execution(
+            await binding.resolve(), policy.agent.sourceVersion, mode="chat",
+        )
     linked = {}
     if policy.agent is not None and policy.agent.links:
         catalog = await state.agent_service.catalog_for(user_id, state.agents)
@@ -278,21 +328,51 @@ async def session_snapshot(
         state, user_id=user_id, session=session, tool_names=policy.effective_tools,
         email=email,
     )
+    if (
+        publication is not None and binding is not None
+        and policy.agent is not None and policy.agent.links and tools_allowed()
+    ):
+        from .orchestration import build_delegate_capability
+
+        dependency_catalog = await state.publications.dependency_catalog(
+            await binding.resolve(), publication.version,
+        )
+        model = session.model or policy.agent.defaultModel or publication.version.modelBindings[0].modelId
+        deployment = state.catalog.resolve_deployment(model)
+        if deployment is None:
+            raise ValueError("Published model is unavailable.")
+        delegated, _, _ = build_delegate_capability(
+            orchestrator=policy.agent, composed=dependency_catalog, gateway=state.gateway,
+            registry=state.tool_registry, executor=state.tool_executor,
+            deployment=deployment.deploymentName,
+        )
+        schemas.extend(delegated)
     contracts = await _contracts(
         state, user_id=user_id, tool_names=policy.effective_tools, schemas=schemas,
     )
     official = getattr(state, "official_mcp_service", None)
-    if official is not None and (policy.agent is not None or policy.effective_tools):
+    if (
+        tools_allowed() and official is not None
+        and (policy.agent is not None or policy.effective_tools)
+        and (publication is None or publication.version.skillMode != "excluded")
+    ):
         skill = build_load_skill_definition(servers=await official.list_all(), reader=official)
         if skill is not None:
             contracts[skill.spec.name] = tool_contract_hash(
                 skill.spec, skill.parameters, metadata=skill.consent_metadata,
             )
+    subset = (
+        state.publications.validate_subset(
+            publication.version.profiles["chat"], "root", contracts,
+            empty_document_scope=session.libraryDocumentIds == [], tools_disabled=not tools_allowed(),
+        ) if publication is not None else None
+    )
     return ConsentSnapshot(
         selection_hash=contract_hash({
             "agent": policy.agent, "linked": linked, "tools": policy.effective_tools,
             "instructions": policy.instructions,
             "documents": session.libraryDocumentIds, "images": session.imagePreferences,
+            **({"publicationSubset": subset.model_dump(mode="json")} if subset is not None else {}),
         }),
         environment_hash=environment_hash(state),
         contracts=contracts,
@@ -337,6 +417,7 @@ def session_consent_checker(
             return ConsentDecision(consent_id=initial.grant.id, reason="consent_revoked")
         if (
             latest.agentName != live.agentName
+            or latest.agentVersion != live.agentVersion
             or latest.toolOverrides != live.toolOverrides
             or latest.systemPrompt != live.systemPrompt
             or latest.libraryDocumentIds != live.libraryDocumentIds
@@ -399,6 +480,15 @@ async def workflow_snapshot(
 ) -> ConsentSnapshot:
     contracts: dict[str, str] = {}
     agents: dict[str, Any] = {}
+    publication = None
+    subsets: list[Any] = []
+    binding = current_binding()
+    if getattr(workflow, "sourceVersion", None) is not None:
+        if binding is None or binding.owner_id != user_id:
+            raise PolicyError(PolicyDecision("unavailable", "reauthentication_required"))
+        publication = await state.publications.resolve_for_execution(
+            await binding.resolve(), workflow.sourceVersion, mode="workflow",
+        )
     builder = capability_builder_for_state(
         state, user_id=user_id, session_id=session.id, email=email,
         allowed_document_ids=(
@@ -406,19 +496,26 @@ async def workflow_snapshot(
         ),
         nonce="consent",
     )
-    for step in workflow.steps:
+    for index, step in enumerate(workflow.steps):
         agent = composed.get(step.agent)
         agents[step.agent] = agent
         if agent is None or not agent.enabled:
             continue
         names = list(dict.fromkeys([*agent.tools, *step.extraTools]))
         schemas, _ = builder(names)
-        contracts.update(await _contracts(
+        step_contracts = await _contracts(
             state, user_id=user_id, tool_names=names, schemas=schemas,
-        ))
+        )
+        contracts.update(step_contracts)
+        if publication is not None:
+            subsets.append(state.publications.validate_subset(
+                publication.version.profiles["workflow"], f"step:{index}", step_contracts,
+                empty_document_scope=session.libraryDocumentIds == [], tools_disabled=not tools_allowed(),
+            ).model_dump(mode="json"))
     return ConsentSnapshot(
         selection_hash=contract_hash({
             "workflow": workflow, "agents": agents, "documents": session.libraryDocumentIds,
+            **({"publicationSubsets": subsets} if publication is not None else {}),
         }),
         environment_hash=environment_hash(state),
         contracts=contracts,
@@ -455,7 +552,11 @@ def run_consent_checker(
             or consent.runId != run_id or consent.grant.scope != "run"
         ):
             return ConsentDecision(consent_id=consent_id, reason="consent_disabled")
-        current_workflow = await state.workflow_service.get(user_id, workflow.name)
+        current_workflow = (
+            await state.workflow_service.resolve_for(user_id, workflow.name)
+            if getattr(workflow, "sourceVersion", None) is not None
+            else await state.workflow_service.get(user_id, workflow.name)
+        )
         if current_workflow is None or not current_workflow.enabled:
             return ConsentDecision(consent_id=consent_id, reason="consent_changed")
         composed = await state.agent_service.catalog_for(user_id, state.agents)

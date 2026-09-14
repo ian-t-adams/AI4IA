@@ -1,12 +1,11 @@
 "use client";
 
 // Admin usage dashboard. Client component that:
-//  1. Confirms the viewer is an admin via /api/admin/whoami (cosmetic — the API
-//     still enforces require_admin, so a non-admin only ever sees the forbidden
-//     view and empty 403s).
-//  2. Loads every org-level rollup (summary / by-model / by-day / top-users /
-//     agents / user-agents / distributions) in ONE request, plus the best-effort
-//     resource, operations, security and web-search panels alongside it
+//  1. Reads exact server-owned admin operations from /api/admin/whoami. The API
+//     still re-authorizes every request; an admin badge never grants all panels.
+//  2. Uses ONE usage scan: the consolidated overview when entitlement reads are
+//     allowed, otherwise an unenriched summary. Separately authorized resource,
+//     operations, security and web-search panels load alongside it
 //     (Promise.allSettled) so one failing source never blanks the page.
 //
 // The single usage request is deliberate. This used to fan out to seven admin
@@ -27,13 +26,16 @@ import {
 import Link from "next/link";
 
 import { HelpTooltip } from "./HelpTooltip";
+import { secondaryBtn } from "./builderStyles";
 import {
+  type AdminDashboardAccess,
   type AdminUsageSummary,
   type AdminUserRow,
   type AgentUsageBucket,
   type DayUsageBucket,
   type DimensionBucket,
   type ModelUsageBucket,
+  type OfficialMcpHealthReport,
   type OperationalMetricsReport,
   type OperationalPanel,
   type ResourcePanel,
@@ -43,11 +45,14 @@ import {
   barScale,
   rankModelBuckets,
   canShowAdmin,
+  adminDashboardAccess,
   dimensionShare,
   entitlementLabel,
   errorLabel,
   fetchOverview,
   fetchResources,
+  fetchUsageSummary,
+  fetchOfficialMcpHealth,
   fetchOperations,
   fetchSecurityMetrics,
   fetchWebSearchHealth,
@@ -368,7 +373,9 @@ function UserCell({
   );
 }
 
-function TopUsers({ rows, identified }: { rows: AdminUserRow[]; identified: boolean }) {
+function TopUsers({ rows, identified, canManage }: {
+  rows: AdminUserRow[]; identified: boolean; canManage: boolean;
+}) {
   if (!rows.length) return <div style={muted}>No usage in this window.</div>;
   return (
     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85em" }}>
@@ -396,8 +403,12 @@ function TopUsers({ rows, identified }: { rows: AdminUserRow[]; identified: bool
               <span
                 title={
                   u.entitlement
-                    ? "Managed via PUT/DELETE /api/admin/entitlements/{userId}"
-                    : "No override — shipped unlimited default"
+                    ? canManage
+                      ? "Managed via PUT/DELETE /api/admin/entitlements/{userId}"
+                      : "Read-only entitlement. Changes require entitlement-write access."
+                    : u.entitlementKnown === false
+                      ? "Entitlement unavailable"
+                      : "No override — shipped unlimited default"
                 }
               >
                 {entitlementLabel(u.entitlement, u.entitlementKnown)}
@@ -687,8 +698,64 @@ function WebSearchHealthPanel({ report }: { report: WebSearchHealthReport | null
   );
 }
 
+type McpHealthState = { phase: "loading"; refreshing: boolean } | { phase: "ready"; report: OfficialMcpHealthReport } |
+  { phase: "error"; message: string };
+
+function OfficialMcpHealthPanel({ canRefresh }: { canRefresh: boolean }) {
+  const [state, setState] = useState<McpHealthState>({ phase: "loading", refreshing: false });
+  const active = useRef<AbortController | null>(null);
+  const load = useCallback((refresh: boolean, controller: AbortController) => {
+    active.current = controller;
+    return fetchOfficialMcpHealth(refresh, controller.signal).then(
+      (report) => { if (!controller.signal.aborted) setState({ phase: "ready", report }); },
+      (error: unknown) => {
+        if (!controller.signal.aborted) setState({ phase: "error", message: error instanceof Error ? error.message : "Inspection unavailable." });
+      },
+    ).finally(() => { if (active.current === controller) active.current = null; });
+  }, []);
+  useEffect(() => {
+    void load(false, new AbortController());
+    return () => { active.current?.abort(); };
+  }, [load]);
+  const inspect = (refresh: boolean) => {
+    if (active.current || (refresh && !canRefresh)) return;
+    setState({ phase: "loading", refreshing: refresh });
+    void load(refresh, new AbortController());
+  };
+  return <div>
+    <p style={muted}>Official catalog discovery for this replica. Inspection does not clear the discovery cache.</p>
+    {state.phase === "loading" && <p role="status" style={muted}>
+      {state.refreshing ? "Refreshing MCP discovery..." : "Inspecting official MCP..."}
+    </p>}
+    {state.phase === "error" && <p role="alert" style={{ ...muted, color: "var(--danger)" }}>{state.message}</p>}
+    {state.phase === "ready" && <>
+      <p style={muted}>Observed {formatWhen(state.report.generatedAt)}.</p>
+      {state.report.enabled === false ? <p style={muted}>Official MCP is disabled.</p> :
+        state.report.gatewayConfigured === false ? <p style={muted}>The official MCP gateway is not configured.</p> :
+          state.report.servers.length === 0 ? <p style={muted}>No official MCP servers in the catalog.</p> :
+            <ul style={{ paddingLeft: 20 }}>
+              {state.report.servers.map((server) => <li key={server.name}>
+                <strong>{server.displayName || server.name}</strong>: {server.toolCount} tools
+                <p style={muted}>Last connected: {formatWhen(server.lastConnectedAt)}</p>
+                {server.lastError && <p role="alert" style={{ ...muted, color: "var(--danger)" }}>{server.lastError}</p>}
+              </li>)}
+            </ul>}
+    </>}
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+      <button type="button" style={secondaryBtn} disabled={state.phase === "loading"} onClick={() => inspect(false)}>
+        {state.phase === "error" ? "Retry MCP inspection" : "Inspect official MCP"}
+      </button>
+      {canRefresh && <button type="button" style={secondaryBtn} disabled={state.phase === "loading"} onClick={() => inspect(true)}>
+        Refresh MCP discovery cache
+      </button>}
+    </div>
+    {canRefresh && <p style={muted}>Cache refresh is a separate explicit action, not an automatic retry after inspection fails.</p>}
+  </div>;
+}
+
 export function AdminDashboard() {
   const [phase, setPhase] = useState<"checking" | "forbidden" | "error" | "ready">("checking");
+  const [access, setAccess] = useState<AdminDashboardAccess>(() => adminDashboardAccess(null));
   const [accessAttempt, setAccessAttempt] = useState(0);
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(true);
@@ -696,17 +763,19 @@ export function AdminDashboard() {
   const [data, setData] = useState<DashboardData>(EMPTY);
   const loadGenerationRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
-  const identifyUsers = useSyncExternalStore(
+  const identifyPreference = useSyncExternalStore(
     subscribeIdentityPreference,
     readIdentityPreference,
     () => false,
   );
+  const identifyUsers = access.identify && identifyPreference;
 
   useEffect(() => {
     let cancelled = false;
     fetchWhoAmI()
       .then((who) => {
         if (cancelled) return;
+        setAccess(adminDashboardAccess(who));
         setPhase(canShowAdmin(who) ? "ready" : "forbidden");
       })
       .catch(() => {
@@ -737,63 +806,51 @@ export function AdminDashboard() {
     setLoading(true);
     setData(EMPTY);
     setError(null);
-    const [overview, resources, webSearch, operations, security] = await Promise.allSettled([
-      fetchOverview(windowDays, USER_PAGE_SIZE, 0, identify, controller.signal),
-      fetchResources(controller.signal),
-      fetchWebSearchHealth(controller.signal),
-      fetchOperations(60, controller.signal),
-      fetchSecurityMetrics(60, controller.signal),
-    ]);
+    const reads: { panels: readonly string[]; promise: Promise<Partial<DashboardData>> }[] = [];
+    if (access.overview) {
+      reads.push({
+        panels: USAGE_PANELS,
+        promise: fetchOverview(windowDays, USER_PAGE_SIZE, 0, identify && access.identify, controller.signal).then((report) => ({
+          summary: report.summary, byModel: report.byModel, byDay: report.byDay, byUser: report.byUser,
+          agents: report.agents, userAgents: report.userAgents, byRegion: report.byRegion, byDataZone: report.byDataZone,
+          byDeployment: report.byDeployment, byStatus: report.byStatus, truncated: report.truncated,
+          loadErrors: (report.partialSections ?? []).map((section) => `${OVERVIEW_SECTION_LABELS[section] ?? section}: unavailable`),
+        })),
+      });
+    } else if (access.usage) {
+      reads.push({ panels: ["usage summary"], promise: fetchUsageSummary(windowDays, controller.signal)
+        .then((summary) => ({ summary, truncated: summary.truncated })) });
+    }
+    if (access.resources) {
+      reads.push({ panels: ["resources"], promise: fetchResources(controller.signal).then((report) => ({ resources: report.panels })) });
+    }
+    if (access.webSearch) {
+      reads.push({ panels: ["web search"], promise: fetchWebSearchHealth(controller.signal).then((webSearch) => ({ webSearch })) });
+    }
+    if (access.operations) {
+      reads.push({ panels: ["operations"], promise: fetchOperations(60, controller.signal).then((operations) => ({ operations })) });
+    }
+    if (access.security) {
+      reads.push({ panels: ["security"], promise: fetchSecurityMetrics(60, controller.signal).then((security) => ({ security })) });
+    }
+    const results = await Promise.allSettled(reads.map((read) => read.promise));
     if (controller.signal.aborted || generation !== loadGenerationRef.current) return;
     const next: DashboardData = { ...EMPTY };
     const failures: string[] = [];
-    if (overview.status === "fulfilled") {
-      const report = overview.value;
-      next.summary = report.summary;
-      next.byModel = report.byModel;
-      next.byDay = report.byDay;
-      next.byUser = report.byUser;
-      next.agents = report.agents;
-      next.userAgents = report.userAgents;
-      next.byRegion = report.byRegion;
-      next.byDataZone = report.byDataZone;
-      next.byDeployment = report.byDeployment;
-      next.byStatus = report.byStatus;
-      next.truncated = report.truncated;
-      // The scan succeeded but a rollup did not: name only those panels, and
-      // keep every section that did resolve.
-      for (const section of report.partialSections ?? []) {
-        failures.push(`${OVERVIEW_SECTION_LABELS[section] ?? section}: unavailable`);
-      }
-    } else {
-      // One request now backs seven panels, so name all seven rather than
-      // reporting a single opaque failure the operator cannot map to the page.
-      const reason =
-        overview.reason instanceof Error ? overview.reason.message : "unavailable";
-      for (const panel of USAGE_PANELS) failures.push(`${panel}: ${reason}`);
-    }
-    if (resources.status === "fulfilled") next.resources = resources.value.panels;
-    if (webSearch.status === "fulfilled") next.webSearch = webSearch.value;
-    if (operations.status === "fulfilled") next.operations = operations.value;
-    if (security.status === "fulfilled") next.security = security.value;
-    const namedResults = [
-      ["resources", resources],
-      ["web search", webSearch],
-      ["operations", operations],
-      ["security", security],
-    ] as const;
-    for (const [name, result] of namedResults) {
-      if (result.status === "rejected") {
-        failures.push(
-          `${name}: ${result.reason instanceof Error ? result.reason.message : "unavailable"}`,
-        );
+    for (const [index, result] of results.entries()) {
+      if (result.status === "fulfilled") {
+        Object.assign(next, result.value);
+        failures.push(...(result.value.loadErrors ?? []));
+      } else {
+        const reason = result.reason instanceof Error ? result.reason.message : "unavailable";
+        for (const panel of reads[index].panels) failures.push(`${panel}: ${reason}`);
       }
     }
     next.loadErrors = failures;
     if (next.loadErrors.length) setError("Some admin data sources failed to load.");
     setData(next);
     setLoading(false);
-  }, []);
+  }, [access]);
 
   useEffect(() => {
     if (phase !== "ready") return;
@@ -859,8 +916,8 @@ export function AdminDashboard() {
   return (
     <Shell>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-        <h1 style={{ fontSize: "1.3em", margin: 0, flex: 1 }}>Usage dashboard</h1>
-        <span style={{ ...muted, display: "flex", alignItems: "center", gap: 4 }}>
+        <h1 style={{ fontSize: "1.3em", margin: 0, flex: 1 }}>{access.usage ? "Usage dashboard" : "Admin dashboard"}</h1>
+        {access.identify && <span style={{ ...muted, display: "flex", alignItems: "center", gap: 4 }}>
           <input
             type="checkbox"
             id="admin-identify-users"
@@ -875,7 +932,8 @@ export function AdminDashboard() {
             which is safer for demos, screen-shares, or recordings. This
             preference is remembered on this device only.
           </HelpTooltip>
-        </span>
+        </span>}
+        {access.usage && <>
         <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <label style={muted} htmlFor="admin-window">
             Window
@@ -905,6 +963,7 @@ export function AdminDashboard() {
             </option>
           ))}
         </select>
+        </>}
         <Link href="/" style={{ ...muted, color: "var(--accent)", textDecoration: "none" }}>
           ← Chat
         </Link>
@@ -932,14 +991,14 @@ export function AdminDashboard() {
         <div
           role="status"
           aria-live="polite"
-          aria-label={`Loading dashboard data for the last ${days} days`}
+          aria-label={access.usage ? `Loading dashboard data for the last ${days} days` : "Loading authorized dashboard panels"}
           style={{ ...card, ...muted }}
         >
-          Loading dashboard data for the last {days} days…
+          {access.usage ? `Loading dashboard data for the last ${days} days…` : "Loading authorized dashboard panels..."}
         </div>
       ) : (
       <>
-      <div
+      {access.usage && <div
         style={{
           display: "grid",
           gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
@@ -997,9 +1056,15 @@ export function AdminDashboard() {
           label="Models / agents"
           value={s ? `${s.distinctModels} / ${s.distinctAgents}` : "—"}
         />
-      </div>
+      </div>}
+
+      {access.usage && !access.overview && <p style={muted}>
+        Showing unenriched usage totals. The consolidated breakdowns and entitlement-enriched user rows require
+        {" "}<code>admin.entitlements.read</code> in addition to usage access.
+      </p>}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 20 }}>
+        {access.overview && <>
         <section style={card}>
           <h2 style={sectionTitle}>Top models by tokens and cost</h2>
           <ModelBars items={data.byModel} />
@@ -1012,7 +1077,7 @@ export function AdminDashboard() {
 
         <section style={card}>
           <h2 style={sectionTitle}>Top users</h2>
-          <TopUsers rows={data.byUser} identified={identifyUsers} />
+          <TopUsers rows={data.byUser} identified={identifyUsers} canManage={access.entitlementsWrite} />
         </section>
 
         <section style={card}>
@@ -1044,40 +1109,47 @@ export function AdminDashboard() {
           <h2 style={sectionTitle}>Request status mix</h2>
           <DimBars items={data.byStatus} emptyLabel="No requests in this window." labelOf={statusLabel} />
         </section>
+        </>}
 
-        <section style={card}>
+        {access.resources && <section style={card}>
           <h2 style={sectionTitle}>Platform resources</h2>
           <p style={{ ...muted, margin: "-4px 0 12px" }}>
             Live Azure Monitor values for the last hour. Unavailable or — means the
             source is not configured, fresh, or reporting; it never means zero.
           </p>
           <ResourcePanels panels={data.resources} />
-        </section>
+        </section>}
 
-        <section style={card}>
+        {access.operations && <section style={card}>
           <h2 style={sectionTitle}>Operations and latency</h2>
           <OperationalPanels
             report={data.operations}
             emptyLabel="Operations telemetry is unavailable."
           />
-        </section>
+        </section>}
 
-        <section style={card}>
+        {access.security && <section style={card}>
           <h2 style={sectionTitle}>Security and governance blocks</h2>
           <OperationalPanels
             report={data.security}
             emptyLabel="Security telemetry is unavailable."
           />
-        </section>
+        </section>}
 
-        <section style={card}>
+        {access.webSearch && <section style={card}>
           <h2 style={sectionTitle}>Web search health</h2>
           <p style={{ ...muted, margin: "-4px 0 12px" }}>
             Diagnoses the fail-soft web-search path. Counters are per-replica and in-memory
             (reset on restart); the durable, cross-replica view is App Insights.
           </p>
           <WebSearchHealthPanel report={data.webSearch} />
-        </section>
+        </section>}
+        {access.officialMcp && <section style={card}>
+          <h2 style={sectionTitle}>Official MCP discovery</h2>
+          <OfficialMcpHealthPanel canRefresh={access.refreshOfficialMcp} />
+        </section>}
+        {!access.usage && !access.resources && !access.operations && !access.security && !access.webSearch && !access.officialMcp &&
+          <p style={muted}>No dashboard read panels are available for your admin operations.</p>}
       </div>
       </>
       )}

@@ -38,6 +38,7 @@ import time
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Protocol
 from urllib.parse import quote
@@ -51,17 +52,33 @@ from starlette.websockets import WebSocketDisconnect
 from ..agents.agent_catalog import AgentSpec
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
+from ..agents.consent import tool_contract_hash
 from ..auth.base import AuthCredentials, AuthError, AuthenticatedUser
 from ..catalog import DeploymentOption, ModelCatalog
 from ..config import Environment, GatewayAuthMode, Settings
 from ..conversations.policy import resolve_conversation_policy
 from ..logging_setup import emit_custom_event, emit_security_block, new_correlation_id, set_correlation_id
+from ..realtime_canary import (
+    SETUP_INPUT, SETUP_MAX_SECONDS, RealtimeSetup, RealtimeSetupRejected,
+    current_realtime_setup, realtime_setup_scope,
+)
 from ..realtime_protocol import (
     RealtimeProtocol,
     rewrite_ga_upstream_frame,
     rewrite_openai_client_frame,
 )
 from ..sessions.repository import SessionNotFoundError
+from ..sessions.models import Message, MessageRole, MessageSource, MessageStatus
+from ..policy.context import bind_authenticated, clear_policy_context, require_policy
+from ..policy.dispatch import authorize_dispatch
+from ..policy.models import PolicyError, PolicyRequest
+from ..publishing.execution import bind_execution, prepare_execution, publication_evidence
+from ..publishing.models import PublicationError
+from ..publishing.refs import AssetVersionRef
+from ..receipts import (
+    ReceiptRuntime, ReceiptToolCall, build_receipt, enforce_receipt_budget, json_payload,
+    safe_tool_label,
+)
 from ..voice_provider_catalog import (
     AZURE_OPENAI_PROVIDER_ID,
     SPEECH_VOICE_LIVE_PROVIDER_ID,
@@ -964,6 +981,9 @@ class ToolBridge:
     tool_choice: str = "auto"
     instructions: str | None = None
     instructions_authoritative: bool = False
+    source_version: AssetVersionRef | None = None
+    calls: list[ReceiptToolCall] = field(default_factory=list)
+    call_count: int = 0
 
     @property
     def enabled(self) -> bool:
@@ -991,6 +1011,7 @@ class ToolBridge:
     async def _run(self, call: RealtimeFunctionCall) -> str:
         if call.name not in {tool["name"] for tool in self.tools}:
             logger.info("voice-live rejected a tool outside the session contract")
+            self._record_call(ReceiptToolCall(tool=call.name, outcome="denied", detail="not_offered"))
             return _tool_error("tool is not permitted in this live session")
         # Authorize through the SAME governance as chat. Built-ins are ``safe`` with
         # no scopes, but a denied/unknown tool must still fail closed to a structured
@@ -1004,16 +1025,21 @@ class ToolBridge:
         if not decision.allowed:
             reason = decision.reason.value if decision.reason else "denied"
             logger.info("voice-live tool '%s' denied (%s)", call.name, reason)
+            self._record_call(ReceiptToolCall(tool=call.name, outcome="denied", detail=reason))
             return _tool_error(f"tool '{call.name}' is not permitted")
         try:
             args = json.loads(call.arguments) if call.arguments.strip() else {}
             if not isinstance(args, dict):
                 raise ValueError("arguments must be a JSON object")
         except (ValueError, TypeError) as exc:
+            self._record_call(ReceiptToolCall(tool=call.name, outcome="error", detail="validation_error"))
             return _tool_error(f"invalid arguments: {exc}")
         try:
             result = await self.executor.execute(call.name, args, self.ctx)
         except Exception as exc:  # noqa: BLE001 - any tool failure -> structured error
+            self._record_call(ReceiptToolCall(
+                tool=call.name, outcome="error", detail="execution_error", arguments=json_payload(args),
+            ))
             exception_class, _ = _safe_exception_parts(exc)
             logger.info(
                 "voice-live tool '%s' failed (%s)",
@@ -1021,7 +1047,16 @@ class ToolBridge:
                 exception_class or "Exception",
             )
             return _tool_error(str(exc))
+        self._record_call(ReceiptToolCall(
+            tool=call.name, outcome="result", arguments=json_payload(args),
+            result=json_payload(result), approval="not_required", callId=call.call_id,
+        ))
         return _tool_output(result)
+
+    def _record_call(self, call: ReceiptToolCall) -> None:
+        self.call_count += 1
+        if len(self.calls) < 16:
+            self.calls.append(call.model_copy(update={"tool": safe_tool_label(call.tool)}))
 
 
 def build_tool_bridge(
@@ -1081,11 +1116,14 @@ async def resolve_live_agent(state, user, agent_name: str) -> AgentSpec | None:
     OPEN to the generic assistant rather than breaking the session.
     """
     try:
-        composed = await state.agent_service.catalog_for(user.internal_user_id, state.agents)
+        spec = await state.agent_service.resolve_for(
+            user.internal_user_id, agent_name, state.agents, mode="voice",
+        )
+    except (PublicationError, PolicyError):
+        raise
     except Exception:  # noqa: BLE001 - agent resolution must never break a live session
         logger.warning("voice-live agent resolution failed; using generic", exc_info=True)
         return None
-    spec = composed.get(agent_name)
     if spec is None or not spec.enabled:
         return None
     return spec
@@ -1115,7 +1153,7 @@ async def build_session_bridge(
     """
     if session is not None:
         policy = await resolve_conversation_policy(
-            state, user.internal_user_id, session
+            state, user.internal_user_id, session, mode="voice",
         )
         bridge = build_tool_bridge(
             state,
@@ -1126,11 +1164,12 @@ async def build_session_bridge(
             tools_requested=True,
         )
         bridge.instructions_authoritative = True
+        bridge.source_version = policy.agent.sourceVersion if policy.agent is not None else None
         return bridge
     if agent_name:
         spec = await resolve_live_agent(state, user, agent_name)
         if spec is not None:
-            return build_tool_bridge(
+            bridge = build_tool_bridge(
                 state,
                 settings,
                 correlation_id,
@@ -1138,6 +1177,8 @@ async def build_session_bridge(
                 instructions=spec.systemPrompt,
                 tools_requested=tools_requested,
             )
+            bridge.source_version = spec.sourceVersion
+            return bridge
     return build_tool_bridge(
         state, settings, correlation_id, tools_requested=tools_requested
     )
@@ -1416,6 +1457,11 @@ def _client_termination_from_exception(exc: BaseException) -> _RelayTermination:
     )
 
 
+_voice_policy: ContextVar[Callable[[], Awaitable[None]] | None] = ContextVar(
+    "voice_model_policy", default=None,
+)
+
+
 async def _send_upstream(
     upstream: UpstreamConnection,
     lock: anyio.Lock,
@@ -1431,6 +1477,17 @@ async def _send_upstream(
     only the client pump writes then.
     """
     async with lock:
+        event_type = None
+        if text is not None:
+            event_type, _ = inspect_realtime_text_frame(text, include_protocol_error=False)
+        guard = _voice_policy.get()
+        if guard is not None and event_type not in {
+            "response.cancel", "conversation.item.truncate", "input_audio_buffer.clear",
+        }:
+            await guard()
+        setup = current_realtime_setup()
+        if setup is not None:
+            await setup.before_send(text=text, data=data)
         if text is not None:
             await upstream.send_text(text)
         elif data is not None:
@@ -1463,6 +1520,9 @@ async def _pump_client_to_upstream(
                 return
             text = message.get("text")
             if text is not None:
+                setup = current_realtime_setup()
+                if setup is not None:
+                    setup.client_frame(text)
                 event_type, _ = inspect_realtime_text_frame(
                     text, include_protocol_error=False
                 )
@@ -1526,6 +1586,10 @@ async def _pump_upstream_to_client(
                 )
                 return
             if msg.kind == "text" and msg.text is not None:
+                setup = current_realtime_setup()
+                setup_complete = False
+                if setup is not None:
+                    setup_complete = await setup.server_frame(text=msg.text, data=None)
                 event_type, protocol_error = inspect_realtime_text_frame(
                     msg.text, include_protocol_error=True
                 )
@@ -1539,6 +1603,9 @@ async def _pump_upstream_to_client(
                 except (WebSocketDisconnect, RuntimeError) as exc:
                     state.stop(_client_termination_from_exception(exc))
                     return
+                if setup_complete:
+                    state.stop(_RelayTermination(status="complete", source_event="setup_complete"))
+                    return
                 # Governed tool calling: a function-call event is executed in-process
                 # and its result returned upstream. No-op (and no JSON parse) for
                 # every other frame, and entirely skipped when tools are disabled.
@@ -1546,6 +1613,9 @@ async def _pump_upstream_to_client(
                     for frame in await bridge.handle_upstream_frame(msg.text):
                         await _send_upstream(upstream, lock, text=frame)
             elif msg.kind == "binary" and msg.data is not None:
+                setup = current_realtime_setup()
+                if setup is not None:
+                    await setup.server_frame(text=None, data=msg.data)
                 state.upstream_stats.observe(text=False)
                 try:
                     await client_ws.send_bytes(msg.data)
@@ -1577,6 +1647,8 @@ async def relay(
     """Pump frames both ways and return a content-free, typed terminal outcome."""
 
     send_lock = anyio.Lock()
+    if current_realtime_setup() is not None:
+        max_seconds = min(max_seconds or SETUP_MAX_SECONDS, SETUP_MAX_SECONDS)
     rewrite = rewrite_client_frame or bridge.rewrite_client_frame
     state = _RelayState(stopped=anyio.Event())
 
@@ -1829,9 +1901,57 @@ async def _finalize_relay(
     await _deny(websocket, close_code)
 
 
+async def _realtime_setup_for_actor(
+    state, user: AuthenticatedUser, resolution: LiveVoiceProviderResolution,
+    query, bridge: ToolBridge, url: str,
+    rewrite: Callable[[str], str | None],
+) -> RealtimeSetup | None:
+    from ..policy.context import current_binding
+
+    policy = getattr(state, "policy", None)
+    if policy is None:
+        return None
+    binding = current_binding()
+    profile = (
+        binding.restricted_profile if binding is not None else None
+    ) or policy.restricted_profile(user.internal_user_id, cached=True)
+    if profile is None:
+        return None
+    if (
+        profile != "realtime-setup-canary" or resolution.provider.id != AZURE_OPENAI_PROVIDER_ID
+        or resolution.protocol != "ga" or resolution.deployment is None
+        or any(name in query for name in ("agent", "session", "tools"))
+        or bridge.enabled
+    ):
+        raise RealtimeSetupRejected()
+    probe = getattr(state, "realtime_canary_policy_probe", None)
+    if not callable(probe) or not callable(getattr(state, "realtime_canary_dispatch_guard", None)):
+        raise RealtimeSetupRejected()
+    expected = rewrite(SETUP_INPUT)
+    if expected is None:
+        raise RealtimeSetupRejected()
+
+    async def current_authority() -> bool:
+        settings = state.settings
+        if not settings.realtime_enabled or settings.realtime_protocol.value != "ga":
+            return False
+        decision = await state.realtime_canary_policy_probe(
+            user, resolution.model_id, resolution.deployment,
+        )
+        return decision.outcome == "allow"
+
+    setup = RealtimeSetup(
+        user.internal_user_id, resolution.deployment.deploymentName, url, expected, current_authority,
+    )
+    await setup.check_current()
+    return setup
+
+
 @router.websocket("/api/voice/live")
 async def voice_live(websocket: WebSocket) -> None:
     clear_admission_owner()
+    clear_policy_context()
+    _voice_policy.set(None)
     state = websocket.app.state
     settings: Settings = state.settings
 
@@ -1865,6 +1985,9 @@ async def voice_live(websocket: WebSocket) -> None:
     admission = getattr(state, "hard_quota", None)
     if admission is not None:
         set_admission_owner(admission, user.internal_user_id)
+    policy_service = getattr(state, "policy", None)
+    if policy_service is not None:
+        bind_authenticated(policy_service, user)
 
     session = None
     session_id = (websocket.query_params.get("session") or "").strip()
@@ -1901,7 +2024,10 @@ async def voice_live(websocket: WebSocket) -> None:
         return
 
     # Handshake complete: echo the auth marker as the selected subprotocol.
-    await websocket.accept(subprotocol=auth.marker)
+    await websocket.accept(
+        subprotocol=auth.marker,
+        headers=[(b"x-ai4ia-realtime-protocol", provider_resolution.protocol.encode("ascii"))],
+    )
 
     correlation_id = new_correlation_id()
     set_correlation_id(correlation_id)
@@ -1920,15 +2046,55 @@ async def voice_live(websocket: WebSocket) -> None:
     # Agent-aware live voice: when the browser names an agent (?agent=), bind that
     # agent's persona + tool allowlist into the session (server-authoritative). The
     # ?tools= opt-in gates tool advertisement per session (default OFF).
-    bridge = await build_session_bridge(
-        state,
-        settings,
-        correlation_id,
-        user=user,
-        agent_name=None if session is not None else websocket.query_params.get("agent"),
-        session=session,
-        tools_requested=parse_tools_opt_in(websocket.query_params.get("tools")),
-    )
+    try:
+        bridge = await build_session_bridge(
+            state, settings, correlation_id, user=user,
+            agent_name=None if session is not None else websocket.query_params.get("agent"),
+            session=session,
+            tools_requested=parse_tools_opt_in(websocket.query_params.get("tools")),
+        )
+    except (PublicationError, PolicyError):
+        await _deny(websocket, WS_POLICY_VIOLATION, security_reason="publication_unavailable")
+        return
+    publication = None
+    if bridge.source_version is not None:
+        if session is None or provider_resolution.deployment is None:
+            await _deny(websocket, WS_POLICY_VIOLATION, security_reason="publication_scope_required")
+            return
+        try:
+            publication = await prepare_execution(
+                state, bridge.source_version, mode="voice", model_id=provider_resolution.model_id,
+                deployment=provider_resolution.deployment, session=session,
+            )
+            bind_execution(publication)
+            contracts = {}
+            for offered in bridge.tools:
+                name = offered["name"]
+                definition, spec = bridge.executor.get(name), bridge.registry.get(name)
+                if definition is None or spec is None:
+                    raise PublicationError("publication_tool_unavailable")
+                contracts[name] = tool_contract_hash(
+                    spec, offered.get("parameters") or {}, description=offered.get("description"),
+                    metadata=definition.consent_metadata,
+                )
+            await publication.observe(contracts, [tool["name"] for tool in bridge.tools])
+        except (PublicationError, PolicyError):
+            await _deny(websocket, WS_POLICY_VIOLATION, security_reason="publication_unavailable")
+            return
+
+    async def check_voice_policy() -> None:
+        if provider_resolution.deployment is not None:
+            await require_policy(PolicyRequest(
+                "model.invoke", model_id=provider_resolution.model_id,
+                deployment=provider_resolution.deployment,
+            ))
+        else:
+            await authorize_dispatch(
+                "realtime", deployment=None,
+                required=bool(policy_service is not None and policy_service.enabled),
+            )
+
+    _voice_policy.set(check_voice_policy)
 
     def rewrite_client_frame(frame: str) -> str | None:
         provider_frame = provider_resolution.rewrite_client_frame(frame)
@@ -1939,14 +2105,34 @@ async def voice_live(websocket: WebSocket) -> None:
             return None
         return bridge.rewrite_client_frame(safe_frame)
 
-    async def run_relay() -> RelayOutcome:
+    try:
+        setup = await _realtime_setup_for_actor(
+            state, user, provider_resolution, websocket.query_params,
+            bridge, url, rewrite_client_frame,
+        )
+    except RealtimeSetupRejected:
+        await _deny(websocket, WS_POLICY_VIOLATION, security_reason="canary_policy_denied")
+        return
+    open_payload = {"operation": "session_open", "endpoint": url}
+    if setup is not None:
+        open_payload.update({"protocol": "ga", "provider": AZURE_OPENAI_PROVIDER_ID})
+    connected = False
+
+    async def dispatch_relay() -> RelayOutcome:
+        nonlocal connected
         async with admitted_dispatch(
-            "realtime", {"operation": "session_open", "endpoint": url},
+            "realtime", open_payload,
+            deployment=(
+                provider_resolution.deployment.deploymentName
+                if provider_resolution.deployment is not None else None
+            ),
             required=settings.hard_quota_enabled,
+            policy_required=settings.group_policy_enabled,
         ) as quota:
             async with connector.connect(
                 url=url, headers=headers, timeout=settings.realtime_timeout_seconds
             ) as upstream:
+                connected = True
                 outcome = await relay(
                     websocket, upstream, max_seconds=settings.realtime_max_session_seconds,
                     bridge=bridge, rewrite_client_frame=rewrite_client_frame,
@@ -1955,6 +2141,18 @@ async def voice_live(websocket: WebSocket) -> None:
                 if outcome.status == "complete":
                     quota.report()
                 return outcome
+
+    async def run_relay() -> RelayOutcome:
+        if setup is None:
+            return await dispatch_relay()
+        remaining = setup.deadline - setup.clock()
+        if remaining <= 0:
+            raise RealtimeSetupRejected()
+        # The limit includes policy admission and connection establishment,
+        # not a new full window after a slow handshake. Final accounting and
+        # socket close remain outside this processing deadline.
+        with anyio.fail_after(remaining):
+            return await dispatch_relay()
 
     async def finalize_relay(outcome: RelayOutcome) -> None:
         await _finalize_relay(
@@ -1965,8 +2163,34 @@ async def voice_live(websocket: WebSocket) -> None:
             resolution=provider_resolution,
             outcome=outcome,
         )
+        if publication is not None and session is not None:
+            runtime = ReceiptRuntime(
+                modelId=provider_resolution.model_id, deployment=provider_resolution.target_name,
+                api=provider_resolution.protocol, agent=session.agentName,
+                publication=publication_evidence(),
+            )
+            receipt = build_receipt(
+                runtime=runtime, correlation_id=correlation_id,
+                calls=bridge.calls, usage=_session_usage() if connected else TokenUsage.empty(),
+                offered=[{"type": "function", "function": tool} for tool in bridge.tools],
+                status="error" if outcome.status == "error" else "cancelled" if outcome.status == "cancelled" else "complete",
+                partial=outcome.status != "complete",
+                notes=[
+                    "voice_usage_not_recorded", "voice_model_parameters_not_recorded",
+                    *(["voice_not_started"] if not connected else []),
+                ],
+            )
+            receipt.toolCallCount = bridge.call_count
+            await state.session_repo.add_message(user.internal_user_id, Message(
+                sessionId=session.id, userId=user.internal_user_id, role=MessageRole.assistant,
+                source=MessageSource.voice, fromCommand=True,
+                content="Published voice session ended.", agent=session.agentName,
+                status=MessageStatus.error if outcome.status == "error" else MessageStatus.complete,
+                executionReceipt=enforce_receipt_budget(receipt),
+            ))
 
-    await _run_relay_with_finalization(
-        run_relay=run_relay,
-        finalize_relay=finalize_relay,
-    )
+    with realtime_setup_scope(setup):
+        await _run_relay_with_finalization(
+            run_relay=run_relay,
+            finalize_relay=finalize_relay,
+        )

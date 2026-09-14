@@ -42,6 +42,8 @@ feature posture.
 | Private tool catalog (API Center) | admin/IaC only (no app-runtime env) | none | `enablePrivateToolCatalog` | Requires `enableOfficialMcp`; IaC registers each official MCP server with an APIM-fronted deployment. Preview. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
 | Web IQ search tools | `AI4IA_WEB_SEARCH_ENABLED` | none | `webSearchEnabled` | Web IQ API key or Entra managed identity outside local |
 | Session/run tool auto-approval | `AI4IA_TOOL_AUTO_APPROVE_ENABLED` | availability read from API | `toolAutoApproveEnabled` | Default `false`; explicit user consent plus Entra auth and Cosmos outside local. No new Azure resources. |
+| Group policy | `AI4IA_GROUP_POLICY_ENABLED`, `AI4IA_GROUP_POLICY_JSON` | current capabilities from API | `groupPolicyEnabled`, `groupPolicyJson` | Default off/unconfigured; bounded operator mapping, validated Entra claims, explicit restrictive defaults. No Graph permissions or membership queries. |
+| Reviewed agent/workflow publishing | `AI4IA_ASSET_PUBLISHING_ENABLED` | availability from API | `assetPublishingEnabled` | Default off; group policy, Entra, one tenant, durable Cosmos outside local, explicit owner submission and independent review. |
 | Resumable conversation deletion | `AI4IA_SESSION_DELETION_ENABLED` | owner deletion status / explicit resume | `sessionDeletionEnabled`, `sessionDeletionRolloutId` | Default `false`; new conversations only, approved rollout record selected by `AI4IA_SESSION_DELETION_ROLLOUT_ID`, Entra + single-write-region Cosmos + no-TTL layout. No background cleanup or automatic existing-record enrollment. |
 | Admin resource panels | `AI4IA_RESOURCE_METRICS_ENABLED` + resource ids | admin dashboard | resource-id env from modules | Monitoring Reader and ARM resource ids |
 | Proxy application profiles | proxy runtime only | none | `proxyProfilesEnabled` | Secret-mounted minimal projection **and verified identity-aware app header**; validator blocks enablement with shared-key ingress |
@@ -200,6 +202,121 @@ the profile default.
 
 ## Enablement notes
 
+### Group policy and reviewed publishing
+
+These are source capabilities, not an approved live identity configuration.
+Keep both flags off until the operator has reviewed the mapping and named the
+independent reviewer identities. Enabling a flag does not create Entra roles,
+assign groups, publish existing assets, or migrate user data.
+
+`AI4IA_GROUP_POLICY_JSON` is a strict version-1 object. `domains` can configure
+`models` (catalog categories), `zones` (actual inference processing scope),
+`tools` (exact canonical governance names), `documents` (read, upload, process,
+compute, export, share, annotate, memory, analyzers, index), `publication`
+(submit, review, consume), and `admin` (explicit operation names).
+
+Each configured domain requires `default`; it has `allow`, `deny`, and optional
+`restrict` lists. Its optional `mappings` list uses an exact `claim` of `roles`
+or `groups`, an exact `value`, and the same rule fields. Grants union within
+the existing individual/server ceiling, restrictions intersect, and denies win.
+Unknown values never become wildcard grants. App roles are the case-sensitive
+**claim values**, not directory app-role GUIDs. Groups are exact object IDs.
+Malformed, oversized or overage claims cannot restore an unrestricted domain.
+There is no Graph lookup or fallback membership inference.
+
+An illustrative mapping structure (the role strings below are examples, not
+roles this repository creates or assigns):
+
+```json
+{
+  "version": 1,
+  "domains": {
+    "publication": {
+      "default": {"allow": ["consume"]},
+      "mappings": [
+        {"claim": "roles", "value": "example.publisher", "allow": ["submit"]},
+        {"claim": "roles", "value": "example.reviewer", "allow": ["review"]}
+      ]
+    }
+  },
+  "adminCeiling": []
+}
+```
+
+`spend` has a `default` limit object and optional claim mappings with `limits`.
+The fields match existing entitlements; numeric limits take the minimum of
+individual, default and matched restrictions. Usage accounting remains soft:
+concurrent work can overshoot, and missing usage/prices are not a bill cap.
+Active policy reads distinguish unavailable state from permission. The existing
+hard-admission gate, reservations and activation restrictions are separate.
+
+Mapped administration is per operation and additionally intersects
+`adminCeiling`, which defaults empty. Existing bootstrap identities and the
+configured admin secret remain explicit; group membership does not set a global
+administrator flag or proxy priority. Identified usage requires
+`admin.directory.read`; entitlement-enriched views require
+`admin.entitlements.read`; official MCP refresh is separate from inspection.
+A publication reviewer cannot administer entitlements by virtue of review.
+
+Publishing preserves owner/name draft keys and adds conditional revisions.
+Owner submission freezes source, audience, model/version constraints,
+dependencies and supported tool profiles. A different authorized reviewer
+decides that exact snapshot; the freshly authenticated owner then activates it.
+Concurrent edits or changed tool/resource/model metadata require a new review.
+Only the current active version executes; old receipts and immutable decisions
+remain historical. Withdrawal/deletion cannot resurrect through name reuse.
+
+Required contracts cannot disappear. Optional contracts can narrow only for an
+explicit supported reason such as an empty selected document scope or a
+request-level tool prohibition; discovery failure or unknown metadata is not
+such a reason. Receipts and consent bind both the approved profile and actual
+subset. `skillMode: "excluded"` is an explicit reviewed no-skill profile;
+`"versioned"` requires an explicitly versioned official resource when a loader
+is offered. Neither option copies skill bodies, private MCP credentials or
+unreviewed private dependencies. Required skills cannot be excluded.
+
+Public means **tenant-visible**, never anonymous. Consumer ownership, current
+claims, model/tool permissions, approvals, destinations and budgets are checked
+again before dispatch. The publisher's authorization does not transfer.
+Current claims mean the current verified token until expiry, not instantaneous
+directory revocation. Unattended group-dependent work requires fresh interactive
+authorization; queued claims and last-login membership are not authority.
+Expiry stops the next protected dispatch, not accounting, status or cleanup
+for already accepted work.
+
+Optional `canaryActor` and `evaluationActor` markers each contain exact
+`tenantId` and `subject` values and must designate different identities. They
+grant nothing. They require a current non-admin, non-publisher model-only policy,
+explicit tool/data denial, and applicable numeric limits. Actual model
+dispatch additionally requires the real owner-bound one-shot fresh-v1-session
+guard with tools and automatic memory prohibited. The monitor is sentinel-only
+and bounded to 64 output tokens; authored evaluation has a separate bounded
+single-prompt profile and at most 256. Other model/tool/media paths are refused.
+`GET /api/execution-capabilities` is a current compatibility observation, never
+a bearer grant. Missing profile, policy, v1 readiness or real guard is not ready.
+
+The distinct optional `realtimeCanaryActor` marker uses the same exact
+`tenantId`/`subject` shape but selects only `realtime-setup-canary`. All three
+markers must differ. It requires a model domain restricted to `realtime`, empty
+tool/document permissions, current non-admin/non-publisher claims and applicable
+limits, plus the server's GA selection. Every non-realtime metered surface is
+denied. The real factory guard permits one resolved application-relay opening,
+one exact setup update, no audio/responses/tools/agent/session context, and only
+ordered setup acknowledgements within a 15-second processing deadline that also
+covers connection establishment. Current authority is rechecked before frames
+are sent or delivered. Socket close and accounting still finish after processing
+stops. This is not a provider bill cap.
+
+`GET /api/canary/realtime-capabilities` is the separate setup compatibility
+reader; a caller profile/query/header cannot select actor authority. An absent
+marker is inert, and pausing group evaluation with a marker still configured
+refuses the restricted actor rather than making it an ordinary caller. Keep
+explicit policy JSON valid while paused. Before removing an actor configuration
+entirely, revoke its API access or disable its individual entitlement and retire
+outstanding credentials; an application cannot infer an identity removed from
+its configuration after a restart. These are source contracts, not approval to
+create actors, change federation, select GA or run a paid canary.
+
 ### Resumable conversation deletion
 
 Do not enable this as an ordinary convenience flag. The [deletion
@@ -268,6 +385,12 @@ ship with `realtimeGaEnabled=false` and `realtimeProtocol=preview`. Model catalo
 versions, capacities, deployment counts, the default realtime model and TTS are
 unchanged. All live work below requires separate approval under
 [`deploy-with-an-agent.md`](../deploy-with-an-agent.md).
+
+The separate [continuous application canary](deployment.md#continuous-application-canaries)
+is default-off and cannot enable this gate or select `ga`. Its setup-only
+observation requires both the resolved protocol header and ordered server
+acknowledgements under separately approved actor/spend scope. It does not replace
+the audio, tools, interruption, persistence, cutover or rollback acceptance below.
 
 1. Reconfirm the intended catalog deployment's current offering, entitlement,
    regional capacity and lifecycle evidence. The existing GA `gpt-realtime`

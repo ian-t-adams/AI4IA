@@ -219,6 +219,37 @@ The disabled-user guard remains authoritative even with numeric enforcement off.
 
 ## Agent and tool execution
 
+### Group policy and immutable publication
+
+The default-off policy layer consumes only claims already verified by the
+existing Entra provider. Operator mappings narrow catalog categories, processing
+zones, canonical tools, document features, soft spend and named admin operations;
+they cannot exceed existing individual/server ceilings. Denies win and conflicting
+constraints remain denied. Group overage is not resolved through Graph.
+
+The existing owner/public/shared access predicate also governs published assets.
+Drafts keep their owner/name partition keys. Disjoint typed records in the same
+agents/workflows owner partitions hold CAS-controlled heads, immutable versions
+and immutable review decisions; definition queries exclude both publication and
+automation controls while preserving legacy private rows.
+
+Publication requires owner consent to release a frozen snapshot for independent
+review and fresh owner activation of that approved version. A source reference
+does not carry the author's permissions. Model bindings include catalog-declared
+versions and any declared runtime/protocol restrictions; they are not proof of
+the live provider version. Runtime offers must be exact members of the approved
+profile, and required members remain authorized and present. Actual subset
+digests and explicit narrowing provenance join the bounded execution receipt.
+
+Every consumer rechecks current owner, access, source version, model/tool/resource
+contracts and ordinary execution gates. Private MCP secrets, private dependencies
+and curated private prompts are not published as a side effect. Model-only
+monitor/evaluation actors and the separate realtime-setup actor use the same
+policy core with real reduction-only one-shot or setup-only guards, not
+alternative authentication systems. Configured actors remain restricted while
+policy evaluation is paused. There is no live directory-freshness claim or
+implicit unattended grant.
+
 Built-ins, synthetic capabilities, BYO MCP, and official MCP share execution-time
 governance. Tool aliases retain plane/server identity so a remote name collision
 cannot silently switch the dispatch target.

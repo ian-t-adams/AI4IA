@@ -84,6 +84,17 @@ class InMemorySessionRepository:
     async def get_session(self, user_id: str, session_id: str) -> Session:
         return (await self._owned_session(user_id, session_id)).model_copy(deep=True)
 
+    async def claim_fresh_session(self, user_id: str, expected: Session) -> Session | None:
+        async with self._lock:
+            current = await self._owned_session(user_id, expected.id)
+            if (
+                not self._deletion_enabled or current.deletionProtocol != 1
+                or current.freshTurnClaimed or current != expected
+            ):
+                return None
+            current.freshTurnClaimed = True
+            return current.model_copy(deep=True)
+
     async def list_sessions(self, user_id: str) -> list[Session]:
         items = [
             s.model_copy(deep=True)

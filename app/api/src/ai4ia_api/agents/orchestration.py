@@ -32,6 +32,9 @@ from ..model_evidence import ModelCallRecorder
 from ..receipts import ReceiptRuntime, json_payload, text_payload
 from ..usage.models import TokenUsage
 from ..usage.pricing import PricingBook
+from ..policy.context import current_binding
+from ..publishing.execution import current_execution, prepare_execution, run_with_publication
+from ..publishing.models import PublicationError
 from .agent_catalog import AgentCatalog, AgentSpec
 from .runtime import (
     AgentRunCancelled,
@@ -94,6 +97,8 @@ def build_delegate_capability(
     api: str = "chat",
     model_id: str | None = None,
     pricing: PricingBook | None = None,
+    state: Any | None = None,
+    session: Any | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, DelegateHandler], list[TokenUsage]]:
     """Build the ``delegate_to_agent`` synthetic tool for an orchestrator.
 
@@ -155,7 +160,12 @@ def build_delegate_capability(
             return {"error": f"task must be at most {_MAX_TASK_LEN} characters."}
         if budget["used"] >= MAX_DELEGATIONS_PER_TURN:
             return {"error": "delegation budget exhausted for this turn."}
-        target = composed.get(target_name)
+        binding = current_binding()
+        target = (
+            await state.agent_service.resolve_for(
+                binding.owner_id, target_name, state.agents, mode="delegation",
+            ) if state is not None and binding is not None else composed.get(target_name)
+        )
         if target is None or not target.enabled:
             return {"error": f"agent '{target_name}' is unavailable."}
 
@@ -185,11 +195,28 @@ def build_delegate_capability(
             instructionSource="agent", instructionSha256=text_payload(target.systemPrompt).sha256,
             agentConfigSha256=json_payload(target.model_dump(mode="json")).sha256,
         )
+        publication = None
+        parent_publication = current_execution()
+        if parent_publication is not None:
+            publication = parent_publication.derive(f"delegate:{target_name}")
+        elif target.sourceVersion is not None:
+            if state is None or model_id is None:
+                raise PublicationError("publication_unavailable", 503)
+            option = next(
+                (option for entry in state.catalog.models for option in entry.options
+                 if option.deploymentName == deployment), None,
+            )
+            if option is None:
+                raise PublicationError("publication_model_unavailable")
+            publication = await prepare_execution(
+                state, target.sourceVersion, mode="delegation", model_id=model_id,
+                deployment=option, session=session,
+            )
         # Depth-1: no extra_tools/extra_handlers, so the sub-agent cannot itself
         # delegate. Supervisor deployment + params=None for correct, simple
         # metering and to avoid inheriting the parent's sampling/token budget.
         try:
-            run = await run_agent_turn(
+            run = await run_with_publication(publication, run_agent_turn(
                 deployment=deployment,
                 messages=sub_messages,
                 tool_names=target.tools,
@@ -202,8 +229,9 @@ def build_delegate_capability(
                 api=api,
                 model_evidence=evidence,
                 retain_failed_request=True,
-            )
+            ))
         except AgentRunCancelled as exc:
+            runtime.publication = exc.partial.publication
             raise DelegatedAgentRunCancelled(
                 exc.partial,
                 DelegatedRunTrace(
@@ -218,6 +246,7 @@ def build_delegate_capability(
                 ),
             ) from exc
         except AgentRunFailed as exc:
+            runtime.publication = exc.partial.publication
             raise DelegatedAgentRunFailed(
                 cause=exc.cause,
                 partial=exc.partial,
@@ -258,6 +287,7 @@ def build_delegate_capability(
                     runtime=runtime, model_evidence=evidence,
                 ),
             ) from exc
+        runtime.publication = run.publication
         usage_sink.append(run.usage)
         logger.info(
             "delegated to agent=%s iters=%s", target_name, run.iterations

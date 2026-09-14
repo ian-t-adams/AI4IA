@@ -1,0 +1,129 @@
+name: application-canaries
+
+# Scheduling is operational, not a user workflow. Model/WS traffic is dormant
+# until a separately approved identity, finite lease, and server posture exist.
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Observe, or initialize a reviewed finite lease without app calls"
+        type: choice
+        options: [observe, bootstrap]
+        default: observe
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions: {}
+
+concurrency:
+  group: application-canaries
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: canary state admission
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      observe: ${{ steps.prepare.outputs.observe }}
+    env:
+      AI4IA_CANARY_ENABLED: ${{ vars.AI4IA_CANARY_ENABLED }}
+      AI4IA_CANARY_CONFIG: ${{ vars.AI4IA_CANARY_CONFIG }}
+      AI4IA_CANARY_HARD_USD_CAP: ${{ vars.AI4IA_CANARY_HARD_USD_CAP }}
+      DEPLOY_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      CANARY_OPERATION: ${{ inputs.operation || 'observe' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install bounded HTTP transport
+        run: python -m pip install --quiet "aiohttp==3.14.3"
+      - name: Locate exact predecessor
+        id: history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m scripts.canaries locate --directory "$RUNNER_TEMP/application-canary"
+      - name: Read exact predecessor state
+        if: ${{ steps.history.outputs.artifact_id != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.history.outputs.artifact_id }}
+          run-id: ${{ steps.history.outputs.previous_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/application-canary/previous
+      - name: Admit or record unscored coverage
+        id: prepare
+        if: ${{ !cancelled() }}
+        run: python -m scripts.canaries prepare --directory "$RUNNER_TEMP/application-canary"
+      - name: Retain bounded handoff
+        if: ${{ steps.prepare.outputs.observe == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-canary-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/application-canary/handoff.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain control state
+        if: ${{ !cancelled() && steps.prepare.outputs.observe != 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-canary-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/application-canary/state.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Report control coverage
+        if: ${{ !cancelled() && steps.prepare.outputs.observe != 'true' }}
+        run: python -m scripts.canaries notify --directory "$RUNNER_TEMP/application-canary"
+
+  observe:
+    name: canary observation and alert transition
+    needs: prepare
+    if: ${{ needs.prepare.outputs.observe == 'true' && github.ref == 'refs/heads/main' && vars.AI4IA_CANARY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AI4IA_CANARY_ENABLED: ${{ vars.AI4IA_CANARY_ENABLED }}
+      AI4IA_CANARY_CONFIG: ${{ vars.AI4IA_CANARY_CONFIG }}
+      AI4IA_CANARY_HARD_USD_CAP: ${{ vars.AI4IA_CANARY_HARD_USD_CAP }}
+      DEPLOY_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install bounded HTTP transport
+        run: python -m pip install --quiet "aiohttp==3.14.3"
+      - name: Read same-run admitted handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: application-canary-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/application-canary
+      - name: Exchange dedicated OIDC and observe application
+        run: python -m scripts.canaries observe --directory "$RUNNER_TEMP/application-canary"
+      - name: Retain final content-free state
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-canary-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/application-canary/state.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Publish coverage and alert transitions
+        if: ${{ !cancelled() }}
+        run: python -m scripts.canaries notify --directory "$RUNNER_TEMP/application-canary"

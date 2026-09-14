@@ -50,6 +50,8 @@ from ..config import Settings
 from ..gateway.client import ModelGatewayError
 from ..memory.embedder import GatewayEmbedder
 from .access import can_access, get_accessible_document
+from ..policy.context import require_policy
+from ..policy.models import PolicyRequest
 from .blob_store import MEDIA_NAME, PARSED_NAME, BlobNotFoundError, BlobStore, blob_path
 from .chunking import format_timestamp
 from .doc_chunks import DocChunkRecord, DocChunkStore
@@ -249,6 +251,7 @@ class DocumentRetrievalService:
         return a safe unavailable/partial notice, independent of excerpt count.
         Summary cards survive a Search failure; only successfully retrieved
         excerpts can enter the citation registry."""
+        await require_policy(PolicyRequest("document.read"), owner_id=user_id)
         try:
             if document_ids is None:
                 ready = await self._accessible_ready_documents(user_id, email)
@@ -448,6 +451,7 @@ class DocumentRetrievalService:
         exception, never an existence leak). The filename is sanitized the same way
         Tier 1 does — newlines stripped, length bounded — so a crafted name can't
         inject structure outside the nonce fence."""
+        await require_policy(PolicyRequest("document.read"), owner_id=user_id)
         document_id = (document_id or "").strip()
         if not document_id:
             return {"error": "document_id is required."}

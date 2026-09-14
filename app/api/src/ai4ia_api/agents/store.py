@@ -11,15 +11,24 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from .user_agents import UserAgent
+from ..publishing.store import (
+    InMemoryRecordStore, RecordStore, delete_definition, replace_definition,
+)
+from ..workflows.record_types import AGENT_DEFINITION_KIND, is_definition
 
 
 @runtime_checkable
 class UserAgentStore(Protocol):
+    @property
+    def records(self) -> RecordStore: ...
+
     async def list(self, user_id: str) -> list[UserAgent]: ...
 
     async def get(self, user_id: str, name: str) -> UserAgent | None: ...
 
     async def put(self, agent: UserAgent) -> None: ...
+    async def create_if_absent(self, agent: UserAgent) -> bool: ...
+    async def replace_if_revision(self, agent: UserAgent, expected_revision: int) -> bool: ...
 
     async def delete(self, user_id: str, name: str) -> None: ...
 
@@ -30,20 +39,42 @@ class InMemoryUserAgentStore:
     """Non-durable store for local/dev/tests."""
 
     def __init__(self) -> None:
-        # userId -> name -> UserAgent
-        self._by_user: dict[str, dict[str, UserAgent]] = {}
+        self.records = InMemoryRecordStore()
 
     async def list(self, user_id: str) -> list[UserAgent]:
-        return list(self._by_user.get(user_id, {}).values())
+        return [
+            UserAgent.model_validate(body) for body in self.records.definitions(user_id)
+            if is_definition(body, user_id=user_id, kind=AGENT_DEFINITION_KIND)
+        ]
 
     async def get(self, user_id: str, name: str) -> UserAgent | None:
-        return self._by_user.get(user_id, {}).get(name)
+        item = await self.records.read(user_id, name)
+        if item is None or not is_definition(
+            item.body, user_id=user_id, kind=AGENT_DEFINITION_KIND, name=name,
+        ):
+            return None
+        return UserAgent.model_validate(item.body)
 
     async def put(self, agent: UserAgent) -> None:
-        self._by_user.setdefault(agent.userId, {})[agent.name] = agent
+        await self.records.put(agent.userId, agent.model_dump(mode="json"))
+
+    async def create_if_absent(self, agent: UserAgent) -> bool:
+        return await replace_definition(
+            self.records, agent.model_dump(mode="json"), expected_revision=None, create=True,
+        )
+
+    async def replace_if_revision(self, agent: UserAgent, expected_revision: int) -> bool:
+        return await replace_definition(
+            self.records, agent.model_dump(mode="json"), expected_revision=expected_revision,
+        )
 
     async def delete(self, user_id: str, name: str) -> None:
-        self._by_user.get(user_id, {}).pop(name, None)
+        from .user_agents import AgentConflictError
+
+        if await self.get(user_id, name) is not None and not await delete_definition(
+            self.records, user_id, name,
+        ):
+            raise AgentConflictError("Agent changed before deletion; refresh and retry.")
 
     async def close(self) -> None:
         return None

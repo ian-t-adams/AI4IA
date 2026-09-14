@@ -40,6 +40,8 @@ on:
       - "scripts/fixtures/conversation-deletion-assessment.json"
       - "scripts/tests/test_conversation_deletion_assessment.py"
       - "scripts/evaluations/**"
+      - "scripts/canaries/**"
+      - "scripts/_canary_contract.py"
       - "scripts/tests/test_behavioral_evaluations.py"
       - ".github/workflows/app-ci.yml"
 
@@ -153,3 +155,8 @@ jobs:
           ruff check --config app/api/pyproject.toml scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py scripts/tests/test_conversation_deletion_assessment.py
           pyright --pythonversion 3.12 --level error scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py
           python -m pytest -q scripts/tests/test_conversation_deletion_assessment.py
+      - name: Operational canary static controls
+        working-directory: .
+        run: |
+          ruff check --config app/api/pyproject.toml scripts/canaries scripts/_canary_contract.py scripts/tests/test_application_canary.py
+          pyright --project scripts/canaries

@@ -26,6 +26,8 @@ from fastapi import Depends, HTTPException, Request, status
 
 from ..config import Settings
 from ..logging_setup import emit_security_block
+from ..policy.models import ADMIN_OPERATIONS, PolicyError, PolicyRequest
+from ..policy.routes import admin_operations
 from .base import AuthenticatedUser
 from .dependencies import get_current_user
 from .identity import identity_is_admin
@@ -67,9 +69,42 @@ async def require_admin(
 ) -> AuthenticatedUser:
     settings: Settings = request.app.state.settings
     provided_secret = request.headers.get("X-Admin-Secret")
-    if not evaluate_admin(user, settings, provided_secret):
+    legacy = evaluate_admin(user, settings, provided_secret)
+    policy = getattr(request.app.state, "policy", None)
+    allowed = legacy
+    if policy is not None and policy.enabled:
+        actor = await policy.resolve(user)
+        allowed = not settings.auth_provider_is_spoofable and (
+            not settings.admin_api_secret or _secret_ok(provided_secret, settings.admin_api_secret)
+        )
+        for operation in admin_operations(request):
+            decision = await policy.authorize(
+                actor, PolicyRequest(operation, legacy_admin=legacy),
+            )
+            if decision.outcome == "unavailable":
+                raise PolicyError(decision)
+            allowed = allowed and decision.allowed
+    if not allowed:
         emit_security_block("admin_auth", "privileges_required", "admin_dependency")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required."
         )
     return user
+
+
+async def authorized_admin_operations(request: Request, user: AuthenticatedUser) -> list[str]:
+    settings: Settings = request.app.state.settings
+    provided = request.headers.get("X-Admin-Secret")
+    legacy = evaluate_admin(user, settings, provided)
+    policy = getattr(request.app.state, "policy", None)
+    if policy is None or not policy.enabled:
+        return sorted(ADMIN_OPERATIONS) if legacy else []
+    if settings.auth_provider_is_spoofable or (
+        settings.admin_api_secret and not _secret_ok(provided, settings.admin_api_secret)
+    ):
+        return []
+    actor = await policy.resolve(user)
+    return sorted(
+        operation for operation in ADMIN_OPERATIONS
+        if policy.decide(actor, PolicyRequest(operation, legacy_admin=legacy)).allowed
+    )

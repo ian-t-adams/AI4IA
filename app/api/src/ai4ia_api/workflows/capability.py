@@ -29,6 +29,10 @@ from .models import MAX_RUN_INPUT_LEN, RUN_WORKFLOW_TOOL_NAME, Workflow
 from .runner import run_workflow
 from .receipts import workflow_receipt
 from .service import WorkflowService
+from ..publishing.execution import (
+    execution_scope, prepare_execution, workflow_publication_builder,
+)
+from ..publishing.models import PublicationError
 
 MAX_WORKFLOW_CALLS_PER_TURN = 1
 _RESULT_LIMIT = 6000
@@ -100,7 +104,7 @@ async def eligible_workflows(
     composed: AgentCatalog,
     registry: ToolRegistry,
 ) -> list[Workflow]:
-    workflows = await service.list_for(user_id)
+    workflows = await service.available_for(user_id)
     return [
         workflow
         for workflow in workflows
@@ -127,6 +131,7 @@ def build_workflow_capability(
     user_id: str,
     session_id: str,
     api: str = "chat",
+    state: Any | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]]]:
     names = [workflow.name for workflow in workflows]
     descriptions = "; ".join(
@@ -178,11 +183,32 @@ def build_workflow_capability(
                 "error": f"Workflow input must be at most {MAX_RUN_INPUT_LEN} characters."
             }
 
-        current = await workflow_service.get(user_id, name)
+        advertised = next(item for item in workflows if item.name == name)
+        current = (
+            await workflow_service.resolve_for(user_id, name)
+            if advertised.sourceVersion is not None else await workflow_service.get(user_id, name)
+        )
         if current is None:
             return {"error": "That workflow no longer exists."}
+        if current.sourceVersion != advertised.sourceVersion:
+            raise PublicationError("publication_version_changed")
+        publication = None
+        run_catalog = composed
+        session = None
+        if state is not None:
+            session = await state.session_repo.get_session(user_id, session_id)
+        if current.sourceVersion is not None:
+            if state is None:
+                raise PublicationError("publication_unavailable", 503)
+            publication = await prepare_execution(
+                state, current.sourceVersion, mode="workflow_tool", model_id=model_id,
+                deployment=deployment, session=session,
+            )
+            run_catalog = await state.publications.dependency_catalog(
+                publication.actor, publication.resolved.version,
+            )
         reason = workflow_tool_ineligible_reason(
-            current, composed=composed, registry=registry
+            current, composed=run_catalog, registry=registry
         )
         if reason is not None:
             return {"error": f"That workflow is no longer safe to run here: {reason}."}
@@ -198,21 +224,19 @@ def build_workflow_capability(
                 nested, prepare_model_context=ctx.prepare_model_context
             )
 
-        outcome = await run_workflow(
-            current,
-            run_input=run_input,
-            composed=composed,
-            deployment=deployment.deploymentName,
-            gateway=gateway,
-            registry=registry,
-            executor=executor,
-            capabilities=safe_capabilities,
-            correlation_id=ctx.correlation_id,
-            approval_policy=ApprovalPolicy.always,
-            tool_builder=prepare_tools,
-            api=api,
-            model_id=model_id, pricing=metering.pricing,
-        )
+        with execution_scope(publication):
+            outcome = await run_workflow(
+                current, run_input=run_input, composed=run_catalog,
+                deployment=deployment.deploymentName, gateway=gateway,
+                registry=registry, executor=executor, capabilities=safe_capabilities,
+                correlation_id=ctx.correlation_id, approval_policy=ApprovalPolicy.always,
+                tool_builder=prepare_tools, api=api, model_id=model_id, pricing=metering.pricing,
+                publication_builder=(
+                    workflow_publication_builder(
+                        state, model_id=model_id, deployment=deployment, session=session,
+                    ) if state is not None else None
+                ),
+            )
         if outcome.usage.calls > 0:
             await metering.record_completion(
                 user_id=user_id,
@@ -232,6 +256,7 @@ def build_workflow_capability(
                 region=deployment.region, sku=deployment.sku, dataZone=deployment.dataZone,
                 residency=deployment.residency, api=api, agent=f"workflow:{current.name}",
                 workflowConfigSha256=json_payload(current.model_dump(mode="json")).sha256,
+                publication=publication.evidence() if publication is not None else None,
             ),
             correlation_id=ctx.correlation_id, include_steps=True,
         )
