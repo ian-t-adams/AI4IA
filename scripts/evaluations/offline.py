@@ -96,6 +96,9 @@ def offline_environment() -> Iterator[NetworkGuard]:
     old_logging = logging.root.manager.disable
     with ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ, environment, clear=True))
+        from opentelemetry.instrumentation.utils import suppress_instrumentation
+
+        stack.enter_context(suppress_instrumentation())
         # main's import-time app is constructed before make_settings can supply
         # _env_file=None. Prevent even reading dotenv before any app/helper import.
         stack.enter_context(patch.object(DotEnvSettingsSource, "_read_env_files", return_value={}))

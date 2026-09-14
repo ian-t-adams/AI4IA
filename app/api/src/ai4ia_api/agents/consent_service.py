@@ -141,6 +141,8 @@ async def execution_tools_for_state(
         mcp_ctx, granted_scopes=ctx.granted_scopes,
         approvals=mcp_ctx.approvals | ctx.approvals,
         prepare_model_context=ctx.prepare_model_context,
+        turn_budgets=ctx.turn_budgets,
+        capture_memory_context=ctx.capture_memory_context,
     )
 
 
@@ -192,7 +194,7 @@ async def describe_contracts(
         fn = schema["function"]
         name = fn.get("name")
         if not isinstance(name, str):
-            continue
+            raise ValueError("The tool schema has no canonical identity.")
         definition = executor.get(name)
         spec = registry.get(name)
         if definition is not None and spec is not None:

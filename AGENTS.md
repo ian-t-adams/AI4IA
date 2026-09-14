@@ -240,9 +240,9 @@ the repo root, using the already-installed API dev dependencies:
 
 ```powershell
 python -m scripts.evaluations run --output <new-local-report.json>
-ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py
+ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py scripts/tests/test_live_evaluation_api.py
 pyright --project scripts/evaluations
-python -m pytest -q scripts/tests/test_behavioral_evaluations.py
+python -m pytest -q scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py scripts/tests/test_live_evaluation_api.py
 ```
 
 `scripts/evaluations` drives real API, provider-adapter, orchestration, ownership,
@@ -255,6 +255,26 @@ before comparison. Do not add production-trace input, a paid judge, live calls o
 a schedule under this offline gate. See
 [`docs/behavioral-evaluations.md`](docs/behavioral-evaluations.md) for commands,
 version rules, limits and the remaining approval boundaries.
+
+`python -m scripts.evaluations.live` and `live-evaluations.yml` are separate,
+default-off authored-synthetic surfaces, never an escape from the offline worker's
+network/dotenv/credential/export isolation or a stochastic PR gate. A dedicated
+non-admin evaluation actor/policy capability (never the monitor's canaryActor),
+three request-reduction controls, priced supported caps and exact-owner cleanup
+proofs are prerequisites. All probes, four new fixtures and cleanup calls
+share one 48-request/240-second budget; cleanup retains eight requests/45 seconds.
+Unknown creation, cleanup or worker state stops later tasks and keeps every case
+in coverage. Client/request caps are not a proven Azure bill cap. No production
+trace input, judge, grants, resource changes or activation is implied.
+
+Content-free GenAI model spans reuse `logging_setup`'s exporter gate and observe
+post-admission adapted requests/native responses, including streamed Responses
+and Claude. Keep the pinned development-semantic contract and its fixed
+`gen_ai.system` exporter-compatibility alias; do not upgrade the telemetry pair.
+No payload, URL, identity, event, exception message or provider-internal reasoning
+belongs on these spans. Cumulative usage is recorded once per logical model call,
+not added across chunks or copied onto parent spans. The SDK/exporter capture
+controls and existing offline no-export controls must stay non-vacuous.
 
 **Any edit to `app/api/pyproject.toml` must be followed by `uv lock` in the same
 commit.** `uv.lock` records the declared specifier alongside resolved versions, so
@@ -570,6 +590,7 @@ python3 -m unittest scripts.tests.test_documented_paths_exist   # repo paths nam
 python3 -m unittest scripts.tests.test_markdown_anchors         # Markdown #fragment links must resolve
 python3 -m unittest scripts.tests.test_markdown_tables          # tables cannot silently swallow rows/columns
 python3 -m unittest scripts.tests.test_gating_workflows         # required checks, checkout and job-token boundaries
+python3 -m unittest scripts.tests.test_live_evaluation_workflow # default-off separate actor/schedule and report-only retention
 python3 -m unittest scripts.tests.test_governance_contracts     # cross-file governance/Foundry/config invariants
 python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name reachable azd vars
 python3 -m unittest scripts.tests.test_foundry_assets_workflow  # Foundry handoff stays artifact-scoped
@@ -1081,6 +1102,35 @@ completeness (assets are discovered via `git ls-files`; anything not owned by th
 generator must be listed in `NON_BRAND_RASTERS`), colour (≥40% of saturated pixels
 near the brand hue), and shape/weight against the portal's declared `og:image`
 dimensions and per-file size ceilings.
+
+## Resumable workflow automation
+
+`AI4IA_WORKFLOW_APPROVALS_ENABLED` and `AI4IA_WORKFLOW_SCHEDULING_ENABLED`
+are default-off, explicit v3 paths on the existing DTS worker. Legacy synchronous
+and durable histories stay separate. New runs require protocol-v1 conversations;
+never enroll an existing session or bypass its rollout prerequisite.
+
+An approval pauses the stored exact operation, not a request for a model to
+recreate it. Reuse normal one-time grant cryptography, owner/run/source/schema/
+destination/argument/expiry binding and full checkpoint/message CAS behind the
+child fence. Keep per-operation SDK options copied across every batch retry.
+Provider acceptance without a recoverable result is unknown and never replayable.
+Late cancellation evidence can grow without restoring authority; accounting
+does not require a new policy grant and survives conversation cleanup.
+
+Use `workflows.record_types` for owner-container control identity; never add a
+second publication or group-policy map. Queued user claims are not authority.
+Request constraints remain reduction-only across continuation. Safe-only means
+actual effects, including ambient writes, not only a declared tool label.
+Recheck previously supplied memory/resource context; stop rather than regenerate
+accepted work when revoked context cannot safely be excluded.
+
+Schedules use finite IANA once/daily/weekly rules, gap skip/fold first, no backfill
+storm, overlap denial, stable slot identities and bounded histories. Count actual
+shared application dispatches, not just loop iterations. Finite USD caps and
+hard-quota durable execution remain refused under the unproven downstream attempt
+envelope. See [the automation contract](docs/workflow-automation.md); source
+completion never implies live activation.
 
 ## Staged GA Realtime protocol
 

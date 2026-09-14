@@ -127,6 +127,10 @@ jobs:
         run: |
           docker run --rm --interactive ai4ia-api:ci python - \
             < app/api/tests/test_lazy_imports_are_declared.py
+      - name: Smoke test - system TZif rules support workflow calendars
+        run: |
+          docker run --rm --interactive ai4ia-api:ci python - \
+            < app/api/tests/test_system_timezone_data.py
 
       - name: Build proxy image (proxy/Dockerfile)
         id: proxy-build

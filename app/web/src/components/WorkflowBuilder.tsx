@@ -23,6 +23,7 @@ import { WorkflowDisclosure } from "./WorkflowDisclosure";
 import { TOOL_CONSENT_WARNING } from "./ToolConsentControls";
 import { WorkflowRunConsentNotice, findWorkflowRunMessage, type WorkflowRunWatch } from "./WorkflowRunConsentNotice";
 import { WorkflowRunReport } from "./WorkflowRunReport";
+import { WorkflowAutomationPanel } from "./WorkflowAutomationPanel";
 import { deriveSteps, evidenceFromMessage, pendingSteps, resultFromMessage, type RunState } from "./workflowRun";
 import { useLibraryConfig } from "./LibraryProvider";
 import {
@@ -1319,6 +1320,10 @@ export function WorkflowBuilder({
                   runAgainDisabled={runDisabled}
                 />
               )}
+              {runTarget ? <WorkflowAutomationPanel
+                key={`${runTarget.userId}:${runTarget.name}:${runTarget.updatedAt}:${runModel}:${selectedDocIds.join(",")}`}
+                workflow={runTarget} model={runModel} documentIds={selectedDocIds} onOpenChat={onRun}
+              /> : null}
             </>
           )}
         </div>

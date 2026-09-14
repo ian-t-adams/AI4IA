@@ -12,7 +12,7 @@ import base64
 import hashlib
 import json
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
-from contextlib import aclosing, asynccontextmanager
+from contextlib import AsyncExitStack, aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +20,7 @@ import httpx
 
 from ..config import GatewayAuthMode, GatewayProviderStyle, Settings
 from ..chat_timing import current_chat_timing
+from ..genai_telemetry import ModelSpan, ModelTelemetry
 from ..model_evidence import CapturedModelCall, begin_model_call
 from ..request_constraints import (
     constrain_tool_parameters, contains_tool_output, fresh_session_required, tools_allowed,
@@ -492,12 +493,14 @@ class ModelGatewayClient:
         self._retry_policy = settings.outbound_retry_policy()
         self._http = http_client
         self._hard_quota_enabled = settings.hard_quota_enabled
+        self._model_telemetry = ModelTelemetry(settings)
         self._group_policy_enabled = settings.group_policy_enabled
 
     async def _post(
         self, client: httpx.AsyncClient, url: str, *, surface: Surface,
         deployment: str, payload: dict[str, Any], api: str = "chat",
-        evidence: CapturedModelCall | None = None, **kwargs: Any,
+        evidence: CapturedModelCall | None = None, telemetry: ModelSpan | None = None,
+        **kwargs: Any,
     ) -> httpx.Response:
         async with admitted_dispatch(
             surface, payload, deployment=deployment, target=url, required=self._hard_quota_enabled,
@@ -506,8 +509,11 @@ class ModelGatewayClient:
         ) as admission:
             if "json" in kwargs:
                 kwargs["json"] = admission.payload
-            response = await client.post(url, **kwargs)
-            if admission.reservation is not None and response.is_success:
+            if telemetry is not None:
+                telemetry.request(admission.payload)
+            with telemetry.http_scope() if telemetry is not None else nullcontext():
+                response = await client.post(url, **kwargs)
+            if (admission.reservation is not None or admission.workflow_observed) and response.is_success:
                 usage = None
                 if surface in {"chat", "embedding"}:
                     try:
@@ -532,16 +538,20 @@ class ModelGatewayClient:
     @asynccontextmanager
     async def _stream_request(
         self, client: httpx.AsyncClient, req: GatewayRequest, *, deployment: str,
-        evidence: CapturedModelCall | None,
+        evidence: CapturedModelCall | None, telemetry: ModelSpan | None = None,
     ) -> AsyncIterator[tuple[httpx.Response, DispatchLease]]:
         async with admitted_dispatch(
             "chat", req.json, deployment=deployment, target=req.url, required=self._hard_quota_enabled,
             observe=evidence.report_admission if evidence is not None else None,
             policy_required=self._group_policy_enabled,
         ) as admission:
-            async with client.stream(
-                "POST", req.url, headers=req.headers, json=admission.payload,
-            ) as response:
+            if telemetry is not None:
+                telemetry.request(admission.payload)
+            async with AsyncExitStack() as stack:
+                with telemetry.http_scope() if telemetry is not None else nullcontext():
+                    response = await stack.enter_async_context(client.stream(
+                        "POST", req.url, headers=req.headers, json=admission.payload,
+                    ))
                 yield response, admission
 
     def _auth_headers(self, correlation_id: str | None) -> dict[str, str]:
@@ -1194,11 +1204,13 @@ class ModelGatewayClient:
         client, owned = self._client()
         timing = current_chat_timing()
         timing_started = timing.gateway_started() if timing is not None else None
+        telemetry = self._model_telemetry.start(deployment, resolved_api)
         try:
             try:
                 resp = await self._post(
                     client, req.url, surface="chat", deployment=deployment, payload=req.json,
-                    api=resolved_api, evidence=evidence, headers=req.headers, json=req.json,
+                    api=resolved_api, evidence=evidence, telemetry=telemetry,
+                    headers=req.headers, json=req.json,
                 )
             except httpx.HTTPError as exc:
                 raise ModelGatewayError(502, _REQUEST_FAILED) from exc
@@ -1210,6 +1222,7 @@ class ModelGatewayClient:
                 raise ModelGatewayError(502, _REQUEST_FAILED) from exc
             if not isinstance(data, dict):
                 raise ModelGatewayError(502, _REQUEST_FAILED)
+            telemetry.response_metadata(data)
             if not tools_allowed() and contains_tool_output(data):
                 raise ModelGatewayError(502, "Provider returned a tool on a tool-free request.")
             if resolved_api == "responses":
@@ -1224,8 +1237,13 @@ class ModelGatewayClient:
                 data = anthropic_json_to_chat(data)
             if evidence is not None:
                 evidence.report_usage(data.get("usage"), completed=True)
+            telemetry.usage(data.get("usage"), completed=True)
             return data
+        except BaseException as exc:
+            telemetry.error(exc)
+            raise
         finally:
+            telemetry.finish()
             if timing is not None and timing_started is not None:
                 timing.gateway_finished(timing_started)
             if owned:
@@ -1273,8 +1291,10 @@ class ModelGatewayClient:
         timing_started = timing.gateway_started() if timing is not None else None
         client: httpx.AsyncClient | None = None
         owned = False
+        telemetry: ModelSpan | None = None
         try:
             resolved_api = _resolved_api(api, deployment)
+            telemetry = self._model_telemetry.start(deployment, resolved_api)
             evidence = begin_model_call(deployment, resolved_api)
             if resolved_api == "responses":
                 async with aclosing(
@@ -1284,11 +1304,13 @@ class ModelGatewayClient:
                         params=params,
                         correlation_id=correlation_id,
                         evidence=evidence,
+                        telemetry=telemetry,
                     )
                 ) as response_stream:
                     async for chunk in response_stream:
                         if evidence is not None:
                             evidence.report_usage(chunk.usage, completed=chunk.done)
+                        telemetry.usage(chunk.usage, completed=chunk.done)
                         yield chunk
                 return
             if resolved_api == ANTHROPIC_API:
@@ -1299,6 +1321,7 @@ class ModelGatewayClient:
                         params=params,
                         correlation_id=correlation_id,
                         evidence=evidence,
+                        telemetry=telemetry,
                     )
                 ) as anthropic_stream:
                     async for chunk in anthropic_stream:
@@ -1310,6 +1333,7 @@ class ModelGatewayClient:
                                 )
                         if evidence is not None:
                             evidence.report_usage(chunk.usage, completed=chunk.done)
+                        telemetry.usage(chunk.usage, completed=chunk.done)
                         yield chunk
                 return
             client, owned = self._client()
@@ -1332,7 +1356,7 @@ class ModelGatewayClient:
                     evidence.request(req.json)
                 is_last = attempt_idx == len(attempts) - 1
                 async with self._stream_request(
-                    client, req, deployment=deployment, evidence=evidence,
+                    client, req, deployment=deployment, evidence=evidence, telemetry=telemetry,
                 ) as (resp, admission):
                     if resp.status_code >= 400:
                         body = await resp.aread()
@@ -1342,18 +1366,27 @@ class ModelGatewayClient:
                             continue
                         raise ModelGatewayError(resp.status_code, detail)
                     async for line in resp.aiter_lines():
-                        chunk = parse_sse_line(line)
+                        chunk = parse_sse_line(line, telemetry=telemetry)
                         if chunk is not None:
                             admission.report(chunk.usage, complete=chunk.done)
                             if evidence is not None:
                                 evidence.report_usage(chunk.usage, completed=chunk.done)
+                            telemetry.usage(chunk.usage, completed=chunk.done)
                             yield chunk
                             if chunk.done:
                                 return
                     return
         except httpx.HTTPError as exc:
+            if telemetry is not None:
+                telemetry.error(exc)
             raise ModelGatewayError(502, _STREAM_FAILED) from exc
+        except BaseException as exc:
+            if telemetry is not None:
+                telemetry.error(exc)
+            raise
         finally:
+            if telemetry is not None:
+                telemetry.finish()
             if timing is not None and timing_started is not None:
                 timing.gateway_finished(timing_started)
             if owned and client is not None:
@@ -1367,6 +1400,7 @@ class ModelGatewayClient:
         params: dict[str, Any] | None = None,
         correlation_id: str | None = None,
         evidence: CapturedModelCall | None = None,
+        telemetry: ModelSpan | None = None,
     ) -> AsyncGenerator[ChatChunk, None]:
         """Translate Claude Messages SSE frames into chat-shaped chunks."""
         client, owned = self._client()
@@ -1382,7 +1416,7 @@ class ModelGatewayClient:
             if evidence is not None:
                 evidence.request(req.json)
             async with self._stream_request(
-                client, req, deployment=deployment, evidence=evidence,
+                client, req, deployment=deployment, evidence=evidence, telemetry=telemetry,
             ) as (resp, admission):
                 if resp.status_code >= 400:
                     body = await resp.aread()
@@ -1395,7 +1429,7 @@ class ModelGatewayClient:
                         data_buf.append(line[len("data:") :].lstrip())
                         continue
                     if line == "" and data_buf:
-                        event = parse_anthropic_event("\n".join(data_buf), state)
+                        event = parse_anthropic_event("\n".join(data_buf), state, telemetry=telemetry)
                         data_buf = []
                         if event is None:
                             continue
@@ -1412,7 +1446,7 @@ class ModelGatewayClient:
                         if chunk.done:
                             return
                 if data_buf:
-                    event = parse_anthropic_event("\n".join(data_buf), state)
+                    event = parse_anthropic_event("\n".join(data_buf), state, telemetry=telemetry)
                     if event is not None:
                         if event.error:
                             raise ModelGatewayError(502, _STREAM_FAILED)
@@ -1437,6 +1471,7 @@ class ModelGatewayClient:
         params: dict[str, Any] | None = None,
         correlation_id: str | None = None,
         evidence: CapturedModelCall | None = None,
+        telemetry: ModelSpan | None = None,
     ) -> AsyncGenerator[ChatChunk, None]:
         """Stream a Responses turn, translating its SSE events into the synthetic
         chat-shaped ``ChatChunk`` stream the router already consumes.
@@ -1459,7 +1494,7 @@ class ModelGatewayClient:
             if evidence is not None:
                 evidence.request(req.json)
             async with self._stream_request(
-                client, req, deployment=deployment, evidence=evidence,
+                client, req, deployment=deployment, evidence=evidence, telemetry=telemetry,
             ) as (resp, admission):
                 if resp.status_code >= 400:
                     body = await resp.aread()
@@ -1474,7 +1509,7 @@ class ModelGatewayClient:
                     if line == "":
                         # Frame boundary: flush the accumulated data payload.
                         if data_buf:
-                            chunk = _parse_responses_event("\n".join(data_buf))
+                            chunk = _parse_responses_event("\n".join(data_buf), telemetry=telemetry)
                             data_buf = []
                             if chunk is not None:
                                 admission.report(chunk.usage, complete=chunk.done and not chunk.incomplete)
@@ -1484,7 +1519,7 @@ class ModelGatewayClient:
                     # ``event:``/comment lines carry no payload — ignore them.
                 # Flush a trailing frame not followed by a blank line.
                 if data_buf:
-                    chunk = _parse_responses_event("\n".join(data_buf))
+                    chunk = _parse_responses_event("\n".join(data_buf), telemetry=telemetry)
                     if chunk is not None:
                         admission.report(chunk.usage, complete=chunk.done and not chunk.incomplete)
                         yield chunk
@@ -1495,7 +1530,7 @@ class ModelGatewayClient:
                 await client.aclose()
 
 
-def parse_sse_line(line: str) -> ChatChunk | None:
+def parse_sse_line(line: str, *, telemetry: ModelSpan | None = None) -> ChatChunk | None:
     """Parse one SSE line into a ChatChunk (None for blanks/comments)."""
     if not line or not line.startswith("data:"):
         return None
@@ -1508,6 +1543,8 @@ def parse_sse_line(line: str) -> ChatChunk | None:
         obj = json.loads(payload)
     except json.JSONDecodeError:
         return ChatChunk(raw=payload)
+    if telemetry is not None and isinstance(obj, dict):
+        telemetry.response_metadata(obj)
     if not tools_allowed() and contains_tool_output(obj):
         raise ModelGatewayError(502, "Provider returned a tool on a tool-free request.")
     delta = ""
@@ -1522,7 +1559,9 @@ def parse_sse_line(line: str) -> ChatChunk | None:
     )
 
 
-def _parse_responses_event(payload: str) -> ChatChunk | None:
+def _parse_responses_event(
+    payload: str, *, telemetry: ModelSpan | None = None,
+) -> ChatChunk | None:
     """Translate one Responses SSE frame payload into a chat-shaped ChatChunk.
 
     Routes by the event's ``type``:
@@ -1545,6 +1584,8 @@ def _parse_responses_event(payload: str) -> ChatChunk | None:
         obj = json.loads(payload)
     except json.JSONDecodeError:
         return None
+    if telemetry is not None and isinstance(obj, dict):
+        telemetry.response_metadata(obj)
     if not tools_allowed() and contains_tool_output(obj):
         raise ModelGatewayError(502, "Provider returned a tool on a tool-free request.")
     etype = obj.get("type")

@@ -24,9 +24,17 @@ from typing import Protocol, runtime_checkable
 from .models import UsageRecord, UsageRollupRow, UsageSummary
 
 
+class UsageRecordConflict(RuntimeError):
+    """A stable operation id already has different persisted accounting."""
+
+
 @runtime_checkable
 class UsageRepository(Protocol):
     async def record(self, record: UsageRecord) -> None: ...
+
+    async def record_once(self, record: UsageRecord) -> bool:
+        """Create a frozen operation row, or confirm its exact prior write."""
+        ...
 
     async def summarize(
         self, user_id: str, *, since: datetime, since_days: int, now: datetime

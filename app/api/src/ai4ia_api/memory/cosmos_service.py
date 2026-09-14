@@ -66,6 +66,9 @@ class CosmosMemoryService:
     async def get_preference(self, user_id: str) -> MemoryPreference:
         return await self._store.get_preference(user_id)
 
+    async def validate_context_references(self, user_id, preference, references) -> None:
+        await self._store.validate_context_references(user_id, preference, references)
+
     async def set_preference(
         self, user_id: str, automatic_enabled: bool, *, expected_etag: str
     ) -> MemoryPreference:
@@ -129,6 +132,9 @@ class CosmosMemoryService:
         the model "already covered, do not retry" after an outage is a lie it will
         confidently repeat to the user.
         """
+        from ..workflows.dispatch_scope import require_workflow_effect
+
+        await require_workflow_effect("memory.write")
         started = time.monotonic()
         if not automatic_memory_allowed():
             emit_memory_operation("save", "disabled", "cosmos", started, count=0)
@@ -410,6 +416,9 @@ class CosmosMemoryService:
         session_id: str | None = None,
         document_id: str | None = None,
     ) -> int:
+        from ..workflows.dispatch_scope import require_workflow_effect
+
+        await require_workflow_effect("memory.document_write")
         texts = [item.strip() for item in items if item and item.strip()]
         if not texts:
             return 0

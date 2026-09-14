@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .models import UsageRecord, UsageRollupRow, UsageSummary, summarize_records
+from .repository import UsageRecordConflict
 
 
 class InMemoryUsageRepository:
@@ -12,6 +13,16 @@ class InMemoryUsageRepository:
 
     async def record(self, record: UsageRecord) -> None:
         self._by_user.setdefault(record.userId, []).append(record)
+
+    async def record_once(self, record: UsageRecord) -> bool:
+        records = self._by_user.setdefault(record.userId, [])
+        existing = next((item for item in records if item.id == record.id), None)
+        if existing is not None:
+            if existing != record:
+                raise UsageRecordConflict("Usage operation identity has different accounting.")
+            return False
+        records.append(record.model_copy(deep=True))
+        return True
 
     async def summarize(
         self, user_id: str, *, since: datetime, since_days: int, now: datetime

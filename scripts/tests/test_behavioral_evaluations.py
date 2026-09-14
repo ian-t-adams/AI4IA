@@ -78,6 +78,41 @@ def test_golden_controls_execute_every_case(dataset, golden_report):
         assert coverage.scored + coverage.unknown + coverage.unscored == coverage.total
 
 
+def test_offline_execution_suppresses_an_already_active_exporter(dataset):
+    from opentelemetry.instrumentation.httpx import (
+        AsyncOpenTelemetryTransport, SyncOpenTelemetryTransport,
+    )
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    provider = TracerProvider(resource=Resource({"service.name": "synthetic-control"}))
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    original_client = httpx.AsyncClient
+
+    def instrumented_client(**kwargs):
+        kwargs["transport"] = AsyncOpenTelemetryTransport(
+            kwargs["transport"], tracer_provider=provider,
+        )
+        return original_client(**kwargs)
+
+    try:
+        with patch.object(httpx, "AsyncClient", instrumented_client):
+            assert execute_case(dataset, case_named(dataset, "chat-json")).status == "passed"
+        assert exporter.get_finished_spans() == ()
+        # Same active exporter, with only the isolation scope removed.
+        transport = SyncOpenTelemetryTransport(
+            httpx.MockTransport(lambda _: httpx.Response(200)), tracer_provider=provider,
+        )
+        with httpx.Client(transport=transport) as client:
+            client.get("https://synthetic-control.invalid")
+        assert len(exporter.get_finished_spans()) == 1
+    finally:
+        provider.shutdown()
+
+
 @pytest.mark.parametrize(
     "name, mutate, check",
     [
