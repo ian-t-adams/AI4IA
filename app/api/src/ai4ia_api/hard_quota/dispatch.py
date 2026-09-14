@@ -43,6 +43,16 @@ def clear_admission_owner() -> None:
     _current.set(None)
 
 
+def current_dispatch_owner() -> str | None:
+    context = _current.get()
+    return context.owner if context is not None else None
+
+
+def current_dispatch_catalog() -> ModelCatalog | None:
+    context = _current.get()
+    return context.controller.catalog if context is not None else None
+
+
 def set_admission_owner(controller: AdmissionController, owner: str) -> None:
     """Only authentication boundaries or a validated durable owner may call."""
     _current.set(AdmissionContext(controller, owner))
@@ -122,7 +132,7 @@ class AdmissionController:
         key = operation_id(snapshot.state.epoch, context.issued_at, f"{context.root}:{context.sequence}")
         bounds = reservation_bounds(
             surface, payload, deployment=deployment, catalog=self.catalog, pricing=self.pricing,
-            attempts=self.attempts,
+            attempts=self._attempts(context.owner, surface, payload, deployment, target),
         )
         reservation = await self.reservations.reserve(
             context.owner, key=key,
@@ -139,6 +149,17 @@ class AdmissionController:
             await self.reservations.release(context.owner, reservation)
             raise QuotaError("Hard quota policy changed before dispatch.", code=409)
         return await self.reservations.dispatch(context.owner, reservation)
+
+    def _attempts(
+        self, owner: str, surface: Surface, payload: dict[str, Any],
+        deployment: str | None, target: str | None,
+    ) -> AttemptEnvelope | None:
+        from ..gateway.attempts import current_attempt_envelope
+
+        bound = current_attempt_envelope(
+            surface, payload, deployment=deployment, target=target, owner=owner,
+        )
+        return bound if bound is not None else self.attempts
 
 
 @asynccontextmanager
@@ -228,6 +249,14 @@ async def admitted_dispatch(
     policy_required: bool = False,
 ) -> AsyncIterator[DispatchLease]:
     from ..workflows.dispatch_scope import current_workflow_scope
+    from ..gateway.attempts import current_attempt_envelope, no_replay_selected
+
+    if no_replay_selected():
+        owner = current_dispatch_owner()
+        if owner is None or current_attempt_envelope(
+            surface, payload, deployment=deployment, target=target, owner=owner,
+        ) is None:
+            raise QuotaError("This dispatch has no verified gateway attempt binding.")
 
     workflow = current_workflow_scope()
     if workflow is None:

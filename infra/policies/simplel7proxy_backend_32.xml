@@ -1,9 +1,7 @@
 <fragment>
-<retry condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;RetryRemaining&quot;, true))" count="50" interval="1" delta="1">
+<retry condition="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; context.Variables.GetValueOrDefault&lt;bool>(&quot;RetryRemaining&quot;, true))" count="50" interval="1" delta="1">
 			<set-variable name="PolicyCycleCounter" value="@(context.Variables.GetValueOrDefault&lt;int>(&quot;PolicyCycleCounter&quot;) + 1)" />
-			<!-- Keep the request-local throttle map. APIM's cache is eventually
-			     consistent, so reloading it here can erase the backend marked by
-			     the immediately preceding attempt and retry the same failed region. -->
+
 			<set-variable name="listBackends" value="@{
 				JArray backends = (JArray)context.Variables[&quot;listBackends&quot;];
 				JObject state = (JObject)((JObject)context.Variables[&quot;throttleState&quot;])[&quot;backends&quot;];
@@ -17,7 +15,7 @@
 				return backends;
 			}" />
 
-			<!-- If a call was attempted, what scenario are we in?  0: success, 1: error 2: timeout, 3: concurrency limit, 4: unknown -->
+
 			<set-variable name="ErrorScenario" value="@{
 				// Error Scenario
 				JArray backends = (JArray)context.Variables[&quot;listBackends&quot;];
@@ -100,14 +98,14 @@
 				arr.Add(new JObject {{ &quot;Elapsed&quot;, elapsedStr },{ &quot;message&quot;, message }});
 				return scenario;
 			}" />
-			<!-- Persist only if the classification changed the shared throttle state -->
+
 			<choose>
 				<when condition="@(((JObject)context.Variables[&quot;throttleState&quot;]).Value&lt;bool>(&quot;dirty&quot;))">
 					<cache-store-value key="@(&quot;throttle-&quot; + context.Api.Id)" value="@((JObject)context.Variables[&quot;throttleState&quot;])" duration="60" />
 				</when>
 			</choose>
 
-			<!-- This is the main logic to pick the backend to be used -->
+
 			<set-variable name="backendIndex" value="@{
 				try {
 					JArray backends = context.Variables.GetValueOrDefault&lt;JArray>(&quot;listBackends&quot;, new JArray());
@@ -193,7 +191,7 @@
 					return &quot;off&quot;;
 				}
 			}" />
-			<!-- Make the request to the selected backend -->
+
 			<set-variable name="activityLog" value="@{
 				var arr = context.Variables.GetValueOrDefault&lt;JArray>(&quot;activityLog&quot;, new JArray());
 				var backends = context.Variables.GetValueOrDefault&lt;JArray>(&quot;listBackends&quot;, new JArray());
@@ -217,11 +215,11 @@
 				return arr;
 			}" />
 
-			<!-- Ok to make a request -->
+
 			<set-variable name="callAttempted" value="@(false)" />
 			<choose>
 				<when condition="@(context.Variables.GetValueOrDefault&lt;int>(&quot;backendIndex&quot;, 0) > -1 &amp;&amp; context.Variables.GetValueOrDefault&lt;int>(&quot;RetryCount&quot;) > 0)">
-					<!-- Set each backend configuration value individually -->
+
 					<set-variable name="RetryCount" value="@(context.Variables.GetValueOrDefault&lt;int>(&quot;RetryCount&quot;) - 1)" />
 					<set-variable name="selectedBackend" value="@(((JArray)context.Variables[&quot;listBackends&quot;])[(int)context.Variables[&quot;backendIndex&quot;]])" />
 					<set-variable name="RequestTimeout" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;int>(&quot;timeout&quot;))" />
@@ -230,15 +228,18 @@
 					<set-variable name="selectedDeployment" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;deployment&quot;))" />
 					<set-variable name="backendProtocolPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;path&quot;))" />
 					<set-variable name="backendOperationPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;operation&quot;))" />
+					<choose>
+						<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; (context.Variables.GetValueOrDefault&lt;bool>(&quot;attemptClaimed&quot;, false) || context.Variables.GetValueOrDefault&lt;int>(&quot;backendCallCounter&quot;, 0) != 0 || (context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;) != &quot;openai&quot; &amp;&amp; context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;) != &quot;anthropic&quot;) || !string.IsNullOrEmpty(context.Variables.GetValueOrDefault&lt;string>(&quot;backendOperationPath&quot;, &quot;&quot;))))">
+							<return-response>
+								<set-status code="400" reason="Unsupported gateway attempt" />
+								<set-body>{"error":{"code":"unsupported_attempt_contract"}}</set-body>
+							</return-response>
+						</when>
+					</choose>
 					<set-variable name="backendCallCounter" value="@(context.Variables.GetValueOrDefault&lt;int>(&quot;backendCallCounter&quot;) + 1)" />
-					<!-- Set the backend service URL. backendUrl already includes the
-					     generated provider base path (`/openai`, `/anthropic`, `/mai`,
-					     or `/providers/blackforestlabs/v1`);
-					     rewrite-uri below supplies the relative operation path. -->
+
 					<set-backend-service base-url="@((string)context.Variables[&quot;backendUrl&quot;])" />
-					<!-- Deployment names are region-specific in infra/models.json.
-					     Rewrite path-based Azure OpenAI calls and model-body calls
-					     to the deployment selected for this immediate APIM attempt. -->
+
 					<set-variable name="backendRelativePath" value="@{
 						string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);
 						string requested = context.Variables.GetValueOrDefault&lt;string>(&quot;model&quot;, &quot;&quot;);
@@ -284,9 +285,7 @@
 					}" />
 					<choose>
 						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;), &quot;anthropic&quot;, StringComparison.OrdinalIgnoreCase))">
-							<!-- Claude's endpoint is fixed and rejects the Azure OpenAI
-							     api-version query. APIM owns both the path and protocol
-							     header; the caller can select neither. -->
+
 							<rewrite-uri template="/v1/messages" copy-unmatched-params="false" />
 							<set-header name="anthropic-version" exists-action="override">
 								<value>2023-06-01</value>
@@ -314,9 +313,7 @@
 							}</set-body>
 						</when>
 						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;), &quot;mai&quot;, StringComparison.OrdinalIgnoreCase))">
-							<!-- MAI uses an OpenAI-compatible body on its own fixed
-							     endpoint. Remove the Azure OpenAI api-version query
-							     and bind model to the backend selected for this try. -->
+
 							<rewrite-uri template="/v1/chat/completions" copy-unmatched-params="false" />
 							<set-body>@{
 								JObject body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
@@ -325,9 +322,7 @@
 							}</set-body>
 						</when>
 						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;), &quot;providers/blackforestlabs/v1&quot;, StringComparison.OrdinalIgnoreCase))">
-							<!-- BFL models use a provider-specific operation path and
-							     require the selected deployment name in lowercase.
-							     APIM owns both, including the preview query version. -->
+
 							<rewrite-uri template="@((string)context.Variables[&quot;backendRelativePath&quot;])" copy-unmatched-params="false" />
 							<set-query-parameter name="api-version" exists-action="override">
 								<value>preview</value>
@@ -340,9 +335,7 @@
 							}</set-body>
 						</when>
 						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;), &quot;providers/mistral/azure&quot;, StringComparison.OrdinalIgnoreCase))">
-							<!-- Mistral document models share one provider OCR endpoint.
-							     APIM owns its preview version and the regional failover
-							     deployment carried in the request body. -->
+
 							<rewrite-uri template="@((string)context.Variables[&quot;backendRelativePath&quot;])" copy-unmatched-params="false" />
 							<set-query-parameter name="api-version" exists-action="override">
 								<value>2024-05-01-preview</value>
@@ -369,7 +362,7 @@
 							</choose>
 						</otherwise>
 					</choose>
-					<!-- use Managed Identity, API-Key, or no auth header based on auth value -->
+
 					<choose>
 						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;auth&quot;, &quot;&quot;), &quot;MI&quot;, StringComparison.OrdinalIgnoreCase))">
 							<set-header name="Authorization" exists-action="override">
@@ -382,7 +375,7 @@
 							</set-header>
 						</when>
 						<otherwise>
-							<!-- empty/none: do not add any auth header -->
+
 						</otherwise>
 					</choose>
 					<set-variable name="activityLog" value="@{
@@ -397,35 +390,44 @@
 						});
 						return arr;
 					}" />
-					<!-- If the endpoint is concurrency limited, it will immedietly retry -->
+
 
 					<set-variable name="callCompleted" value="@(false)" />
 					<set-variable name="callAttempted" value="@(true)" />
 					<set-variable name="CallAttemptStartTime" value="@(DateTime.UtcNow)" />
 					<set-variable name="wasLimited" value="@(true)" />
-					<!-- Concurrency counter is per-backend, keyed by its label -->
+
 					<set-variable name="concurrencyKey" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;label&quot;))" />
+
+					<choose>
+						<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; context.Variables.GetValueOrDefault&lt;bool>(&quot;attemptClaimed&quot;, false))">
+							<return-response>
+								<set-status code="409" reason="Gateway attempt already claimed" />
+							</return-response>
+						</when>
+					</choose>
+					<set-variable name="attemptClaimed" value="@(true)" />
 					<choose>
 						<when condition="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;bool>(&quot;bufferResponse&quot;))">
 							<choose>
 								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;low&quot;)">
 									<limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="10">
-										<forward-request buffer-request-body="true" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])"/>
+										<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])"/>
 									</limit-concurrency>
 								</when>
 								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;medium&quot;)">
 									<limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="50">
-										<forward-request buffer-request-body="true" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+										<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
 									</limit-concurrency>
 								</when>
 								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;high&quot;)">
 									<limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="100">
-										<forward-request buffer-request-body="true" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+										<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
 									</limit-concurrency>
 								</when>
 								<otherwise>
 									<set-variable name="wasLimited" value="@(false)" />
-									<forward-request buffer-request-body="true" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+									<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
 								</otherwise>
 							</choose>
 						</when>
@@ -433,22 +435,22 @@
 							<choose>
 								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;low&quot;)">
 									<limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="10">
-										<forward-request buffer-request-body="true" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])"/>
+										<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])"/>
 									</limit-concurrency>
 								</when>
 								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;medium&quot;)">
 									<limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="50">
-										<forward-request buffer-request-body="true" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+										<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
 									</limit-concurrency>
 								</when>
 								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;high&quot;)">
 									<limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="100">
-										<forward-request buffer-request-body="true" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+										<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
 									</limit-concurrency>
 								</when>
 								<otherwise>
 									<set-variable name="wasLimited" value="@(false)" />
-									<forward-request buffer-request-body="true" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+									<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
 								</otherwise>
 							</choose>
 						</otherwise>
@@ -456,19 +458,7 @@
 					<set-variable name="wasLimited" value="@(false)" />
 					<set-variable name="callCompleted" value="@(true)" />
 
-					<!-- Is this 400 worth retrying on a DIFFERENT backend?
-					     Only one 400 is: "context_length_exceeded". That is a property of the
-					     backend the request landed on (a PTU deployment with a smaller window),
-					     so another backend can genuinely succeed, and the retry loop below
-					     deliberately skips PTU backends once this is set.
-					     Every other 400 is a malformed request: it is deterministic, it will
-					     fail identically on every backend, and retrying it costs three upstream
-					     calls, throttles a HEALTHY backend for 10s for all other callers, and
-					     replaces the provider's own diagnostic body with an empty 429. That is
-					     the same "client error laundered into a retryable capacity error" bug
-					     the pre-routing 401 guard fixes, one stage later.
-					     Computed here, once, because both isTempError (immediately below) and
-					     contextWindowExceeded (further down) need the same answer. -->
+
 					<set-variable name="isRetryableBadRequest" value="@{
 						if (context.Response == null || context.Response.StatusCode != 400) { return false; }
 						try {
@@ -477,7 +467,7 @@
 						} catch { return false; }
 					}" />
 
-					<!-- Temporary Errors: 408, 429, 50xx, and a context_length_exceeded 400 -->
+
 					<set-variable name="isTempError" value="@{
 						var statusCode = context.Response?.StatusCode ?? 500;
 						var retryableBadRequest = context.Variables.GetValueOrDefault&lt;bool>(&quot;isRetryableBadRequest&quot;, false);
@@ -485,11 +475,7 @@
 						bool isTempError = statusCode == 429 || statusCode == 408 || (statusCode == 400 &amp;&amp; retryableBadRequest) || statusCode >= 500;
 						return isTempError;
 					}" />
-					<!-- Permanent Errors: 4xx that is not 408, not 429, and not a retryable 400.
-					     The lower bound is >= 400, not > 400: a malformed 400 is now excluded
-					     from isTempError, and if it were excluded from isPermError as well it
-					     would be NEITHER, which leaves RetryRemaining true and reinstates the
-					     retry loop this classification exists to stop. -->
+
 					<set-variable name="isPermError" value="@{
 						var isTempError = context.Variables.GetValueOrDefault&lt;bool>(&quot;isTempError&quot;, false);
 						var statusCode = context.Response?.StatusCode ?? 500;
@@ -515,7 +501,7 @@
 					}" />
 				</when>
 				<otherwise>
-					<!-- No backend was selected (backendIndex == -1): record the reason in the activity log -->
+
 					<set-variable name="activityLog" value="@{
 						// No Backend
 						var arr = context.Variables.GetValueOrDefault&lt;JArray>(&quot;activityLog&quot;, new JArray());
@@ -551,10 +537,7 @@
 					}" />
 				</otherwise>
 			</choose>
-			<!-- Set contextWindowExceeded flag separately after checking isPermError.
-			     Reuses the single isRetryableBadRequest decision above rather than parsing
-			     the body a second time; a second copy of the rule would let the retry
-			     classification and the PTU-skip disagree about the same response. -->
+
 			<set-variable name="contextWindowExceeded" value="@{
 				if (context.Response == null) { return context.Variables.GetValueOrDefault&lt;bool>(&quot;contextWindowExceeded&quot;, false); }
 
@@ -566,9 +549,7 @@
 				return context.Variables.GetValueOrDefault&lt;bool>(&quot;contextWindowExceeded&quot;, false);
 			}" />
 
-			<!-- Throttle the backend only for signals that say the BACKEND is unhealthy.
-			     A malformed 400 says the REQUEST is wrong, so it must not park a healthy
-			     backend for 10s and degrade every other caller in the region. -->
+
 			<choose>
 				<when condition="@(context.Variables.GetValueOrDefault&lt;int>(&quot;backendIndex&quot;, -1) > -1 &amp;&amp;
 					(context.Variables.GetValueOrDefault&lt;bool>(&quot;isTempError&quot;, true) ||
@@ -643,6 +624,7 @@
 				return count;
 			}" />
 			<set-variable name="RetryRemaining" value="@{
+				if (context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false)) { return false; }
 				var isPermError = context.Variables.GetValueOrDefault&lt;bool>(&quot;isPermError&quot;, false);
 				var retryCount = context.Variables.GetValueOrDefault&lt;int>(&quot;RetryCount&quot;, -1);
 				var unthrottled = context.Variables.GetValueOrDefault&lt;int>(&quot;unThrottledBackends&quot;, 0);
@@ -654,6 +636,7 @@
 			}" />
 
 			<set-variable name="Return429" value="@{
+				if (context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false)) { return false; }
 				var isPermError = context.Variables.GetValueOrDefault&lt;bool>(&quot;isPermError&quot;, false);
 				var RetryRemaining = context.Variables.GetValueOrDefault&lt;bool>(&quot;RetryRemaining&quot;, true);
 				var RequeueAllowed = context.Variables.GetValueOrDefault&lt;bool>(&quot;RequeueAllowed&quot;, true);
@@ -694,18 +677,22 @@
 				return arr;
 			}" />
 
-			<!-- Determine if next action is retry, requeue, or return response -->
+
 			<choose>
-				<!-- If we got a 200, skip the retry and return the response -->
+				<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))">
+					<set-variable name="RetryRemaining" value="@(false)" />
+					<set-variable name="Return429" value="@(false)" />
+				</when>
+
 				<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;callCompleted&quot;, false) &amp;&amp; context.Response != null &amp;&amp; context.Response.StatusCode == 200)">
 					<choose>
 						<when condition="@(context.Response.Headers.ContainsKey(&quot;Transfer-Encoding&quot;) &amp;&amp; context.Response.Headers[&quot;Transfer-Encoding&quot;].Contains(&quot;chunked&quot;))">
-							<!-- For streaming responses, success is indicated by 200 status -->
+
 							<set-variable name="RetryRemaining" value="@(false)" />
 						</when>
 						<when condition="@( !context.Response.Headers.ContainsKey(&quot;Content-Length&quot;) || context.Response.Headers[&quot;Content-Length&quot;].FirstOrDefault() == &quot;0&quot; || context.Response.Body is null )">
 							<set-variable name="RetryRemaining" value="@(true)" />
-							<!-- <set-variable name="RetryCount" value="@(context.Variables.GetValueOrDefault<int>("RetryCount") + 1)" /> -->
+
 							<set-variable name="Return429" value="@(false)" />
 						</when>
 						<otherwise>
@@ -714,7 +701,7 @@
 					</choose>
 				</when>
 
-				<!-- If all backends are throttling, or no retry remains, calculate sleep time and return a 429 -->
+
 				<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;Return429&quot;, true) ||
 					(!context.Variables.GetValueOrDefault&lt;bool>(&quot;RetryRemaining&quot;, true) &amp;&amp;
 					!context.Variables.GetValueOrDefault&lt;bool>(&quot;isPermError&quot;, false)))">
@@ -738,19 +725,7 @@
 						return 1000;
 					}" />
 
-					<!--<set-variable name="activityLog" value="@{
-						JArray arr = context.Variables.GetValueOrDefault<JArray>("activityLog", new JArray());
-						arr.Add(new JObject {
-							{ "Elapsed", context.Elapsed.TotalSeconds.ToString("F3")},
-							{ "message", "No available backends" }
-						});
-						return arr;
-					}" />
-					<send-request mode="new" response-variable-name="sleepResponse" timeout="@(Math.Min(10, (int)Math.Ceiling(((double)context.Variables["sleepDuration"])/1000) + 1))">
-						<set-url>@("https://your-backend-service/sleep?milliseconds=" + context.Variables["sleepDuration"])</set-url>
-						<set-method>GET</set-method>
-					</send-request>
-					-->
+
 					<choose>
 						<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;RequeueAllowed&quot;, true))">
 							<set-header name="S7PREQUEUE" exists-action="override">
@@ -789,13 +764,7 @@
 					</return-response>
 				</when>
 
-				<!-- If we got a permanent error, return the error code AND the upstream body.
-				     <return-response> REPLACES the response wholesale, so omitting <set-body>
-				     silently returns Content-Length: 0. Every terminal 4xx from the provider
-				     (bad parameter, unsupported value, content filter) therefore reached the
-				     caller as a bare status with no reason, which is what made a malformed
-				     request undiagnosable from the app. The body was already read with
-				     preserveContent above, so it is still available here. -->
+
 				<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;isPermError&quot;, true))">
 					<return-response>
 						<set-status code="@(context.Response?.StatusCode ?? 500)" reason="Permanent Error" />

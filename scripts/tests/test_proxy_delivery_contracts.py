@@ -69,6 +69,24 @@ class ProxyTelemetryContracts(unittest.TestCase):
 
 
 class ProxyRuntimeContracts(unittest.TestCase):
+    def test_bounded_metadata_is_bound_before_configurable_stripping(self) -> None:
+        source = (ROOT / "proxy" / "SimpleL7Proxy" / "server.cs").read_text(encoding="utf-8")
+        authenticated = source.index("authenticatedKey = isValid;")
+        bound = source.index("NoReplayAttempt.BindAuthenticated(rd, authenticatedKey, _options)")
+        strip = source.index("foreach (var header in _disallowedHeaders)")
+        recheck = source.index("NoReplayAttempt.ValidateState(rd)")
+        self.assertLess(authenticated, bound)
+        self.assertLess(bound, strip)
+        self.assertLess(strip, recheck)
+
+    def test_proxy_ci_requires_actual_test_discovery(self) -> None:
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "quality.yml").read_text())
+        commands = "\n".join(step.get("run", "") for step in workflow["jobs"]["proxy-dotnet"]["steps"])
+        self.assertIn("dotnet restore", commands)
+        self.assertIn("--locked-mode", commands)
+        self.assertIn("--no-build --no-restore", commands)
+        self.assertIn("-- --minimum-expected-tests 40", commands)
+
     def test_secret_adjacent_warm_reload_debug_output_cannot_be_reenabled(self) -> None:
         source = CONFIG_FACTORY.read_text(encoding="utf-8")
         self.assertNotIn("[WARM]", source)
