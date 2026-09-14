@@ -66,6 +66,7 @@ from ..policy.context import canonical_tool_name, require_policy, tool_allowed, 
 from ..policy.models import PolicyError, PolicyRequest
 from ..publishing.execution import observe_publication_offers
 from ..publishing.models import PublicationError
+from ..publishing.refs import PublicationEvidence
 from .prompt_budget import (
     TOOL_CONTEXT_RESERVE_TOKENS,
     bound_agent_context,
@@ -186,6 +187,7 @@ class AgentRunResult:
     incomplete: bool = False
     incomplete_reason: str | None = None
     model_evidence: ModelCallRecorder | None = None
+    publication: PublicationEvidence | None = None
 
 
 class DelegatedToolResult(dict[str, Any]):

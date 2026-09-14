@@ -72,6 +72,9 @@ from ..workflows.runner import run_workflow
 from ..workflows.persistence import persist_run_message
 from ..workflows.receipts import workflow_activity, workflow_receipt, workflow_safety
 from ..workflows.service import WorkflowService
+from ..publishing.execution import bind_execution, prepare_execution, workflow_publication_builder
+from ..publishing.models import PublicationError
+from ..publishing.refs import AssetVersionRef
 
 router = APIRouter(prefix="/api", tags=["workflows"])
 _DURABLE_SCHEDULING_LEASE_SECONDS = 30
@@ -148,6 +151,7 @@ class WorkflowRunRequest(BaseModel):
     # handle for cancellation before the synchronous response reveals runId.
     idempotencyKey: str | None = Field(default=None, min_length=8, max_length=128)
     autoApproveTools: bool = Field(default=False, strict=True)
+    sourceVersion: AssetVersionRef | None = None
 
     @model_validator(mode="after")
     def require_run_idempotency_key(self) -> WorkflowRunRequest:
@@ -407,7 +411,7 @@ async def run_workflow_endpoint(
 
     session = await repo.get_session(uid, body.sessionId)
 
-    workflow = await _service(request).get(uid, name)
+    workflow = await _service(request).resolve_for(uid, name)
     if workflow is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -418,6 +422,8 @@ async def run_workflow_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Workflow '{workflow.name}' is disabled.",
         )
+    if body.sourceVersion is not None and body.sourceVersion != workflow.sourceVersion:
+        raise PublicationError("publication_version_changed")
     if body.autoApproveTools and not tool_auto_approve_available(request.app.state):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -456,6 +462,15 @@ async def run_workflow_endpoint(
             detail=f"Unknown or unavailable model: {model_id}",
         )
     entry = catalog.get(model_id)
+    publication = None
+    if workflow.sourceVersion is not None:
+        if body.durable:
+            raise PublicationError("publication_requires_interactive_authorization", 409)
+        publication = await prepare_execution(
+            request.app.state, workflow.sourceVersion, mode="workflow",
+            model_id=model_id, deployment=deployment, session=session,
+        )
+        bind_execution(publication)
     if entry is not None and not entry.supportsTools:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -481,8 +496,10 @@ async def run_workflow_endpoint(
     approval_policy = getattr(
         request.app.state.settings, "tool_approval_mode", ApprovalPolicy.always
     )
-    composed: AgentCatalog = await request.app.state.agent_service.catalog_for(
-        uid, request.app.state.agents
+    composed: AgentCatalog = (
+        await request.app.state.publications.dependency_catalog(publication.actor, publication.resolved.version)
+        if publication is not None else
+        await request.app.state.agent_service.catalog_for(uid, request.app.state.agents)
     )
     snapshot_agents = AgentCatalog(agents=[
         agent for agent_name in dict.fromkeys(step.agent for step in workflow.steps)
@@ -801,6 +818,9 @@ async def run_workflow_endpoint(
         ),
         api=entry.api if entry is not None else "chat",
         model_id=model_id, pricing=metering.pricing,
+        publication_builder=workflow_publication_builder(
+            request.app.state, model_id=model_id, deployment=deployment, session=session,
+        ),
     )
 
     assistant = Message(

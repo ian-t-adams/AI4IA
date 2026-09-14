@@ -46,9 +46,15 @@ the subset enforced by its model-routing policy.
 
 ## Capacity is not capability
 
-The catalog separates portable `capacity` from optional `maxCapacity`:
+The catalog separates portable allocations, reviewed production policy and
+subscription-specific maxima:
 
 - **Baseline** uses the portable allocation.
+- **Production** requires an explicitly reviewed catalog policy and capacities
+  with per-pool replacement/retry/other-workload reserves. The shipped catalog
+  intentionally has no production assignments; missing policy refuses instead
+  of falling back. See the
+  [offline recommendation and adoption workflow](runbooks/deploy-to-azure.md#production-capacity-policy-and-offline-recommendations).
 - **Maximum** uses subscription-specific values produced by
   `scripts/sync-model-capacity.py`, falling back to baseline where none exists.
 

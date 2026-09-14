@@ -254,10 +254,9 @@ async def _validate_policy_fields(
     selected = (agent_name or "").strip() or None
     source_version = None
     if selected and validate_agent:
-        catalog = await request.app.state.agent_service.catalog_for(
-            user.internal_user_id, request.app.state.agents
+        agent = await request.app.state.agent_service.resolve_for(
+            user.internal_user_id, selected, request.app.state.agents, mode=None,
         )
-        agent = catalog.get(selected)
         if agent is None or not agent.enabled:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -265,9 +264,6 @@ async def _validate_policy_fields(
             )
         selected = agent.name
         if agent.sourceVersion is not None:
-            await request.app.state.publications.resolve_for_execution(
-                await request.app.state.policy.resolve(user), agent.sourceVersion, mode="chat",
-            )
             source_version = agent.sourceVersion
 
     try:

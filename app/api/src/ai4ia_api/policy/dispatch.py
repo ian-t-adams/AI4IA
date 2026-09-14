@@ -34,7 +34,8 @@ async def authorize_dispatch(
     actor = await binding.resolve()
     profile = binding.restricted_profile or binding.service.restricted_profile(actor.owner_id)
     if profile is not None:
-        if surface != "chat":
+        expected_surface = "realtime" if profile == "realtime-setup-canary" else "chat"
+        if surface != expected_surface:
             raise PolicyError(PolicyDecision("deny", "canary_policy_incompatible"))
     if deployment is not None:
         matches = [

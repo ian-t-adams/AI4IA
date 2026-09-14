@@ -124,6 +124,9 @@ async def require_policy(request: PolicyRequest, *, owner_id: str | None = None)
         return
     if owner_id is not None and binding.owner_id != owner_id:
         raise PolicyError(PolicyDecision("deny", "owner_mismatch"))
+    profile = binding.restricted_profile or binding.service.restricted_profile(binding.owner_id, cached=True)
+    if profile is not None and not binding.service.enabled:
+        raise PolicyError(PolicyDecision("unavailable", "canary_policy_unconfigured"))
     effective = None
     if binding.service.enabled:
         effective = await binding.resolve()

@@ -110,6 +110,8 @@ class WorkflowService:
 
     async def resolve_for(self, user_id: str, name: str) -> Workflow | None:
         key = (name or "").strip().lower()
+        if not key.startswith("pub."):
+            return await self.get(user_id, key)
         return next((item for item in await self.available_for(user_id) if item.name == key), None)
 
     async def create(self, user_id: str, req: WorkflowCreate) -> Workflow:

@@ -39,8 +39,7 @@ async def resolve_conversation_policy(
     selected = (explicit_agent or session.agentName or "").strip()
     agent = None
     if selected:
-        catalog = await state.agent_service.catalog_for(user_id, state.agents)
-        candidate = catalog.get(selected)
+        candidate = await state.agent_service.resolve_for(user_id, selected, state.agents, mode=mode)
         if session.agentVersion is not None and not explicit_agent:
             binding = current_binding()
             if binding is None or binding.owner_id != user_id:

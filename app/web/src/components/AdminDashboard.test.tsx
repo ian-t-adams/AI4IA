@@ -16,6 +16,8 @@ vi.mock("@/lib/admin", async (importOriginal) => {
     ...actual,
     fetchWhoAmI: vi.fn(),
     fetchOverview: vi.fn(),
+    fetchUsageSummary: vi.fn(),
+    fetchOfficialMcpHealth: vi.fn(),
     fetchResources: vi.fn(),
     fetchWebSearchHealth: vi.fn(),
     fetchOperations: vi.fn(),
@@ -24,8 +26,12 @@ vi.mock("@/lib/admin", async (importOriginal) => {
 });
 
 import {
+  ADMIN_OPERATIONS,
   type AdminUsageOverviewReport,
+  type OfficialMcpHealthReport,
   fetchOverview,
+  fetchUsageSummary,
+  fetchOfficialMcpHealth,
   fetchResources,
   fetchWebSearchHealth,
   fetchOperations,
@@ -33,6 +39,10 @@ import {
   fetchWhoAmI,
 } from "@/lib/admin";
 
+const adminReaders = [fetchOverview, fetchUsageSummary, fetchResources, fetchWebSearchHealth, fetchOperations, fetchSecurityMetrics, fetchOfficialMcpHealth];
+const officialMcp: OfficialMcpHealthReport = {
+  enabled: false, gatewayConfigured: false, generatedAt: "2024-06-30T00:00:00Z", servers: [],
+};
 
 const localStorageData = new Map<string, string>();
 const localStorageMock = {
@@ -114,8 +124,10 @@ beforeEach(() => {
     configurable: true,
   });
   window.localStorage.clear();
-  vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "alice", isAdmin: true });
+  vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "alice", isAdmin: true, adminOperations: [...ADMIN_OPERATIONS] });
   vi.mocked(fetchOverview).mockResolvedValue(overview);
+  vi.mocked(fetchUsageSummary).mockResolvedValue(summary);
+  vi.mocked(fetchOfficialMcpHealth).mockResolvedValue(officialMcp);
   vi.mocked(fetchResources).mockResolvedValue({ generatedAt: "", windowMinutes: 5, panels: [] });
   vi.mocked(fetchWebSearchHealth).mockResolvedValue({
     enabled: true,
@@ -181,11 +193,146 @@ async function panelByHeading(name: string): Promise<HTMLElement> {
 }
 
 describe("AdminDashboard new analytics panels", () => {
+  it.each([
+    { operation: "admin.metrics.resources.read", heading: "Platform resources", reader: fetchResources },
+    { operation: "admin.metrics.operations.read", heading: "Operations and latency", reader: fetchOperations },
+    { operation: "admin.metrics.security.read", heading: "Security and governance blocks", reader: fetchSecurityMetrics },
+    { operation: "admin.metrics.websearch.read", heading: "Web search health", reader: fetchWebSearchHealth },
+    { operation: "admin.mcp.inspect", heading: "Official MCP discovery", reader: fetchOfficialMcpHealth },
+  ])("requests and shows only the explicitly granted $operation family", async ({ operation, heading, reader }) => {
+    vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "mapped-reader", isAdmin: true, adminOperations: [operation] });
+    render(<AdminDashboard />);
+    await panelByHeading(heading);
+    await waitFor(() => expect(reader).toHaveBeenCalledTimes(1));
+    for (const candidate of adminReaders) expect(candidate).toHaveBeenCalledTimes(candidate === reader ? 1 : 0);
+    expect(screen.queryByText("Active users")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Top users" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Show real identities")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Window")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { adminOperations: [] },
+    { adminOperations: ["publication.review"] },
+    { adminOperations: ["admin"] },
+    { adminOperations: ["Admin.Usage.Read"] },
+  ])(
+    "does not let an admin badge or publication-review role grant dashboard endpoints ($adminOperations)", async ({ adminOperations }) => {
+      vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "reviewer", isAdmin: true, adminOperations });
+      render(<AdminDashboard />);
+      await screen.findByRole("heading", { name: "Admins only" });
+      for (const reader of adminReaders) expect(reader).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["admin.directory.read", "admin.entitlements.read", "admin.entitlements.write", "admin.mcp.refresh"])(
+    "does not infer missing read prerequisites from %s", async (operation) => {
+      vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "mapped", isAdmin: true, adminOperations: [operation] });
+      render(<AdminDashboard />);
+      expect(await screen.findByText("No dashboard read panels are available for your admin operations.")).toBeInTheDocument();
+      for (const reader of adminReaders) expect(reader).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])("uses exactly one usage scan with entitlement-read access=%s", async (entitlements) => {
+    vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "usage-reader", isAdmin: true,
+      adminOperations: ["admin.usage.read", ...(entitlements ? ["admin.entitlements.read"] : [])] });
+    render(<AdminDashboard />);
+    await screen.findByText("Active users");
+    expect(fetchOverview).toHaveBeenCalledTimes(entitlements ? 1 : 0);
+    expect(fetchUsageSummary).toHaveBeenCalledTimes(entitlements ? 0 : 1);
+    expect(screen.queryByRole("heading", { name: "Top users" }) !== null).toBe(entitlements);
+    expect(screen.queryByRole("heading", { name: "Top models by tokens and cost" }) !== null).toBe(entitlements);
+    if (!entitlements) expect(screen.getByText(/Showing unenriched usage totals/)).toBeInTheDocument();
+    for (const reader of [fetchResources, fetchOperations, fetchSecurityMetrics, fetchWebSearchHealth, fetchOfficialMcpHealth]) {
+      expect(reader).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([false, true])("honors a saved identity preference only with directory-read access=%s", async (directory) => {
+    window.localStorage.setItem("ai4ia.admin.showRealIdentities", "true");
+    vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "usage-reader", isAdmin: true,
+      adminOperations: ["admin.usage.read", "admin.entitlements.read", ...(directory ? ["admin.directory.read"] : [])] });
+    vi.mocked(fetchOverview).mockResolvedValue({ ...overview, byUser: [{
+      userId: "opaque-user", requests: 1, erroredRequests: 0, promptTokens: 1, completionTokens: 1, totalTokens: 2,
+      costMicroUsd: 0, costKnown: true, displayName: "Visible identity", email: "identity@example.com",
+    }] });
+    render(<AdminDashboard />);
+    const users = await panelByHeading("Top users");
+    expect(fetchOverview).toHaveBeenCalledWith(30, 20, 0, directory, expect.any(AbortSignal));
+    expect(within(users).queryByText("Visible identity") !== null).toBe(directory);
+    expect(within(users).queryByText("identity@example.com") !== null).toBe(directory);
+    expect(screen.queryByRole("checkbox", { name: "Show real identities" }) !== null).toBe(directory);
+    expect(window.localStorage.getItem("ai4ia.admin.showRealIdentities")).toBe("true");
+  });
+
+  it.each([false, true])("keeps entitlement management separate from entitlement-read access (%s)", async (write) => {
+    vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "entitlement-reader", isAdmin: true,
+      adminOperations: ["admin.usage.read", "admin.entitlements.read", ...(write ? ["admin.entitlements.write"] : [])] });
+    vi.mocked(fetchOverview).mockResolvedValue({ ...overview, byUser: [{
+      userId: "opaque-user", requests: 1, erroredRequests: 0, promptTokens: 1, completionTokens: 1, totalTokens: 2,
+      costMicroUsd: 0, costKnown: true, entitlementKnown: true,
+      entitlement: { userId: "opaque-user", source: "override", disabled: true, isUnlimited: false },
+    }] });
+    render(<AdminDashboard />);
+    const users = await panelByHeading("Top users");
+    expect(within(users).getByText("Disabled")).toHaveAttribute("title", write
+      ? "Managed via PUT/DELETE /api/admin/entitlements/{userId}"
+      : "Read-only entitlement. Changes require entitlement-write access.");
+  });
+
+  it.each([false, true])("requires a separate MCP refresh grant (%s) and never refreshes automatically", async (refresh) => {
+    vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "mcp-reader", isAdmin: true,
+      adminOperations: ["admin.mcp.inspect", ...(refresh ? ["admin.mcp.refresh"] : [])] });
+    const user = userEvent.setup();
+    render(<AdminDashboard />);
+    await screen.findByText("Official MCP is disabled.");
+    expect(fetchOfficialMcpHealth).toHaveBeenCalledExactlyOnceWith(false, expect.any(AbortSignal));
+    expect(screen.queryByRole("button", { name: "Refresh MCP discovery cache" }) !== null).toBe(refresh);
+    await user.click(screen.getByRole("button", { name: refresh ? "Refresh MCP discovery cache" : "Inspect official MCP" }));
+    await waitFor(() => expect(fetchOfficialMcpHealth).toHaveBeenCalledTimes(2));
+    expect(fetchOfficialMcpHealth).toHaveBeenLastCalledWith(refresh, expect.any(AbortSignal));
+  });
+
+  it("does not escalate an MCP inspection failure into a cache refresh", async () => {
+    vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "mcp-operator", isAdmin: true,
+      adminOperations: ["admin.mcp.inspect", "admin.mcp.refresh"] });
+    vi.mocked(fetchOfficialMcpHealth).mockRejectedValueOnce(new Error("Discovery unavailable"));
+    const user = userEvent.setup();
+    render(<AdminDashboard />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Discovery unavailable");
+    expect(fetchOfficialMcpHealth).toHaveBeenCalledExactlyOnceWith(false, expect.any(AbortSignal));
+    await user.click(screen.getByRole("button", { name: "Retry MCP inspection" }));
+    await screen.findByText("Official MCP is disabled.");
+    expect(vi.mocked(fetchOfficialMcpHealth).mock.calls.map(([refresh]) => refresh)).toEqual([false, false]);
+    await user.click(screen.getByRole("button", { name: "Refresh MCP discovery cache" }));
+    await waitFor(() => expect(fetchOfficialMcpHealth).toHaveBeenLastCalledWith(true, expect.any(AbortSignal)));
+  });
+
+  it("disables duplicate cache refresh and discards its response after unmount", async () => {
+    vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "mcp-operator", isAdmin: true,
+      adminOperations: ["admin.mcp.inspect", "admin.mcp.refresh"] });
+    let resolve!: (report: OfficialMcpHealthReport) => void;
+    const pending = new Promise<OfficialMcpHealthReport>((done) => { resolve = done; });
+    vi.mocked(fetchOfficialMcpHealth).mockImplementation((refresh) => refresh ? pending : Promise.resolve(officialMcp));
+    const user = userEvent.setup();
+    const view = render(<AdminDashboard />);
+    await screen.findByText("Official MCP is disabled.");
+    await user.dblClick(screen.getByRole("button", { name: "Refresh MCP discovery cache" }));
+    expect(fetchOfficialMcpHealth).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("button", { name: "Refresh MCP discovery cache" })).toBeDisabled();
+    const signal = vi.mocked(fetchOfficialMcpHealth).mock.calls[1][1];
+    view.unmount();
+    expect(signal?.aborted).toBe(true);
+    await act(async () => { resolve(officialMcp); await pending; });
+    expect(fetchOfficialMcpHealth).toHaveBeenCalledTimes(2);
+  });
+
   it("shows a retryable access error when whoami cannot be reached", async () => {
     const user = userEvent.setup();
     vi.mocked(fetchWhoAmI)
       .mockRejectedValueOnce(new Error("internal gateway details"))
-      .mockResolvedValueOnce({ subject: "alice", isAdmin: true });
+      .mockResolvedValueOnce({ subject: "alice", isAdmin: true, adminOperations: [...ADMIN_OPERATIONS] });
 
     render(<AdminDashboard />);
 

@@ -401,7 +401,7 @@ class PublicationService:
 
     async def resolve_handle(
         self, actor: EffectivePolicy, kind: AssetKind, handle: str, *,
-        mode: PublicationExecutionMode,
+        mode: PublicationExecutionMode | None,
     ) -> ResolvedPublication | None:
         heads = await self.catalog(actor, kind, handle=handle)
         if not heads:
@@ -414,8 +414,11 @@ class PublicationService:
         )
         if snapshot is None:
             raise PublicationError("publication_unavailable", 503)
-        ref = PublicationVersion.model_validate(snapshot.body).reference()
-        return await self.resolve_for_execution(actor, ref, mode=mode)
+        version = PublicationVersion.model_validate(snapshot.body)
+        ref = version.reference()
+        return await self.resolve_for_execution(
+            actor, ref, mode=mode if mode is not None else next(iter(version.profiles)),
+        )
 
     async def resolve_for_execution(
         self, actor: EffectivePolicy, ref: AssetVersionRef, *,
@@ -467,9 +470,13 @@ class PublicationService:
         self, actor: EffectivePolicy, ref: AssetVersionRef, *,
         mode: PublicationExecutionMode, implemented_bundle_digest: str,
         model_id: str, deployment: DeploymentOption,
+        _seen: frozenset[str] = frozenset(),
     ) -> None:
         resolved = await self.resolve_for_execution(actor, ref, mode=mode)
         version = resolved.version
+        marker = f"{ref.kind}:{ref.ownerId}:{ref.assetId}:{ref.version}"
+        if marker in _seen or len(_seen) >= 16:
+            raise PublicationError("publication_dependency_cycle")
         await self.state.policy.require(actor, PolicyRequest(
             "model.invoke", model_id=model_id, deployment=deployment,
         ))
@@ -477,9 +484,25 @@ class PublicationService:
             item.modelId == model_id and item.option == deployment for item in version.modelBindings
         ):
             raise PublicationError("publication_model_not_reviewed")
+        if mode == "voice":
+            protocol = getattr(self.state.settings.realtime_protocol, "value", self.state.settings.realtime_protocol)
+            if any(
+                item.modelId == model_id and item.requiredRealtimeProtocol is not None
+                and item.requiredRealtimeProtocol != protocol for item in version.modelBindings
+            ):
+                raise PublicationError("publication_realtime_protocol_changed")
         await self._check_compilation(actor, version)
         if version.profiles[mode].digest != implemented_bundle_digest:
             raise PublicationError("publication_contract_changed")
+        for dependency in version.dependencies:
+            if dependency.published is not None:
+                _, child = await self._version(dependency.published)
+                child_mode = "delegation" if ref.kind == "agent" else "workflow"
+                await self.recheck_execution(
+                    actor, dependency.published, mode=child_mode,
+                    implemented_bundle_digest=child.profiles[child_mode].digest,
+                    model_id=model_id, deployment=deployment, _seen=_seen | {marker},
+                )
         # Metadata discovery may have awaited a remote server. Re-read active
         # source/access after it so withdrawal during discovery cannot be lost.
         await self.resolve_for_execution(actor, ref, mode=mode)

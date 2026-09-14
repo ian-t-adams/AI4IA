@@ -17,6 +17,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _capacity_evidence import EvidenceError
+from _production_capacity import PROFILES, bind_scope, effective_capacity, parse_policy
+
 ROOT = Path(__file__).resolve().parents[1]
 PARAMETERS_FILE = ROOT / "infra" / "main.parameters.json"
 MODELS_FILE = ROOT / "infra" / "models.json"
@@ -64,8 +68,25 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     model_capacity_profile = text(
         parameter_value(parameters, "modelCapacityProfile", "baseline")
     ).lower()
-    if model_capacity_profile not in {"baseline", "maximum"}:
-        errors.append("modelCapacityProfile must be baseline or maximum.")
+    capacity_policy_valid = True
+    if model_capacity_profile not in PROFILES:
+        errors.append("modelCapacityProfile must be baseline, production or maximum.")
+        capacity_policy_valid = False
+    try:
+        policy = parse_policy(
+            models, required=model_capacity_profile == "production",
+            include_anthropic=truthy(parameter_value(parameters, "claudeEnabled", False)),
+        )
+        if policy is not None and model_capacity_profile == "production" and require_deployment_attestation:
+            environment = text(parameter_value(parameters, "environmentName"))
+            workload_token = text(parameter_value(parameters, "workload", "ai4ia"))
+            bind_scope(
+                policy, os.environ.get("AZURE_SUBSCRIPTION_ID", ""),
+                f"rg-{workload_token}-{environment}", environment,
+            )
+    except EvidenceError as exc:
+        errors.append(f"production capacity policy: {exc.code}")
+        capacity_policy_valid = False
 
     workload = text(parameter_value(parameters, "workload", "ai4ia"))
     environment_name = text(parameter_value(parameters, "environmentName"))
@@ -207,6 +228,33 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             "user consent cannot be granted through spoofable development identity."
         )
 
+    group_policy = truthy(parameter_value(parameters, "groupPolicyEnabled", False))
+    publishing = truthy(parameter_value(parameters, "assetPublishingEnabled", False))
+    policy_json = text(parameter_value(parameters, "groupPolicyJson"))
+    if group_policy or publishing:
+        if auth_provider != "entra":
+            errors.append("Group policy and asset publishing require apiAuthProvider=entra.")
+        if publishing and not group_policy:
+            errors.append("assetPublishingEnabled=true requires groupPolicyEnabled=true.")
+        if not policy_json or len(policy_json.encode("utf-8")) > 65536:
+            errors.append("Enabled group policy requires bounded, nonempty groupPolicyJson.")
+        else:
+            try:
+                policy_config = json.loads(policy_json)
+            except (ValueError, RecursionError):
+                errors.append("groupPolicyJson must be valid JSON.")
+            else:
+                if not isinstance(policy_config, dict) or (
+                    type(policy_config.get("version", 1)) is not int
+                    or policy_config.get("version", 1) != 1
+                    or not isinstance(policy_config.get("domains", {}), dict)
+                ):
+                    errors.append("groupPolicyJson requires the version-1 object contract.")
+                elif set(policy_config) - {
+                    "version", "domains", "spend", "adminCeiling", "canaryActor", "evaluationActor",
+                }:
+                    errors.append("groupPolicyJson contains unsupported top-level policy fields.")
+
     if auth_provider == "entra":
         for name in ("entraTenantId", "entraAudience", "entraWebClientId"):
             if not text(parameter_value(parameters, name)):
@@ -345,20 +393,13 @@ def main(*, require_deployment_attestation: bool = False) -> int:
                 "cuAgenticAnalyzerId must be a valid Content Understanding analyzer id."
             )
         capacities = [
-            int(
-                (
-                    deployment.get("maxCapacity", deployment.get("capacity"))
-                    if model_capacity_profile == "maximum"
-                    else deployment.get("capacity")
-                )
-                or 0
-            )
+            int(effective_capacity(deployment, model_capacity_profile) or 0)
             for model in models.get("catalog", [])
             if model.get("name") == "gpt-5.2"
             for deployment in model.get("deployments", [])
             if deployment.get("region") == location
             and deployment.get("sku") == "GlobalStandard"
-        ]
+        ] if capacity_policy_valid else []
         if not capacities or max(capacities) < 400:
             errors.append(
                 "cuAgenticAnalyzerId requires at least 400K TPM on the primary "

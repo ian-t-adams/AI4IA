@@ -63,6 +63,11 @@ from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 from _image_refs import SERVICES, ImageInputError as VerifyInputError, parse_expected_images
+from _canary_contract import (
+    CANARY_PROMPT as CANARY_PROMPT, CANARY_TITLE as CANARY_TITLE,
+    CANARY_CATEGORY_ORDER as CANARY_CATEGORY_ORDER, catalog_model_preferences,
+    chat_payload, session_payload,
+)
 
 STATE_VERSION = 1
 APP_NAME_PREFIX = {"api": "ca-api-", "web": "ca-web-", "proxy": "ca-proxy-"}
@@ -849,44 +854,6 @@ def ingress_or_redirect(outcome: HttpOutcome) -> bool:
 # canary
 # --------------------------------------------------------------------------
 
-CANARY_PROMPT = "Reply with the single word: ready."
-CANARY_TITLE = "post-deploy canary"
-# Cheapest first. Only conversational categories -- a capability model (image,
-# tts, embedding) is not reachable through /api/chat at all.
-CANARY_CATEGORY_ORDER = ("chat-fast", "chat", "reasoning")
-
-
-def catalog_model_preferences(catalog_doc: Any) -> list[str]:
-    """Candidate chat model ids from infra/models.json, cheapest first.
-
-    Deterministic on purpose: a canary that picks a different model per run
-    tests a different path per run. Never returns a *deployment* name -- the
-    deployment is derived server-side from the catalog, and hardcoding one here
-    would be the exact governance violation AGENTS.md forbids.
-    """
-
-    catalog = catalog_doc.get("catalog") if isinstance(catalog_doc, dict) else None
-    if not isinstance(catalog, list):
-        return []
-    by_category: dict[str, list[str]] = {}
-    for entry in catalog:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        category = entry.get("category")
-        if not isinstance(name, str) or not _MODEL_ID_RE.fullmatch(name):
-            continue
-        if category not in CANARY_CATEGORY_ORDER:
-            continue
-        if not isinstance(entry.get("deployments"), list) or not entry["deployments"]:
-            continue
-        by_category.setdefault(category, []).append(name)
-    ordered: list[str] = []
-    for category in CANARY_CATEGORY_ORDER:
-        ordered.extend(sorted(set(by_category.get(category, []))))
-    return ordered
-
-
 def select_canary_model(catalog_doc: Any, available_ids: Sequence[str]) -> str:
     """First catalog preference the live API says it will actually route to."""
 
@@ -984,7 +951,7 @@ def run_canary(
         f"{api_base}/api/sessions",
         method="POST",
         headers=json_headers,
-        body=json.dumps({"title": CANARY_TITLE, "model": model}).encode("utf-8"),
+        body=json.dumps(session_payload(model)).encode("utf-8"),
         accept=lambda outcome: outcome.status == 201,
         # Session creation is not idempotent. A lost response may mean Cosmos
         # accepted it, so retrying here can create an untracked orphan that this
@@ -1016,14 +983,7 @@ def run_canary(
             # completion and a canary that fails a perfectly healthy deploy. The
             # per-model output cap is applied server-side anyway, and the prompt
             # is what keeps the reply to one word.
-            body=json.dumps(
-                {
-                    "sessionId": session_id,
-                    "content": CANARY_PROMPT,
-                    "model": model,
-                    "stream": False,
-                }
-            ).encode("utf-8"),
+            body=json.dumps(chat_payload(session_id, model)).encode("utf-8"),
             attempts=attempts,
             delay=delay,
             timeout=timeout,
