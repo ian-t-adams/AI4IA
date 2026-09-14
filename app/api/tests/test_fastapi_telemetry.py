@@ -165,13 +165,25 @@ def _exercise(case: str) -> None:
         from tests.conftest import make_settings
         from fastapi.testclient import TestClient
         from fastapi import HTTPException
-        from starlette.responses import StreamingResponse
+        from starlette.background import BackgroundTask
+        from starlette.responses import Response, StreamingResponse
+
+        background_calls = []
+
+        async def background():
+            background_calls.append(True)
+
+        async def background_response():
+            return Response(status_code=204, background=BackgroundTask(background))
 
         assert configured == []  # main's import-time default app is disabled.
         default_app = main.create_app(make_settings())
+        default_app.add_api_route("/background", background_response, methods=["GET"])
         assert configured == []
         with TestClient(default_app) as client:
             assert client.get("/health/live").status_code == 200
+            assert client.get("/background").status_code == 204
+        assert background_calls == [True]
         assert providers == [] and captured.get_finished_spans() == ()
         if case in ("gate", "auto_gate"):
             settings = make_settings(applicationinsights_connection_string=connection)
@@ -186,8 +198,11 @@ def _exercise(case: str) -> None:
             assert len(spans) == 2 and all(span.kind == SpanKind.SERVER for span in spans)
             captured.clear()
             disabled = main.create_app(make_settings())
+            disabled.add_api_route("/background", background_response, methods=["GET"])
             with TestClient(disabled) as client:
                 assert client.get("/health/live").status_code == 200
+                assert client.get("/background").status_code == 204
+            assert background_calls == [True, True]
             providers[0].force_flush()
             assert captured.get_finished_spans() == ()
         else:

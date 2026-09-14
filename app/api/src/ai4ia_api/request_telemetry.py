@@ -129,6 +129,12 @@ class _RequestTracer(trace.Tracer):
         start_time: int | None = None, record_exception: bool = True,
         set_status_on_exception: bool = True, end_on_exit: bool = True,
     ) -> Iterator[trace.Span]:
+        if not attributes:
+            # 0.64b0 also wraps BackgroundTask process-wide using the first app's
+            # tracer. That hook has no request metadata and must not create
+            # spans for a disabled app, or replace its existing context.
+            yield trace.get_current_span(context)
+            return
         span = self.start_span(name, context, kind, attributes, links, start_time)
         with trace.use_span(
             span, end_on_exit=end_on_exit, record_exception=False, set_status_on_exception=False,

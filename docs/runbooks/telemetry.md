@@ -105,7 +105,11 @@ Request instrumentation requires both this app's nonempty Application Insights
 connection setting and successful existing exporter configuration. Repeated
 factory calls reuse that exporter; each enabled app is instrumented once.
 An app without the setting remains uninstrumented even if another app in the
-process has configured the exporter. Health/auth responses, middleware order,
+process has configured the exporter. The instrumentor's process-wide
+`BackgroundTask` hook cannot create non-request spans through this facade;
+otherwise the first enabled app's tracer would leak into a disabled app's
+background responses. Tasks still execute in their existing context.
+Health/auth responses, middleware order,
 correlation-header echo and asynchronous lifespan cleanup retain their existing
 application behavior.
 
