@@ -2205,6 +2205,288 @@ class ServingRevisionContractTests(unittest.TestCase):
         self.assertFalse([call for call in az.calls if "set" in call and APPS["api"] in call])
 
 
+class TemplateProjectionTests(unittest.TestCase):
+    def world(self) -> FakeAz:
+        fixture = json.loads(
+            (ROOT / "scripts/tests/fixtures/container_app_template_projection.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        az = world()
+        for name in APPS.values():
+            for revision in (f"{name}--r1", f"{name}--r2"):
+                props = az.revisions[(name, revision)]["properties"]
+                template = props["template"]
+                template["containers"][0].update(
+                    image=RESTORED_IMAGE,
+                    resources={**fixture["revision"]["resources"], "memory": "1Gi"},
+                    env=[
+                        {"name": "MODE", "value": "synthetic"},
+                        {"name": "TOKEN", "secretRef": "synthetic-secret"},
+                    ],
+                    probes=[{"type": "Readiness", "httpGet": {"path": "/ready", "port": 8080}}],
+                )
+                template["scale"].update(minReplicas=1, **fixture["revision"]["scale"])
+                template["volumes"] = [{"name": "work", "storageType": "EmptyDir"}]
+                if revision.endswith("--r2"):
+                    props.update(replicas=1, runningState="Running")
+            desired = deepcopy(az.revisions[(name, f"{name}--r2")]["properties"]["template"])
+            desired["containers"][0]["resources"].update(fixture["desired"]["resources"])
+            desired["scale"].update(fixture["desired"]["scale"])
+            az.apps[name]["properties"]["template"] = desired
+        return az
+
+    def snapshot(self, service: str) -> Any:
+        return pdv.AppSnapshot(
+            service=service, name=APPS[service], exists=True,
+            revision=f"{APPS[service]}--r1", revisionsMode="Single",
+            image=RESTORED_IMAGE, minReplicas=1,
+        )
+
+    def observe(self, az: FakeAz, service: str = "api") -> Any:
+        with patch.object(pdv, "run_az", az):
+            return pdv.read_current_observation(
+                GROUP, APPS[service], subscription=SUBSCRIPTION,
+                reference_revision=self.snapshot(service).revision,
+            )
+
+    def test_real_projection_passes_pending_restoration_and_rollout_predicates(self) -> None:
+        az = self.world()
+        before_apps, before_revisions = deepcopy(az.apps), deepcopy(az.revisions)
+        for service in pdv.SERVICES:
+            with self.subTest(service=service):
+                snapshot = self.snapshot(service)
+                observation = self.observe(az, service)
+                pending = pdv._pending_cutover_problems(observation)
+                restoration = pdv._restoration_problems(
+                    snapshot, observation, observation.reference
+                )
+                slept = []
+                with patch.object(pdv, "run_az", az):
+                    problems, current, revision = pdv.await_rollout(
+                        resource_group=GROUP, service=service, snapshot=snapshot,
+                        expected_image=RESTORED_IMAGE, attempts=1, sleep=slept.append,
+                    )
+                    confirmed, serving = pdv.confirm_restored(
+                        resource_group=GROUP, snapshot=snapshot,
+                        target=observation.reference, pending_revision=snapshot.revision,
+                        replaced_revision=snapshot.revision, attempts=1, sleep=slept.append,
+                    )
+                self.assertEqual(
+                    {"pending": pending, "restoration": restoration, "rollout": problems,
+                     "confirmed": confirmed},
+                    {"pending": [], "restoration": [], "rollout": [], "confirmed": True},
+                )
+                self.assertIsNotNone(current)
+                self.assertEqual(revision, f"{APPS[service]}--r2")
+                self.assertTrue(confirmed)
+                self.assertEqual(serving, revision)
+                self.assertEqual(slept, [])
+        self.assertEqual(az.apps, before_apps)
+        self.assertEqual(az.revisions, before_revisions)
+        self.assertFalse([call for call in az.calls if "copy" in call or "set" in call])
+
+    def test_projection_alone_does_not_restart_an_unchanged_revision(self) -> None:
+        az = self.world()
+        for service, name in APPS.items():
+            source = deepcopy(az.revisions[(name, f"{name}--r2")])
+            source["name"] = f"{name}--r1"
+            source["id"] = f"{app_id(name)}/revisions/{name}--r1"
+            source["properties"]["template"]["revisionSuffix"] = "r1"
+            az.revisions[(name, f"{name}--r1")] = source
+            az.apps[name]["properties"].update(
+                latestRevisionName=f"{name}--r1", latestReadyRevisionName=f"{name}--r1"
+            )
+            observation = self.observe(az, service)
+            self.assertEqual(
+                pdv.rollback_commands(
+                    resource_group=GROUP, snapshot=self.snapshot(service), observation=observation
+                ),
+                [],
+            )
+
+    def test_verify_and_rollback_use_the_real_projection_comparison(self) -> None:
+        az = self.world()
+        expected = [
+            value for service in pdv.SERVICES
+            for value in ("--expect-image", f"{service}={RESTORED_IMAGE}")
+        ]
+        code, out = VerifyTests().verify(az=az, extra_args=["--skip-canary", *expected])
+        self.assertEqual(code, 0, out)
+
+        def projected_copy(args, **kwargs):
+            response = az(args, **kwargs)
+            if list(args)[:3] == ["containerapp", "revision", "copy"] and response[0] == 0:
+                name = FakeAz._flag(list(args), "-n")
+                template = az.apps[name]["properties"]["template"]
+                template["containers"][0]["resources"]["ephemeralStorage"] = "2Gi"
+                for field, default in (("cooldownPeriod", 300), ("pollingInterval", 30)):
+                    if template["scale"].get(field) is None:
+                        template["scale"][field] = default
+            return response
+
+        code, out, _ = RollbackTests().rollback(
+            inert_az(az, projected_copy), snapshot_overrides={"proxy": {"minReplicas": 1}}
+        )
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.count('"outcome":"restored"'), 3)
+        self.assertEqual(len([call for call in az.calls if "copy" in call]), 3)
+
+    def test_nullable_or_omitted_scale_matches_only_its_documented_default(self) -> None:
+        for field, default in (("cooldownPeriod", 300), ("pollingInterval", 30)):
+            for omitted in (False, True):
+                with self.subTest(field=field, omitted=omitted):
+                    az = self.world()
+                    serving = az.revisions[(APPS["api"], f"{APPS['api']}--r2")]["properties"]["template"]
+                    if omitted:
+                        del serving["scale"][field]
+                    self.assertEqual(pdv._pending_cutover_problems(self.observe(az)), [])
+                    for changed in (0, default + 1):
+                        az.apps[APPS["api"]]["properties"]["template"]["scale"][field] = changed
+                        self.assertTrue(pdv._pending_cutover_problems(self.observe(az)))
+                    az.apps[APPS["api"]]["properties"]["template"]["scale"][field] = default
+                    self.assertEqual(pdv._pending_cutover_problems(self.observe(az)), [])
+
+    def test_matching_explicit_nondefault_scale_values_remain_comparable(self) -> None:
+        for field, value in (("cooldownPeriod", 0), ("cooldownPeriod", 600), ("pollingInterval", 45)):
+            with self.subTest(field=field, value=value):
+                az = self.world()
+                app = az.apps[APPS["api"]]["properties"]["template"]
+                serving = az.revisions[(APPS["api"], f"{APPS['api']}--r2")]["properties"]["template"]
+                app["scale"][field] = serving["scale"][field] = value
+                self.assertEqual(pdv._pending_cutover_problems(self.observe(az)), [])
+                serving["scale"][field] = value + 1
+                self.assertTrue(pdv._pending_cutover_problems(self.observe(az)))
+
+    def test_writable_and_unknown_template_changes_are_not_normalized_away(self) -> None:
+        changes = [
+            (("containers", 0, "image"), DIGEST_B),
+            (("containers", 0, "env", 0, "value"), "changed"),
+            (("containers", 0, "env", 1, "secretRef"), "changed-secret"),
+            (("containers", 0, "resources", "cpu"), 1),
+            (("containers", 0, "resources", "memory"), "2Gi"),
+            (("containers", 0, "resources", "unknownResource"), "changed"),
+            (("containers", 0, "probes", 0, "httpGet", "port"), 8081),
+            (("containers", 0, "probes", 0, "httpGet", "path"), "/changed"),
+            (("scale", "minReplicas"), 2),
+            (("scale", "maxReplicas"), 4),
+            (("scale", "rules"), [{"name": "changed", "http": {"metadata": {"concurrentRequests": "7"}}}]),
+            (("scale", "unknownScale"), None),
+            (("volumes", 0, "storageType"), "AzureFile"),
+            (("unknownTemplate",), None),
+        ]
+        for side in ("desired", "serving", "captured"):
+            for path, value in changes:
+                with self.subTest(side=side, path=path):
+                    az = self.world()
+                    observation = self.observe(az)
+                    self.assertEqual(
+                        pdv._restoration_problems(self.snapshot("api"), observation, observation.reference), []
+                    )
+                    if side == "desired":
+                        template = az.apps[APPS["api"]]["properties"]["template"]
+                    else:
+                        suffix = "r2" if side == "serving" else "r1"
+                        template = az.revisions[(APPS["api"], f"{APPS['api']}--{suffix}")]["properties"]["template"]
+                    parent = template
+                    for key in path[:-1]:
+                        parent = parent[key]
+                    parent[path[-1]] = value
+                    observation = self.observe(az)
+                    self.assertTrue(
+                        pdv._restoration_problems(self.snapshot("api"), observation, observation.reference)
+                    )
+                    if side == "desired":
+                        self.assertTrue(pdv._pending_cutover_problems(observation))
+                        with patch.object(pdv, "run_az", az):
+                            problems, _, _ = pdv.await_rollout(
+                                resource_group=GROUP, service="api", snapshot=self.snapshot("api"),
+                                expected_image=RESTORED_IMAGE, attempts=1,
+                            )
+                        self.assertTrue(problems)
+
+    def test_scale_type_errors_refuse_even_when_python_numeric_equality_would_match(self) -> None:
+        for field, default in (("cooldownPeriod", 300), ("pollingInterval", 30)):
+            for invalid in (False, True, float(default), str(default), [], {}, 2 ** 31):
+                with self.subTest(field=field, invalid=invalid):
+                    az = self.world()
+                    self.assertEqual(pdv._pending_cutover_problems(self.observe(az)), [])
+                    app = az.apps[APPS["api"]]["properties"]["template"]
+                    serving = az.revisions[(APPS["api"], f"{APPS['api']}--r2")]["properties"]["template"]
+                    app["scale"][field] = serving["scale"][field] = invalid
+                    observation = self.observe(az)
+                    self.assertTrue(pdv._pending_cutover_problems(observation))
+                    self.assertTrue(
+                        pdv._restoration_problems(self.snapshot("api"), observation, observation.reference)
+                    )
+                    expected = [
+                        value for service in pdv.SERVICES
+                        for value in ("--expect-image", f"{service}={RESTORED_IMAGE}")
+                    ]
+                    code, out = VerifyTests().verify(
+                        az=az, extra_args=["--skip-canary", *expected]
+                    )
+                    self.assertEqual(code, 3, out)
+                    self.assertEqual(out.count('"event":"rollout"'), 3)
+
+    def test_unknown_json_value_types_remain_distinct(self) -> None:
+        for original, changed in ((True, 1), (300, 300.0), (False, 0)):
+            with self.subTest(original=original, changed=changed):
+                az = self.world()
+                app = az.apps[APPS["api"]]["properties"]["template"]
+                serving = az.revisions[(APPS["api"], f"{APPS['api']}--r2")]["properties"]["template"]
+                app["unknownValue"] = serving["unknownValue"] = original
+                self.assertEqual(pdv._pending_cutover_problems(self.observe(az)), [])
+                serving["unknownValue"] = changed
+                self.assertTrue(pdv._pending_cutover_problems(self.observe(az)))
+
+    def test_read_only_ephemeral_storage_is_narrow_and_not_an_in_place_edit(self) -> None:
+        az = self.world()
+        app = az.apps[APPS["api"]]["properties"]["template"]
+        serving = az.revisions[(APPS["api"], f"{APPS['api']}--r2")]["properties"]["template"]
+        for key in ("containers", "initContainers"):
+            if key == "initContainers":
+                app[key] = [deepcopy(app["containers"][0])]
+                serving[key] = [deepcopy(serving["containers"][0])]
+            self.assertEqual(pdv._pending_cutover_problems(self.observe(az)), [])
+            self.assertEqual(app[key][0]["resources"]["ephemeralStorage"], "2Gi")
+            self.assertNotIn("ephemeralStorage", serving[key][0]["resources"])
+            app[key][0]["resources"]["ephemeralStorage"] = {"unrecognized": "shape"}
+            self.assertTrue(pdv._pending_cutover_problems(self.observe(az)))
+            app[key][0]["resources"]["ephemeralStorage"] = "2Gi"
+            app[key][0]["resources"]["memory"] = "2Gi"
+            self.assertTrue(pdv._pending_cutover_problems(self.observe(az)))
+            app[key][0]["resources"]["memory"] = "1Gi"
+
+    def test_real_pending_identity_and_failed_provisioning_still_refuse(self) -> None:
+        for field, value in (
+            ("latestRevisionName", f"{APPS['api']}--pending"),
+            ("provisioningState", "Updating"),
+        ):
+            with self.subTest(field=field):
+                az = self.world()
+                self.assertEqual(pdv._pending_cutover_problems(self.observe(az)), [])
+                az.apps[APPS["api"]]["properties"][field] = value
+                observation = self.observe(az)
+                self.assertTrue(pdv._pending_cutover_problems(observation))
+                self.assertTrue(
+                    pdv.rollback_commands(
+                        resource_group=GROUP, snapshot=self.snapshot("api"), observation=observation
+                    )
+                )
+
+    def test_malformed_captured_scale_is_not_copied_and_other_apps_continue(self) -> None:
+        az = self.world()
+        source = az.revisions[(APPS["api"], f"{APPS['api']}--r1")]["properties"]["template"]
+        source["scale"]["cooldownPeriod"] = 300.0
+        code, out, _ = RollbackTests().rollback(
+            az, snapshot_overrides={"proxy": {"minReplicas": 1}}
+        )
+        self.assertEqual(code, 4, out)
+        self.assertFalse([call for call in az.calls if "copy" in call and APPS["api"] in call])
+        self.assertEqual(out.count('"outcome":"restored"'), 2)
+
+
 class AzInvocationTests(unittest.TestCase):
     def test_the_az_binary_is_overridable_for_testing(self) -> None:
         with patch.dict("os.environ", {"AI4IA_AZ_CLI": "/nonexistent/az"}, clear=False):

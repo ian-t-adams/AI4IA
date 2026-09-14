@@ -467,6 +467,15 @@ template could cut over. Validate v1 captured image/scale against the immutable
 source revision before copying; never infer an unknown or mismatched saved image.
 Single-mode copy confirmation requires the actual new healthy/provisioned serving
 template, settled latest/desired state and the previous latest candidate inactive.
+Compare writable template intent using only the evidenced ARM projection rules:
+exclude the explicitly read-only `resources.ephemeralStorage` in containers and
+init containers, and resolve only unset/missing scale `cooldownPeriod` and
+`pollingInterval` to their published 300/30-second defaults. Preserve explicit
+zero/nondefaults and every other field; malformed types, unknown changes and
+bool/int/float equality shortcuts must not become a pass. Same-version raw GETs
+also expose these differences, so changing CLI transport alone is not a fix.
+Candidate acceptance must exercise actual pending/restoration/rollout predicates;
+capture or healthy-image reads alone do not cover writable-template comparison.
 Multiple mode pins all traffic to the exact captured revision without switching
 modes. Preserve min-zero support, per-app failure isolation and no write replay;
 see `docs/runbooks/deployment.md#automatic-and-manual-rollback`.
