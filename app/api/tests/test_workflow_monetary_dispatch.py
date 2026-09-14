@@ -101,10 +101,9 @@ def test_real_bound_reserves_before_send_at_the_exact_dollar_boundary(client, mo
             "surface": "chat", "payload": json.loads(request.content),
             "deployment": DEPLOYMENT, "target": str(request.url),
         })
-        with pytest.raises(QuotaError, match="binding"):
-            current_attempt_envelope(
-                "chat", json.loads(request.content), deployment=DEPLOYMENT, target=str(request.url), owner=owner,
-            )
+        assert current_attempt_envelope(
+            "chat", json.loads(request.content), deployment=DEPLOYMENT, target=str(request.url), owner=owner,
+        ) is None
         return response_for("chat", request)
 
     response[0] = reply
