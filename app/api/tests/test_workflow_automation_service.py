@@ -256,6 +256,7 @@ def test_http_inbox_and_one_time_review_are_owner_scoped(client):
     old = {"decision": "approve", "requestId": first["requestId"], "grant": first["grant"]}
     assert client.post(decision_url, json=old).status_code == 409
     exact = {"decision": "approve", "requestId": second["requestId"], "grant": second["grant"]}
+    assert client.post(decision_url, json={**exact, "grant": "not-the-issued-grant"}).status_code == 409
     assert client.post(decision_url, json={**exact, "arguments": {"text": "changed"}}).status_code == 422
     assert client.post(decision_url, json=exact, headers=foreign).status_code == 404
     assert client.post(decision_url, json=exact).status_code == 202
