@@ -185,6 +185,46 @@ def test_missing_actual_factory_or_changed_invalid_policy_refuses(program, failu
     assert not any(path == "/api/sessions" for _, path, _ in transport.requests)
 
 
+@pytest.mark.parametrize("paused", [False, True])
+@pytest.mark.parametrize("when", ["before_preflight", "before_dispatch"])
+def test_paused_evaluation_policy_preserves_denial_cleanup_and_coverage(program, paused, when):
+    assert run_program(program, operation="preflight")[0].api_preflight == "passed"
+    if when == "before_preflight":
+        program.settings.group_policy_enabled = not paused
+
+    dispatch_attempts = []
+
+    def mutate(method, path, body):
+        if method == "POST" and path == "/api/chat" and "sessionId" in body:
+            dispatch_attempts.append(body["sessionId"])
+            if when == "before_dispatch":
+                program.settings.group_policy_enabled = not paused
+        return body
+
+    report, transport = run_program(program, AppTransport(program, mutate=mutate))
+    creates = [
+        body for method, path, body in transport.requests
+        if (method, path) == ("POST", "/api/sessions")
+    ]
+    assert report.coverage.pass_denominator == 3
+    if not paused:
+        assert report.gate == "passed" and report.coverage.passed == 3
+        assert len(program.calls) == len(dispatch_attempts) == 3
+        assert len(creates) == 4
+    else:
+        assert report.gate == "unknown" and report.coverage.unknown == 3
+        assert program.calls == []
+        assert all(row.measurements.cost_micro_usd is None for row in report.cases)
+        if when == "before_preflight":
+            assert report.api_preflight == "unknown" and report.lifecycle.status == "not_run"
+            assert creates == dispatch_attempts == []
+        else:
+            assert report.api_preflight == "passed" and report.lifecycle.status == "passed"
+            assert len(dispatch_attempts) == 1 and len(creates) == 2
+            assert report.cases[0].checks[-1].status == "passed"
+            assert all(row.checks[-1].reason == "not_run" for row in report.cases[1:])
+
+
 @pytest.mark.parametrize("control,value", [
     ("allowTools", True), ("allowAutomaticMemory", True), ("requireFreshSession", False),
 ])

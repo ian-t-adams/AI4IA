@@ -275,7 +275,10 @@ and fresh-dispatch factories, actual session/receipt/deletion routes and the
 real gateway adapter with only its HTTP provider replaced. They exercise the
 complete driver, incompatible/expired/privileged actors, changed policy, absent
 factory callbacks, altered request reductions, one-shot replay and foreign-owner
-refusal. They are still offline fixtures, not live actor or rollout evidence.
+refusal. Pausing policy before preflight or between preflight and dispatch retains
+the evaluation actor's denial: the driver stops later cases, preserves all three
+unknown rows and still verifies cleanup for its already-created fixture. These
+are still offline fixtures, not live actor or rollout evidence.
 
 ### Finite work and cleanup
 
