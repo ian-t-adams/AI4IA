@@ -10,6 +10,7 @@ public class ProxyData : IDisposable
     public WebHeaderCollection ContentHeaders { get; set; } = [];
     public byte[]? Body { get; set; }
     public HttpResponseMessage? BodyResponseMessage { get; set; } = null;
+    internal HttpClient? OwnedClient { get; set; }
 
     public string FullURL { get; set; } = string.Empty;
 
@@ -70,6 +71,8 @@ public class ProxyData : IDisposable
         Body = null; // Release large byte array immediately
         BodyResponseMessage?.Dispose();
         BodyResponseMessage = null;
+        OwnedClient?.Dispose();
+        OwnedClient = null;
         Headers?.Clear();
         ContentHeaders?.Clear();
     }

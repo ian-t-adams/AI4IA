@@ -4,8 +4,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from ai4ia_api.hard_quota.coverage import COVERAGE, AttemptEnvelope, reservation_bounds
-from ai4ia_api.hard_quota.models import Amounts, Bounds
+from ai4ia_api.hard_quota.coverage import COVERAGE, AttemptEnvelope, actual_amounts, reservation_bounds
+from ai4ia_api.hard_quota.models import MAX_QUANTITY, Amounts, Bounds
 from ai4ia_api.usage.pricing import PriceRate, PricingBook, conservative_token_cost
 from tests.test_hard_quota_dispatch import DEPLOYMENT, Harness
 
@@ -86,3 +86,18 @@ def test_shared_pricing_bound_is_versioned_and_rounds_conservatively():
         ) is None
     with pytest.raises(ValidationError, match="versioned"):
         Bounds(amounts=Amounts(microUsd=0), basis="request-v1")
+
+
+def test_total_usage_overflow_is_unknown_not_a_failed_accounting_construction():
+    bounds = Bounds(
+        amounts=Amounts(tokens=MAX_QUANTITY), basis="catalog-text-v1",
+        attemptVersion="fixture-v1", maxAttempts=1,
+    )
+    at_limit = {"prompt_tokens": MAX_QUANTITY - 1, "completion_tokens": 1, "total_tokens": MAX_QUANTITY}
+    known = actual_amounts(bounds, at_limit)
+    assert known is not None and known.tokens == MAX_QUANTITY
+    for explicit_total in (True, False):
+        too_large = {"prompt_tokens": MAX_QUANTITY, "completion_tokens": 1}
+        if explicit_total:
+            too_large["total_tokens"] = MAX_QUANTITY + 1
+        assert actual_amounts(bounds, too_large) is None

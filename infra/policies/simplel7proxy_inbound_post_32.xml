@@ -88,11 +88,13 @@
 			return list;
 		}" />
 <set-variable name="RetryCount" value="@{
+			if (context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false)) { return 1; }
 			return ((JObject)context.Variables[&quot;priorityCfg&quot;])
 				.GetValue(context.Variables.GetValueOrDefault&lt;int>(&quot;RequestPriority&quot;, 3).ToString())?
 				.Value&lt;int>(&quot;retryCount&quot;) ?? 1;
 		}" />
 <set-variable name="RequeueAllowed" value="@{
+			if (context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false)) { return false; }
 			return ((JObject)context.Variables[&quot;priorityCfg&quot;])
 				.GetValue(context.Variables.GetValueOrDefault&lt;int>(&quot;RequestPriority&quot;, 3).ToString())?
 				.Value&lt;bool>(&quot;requeue&quot;) ?? true;

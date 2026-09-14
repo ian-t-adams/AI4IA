@@ -66,12 +66,35 @@ AI4IA_PATCH_REASONS = {
         "OpenTelemetry duplicate-telemetry filter."
     ),
     "SimpleL7Proxy/RequestData.cs": (
-        "Derive Azure deployment names from request paths when model is absent."
+        "Derive Azure deployment names from request paths when model is absent; "
+        "retain authenticated one-attempt state across the in-memory worker lifetime."
     ),
     "SimpleL7Proxy/server.cs": (
         "Compare opaque inbound authentication keys exactly and in constant time; remove "
         "redundant request-null control flow; return 404 for privileged legacy diagnostics "
-        "before auth or worker dispatch."
+        "before auth or worker dispatch; bind reduction-only attempt metadata only "
+        "after successful key authentication."
+    ),
+    "SimpleL7Proxy/Proxy/NoReplayAttempt.cs": (
+        "AI4IA authenticated one-attempt binding, exact byte/model/path HMAC, "
+        "pre-send claim, unsupported-shape refusal and nonredirecting HTTP/1.1 transport."
+    ),
+    "SimpleL7Proxy/Proxy/ProxyWorker.cs": (
+        "Fence bounded sends, host fallback, requeue and recovery; retain one-use "
+        "HTTP clients through streaming; construct portable diagnostic URIs from "
+        "the same destination builder as the transport."
+    ),
+    "SimpleL7Proxy/Proxy/ProxyData.cs": (
+        "Dispose the bounded request's dedicated transport after its response body."
+    ),
+    "SimpleL7Proxy/Proxy/ProxyHelperUtils.cs": (
+        "Redact internal one-attempt metadata in the shared header logger."
+    ),
+    "SimpleL7Proxy/Proxy/RequeueDelayWorker.cs": (
+        "Reject bounded requests before enqueueing or resetting attempt counters."
+    ),
+    "SimpleL7Proxy/DTO/RequestDataDtoV1.cs": (
+        "Refuse bounded request persistence and reject recovered attempt metadata."
     ),
     "SimpleL7Proxy/SimpleL7Proxy.csproj": (
         "Keep runtime dependencies current, remove unsupported Application Insights "

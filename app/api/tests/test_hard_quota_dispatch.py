@@ -257,6 +257,18 @@ async def test_every_surface_fails_closed_on_storage_outage_with_healthy_control
     assert outbound.sent
 
 
+async def test_no_replay_scope_cannot_invent_shipping_coverage_for_any_metered_client(harness, outbound):
+    from ai4ia_api.gateway.attempts import no_replay_scope
+
+    with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
+        with pytest.raises(QuotaError):
+            await outbound.invoke()
+    assert outbound.sent == []
+    with admission_scope(harness.controller, "alice"):
+        await outbound.invoke()
+    assert len(outbound.sent) == (3 if outbound.case.startswith("mcp-") else 1)
+
+
 @pytest.mark.parametrize("cap", ["tokensPerDay", "costPerDayMicroUsd"])
 async def test_shipping_surfaces_refuse_unsupported_token_and_dollar_caps(harness, outbound, cap):
     await harness.limits(**{cap: 1_000_000})
