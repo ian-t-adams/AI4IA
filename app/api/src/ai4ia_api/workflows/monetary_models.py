@@ -191,6 +191,8 @@ class OperationSpend(MonetaryModel):
                 raise ValueError("zero spend requires an exact local-only operation")
         elif (
             self.bounds is None or self.bounds.maxAttempts != 1
+            or self.bounds.amounts.tokens is None
+            or self.bounds.amounts.requests != 1 or self.bounds.amounts.compute != 0
             or self.amountMicroUsd is None or self.amountMicroUsd != self.bounds.amounts.microUsd
             or self.basis != self.bounds.basis or self.localContractDigest is not None
             or self.reason != "catalog-token-envelope"

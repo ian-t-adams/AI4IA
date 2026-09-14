@@ -5,12 +5,12 @@ import { formatWorkflowUsd, type WorkflowBudget, type WorkflowSpendView } from "
 export function WorkflowBudgetEvidence({ budget }: { budget: WorkflowBudget }) {
   if (budget.mode === "no_hard_dollar_cap") return <p className="workflow-run-hint">This run has no monetary maximum.</p>;
   return <div>
-    <dl className="workflow-automation-facts">
+    <dl className="workflow-automation-facts workflow-money-facts">
       <dt>Per-run app-meter limit</dt><dd>{formatWorkflowUsd(budget.limitMicroUsd)}</dd>
       <dt>Settled app-meter spend</dt><dd>{formatWorkflowUsd(budget.settledMicroUsd)}</dd>
       <dt>Charged reservations</dt><dd>{formatWorkflowUsd(budget.heldMicroUsd)}</dd>
       <dt>Unknown outcomes within reservations</dt><dd>{formatWorkflowUsd(budget.unknownMicroUsd)}</dd>
-      <dt>Remaining for new work</dt><dd>{formatWorkflowUsd(budget.remainingMicroUsd)}</dd>
+      <dt>Unreserved app-meter balance</dt><dd>{formatWorkflowUsd(budget.remainingMicroUsd)}</dd>
     </dl>
     <p className="workflow-run-hint">Budget revision {budget.revision}. Unknown or lost outcomes keep their full reservation; timeouts and stopping a run do not refund them.</p>
     {budget.blocked ? <p role="alert" className="studio-alert">The accounting contract no longer permits more work. Stopping or reloading does not remove its charges.</p> : null}

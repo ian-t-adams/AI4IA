@@ -254,8 +254,10 @@ export function WorkflowAutomationPanel({
     </> : null}
     <label className="workflow-run-option"><input type="checkbox" checked={!allowTools} disabled={locked} onChange={(event) => { setAllowTools(!event.target.checked); setConfirmed(false); }} /> Disable tools for this request</label>
     <label className="workflow-run-option"><input type="checkbox" checked={!allowMemory} disabled={locked} onChange={(event) => { setAllowMemory(!event.target.checked); setConfirmed(false); }} /> Disable automatic memory for this request</label>
-    <label className="workflow-run-option"><input type="checkbox" checked={confirmed} disabled={locked} onChange={(event) => setConfirmed(event.target.checked)} />
-      {capped ? ` I choose a per-run app-meter maximum of ${formatWorkflowUsd(maximum)}, not an Azure bill cap.` : " I choose bounded execution without a hard dollar cap."}
+    <label className="workflow-run-option"><input type="checkbox" checked={confirmed} disabled={locked || (capped && maximum === null)} onChange={(event) => setConfirmed(event.target.checked)} />
+      {capped ? maximum === null ? " Enter a valid USD maximum before confirming this run."
+        : ` I choose a per-run app-meter maximum of ${formatWorkflowUsd(maximum)}, not an Azure bill cap.`
+        : " I choose bounded execution without a hard dollar cap."}
     </label>
     {error ? <p role="alert" className="studio-alert">{error}</p> : null}
     {notice ? <p role="status">{notice}</p> : null}

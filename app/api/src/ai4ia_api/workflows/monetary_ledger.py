@@ -116,6 +116,8 @@ def validate_money_balances(owner: AutomationOwner) -> None:
             if any(effect.money is not None for effect in dispatches):
                 raise ValueError("a monetary dispatch has no matching run account")
             continue
+        if len({effect.operationId for effect in dispatches}) != len(dispatches):
+            raise ValueError("a capped logical operation claimed more than one actual dispatch")
         settled, held, unknown = account.compactedMicroUsd, 0, 0
         for effect in dispatches:
             money = effect.money

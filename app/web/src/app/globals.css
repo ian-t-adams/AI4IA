@@ -1515,6 +1515,9 @@ select {
 .workflow-automation-facts dt { color: var(--fg-muted); }
 .workflow-automation-facts dd { margin: 0; overflow-wrap: anywhere; }
 
+.workflow-money-facts { grid-template-columns: minmax(0, 1fr) max-content; }
+.workflow-money-facts dd { text-align: end; white-space: nowrap; }
+
 .workflow-automation-json {
   margin: 0;
   padding: 12px;

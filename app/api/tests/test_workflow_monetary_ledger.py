@@ -47,7 +47,7 @@ def reserve(value, identifier="one", *, payload="original"):
     if identifier in value.effects:
         raise AutomationError("operation_replayed", "The dispatch cannot be repeated.")
     value.effects[identifier] = EffectIntent(
-        id=identifier, runId=RUN, sessionId="session", operationId="0:1:model:-1",
+        id=identifier, runId=RUN, sessionId="session", operationId=f"operation-{identifier}",
         category="dispatch", payloadDigest=digest(payload), state="dispatched", startedAt=NOW,
         resultDigest=None, delivered=False,
         usage=UsageRecord(
@@ -259,6 +259,41 @@ async def test_settlement_survives_terminal_run_without_execution_authority(stor
     assert snapshot.runs[RUN].terminal
     assert snapshot.runs[RUN].money.settledMicroUsd == 20
     with pytest.raises(AutomationError, match="no longer"):
+        await service.mutate_owner("owner", lambda value, now: reserve(value, "two"))
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+async def test_consistent_zero_charge_is_allowed_only_for_complete_proven_usage(store, unknown):
+    await store.create_owner(funded(store, 140))
+    service = WorkflowAutomationService(None, store, None)
+    await service.mutate_owner("owner", lambda value, now: reserve(value))
+    await service.mutate_owner("owner", lambda value, now: settle(
+        value, completed=not unknown, usage={"prompt_tokens": 0, "completion_tokens": 0},
+        outcome="timeout" if unknown else "complete",
+    ))
+    if unknown:
+        prior = await store.read_owner("owner")
+        updated = prior.value.model_copy(deep=True)
+        updated.revision += 1
+        account = updated.runs[RUN].money
+        updated.runs[RUN].money = account.model_copy(update={
+            "heldMicroUsd": 0, "unknownMicroUsd": 0, "revision": account.revision + 1,
+        })
+        effect = updated.effects["one"]
+        effect.money = effect.money.model_copy(update={
+            "phase": "settled", "chargedMicroUsd": 0, "settlementDigest": digest("invented complete"),
+        })
+        effect.state = "complete"
+        # The arithmetic and persisted shape are internally coherent. Only the
+        # immutable unknown transition prevents this apparent refund.
+        writable_body(updated)
+        with pytest.raises(AutomationError, match="cannot change"):
+            await store.write_owner(prior, updated)
+        assert (await store.read_owner("owner")).value == prior.value
+    else:
+        current = (await store.read_owner("owner")).value
+        assert current.runs[RUN].money.heldMicroUsd == current.runs[RUN].money.settledMicroUsd == 0
+        assert current.effects["one"].money.phase == "settled"
         await service.mutate_owner("owner", lambda value, now: reserve(value, "two"))
 
 
