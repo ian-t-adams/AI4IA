@@ -353,14 +353,20 @@ def _exercise(case: str) -> None:
                     attributes = {_SAMPLE_RATE_KEY: 20.0}
                     def is_recording(self):
                         return True
-                admitted = actual_provider.sampler.should_sample(
-                    trace.set_span_in_context(RecordedParent(SpanContext(
+                from ai4ia_api.request_telemetry import _RequestSpan
+                recorded = _RequestSpan(RecordedParent(SpanContext(
                         123, 456, is_remote=False, trace_flags=TraceFlags.SAMPLED,
-                    )), Context()), 123, "chat",
+                    )), frozenset(), SpanKind.SERVER)
+                inheritance_control = RateLimitedSampler(0)
+                admitted = inheritance_control.should_sample(
+                    trace.set_span_in_context(recorded, Context()), 123, "chat",
                     kind=SpanKind.CLIENT, attributes={},
                 )
                 assert admitted.decision == Decision.RECORD_AND_SAMPLE
                 assert admitted.attributes[_SAMPLE_RATE_KEY] == 20.0
+                assert inheritance_control.should_sample(
+                    dropped_parent, 123, "chat", kind=SpanKind.CLIENT, attributes={},
+                ).decision == Decision.DROP
         assert network == []
         assert secret not in json.dumps(starts)
         assert metric_reader.get_metrics_data() is None
