@@ -91,6 +91,7 @@ IDLE_RUNNING_STATES = frozenset({"scaledtozero", "scaleddown", "stopped"})
 MAX_SAFE_CHARS = 512
 MAX_BODY_BYTES = 64 * 1024
 MAX_CUTOVER_DIFFERENCE_AREAS = 12
+MAX_PROBE_FIELD_SHAPES = 2
 
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _ENVIRONMENT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,60}\Z", re.IGNORECASE)
@@ -874,6 +875,40 @@ def _template_difference_areas(left: dict[str, Any], right: dict[str, Any]) -> t
     return areas[:MAX_CUTOVER_DIFFERENCE_AREAS], len(areas) > MAX_CUTOVER_DIFFERENCE_AREAS
 
 
+def _probe_field_shapes(left: dict[str, Any], right: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+    def encoded(row: dict[str, Any]) -> str:
+        return json.dumps(
+            ("probes" in row, row.get("probes")),
+            sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
+
+    def shape(row: dict[str, Any]) -> dict[str, Any]:
+        if "probes" not in row:
+            return {"kind": "missing"}
+        value = row["probes"]
+        kind = {
+            type(None): "null", bool: "boolean", int: "number", float: "number",
+            str: "string", list: "array", dict: "object",
+        }[type(value)]
+        return {"kind": kind, "count": len(value)} if isinstance(value, list) else {"kind": kind}
+
+    shapes: list[dict[str, Any]] = []
+    for collection in ("containers", "initContainers"):
+        before, after = left.get(collection), right.get(collection)
+        if not isinstance(before, list) or not isinstance(after, list) or len(before) != len(after):
+            continue
+        for index, (desired, serving) in enumerate(zip(before, after, strict=True)):
+            if encoded(desired) == encoded(serving):
+                continue
+            if len(shapes) == MAX_PROBE_FIELD_SHAPES:
+                return shapes, True
+            shapes.append({
+                "area": f"{collection}.probes", "index": index,
+                "desired": shape(desired), "serving": shape(serving),
+            })
+    return shapes, False
+
+
 def _cutover_evidence(observation: CurrentObservation | None) -> dict[str, Any]:
     if observation is None:
         return {"observation": "unavailable"}
@@ -894,12 +929,16 @@ def _cutover_evidence(observation: CurrentObservation | None) -> dict[str, Any]:
     try:
         desired = _comparable_template(props["template"])
         actual = _comparable_template(serving.template)
-        areas, truncated = (
-            _template_difference_areas(json.loads(desired), json.loads(actual))
-            if desired != actual else ([], False)
-        )
+        areas, truncated = [], False
+        shapes, shapes_truncated = [], False
+        if desired != actual:
+            left, right = json.loads(desired), json.loads(actual)
+            areas, truncated = _template_difference_areas(left, right)
+            shapes, shapes_truncated = _probe_field_shapes(left, right)
     except (AzError, ValueError, TypeError, RecursionError):
         return {**result, "templateComparison": "invalid"}
+    if shapes:
+        result.update(probeFieldShapes=shapes, probeFieldShapesTruncated=shapes_truncated)
     return {
         **result, "templateComparison": "equal" if desired == actual else "different",
         "templateDifferenceAreas": areas, "differenceAreasTruncated": truncated,

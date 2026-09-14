@@ -1680,6 +1680,108 @@ class CutoverEvidenceTests(unittest.TestCase):
         self.assertTrue(evidence["differenceAreasTruncated"])
         self.assertLessEqual(len(json.dumps(evidence, ensure_ascii=True).encode()), 1024)
 
+    def test_probe_field_shapes_distinguish_missing_null_empty_and_other_json_types(self) -> None:
+        cases = (
+            ({}, {"kind": "missing"}),
+            ({"probes": None}, {"kind": "null"}),
+            ({"probes": [{"private-field": "private-probe-value"}]}, {"kind": "array", "count": 1}),
+            ({"probes": {"private-field": "private-probe-value"}}, {"kind": "object"}),
+            ({"probes": "private-probe-value"}, {"kind": "string"}),
+            ({"probes": True}, {"kind": "boolean"}),
+            ({"probes": 1}, {"kind": "number"}),
+            ({"probes": 1.5}, {"kind": "number"}),
+        )
+        for changed, expected_shape in cases:
+            with self.subTest(shape=expected_shape):
+                az = world()
+                desired = az.apps[APPS["web"]]["properties"]["template"]["containers"][0]
+                actual = az.revisions[(APPS["web"], f"{APPS['web']}--r2")]["properties"]["template"]["containers"][0]
+                desired["probes"] = []
+                actual["probes"] = []
+                code, healthy, _ = self.verify_web(az)
+                self.assertEqual(code, 0)
+                self.assertNotIn("probeFieldShapes", healthy)
+                del desired["probes"]
+                desired.update(changed)
+                before_apps, before_revisions = deepcopy(az.apps), deepcopy(az.revisions)
+                az.calls.clear()
+                code, evidence, out = self.verify_web(az)
+                self.assertEqual(code, 3)
+                self.assertEqual(evidence["templateComparison"], "different")
+                self.assertEqual(evidence["templateDifferenceAreas"], ["containers.probes"])
+                self.assertIn("probeFieldShapes", evidence)
+                self.assertEqual(evidence["probeFieldShapes"], [{
+                    "area": "containers.probes", "index": 0,
+                    "desired": expected_shape, "serving": {"kind": "array", "count": 0},
+                }])
+                self.assertFalse(evidence["probeFieldShapesTruncated"])
+                self.assertNotIn("private-field", out)
+                self.assertNotIn("private-probe-value", out)
+                self.assertEqual(len(az.calls), 9)
+                self.assertEqual(az.apps, before_apps)
+                self.assertEqual(az.revisions, before_revisions)
+                desired["probes"] = []
+                self.assertEqual(self.verify_web(az)[0], 0)
+
+    def test_matching_probe_shapes_do_not_hide_changed_configuration(self) -> None:
+        az = world()
+        desired = az.apps[APPS["web"]]["properties"]["template"]["containers"][0]
+        actual = az.revisions[(APPS["web"], f"{APPS['web']}--r2")]["properties"]["template"]["containers"][0]
+        probes = [{
+            "type": "Readiness",
+            "httpGet": {
+                "path": "/private-probe-path", "port": 8080,
+                "httpHeaders": [{"name": "private-header-name", "value": "private-header-value"}],
+            },
+        }]
+        desired["probes"] = deepcopy(probes)
+        actual["probes"] = deepcopy(probes)
+        self.assertEqual(self.verify_web(az)[0], 0)
+        desired["probes"][0]["httpGet"]["httpHeaders"][0]["value"] = "private-changed-value"
+        code, evidence, out = self.verify_web(az)
+        self.assertEqual(code, 3)
+        self.assertEqual(evidence["templateComparison"], "different")
+        for private in ("private-probe-path", "private-header-name", "private-header-value", "private-changed-value"):
+            self.assertNotIn(private, out)
+        self.assertIn("probeFieldShapes", evidence)
+        self.assertEqual(evidence["probeFieldShapes"], [{
+            "area": "containers.probes", "index": 0,
+            "desired": {"kind": "array", "count": 1}, "serving": {"kind": "array", "count": 1},
+        }])
+        desired["probes"] = deepcopy(probes)
+        self.assertEqual(self.verify_web(az)[0], 0)
+
+    def test_probe_shape_bound_covers_both_container_collections(self) -> None:
+        for collection in ("containers", "initContainers"):
+            with self.subTest(collection=collection):
+                az = world()
+                desired = az.apps[APPS["web"]]["properties"]["template"]
+                actual = az.revisions[(APPS["web"], f"{APPS['web']}--r2")]["properties"]["template"]
+                containers = [
+                    {**deepcopy(actual["containers"][0]), "name": f"private-container-{i}", "probes": []}
+                    for i in range(3)
+                ]
+                desired[collection] = deepcopy(containers)
+                actual[collection] = deepcopy(containers)
+                self.assertEqual(self.verify_web(az)[0], 0)
+                for container in desired[collection]:
+                    container["probes"] = None
+                code, evidence, out = self.verify_web(az)
+                self.assertEqual(code, 3)
+                self.assertIn("probeFieldShapes", evidence)
+                self.assertEqual(evidence["probeFieldShapes"], [
+                    {
+                        "area": f"{collection}.probes", "index": i,
+                        "desired": {"kind": "null"}, "serving": {"kind": "array", "count": 0},
+                    }
+                    for i in range(2)
+                ])
+                self.assertTrue(evidence["probeFieldShapesTruncated"])
+                self.assertLessEqual(len(json.dumps(evidence, ensure_ascii=True).encode()), 1024)
+                self.assertNotIn("private-container", out)
+                desired[collection] = deepcopy(containers)
+                self.assertEqual(self.verify_web(az)[0], 0)
+
     def test_unavailable_and_invalid_are_not_equal(self) -> None:
         az = world()
         self.assertEqual(self.verify_web(az)[0], 0)

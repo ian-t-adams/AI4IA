@@ -611,6 +611,15 @@ plus an explicit truncation flag. The difference summary never logs template
 values, environment-variable names, custom field names, or template hashes.
 Multiple mode does not claim these Single-mode checks passed.
 
+Differing probe fields also record at most two container-array positions in
+`probeFieldShapes`: a fixed collection label, index, desired/serving JSON kinds
+(including `missing`), and an item count for arrays. `probeFieldShapesTruncated`
+marks additional differences. Probe paths, header names, values, and container
+names are never emitted. Missing, null, and empty arrays remain distinct in the
+comparison; identical kinds/counts do not prove equal probe configurations. This
+retains representation evidence from the actual failed observation without
+changing health probes, adding Azure calls, or weakening the cutover guard.
+
 Inspect this evidence before retrying a failed release. A healthy serving image
 alone does not clear a pending cutover, and an app read after rollback cannot
 reconstruct the historical desired template. Missing historical evidence remains

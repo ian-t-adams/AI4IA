@@ -513,6 +513,9 @@ bool/int/float equality shortcuts must not become a pass. Same-version raw GETs
 also expose these differences, so changing CLI transport alone is not a fix.
 Candidate acceptance must exercise actual pending/restoration/rollout predicates;
 capture or healthy-image reads alone do not cover writable-template comparison.
+Cutover diagnostics retain fixed difference areas and bounded probe-field
+presence/type/counts from those same reads, never probe configuration values.
+These shapes do not equate missing/null/empty probes or relax a failed comparison.
 Multiple mode pins all traffic to the exact captured revision without switching
 modes. Preserve min-zero support, per-app failure isolation and no write replay;
 see `docs/runbooks/deployment.md#automatic-and-manual-rollback`.
