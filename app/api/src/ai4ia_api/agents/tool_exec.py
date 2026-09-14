@@ -20,7 +20,11 @@ import operator
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
+
+if TYPE_CHECKING:
+    from ..memory.context_refs import MemoryReference
+    from ..memory.preferences import MemoryPreference
 
 from .approvals import ApprovalPolicy, ApprovalSink
 from .consent import ConsentChecker, tool_contract_hash
@@ -91,6 +95,11 @@ class ToolContext:
     approval_sink: ApprovalSink | None = None
     consent_checker: ConsentChecker | None = None
     prepare_model_context: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None
+    # Present only for resumable turns; capability counters survive handler rebuilds.
+    turn_budgets: dict[str, int] | None = None
+    capture_memory_context: Callable[
+        [MemoryPreference, list[MemoryReference]], Awaitable[None],
+    ] | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +110,21 @@ class ToolDefinition:
     parameters: dict[str, Any]
     handler: ToolHandler
     consent_metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+def take_turn_budget(
+    ctx: ToolContext | None, name: str, limit: int, legacy: dict[str, int],
+) -> bool:
+    durable = ctx.turn_budgets if ctx is not None else None
+    counter = legacy if durable is None else durable
+    key = "used" if durable is None else name
+    used = counter.get(key)
+    if type(used) is not int or used < 0:
+        raise ToolExecutionError("The tool-call budget state is unavailable.")
+    if used >= limit:
+        return False
+    counter[key] = used + 1
+    return True
 
 
 # --- Minimal JSON-Schema argument validation -----------------------------------

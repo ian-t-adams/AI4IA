@@ -413,6 +413,8 @@ jobs:
       AI4IA_ENABLE_DURABLE_WORKFLOWS: ${{ vars.AI4IA_ENABLE_DURABLE_WORKFLOWS }}
       AI4IA_DURABLE_TASK_SKU: ${{ vars.AI4IA_DURABLE_TASK_SKU }}
       AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS: ${{ vars.AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS }}
+      AI4IA_WORKFLOW_APPROVALS_ENABLED: ${{ vars.AI4IA_WORKFLOW_APPROVALS_ENABLED }}
+      AI4IA_WORKFLOW_SCHEDULING_ENABLED: ${{ vars.AI4IA_WORKFLOW_SCHEDULING_ENABLED }}
       # Web IQ API key. This is a SECRET (not a repo variable). Web search is
       # enabled in main.parameters.json, so if this is empty at provision time
       # bicep drops the webiq-api-key Container App secret and falls back to the

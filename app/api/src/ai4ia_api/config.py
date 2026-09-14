@@ -629,6 +629,8 @@ class Settings(BaseSettings):
     # Upper bound on how long a durable run may take before the status endpoint
     # reports it failed. Bounds the orchestration, not a single model call.
     durable_workflow_timeout_seconds: int = 1800
+    workflow_approvals_enabled: bool = False
+    workflow_scheduling_enabled: bool = False
 
     # --- Rolling summarization: sustainable long conversations ---
     # Default OFF. When off, the chat path sends today's full history byte-for-byte
@@ -1581,6 +1583,19 @@ class Settings(BaseSettings):
                 "AI4IA_DURABLE_TASK_HUB_NAME outside local, or disable them with "
                 "AI4IA_DURABLE_WORKFLOWS_ENABLED=false."
             )
+        if self.workflow_scheduling_enabled and not self.workflow_approvals_enabled:
+            raise RuntimeError("Workflow scheduling requires resumable workflow approvals.")
+        if self.workflow_approvals_enabled:
+            if not self.durable_workflows_enabled or not self.session_deletion_enabled:
+                raise RuntimeError(
+                    "Resumable workflows require the existing durable host and protocol-v1 session deletion readiness."
+                )
+            if not self.usage_metering_enabled or not 1 <= self.durable_workflow_timeout_seconds <= 86400:
+                raise RuntimeError("Resumable workflows require durable usage and a finite positive runtime.")
+            if self.env != Environment.local and (
+                self.auth_provider != AuthProviderKind.entra or self.session_store != SessionStoreKind.cosmos
+            ):
+                raise RuntimeError("Resumable workflows require Entra and Cosmos outside local.")
         if (
             self.durable_workflows_enabled
             and self.env != Environment.local

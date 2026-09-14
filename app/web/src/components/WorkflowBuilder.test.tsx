@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   createWorkflow: vi.fn(),
   updateWorkflow: vi.fn(),
   deleteWorkflow: vi.fn(),
+  getWorkflowAutomationConfig: vi.fn(),
   listModels: vi.fn(),
   getPublicationCapabilities: vi.fn(),
   getOwnerPublication: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     createWorkflow: mocks.createWorkflow,
     updateWorkflow: mocks.updateWorkflow,
     deleteWorkflow: mocks.deleteWorkflow,
+    getWorkflowAutomationConfig: mocks.getWorkflowAutomationConfig,
     // Not mocked: the real terminal-state predicate is the contract under test.
     // Stubbing it would let the component "poll to completion" against a fake
     // rule and pass while disagreeing with the API's actual statuses.
@@ -110,6 +112,7 @@ beforeEach(() => {
   mocks.submitPublication.mockResolvedValue({ ...publicationHead, userId: "u1", kind: "workflow", sourceName: "summarize" });
   mocks.listModels.mockResolvedValue({ models: publicationModels, residencyPolicy: "global" });
   mocks.updateWorkflow.mockResolvedValue(WORKFLOWS[0]);
+  mocks.getWorkflowAutomationConfig.mockResolvedValue({ approvalsAvailable: false, schedulesAvailable: false });
   mocks.listWorkflows.mockResolvedValue({
     workflows: WORKFLOWS,
     durableAvailable: false,

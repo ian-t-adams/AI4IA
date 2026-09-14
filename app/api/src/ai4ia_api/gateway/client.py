@@ -507,7 +507,7 @@ class ModelGatewayClient:
             if "json" in kwargs:
                 kwargs["json"] = admission.payload
             response = await client.post(url, **kwargs)
-            if admission.reservation is not None and response.is_success:
+            if (admission.reservation is not None or admission.workflow_observed) and response.is_success:
                 usage = None
                 if surface in {"chat", "embedding"}:
                     try:

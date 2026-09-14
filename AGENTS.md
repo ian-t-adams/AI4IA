@@ -1039,6 +1039,35 @@ generator must be listed in `NON_BRAND_RASTERS`), colour (≥40% of saturated pi
 near the brand hue), and shape/weight against the portal's declared `og:image`
 dimensions and per-file size ceilings.
 
+## Resumable workflow automation
+
+`AI4IA_WORKFLOW_APPROVALS_ENABLED` and `AI4IA_WORKFLOW_SCHEDULING_ENABLED`
+are default-off, explicit v3 paths on the existing DTS worker. Legacy synchronous
+and durable histories stay separate. New runs require protocol-v1 conversations;
+never enroll an existing session or bypass its rollout prerequisite.
+
+An approval pauses the stored exact operation, not a request for a model to
+recreate it. Reuse normal one-time grant cryptography, owner/run/source/schema/
+destination/argument/expiry binding and full checkpoint/message CAS behind the
+child fence. Keep per-operation SDK options copied across every batch retry.
+Provider acceptance without a recoverable result is unknown and never replayable.
+Late cancellation evidence can grow without restoring authority; accounting
+does not require a new policy grant and survives conversation cleanup.
+
+Use `workflows.record_types` for owner-container control identity; never add a
+second publication or group-policy map. Queued user claims are not authority.
+Request constraints remain reduction-only across continuation. Safe-only means
+actual effects, including ambient writes, not only a declared tool label.
+Recheck previously supplied memory/resource context; stop rather than regenerate
+accepted work when revoked context cannot safely be excluded.
+
+Schedules use finite IANA once/daily/weekly rules, gap skip/fold first, no backfill
+storm, overlap denial, stable slot identities and bounded histories. Count actual
+shared application dispatches, not just loop iterations. Finite USD caps and
+hard-quota durable execution remain refused under the unproven downstream attempt
+envelope. See [the automation contract](docs/workflow-automation.md); source
+completion never implies live activation.
+
 ## Staged GA Realtime protocol
 
 `AI4IA_REALTIME_GA_ENABLED=false` stages no GA infrastructure; enabling it only

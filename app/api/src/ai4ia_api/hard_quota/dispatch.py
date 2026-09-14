@@ -75,6 +75,7 @@ class DispatchLease:
     usage: dict[str, Any] | None = None
     completed: bool = False
     payload: dict[str, Any] = field(default_factory=dict)
+    workflow_observed: bool = False
 
     def report(self, usage: dict[str, Any] | None = None, *, complete: bool = True) -> None:
         if usage is not None:
@@ -141,7 +142,7 @@ class AdmissionController:
 
 
 @asynccontextmanager
-async def admitted_dispatch(
+async def _quota_dispatch(
     surface: Surface, payload: dict[str, Any], *, deployment: str | None = None,
     target: str | None = None,
     required: bool = False, observe: Callable[[AdmissionEvidence], None] | None = None,
@@ -217,3 +218,50 @@ async def admitted_dispatch(
                 context.evidence[evidence_index] = evidence
             if observe is not None:
                 observe(evidence)
+
+
+@asynccontextmanager
+async def admitted_dispatch(
+    surface: Surface, payload: dict[str, Any], *, deployment: str | None = None,
+    target: str | None = None, required: bool = False,
+    observe: Callable[[AdmissionEvidence], None] | None = None,
+    policy_required: bool = False,
+) -> AsyncIterator[DispatchLease]:
+    from ..workflows.dispatch_scope import current_workflow_scope
+
+    workflow = current_workflow_scope()
+    if workflow is None:
+        async with _quota_dispatch(
+            surface, payload, deployment=deployment, target=target, required=required, observe=observe,
+            policy_required=policy_required,
+        ) as lease:
+            yield lease
+        return
+    context = _current.get()
+    if context is not None and context.owner != workflow.owner_id:
+        raise QuotaError("Workflow dispatch owner does not match admission.")
+    frozen = json.loads(json.dumps(payload, ensure_ascii=True, allow_nan=False))
+    ticket = await workflow.before_dispatch(surface, frozen, deployment=deployment, target=target)
+    lease = None
+    outcome = "error"
+    try:
+        async with _quota_dispatch(
+            surface, frozen, deployment=deployment, target=target, required=required, observe=observe,
+            policy_required=policy_required,
+        ) as active:
+            lease = active
+            active.workflow_observed = True
+            await workflow.authorize_dispatch(ticket)
+            yield active
+            outcome = active.outcome
+    except asyncio.CancelledError:
+        outcome = "cancelled"
+        raise
+    except (TimeoutError, httpx.TimeoutException):
+        outcome = "timeout"
+        raise
+    finally:
+        await workflow.after_dispatch(
+            ticket, usage=lease.usage if lease else None,
+            completed=lease.completed if lease else False, outcome=outcome,
+        )

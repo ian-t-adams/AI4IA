@@ -14,6 +14,7 @@ from typing import Protocol, runtime_checkable
 
 from .models import MemoryRecord
 from .preferences import MemoryPreference
+from .context_refs import MemoryReference
 
 
 @runtime_checkable
@@ -30,6 +31,10 @@ class MemoryStore(Protocol):
     """A per-user vector store. Every method is user-scoped by signature."""
 
     async def get_preference(self, user_id: str) -> MemoryPreference: ...
+
+    async def validate_context_references(
+        self, user_id: str, preference: MemoryPreference, references: Sequence[MemoryReference],
+    ) -> None: ...
 
     async def set_preference(
         self, user_id: str, automatic_enabled: bool, *, expected_etag: str

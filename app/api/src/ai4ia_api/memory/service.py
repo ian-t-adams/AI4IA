@@ -22,6 +22,7 @@ from collections.abc import Sequence
 from typing import Literal, Protocol
 
 from .base import Embedder, MemoryStore
+from .context_refs import MemoryReference
 from .formatting import format_memory_context
 from .models import MemoryRecord
 from .preferences import (
@@ -59,6 +60,10 @@ class MemoryServiceProtocol(Protocol):
     def enabled(self) -> bool: ...
 
     async def get_preference(self, user_id: str) -> MemoryPreference: ...
+
+    async def validate_context_references(
+        self, user_id: str, preference: MemoryPreference, references: Sequence[MemoryReference],
+    ) -> None: ...
 
     async def set_preference(
         self, user_id: str, automatic_enabled: bool, *, expected_etag: str
@@ -108,6 +113,11 @@ class NoopMemoryService:
     enabled = False
 
     async def get_preference(self, user_id: str) -> MemoryPreference:
+        raise MemoryPreferenceUnavailable("Memory is disabled by the server.")
+
+    async def validate_context_references(
+        self, user_id: str, preference: MemoryPreference, references: Sequence[MemoryReference],
+    ) -> None:
         raise MemoryPreferenceUnavailable("Memory is disabled by the server.")
 
     async def set_preference(
@@ -189,6 +199,11 @@ class MemoryService:
     async def get_preference(self, user_id: str) -> MemoryPreference:
         return await self._store.get_preference(user_id)
 
+    async def validate_context_references(
+        self, user_id: str, preference: MemoryPreference, references: Sequence[MemoryReference],
+    ) -> None:
+        await self._store.validate_context_references(user_id, preference, references)
+
     async def set_preference(
         self, user_id: str, automatic_enabled: bool, *, expected_etag: str
     ) -> MemoryPreference:
@@ -238,6 +253,9 @@ class MemoryService:
         can tell the user the truth rather than assuming success — and, just as
         importantly, so a failure is never described as "already covered".
         """
+        from ..workflows.dispatch_scope import require_workflow_effect
+
+        await require_workflow_effect("memory.write")
         started = time.monotonic()
         if not automatic_memory_allowed():
             emit_memory_operation("save", "disabled", "custom", started, count=0)
@@ -291,6 +309,9 @@ class MemoryService:
         "save to memory" twice does not accumulate duplicates. Embedding runs
         before the erase so a failed embed surfaces without first deleting the
         existing memories."""
+        from ..workflows.dispatch_scope import require_workflow_effect
+
+        await require_workflow_effect("memory.document_write")
         texts = [t.strip() for t in items if t and t.strip()]
         if not texts:
             return 0

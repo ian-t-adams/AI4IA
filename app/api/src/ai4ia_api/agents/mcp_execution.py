@@ -221,9 +221,10 @@ def _make_handler(
 
     async def handler(args: dict, ctx: ToolContext) -> dict:
         await assert_current_contract()
-        if budget["used"] >= max_calls:
+        from .tool_exec import take_turn_budget
+
+        if not take_turn_budget(ctx, "mcp", max_calls, budget):
             raise ToolExecutionError("MCP tool-call budget exhausted for this turn.")
-        budget["used"] += 1
 
         timer = obs.Timer()
         try:

@@ -28,8 +28,9 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ..agents.tool_exec import ToolContext
+from ..agents.tool_exec import ToolContext, take_turn_budget
 from .context import MemoryContextGuard
+from .context_refs import MemoryReference
 from .service import MemoryServiceProtocol
 
 RECALL_TOOL_NAME = "recall_memory"
@@ -98,12 +99,11 @@ def build_recall_capability(
     }
 
     async def _handler(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        if budget["used"] >= MAX_RECALLS_PER_TURN:
-            return {"error": "recall budget exhausted for this turn."}
         query = str(args.get("query") or "").strip()
         if not query:
             return {"error": "query must be a non-empty string."}
-        budget["used"] += 1
+        if not take_turn_budget(ctx, "recall", MAX_RECALLS_PER_TURN, budget):
+            return {"error": "recall budget exhausted for this turn."}
         scope = str(args.get("scope") or "all").strip().lower()
         if not await guard.allowed():
             return {"results": "", "count": 0, "note": "Automatic memory is off or unavailable."}
@@ -119,6 +119,7 @@ def build_recall_capability(
             records = [r for r in records if r.session_id == session_id]
 
         items: list[str] = []
+        references: list[MemoryReference] = []
         total = 0
         for record in records[:MAX_ITEMS]:
             text = (record.text or "").strip()
@@ -130,10 +131,13 @@ def build_recall_capability(
                 break
             total += len(text)
             items.append(text)
+            references.append(MemoryReference.from_record(record))
 
         if not items:
             return {"results": "", "count": 0, "note": "No relevant memories found."}
 
+        if ctx is not None and ctx.capture_memory_context is not None:
+            await ctx.capture_memory_context(guard.preference, references)
         body = "\n".join(f"- {t}" for t in items)
         return {
             "results": f"BEGIN MEMORY {nonce}\n{body}\nEND MEMORY {nonce}",

@@ -23,6 +23,12 @@ class MemoryContextGuard:
         self.block = ""
         self.on_withheld: Callable[[list[dict[str, Any]]], None] | None = None
 
+    @property
+    def preference(self) -> MemoryPreference:
+        if self._preference is None or self._blocked:
+            raise MemoryPreferenceUnavailable("Memory context has no current preference.")
+        return self._preference
+
     async def allowed(self) -> bool:
         if self._blocked or not automatic_memory_allowed():
             self._blocked = True

@@ -11,6 +11,21 @@ new feature flag. They expose only capabilities already enabled by the authorita
 API settings below; disabled library, memory, voice, or telemetry sources return an
 explicit disabled/unavailable state.
 
+## Resumable workflow automation
+
+| Input and runtime variable | Bicep parameter | Default | Runtime contract |
+| --- | --- | --- | --- |
+| `AI4IA_WORKFLOW_APPROVALS_ENABLED` | `workflowApprovalsEnabled` | `false` | Enables explicit v3 exact-call suspension on the existing durable host; requires metering, a finite runtime and approved protocol-v1 sessions. Entra and Cosmos are required outside local. |
+| `AI4IA_WORKFLOW_SCHEDULING_ENABLED` | `workflowSchedulingEnabled` | `false` | Enables finite once/daily/weekly safe-only schedules. Requires resumable approvals; no standing consent, fresh-claim impersonation or hard dollar guarantee. |
+
+The API advertises availability at `/api/workflows/automation/config`; there is
+no independent web enable flag. Disabled features do not dispatch new work.
+Existing owner status, cancellation and accounting remain separate from new
+execution authority. Both variables flow through the existing deployment job;
+neither provisions another resource. See
+[resumable workflow automation](workflow-automation.md) for bounds, DST,
+idempotency, unsupported group/dollar-cap cases and recovery.
+
 ## Per-user automatic memory
 
 The **Automatic memory** switch in **Context > Memory** is on by default when

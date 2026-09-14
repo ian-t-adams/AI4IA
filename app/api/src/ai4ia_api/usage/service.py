@@ -199,6 +199,20 @@ class UsageService:
         """Meter one turn. Never raises: ledger/log failures are swallowed."""
         if not self._enabled:
             return
+        from ..workflows.dispatch_scope import current_workflow_scope
+
+        workflow = current_workflow_scope()
+        if workflow is not None:
+            # The operation outbox, not this legacy UUID writer, owns the row.
+            # A source completion can enrich that same unsealed operation only.
+            await workflow.capture_usage(self.build_record(
+                user_id=user_id, session_id=session_id, model_id=model_id,
+                target=target, deployment=deployment, usage=usage, status=status,
+                provider_completed=provider_completed, agent=agent,
+                correlation_id=correlation_id, billable_units=billable_units,
+                billing_unit=billing_unit, image_size=image_size, image_quality=image_quality,
+            ))
+            return
         try:
             rec = self.build_record(
                 user_id=user_id,
@@ -238,6 +252,15 @@ class UsageService:
             self._emit_event(rec, timing_attributes)
         except Exception:  # noqa: BLE001 - telemetry must never break a turn
             logger.warning("usage custom event emit failed", exc_info=True)
+
+    async def record_frozen(self, record: UsageRecord) -> bool:
+        """Strict durable outbox delivery; never rebuild or reprice a prior row."""
+        if not self._enabled:
+            raise RuntimeError("Durable usage recording is disabled.")
+        created = await self._repo.record_once(record.model_copy(deep=True))
+        if created:
+            self._emit_event_safe(record)
+        return created
 
     def _emit_event(
         self, rec: UsageRecord, timing_attributes: dict[str, object] | None = None

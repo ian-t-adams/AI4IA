@@ -51,6 +51,7 @@ def cost_bearing_attempt(rec: "UsageRollupSource") -> bool:
     return (
         rec.billable
         or rec.providerCompleted
+        or rec.workflowDispatchClaimed
         or rec.provider == CODE_INTERPRETER_PROVIDER
     )
 #: Target/agent label carried alongside the provider, so the admin agents panel
@@ -215,6 +216,9 @@ class UsageRecord(BaseModel):
     # Provider completion is separate from downstream delivery: generated media
     # can be billed even when local decode/blob persistence later fails.
     providerCompleted: bool = False
+    # A durable dispatch claim may outlive a lost provider response. Its cost is
+    # unknown, not free; this does not assert that the provider completed work.
+    workflowDispatchClaimed: bool = False
     # A provider-completed attempt is billable when it reported real usage.
     billable: bool = False
     usageKnown: bool = False
@@ -296,6 +300,8 @@ class UsageRollupSource(Protocol):
     def billable(self) -> bool: ...
     @property
     def providerCompleted(self) -> bool: ...
+    @property
+    def workflowDispatchClaimed(self) -> bool: ...
     @property
     def usageKnown(self) -> bool: ...
     @property
@@ -383,6 +389,7 @@ class UsageRollupRow:
     costKnown: bool
     createdAt: datetime
     providerCompleted: bool = False
+    workflowDispatchClaimed: bool = False
     agent: str | None = None
     deployment: str | None = None
     region: str | None = None
@@ -402,6 +409,7 @@ class UsageRollupRow:
             status=record.status,
             billable=record.billable,
             providerCompleted=record.providerCompleted,
+            workflowDispatchClaimed=record.workflowDispatchClaimed,
             usageKnown=record.usageKnown,
             costKnown=record.costKnown,
             createdAt=record.createdAt,
@@ -436,6 +444,7 @@ class UsageRollupRow:
                     str(doc.get("status") or "complete") == "complete",
                 )
             ),
+            workflowDispatchClaimed=doc.get("workflowDispatchClaimed") is True,
             usageKnown=bool(doc.get("usageKnown", False)),
             costKnown=bool(doc.get("costKnown", False)),
             createdAt=_coerce_datetime(doc.get("createdAt")),
@@ -459,6 +468,7 @@ ROLLUP_FIELDS: tuple[str, ...] = (
     "status",
     "billable",
     "providerCompleted",
+    "workflowDispatchClaimed",
     "usageKnown",
     "costKnown",
     "createdAt",

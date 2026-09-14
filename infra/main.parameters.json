@@ -179,6 +179,12 @@
     "durableWorkflowTimeoutSeconds": {
       "value": "${AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS=1800}"
     },
+    "workflowApprovalsEnabled": {
+      "value": "${AI4IA_WORKFLOW_APPROVALS_ENABLED=false}"
+    },
+    "workflowSchedulingEnabled": {
+      "value": "${AI4IA_WORKFLOW_SCHEDULING_ENABLED=false}"
+    },
     "searchEnabled": {
       "value": "${AI4IA_SEARCH_ENABLED=true}"
     },
