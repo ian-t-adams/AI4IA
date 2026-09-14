@@ -139,6 +139,15 @@ npm run build --if-present
 Package scripts resolve to `eslint .`, `vitest run`, and `next build`. Local dev
 uses `npm run dev`.
 
+`nativeLockCoverage.test.ts` derives the native SWC packages from the locked
+Next.js declarations and requires a matching lock record for every platform,
+including platforms absent from the CI runner. A missing optional binary can
+otherwise pass Linux CI while leaving Windows without its locked native package.
+The guard checks recorded version, public artifact reference and integrity
+metadata; it does not prove registry availability or native execution. Repair a
+missing record through the package manager with verified metadata, never a
+guessed integrity hash or a WASM fallback presented as native validation.
+
 `npm ci` prints benign `ERESOLVE overriding peer dependency` warnings for
 `eslint-config-next`'s bundled plugins, whose published peer ranges still cap at
 `eslint@^9`. Install exits 0 and everything dedupes to the single installed
