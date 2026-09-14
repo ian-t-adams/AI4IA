@@ -119,6 +119,11 @@ redirects, inherited hooks/auth, environment proxy or shared-client defaults.
 The Chat Completions `stream_options` fallback is suppressed only for this
 selected mode; an empty/malformed reply, 400, timeout or cancellation is not
 permission to try again.
+Selected Responses requests preserve a valid explicit output maximum rather
+than applying the ordinary 16,384-token floor. Malformed, Boolean, nonpositive
+and over-catalog maxima refuse before egress. This is independent of
+fresh-session/canary authority; normal group and run restrictions still see the
+exact adapted maximum at the shared admission seam.
 
 The proxy binds the internal selector only after successful existing inbound-key
 authentication, **before** configurable header stripping and profile enrichment.
@@ -192,6 +197,31 @@ prove a second actual request occurs, not that APIM necessarily chose another
 region. Direct proxy host-failover controls separately exercise multiple hosts.
 Unknown and cancelled calls retain their full original reservation; oversized or
 inconsistent total usage is unknown rather than an accounting-construction error.
+
+#### Compatibility matrix: source refusal is not runtime readiness
+
+With the **shipping absent verifier**, every selected API call below refuses
+before contacting the proxy: zero paid egress. The counterfactual rows describe
+what can happen if an integration incorrectly supplies compatibility authority.
+There is **no versioned operation/path fence** in this source slice; it keeps
+the ordinary catalog route. A signature or reply header does not make an older
+route incapable of paid work.
+
+| Counterfactual combination | Source result without truthful deployed compatibility proof |
+| --- | --- |
+| New API + new proxy + new APIM, marker-preserving non-replaying path | One provider attempt per claimed application request; no automatic retry or recovery. This still requires the documented exact-deployment/topology proof. |
+| New API + new proxy + old APIM | **Unsafe:** an old policy can ignore markers and retry. The missing ACK is detected only after possible paid attempts. Zero paid egress is not guaranteed by this route. |
+| New API + old proxy + new APIM | Zero provider sends **if the API selector reaches new APIM**: the required proxy HMAC is missing. Not an unconditional guarantee if the old proxy/intermediary strips both fields or routes elsewhere. |
+| Present unknown, malformed, incomplete or mismatching metadata at new proxy/APIM | Refused before the next protected hop/provider send. |
+| Both fields stripped before new proxy binding, or between proxy and APIM | **Unsafe:** absence selects the ordinary route. Stripping after successful proxy binding cannot erase its in-memory claim or its final header stamping, but an intermediary stripping both stamped fields remains outside the source guarantee. |
+| Retry using the same prepared API object or proxy request object after a lost reply | Zero additional sends: the consumed claim is not restored by counter reset, error, cancellation or requeue. |
+| New HTTP operation reusing identical nonce/body after a lost reply | **Not globally deduplicated:** a new request has new local state and may pay again. There is no distributed nonce cache. |
+
+Synthetic loopback counterfactuals explicitly demonstrate the unsafe ordinary
+route (two provider sends before ACK failure) and new-HTTP nonce reuse. They are
+not live observations. A future route/auth-membership contract that older APIM
+cannot service as ordinary work requires a separate reviewed source change;
+no new APIM API, operation, subscription, key or activation is part of this slice.
 
 ## Reservation state machine
 

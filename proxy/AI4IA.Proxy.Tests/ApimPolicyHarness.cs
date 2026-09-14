@@ -21,6 +21,7 @@ internal sealed class ApimPolicyHarness
     internal static readonly Dictionary<string, XElement> Policies = Sections.ToDictionary(
         s => s, s => LoadPolicy(System.IO.Path.Combine(PolicyDirectory, $"simplel7proxy_{s}_32.xml")));
     private static readonly Lazy<Func<string, ApimContext, object>> Evaluator = new(Compile);
+    internal static void CompileBeforeTimedRequests() => _ = Evaluator.Value;
     internal readonly ApimContext Context = new();
     internal int Sends;
     internal int Limit = 0;

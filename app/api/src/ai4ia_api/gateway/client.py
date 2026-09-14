@@ -249,6 +249,12 @@ def _normalize_params_for_responses(params: dict[str, Any] | None) -> dict[str, 
       ``stream``/``stream_options`` keys (``stream`` is set by the builder).
     """
     out: dict[str, Any] = dict(params or {})
+    if no_replay_selected() and any(
+        type(out[name]) is not int or out[name] <= 0
+        for name in ("max_output_tokens", "max_completion_tokens", "max_tokens")
+        if name in out
+    ):
+        raise QuotaError("Bounded Responses requires a positive integer output maximum.")
     max_out = out.pop("max_output_tokens", None)
     for key in ("max_completion_tokens", "max_tokens"):
         value = out.pop(key, None)
@@ -261,6 +267,10 @@ def _normalize_params_for_responses(params: dict[str, Any] | None) -> dict[str, 
     out["max_output_tokens"] = (
         max_out if fresh_session_required() and type(max_out) is int and max_out > 0 else floored
     )
+    if no_replay_selected() and type(max_out) is int and max_out > 0:
+        # A reduction-only request must not silently widen its admitted maximum.
+        # This does not select or grant the distinct fresh-session actor path.
+        out["max_output_tokens"] = max_out
 
     effort = out.pop("reasoning_effort", None)
     if effort:

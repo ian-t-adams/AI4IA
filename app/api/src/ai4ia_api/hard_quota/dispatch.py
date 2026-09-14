@@ -48,6 +48,11 @@ def current_dispatch_owner() -> str | None:
     return context.owner if context is not None else None
 
 
+def current_dispatch_catalog() -> ModelCatalog | None:
+    context = _current.get()
+    return context.controller.catalog if context is not None else None
+
+
 def set_admission_owner(controller: AdmissionController, owner: str) -> None:
     """Only authentication boundaries or a validated durable owner may call."""
     _current.set(AdmissionContext(controller, owner))

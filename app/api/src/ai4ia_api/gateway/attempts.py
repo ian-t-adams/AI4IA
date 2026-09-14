@@ -13,13 +13,13 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import httpx
 
-from ..hard_quota.coverage import AttemptEnvelope, supported_attempt_payload
+from ..hard_quota.coverage import AttemptEnvelope, model_for_deployment, supported_attempt_payload
 from ..hard_quota.models import QuotaError, Surface
 
 ATTEMPT_VERSION = "ai4ia-one-attempt-v1"
@@ -121,6 +121,12 @@ class PreparedAttempt:
     nonce: str = field(default_factory=lambda: uuid.uuid4().hex)
     claimed: bool = False
     active: bool = True
+    binding: Token[PreparedAttempt | None] | None = field(default=None, repr=False)
+
+    def unbind(self) -> None:
+        if self.binding is not None:
+            _prepared.reset(self.binding)
+            self.binding = None
 
     def match(
         self, surface: Surface, payload: dict[str, Any], *, deployment: str | None,
@@ -146,6 +152,9 @@ class PreparedAttempt:
         # No await between the check and the claim. Cancellation, lost replies and
         # errors never restore this permission, even if no body was received.
         self.claimed = True
+        # No ContextVar token may survive a yielded SSE chunk: ASGI can close
+        # the generator in another task. Authority ends before the send await.
+        self.unbind()
         digest = hashlib.sha256(self.body).hexdigest()
         return {**headers, ATTEMPT_HEADER: f"{ATTEMPT_VERSION}.{self.nonce}.{digest}"}
 
@@ -162,7 +171,7 @@ def current_attempt_envelope(
     target: str | None, owner: str,
 ) -> AttemptEnvelope | None:
     attempt = _prepared.get()
-    if attempt is None:
+    if attempt is None or not no_replay_selected():
         return None
     return attempt.match(surface, payload, deployment=deployment, target=target, owner=owner)
 
@@ -175,12 +184,7 @@ async def prepare_attempt(
 ) -> AsyncIterator[PreparedAttempt | None]:
     selected = _selected.get()
     if selected is None:
-        # An unrelated nested metered call cannot inherit a parent's proof.
-        token = _prepared.set(None)
-        try:
-            yield None
-        finally:
-            _prepared.reset(token)
+        yield None
         return
     if owner is None or selected != owner:
         raise QuotaError("Gateway attempt has no matching authenticated owner.", code=403)
@@ -206,17 +210,28 @@ async def prepare_attempt(
         or not supported_attempt_payload(surface, payload)
     ):
         raise QuotaError("Unsupported bounded gateway operation.")
+    if relative == "/responses":
+        from ..hard_quota.dispatch import current_dispatch_catalog
+
+        catalog = current_dispatch_catalog()
+        model = model_for_deployment(catalog, deployment) if catalog is not None else None
+        maximum = payload.get("max_output_tokens")
+        if (
+            model is None or model.maxOutputTokens is None or model.maxOutputTokens <= 0
+            or type(maximum) is not int or not 0 < maximum <= model.maxOutputTokens
+        ):
+            raise QuotaError("Bounded Responses output maximum is outside the catalog limit.")
     encoded = _body(payload)
     await verifier.verify(capability)
     attempt = PreparedAttempt(
         owner, surface, deployment, target, encoded, capability, verifier, gateway_url,
     )
-    token = _prepared.set(attempt)
+    attempt.binding = _prepared.set(attempt)
     try:
         yield attempt
     finally:
         attempt.active = False
-        _prepared.reset(token)
+        attempt.unbind()
 
 
 def bounded_http_client(timeout: float) -> httpx.AsyncClient:
