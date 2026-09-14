@@ -798,7 +798,8 @@ states, but active sources must still pass the readiness checks.
 
 A successful copy command is not restoration proof. Confirmation reads the
 actual new serving revision, requires the captured full template (apart from
-the generated revision suffix), health, provisioning and replica posture, and
+the generated revision suffix and the exact schema-backed projection rules
+below), health, provisioning and replica posture, and
 checks that latest/desired state has settled onto it. The previous latest
 candidate must also read back inactive, so finishing its readiness checks cannot
 later promote the known pending failure. Multiple-mode confirmation instead
@@ -807,6 +808,28 @@ requires all traffic pinned to the captured named revision, not a dynamic
 These checks use the platform's
 [revision lifecycle and Single-mode promotion contract](https://learn.microsoft.com/azure/container-apps/revisions).
 They detect changes across the reads, not lock out a later external writer.
+
+App and revision GETs can represent the same writable template differently,
+even under the same ARM API version. Comparison uses only these published
+exceptions from the pinned
+[ARM 2025-01-01 CommonDefinitions](https://github.com/Azure/azure-rest-api-specs/blob/885bc71210faa273dae935ca980c86b244b37fa3/specification/app/resource-manager/Microsoft.App/ContainerApps/stable/2025-01-01/CommonDefinitions.json):
+`containers[*].resources.ephemeralStorage` and the same field in `initContainers`
+are explicitly `readOnly`, so they are excluded from writable-intent comparison.
+Only unset/missing `scale.cooldownPeriod` and `scale.pollingInterval` resolve to
+their documented defaults of 300 and 30 seconds. The
+[SDK's nullable scale contract](https://learn.microsoft.com/python/api/azure-mgmt-appcontainers/azure.mgmt.appcontainers.models.scale)
+also represents these optional fields as `int | None`.
+
+Explicit zero and nondefault integers remain distinct from unset/default values;
+Boolean, floating-point, string and out-of-int32 substitutes are refused, not
+coerced. All other fields, including CPU, memory, environment values, secret
+references, probes, min/max replicas, volumes and unknown/null fields, remain in
+the comparison. Inputs are not mutated, and comparison errors contain no template
+values. These rules compare writable configuration, not physical ephemeral-storage
+capacity. Do not replace them with broad null removal or a writable-field allowlist.
+Capture-only evidence does not exercise this comparison: a candidate acceptance
+must execute the pending-cutover, restoration and rollout predicates on real
+scoped observations, with the currently verified images supplied independently.
 
 A failed or unknown confirmation remains a failed job. An ambiguous write
 acknowledgement is not replayed, and one app's failure does not abandon the other

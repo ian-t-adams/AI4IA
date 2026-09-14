@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "evidence": {
+    "description": "Sanitized scalar-only app/revision projection observed for all three services; the same differences persisted in an operator's same-version 2025-01-01 raw GET control. No identities, images, environment values or credentials are retained here.",
+    "observedAt": "2026-09-14T02:58:33Z",
+    "schema": "https://github.com/Azure/azure-rest-api-specs/blob/885bc71210faa273dae935ca980c86b244b37fa3/specification/app/resource-manager/Microsoft.App/ContainerApps/stable/2025-01-01/CommonDefinitions.json",
+    "nullableScale": "https://learn.microsoft.com/python/api/azure-mgmt-appcontainers/azure.mgmt.appcontainers.models.scale",
+    "ephemeralStorageReadOnly": true,
+    "scaleDefaults": {
+      "cooldownPeriod": 300,
+      "pollingInterval": 30
+    }
+  },
+  "desired": {
+    "resources": {
+      "cpu": 0.5,
+      "ephemeralStorage": "2Gi"
+    },
+    "scale": {
+      "cooldownPeriod": 300,
+      "pollingInterval": 30
+    }
+  },
+  "revision": {
+    "resources": {
+      "cpu": 0.5
+    },
+    "scale": {
+      "cooldownPeriod": null,
+      "pollingInterval": null
+    }
+  }
+}
