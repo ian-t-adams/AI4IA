@@ -81,6 +81,118 @@ or weaken the hard-quota durable/nonlocal activation refusal. Its source ledger,
 approval quote or successful fixture does not establish the missing shipping
 attempt proof. Unknown remote service meters are still refused under a cap.
 
+### Bounded one-attempt source transport
+
+`ai4ia-one-attempt-v1` adds a **default-absent source contract**, not a deployed
+capability or permission to activate monetary enforcement. The app factory still
+supplies no `GatewayCapabilityVerifier`; `ModelGatewayClient.attempt_capability`
+is `None`. A settings Boolean, administrator acknowledgement, apparent version
+header, final response counter, or the presence of the new files cannot change
+that. Nonlocal hard-mode activation and local Cosmos activation remain refused.
+
+The trusted server integration surface is `ai4ia_api.gateway.attempts`:
+
+| Surface | Meaning and authority |
+| --- | --- |
+| `no_replay_scope(owner)` | Nested reduction-only requirement, with no HTTP field or environment selector. It must match the independently authenticated admission owner. It grants no model, tool, priority or quota permission. Without verified compatibility it refuses before sending. |
+| `GatewayCapabilityVerifier.capability` and `verify(capability)` | An injected, independently trusted integration must verify exact deployed compatibility before admission. No shipping implementation exists. Constructing a well-formed `VerifiedGatewayCapability` is not verification. |
+| `VerifiedGatewayCapability` | Exact HTTPS proxy base, immutable proxy-image digest, effective APIM-policy digest, topology/configuration digest, catalog digest, version and short expiry (at most five minutes). All are bound again before egress; mismatches/expiry fail closed. |
+| `current_attempt_envelope(surface, payload, deployment=..., target=..., owner=...)` | Available only inside an active prepared actual gateway request, before shared `admitted_dispatch` and workflow `before_dispatch`. Checks exact adapted/frozen payload, owner, surface, deployment and URL; a mismatch raises, never falls back. Pass this result to the existing shared coverage/pricing helpers. |
+| `ModelGatewayClient.attempt_capability` | Read-only availability for preflight/display, never a per-request grant or sufficient admission evidence. Controller-wide `AdmissionController.attempts` remains a deterministic-test seam. |
+
+V1 supports synchronous and SSE **stateless plain-text** Chat Completions,
+Responses and Claude Messages, plus text-only embedding input lists. It refuses
+all tool declarations and tool/opaque reasoning continuations, provider-hosted
+tools, async/background requests, stateful IDs, media, multimodal input, unknown
+parameters and multiple outputs. Responses retention stays `store=false`.
+The same scope on other metered clients does not invent coverage: without a
+prepared gateway proof the shared dispatch boundary refuses, even without a
+numeric limit.
+Embeddings still require a catalog input context and priced text still requires
+the shared immutable price snapshot. A one-attempt transport alone is not a
+complete meter bound.
+
+The API freezes at most 1 MiB of canonical JSON bytes before verifier/admission
+awaits, and sends those exact bytes. A request-bound one-shot claim precedes
+HTTP egress. Its dedicated HTTPX transport has zero retries, HTTP/1 only, no
+redirects, inherited hooks/auth, environment proxy or shared-client defaults.
+The Chat Completions `stream_options` fallback is suppressed only for this
+selected mode; an empty/malformed reply, 400, timeout or cancellation is not
+permission to try again.
+
+The proxy binds the internal selector only after successful existing inbound-key
+authentication, **before** configurable header stripping and profile enrichment.
+It rejects unknown/duplicate or forged downstream metadata. The claim verifies
+the exact original body hash, model, method and path/query, refuses direct or
+unkeyed backend hosts and all async/recovery shapes, then atomically consumes its
+request-lifetime state before `SendAsync`. Neither per-loop nor lifetime counter
+resets restore that claim. Requeue and DTO persistence/recovery reject selected
+requests outright; there is no async replay identity to recover.
+
+The proxy signs `version.nonce.bodySha256 + LF + POST + LF + pathAndQuery + LF +
+model` using HMAC-SHA-256 and the **existing scoped APIM subscription key**.
+The API-to-proxy selector is `x-ai4ia-attempt`; only the proxy supplies
+`x-ai4ia-proxy-attempt`. APIM checks the signature against its authenticated
+subscription keys and the original body bytes before catalog routing, then
+removes this metadata before provider egress. No new credential, grant or
+resource is introduced, and the shared header logger redacts these fields.
+This is a per-request authenticated binding, not a distributed nonce cache or
+permission to replay a captured request as a new operation.
+
+The proxy uses a fresh `SocketsHttpHandler`/client for each selected request,
+HTTP/1.1 exact, nonempty byte content, `Expect: 100-continue` disabled,
+`Connection: close`, no cookies/proxy/credentials/preauthentication, and no
+redirects or reused connections. The client remains alive through the response
+body and is disposed with it. These constraints exclude .NET's version fallback,
+authentication/redirect and pooled-connection replay paths; TCP retransmission
+inside one connection is not another HTTP operation. The inspected
+[.NET 10 HTTP/1 implementation](https://github.com/dotnet/runtime/blob/v10.0.0/src/libraries/System.Net.Http/src/System/Net/Http/SocketsHttpHandler/HttpConnection.cs)
+also marks an ambiguous empty response non-retryable after a content-bearing
+request without `Expect: 100-continue`. Loopback controls exercise the installed
+runtime, including lost replies and redirects, rather than trusting loop counts.
+
+APIM preserves ordinary priority/circuit/concurrency selection, but selected
+requests get `RetryCount=1`, no requeue, a pre-forward retained claim and a
+non-repeating outer retry condition. Every forward branch explicitly uses
+HTTP/1, no redirects and no request-body replay buffering for the selected mode.
+Empty success, temporary errors and on-error cannot restore retry/requeue
+authority. See the official
+[`forward-request` contract](https://learn.microsoft.com/azure/api-management/forward-request-policy).
+The acknowledgement `x-ai4ia-attempt-ack` binds the version and nonce on replies;
+missing/mismatched acknowledgements retain uncertainty and cannot trigger
+fallback. **Acknowledgements detect incompatible replies; they cannot prove a
+safe first dispatch to an old proxy or APIM policy.**
+
+Before any future factory can supply the verifier, owner-reviewed integration
+must establish all of the following outside user-controlled request data:
+
+- Every serving API/proxy replica runs the exact reviewed immutable implementation,
+  and the complete effective APIM policy (all scopes, fragments, API revision and
+  runtime capabilities) implements the same version. A source hash alone is not
+  evidence of serving code or Azure policy compilation.
+- The exact proxy origin, APIM destination, catalog/model protocol and credential
+  scopes agree. Inspect ingress intermediaries, transports, inherited policies,
+  profile/config refresh and forwarding rules for any duplicate, automatic
+  retry, redirect, fallback or async path. Unknown platform attempts refuse.
+- Evidence is fresh and invalidated before a configuration, route, key-scope,
+  catalog or deployment transition can escape its guarantee. The short expiry
+  limits stale observations; it is not a substitute for a cutover/invalidation
+  protocol or a lease on an otherwise mutable topology.
+- The supported provider's input/output meters, catalog bounds and price version
+  are compatible. Opaque provider-internal work is not priced merely because one
+  external HTTP request was sent. Complete independent staging evidence is
+  required before monetary enforcement; no paid probe or activation is included
+  in source validation.
+
+The offline .NET suite compiles the actual generated policy expressions with the
+installed SDK compiler and projects their control flow into loopback HTTP sends.
+It proves source behavior, not Azure's sandbox/compiler, inherited live policies,
+APIM implementation internals or serving-replica coverage. Ordinary controls
+prove a second actual request occurs, not that APIM necessarily chose another
+region. Direct proxy host-failover controls separately exercise multiple hosts.
+Unknown and cancelled calls retain their full original reservation; oversized or
+inconsistent total usage is unknown rather than an accounting-construction error.
+
 ## Reservation state machine
 
 The store contains one immutable-payload entry per operation. State transitions

@@ -103,7 +103,8 @@ jobs:
           dotnet build proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj \
             --configuration Release --no-restore --nologo
           dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj \
-            --configuration Release --no-build --no-restore --nologo
+            --configuration Release --no-build --no-restore --nologo \
+            -- --minimum-expected-tests 40
 
   yamllint:
     name: yamllint

@@ -93,7 +93,8 @@ public static class ProxyHelperUtils
             var firstValue = header.Value.FirstOrDefault();
             var shouldRedact = firstValue is not null &&
                 (firstValue.StartsWith("Bearer", StringComparison.OrdinalIgnoreCase) ||
-                 header.Key.EndsWith("-key", StringComparison.OrdinalIgnoreCase));
+                 header.Key.EndsWith("-key", StringComparison.OrdinalIgnoreCase) ||
+                 NoReplayAttempt.IsInternalHeader(header.Key));
 
             if (shouldRedact)
             {

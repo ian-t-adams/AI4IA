@@ -117,6 +117,11 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    Deployed activation remains
    blocked pending the boundaries in `docs/hard-quota-admission.md`; neither an
    acknowledgement flag nor a local fake proves a Cosmos cutover or bill cap.
+   `gateway.attempts` is a default-absent, reduction-only one-attempt source
+   contract, not activation authority. Only an exact, fresh server-verified
+   gateway capability may prepare a request-bound envelope before admission.
+   Keep the shipping verifier absent; no header or operator Boolean proves the
+   deployed proxy/APIM/ingress transport. Ordinary retries stay unchanged.
 
 ## CI build / test / lint commands
 
@@ -727,8 +732,18 @@ The vendored proxy plus AI4IA auth guard tests use .NET 10:
 ```powershell
 dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --locked-mode
 dotnet build   proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-restore
-dotnet test    proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-build --no-restore
+dotnet test    proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-build --no-restore --nologo -- --minimum-expected-tests 40
 ```
+
+The existing MSTest bridge runs actual tests after locked restore/build. The
+minimum discovery floor also rejects an empty run; the isolated runner controls
+pair a passing test with an intentional failing test and zero discovery.
+No-replay tests drive public proxy sends and compile the actual APIM fragment
+expressions with the installed SDK compiler against offline context projections
+and loopback providers. They are not an Azure policy compiler or live capability
+proof. Generated backend fragments omit only parser-identified XML comment nodes
+to fit the unchanged 48 KiB compiler ceiling; authored comments and C# bytes stay
+intact.
 
 When a proxy project dependency changes, refresh from the top-level test project
 with `dotnet restore ... --force-evaluate`. NuGet does not recalculate

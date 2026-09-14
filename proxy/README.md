@@ -27,8 +27,8 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
 
 ### Intentional source deviation
 
-Fourteen upstream files carry AI4IA security, correctness, dependency, or
-telemetry patches over the audited pin. Four additional files are AI4IA-owned.
+Nineteen upstream files carry AI4IA security, correctness, dependency, or
+telemetry patches over the audited pin. Five additional files are AI4IA-owned.
 The complete machine-readable list and reason for every deviation lives in
 `upstream-provenance.json`; the behaviorally important groups are:
 
@@ -83,6 +83,17 @@ The complete machine-readable list and reason for every deviation lives in
   branch is also removed: `HttpListener.GetContextAsync()` and `HttpListenerContext.Request`
   are non-null contracts, while retaining that dead branch makes request data appear to control
   whether the later authentication methods execute (CodeQL `cs/user-controlled-bypass`).
+- The default-absent `Proxy/NoReplayAttempt.cs` contract binds authenticated
+  request metadata before stripping/profile changes and verifies exact
+  body/model/path bytes before a one-shot send. `ProxyWorker.cs` prevents host
+  fallback and retains a dedicated nonredirecting HTTP/1.1 client through the
+  response body (`ProxyData.cs`); its diagnostic URI now uses the actual
+  destination builder rather than a platform-dependent relative URI.
+  `RequeueDelayWorker.cs` and `DTO/RequestDataDtoV1.cs` refuse bounded
+  persistence/recovery, and `ProxyHelperUtils.cs` redacts internal attempt
+  headers. Ordinary retry behavior is unchanged. This is source staging, not
+  proof of deployed APIM compatibility; see
+  [the typed authority boundary](../docs/hard-quota-admission.md#bounded-one-attempt-source-transport).
 
 The remaining declared deviations update the Application Insights 3.x /
 OpenTelemetry integration, remove unused parser runtime packages, and keep the
@@ -98,12 +109,13 @@ bytes never gate CI. `scripts/tests/test_proxy_provenance.py` fails for an
 added, deleted, or semantically changed file that is not represented exactly.
 The current measured breakdown is:
 
-- **160 files** are content-equivalent to upstream after CRLF/LF canonicalization.
-- **14 files** contain the documented AI4IA source patches.
-- **4 files** are AI4IA additions: `Config/SecretComparer.cs` plus three
+- **155 files** are content-equivalent to upstream after CRLF/LF canonicalization.
+- **19 files** contain the documented AI4IA source patches.
+- **5 files** are AI4IA additions: `Config/SecretComparer.cs`,
+  `Proxy/NoReplayAttempt.cs`, plus three
   `packages.lock.json` files used by the runtime project graph.
 
-The upstream tree has 174 files; the local scoped tree has 178. Regenerate only
+The upstream tree has 174 files; the local scoped tree has 179. Regenerate only
 after fetching and reviewing the pinned upstream commit:
 
 ```powershell

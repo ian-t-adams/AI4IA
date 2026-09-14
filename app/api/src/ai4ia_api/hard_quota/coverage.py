@@ -8,7 +8,7 @@ from typing import Any
 
 from ..catalog import ModelCatalog
 from ..usage.pricing import PricingBook, conservative_token_cost
-from .models import Amounts, Bounds, Surface
+from .models import MAX_QUANTITY, Amounts, Bounds, Surface
 
 # The transport sites and their meters are intentionally finite. Adding an
 # outbound metered client requires adding a site and a paired no-dispatch test.
@@ -32,8 +32,9 @@ COVERAGE: dict[Surface, str] = {
 class AttemptEnvelope:
     """A transport integration contract, NEVER an env/admin acknowledgement.
 
-    The shipping proxy/APIM path has no verified envelope. Runtime factories
-    supply None; only deterministic test transports currently supply one.
+    Runtime factories supply None. A reviewed gateway integration may bind this
+    value to one adapted request; the value alone never selects that transport.
+    Controller-wide values are reserved for deterministic test transports.
     """
 
     version: str
@@ -64,6 +65,55 @@ def _text_only(value: Any) -> bool:
     if isinstance(value, list):
         return all(_text_only(child) for child in value)
     return value is None or isinstance(value, (str, int, float, bool))
+
+
+def supported_attempt_payload(surface: Surface, payload: dict[str, Any]) -> bool:
+    """Narrow v1 wire coverage; unknown effects are not inferred to be text."""
+    if surface == "embedding":
+        inputs = payload.get("input")
+        return (
+            set(payload) <= {"input", "model"}
+            and isinstance(inputs, list) and bool(inputs)
+            and all(isinstance(item, str) for item in inputs)
+        )
+    if surface != "chat" or not _text_only(payload):
+        return False
+    allowed = {
+        "model", "messages", "input", "instructions", "system", "stream", "stream_options",
+        "max_tokens", "max_completion_tokens", "max_output_tokens", "temperature", "top_p",
+        "top_k", "presence_penalty", "frequency_penalty", "seed", "stop", "stop_sequences",
+        "reasoning", "reasoning_effort", "text", "response_format", "store", "n",
+    }
+    if set(payload) - allowed:
+        return False
+    if payload.get("store", False) is not False or payload.get("n", 1) != 1:
+        return False
+    # Stateless text messages only. In particular, opaque Responses reasoning,
+    # tool continuations, images and Claude thinking/cache blocks are excluded.
+    def text_messages(messages: Any) -> bool:
+        if not isinstance(messages, list) or not messages:
+            return False
+        for message in messages:
+            if not isinstance(message, dict) or set(message) - {"role", "content", "type", "name"}:
+                return False
+            if message.get("role") not in {"system", "developer", "user", "assistant"}:
+                return False
+            if message.get("type", "message") != "message":
+                return False
+            content = message.get("content")
+            if isinstance(content, str):
+                continue
+            if not isinstance(content, list) or not content:
+                return False
+            if any(
+                not isinstance(block, dict) or set(block) != {"type", "text"}
+                or block.get("type") not in {"text", "input_text", "output_text"}
+                or not isinstance(block.get("text"), str)
+                for block in content
+            ):
+                return False
+        return True
+    return text_messages(payload.get("messages", payload.get("input")))
 
 
 def reservation_bounds(
@@ -157,13 +207,16 @@ def actual_amounts(bounds: Bounds, raw: dict[str, Any] | None) -> Amounts | None
         return None
     prompt, completion = raw.get("prompt_tokens"), raw.get("completion_tokens")
     if not all(
-        isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2**53 - 1
+        isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_QUANTITY
         for value in (prompt, completion)
     ):
         return None
     assert isinstance(prompt, int) and isinstance(completion, int)
     total = raw.get("total_tokens", prompt + completion)
-    if not isinstance(total, int) or isinstance(total, bool) or total != prompt + completion:
+    if (
+        not isinstance(total, int) or isinstance(total, bool)
+        or not 0 <= total <= MAX_QUANTITY or total != prompt + completion
+    ):
         return None
     micro = None
     if bounds.inputRate is not None and bounds.outputRate is not None:
@@ -173,4 +226,6 @@ def actual_amounts(bounds: Bounds, raw: dict[str, Any] | None) -> Amounts | None
             prompt_tokens=prompt, completion_tokens=completion,
             input_rate=bounds.inputRate, output_rate=bounds.outputRate,
         )
+        if micro is None or not 0 <= micro <= MAX_QUANTITY:
+            return None
     return Amounts(tokens=total, microUsd=micro, compute=bounds.amounts.compute)

@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
+from xml.parsers import expat
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _generator import build_parser
@@ -684,10 +685,34 @@ def _node_tag(node: str) -> str:
     return match.group(1) if match else ""
 
 
-def _serialize_fragment(children: list[str]) -> str:
+def _serialize_fragment(children: list[str], *, compact_comments: bool = False) -> str:
     body = "\n".join(child.rstrip() for child in children)
-    body = "\n".join(line.rstrip() for line in body.splitlines())
-    return f"<fragment>\n{body}\n</fragment>\n"
+    fragment = f"<fragment>\n{body}\n</fragment>\n"
+    if compact_comments:
+        fragment = _without_xml_comments(fragment)
+    return "\n".join(line.rstrip() for line in fragment.splitlines()) + "\n"
+
+
+def _without_xml_comments(xml_text: str) -> str:
+    """Remove only parser-identified XML comments; preserve all expression bytes."""
+    raw = xml_text.encode("utf-8")
+    parser = expat.ParserCreate()
+    ranges: list[tuple[int, int]] = []
+
+    def comment(_text: str) -> None:
+        start = parser.CurrentByteIndex
+        end = raw.index(b"-->", start) + 3
+        ranges.append((start, end))
+
+    parser.CommentHandler = comment
+    parser.Parse(raw, True)
+    chunks: list[bytes] = []
+    position = 0
+    for start, end in ranges:
+        chunks.append(raw[position:start])
+        position = end
+    chunks.append(raw[position:])
+    return b"".join(chunks).decode("utf-8")
 
 
 def generate_priority_policies() -> tuple[str, tuple[str, ...]]:
@@ -754,7 +779,10 @@ def generate_priority_policies() -> tuple[str, tuple[str, ...]]:
     fragments = (
         _serialize_fragment(inbound_pre),
         _serialize_fragment(inbound_post),
-        _serialize_fragment(backend_children),
+        # Keep explanatory comments in the authored policy, not in the bounded
+        # deployed fragment. The one-attempt guards must fit the observed APIM
+        # compiler ceiling without splitting a retry scope or raising the limit.
+        _serialize_fragment(backend_children, compact_comments=True),
         _serialize_fragment(outbound_children),
         _serialize_fragment(on_error_children),
     )

@@ -25,6 +25,20 @@ docs_generator = load_script(
 
 
 class GatewayPolicyTests(unittest.TestCase):
+    def test_fragment_compaction_preserves_code_and_string_bytes(self) -> None:
+        source = (
+            '<fragment><!-- remove this XML comment -->\n'
+            '<set-variable name="fixture" value="@{\n'
+            '// keep this C# comment\n'
+            'return &quot;&lt;!-- keep this string --&gt;&quot;;\n'
+            '}" />\n'
+            '<set-body><![CDATA[<!-- keep this literal -->]]></set-body>'
+            '</fragment>\n'
+        )
+        expected = source.replace("<!-- remove this XML comment -->", "")
+        self.assertEqual(gateway_generator._without_xml_comments(source), expected)
+        self.assertEqual(gateway_generator._without_xml_comments(expected), expected)
+
     def test_ga_routes_are_generated_from_the_same_realtime_catalog(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
         generated = gateway_generator.generate_realtime_policy(models, ga=True)
@@ -1132,7 +1146,10 @@ class GatewayPolicyTests(unittest.TestCase):
                     "X-Policy-LastError must fall back to the real APIM error",
                 )
                 # Requeue/retry hints are only meaningful for a throttled backend.
-                for header in ('name="S7PREQUEUE"', 'name="retry-after-ms"'):
+                for header in (
+                    'name="S7PREQUEUE" exists-action="override"',
+                    'name="retry-after-ms" exists-action="override"',
+                ):
                     self.assertLess(
                         policy.index(
                             'condition="@(!context.Variables.GetValueOrDefault'
