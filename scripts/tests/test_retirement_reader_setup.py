@@ -12,9 +12,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import yaml
 
+from scripts.tests._account_pagination import invalid_account_continuations
 from scripts.tests._loader import load_script
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,6 +34,7 @@ RUNNER = """
 import importlib.util
 import os
 import sys
+import time
 from pathlib import Path
 script, stub, *arguments = sys.argv[1:]
 sys.path.insert(0, str(Path(script).parent))
@@ -40,6 +43,22 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 module.cli_command = lambda tool: [sys.executable, stub, tool]
+if os.environ.get("READER_STUB_ACCOUNT_BUDGET"):
+    original_get = module.Cli.get
+    def consume_budget(self, path, api, query=None):
+        result = original_get(self, path, api, query)
+        if path.endswith("/Microsoft.CognitiveServices/accounts") and not (query or {}).get("$skiptoken"):
+            budget = os.environ["READER_STUB_ACCOUNT_BUDGET"]
+            if budget == "calls":
+                self.calls = 192
+            elif budget == "time":
+                self.deadline = time.monotonic()
+            elif budget == "bytes":
+                self.bytes = 32 * module.MAX_BYTES
+            else:
+                raise AssertionError(budget)
+        return result
+    module.Cli.get = consume_budget
 if os.environ.get("READER_STUB_INTERRUPT") == "after-create":
     original = module.Cli.create
     def interrupt(self, *args, **kwargs):
@@ -148,6 +167,12 @@ if state.get("malformed_contains") and state["malformed_contains"] in key:
 if path == state["group"]["id"]:
     response(state["group"])
 if path.endswith("/Microsoft.CognitiveServices/accounts"):
+    if "account_pages" in state:
+        parameters = parse_qs(url.query, keep_blank_values=True)
+        assert parameters["api-version"] == ["2024-10-01"]
+        assert set(parameters) <= {"api-version", "$skiptoken"}
+        cursor = parameters.get("$skiptoken", [""])[0]
+        response(state["account_pages"][cursor])
     rows = state["accounts"]
 elif path.endswith("/Microsoft.ManagedIdentity/userAssignedIdentities"):
     rows = [v for v in state["resources"].values()
@@ -229,6 +254,7 @@ class Fixture:
             [sys.executable, str(self.directory / "runner.py"), str(ROOT / "scripts" / "setup-retirement-reader.py"),
              str(self.directory / "cli.py"), *self.arguments, *extra],
             env={**os.environ, "READER_STUB_DIRECTORY": str(self.directory),
+                 "READER_STUB_ACCOUNT_BUDGET": self.state.get("account_budget", ""),
                  "READER_STUB_INTERRUPT": "after-create" if self.state.get("interrupt") else ""},
             cwd=ROOT, text=True, capture_output=True, timeout=120, check=False,
         )
@@ -267,6 +293,30 @@ class Fixture:
     def row(self, name: str) -> dict:
         return self.state["resources"][self.intents[name]["id"]]
 
+    def account_link(self, cursor: str) -> str:
+        query = {"api-version": "2024-10-01", "$skiptoken": cursor}
+        return (
+            "https://management.azure.com" + self.target.group
+            + "/providers/Microsoft.CognitiveServices/accounts?" + urlencode(query, safe="$")
+        )
+
+    def paginate_accounts(self, *pages: list[dict]) -> list[str]:
+        cursors = [""] + [f"PRIVATE-page-{index}+cursor/with=padding%and&value" for index in range(1, len(pages))]
+        self.state["account_pages"] = {}
+        for index, items in enumerate(pages):
+            page = {"value": copy.deepcopy(items)}
+            if index + 1 < len(pages):
+                page["nextLink"] = self.account_link(cursors[index + 1])
+            self.state["account_pages"][cursors[index]] = page
+        return cursors
+
+    def account_calls(self, calls: list[list[str]]) -> list[list[str]]:
+        return [
+            call for call in calls if "--url" in call
+            and urlsplit(call[call.index("--url") + 1]).path
+            == self.target.group + "/providers/Microsoft.CognitiveServices/accounts"
+        ]
+
 
 class ReaderSetupExecutionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -284,6 +334,18 @@ class ReaderSetupExecutionTests(unittest.TestCase):
         self.assertIn(text, result.stderr)
         self.assertNotIn("PRIVATE-", result.stderr + result.stdout)
         self.assertNotIn("--body 'true'", result.stdout)
+
+    def assert_account_blocked(
+        self, result: subprocess.CompletedProcess, calls: list[list[str]], reads: int, text: str = "",
+    ) -> None:
+        self.assert_blocked(result, calls, text)
+        self.assertEqual(result.stdout, "")
+        failure = json.loads(result.stderr)
+        self.assertEqual(failure["attempted_resource_ids"], [])
+        self.assertIsNone(failure["activation_command"])
+        account_calls = self.fixture.account_calls(calls)
+        self.assertEqual(len(account_calls), reads)
+        self.assertEqual(calls[-1], account_calls[-1], "Incomplete inventory must stop before other setup reads.")
 
     def test_import_has_no_cli_or_file_side_effects(self) -> None:
         # The import above precedes the test stub setup. This separate process also
@@ -311,6 +373,252 @@ class ReaderSetupExecutionTests(unittest.TestCase):
         result, calls = self.fixture.run("--apply", "--approve-plan", plan["plan_sha256"], "--what-if")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_no_mutations(calls)
+
+    def test_all_expected_accounts_still_require_an_empty_terminal_page(self) -> None:
+        one_page = self.fixture.plan()
+        accounts = self.fixture.state["accounts"]
+        self.assertEqual(len(accounts), 3)
+        cursors = self.fixture.paginate_accounts(accounts, [])
+        result, calls = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_no_mutations(calls)
+        account_calls = self.fixture.account_calls(calls)
+        self.assertEqual(len(account_calls), 2)
+        self.assertEqual(json.loads(result.stdout), one_page)
+        query = parse_qs(urlsplit(account_calls[1][account_calls[1].index("--url") + 1]).query)
+        self.assertEqual(query, {"api-version": ["2024-10-01"], "$skiptoken": [cursors[1]]})
+        self.assertNotIn("PRIVATE-", result.stdout + result.stderr)
+
+    def test_split_and_reordered_pages_preserve_plan_evidence(self) -> None:
+        expected = self.fixture.plan()
+        accounts = self.fixture.state["accounts"]
+        cursors = self.fixture.paginate_accounts(accounts[1:], [], accounts[:1])
+        first = self.fixture.state["account_pages"][""]
+        uri = urlsplit(first["nextLink"])
+        first["nextLink"] = "https://MANAGEMENT.AZURE.COM" + uri.path.upper() + "?" + uri.query.replace("%2F", "%2f")
+        result, calls = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_no_mutations(calls)
+        self.assertEqual(json.loads(result.stdout), expected)
+        account_calls = self.fixture.account_calls(calls)
+        self.assertEqual(len(account_calls), 3)
+        for call, cursor in zip(account_calls[1:], cursors[1:], strict=True):
+            uri = urlsplit(call[call.index("--url") + 1])
+            self.assertEqual(uri.netloc, "management.azure.com")
+            self.assertEqual(uri.path, self.fixture.target.group + "/providers/Microsoft.CognitiveServices/accounts")
+            self.assertEqual(parse_qs(uri.query), {"api-version": ["2024-10-01"], "$skiptoken": [cursor]})
+
+    def test_shared_invalid_continuations_stop_before_a_second_dispatch(self) -> None:
+        cursors = self.fixture.paginate_accounts(self.fixture.state["accounts"], [])
+        self.fixture.plan()
+        good = self.fixture.account_link(cursors[1])
+        for index, link in enumerate(invalid_account_continuations(
+            good, SUB, TENANT, self.fixture.target.resource_group,
+        )):
+            with self.subTest(case=index):
+                self.fixture.state["account_pages"][""]["nextLink"] = link
+                result, calls = self.fixture.run()
+                self.assert_account_blocked(result, calls, 1)
+                self.assertNotIn("password", result.stderr + result.stdout)
+                self.assertNotIn("evil.invalid", result.stderr + result.stdout)
+        self.fixture.state["account_pages"][""]["nextLink"] = good
+        self.fixture.plan()
+
+    def test_malformed_or_oversized_account_cursor_never_dispatches(self) -> None:
+        cursors = self.fixture.paginate_accounts(self.fixture.state["accounts"], [])
+        self.fixture.plan()
+        for link in (
+            False, 0, [], {}, self.fixture.account_link(""),
+            self.fixture.account_link("control\ncursor"), self.fixture.account_link("non-ascii-\u00e9"),
+            self.fixture.account_link(cursors[1]) + "%GG", self.fixture.account_link("c" * 4097),
+            self.fixture.account_link("c" * 8193),
+        ):
+            with self.subTest(kind=type(link).__name__):
+                self.fixture.state["account_pages"][""]["nextLink"] = link
+                result, calls = self.fixture.run()
+                self.assert_account_blocked(result, calls, 1)
+        boundary = "c" * 4096
+        terminal = self.fixture.state["account_pages"].pop(cursors[1])
+        self.fixture.state["account_pages"][boundary] = terminal
+        self.fixture.state["account_pages"][""]["nextLink"] = self.fixture.account_link(boundary)
+        self.fixture.plan()
+
+    def test_later_malicious_or_repeated_cursor_never_completes_inventory(self) -> None:
+        cursors = self.fixture.paginate_accounts(self.fixture.state["accounts"], [])
+        self.fixture.plan()
+        for link, message in (
+            (self.fixture.account_link(cursors[1]).replace("%2F", "%2f"), "Repeated account continuation"),
+            (self.fixture.account_link("next").replace("management.azure.com", "foreign.invalid"), ""),
+        ):
+            self.fixture.state["account_pages"][cursors[1]]["nextLink"] = link
+            result, calls = self.fixture.run()
+            self.assert_account_blocked(result, calls, 2, message)
+        self.fixture.state["account_pages"][cursors[1]].pop("nextLink")
+        self.fixture.plan()
+
+    def test_later_duplicate_names_ids_and_ownership_fail_before_more_reads(self) -> None:
+        accounts = self.fixture.state["accounts"]
+        cursors = self.fixture.paginate_accounts(accounts, [])
+        self.fixture.plan()
+        for change in ("same", "case", "name-alias", "id-alias", "foreign", "unowned-foreign",
+                       "ambiguous", "tag", "location", "kind", "provisioning", "missing-name"):
+            with self.subTest(change=change):
+                row = copy.deepcopy(accounts[0])
+                if change in ("ambiguous", "tag", "location", "kind", "provisioning"):
+                    row["name"] = row["name"][:-13] + "anotherabcdef"
+                    row["id"] = row["id"].rsplit("/", 1)[0] + "/" + row["name"]
+                if change == "case":
+                    row["name"], row["id"] = row["name"].upper(), row["id"].upper()
+                elif change == "name-alias":
+                    row["name"] = "unrelated-name"
+                elif change == "id-alias":
+                    row["id"] = row["id"].rsplit("/", 1)[0] + "/unrelated-name"
+                elif change in ("foreign", "unowned-foreign"):
+                    if change == "unowned-foreign":
+                        row["name"] = "unrelated-account"
+                        row["id"] = row["id"].rsplit("/", 1)[0] + "/" + row["name"]
+                    row["id"] = row["id"].replace(SUB, TENANT)
+                elif change == "tag":
+                    row["tags"]["env"] = "other-environment"
+                elif change == "location":
+                    row["location"] = "wrong-region"
+                elif change == "kind":
+                    row["kind"] = "OpenAI"
+                elif change == "provisioning":
+                    row["properties"]["provisioningState"] = "Failed"
+                elif change == "missing-name":
+                    row.pop("name")
+                first = accounts[1:] if change in ("tag", "location", "kind", "provisioning") else accounts
+                self.fixture.state["account_pages"][""]["value"] = copy.deepcopy(first)
+                self.fixture.state["account_pages"][cursors[1]] = {
+                    "value": [row], "nextLink": self.fixture.account_link("never-read"),
+                }
+                result, calls = self.fixture.run()
+                self.assert_account_blocked(result, calls, 2)
+        self.fixture.paginate_accounts(accounts, [])
+        self.fixture.plan()
+
+    def test_later_failure_warning_or_malformed_rows_withholds_plan(self) -> None:
+        accounts = self.fixture.state["accounts"]
+        cursors = self.fixture.paginate_accounts(accounts, [])
+        self.fixture.plan()
+        for key in ("fail_contains", "warn_contains", "malformed_contains"):
+            with self.subTest(failure=key):
+                self.fixture.state[key] = "skiptoken"
+                result, calls = self.fixture.run()
+                self.assert_account_blocked(result, calls, 2)
+                self.fixture.state.pop(key)
+        for bad_rows in (None, {}, [None], [False], [1]):
+            self.fixture.state["account_pages"][cursors[1]]["value"] = bad_rows
+            result, calls = self.fixture.run()
+            self.assert_account_blocked(result, calls, 2)
+        self.fixture.state["account_pages"][cursors[1]]["value"] = []
+        self.fixture.plan()
+
+    def test_total_account_row_limit_has_an_exact_boundary_control(self) -> None:
+        accounts = copy.deepcopy(self.fixture.state["accounts"])
+        self.assertEqual(setup.MAX_ACCOUNT_ROWS, 4096)
+        template = copy.deepcopy(accounts[0])
+        for index in range(4097 - len(accounts)):
+            row = copy.deepcopy(template)
+            row["name"] = f"unrelated-account-{index}"
+            row["id"] = row["id"].rsplit("/", 1)[0] + "/" + row["name"]
+            accounts.append(row)
+        cursors = self.fixture.paginate_accounts(accounts[:2048], accounts[2048:4096])
+        result, calls = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_no_mutations(calls)
+        self.assertEqual(len(self.fixture.account_calls(calls)), 2)
+        self.fixture.state["account_pages"][cursors[1]]["value"].append(accounts[-1])
+        result, calls = self.fixture.run()
+        self.assert_account_blocked(result, calls, 2, "total row bound")
+
+    def test_account_page_limit_has_an_exact_terminal_boundary_control(self) -> None:
+        self.assertEqual(setup.MAX_ACCOUNT_PAGES, 64)
+        self.fixture.paginate_accounts(self.fixture.state["accounts"], *([[]] * 63))
+        result, calls = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_no_mutations(calls)
+        self.assertEqual(len(self.fixture.account_calls(calls)), 64)
+        self.fixture.paginate_accounts(self.fixture.state["accounts"], *([[]] * 64))
+        result, calls = self.fixture.run()
+        self.assert_account_blocked(result, calls, 64, "page bound")
+
+    def test_remaining_setup_budgets_are_not_reset_for_continuation(self) -> None:
+        self.fixture.paginate_accounts(self.fixture.state["accounts"], [])
+        self.fixture.plan()
+        for budget in ("calls", "time", "bytes"):
+            with self.subTest(budget=budget):
+                self.fixture.state["account_budget"] = budget
+                result, calls = self.fixture.run()
+                self.assert_account_blocked(result, calls, 1, "budget exhausted")
+        self.fixture.state.pop("account_budget")
+        self.fixture.plan()
+
+    def test_each_cli_read_respects_remaining_bytes_before_dispatch(self) -> None:
+        command = [sys.executable, "-c", "print('{}', end='')"]
+        for available in (2, 1, 0):
+            with (
+                self.subTest(available=available),
+                patch.object(setup, "cli_command", return_value=command),
+                patch.object(setup, "run_bounded", wraps=setup.run_bounded) as run,
+            ):
+                cli = setup.Cli(SUB, False)
+                cli.bytes = 32 * setup.MAX_BYTES - available
+                if available == 2:
+                    self.assertEqual(cli.call("az", []), {})
+                    self.assertEqual(cli.bytes, 32 * setup.MAX_BYTES)
+                else:
+                    with self.assertRaises((setup.EvidenceError, setup.SetupError)):
+                        cli.call("az", [])
+                if available:
+                    self.assertEqual(run.call_args.args[2], available)
+                    self.assertLessEqual(run.call_args.args[1], 30)
+                else:
+                    run.assert_not_called()
+
+    def test_paginated_plan_apply_and_freshness_keep_the_same_five_intents(self) -> None:
+        accounts = self.fixture.state["accounts"]
+        cursors = self.fixture.paginate_accounts(accounts[:1], accounts[1:])
+        plan = self.fixture.plan()
+        self.fixture.state["account_pages"][cursors[1]]["value"][0]["etag"] = "changed-after-plan"
+        result, calls = self.fixture.run("--apply", "--approve-plan", plan["plan_sha256"])
+        self.assert_blocked(result, calls, "Stale/wrong")
+        self.fixture.state["account_pages"][cursors[1]]["value"][0]["etag"] = accounts[1]["etag"]
+        self.fixture.state["fail_contains"] = "skiptoken"
+        result, calls = self.fixture.run("--apply", "--approve-plan", plan["plan_sha256"])
+        self.assert_account_blocked(result, calls, 2)
+        self.fixture.state.pop("fail_contains")
+        result, calls = self.fixture.run("--apply", "--approve-plan", plan["plan_sha256"], "--what-if")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_no_mutations(calls)
+        result, calls = self.fixture.run("--apply", "--approve-plan", plan["plan_sha256"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len([call for call in calls if "PUT" in call]), 5)
+        self.assertEqual(set(self.fixture.state["resources"]), set(self.fixture.state["allowed_creates"]))
+        self.assertIsNone(json.loads(result.stdout)["activation_command"])
+        repeated, calls = self.fixture.apply()
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assert_no_mutations(calls)
+
+    def test_paginated_accounts_do_not_relax_other_lists_or_configuration_readiness(self) -> None:
+        self.fixture.complete()
+        self.fixture.configure()
+        self.fixture.paginate_accounts(self.fixture.state["accounts"], [])
+        result, calls = self.fixture.run("--verify-configuration")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_no_mutations(calls)
+        self.assertIn("--body 'true'", json.loads(result.stdout)["activation_command"])
+        for operation in ("userAssignedIdentities?", "roleDefinitions?", "roleAssignments?", "federatedIdentityCredentials?"):
+            with self.subTest(operation=operation):
+                self.fixture.state["page_contains"] = operation
+                result, calls = self.fixture.run("--verify-configuration")
+                self.assert_blocked(result, calls, "Incomplete/paginated ARM inventory")
+                self.assertEqual(len(self.fixture.account_calls(calls)), 2)
+        self.fixture.state.pop("page_contains")
+        self.fixture.state["fail_contains"] = "skiptoken"
+        result, calls = self.fixture.run("--verify-configuration")
+        self.assert_account_blocked(result, calls, 2)
 
     def test_apply_requires_digest_before_any_cli_call(self) -> None:
         for extra in (("--apply",), ("--apply", "--approve-plan", "yes"), ("--approve-plan", "a" * 64)):
