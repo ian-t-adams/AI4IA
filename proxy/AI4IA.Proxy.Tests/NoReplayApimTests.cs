@@ -77,6 +77,8 @@ public sealed class NoReplayApimTests
     [DataTestMethod]
     [DataRow("missing-proof")]
     [DataRow("missing-mode")]
+    [DataRow("missing-both")]
+    [DataRow("wrong-membership")]
     [DataRow("wrong-key")]
     [DataRow("no-subscription")]
     [DataRow("version")]
@@ -97,6 +99,11 @@ public sealed class NoReplayApimTests
         {
             case "missing-proof": headers.Remove(NoReplayAttempt.ProofHeader); break;
             case "missing-mode": headers.Remove(NoReplayAttempt.RequestHeader); break;
+            case "missing-both":
+                headers.Remove(NoReplayAttempt.RequestHeader);
+                headers.Remove(NoReplayAttempt.ProofHeader);
+                break;
+            case "wrong-membership": policy.Context.Subscription!.Id = "proxy-models"; break;
             case "wrong-key": policy.Context.Subscription!.PrimaryKey = "wrong-key"; break;
             case "no-subscription": policy.Context.Subscription = null; break;
             case "version": headers[NoReplayAttempt.RequestHeader] = ["unknown.1"]; break;
@@ -182,27 +189,33 @@ public sealed class NoReplayApimTests
     }
 
     [TestMethod]
-    public async Task CounterfactualUnenforcedMarkersCanPayTwiceBeforeAckFailure()
+    public async Task MandatoryVersionedMembershipStopsPreviouslyUnsafeMarkerStripping()
     {
-        int calls = 0;
-        await using var provider = new WireServer(_ => Task.FromResult(
-            new WireReply(Interlocked.Increment(ref calls) == 1 ? 500 : 200)));
-        await using var alternate = new WireServer(_ => Task.FromResult(new WireReply(200)));
-        await using var apim = new WireServer(async request =>
+        foreach (bool versioned in new[] { false, true })
         {
-            // Project an intermediary stripping both fields, or an old policy's
-            // lack of membership enforcement, into the unchanged ordinary route.
-            var headers = request.Headers.Where(p => !NoReplayAttempt.IsInternalHeader(p.Key))
-                .ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
-            var ordinary = new ApimPolicyHarness(request with { Headers = headers }, provider, alternate);
-            await ordinary.Run();
-            return new WireReply(ordinary.Context.Response.StatusCode, Ack: false, AllowDisconnect: true);
-        });
-        await using var proxy = await NoReplayWorkerTests.WorkerFixture.Create([apim], true);
-        await Assert.ThrowsExceptionAsync<ProxyErrorException>(() => proxy.Send());
-        Assert.AreEqual(1, apim.Requests.Count);
-        Assert.AreEqual(2, provider.Requests.Count + alternate.Requests.Count,
-            "Missing ACK is too late to prove no paid replay.");
+            int calls = 0;
+            await using var provider = new WireServer(_ => Task.FromResult(
+                new WireReply(Interlocked.Increment(ref calls) == 1 ? 500 : 200)));
+            await using var alternate = new WireServer(_ => Task.FromResult(new WireReply(200)));
+            await using var apim = new WireServer(async request =>
+            {
+                var headers = request.Headers.Where(p => !NoReplayAttempt.IsInternalHeader(p.Key))
+                    .ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
+                var policy = new ApimPolicyHarness(request with { Headers = headers }, provider, alternate);
+                await policy.Run();
+                return new WireReply(policy.Context.Response.StatusCode, Ack: false, AllowDisconnect: true);
+            });
+            await using var proxy = await NoReplayWorkerTests.WorkerFixture.Create([apim], versioned);
+            if (versioned) await Assert.ThrowsExceptionAsync<ProxyErrorException>(() => proxy.Send());
+            else
+            {
+                using var response = await proxy.Send();
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            }
+            Assert.AreEqual(1, apim.Requests.Count);
+            Assert.AreEqual(versioned ? 0 : 2, provider.Requests.Count + alternate.Requests.Count,
+                "Legacy optional markers can pay twice; versioned membership must refuse before paying.");
+        }
     }
 
     [TestMethod]
@@ -238,16 +251,17 @@ public sealed class NoReplayApimTests
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["x-LLMModel"] = "fixture-text",
-            ["Ocp-Apim-Subscription-Key"] = NoReplayWorkerTests.Key,
+            ["Ocp-Apim-Subscription-Key"] = bounded ? NoReplayWorkerTests.Key : NoReplayWorkerTests.LegacyKey,
         };
         if (bounded)
         {
             string value = NoReplayWorkerTests.Header(NoReplayWorkerTests.Body);
-            string signed = $"{value}\nPOST\n{NoReplayWorkerTests.Path}\nfixture-text";
+            string signed = $"{value}\nPOST\n{NoReplayWorkerTests.BoundedPath}\nfixture-text";
             headers[NoReplayAttempt.RequestHeader] = value;
             headers[NoReplayAttempt.ProofHeader] = Convert.ToHexStringLower(HMACSHA256.HashData(
                 Encoding.UTF8.GetBytes(NoReplayWorkerTests.Key), Encoding.UTF8.GetBytes(signed)));
         }
-        return new WireRequest(NoReplayWorkerTests.Path, "HTTP/1.1", headers, NoReplayWorkerTests.Body);
+        return new WireRequest(bounded ? NoReplayWorkerTests.BoundedPath : NoReplayWorkerTests.Path,
+            "HTTP/1.1", headers, NoReplayWorkerTests.Body);
     }
 }

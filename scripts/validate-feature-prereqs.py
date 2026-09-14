@@ -329,6 +329,14 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     ):
         errors.append("voiceLiveToolsEnabled=true is inert unless voiceLiveEnabled=true.")
 
+    if truthy(parameter_value(parameters, "gatewayAttemptsV1Staged", False)):
+        warnings.append(
+            "gatewayAttemptsV1Staged provisions only an isolated API, three POST operations, "
+            "policy and API-scoped proxy key on the existing APIM. Runtime capability is "
+            "still unavailable: exact serving/topology/key-scope readback and "
+            "transition-fenced proof are required. Hard quota activation remains refused."
+        )
+
     realtime_ga_enabled = truthy(parameter_value(parameters, "realtimeGaEnabled", False))
     realtime_protocol = text(parameter_value(parameters, "realtimeProtocol", "preview"))
     if realtime_protocol not in {"preview", "ga"}:

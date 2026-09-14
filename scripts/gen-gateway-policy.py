@@ -51,6 +51,8 @@ PRIORITY_POLICY_PATH = (
 PRIORITY_OUTPUT_PATH = (
     ROOT / "infra" / "policies" / "simplel7proxy-priority-policy.xml"
 )
+ATTEMPTS_GUARD_PATH = ROOT / "infra" / "policies" / "attempts-v1-guard.xml"
+ATTEMPTS_OUTPUT_PATH = ROOT / "infra" / "policies" / "attempts-v1-policy.xml"
 PRIORITY_FRAGMENT_IDS = (
     "simplel7proxy_inbound_pre_32",
     "simplel7proxy_inbound_post_32",
@@ -821,6 +823,30 @@ def generate_priority_policies() -> tuple[str, tuple[str, ...]]:
     return wrapper, fragments
 
 
+def generate_attempts_policy(wrapper: str) -> str:
+    guard = ATTEMPTS_GUARD_PATH.read_text(encoding="utf-8")
+    guard_nodes = _section_nodes(guard, "fragment")
+    ordinary_start = (
+        "    <base />\n"
+        f'    <include-fragment fragment-id="{PRIORITY_FRAGMENT_IDS[0]}" />\n'
+    )
+    if wrapper.count(ordinary_start) != 1:
+        raise ValueError("versioned gateway requires the exact shared inbound chain")
+    selected = wrapper.replace(
+        ordinary_start,
+        "\n".join(guard_nodes) + "\n"
+        f'    <include-fragment fragment-id="{PRIORITY_FRAGMENT_IDS[0]}" />\n',
+        1,
+    )
+    # A mandatory guard before <base/> cannot bound metered inherited policies.
+    # This API owns its full chain; the legacy API retains normal inheritance.
+    sections = []
+    for name in ("inbound", "backend", "outbound", "on-error"):
+        nodes = [node for node in _section_nodes(selected, name) if _node_tag(node) != "base"]
+        sections.append(f"  <{name}>\n" + "\n".join(nodes) + f"\n  </{name}>\n")
+    return "<policies>\n" + "".join(sections) + "</policies>\n"
+
+
 def generate_endpoint_policies() -> tuple[str, tuple[str, ...]]:
     models = json.loads(MODELS_PATH.read_text(encoding="utf-8"))
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -1284,6 +1310,7 @@ def main() -> int:
             PRIORITY_POLICY_PATH.read_text(encoding="utf-8"),
         ),
         (PRIORITY_OUTPUT_PATH, priority_generated),
+        (ATTEMPTS_OUTPUT_PATH, generate_attempts_policy(priority_generated)),
         (REALTIME_OUTPUT_PATH, realtime_generated),
         (REALTIME_GA_OUTPUT_PATH, realtime_ga_generated),
     )
@@ -1314,7 +1341,9 @@ def main() -> int:
             code_interpreter_policy,
             str(CODE_INTERPRETER_POLICY_PATH.relative_to(ROOT)),
         )
-        if len(priority_generated.encode("utf-8")) > APIM_API_POLICY_MAX_BYTES:
+        if max(len(content.encode("utf-8")) for content in (
+            priority_generated, generate_attempts_policy(priority_generated),
+        )) > APIM_API_POLICY_MAX_BYTES:
             raise ValueError(
                 f"{PRIORITY_OUTPUT_PATH.relative_to(ROOT)} exceeds "
                 f"{APIM_API_POLICY_MAX_BYTES} bytes"
@@ -1327,6 +1356,7 @@ def main() -> int:
         generated_outputs = (
             *fragments,
             (PRIORITY_OUTPUT_PATH, priority_generated),
+            (ATTEMPTS_OUTPUT_PATH, generate_attempts_policy(priority_generated)),
             (REALTIME_OUTPUT_PATH, realtime_generated),
             (REALTIME_GA_OUTPUT_PATH, realtime_ga_generated),
         )
@@ -1346,6 +1376,7 @@ def main() -> int:
     for path, content in (
         *fragments,
         (PRIORITY_OUTPUT_PATH, priority_generated),
+        (ATTEMPTS_OUTPUT_PATH, generate_attempts_policy(priority_generated)),
         (REALTIME_OUTPUT_PATH, realtime_generated),
         (REALTIME_GA_OUTPUT_PATH, realtime_ga_generated),
     ):

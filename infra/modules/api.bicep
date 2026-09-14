@@ -49,6 +49,9 @@ param modelGatewayApiKey string = ''
 @description('Header carrying the model gateway API key. Use a proxy-only header when the upstream APIM also uses a subscription key.')
 param modelGatewayApiKeyHeader string = 'Ocp-Apim-Subscription-Key'
 
+@description('Infrastructure staging posture only. Default OFF; runtime selection still requires independently verified deployment compatibility.')
+param gatewayAttemptsV1Staged bool = false
+
 @description('Cosmos DB account endpoint for canonical session and memory data.')
 param cosmosEndpoint string
 
@@ -970,6 +973,10 @@ var apiEnv = concat([
   {
     name: 'AI4IA_MODEL_GATEWAY_AUTH_MODE'
     value: modelGatewayAuthMode
+  }
+  {
+    name: 'AI4IA_GATEWAY_ATTEMPTS_V1_STAGED'
+    value: string(gatewayAttemptsV1Staged)
   }
   {
     name: 'AI4IA_SESSION_STORE'

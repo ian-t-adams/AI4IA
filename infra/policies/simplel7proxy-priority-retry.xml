@@ -520,7 +520,7 @@ REFACTOR:
 					<set-variable name="backendProtocolPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;path&quot;))" />
 					<set-variable name="backendOperationPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;operation&quot;))" />
 					<choose>
-						<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; (context.Variables.GetValueOrDefault&lt;bool>(&quot;attemptClaimed&quot;, false) || context.Variables.GetValueOrDefault&lt;int>(&quot;backendCallCounter&quot;, 0) != 0 || (context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;) != &quot;openai&quot; &amp;&amp; context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;) != &quot;anthropic&quot;) || !string.IsNullOrEmpty(context.Variables.GetValueOrDefault&lt;string>(&quot;backendOperationPath&quot;, &quot;&quot;))))">
+						<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; (context.Variables.GetValueOrDefault&lt;bool>(&quot;attemptClaimed&quot;, false) || context.Variables.GetValueOrDefault&lt;int>(&quot;backendCallCounter&quot;, 0) != 0 || context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;) != &quot;openai&quot; || !string.IsNullOrEmpty(context.Variables.GetValueOrDefault&lt;string>(&quot;backendOperationPath&quot;, &quot;&quot;))))">
 							<return-response>
 								<set-status code="400" reason="Unsupported gateway attempt" />
 								<set-body>{"error":{"code":"unsupported_attempt_contract"}}</set-body>
@@ -537,7 +537,7 @@ REFACTOR:
 					     Rewrite path-based Azure OpenAI calls and model-body calls
 					     to the deployment selected for this immediate APIM attempt. -->
 					<set-variable name="backendRelativePath" value="@{
-						string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);
+						string path = context.Variables.GetValueOrDefault&lt;string>(&quot;attemptsV1Path&quot;, context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;));
 						string requested = context.Variables.GetValueOrDefault&lt;string>(&quot;model&quot;, &quot;&quot;);
 						string selected = context.Variables.GetValueOrDefault&lt;string>(&quot;selectedDeployment&quot;, &quot;&quot;);
 						string protocol = context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;openai&quot;);

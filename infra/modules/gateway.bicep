@@ -125,6 +125,9 @@ param speechVoiceLiveEnabled bool = false
 @description('Stage the separate GA Realtime WebSocket API and API-scoped subscription on the shared APIM. Default OFF; does not select the protocol or change any model deployment.')
 param realtimeGaEnabled bool = false
 
+@description('Stage the isolated one-attempt v1 HTTP API, three exact POST operations and API-scoped proxy subscription on the existing APIM. Default OFF; never supplies runtime capability verification.')
+param gatewayAttemptsV1Staged bool = false
+
 @description('Name of the existing AIServices account Speech Voice Live routes to. This is the SAME account already used as a Foundry model backend (see foundryBackends); no new AIServices account is created for this capability.')
 param speechVoiceLiveAccountName string
 
@@ -147,6 +150,7 @@ param codeInterpreterModel string
 // 'ai4ia' these still emit the original 'ai4ia-*' names, so an existing deployment
 // sees no resource replacement and no subscription-key rotation.
 var proxyModelSubscriptionName = '${workload}-proxy-models'
+var proxyAttemptsSubscriptionName = '${workload}-proxy-attempts-v1'
 var proxyIngressProductName = '${workload}-proxy-ingress'
 var proxyIngressSubscriptionName = '${workload}-api-proxy-ingress'
 var realtimeSubscriptionName = '${workload}-api-realtime'
@@ -305,6 +309,22 @@ var modelApiPolicyValue = reduce(
   )
 )
 
+var attemptsApiPolicyValue = reduce(
+  normalizedModelPolicyFragmentDefinitions,
+  replace(loadTextContent('../policies/attempts-v1-policy.xml'), '__AI4IA_ATTEMPTS_SUBSCRIPTION_ID__', proxyAttemptsSubscriptionName),
+  (policy, definition) => replace(
+    policy,
+    definition.baseName,
+    '${definition.baseName}-${uniqueString(definition.value)}'
+  )
+)
+
+var attemptsOperations = [
+  { name: 'responses', path: '/openai/responses', deployment: false }
+  { name: 'chat-completions', path: '/openai/deployments/{deployment}/chat/completions', deployment: true }
+  { name: 'embeddings', path: '/openai/deployments/{deployment}/embeddings', deployment: true }
+]
+
 var modelMethods = [
   'POST'
   'GET'
@@ -430,6 +450,61 @@ resource sharedProxyModelSubscription 'Microsoft.ApiManagement/service/subscript
   dependsOn: [
     sharedModelsApiPolicy
     sharedModelOperations
+  ]
+}
+
+// No wildcard or legacy product membership. A pre-v1 APIM has no route here;
+// this subscription cannot authenticate a prefix-stripped legacy /openai call.
+resource sharedAttemptsApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = if (gatewayAttemptsV1Staged) {
+  parent: sharedApim
+  name: 'ai4ia-attempts-v1'
+  properties: {
+    displayName: 'AI4IA versioned one-attempt model boundary'
+    path: 'ai4ia-attempts-v1'
+    protocols: [ 'https' ]
+    serviceUrl: foundryOpenAiUrl
+    subscriptionRequired: true
+    apiType: 'http'
+  }
+}
+
+resource sharedAttemptsOperations 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = [for operation in attemptsOperations: if (gatewayAttemptsV1Staged) {
+  parent: sharedAttemptsApi
+  name: operation.name
+  properties: {
+    displayName: 'Bounded ${operation.name}'
+    method: 'POST'
+    urlTemplate: operation.path
+    templateParameters: operation.deployment ? [
+      { name: 'deployment', type: 'string', required: true }
+    ] : []
+  }
+}]
+
+resource sharedAttemptsApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = if (gatewayAttemptsV1Staged) {
+  parent: sharedAttemptsApi
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: attemptsApiPolicyValue
+  }
+  dependsOn: [
+    sharedModelPolicyFragments
+    sharedAttemptsOperations
+  ]
+}
+
+resource sharedProxyAttemptsSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = if (gatewayAttemptsV1Staged) {
+  parent: sharedApim
+  name: proxyAttemptsSubscriptionName
+  properties: {
+    displayName: 'AI4IA proxy one-attempt v1 hop'
+    scope: sharedAttemptsApi.id
+    state: 'active'
+    allowTracing: false
+  }
+  dependsOn: [
+    sharedAttemptsApiPolicy
   ]
 }
 
@@ -804,7 +879,7 @@ resource sharedApimSpeechVoiceLiveFoundryUser 'Microsoft.Authorization/roleAssig
 }
 
 // ---------------- SimpleL7Proxy Container App ----------------
-var hostEnv = [
+var hostEnv = concat([
   {
     name: 'Host1'
     value: 'host=${sharedApimGatewayUrl};mode=apim;probe=/openai/status;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=true'
@@ -813,7 +888,16 @@ var hostEnv = [
     name: 'Host1-api-key'
     secretRef: 'proxy-apim-subscription-key'
   }
-]
+], gatewayAttemptsV1Staged ? [
+  {
+    name: 'Host2'
+    value: 'host=${sharedApimGatewayUrl};path=/ai4ia-attempts-v1;stripprefix=false;mode=apim;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=false'
+  }
+  {
+    name: 'Host2-api-key'
+    secretRef: 'proxy-apim-attempts-v1-key'
+  }
+] : [])
 
 var staticEnv = [
   { name: 'Port', value: '8080' }
@@ -917,7 +1001,12 @@ var proxySecrets = concat([
     name: 'api-proxy-inbound-key'
     value: sharedProxyIngressSubscription.listSecrets().primaryKey
   }
-], proxyProfilesEnabled ? [
+], gatewayAttemptsV1Staged ? [
+  {
+    name: 'proxy-apim-attempts-v1-key'
+    value: sharedProxyAttemptsSubscription!.listSecrets().primaryKey
+  }
+] : [], proxyProfilesEnabled ? [
   {
     name: 'profile-projection-json'
     value: proxyProfileProjectionJson

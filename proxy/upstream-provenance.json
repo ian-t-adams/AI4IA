@@ -62,7 +62,7 @@
     },
     {
       "path": "SimpleL7Proxy/DTO/RequestDataDtoV1.cs",
-      "reason": "Refuse bounded request persistence and reject recovered attempt metadata."
+      "reason": "Refuse bounded request persistence and reject recovered attempt metadata or versioned paths even when all attempt fields are absent."
     },
     {
       "path": "SimpleL7Proxy/Events/ProxyEvent.cs",
@@ -78,7 +78,7 @@
     },
     {
       "path": "SimpleL7Proxy/Proxy/NoReplayAttempt.cs",
-      "reason": "AI4IA authenticated one-attempt binding, exact byte/model/path HMAC, pre-send claim, unsupported-shape refusal and nonredirecting HTTP/1.1 transport."
+      "reason": "AI4IA authenticated one-attempt binding, exact byte/model/path HMAC, mandatory versioned route and non-stripping scoped-host membership, pre-send claim, unsupported-shape refusal and nonredirecting HTTP/1.1 transport."
     },
     {
       "path": "SimpleL7Proxy/Proxy/ProxyData.cs",
@@ -721,7 +721,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/DTO/RequestDataDtoV1.cs": {
-      "localCanonicalSha256": "3f7597ecdcac216f4758f4c48ecb08764830cbdf60c93c0e9992b85780d6d504",
+      "localCanonicalSha256": "fefae210aa5fd39a4f59f8e137f7fe1e2986add442d4347ffa3a03b88b19e1ba",
       "upstreamRawSha256": "9bd79ef0466984a6f51e12449f75b827f534cfb297363a9c818fed5acf6b9a18",
       "upstreamCanonicalSha256": "9bd79ef0466984a6f51e12449f75b827f534cfb297363a9c818fed5acf6b9a18",
       "disposition": "ai4ia-patched"
@@ -913,7 +913,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Proxy/NoReplayAttempt.cs": {
-      "localCanonicalSha256": "6258d39f919f6ce9c46b36b264d6d5aef2ad5d96c37a70ef33a7f06021d42a3f",
+      "localCanonicalSha256": "dd97b659097191edc16e6b54ba215d62dfd40bf28090bb44a118bbe59b1ada03",
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/Proxy/ObjectLifecycle.md": {

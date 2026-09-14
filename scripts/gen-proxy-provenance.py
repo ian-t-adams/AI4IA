@@ -77,6 +77,7 @@ AI4IA_PATCH_REASONS = {
     ),
     "SimpleL7Proxy/Proxy/NoReplayAttempt.cs": (
         "AI4IA authenticated one-attempt binding, exact byte/model/path HMAC, "
+        "mandatory versioned route and non-stripping scoped-host membership, "
         "pre-send claim, unsupported-shape refusal and nonredirecting HTTP/1.1 transport."
     ),
     "SimpleL7Proxy/Proxy/ProxyWorker.cs": (
@@ -94,7 +95,8 @@ AI4IA_PATCH_REASONS = {
         "Reject bounded requests before enqueueing or resetting attempt counters."
     ),
     "SimpleL7Proxy/DTO/RequestDataDtoV1.cs": (
-        "Refuse bounded request persistence and reject recovered attempt metadata."
+        "Refuse bounded request persistence and reject recovered attempt metadata "
+        "or versioned paths even when all attempt fields are absent."
     ),
     "SimpleL7Proxy/SimpleL7Proxy.csproj": (
         "Keep runtime dependencies current, remove unsupported Application Insights "

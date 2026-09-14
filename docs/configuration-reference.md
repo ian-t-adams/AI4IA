@@ -124,6 +124,7 @@ the container — those names are *outputs*, not knobs you set.
 | Feature | azd / CI variable | Bicep parameter | Runtime setting emitted | Required companion config |
 | --- | --- | --- | --- | --- |
 | Atomic application admission (source only) | `AI4IA_HARD_QUOTA_ENABLED` | `hardQuotaEnabled` | `AI4IA_HARD_QUOTA_ENABLED` | **Default `false`.** Preprovision and API startup refuse deployed activation; local Cosmos is also refused. Only explicitly seeded local test state is executable. No automatic bootstrap or acknowledgement override. See [hard admission](hard-quota-admission.md) for units, meter exclusions and the remaining operator boundary. |
+| Stage versioned one-attempt gateway | `AI4IA_GATEWAY_ATTEMPTS_V1_STAGED` | `gatewayAttemptsV1Staged` | `AI4IA_GATEWAY_ATTEMPTS_V1_STAGED` | **Default `false`.** Conditional isolated API, three exact POST operations, policy and API-scoped proxy key on the existing APIM. No runtime selector or capability factory; verified deployment/topology evidence remains required. V1 Claude is unsupported. See [the source boundary](hard-quota-admission.md#versioned-route-staging-and-construction-contract). |
 | Voice Live | `AI4IA_VOICE_LIVE_ENABLED` | `voiceLiveEnabled` | `AI4IA_REALTIME_ENABLED`, `VOICE_LIVE_ENABLED`, `API_PUBLIC_URL`, `AI4IA_REALTIME_ALLOWED_ORIGINS` | Profile default `true`. The Origin allowlist is derived in Bicep from the deployed web origins (ACA default FQDN + `webCustomDomain`); `AI4IA_REALTIME_ALLOWED_ORIGINS` is optional and only *adds* origins. |
 | Voice Live tools | `AI4IA_VOICE_LIVE_TOOLS_ENABLED` | `voiceLiveToolsEnabled` | `AI4IA_REALTIME_TOOLS_ENABLED`, `VOICE_LIVE_TOOLS_ENABLED` | Profile default `true`; requires Voice Live. |
 | Stage GA Realtime | `AI4IA_REALTIME_GA_ENABLED` | `realtimeGaEnabled` | `AI4IA_REALTIME_GA_ENABLED`, `AI4IA_REALTIME_GA_BASE_URL`, `AI4IA_REALTIME_GA_GATEWAY_API_KEY` | Default `false` in Bicep and the profile. Requires Voice Live; provisions a separate WebSocket API/key on the existing APIM. Does not select GA. |
@@ -215,11 +216,18 @@ Treat skipping either phase as an outage risk, not as a harmless omission.
 ## Model gateway direction and trust
 
 Normal HTTP/SSE traffic uses
-`AI4IA_MODEL_GATEWAY_URL=https://<proxy>/openai`. The proxy's only backend is
+`AI4IA_MODEL_GATEWAY_URL=https://<proxy>/openai`. The proxy's normal backend is
 `https://<apim>/openai`; APIM terminates at Foundry endpoints generated from
 `infra/models.json`. Ordered, size-bounded policy fragments initialize the
 catalog and routing setup; they rewrite region-specific deployment names and
 reject unknown deployments rather than falling back.
+
+Separately approved versioned staging adds a second exact, non-stripping proxy
+Host entry for `/ai4ia-attempts-v1`, on the **same APIM origin** with a distinct
+API-scoped subscription secret. It never changes `AI4IA_MODEL_GATEWAY_URL` or
+the normal Host1 key. A trusted, verified bounded selection constructs the fixed
+versioned path before owner admission; it cannot fall back on an error. Staging
+alone leaves availability `None` because no shipping verifier exists.
 
 Claude models use the same proxy ingress and model APIM subscription, not a
 direct provider call. The API translates the internal chat/tool contract to

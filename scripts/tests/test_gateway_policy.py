@@ -500,6 +500,20 @@ class GatewayPolicyTests(unittest.TestCase):
             len(priority_output.encode("utf-8")),
             gateway_generator.APIM_API_POLICY_MAX_BYTES,
         )
+        attempts_output = gateway_generator.ATTEMPTS_OUTPUT_PATH.read_text(encoding="utf-8")
+        self.assertEqual(attempts_output, gateway_generator.generate_attempts_policy(priority_output))
+        gateway_generator.validate_policy_expressions(attempts_output, "attempts-v1-policy.xml")
+        self.assertLessEqual(len(attempts_output.encode("utf-8")), gateway_generator.APIM_API_POLICY_MAX_BYTES)
+        attempts = ElementTree.fromstring(attempts_output)
+        self.assertEqual(attempts.findall(".//base"), [])
+        self.assertEqual(
+            [node.get("fragment-id") for node in attempts.findall(".//include-fragment")],
+            [node.get("fragment-id") for node in ElementTree.fromstring(priority_output).findall(".//include-fragment")],
+        )
+        inbound = list(attempts.find("inbound"))
+        self.assertEqual(inbound[0].get("name"), "attemptsV1Path")
+        self.assertEqual(inbound[1].tag, "choose")
+        self.assertEqual(inbound[2].get("fragment-id"), "simplel7proxy_inbound_pre_32")
         rollback_policy = (
             ROOT / "infra/policies/simplel7proxy-rollback-policy.xml"
         ).read_text(encoding="utf-8")

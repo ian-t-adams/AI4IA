@@ -91,7 +91,11 @@ The complete machine-readable list and reason for every deviation lives in
   destination builder rather than a platform-dependent relative URI.
   `RequeueDelayWorker.cs` and `DTO/RequestDataDtoV1.cs` refuse bounded
   persistence/recovery, and `ProxyHelperUtils.cs` redacts internal attempt
-  headers. Ordinary retry behavior is unchanged. This is source staging, not
+  headers. The versioned boundary requires the exact `/ai4ia-attempts-v1`
+  host prefix, no prefix stripping, scoped API-key auth and no host requeue.
+  A missing bounded host cannot fall back to the catch-all host/key. Missing
+  markers on this path, including a recovered DTO, are refused before dispatch.
+  Ordinary retry behavior is unchanged. This is source staging, not
   proof of deployed APIM compatibility; see
   [the typed authority boundary](../docs/hard-quota-admission.md#bounded-one-attempt-source-transport).
 

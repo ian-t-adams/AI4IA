@@ -25,7 +25,9 @@ namespace AI4IA.Proxy.Tests;
 public sealed class NoReplayWorkerTests
 {
     internal const string Key = "fixture-key";
+    internal const string LegacyKey = "fixture-legacy-key";
     internal const string Path = "/openai/deployments/fixture-text/chat/completions?api-version=fixture";
+    internal const string BoundedPath = NoReplayAttempt.RoutePrefix + Path;
     internal static readonly byte[] Body = Encoding.UTF8.GetBytes(
         """{"messages":[{"role":"user","content":"hello \u263a"}]}""");
 
@@ -144,7 +146,7 @@ public sealed class NoReplayWorkerTests
     public async Task InvalidBindingIsRejectedBeforeFirstBackendSend(string defect)
     {
         await using var server = new WireServer(_ => Task.FromResult(new WireReply(200)));
-        await using var fixture = await WorkerFixture.Create([server], false);
+        await using var fixture = await WorkerFixture.Create([server], false, versioned: true);
         var request = fixture.Request;
         if (defect == "hosted-tool")
             request.setBody(Encoding.UTF8.GetBytes("""{"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"web_search"}]}"""));
@@ -169,7 +171,7 @@ public sealed class NoReplayWorkerTests
             {
                 case "body": request.setBody(Encoding.UTF8.GetBytes("{}")); break;
                 case "model": request.Model = "another-model"; break;
-                case "path": request.Path = Path.Replace("fixture-text", "another-model"); break;
+                case "path": request.Path = BoundedPath.Replace("fixture-text", "another-model"); break;
                 case "recovery": request.AsyncHydrated = true; break;
                 case "host-auth":
                     fixture.Hosts[0].Config = new HostConfig($"host={server.Url};mode=direct");
@@ -192,7 +194,7 @@ public sealed class NoReplayWorkerTests
         await using var server = new WireServer(_ => Task.FromResult(new WireReply(200)));
         foreach (bool authenticated in new[] { false, true })
         {
-            await using var fixture = await WorkerFixture.Create([server], false);
+            await using var fixture = await WorkerFixture.Create([server], false, versioned: true);
             fixture.Request.Headers[NoReplayAttempt.RequestHeader] = Header(Body);
             if (authenticated)
                 fixture.Request.Headers[NoReplayAttempt.ProofHeader] = new string('0', 64);
@@ -310,8 +312,8 @@ public sealed class NoReplayWorkerTests
     {
         public List<BaseHostHealth> GetHosts() => hosts;
         public List<BaseHostHealth> GetActiveHosts() => hosts;
-        public List<BaseHostHealth> GetSpecificPathHosts() => [];
-        public List<BaseHostHealth> GetCatchAllHosts() => hosts;
+        public List<BaseHostHealth> GetSpecificPathHosts() => hosts.Where(h => h.Config.PartialPath != "/").ToList();
+        public List<BaseHostHealth> GetCatchAllHosts() => hosts.Where(h => h.Config.PartialPath == "/").ToList();
         public int ActiveHostCount() => hosts.Count;
         public string HostStatus => "healthy";
         public Task<bool> CheckFailedStatusAsync(bool nosleep = false) => Task.FromResult(false);
@@ -359,7 +361,8 @@ public sealed class NoReplayWorkerTests
 
         internal static async Task<WorkerFixture> Create(
             WireServer[] servers, bool bounded, int timeout = 3000, bool shared = true,
-            CancellationToken cancellation = default)
+            CancellationToken cancellation = default, bool? versioned = null,
+            bool legacyHost = false, bool staged = true)
         {
             var f = new WorkerFixture();
             f.Options.Client = new HttpClient(new SocketsHttpHandler { UseProxy = false });
@@ -372,11 +375,21 @@ public sealed class NoReplayWorkerTests
             typeof(HealthCheckService).GetField("_options", BindingFlags.NonPublic | BindingFlags.Static)!
                 .SetValue(null, f.Options);
             f.Options.StripRequestHeaders = ["S7P-KEY"];
+            bool route = versioned ?? bounded;
             foreach (var server in servers)
             {
-                var config = new HostConfig($"host={server.Url};mode=apim;api-key-header=Ocp-Apim-Subscription-Key;api-key={Key};retryafter=true");
+                string routing = route && staged
+                    ? $"path={NoReplayAttempt.RoutePrefix};stripprefix=false;retryafter=false;api-key={Key}"
+                    : $"retryafter=true;api-key={LegacyKey}";
+                var config = new HostConfig($"host={server.Url};mode=apim;api-key-header=Ocp-Apim-Subscription-Key;{routing}");
                 SetCircuit(config);
                 f.Hosts.Add(new FixtureHost(config));
+                if (legacyHost && route && staged)
+                {
+                    var legacy = new HostConfig($"host={server.Url};mode=apim;api-key-header=Ocp-Apim-Subscription-Key;api-key={LegacyKey}");
+                    SetCircuit(legacy);
+                    f.Hosts.Add(new FixtureHost(legacy));
+                }
             }
             f.Requeue = new RequeueDelayWorker(NullLogger<RequeueDelayWorker>.Instance, f.Queue);
             var notifier = new ConfigChangeNotifier(NullLogger<ConfigChangeNotifier>.Instance);
@@ -400,7 +413,8 @@ public sealed class NoReplayWorkerTests
             f._ingress = new HttpListener();
             f._ingress.Prefixes.Add($"http://127.0.0.1:{port}/");
             f._ingress.Start();
-            f._incoming = f._caller.PostAsync($"http://127.0.0.1:{port}{Path}", new ByteArrayContent(Body));
+            f._incoming = f._caller.PostAsync(
+                $"http://127.0.0.1:{port}{(route ? BoundedPath : Path)}", new ByteArrayContent(Body));
             var incoming = await f._ingress.GetContextAsync().WaitAsync(TimeSpan.FromSeconds(5));
             f.Request = new RequestData(incoming, "fixture")
             {
@@ -433,7 +447,7 @@ public sealed class NoReplayWorkerTests
     }
 }
 
-internal sealed record WireRequest(string Path, string Version, Dictionary<string, string> Headers, byte[] Body);
+internal sealed record WireRequest(string Path, string Version, Dictionary<string, string> Headers, byte[] Body, string Method = "POST");
 internal sealed record WireReply(int Status, bool Drop = false, bool Requeue = false, bool Ack = true, string? Location = null, string Body = "{}", Dictionary<string, string[]>? Headers = null, bool AllowDisconnect = false);
 
 internal sealed class WireServer : IAsyncDisposable
@@ -489,7 +503,7 @@ internal sealed class WireServer : IAsyncDisposable
                 StringComparer.OrdinalIgnoreCase);
             var body = new byte[int.Parse(headers.GetValueOrDefault("Content-Length", "0"))];
             await stream.ReadExactlyAsync(body, _stop.Token);
-            var request = new WireRequest(start[1], start[2], headers, body);
+            var request = new WireRequest(start[1], start[2], headers, body, start[0]);
             Requests.Enqueue(request);
             var response = await _reply(request);
             if (response.Drop)

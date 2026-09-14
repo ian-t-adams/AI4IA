@@ -122,6 +122,16 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    gateway capability may prepare a request-bound envelope before admission.
    Keep the shipping verifier absent; no header or operator Boolean proves the
    deployed proxy/APIM/ingress transport. Ordinary retries stay unchanged.
+   `AI4IA_GATEWAY_ATTEMPTS_V1_STAGED` is a separate default-off infrastructure
+   gate, not capability issuance. The isolated `ai4ia-attempts-v1` API has only
+   three exact POST operations, mandatory route/HMAC membership, no inherited
+   `base` policies and a distinct API-only proxy key. Keep the exact non-stripping
+   Host prefix; absent membership or a missing bounded host must never select
+   catch-all/legacy work. V1 Claude is unsupported even on a generic chat path.
+   Capability readback binds the API revision, operation inventory, key scope and
+   transition-fenced evidence epoch; raw hashes and TTL alone prove none of them.
+   New physical nonce reuse is not globally deduplicated; workflow owner CAS is
+   a distinct operation fence.
 
 ## CI build / test / lint commands
 

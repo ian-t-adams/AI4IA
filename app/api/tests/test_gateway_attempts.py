@@ -13,8 +13,9 @@ import pytest
 
 from ai4ia_api.gateway import client as gateway_module
 from ai4ia_api.gateway.attempts import (
-    ACK_HEADER, ATTEMPT_HEADER, ATTEMPT_VERSION, PROXY_PROOF_HEADER,
-    VerifiedGatewayCapability, current_attempt_envelope, no_replay_scope,
+    ACK_HEADER, ATTEMPT_HEADER, ATTEMPT_OPERATIONS, ATTEMPT_PATH, ATTEMPT_VERSION,
+    PROXY_PROOF_HEADER, GatewayRouteBinding, VerifiedGatewayCapability,
+    current_attempt_envelope, no_replay_scope,
 )
 from ai4ia_api.gateway.client import ModelGatewayClient, ModelGatewayError
 from ai4ia_api.hard_quota.dispatch import admission_scope
@@ -27,10 +28,21 @@ class FixtureVerifier:
     """Local deterministic compatibility evidence; never an app factory."""
 
     def __init__(self):
+        apim_id = (
+            "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/fixture"
+            "/providers/Microsoft.ApiManagement/service/fixture"
+        )
         self.capability = VerifiedGatewayCapability(
             gateway_url="https://gateway.test/openai", proxy_image="sha256:" + "1" * 64,
             apim_policy_sha256="2" * 64, topology_sha256="3" * 64, catalog_sha256="4" * 64,
             expires_at=time.time() + 240,
+            api_image="sha256:" + "5" * 64,
+            route=GatewayRouteBinding(
+                apim_url="https://apim.test", api_resource_id=apim_id + "/apis/ai4ia-attempts-v1",
+                api_revision="1", subscription_resource_id=apim_id + "/subscriptions/fixture-proxy-attempts-v1",
+                subscription_scope=apim_id + "/apis/ai4ia-attempts-v1",
+                operations=ATTEMPT_OPERATIONS, evidence_epoch="6" * 64,
+            ),
         )
         self.verified = 0
 
@@ -67,6 +79,7 @@ def gateway(harness, transport, verifier):
     settings = harness.settings.model_copy(update={
         "model_gateway_auth_mode": "api_key", "model_gateway_api_key": "fixture-ingress",
         "model_gateway_api_key_header": "S7P-KEY",
+        "gateway_attempts_v1_staged": True,
     })
     return ModelGatewayClient(
         settings, http_client=httpx.AsyncClient(transport=transport), attempt_verifier=verifier,
@@ -85,7 +98,7 @@ async def invoke(client, api="chat", *, stream=False, params=None):
 
 @pytest.mark.parametrize("api,stream", [
     ("chat", False), ("chat", True), ("responses", False), ("responses", True),
-    ("anthropic", False), ("anthropic", True), ("embedding", False),
+    ("embedding", False),
 ])
 async def test_real_adapter_exposes_bound_proof_before_admission(wire, api, stream, monkeypatch):
     sent, response, transport = wire
@@ -120,6 +133,7 @@ async def test_real_adapter_exposes_bound_proof_before_admission(wire, api, stre
         with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
             await invoke(client, api, stream=stream, params={"max_tokens": 20} if api == "responses" else None)
         assert len(sent) == len(observed) == verifier.verified == 1
+        assert sent[0].url.path.startswith(ATTEMPT_PATH + "/")
         assert json.loads(sent[0].content) == observed[0]
         assert current_attempt_envelope("chat", {}, deployment=None, target=None, owner="alice") is None
     finally:
@@ -380,8 +394,10 @@ async def test_bounded_responses_invalid_or_over_model_maximum_fails_before_egre
         await client._http.aclose()
 
 
-@pytest.mark.parametrize("api", ["chat", "responses", "anthropic"])
-@pytest.mark.parametrize("bounded", [False, True])
+@pytest.mark.parametrize("api,bounded", [
+    ("chat", False), ("chat", True), ("responses", False), ("responses", True),
+    ("anthropic", False),
+])
 async def test_real_stream_can_close_in_another_task_without_context_leak(wire, api, bounded):
     sent, response, transport = wire
     harness = Harness()
@@ -398,6 +414,156 @@ async def test_real_stream_can_close_in_another_task_without_context_leak(wire, 
             await anext(stream)
             await asyncio.create_task(stream.aclose())
             assert current_attempt_envelope("chat", {}, deployment=None, target=None, owner="alice") is None
+        assert len(sent) == 1
+    finally:
+        await client._http.aclose()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("catalog_api", ["chat", "anthropic"])
+async def test_claude_is_not_a_versioned_route_even_on_a_shared_proxy_path(wire, stream, catalog_api):
+    sent, response, transport = wire
+    harness = Harness()
+    harness.catalog.models[0].api = catalog_api
+    verifier = FixtureVerifier()
+    client = gateway(harness, transport, verifier)
+    response[0] = lambda request: response_for("anthropic-stream" if stream else "anthropic", request)
+    try:
+        assert client.attempt_capability is not None
+        assert client.attempt_capability_for("anthropic") is None
+        with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
+            with pytest.raises(QuotaError, match="Unsupported versioned gateway"):
+                await invoke(client, "anthropic", stream=stream)
+        assert not sent and verifier.verified == 0
+        with admission_scope(harness.controller, "alice"):
+            await invoke(client, "anthropic", stream=stream)
+        assert len(sent) == 1 and sent[0].url.path.startswith("/openai/")
+    finally:
+        await client._http.aclose()
+
+
+@pytest.mark.parametrize("defect", [
+    "api", "scope", "subscription", "revision", "epoch", "operations", "apim-url", "api-image",
+])
+async def test_typed_route_readback_must_describe_the_isolated_api_and_key(wire, defect):
+    sent, _, transport = wire
+    harness, verifier = Harness(), FixtureVerifier()
+    route = verifier.capability.route
+    changes = {
+        "api": {"api_resource_id": route.api_resource_id.replace("ai4ia-attempts-v1", "openai")},
+        "scope": {"subscription_scope": route.subscription_scope.replace("ai4ia-attempts-v1", "openai")},
+        "subscription": {"subscription_resource_id": route.subscription_resource_id.replace("proxy-attempts-v1", "proxy-models")},
+        "revision": {"api_revision": ""},
+        "epoch": {"evidence_epoch": "operator-acknowledged"},
+        "operations": {"operations": (*ATTEMPT_OPERATIONS, ("POST", "/{*path}"))},
+        "apim-url": {"apim_url": "https://apim.test/openai"},
+    }
+    verifier.capability = (
+        replace(verifier.capability, api_image="latest") if defect == "api-image"
+        else replace(verifier.capability, route=replace(route, **changes[defect]))
+    )
+    client = gateway(harness, transport, verifier)
+    try:
+        with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
+            with pytest.raises(QuotaError):
+                await invoke(client)
+        assert not sent and verifier.verified == 0
+        with admission_scope(harness.controller, "alice"):
+            await invoke(client)
+        assert len(sent) == 1
+    finally:
+        await client._http.aclose()
+
+
+@pytest.mark.parametrize("staged,verified", [(False, False), (False, True), (True, False)])
+async def test_staging_cannot_select_runtime_bounded_calls(wire, staged, verified):
+    sent, _, transport = wire
+    harness = Harness()
+    client = gateway(harness, transport, FixtureVerifier() if verified else None)
+    client._attempt_staged = staged
+    try:
+        assert client.attempt_capability is None
+        with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
+            with pytest.raises(QuotaError):
+                await invoke(client)
+        assert not sent
+        with admission_scope(harness.controller, "alice"):
+            await invoke(client)
+        assert len(sent) == 1 and ATTEMPT_HEADER not in sent[0].headers
+    finally:
+        await client._http.aclose()
+
+
+@pytest.mark.parametrize("path", [
+    "/openai/%72esponses", "/openai/deployments/{deployment}/chat%2fcompletions",
+    "/openai//deployments/{deployment}/chat/completions",
+    "/openai/deployments/{deployment}/chat/completions/",
+    "/openai/deployments/{deployment}/chat/completions?api-version=a&api-version=b",
+    "/openai/deployments/{deployment}/chat/completions?api-version=a%26x",
+    "/openai/deployments/{deployment}/chat/completions?subscription-key=wrong",
+    "/openai/deployments/{deployment}/embeddings",
+])
+async def test_encoded_or_ambiguous_path_never_falls_back_to_ordinary(wire, path):
+    sent, _, transport = wire
+    harness, verifier = Harness(), FixtureVerifier()
+    client = gateway(harness, transport, verifier)
+    req = client.build_request(deployment=DEPLOYMENT, messages=[{"role": "user", "content": "hello"}])
+    try:
+        with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
+            with pytest.raises(QuotaError):
+                await client._post(
+                    client._http, "https://gateway.test" + path.format(deployment=DEPLOYMENT),
+                    surface="chat", deployment=DEPLOYMENT, payload=req.json,
+                    headers=req.headers, json=req.json,
+                )
+        assert not sent
+        with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
+            await invoke(client)
+        assert len(sent) == 1 and sent[0].url.path.startswith(ATTEMPT_PATH + "/")
+    finally:
+        await client._http.aclose()
+
+
+@pytest.mark.parametrize("setting,value", [
+    ("model_gateway_url", "http://gateway.test/openai"),
+    ("model_gateway_url", "https://gateway.test/ai4ia-attempts-v1/openai"),
+    ("model_gateway_api_key_header", "Ocp-Apim-Subscription-Key"),
+    ("model_gateway_auth_mode", "none"),
+    ("model_gateway_api_key", ""),
+    ("gateway_chat_path", "/custom"),
+    ("gateway_provider_style", "openai"),
+])
+def test_staging_startup_enforces_governed_ingress_without_constructing_capability(setting, value):
+    from ai4ia_api.config import GatewayAuthMode, Settings
+
+    settings = Harness().settings.model_copy(update={
+        "hard_quota_enabled": False, "gateway_attempts_v1_staged": True,
+        "model_gateway_auth_mode": GatewayAuthMode.api_key, "model_gateway_api_key": "fixture-ingress",
+        "model_gateway_api_key_header": "S7P-KEY",
+    })
+    settings = Settings.model_validate(settings.model_dump())
+    settings.validate_gateway_attempts_v1()
+    invalid = settings.model_copy(update={setting: value})
+    with pytest.raises(RuntimeError, match="STAGED"):
+        invalid.validate_gateway_attempts_v1()
+    invalid.gateway_attempts_v1_staged = False
+    invalid.validate_gateway_attempts_v1()
+    assert Settings(_env_file=None).gateway_attempts_v1_staged is False
+
+
+async def test_catalog_provider_cannot_be_disguised_by_a_chat_route(wire):
+    sent, _, transport = wire
+    harness, verifier = Harness(), FixtureVerifier()
+    harness.catalog.models[0].api = "anthropic"
+    client = gateway(harness, transport, verifier)
+    try:
+        with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
+            with pytest.raises(QuotaError, match="Unsupported versioned gateway provider"):
+                await invoke(client, "chat")
+        assert not sent and verifier.verified == 0
+        harness.catalog.models[0].api = "chat"
+        with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
+            await invoke(client, "chat")
         assert len(sent) == 1
     finally:
         await client._http.aclose()
