@@ -205,12 +205,15 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(
             login["uses"],
-            "azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c",
+            "azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906",
         )
-        self.assertEqual(login["with"]["client-id"], "${{ vars.AZURE_CLIENT_ID }}")
-        self.assertEqual(login["with"]["tenant-id"], "${{ vars.AZURE_TENANT_ID }}")
         self.assertEqual(
-            login["with"]["subscription-id"], "${{ vars.AZURE_SUBSCRIPTION_ID }}"
+            login["with"],
+            {
+                "client-id": "${{ vars.AZURE_CLIENT_ID }}",
+                "tenant-id": "${{ vars.AZURE_TENANT_ID }}",
+                "subscription-id": "${{ vars.AZURE_SUBSCRIPTION_ID }}",
+            },
         )
 
     @unittest.skipUnless(shutil.which("bash"), "bash is required")
