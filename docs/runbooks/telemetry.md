@@ -91,6 +91,71 @@ is preserved rather than overwritten by the recovery snapshot.
 - Correlation ids may cross API, SimpleL7Proxy, APIM, and Foundry; they are not
   credentials.
 
+## Request spans and application factory wiring
+
+The API explicitly instruments the **actual application instance** with
+`FastAPIInstrumentor.instrument_app` after registering its routes and middleware.
+The Azure distro's global FastAPI-class replacement is disabled. Replacing
+`fastapi.FastAPI` cannot instrument a constructor that `main.py` already imported;
+calling the distro before constructing that prebound class is not sufficient.
+The factory uses the canonical `fastapi.applications.FastAPI` class so an ambient
+class replacement cannot silently double-instrument or bypass the per-app gate.
+
+Request instrumentation requires both this app's nonempty Application Insights
+connection setting and successful existing exporter configuration. Repeated
+factory calls reuse that exporter; each enabled app is instrumented once.
+An app without the setting remains uninstrumented even if another app in the
+process has configured the exporter. Health/auth responses, middleware order,
+correlation-header echo and asynchronous lifespan cleanup retain their existing
+application behavior.
+
+The shipping FastAPI instrumentor records raw request metadata and explicit
+exception events by default, which would broaden the app's no-content posture.
+A narrowly scoped public OTel tracer/span facade therefore projects this
+instrumentor's writes **before** they reach the existing SDK. It delegates to the
+already-configured provider; it does not register another SDK provider, sampler,
+processor or exporter. Captured fields are registered route templates, bounded
+method/protocol/scheme/status values and a fixed error category. Unknown routes
+use a method-only name. Raw path/query strings, host/peer addresses, user agents,
+headers, incoming correlation strings, bodies, identities, links, events and
+exception descriptions are not exported by this producer. Numeric W3C trace
+correlation and flags remain; caller-written remote tracestate/baggage is not
+copied into request or model span metadata. The existing correlation header still
+reaches the application/response; it is not treated as trusted span content.
+
+ASGI receive/send spans are excluded. This request instrumentation uses a local
+no-op meter rather than start an additional request-metrics feed whose raw
+host/path dimensions bypass the span projection. Other existing metric and event
+producers keep their previous configuration and allowlists.
+
+**Sampling is unchanged.** Azure Monitor 1.8.9 selects its rate-limited sampler
+by default when no explicit sampling setting is supplied. The request facade
+retains the actual SDK parent context and sampling attributes used by
+exporter 1.0.0b55 / SDK 1.43.0. Its local-parent rules include dropping children
+of a dropped parent and inheriting an explicitly recorded sample rate; a recorded
+100%-rate parent with no explicit rate attribute may be sampled again by b55.
+No always-on override, sample-rate increase or ingestion-limit change is made.
+Missing request spans can affect parentage, but a bounded observation with zero
+GenAI records does not establish an all-time exporter failure or prove sampling
+as the cause.
+
+`app/api/tests/test_fastapi_telemetry.py` executes the real `create_app`, Azure
+configuration, shipping instrumentor and SDK in clean subprocesses, substituting
+only the network exporter with an in-memory exporter and provider HTTP with
+synthetic transports. It checks whole request/GenAI spans and the installed Azure
+envelope conversion, one-time configuration, per-app gates, preserved auth/errors/
+cleanup, real gateway child-parent links, poisoned fields and actual sampler
+controls. The shipping b55 check verifies imported source location as well as
+package metadata; a mixed namespace can report b55 metadata while importing b56
+code. These are offline controls, not production request/GenAI export evidence.
+
+After an approved deployment, verify the exact serving API image first. The
+parent/operator can then compare bounded, content-free request/dependency and
+GenAI coverage in the **same** known Application Insights resource and time
+window, under unchanged sampling, without collecting bodies or enabling a live
+evaluation actor. A missing source or zero records remains incomplete evidence,
+not a reason to activate a paid probe or force sampling.
+
 ## Content-free GenAI model spans
 
 `ai4ia_api.genai` contract 1.0.0 uses the existing connection-gated Azure Monitor
