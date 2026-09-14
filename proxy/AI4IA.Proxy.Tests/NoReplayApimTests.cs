@@ -11,6 +11,9 @@ namespace AI4IA.Proxy.Tests;
 [DoNotParallelize]
 public sealed class NoReplayApimTests
 {
+    [ClassInitialize]
+    public static void Initialize(TestContext _) => ApimPolicyHarness.CompileBeforeTimedRequests();
+
     [DataTestMethod]
     [DataRow(500, false)]
     [DataRow(429, false)]
@@ -176,6 +179,58 @@ public sealed class NoReplayApimTests
         var control = new ApimPolicyHarness(Request(true), provider);
         await control.Run();
         Assert.AreEqual(1, provider.Requests.Count);
+    }
+
+    [TestMethod]
+    public async Task CounterfactualUnenforcedMarkersCanPayTwiceBeforeAckFailure()
+    {
+        int calls = 0;
+        await using var provider = new WireServer(_ => Task.FromResult(
+            new WireReply(Interlocked.Increment(ref calls) == 1 ? 500 : 200)));
+        await using var alternate = new WireServer(_ => Task.FromResult(new WireReply(200)));
+        await using var apim = new WireServer(async request =>
+        {
+            // Project an intermediary stripping both fields, or an old policy's
+            // lack of membership enforcement, into the unchanged ordinary route.
+            var headers = request.Headers.Where(p => !NoReplayAttempt.IsInternalHeader(p.Key))
+                .ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
+            var ordinary = new ApimPolicyHarness(request with { Headers = headers }, provider, alternate);
+            await ordinary.Run();
+            return new WireReply(ordinary.Context.Response.StatusCode, Ack: false, AllowDisconnect: true);
+        });
+        await using var proxy = await NoReplayWorkerTests.WorkerFixture.Create([apim], true);
+        await Assert.ThrowsExceptionAsync<ProxyErrorException>(() => proxy.Send());
+        Assert.AreEqual(1, apim.Requests.Count);
+        Assert.AreEqual(2, provider.Requests.Count + alternate.Requests.Count,
+            "Missing ACK is too late to prove no paid replay.");
+    }
+
+    [TestMethod]
+    public async Task NewHttpOperationReusingNonceAfterLostReplyIsNotGloballyDeduplicated()
+    {
+        int operations = 0;
+        await using var provider = new WireServer(_ => Task.FromResult(new WireReply(200)));
+        await using var apim = new WireServer(async request =>
+        {
+            var policy = new ApimPolicyHarness(request, provider);
+            await policy.Run();
+            return new WireReply(policy.Context.Response.StatusCode, Ack: false,
+                Drop: Interlocked.Increment(ref operations) == 1, Headers: policy.Context.Response.Headers);
+        });
+        await using (var first = await NoReplayWorkerTests.WorkerFixture.Create([apim], true))
+        {
+            using var result = await first.Send();
+            Assert.AreEqual(502, (int)result.StatusCode);
+        }
+        await using (var second = await NoReplayWorkerTests.WorkerFixture.Create([apim], true))
+        {
+            using var result = await second.Send();
+            Assert.AreEqual(200, (int)result.StatusCode);
+        }
+        Assert.AreEqual(2, provider.Requests.Count);
+        var sent = apim.Requests.ToArray();
+        Assert.AreEqual(sent[0].Headers[NoReplayAttempt.RequestHeader], sent[1].Headers[NoReplayAttempt.RequestHeader]);
+        CollectionAssert.AreEqual(sent[0].Body, sent[1].Body);
     }
 
     private static WireRequest Request(bool bounded)

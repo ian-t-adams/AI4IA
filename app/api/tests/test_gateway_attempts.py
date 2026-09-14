@@ -19,6 +19,7 @@ from ai4ia_api.gateway.attempts import (
 from ai4ia_api.gateway.client import ModelGatewayClient, ModelGatewayError
 from ai4ia_api.hard_quota.dispatch import admission_scope
 from ai4ia_api.hard_quota.models import MAX_QUANTITY, QuotaError
+from ai4ia_api.model_evidence import ModelCallRecorder
 from tests.test_hard_quota_dispatch import DEPLOYMENT, Harness, response_for
 
 
@@ -117,7 +118,7 @@ async def test_real_adapter_exposes_bound_proof_before_admission(wire, api, stre
     monkeypatch.setattr(harness.controller, "claim", claim)
     try:
         with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
-            await invoke(client, api, stream=stream)
+            await invoke(client, api, stream=stream, params={"max_tokens": 20} if api == "responses" else None)
         assert len(sent) == len(observed) == verifier.verified == 1
         assert json.loads(sent[0].content) == observed[0]
         assert current_attempt_envelope("chat", {}, deployment=None, target=None, owner="alice") is None
@@ -317,17 +318,86 @@ async def test_proof_is_consumed_and_cannot_authorize_another_dispatch(wire):
     original = response_for
 
     def reply(request):
-        with pytest.raises(QuotaError, match="binding"):
-            current_attempt_envelope(
-                "chat", json.loads(request.content), deployment=DEPLOYMENT,
-                target=str(request.url), owner="alice",
-            )
+        assert current_attempt_envelope(
+            "chat", json.loads(request.content), deployment=DEPLOYMENT,
+            target=str(request.url), owner="alice",
+        ) is None
         return original("chat", request)
 
     response[0] = reply
     try:
         with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
             await invoke(client)
+        assert len(sent) == 1
+    finally:
+        await client._http.aclose()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("bounded", [False, True])
+async def test_responses_preserves_explicit_bounded_maximum_and_legacy_floor(wire, stream, bounded):
+    sent, response, transport = wire
+    harness = Harness()
+    client = gateway(harness, transport, FixtureVerifier())
+    response[0] = lambda request: response_for("responses-stream" if stream else "responses", request)
+    recorder = ModelCallRecorder(model_id="fixture-text", deployment=DEPLOYMENT, pricing=harness.pricing)
+    try:
+        with recorder.bind(), admission_scope(harness.controller, "alice"), (
+            no_replay_scope("alice") if bounded else nullcontext()
+        ):
+            await invoke(client, "responses", stream=stream, params={"max_tokens": 20})
+        assert len(sent) == 1
+        assert json.loads(sent[0].content)["max_output_tokens"] == (20 if bounded else 16384)
+        evidence = recorder.snapshot()[0]
+        assert evidence.parameters.maxOutputTokens == (20 if bounded else 16384)
+        assert evidence.httpAttempts == 1
+        if bounded:
+            record = next(iter((await harness.store.read("alice")).state.entries.values()))
+            assert record.bounds.amounts.tokens == 120
+            assert record.bounds.amounts.microUsd == 140
+            assert record.bounds.maxAttempts == 1
+            assert evidence.admissions[0].reserved.tokens == 120
+            assert evidence.admissions[0].reserved.microUsd == 140
+    finally:
+        await client._http.aclose()
+
+
+@pytest.mark.parametrize("maximum", [True, 0, -1, "20", 20.5, None, 21])
+async def test_bounded_responses_invalid_or_over_model_maximum_fails_before_egress(wire, maximum):
+    sent, response, transport = wire
+    harness = Harness()
+    client = gateway(harness, transport, FixtureVerifier())
+    response[0] = lambda request: response_for("responses", request)
+    try:
+        with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
+            with pytest.raises(QuotaError):
+                await invoke(client, "responses", params={"max_tokens": maximum})
+        assert not sent
+        with admission_scope(harness.controller, "alice"), no_replay_scope("alice"):
+            await invoke(client, "responses", params={"max_tokens": 20})
+        assert len(sent) == 1
+    finally:
+        await client._http.aclose()
+
+
+@pytest.mark.parametrize("api", ["chat", "responses", "anthropic"])
+@pytest.mark.parametrize("bounded", [False, True])
+async def test_real_stream_can_close_in_another_task_without_context_leak(wire, api, bounded):
+    sent, response, transport = wire
+    harness = Harness()
+    client = gateway(harness, transport, FixtureVerifier())
+    response[0] = lambda request: response_for(api + "-stream", request)
+    try:
+        with admission_scope(harness.controller, "alice"), (
+            no_replay_scope("alice") if bounded else nullcontext()
+        ):
+            stream = client.stream(
+                deployment=DEPLOYMENT, messages=[{"role": "user", "content": "hello"}],
+                params={"max_tokens": 20}, api=api,
+            )
+            await anext(stream)
+            await asyncio.create_task(stream.aclose())
+            assert current_attempt_envelope("chat", {}, deployment=None, target=None, owner="alice") is None
         assert len(sent) == 1
     finally:
         await client._http.aclose()

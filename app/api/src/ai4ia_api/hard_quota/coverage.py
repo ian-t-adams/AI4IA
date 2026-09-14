@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from ..catalog import ModelCatalog
+from ..catalog import ModelCatalog, ModelEntry
 from ..usage.pricing import PricingBook, conservative_token_cost
 from .models import MAX_QUANTITY, Amounts, Bounds, Surface
 
@@ -116,6 +116,14 @@ def supported_attempt_payload(surface: Surface, payload: dict[str, Any]) -> bool
     return text_messages(payload.get("messages", payload.get("input")))
 
 
+def model_for_deployment(catalog: ModelCatalog, deployment: str | None) -> ModelEntry | None:
+    matches = [
+        entry for entry in catalog.models
+        if any(option.deploymentName == deployment for option in catalog.eligible_options(entry))
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def reservation_bounds(
     surface: Surface, payload: dict[str, Any], *, deployment: str | None,
     catalog: ModelCatalog, pricing: PricingBook, attempts: AttemptEnvelope | None = None,
@@ -126,13 +134,9 @@ def reservation_bounds(
     )
     if surface not in {"chat", "embedding"} or attempts is None:
         return fallback
-    matches = [
-        entry for entry in catalog.models
-        if any(option.deploymentName == deployment for option in catalog.eligible_options(entry))
-    ]
-    if len(matches) != 1:
+    model = model_for_deployment(catalog, deployment)
+    if model is None:
         return fallback
-    model = matches[0]
     context = model.contextWindow
     if context is None or context <= 0:
         return fallback

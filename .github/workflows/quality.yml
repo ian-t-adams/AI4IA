@@ -102,9 +102,12 @@ jobs:
           dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --locked-mode --nologo
           dotnet build proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj \
             --configuration Release --no-restore --nologo
-          dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj \
+          if ! dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj \
             --configuration Release --no-build --no-restore --nologo \
-            -- --minimum-expected-tests 40
+            -- --minimum-expected-tests 40; then
+            cat proxy/AI4IA.Proxy.Tests/bin/Release/net10.0/TestResults/AI4IA.Proxy.Tests_net10.0_x64.log
+            exit 1
+          fi
 
   yamllint:
     name: yamllint
