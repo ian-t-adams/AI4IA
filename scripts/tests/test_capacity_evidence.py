@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import jmespath
 
+from scripts.tests._account_pagination import invalid_account_continuations
 from scripts.tests._loader import load_script
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1062,31 +1063,9 @@ class AccountPaginationTests(unittest.TestCase):
         self.paginate()
         self.assertEqual(self.source(self.fixture.report())["status"], "available")
         good = self.link()
-        path = f"{self.fixture.scope.group_path}/providers/{capacity.NAMESPACE}"
-        bad_links = [
-            good.replace("https:", "http:", 1),
-            good.replace("management.azure.com", "management.azure.com.evil.invalid", 1),
-            good.replace("management.azure.com", "user:password@management.azure.com", 1),
-            good.replace("management.azure.com", "management.azure.com:443", 1),
-            good.replace(SUBSCRIPTION, OTHER_SUBSCRIPTION),
-            good.replace(self.fixture.scope.resource_group, "other-group"),
-            good.replace(path, path + "/deployments"),
-            good.replace(path, path + "/../accounts"),
-            good.replace(path, path + "/"),
-            good.replace(path, path.replace("/resourceGroups/", "/resourceGroups%2f")),
-            good.removeprefix(capacity.ARM),
-            good + "#fragment",
-            good + "#",
-            " " + good,
-            good + "\n",
-            self.link(**{"api-version": "2023-05-01"}),
-            self.link(**{"$filter": "kind eq 'AIServices'"}),
-            good + "&api-version=" + capacity.COGNITIVE_API,
-            good + "&$skiptoken=duplicate",
-            capacity.ARM + path + "?" + urlencode({"api-version": capacity.COGNITIVE_API, "$skipToken": self.cursor}),
-            capacity.ARM + path + "?" + urlencode({"$skiptoken": self.cursor}),
-            capacity.ARM + path + "?api-version=" + capacity.COGNITIVE_API,
-        ]
+        bad_links = invalid_account_continuations(
+            good, SUBSCRIPTION, OTHER_SUBSCRIPTION, self.fixture.scope.resource_group,
+        )
         for link in bad_links:
             with self.subTest(link=link.replace(SUBSCRIPTION, "<subscription>")):
                 self.fixture.calls.clear()
