@@ -817,6 +817,16 @@ stays permissionless. These source contracts do not configure live GitHub policy
 
 ## Dependency updates and issue closeout
 
+Before updating an exact action-pin assertion, resolve the official version tag
+to its release commit and review the action metadata and shipped code. Keep
+`test_foundry_assets_workflow.py`'s exact Azure login pin and complete OIDC input
+map; a prefix or SHA-shape check does not approve a release. The reviewed
+`azure/login` v3.1.0 defaults retain `api://AzureADTokenExchange`, `azurecloud`,
+`SERVICE_PRINCIPAL` and client-ID masking. Its unmasking and PowerShell context
+inputs remain unused. Reuse `test_gating_workflows.py`'s consumer-derived
+permission checks rather than copying a workflow/job grant map. A dependency
+update does not authorize new inputs, credentials, federated subjects or grants.
+
 Routine API updates stay in `api-deps`. FastAPI and Starlette are a compatibility
 pair in `api-framework`; `azure-ai-projects` stays ungrouped so its exact SDK,
 manifest, and adapter contract is reviewed independently. Do not weaken a parity
