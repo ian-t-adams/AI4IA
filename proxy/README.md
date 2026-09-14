@@ -93,6 +93,8 @@ The complete machine-readable list and reason for every deviation lives in
   persistence/recovery, and `ProxyHelperUtils.cs` redacts internal attempt
   headers. The versioned boundary requires the exact `/ai4ia-attempts-v1`
   host prefix, no prefix stripping, scoped API-key auth and no host requeue.
+  Its explicit `probe=/` selects a non-probing host; omission would activate
+  the production loader's legacy echo probe. The existing Host1 probe is unchanged.
   A missing bounded host cannot fall back to the catch-all host/key. Missing
   markers on this path, including a recovered DTO, are refused before dispatch.
   Ordinary retry behavior is unchanged. This is source staging, not

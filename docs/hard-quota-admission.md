@@ -154,7 +154,10 @@ do not insert inheritance to make staging pass. See the official
 and [API-scoped subscription contract](https://learn.microsoft.com/azure/api-management/api-management-subscriptions).
 
 Proxy Host2 uses the exact `/ai4ia-attempts-v1` prefix (not `/*`),
-`stripprefix=false`, no probes, and the distinct API-only key. Before its atomic
+`stripprefix=false`, explicit `probe=/`, and the distinct API-only key.
+The probe sentinel selects the non-probing host type; merely omitting `probe`
+would inherit the production loader's legacy echo probe. Host1 retains its
+existing `/openai/status` probe. Before its atomic
 send claim, the proxy checks this host shape, the original exact path/query and
 body/model binding; a missing bounded host cannot select the catch-all Host1/key.
 No probes does not establish health. The dedicated subscription cannot invoke

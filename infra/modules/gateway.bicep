@@ -891,7 +891,7 @@ var hostEnv = concat([
 ], gatewayAttemptsV1Staged ? [
   {
     name: 'Host2'
-    value: 'host=${sharedApimGatewayUrl};path=/ai4ia-attempts-v1;stripprefix=false;mode=apim;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=false'
+    value: 'host=${sharedApimGatewayUrl};path=/ai4ia-attempts-v1;stripprefix=false;mode=apim;probe=/;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=false'
   }
   {
     name: 'Host2-api-key'

@@ -171,6 +171,7 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         host_env = gateway["variables"]["hostEnv"]
         self.assertIn(f"if(parameters('{flag}')", host_env)
         self.assertIn("path=/ai4ia-attempts-v1;stripprefix=false", host_env)
+        self.assertIn("mode=apim;probe=/;processor=OpenAI", host_env)
         self.assertIn("retryafter=false", host_env)
         self.assertIn("Host2-api-key", host_env)
         secrets = resources["proxyApp"]["properties"]["configuration"]["secrets"]
