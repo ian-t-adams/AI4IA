@@ -276,6 +276,19 @@ belongs on these spans. Cumulative usage is recorded once per logical model call
 not added across chunks or copied onto parent spans. The SDK/exporter capture
 controls and existing offline no-export controls must stay non-vacuous.
 
+Request spans instrument the actual `create_app` instance through the public
+FastAPI instrumentor, not the distro's replacement of a prebound constructor.
+Keep the per-app connection/exporter gate and exactly-once instrumentation. The
+request tracer facade delegates to the same SDK provider/sampler/exporter while
+projecting route-template/status metadata before recording; no raw path/query,
+credentials, identities, exception payloads or caller-written metadata may reach
+it or GenAI children. Do not register a second provider, increase sampling or
+enable raw request metrics to make coverage appear healthy. The shipping
+1.8.9/b55/1.43.0/0.64b0 integration controls use the actual app and SDK, not only a
+constructor-order mock; metadata-only package checks do not prove imported SDK
+source. See `docs/runbooks/telemetry.md` for the bounded post-deployment observation
+and the distinction between missing coverage and proven exporter failure.
+
 **Any edit to `app/api/pyproject.toml` must be followed by `uv lock` in the same
 commit.** `uv.lock` records the declared specifier alongside resolved versions, so
 even a change that moves no package desyncs it and fails the `uv lock --check`
