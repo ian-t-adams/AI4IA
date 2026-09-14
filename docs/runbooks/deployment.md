@@ -134,7 +134,9 @@ The capture happens **before `azd provision`**, not after the build. This orderi
 is load-bearing: each Container App Bicep module must submit an image, and a
 greenfield template can use a quickstart placeholder. Provisioning can therefore
 create a new placeholder revision before release images exist. Capturing after
-provision would record that placeholder as the rollback target.
+provision could lose the prior rollback target once the placeholder becomes ready.
+Capture reads the exact selected revision's image and scale, not the app's
+desired template: while a replacement is pending, those templates can differ.
 
 The workflow then builds each service once, tags it with the commit SHA, pushes
 it to the azd-managed ACR, reads the digest assigned by the registry, and deploys
@@ -567,6 +569,14 @@ pre-provision revisions. A manual workflow run that skips provision does not
 roll back for a build/preflight failure that touched no app. Deploy and
 verification failures still roll back.
 
+Capture, rollout, and rollback confirmation bind an exact, scoped revision read
+to app reads on both sides. In `Single` mode the selected revision is
+`latestReadyRevisionName`, never the latest-created fallback; in `Multiple` mode
+it is the heaviest positive traffic target. Images and minimum replicas come from
+that revision, not `properties.template` on the app. Missing revision identity,
+image, scale, readiness metadata, or changing app observations fail closed.
+An existing app with no ready revision records no rollback image or target.
+
 A failure to reacquire the **post-deploy** canary token is the deliberate
 exception: the exact-digest release remains live but is reported unverified.
 The grant is preflighted before deploy, and verification acquires a fresh token
@@ -578,7 +588,8 @@ after deploy so an expired token cannot roll back a healthy release.
 |---|---|
 | Active revision moved when expected | Deployment never promoted a new template |
 | Running image equals this run's `--expect-image` digest | A stale or unrelated revision is serving |
-| Revision is active, healthy, and running | ARM accepted a revision that never became ready |
+| Revision is active, provisioned, healthy, and running | ARM accepted a revision that never became ready |
+| Single-mode latest and desired template match the ready revision | An unverified pending replacement can still cut over |
 | Running replicas are positive where minimum replicas require them | Crash loop or failed replica startup |
 | API `/health/live` and `/health/ready` return 200 | Process failure or inability to reach the canonical session store (cached, bounded check) |
 | Web `/` returns 2xx/3xx without following redirects | Next.js failed to render |
@@ -766,17 +777,42 @@ separate operator acceptance. Do not close #412 based only on this source.
 
 ### Automatic and manual rollback
 
-For each app whose active revision moved, rollback restores the captured revision
-and confirms the captured image is serving again. A failed confirmation remains
-a failed job.
+Rollback restores an app when its serving revision moved **or** a different
+Single-mode latest/desired template is pending. An unchanged ready revision is
+not enough to skip restoration. A pending placeholder can coexist with an old,
+healthy serving revision; computed revision-list traffic weights alone do not
+prove a placeholder is serving or that an outage occurred.
 
 | Revision mode | Restore primitive |
 |---|---|
 | `Single` (this stack) | `az containerapp revision copy --from-revision <captured>` |
 | `Multiple` | `az containerapp ingress traffic set --revision-weight <captured>=100` |
 
-A greenfield app has no prior revision and cannot be rolled back on its first
-deployment. An app that did not move is left unchanged.
+Before either write, the captured image and minimum replicas must match an exact
+read of the captured revision in the current app's resource scope. State version
+1 remains supported, but an unknown image or an older mixed ready-name/desired-image
+capture is refused, even when the ready name has not moved. Do not repair such a
+state by guessing from logs; recovery requires independently verified revision
+and image evidence. Inactive immutable source revisions need not report running
+states, but active sources must still pass the readiness checks.
+
+A successful copy command is not restoration proof. Confirmation reads the
+actual new serving revision, requires the captured full template (apart from
+the generated revision suffix), health, provisioning and replica posture, and
+checks that latest/desired state has settled onto it. The previous latest
+candidate must also read back inactive, so finishing its readiness checks cannot
+later promote the known pending failure. Multiple-mode confirmation instead
+requires all traffic pinned to the captured named revision, not a dynamic
+`latestRevision` rule; an unrelated unrouted latest revision is not copied.
+These checks use the platform's
+[revision lifecycle and Single-mode promotion contract](https://learn.microsoft.com/azure/container-apps/revisions).
+They detect changes across the reads, not lock out a later external writer.
+
+A failed or unknown confirmation remains a failed job. An ambiguous write
+acknowledgement is not replayed, and one app's failure does not abandon the other
+apps. A greenfield app has no prior revision and cannot be rolled back on its
+first deployment. Only a healthy, genuinely unchanged app without a pending
+cutover is left unchanged.
 
 To disable only the end-to-end model turn, set
 `AI4IA_DEPLOY_VERIFY_CANARY=false`. Rollout, health, web, proxy, and domain checks

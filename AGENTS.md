@@ -434,7 +434,22 @@ Rollback state is captured **before `azd provision`**, not merely before
 application deployment: all three Bicep app modules use a quickstart placeholder
 image for greenfield creation, so an infrastructure reconciliation can create a
 placeholder revision before the image build starts. Capturing afterward would make
-that placeholder the rollback target.
+that placeholder the rollback target once it becomes ready.
+
+Capture, rollout and restore confirmation read the exact scoped serving revision's
+identity, template, image and scale between stable app reads. Single mode selects
+`latestReadyRevisionName`, never the latest-created fallback; Multiple mode selects
+the heaviest positive traffic target. The app's desired template is not serving-image
+evidence, and computed revision-list weights alone do not prove a pending
+placeholder serves traffic. Missing/contradictory metadata fails closed.
+An unchanged ready name cannot skip rollback while a different latest/desired
+template could cut over. Validate v1 captured image/scale against the immutable
+source revision before copying; never infer an unknown or mismatched saved image.
+Single-mode copy confirmation requires the actual new healthy/provisioned serving
+template, settled latest/desired state and the previous latest candidate inactive.
+Multiple mode pins all traffic to the exact captured revision without switching
+modes. Preserve min-zero support, per-app failure isolation and no write replay;
+see `docs/runbooks/deployment.md#automatic-and-manual-rollback`.
 
 ### Production image proofs
 
