@@ -677,6 +677,14 @@ unknown, colliding, stale or overprivileged observations. Fresh plans classify
 partial setup; do not auto-clean up or replay an uncertain write. The separate
 read-only configuration check only prints an activation command after exact
 metadata readback; it is not live OIDC/report proof or approval to run it.
+Setup may continue only account inventory through the shared
+`_capacity_evidence.account_continuation` validator, rebuilding the exact scoped
+GET from the approved version and opaque cursor. Keep 64 pages, 4,096 total rows
+and the existing shared call/time/byte budgets; reject cross-page duplicates,
+repeated cursors and conflicting ownership before accepting terminal coverage.
+All expected regions on an early page are still candidates until a terminal
+page is validated. Identity/role/assignment/federation continuation remains
+unsupported. Keep the shared helper source hash bound into plan approval.
 See [the reporting runbook](docs/runbooks/deployment.md#read-only-model-retirement-reporting)
 before changing source authority, admission policy or activation.
 
