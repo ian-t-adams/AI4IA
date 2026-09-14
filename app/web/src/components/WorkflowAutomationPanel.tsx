@@ -4,12 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import {
   AUTOMATION_TERMINAL, DEFAULT_AUTOMATION_LIMITS, automationKey,
+  formatWorkflowUsd, parseWorkflowUsd, workflowUsdInput,
   type AutomationConfig, type AutomationRun, type AutomationStart,
   type ScheduleRule, type ScheduleWrite, type WorkflowSchedule,
 } from "@/lib/workflowAutomation";
 import type { Workflow } from "@/lib/types";
 import { ExecutionReceiptPanel } from "./ExecutionEvidence";
 import { WorkflowApprovalInbox } from "./WorkflowApprovalInbox";
+import { WorkflowBudgetEvidence } from "./WorkflowSpendEvidence";
 import { inputStyle, primaryBtn, secondaryBtn } from "./builderStyles";
 
 export function WorkflowAutomationPanel({
@@ -26,6 +28,10 @@ export function WorkflowAutomationPanel({
   const [runtime, setRuntime] = useState(1800);
   const [dispatches, setDispatches] = useState(64);
   const [outputTokens, setOutputTokens] = useState(1024);
+  const [spendMode, setSpendMode] = useState<"no_hard_dollar_cap" | "usd_app_meter">("no_hard_dollar_cap");
+  const [usdLimit, setUsdLimit] = useState("");
+  const [allowTools, setAllowTools] = useState(true);
+  const [allowMemory, setAllowMemory] = useState(true);
   const [frequency, setFrequency] = useState<ScheduleRule["frequency"]>("daily");
   const [zone, setZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
   const [localTime, setLocalTime] = useState("09:00");
@@ -90,14 +96,21 @@ export function WorkflowAutomationPanel({
 
   function request(): AutomationStart {
     if (!model) throw new Error("Select a model for this workflow.");
+    const maximum = spendMode === "usd_app_meter" ? parseWorkflowUsd(usdLimit) : null;
+    if (spendMode === "usd_app_meter" && (
+      !config?.monetaryCapAvailable || maximum === null || allowTools || allowMemory || documentIds.length > 0
+    )) throw new Error("A USD cap needs verified text-only support, a valid amount, no tools or automatic memory, and no selected documents.");
     return {
       selection: { name: workflow.name, model, documentIds: [...documentIds] },
       input,
       limits: {
         ...DEFAULT_AUTOMATION_LIMITS, maxRuntimeSeconds: runtime,
         maxApplicationDispatches: dispatches, maxOutputTokens: outputTokens,
+        spendMode, ...(spendMode === "usd_app_meter" ? { maxSpendMicroUsd: maximum, maxToolCalls: 0 } : {}),
       },
       idempotencyKey: automationKey(),
+      ...(!allowTools ? { allowTools: false } : {}),
+      ...(!allowMemory ? { allowAutomaticMemory: false } : {}),
     };
   }
 
@@ -176,6 +189,9 @@ export function WorkflowAutomationPanel({
     setEditingSchedule(value); setInput(value.input); setConfirmed(false);
     setRuntime(value.limits.maxRuntimeSeconds); setDispatches(value.limits.maxApplicationDispatches);
     setOutputTokens(value.limits.maxOutputTokens); setFrequency(value.rule.frequency);
+    setSpendMode(value.limits.spendMode);
+    setUsdLimit(value.limits.maxSpendMicroUsd != null ? workflowUsdInput(value.limits.maxSpendMicroUsd) : "");
+    setAllowTools(value.allowTools !== false); setAllowMemory(value.allowAutomaticMemory !== false);
     setZone(value.rule.timezone); setLocalTime(value.rule.localTime.slice(0, 5));
     setLocalDate(value.rule.localDate ?? ""); setWeekday(value.rule.weekday ?? 0);
     setOccurrences(value.rule.maxOccurrences);
@@ -197,8 +213,12 @@ export function WorkflowAutomationPanel({
 
   if (!config?.approvalsAvailable) return null;
   const locked = busy || retry !== null;
+  const capped = spendMode === "usd_app_meter";
+  const maximum = capped ? parseWorkflowUsd(usdLimit) : null;
+  const validMoney = !capped || Boolean(config.monetaryCapAvailable && maximum !== null &&
+    !allowTools && !allowMemory && documentIds.length === 0);
   const valid = confirmed && Boolean(model) && Boolean(input.trim()) && runtime >= 1 &&
-    runtime <= config.maxRuntimeSeconds && dispatches >= 1 && dispatches <= 128 && outputTokens >= 1;
+    runtime <= config.maxRuntimeSeconds && dispatches >= 1 && dispatches <= 128 && outputTokens >= 1 && validMoney;
   return <section className="workflow-automation-stack" aria-labelledby="workflow-automation-title">
     <h3 id="workflow-automation-title">Resumable runs and safe schedules</h3>
     <p className="workflow-run-hint">Run {workflow.displayName} with exact-call approvals, or schedule its safe read-only surface. This does not inherit chat or run auto-approval.</p>
@@ -211,7 +231,34 @@ export function WorkflowAutomationPanel({
       <label>Output tokens per model call<input type="number" min={1} max={32768} value={outputTokens} disabled={locked} onChange={(event) => setOutputTokens(Number(event.target.value))} style={inputStyle} /></label>
     </div>
     <p className="workflow-run-hint">Up to 18 model calls and 48 tool calls, further limited by these bounds. Provider retries and infrastructure charges are not a hard spending cap.</p>
-    <label className="workflow-run-option"><input type="checkbox" checked={confirmed} disabled={locked} onChange={(event) => setConfirmed(event.target.checked)} /> I choose bounded execution without a hard dollar cap.</label>
+    <label className="workflow-field">Spending limit
+      <select value={spendMode} disabled={locked} style={inputStyle} onChange={(event) => {
+        setSpendMode(event.target.value === "usd_app_meter" ? "usd_app_meter" : "no_hard_dollar_cap");
+        setConfirmed(false);
+      }}>
+        <option value="no_hard_dollar_cap">No monetary maximum</option>
+        <option value="usd_app_meter" disabled={!config.monetaryCapAvailable}>USD application-meter maximum</option>
+      </select>
+    </label>
+    {!config.monetaryCapAvailable ? <p className="workflow-run-hint">USD caps are unavailable until the server verifies its bounded gateway transport. Uncapped workflows retain their normal tool behavior.</p> : null}
+    {capped ? <>
+      <label className="workflow-field">Maximum USD per run
+        <input type="text" inputMode="decimal" value={usdLimit} maxLength={17} disabled={locked}
+          aria-describedby="workflow-usd-limit-help" aria-invalid={usdLimit !== "" && maximum === null}
+          onChange={(event) => { setUsdLimit(event.target.value); setConfirmed(false); }} style={inputStyle} />
+      </label>
+      <p id="workflow-usd-limit-help" className="workflow-run-hint">Enter a nonnegative USD amount with up to six decimal places. This limit is immutable for each run; a schedule edit creates a new generation.</p>
+      {usdLimit !== "" && maximum === null ? <p role="alert" className="studio-alert">Enter a valid USD amount without signs, exponents or more than six decimal places.</p> : null}
+      <p className="workflow-run-hint">The current capped profile supports only stateless text. Disable tools and automatic memory below, and remove selected documents. The API rejects incompatible workflow requirements; it does not silently remove them.</p>
+      {documentIds.length > 0 ? <p role="alert" className="studio-alert">Remove selected documents before requesting this text-only capped profile.</p> : null}
+    </> : null}
+    <label className="workflow-run-option"><input type="checkbox" checked={!allowTools} disabled={locked} onChange={(event) => { setAllowTools(!event.target.checked); setConfirmed(false); }} /> Disable tools for this request</label>
+    <label className="workflow-run-option"><input type="checkbox" checked={!allowMemory} disabled={locked} onChange={(event) => { setAllowMemory(!event.target.checked); setConfirmed(false); }} /> Disable automatic memory for this request</label>
+    <label className="workflow-run-option"><input type="checkbox" checked={confirmed} disabled={locked || (capped && maximum === null)} onChange={(event) => setConfirmed(event.target.checked)} />
+      {capped ? maximum === null ? " Enter a valid USD maximum before confirming this run."
+        : ` I choose a per-run app-meter maximum of ${formatWorkflowUsd(maximum)}, not an Azure bill cap.`
+        : " I choose bounded execution without a hard dollar cap."}
+    </label>
     {error ? <p role="alert" className="studio-alert">{error}</p> : null}
     {notice ? <p role="status">{notice}</p> : null}
     {retry ? <p className="workflow-run-hint">The outcome is not confirmed. Retry sends the original saved request and key, not a new run or schedule.</p> : null}
@@ -221,6 +268,7 @@ export function WorkflowAutomationPanel({
     {run ? <section aria-label="Resumable run" className="workflow-automation-review">
       <h4>{run.workflow}: {run.status.replaceAll("_", " ")}</h4>
       {run.reason ? <p className="workflow-run-hint">{run.reason}</p> : null}
+      {run.budget ? <WorkflowBudgetEvidence budget={run.budget} /> : null}
       {monitoringPaused ? <p>Monitoring paused; the server still owns the run.</p> : null}
       <div className="workflow-automation-actions">
         <button type="button" style={secondaryBtn} onClick={() => onOpenChat(run.sessionId)}>Open run conversation</button>
@@ -257,6 +305,9 @@ export function WorkflowAutomationPanel({
         {item.next ? <p>Next: {item.next.localSlot} ({item.rule.timezone}) · {item.next.dueAt} UTC</p> : null}
         {item.reason ? <p className="studio-alert">{item.reason}</p> : null}
         <p className="workflow-run-hint">Safe tools: {item.tools.join(", ") || "none"}</p>
+        <p className="workflow-run-hint">{item.limits.spendMode === "usd_app_meter"
+          ? `${formatWorkflowUsd(item.limits.maxSpendMicroUsd ?? null)} app-meter maximum per occurrence.`
+          : "No monetary maximum."}</p>
         <div className="workflow-automation-actions">
           {["pending", "acceptance_unknown"].includes(item.status) ? <button type="button" style={secondaryBtn} disabled={locked} onClick={() => void recover(item)}>Recover original schedule start</button> : null}
           <button type="button" style={secondaryBtn} disabled={locked} onClick={() => edit(item)}>Edit schedule</button>

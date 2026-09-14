@@ -28,6 +28,13 @@ const reviewed: AutomationReview = {
   requestId: "challenge-one", grant: "single-use-value",
   approvedDigest: "a".repeat(64), effectiveDigest: "b".repeat(64),
   spendImpact: "Additional spend is unknown. No hard dollar cap.",
+  spendEvidence: {
+    scope: "exact_tool_operation", status: "legacy_unquoted", quote: null,
+    impact: {
+      coverage: "unknown", amountMicroUsd: null, currency: "USD", basis: "legacy-unquoted",
+      reason: "legacy-unquoted", bounds: null, localContractDigest: null,
+    },
+  },
 };
 
 beforeEach(() => {
@@ -94,5 +101,29 @@ describe("durable workflow approval inbox", () => {
     render(<WorkflowApprovalInbox />);
     expect(await screen.findByRole("alert")).toHaveTextContent("unavailable");
     expect(screen.queryByText("No workflow decisions are pending.")).not.toBeInTheDocument();
+  });
+
+  it("shows unpriced exact-call impact as unknown, not zero or a price for continuation", async () => {
+    const user = userEvent.setup();
+    render(<WorkflowApprovalInbox />);
+    await user.click(await screen.findByRole("button", { name: "Review exact call" }));
+    expect(await screen.findByText("Unknown")).toBeInTheDocument();
+    expect(screen.getByText(/not a zero-cost estimate/)).toBeInTheDocument();
+    expect(screen.getByText(/only the stored tool operation/)).toBeInTheDocument();
+    expect(screen.queryByText("USD 0.00")).not.toBeInTheDocument();
+  });
+
+  it("refreshes the quote only on explicit action and retains no old grant after failure", async () => {
+    const user = userEvent.setup();
+    render(<WorkflowApprovalInbox />);
+    await user.click(await screen.findByRole("button", { name: "Review exact call" }));
+    await screen.findByText(reviewed.argumentsJson);
+    expect(mocks.review).toHaveBeenLastCalledWith(run.runId, run.approval!.id, false);
+    mocks.review.mockRejectedValueOnce(new Error("The immutable budget changed."));
+    await user.click(screen.getByRole("button", { name: "Refresh spend quote" }));
+    expect(mocks.review).toHaveBeenLastCalledWith(run.runId, run.approval!.id, true);
+    expect(await screen.findByRole("alert")).toHaveTextContent("budget changed");
+    expect(screen.queryByRole("button", { name: "Approve this call and resume" })).not.toBeInTheDocument();
+    expect(mocks.decide).not.toHaveBeenCalled();
   });
 });

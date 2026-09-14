@@ -817,6 +817,16 @@ stays permissionless. These source contracts do not configure live GitHub policy
 
 ## Dependency updates and issue closeout
 
+Before updating an exact action-pin assertion, resolve the official version tag
+to its release commit and review the action metadata and shipped code. Keep
+`test_foundry_assets_workflow.py`'s exact Azure login pin and complete OIDC input
+map; a prefix or SHA-shape check does not approve a release. The reviewed
+`azure/login` v3.1.0 defaults retain `api://AzureADTokenExchange`, `azurecloud`,
+`SERVICE_PRINCIPAL` and client-ID masking. Its unmasking and PowerShell context
+inputs remain unused. Reuse `test_gating_workflows.py`'s consumer-derived
+permission checks rather than copying a workflow/job grant map. A dependency
+update does not authorize new inputs, credentials, federated subjects or grants.
+
 Routine API updates stay in `api-deps`. FastAPI and Starlette are a compatibility
 pair in `api-framework`; `azure-ai-projects` stays ungrouped so its exact SDK,
 manifest, and adapter contract is reviewed independently. Do not weaken a parity
@@ -1176,6 +1186,30 @@ shared application dispatches, not just loop iterations. Finite USD caps and
 hard-quota durable execution remain refused under the unproven downstream attempt
 envelope. See [the automation contract](docs/workflow-automation.md); source
 completion never implies live activation.
+
+The additive per-run monetary contract reserves shared catalog/price bounds in
+the existing owner ETag CAS before actual dispatch. It is an immutable USD
+application-meter limit, not an owner balance or Azure bill cap. Preserve
+settled/held/unknown totals and compacted-charge floors when removing delivered
+effects; missing accounting is not zero and unknown work never expires into a
+refund. Reserve escaped state space for every later settlement transition.
+Accounting survives caller expiry and conversation cleanup without new grants.
+Draft spend evidence binds exact owner/source/run/operation/schema/destination/
+arguments/expiry, original prices/coverage/attempt identity and current run
+budget revision. A changed quote cannot use an old one-time challenge; ordinary
+reads never reprice it. Local zero requires the actual repository handler and a
+task-inherited no-metered-effect guard, not tool annotations.
+The first finite profile is explicitly stateless text, with tools and automatic
+memory denied and no selected tool/resource requirements silently discarded.
+Shipping attempt proof remains absent; flags, metadata or local fixtures cannot
+enable finite admission. Unknown remote meters and the independent hard-quota
+durable/nonlocal refusals remain unchanged.
+Monetary retirement selection and validation share the invocation-key timestamp
+and replay floor, not the later run creation time. Retain ineligible or unresolved
+rows without blocking unrelated valid admission. HTTP financial projections must
+include their defaulted currency/scope and explicit unknown nulls; recursively
+excluding unset/none fields breaks consumers. Actual API responses and browser
+validators share `app/web/test-fixtures/workflow_money.json`.
 
 ## Staged GA Realtime protocol
 
