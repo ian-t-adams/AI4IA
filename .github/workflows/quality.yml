@@ -404,6 +404,7 @@ jobs:
           # this fails if a `paths:` filter comes back under `pull_request:`, or
           # if a job is renamed out from under the ruleset's context list.
           python3 -m unittest scripts.tests.test_gating_workflows
+          python3 -m unittest scripts.tests.test_live_evaluation_workflow
 
       - name: Run Foundry asset workflow tests
         run: |

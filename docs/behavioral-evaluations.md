@@ -1,8 +1,10 @@
-# Offline behavioral evaluations
+# Behavioral evaluations
 
 AI4IA's development-only evaluator runs versioned synthetic tasks through the real
-application and scores their observable behavior. It does **not** measure live
-model quality, call Foundry, read production traces, or export execution receipts.
+application and scores their observable behavior. The mandatory **offline**
+program does **not** measure live model quality, call Foundry, read production
+traces, or export execution receipts. A separate, default-off live driver is
+described below; it never runs under the offline or pull-request gate.
 The program and its datasets live in `scripts/evaluations`, outside the application
 Docker contexts.
 
@@ -22,8 +24,8 @@ python -m scripts.evaluations run --output candidate.json
 python -m scripts.evaluations compare baseline.json candidate.json
 
 # Regression controls and the same static gates used by app-ci.
-python -m pytest -q scripts/tests/test_behavioral_evaluations.py
-ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py
+python -m pytest -q scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py scripts/tests/test_live_evaluation_api.py
+ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py scripts/tests/test_live_evaluation_api.py
 pyright --project scripts/evaluations
 ```
 
@@ -149,27 +151,221 @@ Real sync/async HTTP transports, DNS and socket connections are denied; the sole
 socket exception is stdlib asyncio socketpair construction. Fixtures never
 connect to their synthetic gateway or MCP URLs. Lifespan teardown closes the
 application and the subprocess releases its synthetic stores.
+An explicit OpenTelemetry suppression scope also prevents export when these
+fixtures execute inside an already-instrumented test process. Capture controls
+exercise a real in-memory exporter and demonstrate that it emits outside that
+scope. Offline runner version 1.0.1 records this stronger isolation contract.
 
 Reports use an allowlisted content-free schema: no user/session/correlation ids,
 prompts, replies, document excerpts, filenames, tool payloads, approval grants,
 raw exceptions or receipt payloads. The runner has no production-trace input or
 telemetry export path.
 
-`--mode live`, any non-disabled `--judge`, and `--production-content` explicitly
-refuse before execution. They are not latent enablement switches. Still pending
-separate approval and implementation under issue #418:
+The offline command still refuses `--mode live`, any non-disabled `--judge`, and
+`--production-content`. Its worker environment and transport isolation are not
+weakened to reuse it for live calls.
 
-- Live/scheduled evaluation: authorized dedicated synthetic actor, governed API
-  through SimpleL7Proxy/APIM, cleanup, cost limits and provider-variance policy;
-  it must not silently become a PR-blocking stochastic gate.
-- Optional paid judges: justified dimensions, approved judge/version, calibrated
-  uncertainty and spend policy; no unapproved model is selected here.
-- Content-free OpenTelemetry GenAI integration: verify current official semantic
-  conventions and the actual exporter without changing the telemetry dependency
-  compatibility pair or introducing content attributes.
-- Production-content evaluation: an explicit `AppGenAIContent` protection,
-  RBAC, consent/privacy, retention and deletion decision before collecting or
-  emitting any prompt, response, tool payload or identity.
+## Separate opt-in live authored tasks
 
-Offline results do not approve any of these surfaces or alter the recorded
+`python -m scripts.evaluations.live` is a separate CLI and worker. The committed
+`live-synthetic-v1.json` contains exactly three no-tool tasks: a small arithmetic
+JSON object, a fixed quoted-task-instruction response, and an unavailable-source
+JSON format. The server is asked for `allowTools=false`,
+`allowAutomaticMemory=false`, and `requireFreshSession=true` on **every** turn.
+These are request reductions, not authority to override identity, entitlements,
+model policy, tool approvals, or memory preferences. Dataset/prompt version 1.1.0
+encodes each authored task specification and quoted data in **one user message**,
+leaving the session's system prompt unset. It does not relax the fresh-session
+guard or test system-versus-user role obedience.
+
+The live suite measures only those deterministic authored outcomes. Tool choice,
+tool feedback, citation grounding, approvals, broad safety and workflow quality
+remain **unscored**, not passing because no tool ran. Their broader deterministic
+coverage remains in the offline dataset. Open-ended quality is unmeasured. The
+unavailable-source task checks an output format, not a real citation corpus or a
+general resistance-to-injection claim.
+
+Live HTTP goes only to the configured governed API origin. The API retains model
+routing through SimpleL7Proxy -> APIM -> Foundry. The driver does not load an
+application instance, import an installed API checkout, call a model SDK, read
+production traces, list users' records, or fetch external datasets. It validates
+all DNS answers as public, connects to one exact address with the original TLS
+SNI/Host, and accepts no redirects, inherited proxy settings, cookies or
+credential discovery.
+
+### Authorization and activation are separate
+
+Source delivery is **not** authorization to invoke the driver or enable its
+workflow. A human must approve an API-only dedicated authored-synthetic actor,
+its model access, synthetic-data lifecycle, spend exposure and provider-variance
+policy. Existing deployment credentials must not be reused. No identity,
+federation, grant, resource, deployment setting or data migration is created here.
+Lack of an approved identity is an unmet prerequisite, not evidence that no
+identity is needed.
+
+The policy-owned `GET /api/execution-capabilities` read must report version 1,
+current-owner binding and the distinct `authored-synthetic-evaluation` profile
+for the selected model/region. Its `ready` contract includes a known non-admin
+evaluation actor, model permission, no tool/automatic-memory/data authority and
+the real one-shot fresh-turn dispatch guard. Its profile query is a selector,
+never an authorization assertion. The operator's `evaluationActor` marker in
+the existing policy configuration adds restrictions, not grants; it is absent
+by default. This driver neither installs that marker nor configures its identity.
+The monitor's `canaryActor`, fixed sentinel and smaller output envelope must
+never be reused or weakened to accommodate authored quality prompts.
+
+The `live-evaluations.yml` workflow is main-only and uses a dedicated OIDC login
+with `allow-no-subscriptions`; an Azure subscription role is not requested by
+this source. For the existing repository, the main-ref subject is
+`repo:ian-t-adams/AI4IA:ref:refs/heads/main`, with audience
+`api://AzureADTokenExchange`. Review the actual API app-role/assignment policy
+and actor object id separately. Never infer an actor grant from a successful
+Azure login. There is no GitHub environment in this workflow, so adding one
+changes the federation subject and requires a separate review.
+
+These are dedicated **repository/CLI variables**, not azd deployment variables:
+
+| Variable | Required meaning |
+| --- | --- |
+| `AI4IA_LIVE_EVAL_ENABLED` | Unset/off by default; exact `true` admits a separately authorized finite run |
+| `AI4IA_LIVE_EVAL_SCHEDULE_ENABLED` | Separate exact `true` admits the weekly schedule only after manual evidence; unset/off by default |
+| `AI4IA_LIVE_EVAL_API_ORIGIN` | Exact public HTTPS API origin, no credentials, path, query or fragment |
+| `AI4IA_LIVE_EVAL_API_AUDIENCE` | Exact API app audience GUID or `api://` GUID |
+| `AI4IA_LIVE_EVAL_CLIENT_ID` | Dedicated synthetic application's client id, never the deploy client |
+| `AI4IA_LIVE_EVAL_TENANT_ID` | Explicit tenant for that actor and API |
+| `AI4IA_LIVE_EVAL_ACTOR_OBJECT_ID` | That actor's service-principal **object** id, not its client id |
+| `AI4IA_LIVE_EVAL_MODEL_ID` | Explicit approved model **id** in the source and advertised catalogs, not a deployment name |
+| `AI4IA_LIVE_EVAL_LIMITS_ACK` | Exact `finite-requests-not-a-bill-cap`; acknowledgment is not proof of a bill cap |
+| `AI4IA_LIVE_EVAL_DEPLOY_CLIENT_ID` | Known deploy client id to reject reuse; the workflow derives this from `AZURE_CLIENT_ID` |
+| `AI4IA_LIVE_EVAL_TOKEN` | Local process-only approved actor API token; the workflow acquires it in memory and never uploads it |
+
+The CLI locally binds token claims to the configured tenant, object id, client
+and API audience, refuses delegated scope tokens and requires adequate remaining
+lifetime. This is a **misconfiguration guard, not JWT signature verification**.
+The API independently authenticates and authorizes the actual bearer token.
+Token, actor, API-origin and identity hashes are absent from reports.
+
+After approval and with those variables supplied through an approved local
+credential flow:
+
+```powershell
+# Authorized read-only API policy/catalog/compatibility preflight; no fixtures or model call.
+python -m scripts.evaluations.live preflight
+
+# Separate authorization required: one finite run, one new exclusive output path.
+python -m scripts.evaluations.live run --output <new-local-report.json>
+```
+
+The read-only preflight observes the current authenticated policy capability,
+catalog and schema compatibility. A missing/unready/unbound/monitor policy or
+unsafe constraint refuses before fixtures. Exit 0 on **preflight** means that
+these read-only observations passed, not that a quality case ran: all three
+quality rows remain unknown and cleanup remains unproven. The policy read is
+never a cached grant; the real server rechecks authority at dispatch.
+
+The deliberately invalid chat-validation probe omits both required fields; even
+an older server that ignores the new controls cannot execute it. A 422 field
+inventory is only schema compatibility, not execution enforcement. The separate
+versioned policy/factory declaration and real-API boundary controls remain
+necessary. Preflight cannot certify future provider behavior, fixture cleanup,
+spend or live quality, and it creates no session or fresh-turn claim.
+
+The integration controls use real signed JWT validation, the production policy
+and fresh-dispatch factories, actual session/receipt/deletion routes and the
+real gateway adapter with only its HTTP provider replaced. They exercise the
+complete driver, incompatible/expired/privileged actors, changed policy, absent
+factory callbacks, altered request reductions, one-shot replay and foreign-owner
+refusal. Pausing policy before preflight or between preflight and dispatch retains
+the evaluation actor's denial: the driver stops later cases, preserves all three
+unknown rows and still verifies cleanup for its already-created fixture. These
+are still offline fixtures, not live actor or rollout evidence.
+
+### Finite work and cleanup
+
+Each run allows at most **48 API attempts**, including policy, catalog and
+compatibility reads, an empty lifecycle control, all session creation/chat/read calls, and
+every delete/status/reconcile call. There are no write retries or response
+replays, and no permanent background loop. The worker has a 240-second work
+budget and a parent deadline of 255 seconds. Each HTTP operation is bounded to
+45 seconds. Normal work cannot consume the last eight requests or 45 seconds
+reserved for the current fixture's cleanup. The driver checks that create,
+chat and persisted-message read fit before starting another task.
+
+Requests are at most 8 KiB, each response at most 96 KiB, aggregate accepted
+response bytes at most 1 MiB and reports at most 64 KiB. A one-byte overflow
+sentinel detects a bound violation. Worker stdout is bounded while produced;
+stderr and exception text are not retained. Worker failure retains all three
+unknown case rows and unknown request/byte counters, never a false zero.
+
+Before the first model task, the enabled live run creates **one new empty**
+session and proves its current deletion path. This mutating lifecycle control is
+recorded separately from quality-case counts. It cannot certify future task
+cleanup. Every task session must independently reach exact-id
+`cleanup_verified`, with the expected scope, verified child stores, no unresolved
+upload intents and a valid verification timestamp. Up to three owner-resumed
+reconciles are included in the same budget. Legacy 204 deletion, a 202
+acknowledgment, a 404, or an empty list is **not** that proof.
+
+This requires separately approved activation of the existing
+[conversation deletion protocol](runbooks/conversation-deletion.md). The driver
+does not enable it, enroll old records or expose private protocol fields.
+Ambiguous creation with no usable id remains incomplete; it is never replayed or
+recovered by an owner/global orphan scan. A cleanup failure stops later tasks.
+The proof covers conversation content and inline originals only; retained
+coordination, usage accounting and backups are not physically erased.
+
+Only priced, sampling-capable Chat Completions models with an advertised output
+limit are admitted by this first live profile. Requests use at most 256 output
+tokens. Responses' minimum-output floor, reasoning-only paths, media, unpriced
+models and unsupported caps refuse before inference. The executed receipt must
+show one model call, one HTTP attempt and the actual capped request parameter.
+Missing or changed receipt pricing/usage remains unknown and stops further work.
+
+**These are application/request/observation bounds, not a proven Azure bill
+cap.** The proxy/provider's internal attempts and billable processing after a
+timeout cannot be inferred from the client's request count. Flat token-price
+snapshots do not price every cache, geography, priority or non-model meter.
+No retry-pool multiplier, provider-internal count, quota cutover or billing
+guarantee is invented. A recorded cost ceiling is a deterministic observation
+check, not distributed hard admission.
+
+### Reports, variance and remaining decisions
+
+Reports keep every declared case and every check slot. They contain only
+allowlisted statuses/counts, latency, observed token-cost metadata, digests and
+source/catalog versions. Prompts, replies, tool payloads, source excerpts,
+session/user ids, raw responses/events/exceptions and credentials are never
+serialized. Authored prompts remain in the committed source dataset; live
+responses exist only in worker memory and the new API-owned fixture until its
+scoped cleanup completes.
+
+The driver source revision/tree, dataset/prompt/evaluator versions, source
+catalog/prices, dependency environment, observed policy/control contract versions
+and advertised catalog projection are
+identified. Source and advertised model versions are **configuration**, not
+observed provider versions or proof of the deployed application revision. Those
+unobserved fields stay null. Automatic live report comparison is deliberately
+unsupported; no silent cross-target/model-version rebaseline is possible.
+
+For **run**, exit 0 requires all applicable checks and every cleanup proof. A complete
+deterministic failure returns 1; any incomplete/unknown run returns 2, including
+provider outage or ambiguous cleanup even when another check failed. The
+independent workflow retains only the exact content-free report for seven days
+and fails visibly for unknown/unavailable execution. It is not a required PR
+check, and provider variance never silently becomes one. Canceling a live worker
+can prevent cleanup; cancellation is not evidence of no data or no charge.
+
+Optional judges remain disabled: all current declared dimensions have
+deterministic oracles. This does **not** claim that open-ended task quality can
+be reduced to them. A future judge requires a justified dimension, approved
+model/version, calibration, uncertainty and spend policy before implementation.
+Both CLIs continue to refuse production-content ingestion and non-disabled
+judges. Production trace evaluation requires a separate explicit
+`AppGenAIContent` protection, RBAC, privacy/consent, retention and deletion
+decision before any payload collection or emission.
+
+Content-free [GenAI telemetry](runbooks/telemetry.md#content-free-genai-model-spans)
+uses the existing telemetry exporter; it does not grant content collection.
+Neither offline results nor live source/fake-server controls authorize
+activation or alter the recorded
 [non-blocking safety assessment policy](rai-decision-record.md).

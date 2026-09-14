@@ -13,7 +13,7 @@ MAX_DATASET_BYTES = 131_072
 MAX_REPORT_BYTES = 262_144
 MAX_CASES = 32
 MAX_CASE_SECONDS = 30
-RUNNER_VERSION = "1.0.0"
+RUNNER_VERSION = "1.0.1"
 ORACLE_VERSION = "1.0.0"
 CHECK_IDS = (
     "execution", "transport", "tool_choice", "tool_feedback", "citations", "approval",

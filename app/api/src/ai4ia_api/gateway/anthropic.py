@@ -10,7 +10,10 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..genai_telemetry import ModelSpan
 
 
 ANTHROPIC_API = "anthropic"
@@ -350,7 +353,7 @@ def _chat_raw(delta: dict[str, Any]) -> str:
 
 
 def parse_anthropic_event(
-    payload: str, state: AnthropicStreamState
+    payload: str, state: AnthropicStreamState, *, telemetry: ModelSpan | None = None,
 ) -> AnthropicStreamEvent | None:
     if not payload:
         return None
@@ -360,6 +363,8 @@ def parse_anthropic_event(
         return None
     if not isinstance(event, dict):
         return None
+    if telemetry is not None:
+        telemetry.response_metadata(event)
 
     event_type = event.get("type")
     if event_type == "error":
