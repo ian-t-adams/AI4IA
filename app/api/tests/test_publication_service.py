@@ -57,8 +57,11 @@ async def actor(service, name, role):
     ))
 
 
-async def submit(service):
+async def submit(service, *, audience=None, groups=()):
     author = await actor(service, "author", "Author")
+    author.user.policy_claims = verified_policy_claims({
+        "roles": ["Author"], "groups": list(groups), "exp": int(time.time()) + 3600,
+    })
     source = await service.state.agent_service.create(
         author.owner_id, UserAgentCreate(
             name="shared-helper", systemPrompt="Answer carefully.", tools=["calculator"],
@@ -70,7 +73,7 @@ async def submit(service):
     )
     head = await service.submit(author, "agent", source.name, PublicationSubmit(
         expectedRevision=source.revision,
-        audience={"visibility": "shared", "acl": ["consumer@example.com"]},
+        audience=audience or {"visibility": "shared", "acl": ["consumer@example.com"]},
         modelIds=[model], modes=["chat"], reviewConsent=True,
     ))
     rows = await service._store("agent").query(RecordQuery(
@@ -170,4 +173,36 @@ async def test_draft_edits_leave_published_bytes_but_delete_recreate_never_reviv
         name="shared-helper", systemPrompt="Replacement.", tools=["calculator"],
     ), reserved_names=set())
     with pytest.raises(PublicationError):
+        await publication.resolve_for_execution(consumer, version.reference(), mode="chat")
+
+
+async def test_current_group_revocation_and_tenant_wall_never_use_publisher_grants(publication):
+    group = "11111111-2222-3333-4444-555555555555"
+    author, head, version = await submit(
+        publication, audience={"visibility": "shared", "groupAcl": [group]}, groups=[group],
+    )
+    reviewer = await actor(publication, "reviewer", "Reviewer")
+    reviewed = await publication.decide_review(reviewer, ReviewRequest(
+        source=version.reference(), expectedHeadRevision=head.revision, decision="approved",
+    ))
+    await publication.activate(author, "agent", version.source.name, ActivationRequest(
+        source=version.reference(), expectedHeadRevision=reviewed.revision,
+    ))
+    consumer = await actor(publication, "consumer", "")
+    consumer.user.policy_claims = verified_policy_claims({
+        "roles": [], "groups": [group], "exp": int(time.time()) + 3600,
+    })
+    assert (await publication.resolve_for_execution(
+        consumer, version.reference(), mode="chat",
+    )).version.reference() == version.reference()
+    consumer.user.policy_claims = verified_policy_claims({
+        "roles": [], "groups": [], "exp": int(time.time()) + 3600,
+    })
+    with pytest.raises(PublicationError):
+        await publication.resolve_for_execution(consumer, version.reference(), mode="chat")
+    consumer.user.policy_claims = verified_policy_claims({
+        "roles": [], "groups": [group], "exp": int(time.time()) + 3600,
+    })
+    consumer.user.tenant_id = "other-tenant"
+    with pytest.raises(PolicyError):
         await publication.resolve_for_execution(consumer, version.reference(), mode="chat")

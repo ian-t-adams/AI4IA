@@ -20,15 +20,22 @@ MAX_POLICY_BYTES = 64 * 1024
 MAX_MAPPINGS = 128
 PolicyDomain = Literal["models", "zones", "tools", "documents", "publication", "admin"]
 PolicyOutcome = Literal["allow", "deny", "unavailable"]
+ChatRestrictedProfile = Literal["monitor-canary", "authored-synthetic-evaluation"]
+RestrictedProfile = Literal["monitor-canary", "authored-synthetic-evaluation", "realtime-setup-canary"]
 PolicyReason = Literal[
     "allowed", "policy_denied", "policy_unavailable", "reauthentication_required",
     "claim_evidence_invalid", "owner_mismatch", "account_disabled", "feature_disabled",
     "model_unavailable", "policy_surface_unsupported",
+    "canary_policy_unconfigured", "canary_policy_incompatible",
 ]
 DOCUMENT_FEATURES = frozenset({
     "read", "upload", "process", "compute", "export", "share", "annotate",
     "memory", "analyzers", "index",
 })
+DOCUMENT_TOOL_FEATURES = {
+    "fetch_document": "read", "run_code": "compute", "export_document": "export",
+    "analyze_attachment": "compute", "process_document": "process",
+}
 PUBLICATION_ACTIONS = frozenset({"submit", "review", "consume"})
 ADMIN_OPERATIONS: frozenset[PolicyOperation] = frozenset({
     "admin.usage.read", "admin.directory.read", "admin.entitlements.read",
@@ -114,14 +121,43 @@ class SpendPolicy(StrictRecord):
     mappings: tuple[SpendMapping, ...] = Field(default=(), max_length=MAX_MAPPINGS)
 
 
+class CanaryActor(StrictRecord):
+    tenantId: PolicyValue
+    subject: PolicyValue
+
+    @field_validator("tenantId", "subject")
+    @classmethod
+    def exact_identity(cls, value: str) -> str:
+        if value != value.strip() or not value.isprintable():
+            raise ValueError("Canary identity must be an exact validated-token identifier.")
+        return value
+
+
 class PolicyConfig(StrictRecord):
     version: Literal[1] = 1
     domains: dict[PolicyDomain, DomainPolicy] = Field(default_factory=dict, max_length=6)
     spend: SpendPolicy | None = None
     adminCeiling: ValueSet = ()
+    canaryActor: CanaryActor | None = None
+    evaluationActor: CanaryActor | None = None
+    realtimeCanaryActor: CanaryActor | None = None
+
+    def actor_for(self, profile: RestrictedProfile) -> CanaryActor | None:
+        return {
+            "monitor-canary": self.canaryActor,
+            "authored-synthetic-evaluation": self.evaluationActor,
+            "realtime-setup-canary": self.realtimeCanaryActor,
+        }[profile]
 
     @model_validator(mode="after")
     def bounded_known_configuration(self) -> PolicyConfig:
+        markers = [
+            (actor.tenantId, actor.subject) for actor in
+            (self.canaryActor, self.evaluationActor, self.realtimeCanaryActor)
+            if actor is not None
+        ]
+        if len(set(markers)) != len(markers):
+            raise ValueError("Monitor, evaluation and realtime setup actors must be distinct.")
         count = sum(len(domain.mappings) for domain in self.domains.values())
         if self.spend is not None:
             count += len(self.spend.mappings)

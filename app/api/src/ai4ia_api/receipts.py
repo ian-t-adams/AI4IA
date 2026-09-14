@@ -58,6 +58,7 @@ from .agents.consent import ApprovalSource, ToolConsentSummary
 from .model_evidence import ModelCallEvidence, ModelCallRecorder, ReceiptCostSummary, combine_costs
 from .safety import MessageSafety
 from .usage.models import TokenUsage
+from .publishing.refs import PublicationEvidence
 
 # Receipt schema generation. Bumped when the shape changes in a way a reader
 # must notice; old rows keep their own version so they are never misread as new.
@@ -290,6 +291,7 @@ class ReceiptRuntime(BaseModel):
     instructionSha256: str | None = None
     agentConfigSha256: str | None = None
     workflowConfigSha256: str | None = None
+    publication: PublicationEvidence | None = None
     # None is historical/not recorded. An empty list records an observation gap
     # or no dispatched call; never infer provider defaults from either.
     modelCalls: list[ModelCallEvidence] | None = None
@@ -667,6 +669,10 @@ def build_receipt(
     effective_usage = usage or TokenUsage.empty()
     later_requests, later_request_count = model_request_snapshots(model_requests)
     saved_runtime = runtime.model_copy(deep=True) if runtime is not None else ReceiptRuntime()
+    if saved_runtime.publication is None:
+        from .publishing.execution import publication_evidence
+
+        saved_runtime.publication = publication_evidence()
     cost = None
     if model_evidence is not None:
         saved_runtime.modelCalls = model_evidence.snapshot()

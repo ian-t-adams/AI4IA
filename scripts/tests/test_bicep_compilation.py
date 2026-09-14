@@ -10,25 +10,28 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
+
+from scripts.tests._production_fixture import production_document
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "infra" / "main.bicep"
 MODELS = ROOT / "infra" / "models.json"
 
 
-def _compile() -> subprocess.CompletedProcess[str]:
+def _compile(main: Path = MAIN) -> subprocess.CompletedProcess[str]:
     bicep = shutil.which("bicep")
     if bicep:
-        command = [bicep, "build", str(MAIN), "--stdout"]
+        command = [bicep, "build", str(main), "--stdout"]
     else:
         az = shutil.which("az")
         if not az:
             raise AssertionError(
                 "Bicep clean-diagnostics tests require standalone `bicep` or Azure CLI `az`."
             )
-        command = [az, "bicep", "build", "--file", str(MAIN), "--stdout"]
+        command = [az, "bicep", "build", "--file", str(main), "--stdout"]
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -74,6 +77,26 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         actual = sorted(self.template["parameters"]["location"]["allowedValues"])
         self.assertEqual(actual, expected)
         self.assertIn("swedencentral", actual)
+
+    def test_capacity_profile_defaults_and_real_module_selection(self) -> None:
+        parameter = self.template["parameters"]["modelCapacityProfile"]
+        self.assertEqual(parameter["defaultValue"], "baseline")
+        self.assertEqual(parameter["allowedValues"], ["baseline", "production", "maximum"])
+        inputs = [
+            row["input"] for row in self.template["variables"]["copy"]
+            if row["name"] == "modelDeploymentsByRegion"
+        ]
+        self.assertEqual(len(inputs), 1)
+        self.assertIn("__bicep.selectedCapacity", inputs[0])
+        self.assertIn("parameters('modelCapacityProfile')", inputs[0])
+        model_module = self.template["resources"]["modelDeployments"]["properties"]
+        self.assertEqual(
+            model_module["parameters"]["deployments"]["value"],
+            "[variables('modelDeploymentsByRegion')[copyIndex()]]",
+        )
+        resources = model_module["template"]["resources"]
+        deployment = next(r for r in resources if r["type"] == "Microsoft.CognitiveServices/accounts/deployments")
+        self.assertIn("capacity", deployment["sku"]["capacity"])
 
     def test_claude_entitlement_defaults_off(self) -> None:
         self.assertFalse(self.template["parameters"]["claudeEnabled"]["defaultValue"])
@@ -309,6 +332,83 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             outputs["AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT"]["value"],
             "[variables('primaryCuEmbeddingDeployment').deploymentName]",
         )
+
+
+class ProductionCapacityCompiledTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        shutil.copy2(ROOT / "infra" / "capacity.bicep", self.directory / "capacity.bicep")
+        self.document = production_document()
+
+    def build_parameters(
+        self, document: dict, profiles: tuple[str, ...] = ("baseline", "maximum", "production"),
+    ) -> subprocess.CompletedProcess[str]:
+        (self.directory / "models.json").write_text(json.dumps(document), encoding="utf-8")
+        source = """using none
+import { selectedCapacity } from './capacity.bicep'
+var models = loadJsonContent('models.json')
+param selections = {
+"""
+        source += "\n".join(
+            f"  {profile}: map(models.catalog[0].deployments, d => selectedCapacity(d, '{profile}'))"
+            for profile in profiles
+        ) + "\n}\n"
+        parameters = self.directory / "fixture.bicepparam"
+        parameters.write_text(source, encoding="utf-8")
+        bicep, az = shutil.which("bicep"), shutil.which("az")
+        if bicep:
+            command = [bicep, "build-params", str(parameters), "--stdout"]
+        elif az:
+            command = [az, "bicep", "build-params", "--file", str(parameters), "--stdout"]
+        else:
+            self.fail("The same Bicep compiler used by infra-validate is required.")
+        return subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
+
+    def test_real_bicep_evaluates_configured_profile_and_maximum_fallback(self) -> None:
+        from scripts.tests.test_model_capacity_profile import preflight
+
+        del self.document["catalog"][0]["deployments"][1]["maxCapacity"]
+        result = self.build_parameters(self.document)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads(result.stdout)
+        parameters = json.loads(envelope["parametersJson"]) if "parametersJson" in envelope else envelope
+        actual = parameters["parameters"]["selections"]["value"]
+        self.assertEqual(actual, {"baseline": [10, 10], "maximum": [100, 10], "production": [40, 20]})
+        for profile, capacities in actual.items():
+            required = preflight.catalog_requirements(self.document, capacity_profile=profile)
+            self.assertEqual(capacities, [d["capacity"] for region in required.values() for d in region])
+
+    def test_missing_production_metadata_is_a_real_bicep_error_not_zero_or_fallback(self) -> None:
+        allowed = self.build_parameters(self.document)
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        for missing in ("production", "capacity"):
+            document = production_document()
+            deployment = document["catalog"][0]["deployments"][0]
+            if missing == "production":
+                del deployment["production"]
+            else:
+                del deployment["production"]["capacity"]
+            with self.subTest(missing=missing):
+                unchanged = self.build_parameters(document, ("baseline", "maximum"))
+                self.assertEqual(unchanged.returncode, 0, unchanged.stderr)
+                denied = self.build_parameters(document)
+                self.assertNotEqual(denied.returncode, 0)
+                self.assertIn("Error", denied.stderr)
+
+    def test_full_root_compiles_with_the_same_configured_catalog(self) -> None:
+        infra = self.directory / "infra"
+        shutil.copytree(ROOT / "infra", infra)
+        document = production_document(include_cu=True)
+        (infra / "models.json").write_text(json.dumps(document), encoding="utf-8")
+        result = _compile(infra / "main.bicep")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotRegex(result.stderr, r"\(\d+,\d+\)\s*:\s*(?:Warning|Error)")
+        template = json.loads(result.stdout)
+        self.assertIn(document, template["variables"].values())
+        self.assertIn("production", template["parameters"]["modelCapacityProfile"]["allowedValues"])
+        self.assertIn("__bicep.selectedCapacity", json.dumps(template["variables"]["copy"]))
 
 
 if __name__ == "__main__":

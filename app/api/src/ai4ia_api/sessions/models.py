@@ -13,13 +13,14 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, ValidationError, field_validator, model_serializer
 
 from ..agents.approvals import PendingToolApproval
 from ..agents.consent import ToolConsentState, ToolConsentSummary
 from ..citations import MessageCitation, RetrievedSource
 from ..receipts import ExecutionReceipt
 from ..safety import MessageSafety
+from ..publishing.refs import AssetVersionRef, publication_handle
 
 
 def _now() -> datetime:
@@ -300,6 +301,17 @@ def normalize_session_patch_changes(
     if {"toolConsent", "toolConsentState", "toolConsentVersion"} & changes.keys():
         raise ValueError("Tool consent must be changed through the consent endpoint.")
     normalized = dict(changes)
+    if "agentVersion" in normalized:
+        raw = normalized["agentVersion"]
+        reference = AssetVersionRef.model_validate(raw) if raw is not None else None
+        if "agentName" not in normalized or (
+            reference is not None and (
+                reference.kind != "agent"
+                or normalized["agentName"] != publication_handle(reference.assetId)
+            )
+        ):
+            raise ValueError("Published source must accompany its exact agent selection.")
+        normalized["agentVersion"] = reference
     if "toolOverrides" in normalized:
         value = normalized["toolOverrides"]
         if not isinstance(value, (ToolOverrides, Mapping)):
@@ -340,6 +352,7 @@ class Session(BaseModel):
     # Standing conversation policy. All fields are additive so existing Cosmos
     # records remain valid without a migration.
     agentName: str | None = None
+    agentVersion: AssetVersionRef | None = None
     toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
     toolConsent: ToolConsentSummary | None = None
     toolConsentState: ToolConsentState | None = Field(default=None, exclude=True)
@@ -365,6 +378,13 @@ class Session(BaseModel):
     summaryVersion: int = 0
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
+
+    @model_serializer(mode="wrap")
+    def compatible_source(self, handler: SerializerFunctionWrapHandler):
+        value = handler(self)
+        if self.agentVersion is None:
+            value.pop("agentVersion", None)
+        return value
 
     @field_validator("toolOverrides", mode="before")
     @classmethod

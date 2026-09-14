@@ -75,6 +75,35 @@ The chat **Run workflow** tool is deliberately narrower than the workflow
 editor. It advertises only enabled workflows whose resolved steps are safe,
 read-only, non-recursive, and compatible with that execution path.
 
+### Reviewed shared agents and workflows
+
+When the operator enables publishing, saved builder definitions can be submitted
+for independent review. Save edits first: the submission uses the saved
+revision, not an unsaved form. **Shared** names explicit recipients or group IDs;
+**Tenant-visible** is visible only within the application's authenticated tenant.
+Neither setting makes the asset public on the Internet.
+
+Submission explicitly permits an authorized reviewer to inspect that frozen
+version. Optional operator review is a separate choice. The author cannot
+self-approve. After approval, the author activates the exact reviewed version.
+Changed source, audience, models, tools or resource metadata needs another review.
+Personal MCP connections and unreviewed private dependencies are not copied.
+
+Published catalog entries have stable handles and exact source-version
+references. Your own permissions, model constraints and tool approvals still
+apply. A withdrawn, superseded or changed selection is refused rather than
+silently replaced. Required tools cannot be removed; supported optional
+narrowing is recorded. A reviewed **Exclude skills** profile does not load skills
+and cannot remove a required skill. Otherwise, publication requires explicitly
+versioned official skill resources rather than mutable defaults.
+
+Receipts distinguish the approved profile from the actual offered subset.
+Published voice requires an owned conversation and retains a bounded server
+session-end receipt; provider usage/parameters that the relay does not observe
+remain unknown. Expiry blocks new work without discarding accepted work's
+accounting or cleanup. Group-dependent unattended execution cannot use a stored
+token-claim snapshot as current authorization.
+
 ### Agent activity
 
 Activity shows observable work: searching, reading, invoking tools, being

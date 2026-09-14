@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
 from ..agents.user_agents import NAME_RE  # reuse the @mention/Cosmos-id grammar
 from .record_types import WORKFLOW_DEFINITION_KIND
@@ -139,6 +139,18 @@ class Workflow(BaseModel):
     incarnation: str | None = None
     recordKind: str = WORKFLOW_DEFINITION_KIND
     sourceVersion: AssetVersionRef | None = None
+
+    @model_serializer(mode="wrap")
+    def compatible_record(self, handler: SerializerFunctionWrapHandler):
+        value = handler(self)
+        if self.revision == 0:
+            value.pop("revision", None)
+            if "recordKind" not in self.model_fields_set:
+                value.pop("recordKind", None)
+        for name in ("incarnation", "sourceVersion"):
+            if value.get(name) is None:
+                value.pop(name, None)
+        return value
 
 
 class WorkflowCreate(BaseModel):

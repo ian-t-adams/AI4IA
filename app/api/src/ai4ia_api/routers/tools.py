@@ -17,6 +17,7 @@ from ..auth.dependencies import get_current_user
 from ..conversations.policy import resolve_conversation_policy
 from ..memory.context import MemoryContextGuard
 from ..websearch.contracts import MAX_CONTENT_CHARS, MAX_RESULTS, WEBIQ_TOOL_NAMES, tool_schema
+from ..policy.context import current_binding
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +296,13 @@ async def list_tools(
                     ownership="unknown",
                 )
             )
+    binding = current_binding()
+    if binding is not None and binding.service.enabled:
+        for item in items:
+            if not binding.service.allows_tool_snapshot(user, item.name):
+                item.available = False
+                item.selectable = False
+                item.detail = "This tool is not permitted by the current application policy."
     return ToolCatalogResponse(
         tools=sorted(items, key=lambda item: (item.source, item.label)),
         inheritedTools=list(inherited_tools),

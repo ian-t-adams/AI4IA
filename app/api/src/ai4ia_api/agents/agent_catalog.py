@@ -41,6 +41,15 @@ class AgentSpec(BaseModel):
     links: list[str] = []
     enabled: bool = True
     sourceVersion: AssetVersionRef | None = None
+    publishedModes: list[str] | None = None
+
+    @model_serializer(mode="wrap")
+    def compatible_source(self, handler: SerializerFunctionWrapHandler):
+        value = handler(self)
+        for name in ("sourceVersion", "publishedModes"):
+            if value.get(name) is None:
+                value.pop(name, None)
+        return value
 
     def summary(self) -> AgentSummary:
         return AgentSummary(
@@ -49,6 +58,7 @@ class AgentSpec(BaseModel):
             description=self.description,
             enabled=self.enabled,
             sourceVersion=self.sourceVersion,
+            publishedModes=self.publishedModes,
         )
 
 
@@ -60,31 +70,36 @@ class AgentSummary(BaseModel):
     description: str
     enabled: bool = True
     sourceVersion: AssetVersionRef | None = None
+    publishedModes: list[str] | None = None
 
     @model_serializer(mode="wrap")
     def public_projection(self, handler: SerializerFunctionWrapHandler):
         value = handler(self)
-        if self.sourceVersion is None:
-            value.pop("sourceVersion", None)
+        for name in ("sourceVersion", "publishedModes"):
+            if value.get(name) is None:
+                value.pop(name, None)
         return value
 
 
 class AgentCatalog(BaseModel):
     agents: list[AgentSpec]
+    conflicts: list[str] = []
 
     def get(self, name: str) -> AgentSpec | None:
         """Resolve an agent by name, case-insensitively (mentions are lowercased)."""
         if not name:
             return None
         key = name.lower()
+        if key in self.conflicts:
+            return None
         return next((a for a in self.agents if a.name.lower() == key), None)
 
     def enabled_agents(self) -> list[AgentSpec]:
-        return [a for a in self.agents if a.enabled]
+        return [a for a in self.agents if a.enabled and a.name.lower() not in self.conflicts]
 
     def public_list(self) -> list[AgentSummary]:
         """Enabled agents only, projected to the public summary shape."""
-        return [a.summary() for a in self.agents if a.enabled]
+        return [a.summary() for a in self.enabled_agents()]
 
 
 def _load_raw(explicit_path: str | None) -> dict:

@@ -143,6 +143,7 @@ class CodeInterpreterClient:
         self._token_provider = token_provider
         self._owns_token_provider = token_provider is None
         self._hard_quota_enabled = settings.hard_quota_enabled
+        self._group_policy_enabled = settings.group_policy_enabled
 
     async def _post(
         self, client: httpx.AsyncClient, url: str, *, surface: Surface,
@@ -150,6 +151,7 @@ class CodeInterpreterClient:
     ) -> httpx.Response:
         async with admitted_dispatch(
             surface, payload, target=url, required=self._hard_quota_enabled,
+            policy_required=self._group_policy_enabled,
         ) as admission:
             if "json" in kwargs:
                 kwargs["json"] = admission.payload

@@ -923,6 +923,9 @@ class WorkflowContractTests(unittest.TestCase):
             ({"REPORT_CAPACITY_PROFILE": "guessed"}, 1, None),
             ({"REPORT_CLAUDE_ENABLED": "guessed"}, 1, None),
             ({"REPORT_CAPACITY_PROFILE": "maximum", "REPORT_CLAUDE_ENABLED": "true"}, 0, "enabled=true"),
+            ({"REPORT_CAPACITY_PROFILE": "production"}, 0, "enabled=true"),
+            ({"REPORT_CAPACITY_PROFILE": "production", "REPORT_ENABLED": ""}, 0, "enabled=false"),
+            ({"REPORT_CAPACITY_PROFILE": "production", "REPORT_CLIENT_ID": "DePlOyEr"}, 1, None),
         ]
         cases.extend(({name: ""}, 1, None) for name in valid if name.startswith("REPORT_") and name != "REPORT_ENABLED")
         for changes, code, expected_output in cases:

@@ -148,27 +148,37 @@ async def admitted_dispatch(
     policy_required: bool = False,
 ) -> AsyncIterator[DispatchLease]:
     from ..policy.dispatch import authorize_dispatch
+    from ..policy.context import current_binding
 
     context = _current.get()
+    binding = current_binding()
+    must_freeze = (
+        policy_required or (context is not None and context.controller.enabled)
+        or (binding is not None and binding.service.enabled)
+    )
+    frozen = (
+        json.loads(json.dumps(payload, ensure_ascii=True, allow_nan=False))
+        if must_freeze else payload
+    )
     await authorize_dispatch(
         surface, deployment=deployment, required=policy_required,
         expected_owner=context.owner if context is not None else None,
         service=context.controller.policy if context is not None else None,
+        payload=frozen,
     )
     if context is None:
         if required:
             raise QuotaError("Hard quota dispatch has no authenticated owner.")
-        yield DispatchLease(payload=payload)
+        await authorize_dispatch(
+            surface, deployment=deployment, required=policy_required, payload=frozen, final=True,
+        )
+        yield DispatchLease(payload=frozen)
         return
     if required and not context.controller.enabled:
         raise QuotaError("Hard quota dispatch has incompatible coordination.")
     # Snapshot before the first policy/store await. The transport sends this
     # exact snapshot, so concurrent caller mutations cannot change an admitted
     # tool argument or model request behind its immutable digest/bound.
-    frozen = (
-        json.loads(json.dumps(payload, ensure_ascii=True, allow_nan=False))
-        if context.controller.enabled else payload
-    )
     record = await context.controller.claim(context, surface, frozen, deployment, target)
     lease = DispatchLease(reservation=record, payload=frozen)
     evidence_index = None
@@ -181,6 +191,11 @@ async def admitted_dispatch(
         if observe is not None:
             observe(pending)
     try:
+        await authorize_dispatch(
+            surface, deployment=deployment, required=policy_required,
+            expected_owner=context.owner, service=context.controller.policy,
+            payload=lease.payload, final=True,
+        )
         yield lease
     except asyncio.CancelledError:
         lease.outcome = "cancelled"

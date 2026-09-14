@@ -64,6 +64,9 @@ from ..safety import MessageSafety, merge_safety, parse_safety
 from ..logging_setup import emit_custom_event, emit_security_block
 from ..policy.context import canonical_tool_name, require_policy, tool_allowed, tool_policy_scope
 from ..policy.models import PolicyError, PolicyRequest
+from ..publishing.execution import observe_publication_offers
+from ..publishing.models import PublicationError
+from ..publishing.refs import PublicationEvidence
 from .prompt_budget import (
     TOOL_CONTEXT_RESERVE_TOKENS,
     bound_agent_context,
@@ -184,6 +187,7 @@ class AgentRunResult:
     incomplete: bool = False
     incomplete_reason: str | None = None
     model_evidence: ModelCallRecorder | None = None
+    publication: PublicationEvidence | None = None
 
 
 class DelegatedToolResult(dict[str, Any]):
@@ -413,6 +417,7 @@ async def run_agent_turn(
         tool["function"]["name"]: tool["function"] for tool in offered_tools
         if isinstance(tool.get("function"), dict) and isinstance(tool["function"].get("name"), str)
     }
+    await observe_publication_offers(contracts, list(offered_functions))
     effective_prompt_budget = prompt_budget_bytes or (
         prompt_byte_budget(
             None, dict(params or {}), default_max_tokens=_DEFAULT_MAX_OUTPUT_TOKENS
@@ -1048,9 +1053,9 @@ async def run_agent_turn(
                     ))
                     with tool_policy_scope(canonical):
                         raw_result = await handlers[name](parsed, ctx)
-                except PolicyError as exc:
+                except (PolicyError, PublicationError) as exc:
                     if await deny(
-                        name=name, safe_name=safe_name, call_id=call_id, reason=exc.decision.reason,
+                        name=name, safe_name=safe_name, call_id=call_id, reason=str(exc),
                     ):
                         force_final = True
                     continue
@@ -1209,9 +1214,9 @@ async def run_agent_turn(
             started = time.monotonic()
             try:
                 raw_result = await executor.execute(name, parsed, ctx)
-            except PolicyError as exc:
+            except (PolicyError, PublicationError) as exc:
                 if await deny(
-                    name=name, safe_name=safe_name, call_id=call_id, reason=exc.decision.reason,
+                    name=name, safe_name=safe_name, call_id=call_id, reason=str(exc),
                 ):
                     force_final = True
                 continue

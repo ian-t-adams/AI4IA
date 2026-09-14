@@ -15,6 +15,10 @@ import json
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _capacity_evidence import EvidenceError
+from _production_capacity import parse_policy
+
 HERE = Path(__file__).resolve().parent
 MODELS = HERE.parent / "infra" / "models.json"
 
@@ -33,6 +37,10 @@ def main() -> int:
     # to route to. The deployment NAME carries the skuShort token, so the two
     # stay distinct; `seen_names` below is what actually enforces that.
     seen_triples: set[tuple[str, str, str]] = set()
+    try:
+        parse_policy(data)
+    except EvidenceError as exc:
+        errors.append(f"production capacity policy: {exc.code}")
 
     for model in data["catalog"]:
         name = model["name"]

@@ -2,27 +2,31 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from azure.core.exceptions import AzureError
 
 from ..auth.base import AuthenticatedUser
+from ..auth.identity import identity_is_admin
+from ..auth.userid import internal_user_id
 from ..catalog import DeploymentOption, ModelCatalog
 from ..entitlements.models import Entitlement, EntitlementLimits
 from ..entitlements.service import EntitlementService
 from .models import (
-    LIMIT_FIELDS, ClaimRule, DomainPolicy, EffectivePolicy, PolicyConfig, PolicyDecision,
+    ADMIN_OPERATIONS, DOCUMENT_TOOL_FEATURES, LIMIT_FIELDS,
+    ClaimRule, DomainPolicy, EffectivePolicy, PolicyConfig, PolicyDecision,
     PolicyDomain, PolicyError, PolicyRequest, ResolvedDomain, SpendMapping,
-    parse_policy_config, policy_digest,
+    RestrictedProfile, parse_policy_config, policy_digest,
 )
 
 if TYPE_CHECKING:
     from ..config import Settings
 
 _READ_FAILURES = (AzureError, OSError, ValueError, RuntimeError)
+CanaryDispatchGuard = Callable[[str, str, dict[str, Any]], Awaitable[bool]]
 
 
 def minimum_limits(base: Entitlement, restrictions: Iterable[EntitlementLimits]) -> Entitlement:
@@ -57,7 +61,13 @@ def _matched(rule: ClaimRule | SpendMapping, user: AuthenticatedUser | None) -> 
 
 def _complete(rule: ClaimRule | SpendMapping, user: AuthenticatedUser | None) -> bool:
     evidence = user.policy_claims if user is not None and user.provider == "entra" else None
-    return evidence is not None and getattr(evidence, f"{rule.claim}_complete")
+    if evidence is None or not getattr(evidence, f"{rule.claim}_complete"):
+        return False
+    negative = (
+        rule.limits.disabled or rule.limits.has_any_limit
+        if isinstance(rule, SpendMapping) else bool(rule.deny) or rule.restrict is not None
+    )
+    return not negative or getattr(evidence, f"{rule.claim}_present")
 
 
 def _compose(name: str, domain: DomainPolicy, user: AuthenticatedUser | None) -> ResolvedDomain:
@@ -84,19 +94,54 @@ def _compose(name: str, domain: DomainPolicy, user: AuthenticatedUser | None) ->
 class PolicyService:
     def __init__(
         self, settings: Settings, *, catalog: ModelCatalog, entitlements: EntitlementService,
+        canary_guard_provider: Callable[[], CanaryDispatchGuard | None] | None = None,
+        evaluation_guard_provider: Callable[[], CanaryDispatchGuard | None] | None = None,
+        realtime_guard_provider: Callable[[], CanaryDispatchGuard | None] | None = None,
     ) -> None:
         self.settings = settings
         self.catalog = catalog
         self.entitlements = entitlements
         self._binding = object()
+        self._canary_guard_provider = canary_guard_provider
+        self._evaluation_guard_provider = evaluation_guard_provider
+        self._realtime_guard_provider = realtime_guard_provider
         self._raw: str | None = None
         self._config: PolicyConfig | None = None
-        if self.enabled:
+        if self.enabled or self.settings.group_policy_json:
             self._configuration()
 
     @property
     def enabled(self) -> bool:
         return self.settings.group_policy_enabled
+
+    def canary_owner(self, *, cached: bool = False) -> str | None:
+        return self.profile_owner("monitor-canary", cached=cached)
+
+    def profile_owner(self, profile: RestrictedProfile, *, cached: bool = False) -> str | None:
+        # Pausing group evaluation must not turn a still-configured restricted
+        # identity into an ordinary unrestricted caller.
+        config = self._config if cached or not self.enabled else self._configuration()
+        marker = config.actor_for(profile) if config is not None else None
+        if marker is None:
+            return None
+        return internal_user_id(
+            provider="entra", issuer=f"https://login.microsoftonline.com/{marker.tenantId}/v2.0",
+            subject=marker.subject, tenant_id=marker.tenantId,
+        )
+
+    def restricted_profile(self, owner: str, *, cached: bool = False) -> RestrictedProfile | None:
+        for profile in ("monitor-canary", "authored-synthetic-evaluation", "realtime-setup-canary"):
+            if owner == self.profile_owner(profile, cached=cached):
+                return profile
+        return None
+
+    def dispatch_guard(self, profile: RestrictedProfile) -> CanaryDispatchGuard | None:
+        provider = {
+            "monitor-canary": self._canary_guard_provider,
+            "authored-synthetic-evaluation": self._evaluation_guard_provider,
+            "realtime-setup-canary": self._realtime_guard_provider,
+        }[profile]
+        return provider() if provider is not None else None
 
     def _configuration(self) -> PolicyConfig:
         raw = self.settings.group_policy_json or ""
@@ -134,11 +179,18 @@ class PolicyService:
     def allows_tool_snapshot(self, user: AuthenticatedUser | None, name: str) -> bool:
         if not self.enabled:
             return True
-        configured = self._configuration().domains.get("tools")
-        if configured is None:
-            return True
-        domain = _compose("tools", configured, user)
-        return not domain.invalid and not domain.unavailable and name in domain.allowed
+        config = self._configuration()
+        configured = config.domains.get("tools")
+        if configured is not None:
+            domain = _compose("tools", configured, user)
+            if domain.invalid or domain.unavailable or name not in domain.allowed:
+                return False
+        feature = DOCUMENT_TOOL_FEATURES.get(name)
+        documents = config.domains.get("documents")
+        if feature is not None and documents is not None:
+            domain = _compose("documents", documents, user)
+            return not domain.invalid and not domain.unavailable and feature in domain.allowed
+        return True
 
     async def resolve(
         self, user: AuthenticatedUser, *, expected_owner: str | None = None,
@@ -159,7 +211,11 @@ class PolicyService:
             user=user, binding=self._binding,
         )
         if not self.enabled:
-            return empty
+            try:
+                limits = await self.entitlements.get_for_admission(owner)
+            except _READ_FAILURES:
+                return replace(empty, limits_unavailable=True)
+            return replace(empty, limits=limits)
         config = self._configuration()
         limits = empty.limits
         unavailable = False
@@ -229,11 +285,23 @@ class PolicyService:
         if policy.binding is not self._binding:
             return PolicyDecision("unavailable", "policy_unavailable")
         if not self.enabled:
+            if self.restricted_profile(policy.owner_id, cached=True) is not None:
+                return PolicyDecision("unavailable", "canary_policy_unconfigured")
             return PolicyDecision("allow", "allowed")
         identity = self.identity_decision(policy)
         if identity is not None:
             return identity
         operation = request.operation
+        profile = self.restricted_profile(policy.owner_id)
+        if profile == "realtime-setup-canary" and operation != "model.invoke":
+            return PolicyDecision("deny", "canary_policy_incompatible")
+        if self.restricted_profile(policy.owner_id) is not None and (
+            policy.user is None or operation in {"tool.invoke", "document.process", "document.compute"}
+        ):
+            return PolicyDecision(
+                "unavailable" if policy.user is None else "deny",
+                "reauthentication_required" if policy.user is None else "canary_policy_incompatible",
+            )
         if operation.startswith("admin."):
             return self._domain(policy, "admin", operation, legacy=request.legacy_admin)
         if operation.startswith("publication."):
@@ -250,11 +318,18 @@ class PolicyService:
             result = self._domain(policy, "tools", request.tool_name)
             if not result.allowed:
                 return result
+            feature = DOCUMENT_TOOL_FEATURES.get(request.tool_name)
+            if feature is not None:
+                result = self._domain(policy, "documents", feature)
+                if not result.allowed:
+                    return result
         if operation == "model.invoke":
             entry = self.catalog.get(request.model_id or "")
             deployment = request.deployment
             if entry is None or deployment is None or deployment not in self.catalog.eligible_options(entry):
                 return PolicyDecision("deny", "model_unavailable")
+            if profile == "realtime-setup-canary" and entry.category != "realtime":
+                return PolicyDecision("deny", "canary_policy_incompatible")
             for domain, value in (("models", entry.category), ("zones", deployment.residency)):
                 result = self._domain(policy, domain, value)
                 if not result.allowed:
@@ -307,3 +382,129 @@ class PolicyService:
         decision = await self.authorize(policy, request)
         if not decision.allowed:
             raise PolicyError(decision)
+
+    async def canary_probe(
+        self, user: AuthenticatedUser, model_id: str, option: DeploymentOption,
+    ) -> PolicyDecision:
+        return await self.restricted_probe(user, model_id, option, "monitor-canary")
+
+    async def evaluation_probe(
+        self, user: AuthenticatedUser, model_id: str, option: DeploymentOption,
+    ) -> PolicyDecision:
+        return await self.restricted_probe(user, model_id, option, "authored-synthetic-evaluation")
+
+    async def realtime_canary_probe(
+        self, user: AuthenticatedUser, model_id: str, option: DeploymentOption,
+    ) -> PolicyDecision:
+        return await self.restricted_probe(user, model_id, option, "realtime-setup-canary")
+
+    async def restricted_probe(
+        self, user: AuthenticatedUser, model_id: str, option: DeploymentOption,
+        profile: RestrictedProfile,
+    ) -> PolicyDecision:
+        """A readiness restriction, never an identity grant or execution token."""
+        if not self.enabled:
+            return PolicyDecision("unavailable", "canary_policy_unconfigured")
+        config = self._configuration()
+        expected = config.actor_for(profile)
+        if expected is None:
+            return PolicyDecision("unavailable", "canary_policy_unconfigured")
+        if profile == "realtime-setup-canary" and (
+            not self.settings.realtime_enabled or self.settings.realtime_protocol.value != "ga"
+            or "azure_openai" not in self.settings.voice_provider_allowlist_list
+        ):
+            return PolicyDecision("unavailable", "feature_disabled")
+        if (
+            user.provider != "entra" or user.tenant_id != expected.tenantId
+            or user.subject != expected.subject
+            or user.internal_user_id != self.profile_owner(profile)
+        ):
+            return PolicyDecision("deny", "owner_mismatch")
+        actor = await self.resolve(user)
+        envelope = self._canary_envelope(actor, profile)
+        if not envelope.allowed:
+            return envelope
+        request = PolicyRequest("model.invoke", model_id=model_id, deployment=option)
+        decision = await self.authorize(actor, request)
+        if not decision.allowed:
+            return decision
+        latest = await self.resolve(user)
+        if latest.digest != actor.digest or latest.limits != actor.limits:
+            return PolicyDecision("unavailable", "canary_policy_incompatible")
+        envelope = self._canary_envelope(latest, profile)
+        return self.decide(latest, request) if envelope.allowed else envelope
+
+    def _canary_envelope(
+        self, actor: EffectivePolicy, profile: RestrictedProfile = "monitor-canary",
+    ) -> PolicyDecision:
+        user = actor.user
+        config = self._configuration()
+        expected = config.actor_for(profile)
+        if user is None or expected is None or (
+            user.provider != "entra" or user.tenant_id != expected.tenantId
+            or user.subject != expected.subject
+        ):
+            return PolicyDecision("deny", "owner_mismatch")
+        identity = self.identity_decision(actor)
+        if identity is not None:
+            return identity
+        if user.policy_claims is None or not (
+            user.policy_claims.roles_complete and user.policy_claims.groups_complete
+        ):
+            return PolicyDecision("unavailable", "claim_evidence_invalid")
+        if identity_is_admin(user, self.settings) or any(
+            self._domain(actor, "admin", operation).allowed for operation in ADMIN_OPERATIONS
+        ):
+            return PolicyDecision("deny", "canary_policy_incompatible")
+        if any(
+            self._domain(actor, "publication", operation).allowed for operation in ("submit", "review")
+        ):
+            return PolicyDecision("deny", "canary_policy_incompatible")
+        for name in ("models", "tools", "documents"):
+            domain = actor.domains.get(name)
+            if domain is None or domain.invalid or domain.unavailable:
+                return PolicyDecision("unavailable", "canary_policy_incompatible")
+        if actor.domains["tools"].allowed or actor.domains["documents"].allowed:
+            return PolicyDecision("deny", "canary_policy_incompatible")
+        categories = {entry.category for entry in self.catalog.models}
+        if not actor.domains["models"].allowed < categories:
+            return PolicyDecision("deny", "canary_policy_incompatible")
+        if profile == "realtime-setup-canary" and actor.domains["models"].allowed != {"realtime"}:
+            return PolicyDecision("deny", "canary_policy_incompatible")
+        if actor.limits_unavailable:
+            return PolicyDecision("unavailable", "policy_unavailable")
+        if not any(getattr(actor.limits, name) is not None for name in LIMIT_FIELDS[:-1]) or not self.entitlements.enabled:
+            return PolicyDecision("deny", "canary_policy_incompatible")
+        if self.settings.hard_quota_enabled:
+            return PolicyDecision("unavailable", "policy_surface_unsupported")
+        return self.consumption_state(actor)
+
+    async def guard_canary_dispatch(
+        self, actor: EffectivePolicy, *, surface: str, deployment: str | None,
+        payload: dict[str, Any], bound_required: bool = False,
+        profile: RestrictedProfile = "monitor-canary",
+    ) -> None:
+        current_owner = self.profile_owner(profile)
+        if not bound_required and actor.owner_id != current_owner:
+            return
+        if actor.owner_id != current_owner or actor.user is None:
+            raise PolicyError(PolicyDecision("unavailable", "canary_policy_unconfigured"))
+        expected_surface = "realtime" if profile == "realtime-setup-canary" else "chat"
+        if surface != expected_surface or deployment is None:
+            raise PolicyError(PolicyDecision("deny", "canary_policy_incompatible"))
+        envelope = self._canary_envelope(actor, profile)
+        if not envelope.allowed:
+            raise PolicyError(envelope)
+        guard = self.dispatch_guard(profile)
+        if guard is None:
+            raise PolicyError(PolicyDecision("unavailable", "canary_policy_incompatible"))
+        if await guard(actor.owner_id, deployment, payload) is not True:
+            raise PolicyError(PolicyDecision("deny", "canary_policy_incompatible"))
+        latest = await self.resolve(actor.user)
+        if (
+            latest.digest != actor.digest or latest.limits != actor.limits
+            or self.profile_owner(profile) != actor.owner_id
+        ):
+            raise PolicyError(PolicyDecision("unavailable", "canary_policy_incompatible"))
+        if self.identity_decision(latest) is not None:
+            raise PolicyError(PolicyDecision("unavailable", "reauthentication_required"))

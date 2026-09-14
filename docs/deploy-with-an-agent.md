@@ -32,6 +32,7 @@ regenerating catalogs, and reporting findings.
 | Any DNS or custom-domain change | Affects live traffic and certificate issuance. |
 | `scripts/teardown.ps1`, `scripts/purge-soft-deleted.ps1` | Destroys data. |
 | Editing `infra/models.json` capacity upward | Can consume the subscription's entire model quota. |
+| Assigning production criticality, bounds or reserves; selecting `production` | These are owner decisions, not an inference from recent usage. Offline recommendations never authorize adoption or rollout. |
 
 **Never do these.** Do not commit secrets. Do not put a value the human gave you
 into a file — repository variables and environment secrets are set through
@@ -120,6 +121,14 @@ python scripts/gen-gateway-policy.py --check
 
 The `--check` runs must exit 0. The same checks run as a non-optional `azd`
 preprovision hook, so stale generated output fails the deployment.
+
+Production selection additionally requires a reviewed catalog policy and explicit
+capacities. Missing policy refuses before Azure reads, and the normal preflight
+rechecks asserted pools/reserves before ARM. Do not set the profile or invent its
+values to make a gate pass. The
+[offline recommendation workflow](runbooks/deploy-to-azure.md#production-capacity-policy-and-offline-recommendations)
+can analyze an already-approved saved report without Azure access; criticality,
+reserve adoption and rollout still require the owner.
 
 ## Phase 2 — Deployment identity and OIDC
 

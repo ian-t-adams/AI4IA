@@ -20,6 +20,8 @@ class ValidatedPolicyClaims(BaseModel):
     groups: tuple[str, ...] = ()
     roles_complete: bool = True
     groups_complete: bool = True
+    roles_present: bool = False
+    groups_present: bool = False
     expires_at: int | None = None
 
 
@@ -61,5 +63,6 @@ def verified_policy_claims(claims: Mapping[str, Any]) -> ValidatedPolicyClaims:
         roles_complete = groups_complete = False
     return ValidatedPolicyClaims(
         roles=roles, groups=groups, roles_complete=roles_complete,
-        groups_complete=groups_complete, expires_at=expiry,
+        groups_complete=groups_complete, roles_present="roles" in claims,
+        groups_present="groups" in claims, expires_at=expiry,
     )

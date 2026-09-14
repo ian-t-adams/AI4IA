@@ -67,6 +67,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 import _model_retirement as retirement
+import _capacity_evidence as capacity_evidence
+from _production_capacity import PROFILES, bind_scope, check_live_pools, effective_capacity, parse_policy
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_FILE = ROOT / "infra" / "models.json"
@@ -148,6 +150,10 @@ def catalog_requirements(
     capacity_profile: str = "baseline",
 ) -> dict[str, list[dict[str, Any]]]:
     """Group desired deployment records by region, including their exact ARM names."""
+    if capacity_profile not in PROFILES:
+        raise capacity_evidence.EvidenceError("invalid_capacity_profile")
+    if capacity_profile == "production":
+        parse_policy(models, required=True, include_anthropic=include_anthropic)
     naming = models.get("naming") or {}
     pattern = str(
         naming.get("pattern")
@@ -177,11 +183,7 @@ def catalog_requirements(
                     "format": entry.get("format", "OpenAI"),
                     "sku": sku,
                     "version": str(deployment.get("version", "")),
-                    "capacity": (
-                        deployment.get("maxCapacity", deployment.get("capacity", 0))
-                        if capacity_profile == "maximum"
-                        else deployment.get("capacity", 0)
-                    ),
+                    "capacity": effective_capacity(deployment, capacity_profile),
                     "capacityPool": (
                         deployment.get("maxCapacityPool")
                         if capacity_profile == "maximum"
@@ -1161,7 +1163,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--capacity-profile",
-        choices=("baseline", "maximum"),
+        choices=PROFILES,
         default=(
             os.environ.get("AI4IA_MODEL_CAPACITY_PROFILE") or "baseline"
         ).strip().casefold(),
@@ -1181,10 +1183,30 @@ def main() -> int:
 
     catalog_bytes = MODELS_FILE.read_bytes()
     models = json.loads(catalog_bytes)
-    if args.capacity_profile not in {"baseline", "maximum"}:
-        parser.error("capacity profile must be baseline or maximum")
+    if args.capacity_profile not in PROFILES:
+        parser.error("capacity profile must be baseline, production or maximum")
     if args.region and set(args.region) - set(models["regions"]):
         parser.error("--region must name a region in infra/models.json")
+    claude_enabled = (
+        os.environ.get("AI4IA_CLAUDE_ENABLED") or ""
+    ).strip().casefold() in {"1", "true", "yes", "on"}
+    environment_name = (args.environment_name or os.environ.get("AZURE_ENV_NAME") or "").strip()
+    resource_group = (args.resource_group or os.environ.get("AZURE_RESOURCE_GROUP") or "").strip()
+    if not resource_group and environment_name:
+        resource_group = f"rg-{(os.environ.get('AI4IA_WORKLOAD') or 'ai4ia').strip()}-{environment_name}"
+    try:
+        policy = parse_policy(
+            models, required=args.capacity_profile == "production", include_anthropic=claude_enabled,
+        )
+        if args.capacity_profile == "production":
+            if policy is None:
+                raise capacity_evidence.EvidenceError("production_policy_not_configured")
+            bind_scope(policy, os.environ.get("AZURE_SUBSCRIPTION_ID", ""), resource_group, environment_name)
+            if not args.retirement_report and (args.skip_quota or args.region):
+                raise capacity_evidence.EvidenceError("production_requires_all_pool_quota_reads")
+    except capacity_evidence.EvidenceError as exc:
+        print(f"ERROR: production capacity preflight: {exc.code}", file=sys.stderr)
+        return 2 if args.retirement_report else 1
     if args.retirement_report:
         return run_retirement_report(args, models, catalog_bytes)
     public = retirement.load_public_observations(args.public_evidence, datetime.now(UTC))
@@ -1192,17 +1214,12 @@ def main() -> int:
     account_label = f"{account['name']} ({account['id']})" if account["name"] else account["id"]
     print(f"Checking Azure subscription {account_label}.", flush=True)
 
-    claude_enabled = (
-        os.environ.get("AI4IA_CLAUDE_ENABLED") or ""
-    ).strip().casefold() in {"1", "true", "yes", "on"}
     by_region = catalog_requirements(
         models,
         include_anthropic=claude_enabled,
         capacity_profile=args.capacity_profile,
     )
-    regions = sorted(set(args.region or by_region))
-    environment_name = (args.environment_name or os.environ.get("AZURE_ENV_NAME") or "").strip()
-    resource_group = (args.resource_group or os.environ.get("AZURE_RESOURCE_GROUP") or "").strip()
+    regions = sorted(models["regions"] if args.capacity_profile == "production" else set(args.region or by_region))
     existing_deployments, inventory_warnings = existing_deployment_inventory(
         models,
         resource_group=resource_group,
@@ -1225,9 +1242,10 @@ def main() -> int:
     total_errors = 0
     total_warnings = 0
     merged_quota: dict[str, dict[str, Any]] = {}
+    production_quotas: dict[str, list[dict]] = {}
     for region in regions:
         required = by_region.get(region, [])
-        if not required:
+        if not required and args.capacity_profile != "production":
             print(f"{region}: no deployments in the catalog; skipping.")
             continue
         print(f"Checking {len(required)} deployments in {region} ...", flush=True)
@@ -1254,7 +1272,13 @@ def main() -> int:
             else:
                 print(f"  RETIREMENT: {detail}")
         if not args.skip_quota:
-            quota_index = index_quota(quota_usage(region))
+            raw_quota = quota_usage(region)
+            if args.capacity_profile == "production":
+                try:
+                    production_quotas[region] = capacity_evidence.parse_quota({"value": raw_quota})
+                except capacity_evidence.EvidenceError as exc:
+                    errors.append(f"Production quota evidence is unavailable: {exc.code}")
+            quota_index = index_quota(raw_quota) if args.capacity_profile != "production" else {}
             # Counters are subscription-wide and identical in every region, so
             # merging is safe; a region that does not offer a model can still be
             # missing its counter, which is why this merges instead of picking one.
@@ -1262,7 +1286,7 @@ def main() -> int:
                 merged_quota.setdefault(key, entry)
             quota_errors, quota_warnings = evaluate_quota(
                 required, quota_index, existing_deployments
-            )
+            ) if args.capacity_profile != "production" else ([], [])
             errors += quota_errors
             warnings += quota_warnings
         # Findings go to stdout, not stderr. They are the report -- and when the
@@ -1275,10 +1299,27 @@ def main() -> int:
         for error in errors:
             print(f"  ERROR: {error}")
         if not errors and not warnings:
-            scope = "available" if args.skip_quota else "available and within quota"
+            scope = "available; asserted pool check follows" if args.capacity_profile == "production" else (
+                "available" if args.skip_quota else "available and within quota"
+            )
             print(f"  all {len(required)} deployments are deployable ({scope}).")
         total_errors += len(errors)
         total_warnings += len(warnings)
+
+    if args.capacity_profile == "production" and policy is not None:
+        try:
+            for pool in check_live_pools(
+                policy, existing_deployments, production_quotas, include_anthropic=claude_enabled,
+            ):
+                print(
+                    f"Production pool {pool['id']} [{pool['counter']}, {pool['scope']}, "
+                    f"{pool['unit']}; operator_asserted]: selected {pool['proposedCatalogAllocation']}; "
+                    f"headroom {pool['headroomAfter']}; reserved {sum(pool['reserve'].values())}; "
+                    f"unreserved {pool['unreservedHeadroomAfter']}. Platform availability is not guaranteed."
+                )
+        except capacity_evidence.EvidenceError as exc:
+            print(f"ERROR: production capacity preflight: {exc.code}")
+            total_errors += 1
 
     if merged_quota:
         # Deliberately evaluated over the whole catalog, not just `regions`: the

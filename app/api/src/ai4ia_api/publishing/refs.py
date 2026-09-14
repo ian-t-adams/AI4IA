@@ -20,3 +20,16 @@ def publication_handle(asset_id: str) -> str:
     # 112 bits fit the existing 32-character mention grammar; collision checks
     # remain mandatory rather than treating a truncated hash as authority.
     return f"pub.{asset_id[:28]}"
+
+
+class PublicationEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: AssetVersionRef
+    approvedProfileDigest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    effectiveSubsetDigest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    approvalDigest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    mode: str = Field(min_length=1, max_length=32)
+    scope: str = Field(min_length=1, max_length=64)
+    narrowing: tuple[str, ...] = Field(default=(), max_length=8)
+    exclusions: tuple[str, ...] = Field(default=(), max_length=8)
