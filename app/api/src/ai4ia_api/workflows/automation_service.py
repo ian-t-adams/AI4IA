@@ -599,13 +599,29 @@ class WorkflowAutomationService:
             await self.finish_handle(owner, run_id)
             return {"terminal": True, "status": "cancelled"}
         if state.status in TERMINAL_STATES:
-            if state.bundle is not None and result.result.receipt is not None:
+            same_operation = (
+                state.step == control.current.step
+                and state.operationId == control.current.operationId
+                and state.turn == control.current.turn
+            )
+            if (
+                state.bundle is not None and result.result.receipt is not None
+                and (
+                    (state == control.current and message == control.message)
+                    or (state.status in {"cancelled", "timed_out", "denied", "expired"} and same_operation)
+                )
+            ):
                 late = state.model_copy(update={
                     "currentResult": result.result, "currentUsage": result.usage,
                 }, deep=True)
                 state, _ = await self.commit(state, message, late)
             await self.finish_handle(owner, run_id)
             return {"terminal": True, "status": state.status}
+        if state != control.current or message != control.message:
+            return {
+                "terminal": False, "status": state.status,
+                "waitUntil": state.draft.expiresAt.isoformat() if state.draft else state.deadline.isoformat(),
+            }
         if state.status == "reauthentication_required":
             return {"terminal": False, "status": state.status, "waitUntil": state.deadline.isoformat()}
         updated = state.model_copy(deep=True)

@@ -221,6 +221,8 @@ class WorkflowSchedule(AutomationModel):
     scheduleId: str
     generation: int = Field(ge=1, strict=True)
     revision: int = Field(ge=0, strict=True)
+    lastWriteKey: str = Field(min_length=1, max_length=128)
+    lastWriteDigest: str = Field(pattern=SHA256_PATTERN)
     enabled: bool
     status: Literal["pending", "active", "acceptance_unknown", "paused", "completed", "disabled"]
     reason: str | None

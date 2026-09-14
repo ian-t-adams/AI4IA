@@ -9,7 +9,7 @@ from ..request_constraints import automatic_memory_allowed, constrain_request, t
 from .automation_access import WorkflowSelection
 from .automation_common import (
     MAX_SCHEDULES, MAX_SCHEDULE_HISTORY, MISSED_GRACE_SECONDS,
-    AutomationError, ExecutionLimits, request_time, stable_id,
+    AutomationError, ExecutionLimits, digest, request_time, stable_id,
 )
 from .automation_models import ScheduleHistory, WorkflowSchedule
 from .automation_service import WorkflowAutomationService
@@ -52,9 +52,19 @@ class WorkflowScheduleService:
         )
         if not text.strip() or len(text) > 8000:
             raise AutomationError("invalid_input", "Schedule input must contain 1-8000 characters.", status=422)
+        write_digest = digest({
+            "selection": selection.model_dump(mode="json"), "input": text.strip(),
+            "bundle": bundle.bundleDigest, "limits": limits.model_dump(mode="json"),
+            "rule": rule.model_dump(mode="json"), "expectedRevision": expected_revision,
+            "tools": tools_allowed(), "automaticMemory": automatic_memory_allowed(),
+        })
         for _ in range(3):
             before_owner = await automation.owner(owner)
             before = await self.store.read_schedule(owner, identifier)
+            if before is not None and before.value.lastWriteKey == key:
+                if before.value.lastWriteDigest != write_digest:
+                    raise AutomationError("schedule_changed", "The request key is bound to a different schedule.")
+                return await self.ensure_started(before.value)
             if schedule_id is not None and (before is None or before.value.revision != expected_revision):
                 raise AutomationError("schedule_changed", "Reload the schedule before editing it.")
             if before is not None and schedule_id is None:
@@ -76,6 +86,7 @@ class WorkflowScheduleService:
                 id=self.store.schedule_prefix + identifier, userId=owner,
                 recordKind=self.store.schedule_kind, scheduleId=identifier,
                 generation=generation, revision=before.value.revision + 1 if before else 0,
+                lastWriteKey=key, lastWriteDigest=write_digest,
                 enabled=True, status="pending", reason=None, bundle=bundle,
                 input=text.strip(), limits=limits, rule=rule,
                 allowTools=tools_allowed(), allowAutomaticMemory=automatic_memory_allowed(),

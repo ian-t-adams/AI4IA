@@ -100,3 +100,23 @@ def test_unadmitted_pending_slot_still_obeys_missed_grace(client):
     current = client.portal.call(schedules.list, user.internal_user_id)[0]
     assert current.history[0].outcome == "missed"
     assert len(automation.host.started) == 1 and not calls
+
+
+def test_edit_retries_return_the_exact_committed_generation(client):
+    automation, schedules, user, saved, _, _ = prepare(client, daily=True)
+    key = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z") + "~" + "e" * 32
+    write = partial(
+        schedules.save, user, WorkflowSelection(name="flow", model="gpt-5.4"), "Revised input.",
+        saved.limits, saved.rule, key, schedule_id=saved.scheduleId, expected_revision=saved.revision,
+    )
+    first = client.portal.call(write)
+    assert first.generation == 2
+    assert client.portal.call(write) == first
+    assert client.portal.call(write) == first
+    from ai4ia_api.workflows.automation_common import AutomationError
+
+    with pytest.raises(AutomationError, match="different schedule"):
+        client.portal.call(partial(
+            schedules.save, user, WorkflowSelection(name="flow", model="gpt-5.4"), "Changed again.",
+            saved.limits, saved.rule, key, schedule_id=saved.scheduleId, expected_revision=saved.revision,
+        ))

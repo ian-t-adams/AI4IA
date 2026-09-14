@@ -365,3 +365,60 @@ def test_real_workflow_scope_blocks_ambient_mutation_even_under_a_safe_tool_labe
     records = client.portal.call(storage.search, user.internal_user_id, [1.0, 0.0], 10)
     assert len(records) == (0 if safe else 1)
     assert result["status"] == ("failed" if safe else "completed")
+
+
+@pytest.mark.parametrize("overlap", [False, True])
+def test_old_pause_activity_cannot_clear_the_resumed_activity_lease(client, monkeypatch, overlap):
+    from dataclasses import replace
+    from ai4ia_api.workflows import automation_service
+
+    service, calls, sent = install(client, gated=True)
+    user, run = begin(client, service)
+    original_step = automation_service.run_workflow_step
+
+    async def race():
+        paused, release_pause = asyncio.Event(), asyncio.Event()
+        executed, release_tool = asyncio.Event(), asyncio.Event()
+
+        async def delayed_step(*args, **kwargs):
+            result = await original_step(*args, **kwargs)
+            if result.paused:
+                paused.set()
+                await release_pause.wait()
+            return result
+
+        definition = client.app.state.tool_executor.get("send")
+
+        async def delayed_tool(arguments, ctx):
+            result = await definition.handler(arguments, ctx)
+            executed.set()
+            await release_tool.wait()
+            return result
+
+        monkeypatch.setattr(automation_service, "run_workflow_step", delayed_step)
+        client.app.state.tool_executor._defs["send"] = replace(definition, handler=delayed_tool)
+        first = asyncio.create_task(service.advance(user.internal_user_id, run.runId))
+        await paused.wait()
+        if not overlap:
+            release_pause.set()
+            await first
+        state, _ = await service.load(user.internal_user_id, run.runId)
+        reviewed, grant = await service.review(user.internal_user_id, run.runId, state.draft.id, user)
+        await service.decide(
+            user.internal_user_id, run.runId, state.draft.id, user=user, decision="approve",
+            request_id=reviewed.draft.challenge.id, grant=grant,
+        )
+        second = asyncio.create_task(service.advance(user.internal_user_id, run.runId))
+        await executed.wait()
+        before, _ = await service.load(user.internal_user_id, run.runId)
+        release_pause.set()
+        await first
+        after, _ = await service.load(user.internal_user_id, run.runId)
+        release_tool.set()
+        final = await second
+        return before, after, final
+
+    before, after, final = client.portal.call(race)
+    assert before.leaseId is not None and after.leaseId == before.leaseId
+    assert final["status"] == "completed"
+    assert sent == ["hello"] and len(calls) == 2
