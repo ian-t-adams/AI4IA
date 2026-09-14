@@ -65,7 +65,7 @@ def monetary(client, wire, request):
     return service, verifier, wire
 
 
-def start(client, *, limit=140, steps=1):
+def start(client, *, limit=140, steps=1, key_time=None):
     assert client.post("/api/workflows", json={
         "name": "priced", "steps": [{"agent": "testleaf", "instruction": "{input}"} for _ in range(steps)],
     }).status_code == 201
@@ -76,7 +76,7 @@ def start(client, *, limit=140, steps=1):
             "spendMode": "usd_app_meter", "maxSpendMicroUsd": limit, "maxOutputTokens": 20,
             "maxToolCalls": 0,
         },
-        "idempotencyKey": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z") + "~" + uuid4().hex,
+        "idempotencyKey": (key_time or datetime.now(timezone.utc)).isoformat().replace("+00:00", "Z") + "~" + uuid4().hex,
     }
     result = client.post("/api/workflows/automation/runs", json=body)
     assert result.status_code == 202, result.text
@@ -622,4 +622,40 @@ def test_frozen_monetary_bounds_survive_stream_proof_unbinding_and_foreign_close
         assert result["status"] == "completed", result
         assert account.settledMicroUsd == 7 and account.heldMicroUsd == 0
     assert client.portal.call(service.advance, owner, run_id)["terminal"]
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+def test_key_horizon_retirement_allows_unrelated_admission_but_refuses_stale_replay(client, monetary, unknown):
+    service, _, (sent, response, _) = monetary
+    key_time = datetime.now(timezone.utc) - timedelta(minutes=1)
+    owner, run_id, original = start(client, key_time=key_time)
+    if unknown:
+        def incomplete(request):
+            result = response_for("chat", request).json()
+            result["usage"] = None
+            return httpx.Response(200, json=result)
+        response[0] = incomplete
+    assert client.portal.call(service.advance, owner, run_id)["terminal"]
+    old = client.portal.call(service.owner, owner).value.runs[run_id]
+    current = key_time + timedelta(days=30, seconds=30)
+    assert key_time < current - timedelta(days=30) <= old.createdAt
+    set_clock(service, current)
+    assert client.post("/api/workflows", json={
+        "name": "unrelated", "steps": [{"agent": "testleaf", "instruction": "{input}"}],
+    }).status_code == 201
+    fresh = {
+        **original, "selection": {"name": "unrelated", "model": "fixture-text"},
+        "limits": {"spendMode": "no_hard_dollar_cap"},
+        "idempotencyKey": current.isoformat().replace("+00:00", "Z") + "~" + uuid4().hex,
+    }
+    admitted = client.post("/api/workflows/automation/runs", json=fresh)
+    assert admitted.status_code == 202, admitted.text
+    stale = client.post("/api/workflows/automation/runs", json=original)
+    assert stale.status_code == 409 and "recovery horizon" in stale.text
+    rows = client.portal.call(service.owner, owner).value
+    assert admitted.json()["runId"] in rows.runs
+    assert (run_id in rows.runs) is unknown
+    if unknown:
+        assert rows.runs[run_id].money == old.money and rows.runs[run_id].money.heldMicroUsd == 140
     assert len(sent) == 1

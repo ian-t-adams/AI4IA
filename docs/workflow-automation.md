@@ -186,7 +186,9 @@ Escaped JSON capacity, including SDK separators and future settlement fields,
 is reserved for every admitted monetary transition. Incomplete money records do
 not deserialize as empty accounts. The existing thirty-day replay floor permits
 retiring a fully settled, delivered, inactive run; it never retires unresolved
-money. New per-run accounting does not enroll old histories, bootstrap an owner
+money. Selection and validation use the same invocation-key timestamp, not a
+later run creation time. A valid unrelated admission is not blocked by an
+ineligible historical row. New per-run accounting does not enroll old histories, bootstrap an owner
 hard balance, or relax the separate hard-quota durable/nonlocal refusals.
 
 This ledger and quote engine do not by themselves complete all monetary
@@ -236,6 +238,11 @@ Four active runs, row limits, escaped byte budgets and reserved transition space
 bound coordination. Missing or malformed required state fails closed; there is
 no empty-state reset or automatic unknown-hold cleanup. A full state is
 unavailable, not silently truncated permission.
+
+Financial HTTP responses retain explicit currency, scope and unknown nulls even
+when those values originated as model defaults. The API and browser share a
+financial response fixture covering uncapped/capped budgets and new/legacy
+approvals; omitting a discriminator is a contract failure, not a free amount.
 
 Usage records have stable operation identities and strict outbox delivery.
 Duplicate acknowledgment confirms the same row; it does not record another

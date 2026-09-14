@@ -41,6 +41,7 @@ from .runner import MAX_CARRY_LEN, run_workflow_step
 from .monetary_models import BudgetView, RunMoney, budget_identity
 from .monetary_quotes import quote_for_call, require_quote_current, run_account
 from .monetary_profile import require_capped_profile
+from .monetary_ledger import can_retire_run
 
 logger = logging.getLogger(__name__)
 
@@ -144,11 +145,7 @@ class WorkflowAutomationService:
         floor = now - timedelta(days=30)
         removable = {
             key for key, run in owner.runs.items()
-            if run.terminal and not run.active and request_time(run.idempotencyKey) < floor
-            and all(
-                effect.state == "complete" and (effect.usage is None or effect.delivered)
-                for effect in owner.effects.values() if effect.runId == key
-            )
+            if can_retire_run(owner, run, floor)
         }
         for key in removable:
             del owner.runs[key]

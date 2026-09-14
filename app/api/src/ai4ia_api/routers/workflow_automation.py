@@ -114,7 +114,7 @@ def run_view(state: WorkflowCheckpoint, budget: BudgetView) -> dict[str, Any]:
             "spend": ApprovalSpendView.from_quote(draft.spend),
         } if draft else None,
         "budget": budget,
-    }).model_dump(mode="json", exclude_unset=True)
+    }).model_dump(mode="json", exclude={"message"})
 
 
 async def observed_run_view(current: WorkflowAutomationService, state: WorkflowCheckpoint) -> dict[str, Any]:
@@ -188,7 +188,7 @@ async def config(request: Request, user: AuthenticatedUser = Depends(get_current
     }
 
 
-@router.post("/runs", status_code=202, response_model=RunView, response_model_exclude_unset=True)
+@router.post("/runs", status_code=202, response_model=RunView, response_model_exclude={"message"})
 async def start(
     request: Request, body: StartRequest, user: AuthenticatedUser = Depends(get_current_user),
 ):
@@ -206,7 +206,7 @@ async def start(
     return await observed_run_view(current, result)
 
 
-@router.get("/runs/{run_id}", response_model=RunView, response_model_exclude_unset=True)
+@router.get("/runs/{run_id}", response_model=RunView)
 async def read_run(request: Request, run_id: str, user: AuthenticatedUser = Depends(get_current_user)):
     current = service(request)
     state, message = await current.load(user.internal_user_id, run_id)
@@ -240,7 +240,7 @@ async def approvals(request: Request, user: AuthenticatedUser = Depends(get_curr
 
 @router.post(
     "/runs/{run_id}/approvals/{draft_id}/review", response_model=ReviewView,
-    response_model_exclude_unset=True,
+    response_model_exclude={"message"},
 )
 async def review(
     request: Request, run_id: str, draft_id: str, body: ReviewRequest | None = Body(default=None),

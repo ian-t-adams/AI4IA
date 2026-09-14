@@ -217,6 +217,47 @@ async def test_compaction_retains_consumed_money_and_existing_operation_floor(st
         await service.mutate_owner("owner", lambda value, now: reserve(value, "two"))
 
 
+@pytest.mark.parametrize("unknown", [False, True])
+async def test_retirement_uses_the_same_key_horizon_for_selection_and_validation(store, unknown):
+    value = funded(store, 140)
+    value.runs[RUN].createdAt = NOW + timedelta(minutes=1)
+    reserve(value)
+    settle(
+        value, completed=not unknown,
+        usage=None if unknown else {"prompt_tokens": 10, "completion_tokens": 5},
+        outcome="unknown" if unknown else "complete",
+    )
+    value.effects["one"].delivered = True
+    value.runs[RUN].terminal = True
+    value.runs[RUN].active = False
+    if not unknown:
+        compact_money(value, value.effects["one"])
+        del value.effects["one"]
+    await store.create_owner(value)
+    observed = NOW + timedelta(days=30, seconds=30)
+    if isinstance(store, CosmosAutomationStore):
+        store._container.now = observed
+    else:
+        store.clock = lambda: observed
+    service = WorkflowAutomationService(None, store, None)
+
+    def admit(other, now):
+        service.compact(other, now)
+        other.runs["owner:next"] = value.runs[RUN].model_copy(update={
+            "runId": "owner:next", "sessionId": "next", "checkpointId": "next",
+            "idempotencyKey": now.isoformat().replace("+00:00", "Z") + "~" + "2" * 32,
+            "createdAt": now, "active": True, "terminal": False, "money": None,
+        }, deep=True)
+
+    await service.mutate_owner("owner", admit)
+    latest = (await store.read_owner("owner")).value
+    assert "owner:next" in latest.runs
+    assert (RUN in latest.runs) is unknown
+    if unknown:
+        assert latest.runs[RUN].money == value.runs[RUN].money
+        assert latest.runs[RUN].money.unknownMicroUsd == 140
+
+
 async def test_changed_limit_price_payload_or_removed_unknown_is_not_a_valid_transition(store):
     await store.create_owner(funded(store, 280))
     service = WorkflowAutomationService(None, store, None)

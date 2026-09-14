@@ -1194,6 +1194,12 @@ memory denied and no selected tool/resource requirements silently discarded.
 Shipping attempt proof remains absent; flags, metadata or local fixtures cannot
 enable finite admission. Unknown remote meters and the independent hard-quota
 durable/nonlocal refusals remain unchanged.
+Monetary retirement selection and validation share the invocation-key timestamp
+and replay floor, not the later run creation time. Retain ineligible or unresolved
+rows without blocking unrelated valid admission. HTTP financial projections must
+include their defaulted currency/scope and explicit unknown nulls; recursively
+excluding unset/none fields breaks consumers. Actual API responses and browser
+validators share `app/web/test-fixtures/workflow_money.json`.
 
 ## Staged GA Realtime protocol
 

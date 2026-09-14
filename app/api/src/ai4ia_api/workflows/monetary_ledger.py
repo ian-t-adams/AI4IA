@@ -2,15 +2,27 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from ..hard_quota.coverage import actual_amounts
 from ..hard_quota.models import MAX_QUANTITY, Bounds
-from .automation_common import AutomationError, digest, json_bytes
+from .automation_common import AutomationError, digest, json_bytes, request_time
 from .monetary_models import DispatchMoney, RunMoney
 
 if TYPE_CHECKING:
-    from .automation_models import AutomationOwner, EffectIntent
+    from .automation_models import AutomationOwner, EffectIntent, RunHandle
+
+
+def can_retire_run(owner: AutomationOwner, run: RunHandle, floor: datetime) -> bool:
+    return (
+        run.terminal and not run.active and request_time(run.idempotencyKey) < floor
+        and (run.money is None or run.money.heldMicroUsd == 0)
+        and all(
+            effect.state == "complete" and (effect.usage is None or effect.delivered)
+            for effect in owner.effects.values() if effect.runId == run.runId
+        )
+    )
 
 
 def _updated(account: RunMoney, **changes: Any) -> RunMoney:
@@ -149,10 +161,7 @@ def validate_money_transition(prior: AutomationOwner, updated: AutomationOwner) 
                 raise AutomationError("budget_changed", "An existing run cannot acquire a new monetary budget.")
             continue
         if new is None:
-            if (
-                not old.terminal or old.active
-                or old.money.heldMicroUsd or old.createdAt >= updated.requestFloor
-            ):
+            if not can_retire_run(prior, old, updated.requestFloor):
                 raise AutomationError("accounting_changed", "Unresolved run money cannot be retired.")
             continue
         before, after = old.money, new.money

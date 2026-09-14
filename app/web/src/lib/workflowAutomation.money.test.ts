@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import responseContract from "../../test-fixtures/workflow_money.json";
 import {
   formatWorkflowUsd, parseWorkflowUsd, validateWorkflowBudget, validateWorkflowSpend, workflowUsdInput,
   type WorkflowBudget, type WorkflowSpendView,
@@ -45,6 +46,21 @@ describe("exact workflow monetary amounts", () => {
 });
 
 describe("monetary consumer guards", () => {
+  it("accepts actual serialized API financial contracts and rejects missing discriminators", () => {
+    for (const value of [responseContract.uncappedBudget, responseContract.cappedBudget]) {
+      expect(() => validateWorkflowBudget(value)).not.toThrow();
+      const missingCurrency = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "currency"));
+      expect(() => validateWorkflowBudget(missingCurrency)).toThrow("monetary evidence");
+    }
+    for (const value of [responseContract.legacySpend, responseContract.quotedSpend]) {
+      expect(() => validateWorkflowSpend(value)).not.toThrow();
+      const missingScope = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "scope"));
+      expect(() => validateWorkflowSpend(missingScope)).toThrow("monetary evidence");
+      expect(() => validateWorkflowSpend({
+        ...value, impact: Object.fromEntries(Object.entries(value.impact).filter(([key]) => key !== "currency")),
+      })).toThrow("monetary evidence");
+    }
+  });
   it("accepts coherent held and unknown balances but not a lowered liability or missing field", () => {
     expect(() => validateWorkflowBudget(budget)).not.toThrow();
     for (const changed of [
