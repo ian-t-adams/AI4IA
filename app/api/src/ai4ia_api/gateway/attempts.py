@@ -23,11 +23,62 @@ from ..hard_quota.coverage import AttemptEnvelope, model_for_deployment, support
 from ..hard_quota.models import QuotaError, Surface
 
 ATTEMPT_VERSION = "ai4ia-one-attempt-v1"
+ATTEMPT_API_NAME = "ai4ia-attempts-v1"
+ATTEMPT_PATH = f"/{ATTEMPT_API_NAME}/openai"
+ATTEMPT_OPERATIONS = (
+    ("POST", "/openai/responses"),
+    ("POST", "/openai/deployments/{deployment}/chat/completions"),
+    ("POST", "/openai/deployments/{deployment}/embeddings"),
+)
 ATTEMPT_HEADER = "x-ai4ia-attempt"
 PROXY_PROOF_HEADER = "x-ai4ia-proxy-attempt"
 ACK_HEADER = "x-ai4ia-attempt-ack"
 INTERNAL_HEADERS = frozenset({ATTEMPT_HEADER, PROXY_PROOF_HEADER, ACK_HEADER})
 MAX_BODY_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class GatewayRouteBinding:
+    """Required deployment readback, not authority inferred from configuration.
+
+    The verifier must establish API-scoped key membership, effective policy,
+    complete serving revisions and a transition-fenced evidence epoch. Neither
+    these structural checks nor a response ACK establish that evidence.
+    """
+
+    apim_url: str
+    api_resource_id: str
+    api_revision: str
+    subscription_resource_id: str
+    subscription_scope: str
+    operations: tuple[tuple[str, str], ...]
+    evidence_epoch: str
+
+    def validate(self) -> None:
+        url = httpx.URL(self.apim_url)
+        api_match = re.fullmatch(
+            r"(/subscriptions/[0-9a-f-]{36}/resourceGroups/[A-Za-z0-9_.()-]+"
+            r"/providers/Microsoft\.ApiManagement/service/[A-Za-z0-9-]+)/apis/"
+            + ATTEMPT_API_NAME, self.api_resource_id,
+        )
+        if (
+            url.scheme != "https" or not url.host or url.userinfo or url.query or url.fragment
+            or url.path != "/" or self.apim_url != str(url).rstrip("/")
+            or api_match is None or self.subscription_scope != self.api_resource_id
+            or re.fullmatch(r"[1-9][0-9]{0,8}", self.api_revision) is None
+            or self.operations != ATTEMPT_OPERATIONS
+            or re.fullmatch(r"[0-9a-f]{64}", self.evidence_epoch) is None
+        ):
+            raise QuotaError("Verified versioned gateway route is unavailable.")
+        subscription_prefix = api_match[1] + "/subscriptions/"
+        if (
+            not self.subscription_resource_id.startswith(subscription_prefix)
+            or re.fullmatch(
+                r"[A-Za-z0-9-]+-proxy-attempts-v1",
+                self.subscription_resource_id.removeprefix(subscription_prefix),
+            ) is None
+        ):
+            raise QuotaError("Verified versioned gateway subscription is unavailable.")
 
 
 @dataclass(frozen=True)
@@ -45,15 +96,20 @@ class VerifiedGatewayCapability:
     topology_sha256: str
     catalog_sha256: str
     expires_at: float
+    route: GatewayRouteBinding
+    api_image: str
     version: str = ATTEMPT_VERSION
 
     def validate(self, gateway_url: str) -> None:
+        self.route.validate()
         url = httpx.URL(self.gateway_url)
         if (
             self.version != ATTEMPT_VERSION
             or self.gateway_url != gateway_url
             or url.scheme != "https" or not url.host or url.userinfo or url.query or url.fragment
+            or url.path != "/openai" or str(url) != self.gateway_url
             or re.fullmatch(r"sha256:[0-9a-f]{64}", self.proxy_image) is None
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", self.api_image) is None
             or any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in (
                 self.apim_policy_sha256, self.topology_sha256, self.catalog_sha256,
             ))
@@ -71,7 +127,14 @@ class GatewayCapabilityVerifier(Protocol):
     def capability(self) -> VerifiedGatewayCapability | None: ...
 
     async def verify(self, capability: VerifiedGatewayCapability) -> None:
-        """Refuse stale/unknown/mismatched deployed evidence before admission."""
+        """Verify the typed route/readback and transition-fenced epoch before admission.
+
+        Issuance requires all serving API/proxy images, the complete effective
+        API revision/policies and operation inventory, API-only subscription
+        membership, non-replaying ingress and provider meter compatibility.
+        Invalidate the epoch BEFORE any route/key/policy/replica transition.
+        No implementation or evidence authority ships with this contract.
+        """
         ...
 
 
@@ -94,6 +157,32 @@ def no_replay_scope(owner: str) -> Iterator[None]:
 
 def no_replay_selected() -> bool:
     return _selected.get() is not None
+
+
+def versioned_target(
+    gateway_url: str, target: str, *, surface: Surface, deployment: str, api: str,
+) -> str:
+    """Select only a fixed operation; never translate an unknown/failed route."""
+    base, url = httpx.URL(gateway_url), httpx.URL(target)
+    relative = url.path.removeprefix("/openai")
+    expected = (
+        f"/deployments/{deployment}/embeddings" if surface == "embedding"
+        else "/responses" if api == "responses"
+        else f"/deployments/{deployment}/chat/completions" if api == "chat"
+        else None
+    )
+    if (
+        surface not in {"chat", "embedding"} or expected is None or relative != expected
+        or base.path != "/openai" or base.scheme != "https" or not base.host
+        or base.userinfo or base.query or base.fragment
+        or url.scheme != base.scheme or url.host != base.host or url.port != base.port
+        or url.userinfo or url.fragment or str(url) != target
+        or url.raw_path.split(b"?", 1)[0] != url.path.encode("ascii", errors="replace")
+        or re.fullmatch(r"[A-Za-z0-9_.-]+", deployment) is None
+        or (url.query and re.fullmatch(rb"api-version=[A-Za-z0-9_.-]{1,64}", url.query) is None)
+    ):
+        raise QuotaError("Unsupported versioned gateway operation.")
+    return str(url.copy_with(path=ATTEMPT_PATH + relative))
 
 
 def _body(payload: dict[str, Any]) -> bytes:
@@ -181,6 +270,7 @@ async def prepare_attempt(
     surface: Surface, payload: dict[str, Any], *, deployment: str, target: str,
     gateway_url: str, owner: str | None, verifier: GatewayCapabilityVerifier | None,
     credential_header: str, has_credential: bool,
+    staged: bool, api: str,
 ) -> AsyncIterator[PreparedAttempt | None]:
     selected = _selected.get()
     if selected is None:
@@ -188,6 +278,8 @@ async def prepare_attempt(
         return
     if owner is None or selected != owner:
         raise QuotaError("Gateway attempt has no matching authenticated owner.", code=403)
+    if not staged:
+        raise QuotaError("Versioned gateway staging is disabled.")
     if not has_credential or credential_header.lower() != "s7p-key":
         raise QuotaError("Bounded gateway transport requires authenticated proxy ingress.")
     capability = verifier.capability if verifier is not None else None
@@ -195,26 +287,29 @@ async def prepare_attempt(
         raise QuotaError("Verified gateway attempt capability is unavailable.")
     capability.validate(gateway_url)
     url, base = httpx.URL(target), httpx.URL(gateway_url)
-    relative = url.path.removeprefix(base.path)
+    relative = url.path.removeprefix(ATTEMPT_PATH)
     route = (
-        (surface == "chat" and relative == "/responses" and payload.get("model") == deployment)
-        or (surface == "chat" and relative == f"/deployments/{deployment}/chat/completions")
+        (surface == "chat" and api == "responses" and relative == "/responses" and payload.get("model") == deployment)
+        or (surface == "chat" and api == "chat" and relative == f"/deployments/{deployment}/chat/completions")
         or (surface == "embedding" and relative == f"/deployments/{deployment}/embeddings")
     )
     if (
         url.scheme != base.scheme or url.host != base.host or url.port != base.port
-        or not url.path.startswith(base.path + "/") or not route or url.userinfo or url.fragment
-        or any(key != "api-version" for key in url.params) or len(url.params.multi_items()) > 1
+        or not url.path.startswith(ATTEMPT_PATH + "/") or not route or url.userinfo or url.fragment
+        or url.raw_path.split(b"?", 1)[0] != url.path.encode("ascii", errors="replace")
+        or (url.query and re.fullmatch(rb"api-version=[A-Za-z0-9_.-]{1,64}", url.query) is None)
         or re.fullmatch(r"[A-Za-z0-9_.-]+", deployment) is None
         or ("model" in payload and payload["model"] != deployment)
         or not supported_attempt_payload(surface, payload)
     ):
         raise QuotaError("Unsupported bounded gateway operation.")
-    if relative == "/responses":
-        from ..hard_quota.dispatch import current_dispatch_catalog
+    from ..hard_quota.dispatch import current_dispatch_catalog
 
-        catalog = current_dispatch_catalog()
-        model = model_for_deployment(catalog, deployment) if catalog is not None else None
+    catalog = current_dispatch_catalog()
+    model = model_for_deployment(catalog, deployment) if catalog is not None else None
+    if model is None or model.api not in {"chat", "responses", "embedding"}:
+        raise QuotaError("Unsupported versioned gateway provider.")
+    if relative == "/responses":
         maximum = payload.get("max_output_tokens")
         if (
             model is None or model.maxOutputTokens is None or model.maxOutputTokens <= 0

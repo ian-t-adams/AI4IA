@@ -79,14 +79,14 @@ class WorkflowAutomationService:
             raise AutomationError(
                 "spend_profile_unsupported", "The capped profile cannot omit a selected tool contract.", status=422,
             )
-        if not self.monetary_available():
+        if not self.monetary_available(bundle.api):
             raise AutomationError(
                 "spend_transport_unavailable",
                 "A finite USD application-meter cap requires a verified bounded gateway transport.",
                 status=422,
             )
 
-    def monetary_available(self) -> bool:
+    def monetary_available(self, api: str | None = None) -> bool:
         admission = getattr(self.state, "hard_quota", None)
         if (
             self.state.settings.hard_quota_enabled
@@ -94,7 +94,11 @@ class WorkflowAutomationService:
         ):
             return False
         try:
-            envelope = getattr(self.state.gateway, "attempt_capability", None)
+            if api is None:
+                envelope = getattr(self.state.gateway, "attempt_capability", None)
+            else:
+                lookup = getattr(self.state.gateway, "attempt_capability_for", None)
+                envelope = lookup(api) if callable(lookup) else None
         except QuotaError:
             return False
         return isinstance(envelope, AttemptEnvelope) and envelope.max_attempts == 1

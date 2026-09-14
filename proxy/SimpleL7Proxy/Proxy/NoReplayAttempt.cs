@@ -12,6 +12,7 @@ namespace SimpleL7Proxy.Proxy;
 public sealed class NoReplayAttempt
 {
     public const string Version = "ai4ia-one-attempt-v1";
+    public const string RoutePrefix = "/ai4ia-attempts-v1";
     public const string RequestHeader = "x-ai4ia-attempt";
     public const string ProofHeader = "x-ai4ia-proxy-attempt";
     public const string AckHeader = "x-ai4ia-attempt-ack";
@@ -34,10 +35,17 @@ public sealed class NoReplayAttempt
         name.StartsWith("x-ai4ia-attempt", StringComparison.OrdinalIgnoreCase) ||
         name.StartsWith("x-ai4ia-proxy-attempt", StringComparison.OrdinalIgnoreCase);
 
+    public static bool IsVersionedPath(string path) =>
+        path.Split('?')[0].Equals(RoutePrefix, StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith(RoutePrefix + "/", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsExactOperation(string path) =>
+        Regex.IsMatch(path, @"\A/ai4ia-attempts-v1/openai/(responses|deployments/[A-Za-z0-9_.-]+/(chat/completions|embeddings))(\?api-version=[A-Za-z0-9_.-]{1,64})?\z");
+
     public static void BindAuthenticated(RequestData request, bool authenticatedKey, ProxyConfig options)
     {
         var names = request.Headers.AllKeys.Where(k => k is not null && IsInternalHeader(k)).ToArray();
-        if (names.Length == 0)
+        if (names.Length == 0 && !IsVersionedPath(request.Path))
             return;
         if (names.Length != 1 || !string.Equals(names[0], RequestHeader, StringComparison.OrdinalIgnoreCase))
             throw Refused("Untrusted gateway attempt metadata.");
@@ -45,7 +53,8 @@ public sealed class NoReplayAttempt
         if (!authenticatedKey || raw is not { Length: 1 })
             throw Refused("Gateway attempt requires authenticated proxy ingress.");
         var match = Regex.Match(raw[0], @"\Aai4ia-one-attempt-v1\.([0-9a-f]{32})\.([0-9a-f]{64})\z");
-        if (!match.Success || request.NoReplay is not null)
+        if (!match.Success || request.NoReplay is not null ||
+            request.Method != "POST" || !IsExactOperation(request.Path))
             throw Refused("Invalid gateway attempt contract.");
         request.NoReplay = new NoReplayAttempt(match.Groups[1].Value, match.Groups[2].Value, request.Path);
         ValidateState(request);
@@ -61,7 +70,8 @@ public sealed class NoReplayAttempt
     {
         if (request.NoReplay is null)
         {
-            if (request.Headers.AllKeys.Any(k => k is not null && IsInternalHeader(k)))
+            if (IsVersionedPath(request.Path) ||
+                request.Headers.AllKeys.Any(k => k is not null && IsInternalHeader(k)))
                 throw Refused("Gateway attempt was not authenticated.");
             return;
         }
@@ -74,18 +84,21 @@ public sealed class NoReplayAttempt
 
     public static void RefusePersistence(RequestData request)
     {
-        if (request.NoReplay is not null || request.Headers.AllKeys.Any(k => k is not null && IsInternalHeader(k)))
+        if (request.NoReplay is not null || IsVersionedPath(request.Path) ||
+            request.Headers.AllKeys.Any(k => k is not null && IsInternalHeader(k)))
             throw Refused("Gateway attempt cannot be persisted or requeued.");
     }
 
     public void Claim(RequestData request, HttpRequestMessage outgoing, byte[] body, HostConfig host)
     {
         ValidateState(request);
-        if (request.Path != _ingressPath || request.Method != "POST" || body.Length > MaxBodyBytes ||
+        if (request.Path != _ingressPath || request.Method != "POST" || !IsExactOperation(request.Path) ||
+            body.Length > MaxBodyBytes ||
             Convert.ToHexStringLower(SHA256.HashData(body)) != _bodyHash ||
             host.DirectMode || host.AuthMode != AuthModeEnum.ApiKey ||
             !string.Equals(host.ApiKeyHeader, "Ocp-Apim-Subscription-Key", StringComparison.OrdinalIgnoreCase) ||
             string.IsNullOrEmpty(host.ApiKey) || outgoing.RequestUri is null ||
+            host.PartialPath != RoutePrefix || host.StripPrefix || host.UsesRetryAfter ||
             outgoing.RequestUri.PathAndQuery != _ingressPath ||
             (outgoing.RequestUri.Scheme != "https" && !outgoing.RequestUri.IsLoopback))
             throw Refused("Gateway attempt binding does not match.");

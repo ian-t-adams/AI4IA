@@ -1,0 +1,67 @@
+<policies>
+  <inbound>
+<!-- This API is a mandatory membership boundary, never an optional header
+       selector. Authentication and the shared byte/HMAC check precede catalog
+       initialization. This API has no base inheritance. The subscription ID is bound by
+       gateway.bicep to the distinct API-scoped subscription, not a caller. -->
+<set-variable name="attemptsV1Path" value="@{
+    if (context.Api.Path != &quot;ai4ia-attempts-v1&quot; ||
+        context.Subscription == null ||
+        context.Subscription.Id != &quot;__AI4IA_ATTEMPTS_SUBSCRIPTION_ID__&quot; ||
+        context.Request.Method != &quot;POST&quot;) { return &quot;&quot;; }
+    var headers = context.Request.Headers;
+    if (!headers.ContainsKey(&quot;x-ai4ia-attempt&quot;) ||
+        !headers.ContainsKey(&quot;x-ai4ia-proxy-attempt&quot;) ||
+        !headers.ContainsKey(&quot;x-LLMModel&quot;) ||
+        headers[&quot;x-LLMModel&quot;].Length != 1) { return &quot;&quot;; }
+    string path = context.Request.OriginalUrl.Path;
+    var match = System.Text.RegularExpressions.Regex.Match(path,
+        @&quot;\A/ai4ia-attempts-v1/openai/(responses|deployments/([A-Za-z0-9_.-]+)/(chat/completions|embeddings))\z&quot;);
+    string query = context.Request.OriginalUrl.QueryString;
+    if (!match.Success || (!string.IsNullOrEmpty(query) &amp;&amp;
+        !System.Text.RegularExpressions.Regex.IsMatch(query, @&quot;\A\??api-version=[A-Za-z0-9_.-]{1,64}\z&quot;))) { return &quot;&quot;; }
+    string model = headers[&quot;x-LLMModel&quot;][0];
+    if (!System.Text.RegularExpressions.Regex.IsMatch(model, @&quot;\A[A-Za-z0-9_.-]+\z&quot;) ||
+        (match.Groups[2].Success &amp;&amp; match.Groups[2].Value != model)) { return &quot;&quot;; }
+    byte[] bytes = context.Request.Body.As&lt;byte[]&gt;(preserveContent: true);
+    if (bytes.Length == 0 || bytes.Length > 1048576) { return &quot;&quot;; }
+    JObject body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+    if ((match.Groups[1].Value == &quot;responses&quot; &amp;&amp; body[&quot;model&quot;] == null) ||
+        (body[&quot;model&quot;] != null &amp;&amp; (body[&quot;model&quot;].Type != JTokenType.String ||
+        body[&quot;model&quot;].Value&lt;string&gt;() != model))) { return &quot;&quot;; }
+    return match.Groups[1].Value;
+  }" />
+<choose>
+    <when condition="@(string.IsNullOrEmpty(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;attemptsV1Path&quot;, &quot;&quot;)))">
+      <return-response>
+        <set-status code="400" reason="Invalid versioned gateway membership" />
+        <set-body>{"error":{"code":"invalid_versioned_attempt_route"}}</set-body>
+      </return-response>
+    </when>
+  </choose>
+<include-fragment fragment-id="simplel7proxy_inbound_pre_32" />
+<include-fragment fragment-id="endpoint_selection_catalog_0_32" />
+<include-fragment fragment-id="endpoint_selection_catalog_1_32" />
+<include-fragment fragment-id="endpoint_selection_catalog_2_32" />
+<include-fragment fragment-id="endpoint_selection_catalog_3_32" />
+<include-fragment fragment-id="endpoint_selection_catalog_4_32" />
+<include-fragment fragment-id="endpoint_selection_catalog_5_32" />
+<include-fragment fragment-id="endpoint_selection_catalog_6_32" />
+<include-fragment fragment-id="endpoint_selection_catalog_7_32" />
+<include-fragment fragment-id="endpoint_selection_catalog_8_32" />
+<include-fragment fragment-id="endpoint_selection_catalog_9_32" />
+<include-fragment fragment-id="endpoint_selection_catalog_10_32" />
+<include-fragment fragment-id="endpoint_selection_catalog_11_32" />
+<include-fragment fragment-id="endpoint_selection_setup_32" />
+<include-fragment fragment-id="simplel7proxy_inbound_post_32" />
+  </inbound>
+  <backend>
+<include-fragment fragment-id="simplel7proxy_backend_32" />
+  </backend>
+  <outbound>
+<include-fragment fragment-id="simplel7proxy_outbound_32" />
+  </outbound>
+  <on-error>
+<include-fragment fragment-id="simplel7proxy_on_error_32" />
+  </on-error>
+</policies>

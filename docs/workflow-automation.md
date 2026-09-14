@@ -37,6 +37,13 @@ bounds, and explicitly select execution **without a hard dollar cap**.
 The separate **USD application-meter maximum** choice is unavailable unless the
 server has a verified bounded transport. The shipping factory currently has no
 such proof; enabling the workflow flags does not make this choice available.
+Preflight also checks the frozen provider API through
+`attempt_capability_for(bundle.api)`: v1 accepts only the supported OpenAI
+text operations, not Claude's legacy generic proxy path. Unsupported sources,
+tools or required metadata are refused, never removed to manufacture coverage.
+The exact versioned URL joins the adapted payload in the existing owner-CAS
+operation digest; settlement still uses its persisted immutable Bounds after
+the request proof is consumed.
 
 The run captures the owned source revision/digest or exact reviewed source,
 resolved agents, effective tool contracts, resources and model deployment.

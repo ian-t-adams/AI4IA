@@ -52,6 +52,7 @@ def monetary(client, wire, request):
     state.settings.model_gateway_auth_mode = GatewayAuthMode.api_key
     state.settings.model_gateway_api_key = "fixture-ingress"
     state.settings.model_gateway_api_key_header = "S7P-KEY"
+    state.settings.gateway_attempts_v1_staged = True
     state.agents.agents[0].tools = []
     verifier = FixtureVerifier()
     state.gateway = ModelGatewayClient(
@@ -317,7 +318,7 @@ def test_simultaneous_activities_still_have_one_capped_gateway_dispatch(client, 
     assert len(sent) == 1
 
 
-@pytest.mark.parametrize("api", ["chat", "responses", "anthropic"])
+@pytest.mark.parametrize("api", ["chat", "responses"])
 def test_each_real_provider_adapter_uses_the_same_priced_one_attempt_contract(client, monetary, api):
     service, _, (sent, response, _) = monetary
     client.app.state.catalog.models[0].api = api
@@ -332,6 +333,34 @@ def test_each_real_provider_adapter_uses_the_same_priced_one_attempt_contract(cl
     assert "tools" not in payload
     if api == "responses":
         assert payload["store"] is False and payload["max_output_tokens"] == 20
+
+
+def test_versioned_claude_refuses_before_run_creation_but_ordinary_claude_still_sends(client, monetary):
+    service, verifier, (sent, response, _) = monetary
+    client.app.state.catalog.models[0].api = "anthropic"
+    response[0] = lambda request: response_for("anthropic", request)
+    assert client.post("/api/workflows", json={
+        "name": "priced", "steps": [{"agent": "testleaf", "instruction": "{input}"}],
+    }).status_code == 201
+    body = {
+        "selection": {"name": "priced", "model": "fixture-text"},
+        "input": "Plain text.", "allowTools": False, "allowAutomaticMemory": False,
+        "limits": {
+            "spendMode": "usd_app_meter", "maxSpendMicroUsd": 140, "maxOutputTokens": 20,
+            "maxToolCalls": 0,
+        },
+        "idempotencyKey": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z") + "~" + uuid4().hex,
+    }
+    denied = client.post("/api/workflows/automation/runs", json=body)
+    assert denied.status_code == 422 and denied.json()["code"] == "spend_transport_unavailable"
+    assert not sent and not service.host.started and verifier.verified == 0
+    body["limits"] = {"spendMode": "no_hard_dollar_cap", "maxOutputTokens": 20, "maxToolCalls": 0}
+    accepted = client.post("/api/workflows/automation/runs", json=body)
+    assert accepted.status_code == 202, accepted.text
+    run_id = accepted.json()["runId"]
+    result = client.portal.call(service.advance, run_id.partition(":")[0], run_id)
+    assert result["status"] == "completed" and len(sent) == 1
+    assert sent[0].url.path.startswith("/openai/") and ATTEMPT_HEADER not in sent[0].headers
 
 
 @pytest.mark.parametrize("unpriced", [False, True])

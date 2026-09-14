@@ -45,6 +45,7 @@ from .anthropic import (
 from .priority import PRIORITY_HEADER, get_request_priority
 from .attempts import (
     GatewayCapabilityVerifier, bounded_http_client, no_replay_selected, prepare_attempt,
+    versioned_target,
 )
 
 # Azure OpenAI reasoning models (the GPT-5 family and the o-series) reject the
@@ -513,15 +514,21 @@ class ModelGatewayClient:
         self._model_telemetry = ModelTelemetry(settings)
         self._group_policy_enabled = settings.group_policy_enabled
         self._attempt_verifier = attempt_verifier
+        settings.validate_gateway_attempts_v1()
+        self._attempt_staged = settings.gateway_attempts_v1_staged
 
     @property
     def attempt_capability(self) -> AttemptEnvelope | None:
         """Availability only; admission requires the exact prepared request proof."""
-        capability = self._attempt_verifier.capability if self._attempt_verifier else None
+        capability = self._attempt_verifier.capability if self._attempt_staged and self._attempt_verifier else None
         if capability is None:
             return None
         capability.validate(self._base)
         return capability.envelope
+
+    def attempt_capability_for(self, api: str) -> AttemptEnvelope | None:
+        """Provider-aware availability, still not a prepared request proof."""
+        return self.attempt_capability if api in {"chat", "responses", "embedding"} else None
 
     async def _post(
         self, client: httpx.AsyncClient, url: str, *, surface: Surface,
@@ -531,11 +538,14 @@ class ModelGatewayClient:
     ) -> httpx.Response:
         if no_replay_selected() and set(kwargs) - {"headers", "json"}:
             raise QuotaError("Unsupported bounded gateway transport options.")
+        if no_replay_selected():
+            url = versioned_target(self._base, url, surface=surface, deployment=deployment, api=api)
         async with prepare_attempt(
             surface, payload, deployment=deployment, target=url, gateway_url=self._base,
             owner=current_dispatch_owner(), verifier=self._attempt_verifier,
             credential_header=self._api_key_header,
             has_credential=self._auth_mode == GatewayAuthMode.api_key and bool(self._api_key),
+            staged=self._attempt_staged, api=api,
         ) as attempt, admitted_dispatch(
             surface, json.loads(attempt.body) if attempt else payload,
             deployment=deployment, target=url, required=self._hard_quota_enabled,
@@ -583,15 +593,20 @@ class ModelGatewayClient:
     async def _stream_request(
         self, client: httpx.AsyncClient, req: GatewayRequest, *, deployment: str,
         evidence: CapturedModelCall | None, telemetry: ModelSpan | None = None,
+        api: str = "chat",
     ) -> AsyncIterator[tuple[httpx.Response, DispatchLease]]:
+        url = versioned_target(
+            self._base, req.url, surface="chat", deployment=deployment, api=api,
+        ) if no_replay_selected() else req.url
         async with prepare_attempt(
-            "chat", req.json, deployment=deployment, target=req.url, gateway_url=self._base,
+            "chat", req.json, deployment=deployment, target=url, gateway_url=self._base,
             owner=current_dispatch_owner(), verifier=self._attempt_verifier,
             credential_header=self._api_key_header,
             has_credential=self._auth_mode == GatewayAuthMode.api_key and bool(self._api_key),
+            staged=self._attempt_staged, api=api,
         ) as attempt, admitted_dispatch(
             "chat", json.loads(attempt.body) if attempt else req.json,
-            deployment=deployment, target=req.url, required=self._hard_quota_enabled,
+            deployment=deployment, target=url, required=self._hard_quota_enabled,
             observe=evidence.report_admission if evidence is not None else None,
             policy_required=self._group_policy_enabled,
         ) as admission:
@@ -606,7 +621,7 @@ class ModelGatewayClient:
                     body_args = {"content": attempt.body, "follow_redirects": False}
                 with telemetry.http_scope() if telemetry is not None else nullcontext():
                     response = await stack.enter_async_context(client.stream(
-                        "POST", req.url, headers=headers, **body_args,
+                        "POST", url, headers=headers, **body_args,
                     ))
                 if attempt is not None:
                     attempt.check_response(response)
@@ -1478,6 +1493,7 @@ class ModelGatewayClient:
                 evidence.request(req.json)
             async with self._stream_request(
                 client, req, deployment=deployment, evidence=evidence, telemetry=telemetry,
+                api=ANTHROPIC_API,
             ) as (resp, admission):
                 if resp.status_code >= 400:
                     body = await resp.aread()
@@ -1556,6 +1572,7 @@ class ModelGatewayClient:
                 evidence.request(req.json)
             async with self._stream_request(
                 client, req, deployment=deployment, evidence=evidence, telemetry=telemetry,
+                api="responses",
             ) as (resp, admission):
                 if resp.status_code >= 400:
                     body = await resp.aread()
