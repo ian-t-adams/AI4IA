@@ -7,13 +7,14 @@ from contextvars import ContextVar
 from typing import Any, Protocol
 
 from ..usage.models import UsageRecord
+from ..hard_quota.models import Surface
 
 
 class WorkflowExecutionScope(Protocol):
     owner_id: str
 
     async def before_dispatch(
-        self, surface: str, payload: dict[str, Any], *,
+        self, surface: Surface, payload: dict[str, Any], *,
         deployment: str | None, target: str | None,
     ) -> str: ...
 

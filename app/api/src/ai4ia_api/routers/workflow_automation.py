@@ -3,18 +3,22 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request
 from pydantic import Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..sessions.repository import SessionNotFoundError
+from ..sessions.models import Message
+from ..request_constraints import constrain_request
 from ..workflows.automation_access import WorkflowSelection
 from ..workflows.automation_common import AutomationError, AutomationModel, ExecutionLimits, MAX_SCHEDULES
 from ..workflows.automation_models import WorkflowCheckpoint, WorkflowSchedule
 from ..workflows.automation_service import WorkflowAutomationService
 from ..workflows.schedule_service import WorkflowScheduleService
 from ..workflows.scheduling import ScheduleRule
+from ..workflows.monetary_models import ApprovalSpendView, BudgetView
+from ..workflows.monetary_quotes import run_account
 
 router = APIRouter(prefix="/api/workflows/automation", tags=["workflow automation"])
 
@@ -25,6 +29,8 @@ class StartRequest(AutomationModel):
     limits: ExecutionLimits
     idempotencyKey: str = Field(min_length=32, max_length=128)
     sessionId: str | None = Field(default=None, max_length=128)
+    allowTools: bool = Field(default=True, strict=True)
+    allowAutomaticMemory: bool = Field(default=True, strict=True)
 
 
 class ScheduleRequest(AutomationModel):
@@ -34,6 +40,8 @@ class ScheduleRequest(AutomationModel):
     rule: ScheduleRule
     idempotencyKey: str = Field(min_length=32, max_length=128)
     expectedRevision: int | None = Field(default=None, ge=0, strict=True)
+    allowTools: bool = Field(default=True, strict=True)
+    allowAutomaticMemory: bool = Field(default=True, strict=True)
 
 
 class RevisionRequest(AutomationModel):
@@ -46,13 +54,54 @@ class DecisionRequest(AutomationModel):
     grant: str | None = Field(default=None, max_length=256)
 
 
+class ReviewRequest(AutomationModel):
+    refreshSpendQuote: bool = Field(default=False, strict=True)
+
+
+class ApprovalView(AutomationModel):
+    id: str
+    tool: str
+    label: str
+    risk: str
+    purpose: str
+    destination: str | None
+    expiresAt: str
+    state: str
+    argumentsDigest: str
+    spend: ApprovalSpendView
+
+
+class RunView(AutomationModel):
+    runId: str
+    sessionId: str
+    status: str
+    reason: str | None
+    revision: int = Field(ge=0, strict=True)
+    workflow: str
+    deadline: str | None
+    step: int = Field(ge=0, strict=True)
+    approval: ApprovalView | None
+    budget: BudgetView
+    message: Message | None = None
+
+
+class ReviewView(RunView):
+    argumentsJson: str
+    requestId: str
+    grant: str
+    approvedDigest: str
+    effectiveDigest: str
+    spendImpact: str
+    spendEvidence: ApprovalSpendView
+
+
 def service(request: Request) -> WorkflowAutomationService:
     return request.app.state.workflow_automation
 
 
-def run_view(state: WorkflowCheckpoint) -> dict[str, Any]:
+def run_view(state: WorkflowCheckpoint, budget: BudgetView) -> dict[str, Any]:
     draft = state.draft
-    return {
+    return RunView.model_validate({
         "runId": state.runId, "sessionId": state.sessionId, "status": state.status,
         "reason": state.reason, "revision": state.revision,
         "workflow": state.bundle.workflow.displayName if state.bundle else "Workflow",
@@ -62,8 +111,16 @@ def run_view(state: WorkflowCheckpoint) -> dict[str, Any]:
             "risk": draft.risk, "purpose": draft.purpose, "destination": draft.destination,
             "expiresAt": draft.expiresAt.isoformat(), "state": draft.state,
             "argumentsDigest": draft.argumentsDigest,
+            "spend": ApprovalSpendView.from_quote(draft.spend),
         } if draft else None,
-    }
+        "budget": budget,
+    }).model_dump(mode="json", exclude_unset=True)
+
+
+async def observed_run_view(current: WorkflowAutomationService, state: WorkflowCheckpoint) -> dict[str, Any]:
+    return run_view(state, BudgetView.from_account(
+        run_account((await current.owner(state.userId)).value, state),
+    ))
 
 
 def schedule_view(value: WorkflowSchedule) -> dict[str, Any]:
@@ -73,6 +130,7 @@ def schedule_view(value: WorkflowSchedule) -> dict[str, Any]:
         "workflow": value.bundle.workflow.displayName, "workflowName": value.bundle.workflow.name,
         "source": value.bundle.source, "model": value.bundle.modelId,
         "input": value.input, "limits": value.limits.model_dump(mode="json"),
+        "allowTools": value.allowTools, "allowAutomaticMemory": value.allowAutomaticMemory,
         "rule": value.rule.model_dump(mode="json"),
         "next": value.next.model_dump(mode="json") if value.next else None,
         "consumed": value.consumed, "tools": sorted(value.bundle.toolContracts),
@@ -98,11 +156,14 @@ async def active_run_views(current: WorkflowAutomationService, owner: str) -> li
             if exc.code not in {"coordination_missing", "context_revoked"}:
                 raise
             state = None
-        result.append(run_view(state) if state is not None else {
+        result.append(run_view(state, BudgetView.from_account(
+            run_account(stored.value, state),
+        )) if state is not None else {
             "runId": handle.runId, "sessionId": handle.sessionId,
             "workflow": "Workflow preparation", "status": "preparation_unavailable",
             "reason": "The conversation or checkpoint is unavailable. Stop this preparation before starting again.",
             "revision": 0, "deadline": None, "step": 0, "approval": None,
+            "budget": BudgetView.from_account(handle.money).model_dump(mode="json"),
         })
     return result[:20]
 
@@ -120,30 +181,35 @@ async def config(request: Request, user: AuthenticatedUser = Depends(get_current
         "schedulesAvailable": available and settings.workflow_scheduling_enabled,
         "maxSchedules": MAX_SCHEDULES, "maxRuntimeSeconds": settings.durable_workflow_timeout_seconds,
         "hardDollarCapAvailable": False, "spendMode": "no_hard_dollar_cap",
+        "monetaryCapAvailable": False,
+        "monetaryCapProfile": "stateless_text_only",
+        "monetaryCapUnavailableReason": "verified_gateway_required",
     }
 
 
-@router.post("/runs", status_code=202)
+@router.post("/runs", status_code=202, response_model=RunView, response_model_exclude_unset=True)
 async def start(
     request: Request, body: StartRequest, user: AuthenticatedUser = Depends(get_current_user),
 ):
     current = service(request)
     current.require_enabled()
-    bundle = await current.access.freeze(
-        user, body.selection, body.limits,
-        session_id=body.sessionId or "automation-admission", safe_only=False,
-    )
-    result = await current.start(
-        bundle, body.input, body.limits, body.idempotencyKey,
-        user=user, session_id=body.sessionId,
-    )
-    return run_view(result)
+    with constrain_request(tools=body.allowTools, automatic_memory=body.allowAutomaticMemory):
+        bundle = await current.access.freeze(
+            user, body.selection, body.limits,
+            session_id=body.sessionId or "automation-admission", safe_only=False,
+        )
+        result = await current.start(
+            bundle, body.input, body.limits, body.idempotencyKey,
+            user=user, session_id=body.sessionId,
+        )
+    return await observed_run_view(current, result)
 
 
-@router.get("/runs/{run_id}")
+@router.get("/runs/{run_id}", response_model=RunView, response_model_exclude_unset=True)
 async def read_run(request: Request, run_id: str, user: AuthenticatedUser = Depends(get_current_user)):
-    state, message = await service(request).load(user.internal_user_id, run_id)
-    return {**run_view(state), "message": message.model_dump(mode="json")}
+    current = service(request)
+    state, message = await current.load(user.internal_user_id, run_id)
+    return {**await observed_run_view(current, state), "message": message.model_dump(mode="json")}
 
 
 @router.get("/runs")
@@ -153,13 +219,17 @@ async def active_runs(request: Request, user: AuthenticatedUser = Depends(get_cu
 
 @router.post("/runs/{run_id}/recover-start", status_code=202)
 async def recover_run_start(request: Request, run_id: str, user: AuthenticatedUser = Depends(get_current_user)):
-    return run_view(await service(request).recover_start(user.internal_user_id, run_id))
+    current = service(request)
+    return await observed_run_view(current, await current.recover_start(user.internal_user_id, run_id))
 
 
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(request: Request, run_id: str, user: AuthenticatedUser = Depends(get_current_user)):
-    state = await service(request).cancel(user.internal_user_id, run_id)
-    return run_view(state) if state else {"runId": run_id, "status": "cancelled", "preparationOnly": True}
+    current = service(request)
+    state = await current.cancel(user.internal_user_id, run_id)
+    return await observed_run_view(current, state) if state else {
+        "runId": run_id, "status": "cancelled", "preparationOnly": True,
+    }
 
 
 @router.get("/approvals")
@@ -167,18 +237,30 @@ async def approvals(request: Request, user: AuthenticatedUser = Depends(get_curr
     return {"runs": await active_run_views(service(request), user.internal_user_id)}
 
 
-@router.post("/runs/{run_id}/approvals/{draft_id}/review")
+@router.post(
+    "/runs/{run_id}/approvals/{draft_id}/review", response_model=ReviewView,
+    response_model_exclude_unset=True,
+)
 async def review(
-    request: Request, run_id: str, draft_id: str, user: AuthenticatedUser = Depends(get_current_user),
+    request: Request, run_id: str, draft_id: str, body: ReviewRequest | None = Body(default=None),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
-    state, grant = await service(request).review(user.internal_user_id, run_id, draft_id, user)
+    current = service(request)
+    state, grant = await current.review(
+        user.internal_user_id, run_id, draft_id, user,
+        refresh_spend=body.refreshSpendQuote if body else False,
+    )
     assert state.draft is not None and state.draft.challenge is not None
     return {
-        **run_view(state), "argumentsJson": state.draft.argumentsJson,
+        **await observed_run_view(current, state), "argumentsJson": state.draft.argumentsJson,
         "requestId": state.draft.challenge.id, "grant": grant,
         "approvedDigest": state.bundle.approvedBundleDigest if state.bundle else None,
         "effectiveDigest": state.bundle.bundleDigest if state.bundle else None,
-        "spendImpact": "Additional tool or provider spend is unknown. No hard dollar cap is enforced.",
+        "spendImpact": (
+            "Spend impact applies only to this exact call, not later model work. "
+            "Unsupported service charges remain unknown; this is not an Azure bill cap."
+        ),
+        "spendEvidence": ApprovalSpendView.from_quote(state.draft.spend).model_dump(mode="json"),
     }
 
 
@@ -187,11 +269,12 @@ async def decide(
     request: Request, run_id: str, draft_id: str, body: DecisionRequest,
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    state = await service(request).decide(
+    current = service(request)
+    state = await current.decide(
         user.internal_user_id, run_id, draft_id, user=user, decision=body.decision,
         request_id=body.requestId, grant=body.grant,
     )
-    return run_view(state)
+    return await observed_run_view(current, state)
 
 
 @router.get("/schedules")
@@ -205,9 +288,10 @@ async def schedules(request: Request, user: AuthenticatedUser = Depends(get_curr
 async def create_schedule(
     request: Request, body: ScheduleRequest, user: AuthenticatedUser = Depends(get_current_user),
 ):
-    value = await WorkflowScheduleService(service(request)).save(
-        user, body.selection, body.input, body.limits, body.rule, body.idempotencyKey,
-    )
+    with constrain_request(tools=body.allowTools, automatic_memory=body.allowAutomaticMemory):
+        value = await WorkflowScheduleService(service(request)).save(
+            user, body.selection, body.input, body.limits, body.rule, body.idempotencyKey,
+        )
     return schedule_view(value)
 
 
@@ -216,10 +300,11 @@ async def update_schedule(
     request: Request, schedule_id: str, body: ScheduleRequest,
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    value = await WorkflowScheduleService(service(request)).save(
-        user, body.selection, body.input, body.limits, body.rule, body.idempotencyKey,
-        schedule_id=schedule_id, expected_revision=body.expectedRevision,
-    )
+    with constrain_request(tools=body.allowTools, automatic_memory=body.allowAutomaticMemory):
+        value = await WorkflowScheduleService(service(request)).save(
+            user, body.selection, body.input, body.limits, body.rule, body.idempotencyKey,
+            schedule_id=schedule_id, expected_revision=body.expectedRevision,
+        )
     return schedule_view(value)
 
 

@@ -46,3 +46,20 @@ it("uses revision guards for schedule disable and reports missing capability hon
   fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ detail: "Not enabled" }), { status: 404 }));
   await expect(getWorkflowAutomationConfig()).rejects.toThrow("Not enabled");
 });
+
+it("refreshes immutable spend only by explicit POST and refuses inconsistent financial evidence", async () => {
+  await reviewWorkflowApproval("r", "d", true);
+  expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({ refreshSpendQuote: true });
+  fetcher.mockResolvedValueOnce(new Response(JSON.stringify({
+    status: "awaiting_approval",
+    spendEvidence: {
+      scope: "exact_tool_operation", status: "legacy_unquoted", quote: null,
+      impact: {
+        coverage: "unknown", currency: "USD", amountMicroUsd: 0, basis: "legacy-unquoted",
+        reason: "legacy-unquoted", bounds: null, localContractDigest: null,
+      },
+    },
+  }), { status: 200 }));
+  await expect(reviewWorkflowApproval("r", "d")).rejects.toThrow("monetary evidence");
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});

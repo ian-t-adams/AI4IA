@@ -74,6 +74,13 @@ snapshot. Reservation and settlement use the shared pricing helper's ceiling;
 settlement never reloads current rates. Final usage cannot refund earlier
 unaccounted-for retry attempts.
 
+The separate [workflow monetary contract](workflow-automation.md#per-run-monetary-source-contract)
+uses those same versioned bounds for an immutable per-run USD application-meter
+limit. It is not this rolling owner quota and cannot bootstrap an owner balance
+or weaken the hard-quota durable/nonlocal activation refusal. Its source ledger,
+approval quote or successful fixture does not establish the missing shipping
+attempt proof. Unknown remote service meters are still refused under a cap.
+
 ## Reservation state machine
 
 The store contains one immutable-payload entry per operation. State transitions

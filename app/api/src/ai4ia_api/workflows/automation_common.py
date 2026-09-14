@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -48,15 +48,15 @@ class ExecutionLimits(AutomationModel):
     maxToolCalls: int = Field(default=MAX_TOOL_CALLS, ge=0, le=MAX_TOOL_CALLS, strict=True)
     maxOutputTokens: int = Field(default=1024, ge=1, le=32768, strict=True)
     maxRuntimeSeconds: int = Field(default=1800, ge=1, le=86400, strict=True)
-    spendMode: str
-    maxSpendMicroUsd: int | None = Field(default=None, ge=0, strict=True)
+    spendMode: Literal["no_hard_dollar_cap", "usd_app_meter"]
+    maxSpendMicroUsd: int | None = Field(default=None, ge=0, le=2**53 - 1, strict=True)
 
     @model_validator(mode="after")
-    def explicit_unsupported_spend(self) -> ExecutionLimits:
-        if self.spendMode != "no_hard_dollar_cap" or self.maxSpendMicroUsd is not None:
+    def explicit_spend_contract(self) -> ExecutionLimits:
+        if (self.spendMode == "usd_app_meter") != (self.maxSpendMicroUsd is not None):
             raise ValueError(
-                "A finite dollar cap is unsupported by the current gateway attempt envelope. "
-                "Select no_hard_dollar_cap explicitly; request/runtime limits are not a bill cap."
+                "A finite dollar cap requires usd_app_meter and an explicit maxSpendMicroUsd. "
+                "no_hard_dollar_cap has no monetary maximum; request/runtime limits are not a bill cap."
             )
         return self
 

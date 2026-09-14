@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any, Literal, TYPE_CHECKING
@@ -16,6 +17,8 @@ from ..agents.tool_exec import ToolContext, ToolExecutor, validate_args
 from ..agents.tools import ToolRegistry, ToolRisk, ToolSpec
 from ..agents.turn_checkpoint import TurnCheckpoint
 from ..auth.base import AuthenticatedUser
+from ..hard_quota.coverage import reservation_bounds
+from ..hard_quota.models import Surface
 from ..memory.context_refs import MemoryContextBinding, MemoryReference
 from ..memory.preferences import MemoryPreference, MemoryPreferenceConflict, MemoryPreferenceUnavailable
 from ..policy.models import PolicyRequest
@@ -26,6 +29,8 @@ from .automation_common import (
     APPROVAL_SECONDS, MAX_APPROVALS_PER_STEP, AutomationError, digest, exact_arguments, stable_id, utc,
 )
 from .automation_models import AutomationOwner, EffectIntent, InvocationDraft, WorkflowCheckpoint
+from .monetary_ledger import compact_money, reserve_money, settle_money
+from .monetary_quotes import operation_impact, quote_for_call, require_quote_current, run_account, same_prices
 
 if TYPE_CHECKING:
     from .automation_service import WorkflowAutomationService
@@ -50,6 +55,7 @@ class RunController:
         self._dispatch_sequence = 0
         self._approved_operation = state.draft.operationId if state.draft and user else None
         self._aliases: dict[str, str] = {}
+        self._local_zero: ContextVar[bool] = ContextVar("workflow_local_zero", default=False)
 
     @property
     def restored(self) -> TurnCheckpoint | None:
@@ -77,6 +83,9 @@ class RunController:
         self.service.require_enabled(scheduling=self.current.scheduleId is not None)
         owner = await self.service.owner(self.owner_id)
         handle = owner.value.runs[self.current.runId]
+        account = run_account(owner.value, self.current)
+        if account is not None and account.blocked:
+            raise AutomationError("budget_stopped", "The monetary accounting contract no longer admits work.")
         if (
             owner.value.epoch != self.current.ownerEpoch or not handle.active or handle.terminal
             or owner.now >= utc(self.current.deadline)
@@ -175,6 +184,7 @@ class RunController:
         self._dispatch_sequence = 0
 
     async def before_model(self, state: TurnCheckpoint, params: dict[str, Any]) -> None:
+        self._local_zero.set(False)
         await self.begin(state, "model", {"messages": state.conversation, "params": params})
 
     async def before_tool(
@@ -186,6 +196,9 @@ class RunController:
         definition = self._executor.get(tool) if self._executor else None
         if definition is not None and validate_args(definition.parameters, arguments):
             raise AutomationError("invalid_arguments", "Tool arguments do not match the approved schema.")
+        impact = operation_impact(definition, contract)
+        if self.current.limits.maxSpendMicroUsd is not None and impact.coverage != "bounded":
+            raise AutomationError("spend_unbounded", "This exact tool has no proven USD application-meter bound.")
         actor = await self.service.access.actor(self.owner_id, self.user)
         canonical = next(
             (name for name, alias in self.current_aliases().items() if alias == tool), tool,
@@ -208,7 +221,15 @@ class RunController:
                 or draft.destination != self.service.access.destination(self.bundle, tool, arguments)
             ):
                 raise AutomationError("grant_rejected", "No current one-time approval authorizes this exact call.")
+            require_quote_current(
+                self.current, draft, run_account((await self.service.owner(self.owner_id)).value, self.current),
+                definition=definition, now=now, challenged=True,
+            )
         await self.begin(state, "tool", {"tool": tool, "arguments": arguments, "contract": contract})
+        self._local_zero.set(impact.coverage == "bounded" and (
+            self.current.limits.maxSpendMicroUsd is not None
+            or (self.current.draft is not None and self.current.draft.spend is not None)
+        ))
 
     def current_aliases(self) -> dict[str, str]:
         return self._aliases
@@ -253,13 +274,13 @@ class RunController:
             handle.operationFloor = max(handle.operationFloor, self._number)
             # The fenced continuation is now past this operation. Its permanent
             # floor prevents replay; delivered ledger rows retain the accounting.
-            owner.effects = {
-                key: effect for key, effect in owner.effects.items()
-                if not (
+            for key, effect in list(owner.effects.items()):
+                if (
                     effect.runId == self.current.runId and effect.operationId == self._operation
                     and effect.state == "complete" and (effect.usage is None or effect.delivered)
-                )
-            }
+                ):
+                    compact_money(owner, effect)
+                    del owner.effects[key]
 
         await self.service.mutate_owner(self.owner_id, floor)
         if self._approved_operation == self._operation:
@@ -308,6 +329,11 @@ class RunController:
             createdAt=now, expiresAt=min(self.current.deadline, now + timedelta(seconds=APPROVAL_SECONDS)),
             state="pending", challenge=None, challengeGeneration=0, decidedAt=None,
         )
+        pending.spend = quote_for_call(
+            self.current, pending,
+            run_account((await self.service.owner(self.owner_id)).value, self.current),
+            definition=self._executor.get(draft.tool) if self._executor else None, now=now,
+        )
         updated = self.current.model_copy(update={
             "turn": state, "draft": pending, "status": "awaiting_approval",
             "operationId": None, "operationState": "idle", "leaseId": None,
@@ -335,13 +361,17 @@ class RunController:
 
     async def before_effect(self, effect: str) -> None:
         await self.check_current()
+        if self._local_zero.get() or self.current.limits.maxSpendMicroUsd is not None:
+            raise AutomationError("spend_unbounded", "This operation does not admit ambient metered effects.")
         if self.bundle.safeOnly:
             raise AutomationError("unsafe_effect", "Safe scheduled work cannot perform an ambient mutation.")
 
     async def before_dispatch(
-        self, surface: str, payload: dict[str, Any], *, deployment: str | None, target: str | None,
+        self, surface: Surface, payload: dict[str, Any], *, deployment: str | None, target: str | None,
     ) -> str:
         await self.check_current()
+        if self._local_zero.get():
+            raise AutomationError("zero_cost_effect", "An exact local-only operation cannot dispatch a metered request.")
         if self._operation is None or self.current.operationState != "dispatched":
             raise AutomationError("operation_missing", "Egress has no claimed workflow operation.")
         self._dispatch_sequence += 1
@@ -356,11 +386,20 @@ class RunController:
                 break
         prices = self.service.state.usage.pricing.snapshot_token_prices(model_id)
         rate = prices.rate(model_id)
+        bound = reservation_bounds(
+            surface, payload, deployment=deployment, catalog=self.service.state.catalog,
+            pricing=prices, attempts=None,
+        ) if self.current.limits.maxSpendMicroUsd is not None else None
 
         def claim(owner: AutomationOwner, now: datetime) -> None:
             handle = owner.runs[self.current.runId]
             if handle.terminal or not handle.active or identifier in owner.effects:
                 raise AutomationError("operation_replayed", "The dispatch cannot be repeated.")
+            if bound is not None and any(
+                effect.runId == self.current.runId and effect.operationId == self._operation
+                and effect.category == "dispatch" for effect in owner.effects.values()
+            ):
+                raise AutomationError("operation_replayed", "The capped operation already claimed its one dispatch.")
             if handle.dispatches >= self.current.limits.maxApplicationDispatches:
                 raise AutomationError("dispatch_limit", "The run's application-dispatch limit was reached.")
             if surface == "chat":
@@ -373,6 +412,13 @@ class RunController:
                     raise AutomationError("output_limit", "The adapted request does not carry the run's output bound.")
                 handle.modelCalls += 1
             handle.dispatches += 1
+            money = reserve_money(
+                owner, self.current.runId, bound,
+                approval_spend_digest=(
+                    self.current.draft.spend.quoteDigest
+                    if self.current.draft is not None and self.current.draft.spend is not None else None
+                ),
+            ) if bound is not None else None
             usage = UsageRecord(
                 id="wf-use-" + identifier, userId=self.owner_id, sessionId=self.current.sessionId,
                 provider=descriptor.provider if surface in {"chat", "embedding"} else surface,
@@ -391,21 +437,65 @@ class RunController:
                 operationId=self._operation or "", category="dispatch",
                 payloadDigest=digest({"surface": surface, "payload": payload, "deployment": deployment, "target": target}),
                 state="dispatched", startedAt=now, resultDigest=None, usage=usage, delivered=False,
+                money=money,
             )
 
-        await self.service.mutate_owner(self.owner_id, claim)
+        try:
+            await self.service.mutate_owner(self.owner_id, claim)
+        except AutomationError as exc:
+            if bound is not None and exc.code in {"spend_limit", "spend_unbounded", "budget_stopped"}:
+                await self.refuse_undispatched_model(exc.code)
+            raise
         return identifier
+
+    async def refuse_undispatched_model(self, reason: str) -> None:
+        operation = self._operation
+        if operation is None or ":model:" not in operation:
+            return
+        identity = stable_id(self.owner_id, self.current.runId, operation)
+
+        def refuse(owner: AutomationOwner, now: datetime) -> None:
+            logical = owner.effects.get(identity)
+            if logical is None or logical.state != "dispatched":
+                raise AutomationError("accounting_changed", "The model's dispatch ownership changed.")
+            if any(
+                effect.runId == self.current.runId and effect.operationId == operation
+                and effect.category == "dispatch" for effect in owner.effects.values()
+            ):
+                return
+            logical.state = "complete"
+            logical.resultDigest = digest({"notDispatched": reason})
+
+        updated = await self.service.mutate_owner(self.owner_id, refuse)
+        if updated.value.effects[identity].state == "complete":
+            await self.save(self.current.model_copy(update={"operationState": "complete"}, deep=True))
 
     async def authorize_dispatch(self, ticket: str) -> None:
         await self.check_current()
+        if self.current.limits.maxSpendMicroUsd is not None:
+            owner = await self.service.owner(self.owner_id)
+            effect = owner.value.effects.get(ticket)
+            if effect is None or effect.money is None or effect.money.phase != "held" or effect.usage is None:
+                raise AutomationError("accounting_changed", "The dispatch has no current monetary hold.")
+            bound = effect.money.bounds
+            if not same_prices(
+                self.service.state.usage.pricing, effect.usage.model, version=bound.priceVersion,
+                input_rate=bound.inputRate, output_rate=bound.outputRate,
+            ):
+                raise AutomationError("spend_quote_stale", "The price snapshot changed before dispatch.")
 
     async def after_dispatch(
         self, ticket: str, *, usage: dict[str, Any] | None, completed: bool, outcome: str,
     ) -> None:
         def finish(owner: AutomationOwner, now: datetime) -> None:
             effect = owner.effects.get(ticket)
-            if effect is None or effect.runId != self.current.runId or effect.state != "dispatched":
+            identity = digest({"completed": completed, "outcome": outcome, "usage": usage})
+            if effect is None or effect.runId != self.current.runId:
                 raise AutomationError("accounting_changed", "The dispatch receipt has no matching intent.")
+            if effect.state != "dispatched":
+                if effect.resultDigest == identity:
+                    return
+                raise AutomationError("accounting_changed", "The dispatch outcome is already recorded differently.")
             record = effect.usage
             if record is None:
                 raise AutomationError("accounting_changed", "The dispatch lost its price/usage snapshot.")
@@ -429,10 +519,12 @@ class RunController:
                 record.costKnown = estimate.known
                 record.estCostMicroUsd = estimate.micro_usd
                 record.pricingBasis = "input_output_tokens"
-            effect.state = "complete" if completed else "unknown"
-            effect.resultDigest = digest({
-                "completed": completed, "outcome": outcome, "usage": usage,
-            })
+            if effect.money is not None:
+                settle_money(owner, effect, completed=completed, usage=usage, outcome=outcome)
+            effect.state = "complete" if completed and (
+                effect.money is None or effect.money.phase == "settled"
+            ) else "unknown"
+            effect.resultDigest = identity
 
         await self.service.mutate_owner(self.owner_id, finish)
 
