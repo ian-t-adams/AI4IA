@@ -12,6 +12,7 @@ from .automation_common import AutomationError, utc
 from .automation_models import (
     AutomationOwner, WorkflowSchedule, persisted_model, writable_body,
 )
+from .monetary_ledger import validate_money_transition
 from .record_types import (
     AUTOMATION_ID_PREFIX, AUTOMATION_OWNER_ID, AUTOMATION_OWNER_KIND, AUTOMATION_SCHEDULE_KIND,
 )
@@ -49,6 +50,7 @@ def _assert_owner(prior: AutomationOwner, value: AutomationOwner) -> None:
         or value.requestFloor < prior.requestFloor
     ):
         raise AutomationError("state_corrupt", "An owner transition changed its durable identity.")
+    validate_money_transition(prior, value)
 
 
 def _assert_schedule(

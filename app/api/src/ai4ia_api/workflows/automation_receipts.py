@@ -11,7 +11,9 @@ from ..model_evidence import ModelCallRecorder
 from ..receipts import ExecutionReceipt, ReceiptRuntime, enforce_receipt_budget
 from ..sessions.models import ActivityStep, Message, MessageRole, MessageStatus
 from ..usage.models import TokenUsage
+from ..usage.workflow_evidence import ReceiptApprovalSpend, ReceiptRunBudget, ReceiptWorkflowMoney
 from .automation_models import TERMINAL_STATES, WorkflowCheckpoint
+from .automation_common import digest
 from .durable import durable_message_ids
 from .receipts import workflow_activity, workflow_receipt
 from .runner import WorkflowRunResult, WorkflowStepResult
@@ -90,6 +92,28 @@ def project_message(state: WorkflowCheckpoint, previous: Message | None = None) 
         receipt.status = "incomplete"
         receipt.partial = True
     receipt.notes.append("durable_exact_call_v3")
+    quotes = [
+        draft.spend for draft in [*state.approvalHistory, *([state.draft] if state.draft else [])]
+        if draft.spend is not None
+    ]
+    if state.budgetEvidence is not None or quotes:
+        receipt.workflowMoney = ReceiptWorkflowMoney(
+            budget=ReceiptRunBudget.model_validate(
+                state.budgetEvidence.model_dump(mode="json"),
+            ) if state.budgetEvidence else None,
+            quotes=[
+                ReceiptApprovalSpend(
+                    quoteDigest=quote.quoteDigest, bindingDigest=quote.bindingDigest,
+                    currency=quote.impact.currency, coverage=quote.impact.coverage,
+                    amountMicroUsd=quote.impact.amountMicroUsd,
+                    priceVersion=quote.impact.bounds.priceVersion if quote.impact.bounds else None,
+                    attemptVersion=quote.impact.bounds.attemptVersion if quote.impact.bounds else None,
+                    budgetId=quote.budget.budgetId, budgetRevision=quote.budget.revision,
+                    remainingMicroUsd=quote.budget.remainingMicroUsd,
+                ) for quote in quotes[-4:]
+            ],
+            quoteCount=len(quotes), quotesDigest=digest([quote.quoteDigest for quote in quotes]),
+        )
     activity = workflow_activity(finished)
     if current is not None:
         activity.extend(current.activity)
