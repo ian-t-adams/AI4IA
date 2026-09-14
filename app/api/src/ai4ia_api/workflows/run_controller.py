@@ -17,6 +17,7 @@ from ..agents.tool_exec import ToolContext, ToolExecutor, validate_args
 from ..agents.tools import ToolRegistry, ToolRisk, ToolSpec
 from ..agents.turn_checkpoint import TurnCheckpoint
 from ..auth.base import AuthenticatedUser
+from ..gateway.attempts import current_attempt_envelope
 from ..hard_quota.coverage import reservation_bounds
 from ..hard_quota.models import Surface
 from ..memory.context_refs import MemoryContextBinding, MemoryReference
@@ -81,6 +82,7 @@ class RunController:
 
     async def check_current(self) -> datetime:
         self.service.require_enabled(scheduling=self.current.scheduleId is not None)
+        self.service.require_spend_support(self.bundle, self.current.limits)
         owner = await self.service.owner(self.owner_id)
         handle = owner.value.runs[self.current.runId]
         account = run_account(owner.value, self.current)
@@ -388,7 +390,9 @@ class RunController:
         rate = prices.rate(model_id)
         bound = reservation_bounds(
             surface, payload, deployment=deployment, catalog=self.service.state.catalog,
-            pricing=prices, attempts=None,
+            pricing=prices, attempts=current_attempt_envelope(
+                surface, payload, deployment=deployment, target=target, owner=self.owner_id,
+            ),
         ) if self.current.limits.maxSpendMicroUsd is not None else None
 
         def claim(owner: AutomationOwner, now: datetime) -> None:
@@ -449,6 +453,7 @@ class RunController:
         return identifier
 
     async def refuse_undispatched_model(self, reason: str) -> None:
+        """Close only a typed admission refusal before any recorded dispatch."""
         operation = self._operation
         if operation is None or ":model:" not in operation:
             return

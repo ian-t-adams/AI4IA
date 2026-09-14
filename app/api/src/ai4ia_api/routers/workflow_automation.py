@@ -176,14 +176,15 @@ async def config(request: Request, user: AuthenticatedUser = Depends(get_current
         settings.workflow_approvals_enabled and current.host is not None
         and request.app.state.usage.enabled and not settings.hard_quota_enabled
     )
+    monetary = available and current.monetary_available()
     return {
         "approvalsAvailable": available,
         "schedulesAvailable": available and settings.workflow_scheduling_enabled,
         "maxSchedules": MAX_SCHEDULES, "maxRuntimeSeconds": settings.durable_workflow_timeout_seconds,
         "hardDollarCapAvailable": False, "spendMode": "no_hard_dollar_cap",
-        "monetaryCapAvailable": False,
+        "monetaryCapAvailable": monetary,
         "monetaryCapProfile": "stateless_text_only",
-        "monetaryCapUnavailableReason": "verified_gateway_required",
+        "monetaryCapUnavailableReason": None if monetary else "verified_gateway_required",
     }
 
 

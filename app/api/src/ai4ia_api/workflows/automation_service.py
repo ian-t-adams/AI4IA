@@ -3,13 +3,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 from uuid import uuid4
 
 from ..agents.approvals import consume_grant, draft_for_call, mint_pending_approval
 from ..auth.base import AuthenticatedUser
+from ..gateway.attempts import no_replay_scope
+from ..hard_quota.coverage import AttemptEnvelope
+from ..hard_quota.dispatch import AdmissionController, admission_scope
+from ..hard_quota.models import QuotaError
 from ..policy.context import unattended_policy_scope
 from ..policy.models import PolicyError
 from ..request_constraints import automatic_memory_allowed, constrain_request, fresh_session_required, tools_allowed
@@ -73,13 +78,40 @@ class WorkflowAutomationService:
             raise AutomationError(
                 "spend_profile_unsupported", "The capped profile cannot omit a selected tool contract.", status=422,
             )
-        # A local bounds fixture or an operator acknowledgment is not a shipping
-        # request-level transport proof. Integration remains explicitly absent.
-        raise AutomationError(
-            "spend_transport_unavailable",
-            "A finite USD application-meter cap requires a verified bounded gateway transport.",
-            status=422,
-        )
+        if not self.monetary_available():
+            raise AutomationError(
+                "spend_transport_unavailable",
+                "A finite USD application-meter cap requires a verified bounded gateway transport.",
+                status=422,
+            )
+
+    def monetary_available(self) -> bool:
+        admission = getattr(self.state, "hard_quota", None)
+        if (
+            self.state.settings.hard_quota_enabled
+            or not isinstance(admission, AdmissionController) or admission.enabled
+        ):
+            return False
+        try:
+            envelope = getattr(self.state.gateway, "attempt_capability", None)
+        except QuotaError:
+            return False
+        return isinstance(envelope, AttemptEnvelope) and envelope.max_attempts == 1
+
+    @contextmanager
+    def monetary_scope(self, owner: str, limits: ExecutionLimits) -> Iterator[None]:
+        if limits.maxSpendMicroUsd is None:
+            yield
+            return
+        admission = getattr(self.state, "hard_quota", None)
+        if not isinstance(admission, AdmissionController) or admission.enabled:
+            raise AutomationError(
+                "hard_quota_durable_unsupported", "Hard-quota durable execution remains unsupported.",
+            )
+        # The caller has revalidated the canonical run and current unattended
+        # policy. This reuses the existing owner boundary, never queued JWTs.
+        with admission_scope(admission, owner), no_replay_scope(owner):
+            yield
 
     async def owner(self, owner_id: str, *, create: bool = False) -> Stored[AutomationOwner]:
         current = await self.store.read_owner(owner_id)
@@ -600,6 +632,7 @@ class WorkflowAutomationService:
         try:
             actor = await self.access.recheck(state.bundle, user=user)
             await self.access.check_context(state)
+            self.require_spend_support(state.bundle, state.limits)
             surface = await self.access.surface(
                 actor, state.bundle.workflow, state.bundle.agents, state.step,
                 session_id=state.sessionId, documents=state.bundle.selectedDocuments,
@@ -630,7 +663,10 @@ class WorkflowAutomationService:
             raise AutomationError("context_revoked", "The execution source was cleared.")
         remaining = max(0.001, (state.deadline - now).total_seconds())
         try:
-            with unattended_policy_scope(self.state.policy, owner), workflow_execution_scope(control):
+            with (
+                unattended_policy_scope(self.state.policy, owner), workflow_execution_scope(control),
+                self.monetary_scope(owner, state.limits),
+            ):
                 async with asyncio.timeout(remaining):
                     step = bundle.workflow.steps[state.step]
                     result = await run_workflow_step(
@@ -647,6 +683,8 @@ class WorkflowAutomationService:
         except TimeoutError:
             state = await self.stop(owner, run_id, "timed_out", "runtime_exceeded")
             return {"terminal": True, "status": state.status}
+        if state.limits.maxSpendMicroUsd is not None and result.admission_refused:
+            await control.refuse_undispatched_model("spend_admission_refused")
         try:
             state, message = await self.load(owner, run_id)
         except SessionNotFoundError:

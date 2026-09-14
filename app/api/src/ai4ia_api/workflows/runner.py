@@ -141,6 +141,7 @@ class StepOutcome:
     paused: bool = False
     continuation: TurnCheckpoint | None = None
     failure_code: str | None = None
+    admission_refused: bool = False
 
 
 async def run_workflow_step(
@@ -388,6 +389,7 @@ async def run_workflow_step(
         return outcome
     except AgentRunFailed as exc:
         from .automation_common import AutomationError
+        from ..hard_quota.models import QuotaError
         if isinstance(exc.cause, ModelGatewayError):
             logger.warning(
                 "workflow '%s' step %d (agent=%s) gateway failed status=%d",
@@ -404,6 +406,7 @@ async def run_workflow_step(
             usage=exc.partial.usage,
             fatal=True,
             failure_code=exc.cause.code if isinstance(exc.cause, AutomationError) else None,
+            admission_refused=isinstance(exc.cause, QuotaError),
         )
     except Exception:  # noqa: BLE001 — total runner: never propagate.
         logger.warning(
