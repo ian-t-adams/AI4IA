@@ -341,6 +341,7 @@ def bound_custom_domains(app: Any) -> dict[str, str]:
 @dataclass(frozen=True)
 class RevisionObservation:
     name: str
+    app_id: str
     detail: dict[str, Any]
     image: str
     minReplicas: int
@@ -415,6 +416,7 @@ def read_current_observation(
     resource_group: str,
     name: str,
     *,
+    subscription: str | None = None,
     reference_revision: str | None = None,
     allow_absent: bool = False,
     read: Callable[[Sequence[str]], Any] | None = None,
@@ -422,6 +424,8 @@ def read_current_observation(
     """Bind exact revision templates to stable app routing, never to desired images."""
     query = read or az_json
     scope = ["-g", resource_group, "-n", name]
+    if subscription is not None:
+        scope.extend(["--subscription", subscription])
     try:
         app = query(["containerapp", "show", *scope])
     except AzError as exc:
@@ -432,8 +436,11 @@ def read_current_observation(
         return None
     if not isinstance(app, dict):
         raise AzError(f"{name}: app read returned no usable state")
-    app_id, subscription = _app_identity(app, resource_group, name)
-    scope.extend(["--subscription", subscription])
+    app_id, observed_subscription = _app_identity(app, resource_group, name)
+    if subscription is not None and subscription.casefold() != observed_subscription.casefold():
+        raise AzError(f"{name}: app read returned a different subscription")
+    if subscription is None:
+        scope.extend(["--subscription", observed_subscription])
     current = traffic_revision(app)
     if revisions_mode(app).casefold() == "single":
         if current != (_properties(app).get("latestReadyRevisionName") or None):
@@ -452,7 +459,7 @@ def read_current_observation(
         image, minimum = container_image(detail), min_replicas(detail)
         if image is None or minimum is None:
             raise AzError(f"{name}: revision {revision} has incomplete image or scale metadata")
-        return RevisionObservation(revision, detail, image, minimum)
+        return RevisionObservation(revision, app_id, detail, image, minimum)
 
     serving = read_revision(current) if current else None
     reference = (
@@ -465,7 +472,7 @@ def read_current_observation(
     _app_identity(after, resource_group, name)
     if _app_observation_key(app) != _app_observation_key(after):
         raise AzError(f"{name}: app changed while reading exact revision metadata")
-    return CurrentObservation(app, subscription, serving, reference)
+    return CurrentObservation(app, observed_subscription, serving, reference)
 
 
 # --------------------------------------------------------------------------
@@ -807,6 +814,8 @@ def _restoration_problems(
     serving = observation.serving
     if serving is None:
         return ["no revision is receiving traffic"]
+    if serving.app_id.casefold() != target.app_id.casefold():
+        return ["serving revision is outside the captured app resource scope"]
     problems = rollout_problems(
         service=snapshot.service,
         previous_revision=None,
@@ -1698,6 +1707,7 @@ def confirm_restored(
         try:
             observation = read_current_observation(
                 resource_group, snapshot.name,
+                subscription=target.app_id.split("/")[2],
                 reference_revision=(
                     pending_revision if snapshot.revisionsMode.casefold() == "single" else None
                 ),

@@ -2129,6 +2129,46 @@ class ServingRevisionContractTests(unittest.TestCase):
         self.assertEqual(len([call for call in az.calls if "copy" in call and APPS["api"] in call]), 1)
         self.assertEqual(self.snapshot(az).image, RESTORED_IMAGE)
 
+    def test_confirmation_stays_bound_to_the_written_subscription(self) -> None:
+        other_subscription = "00000000-0000-0000-0000-000000000002"
+        for wrong_response in (False, True):
+            with self.subTest(wrong_response=wrong_response):
+                az = pending_world()
+                copied = False
+                confirmation_calls = []
+
+                def changed_default(args, **kwargs):
+                    nonlocal copied
+                    argv = list(args)
+                    if argv[:3] == ["containerapp", "revision", "copy"] and APPS["api"] in argv:
+                        copied = True
+                        return az(argv, **kwargs)
+                    if copied and APPS["api"] in argv:
+                        confirmation_calls.append(argv)
+                        requested = FakeAz._flag(argv, "--subscription")
+                        if wrong_response or requested in (None, other_subscription):
+                            translated = [
+                                SUBSCRIPTION if value == other_subscription else value for value in argv
+                            ]
+                            code, output, error = az(translated, **kwargs)
+                            if code == 0:
+                                payload = json.loads(output)
+                                payload["id"] = payload["id"].replace(SUBSCRIPTION, other_subscription)
+                                output = json.dumps(payload)
+                            return code, output, error
+                    return az(argv, **kwargs)
+
+                code, out, _ = RollbackTests().rollback(inert_az(az, changed_default))
+                self.assertEqual(code, 4 if wrong_response else 0, out)
+                self.assertTrue(confirmation_calls)
+                self.assertTrue(all(
+                    FakeAz._flag(call, "--subscription") == SUBSCRIPTION for call in confirmation_calls
+                ))
+                if wrong_response:
+                    self.assertIn("different subscription", out)
+                    self.assertIn('"outcome":"unconfirmed"', out)
+                    self.assertEqual(out.count('"outcome":"restored"'), 2)
+
     def test_multiple_mode_restores_exact_weights_without_copying_the_unrouted_latest(self) -> None:
         az = pending_world()
         props = az.apps[APPS["api"]]["properties"]
