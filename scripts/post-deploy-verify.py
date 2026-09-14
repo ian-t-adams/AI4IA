@@ -90,6 +90,7 @@ IDLE_RUNNING_STATES = frozenset({"scaledtozero", "scaleddown", "stopped"})
 
 MAX_SAFE_CHARS = 512
 MAX_BODY_BYTES = 64 * 1024
+MAX_CUTOVER_DIFFERENCE_AREAS = 12
 
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _ENVIRONMENT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,60}\Z", re.IGNORECASE)
@@ -829,6 +830,82 @@ def _pending_cutover_problems(observation: CurrentObservation) -> list[str]:
     )
 
 
+def _template_difference_areas(left: dict[str, Any], right: dict[str, Any]) -> tuple[list[str], bool]:
+    """Use fixed area labels, never template values or caller-controlled field names."""
+    def encoded(value: Any) -> str:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+    def field(value: dict[str, Any], key: str) -> tuple[bool, Any]:
+        return key in value, value.get(key)
+
+    areas = []
+    container_fields = ("name", "image", "env", "resources", "command", "args", "probes", "volumeMounts")
+    for collection in ("containers", "initContainers"):
+        if encoded(field(left, collection)) == encoded(field(right, collection)):
+            continue
+        before, after = left.get(collection), right.get(collection)
+        if not isinstance(before, list) or not isinstance(after, list) or len(before) != len(after):
+            areas.append(f"{collection}.layout")
+            continue
+        for key in container_fields:
+            if encoded([field(row, key) for row in before]) != encoded([field(row, key) for row in after]):
+                areas.append(f"{collection}.{key}")
+        before_other = [{k: v for k, v in row.items() if k not in container_fields} for row in before]
+        after_other = [{k: v for k, v in row.items() if k not in container_fields} for row in after]
+        if encoded(before_other) != encoded(after_other):
+            areas.append(f"{collection}.other")
+    scale_fields = ("minReplicas", "maxReplicas", "cooldownPeriod", "pollingInterval", "rules")
+    for key in scale_fields:
+        if encoded(field(left["scale"], key)) != encoded(field(right["scale"], key)):
+            areas.append(f"scale.{key}")
+    if encoded({k: v for k, v in left["scale"].items() if k not in scale_fields}) != encoded(
+        {k: v for k, v in right["scale"].items() if k not in scale_fields}
+    ):
+        areas.append("scale.other")
+    root_fields = ("volumes", "serviceBinds", "terminationGracePeriodSeconds")
+    for key in root_fields:
+        if encoded(field(left, key)) != encoded(field(right, key)):
+            areas.append(key)
+    known = {"containers", "initContainers", "scale", *root_fields}
+    if encoded({k: v for k, v in left.items() if k not in known}) != encoded(
+        {k: v for k, v in right.items() if k not in known}
+    ):
+        areas.append("other")
+    return areas[:MAX_CUTOVER_DIFFERENCE_AREAS], len(areas) > MAX_CUTOVER_DIFFERENCE_AREAS
+
+
+def _cutover_evidence(observation: CurrentObservation | None) -> dict[str, Any]:
+    if observation is None:
+        return {"observation": "unavailable"}
+    single = revisions_mode(observation.app).casefold() == "single"
+    serving = observation.serving
+    result: dict[str, Any] = {
+        "observation": "complete", "singleMode": single, "servingObserved": serving is not None,
+    }
+    if not single:
+        return result
+    props = _properties(observation.app)
+    result.update(
+        latestMatchesServing=bool(serving and props.get("latestRevisionName") == serving.name),
+        appProvisioningSucceeded=str(props.get("provisioningState", "")).casefold() == "succeeded",
+    )
+    if serving is None:
+        return {**result, "templateComparison": "unavailable"}
+    try:
+        desired = _comparable_template(props["template"])
+        actual = _comparable_template(serving.template)
+        areas, truncated = (
+            _template_difference_areas(json.loads(desired), json.loads(actual))
+            if desired != actual else ([], False)
+        )
+    except (AzError, ValueError, TypeError, RecursionError):
+        return {**result, "templateComparison": "invalid"}
+    return {
+        **result, "templateComparison": "equal" if desired == actual else "different",
+        "templateDifferenceAreas": areas, "differenceAreasTruncated": truncated,
+    }
+
+
 def _validate_restore_target(
     snapshot: AppSnapshot, observation: CurrentObservation
 ) -> RevisionObservation:
@@ -1531,6 +1608,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             image=observation.serving.image if observation and observation.serving else None,
             expected=expected_images.get(service),
             problems=problems or None,
+            cutover=_cutover_evidence(observation),
         )
         failures.extend(problems)
 
