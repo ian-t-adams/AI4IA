@@ -16,15 +16,15 @@ This script is the enforced gate that runs *after* `azd deploy`:
 
 ``capture``   Record, per Container App, the revision that is currently taking
               traffic (plus its image, revision mode, and min-replica setting).
-              Run this BEFORE `azd deploy`; it is the rollback target.
+              Run this BEFORE `azd provision`; it is the rollback target.
 
 ``verify``    Assert the deploy actually landed and the app actually serves:
               rollout, API live/ready, web root, model-proxy ingress, custom
               domain bindings, and one authenticated canary that traverses the
               real governed path FastAPI -> SimpleL7Proxy -> APIM -> Foundry.
 
-``rollback``  Restore the captured revision for every app whose active revision
-              moved. Run this only when ``verify`` failed.
+``rollback``  Restore the captured revision when serving or pending state moved.
+              The workflow selects which post-capture failures require this.
 
 Design notes
 ------------
@@ -93,6 +93,12 @@ MAX_BODY_BYTES = 64 * 1024
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _ENVIRONMENT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,60}\Z", re.IGNORECASE)
 _MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_APP_ID_RE = re.compile(
+    r"/subscriptions/([0-9a-f-]{36})/resourceGroups/([^/]+)/providers/"
+    r"Microsoft\.App/containerApps/([^/]+)\Z",
+    re.IGNORECASE,
+)
+_REVISION_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,254}\Z")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # Same redaction contract as scripts/voice-live-canary.py. Keep them in step:
 # both write operator-facing output into a CI log that is retained.
@@ -291,19 +297,18 @@ def min_replicas(app: Any) -> int | None:
     scale = template.get("scale")
     scale = scale if isinstance(scale, dict) else {}
     value = scale.get("minReplicas")
-    return value if isinstance(value, int) else None
+    return value if type(value) is int and value >= 0 else None
 
 
 def container_image(app: Any) -> str | None:
     template = _properties(app).get("template")
     template = template if isinstance(template, dict) else {}
     containers = template.get("containers")
-    if not isinstance(containers, list):
+    if not isinstance(containers, list) or not containers:
         return None
-    for container in containers:
-        if isinstance(container, dict) and isinstance(container.get("image"), str):
-            return container["image"]
-    return None
+    container = containers[0]
+    image = container.get("image") if isinstance(container, dict) else None
+    return image if isinstance(image, str) and image.strip() else None
 
 
 def ingress_fqdn(app: Any) -> str | None:
@@ -331,6 +336,143 @@ def bound_custom_domains(app: Any) -> dict[str, str]:
             binding = domain.get("bindingType")
             bound[domain["name"]] = binding if isinstance(binding, str) else "Unknown"
     return bound
+
+
+@dataclass(frozen=True)
+class RevisionObservation:
+    name: str
+    app_id: str
+    detail: dict[str, Any]
+    image: str
+    minReplicas: int
+
+    @property
+    def template(self) -> dict[str, Any]:
+        return _properties(self.detail)["template"]
+
+
+@dataclass(frozen=True)
+class CurrentObservation:
+    app: dict[str, Any]
+    subscription: str
+    serving: RevisionObservation | None
+    reference: RevisionObservation | None = None
+
+
+def _revision_name(value: Any, name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not _REVISION_NAME_RE.fullmatch(value)
+        or not value.startswith(f"{name}--")
+        or value == f"{name}--"
+    ):
+        raise AzError(f"{name}: revision identity is missing or outside the app scope")
+    return value
+
+
+def _app_identity(app: Any, resource_group: str, name: str) -> tuple[str, str]:
+    if not isinstance(app, dict) or app.get("name") != name:
+        raise AzError(f"{name}: app read returned a missing or mismatched identity")
+    resource_id = app.get("id")
+    match = _APP_ID_RE.fullmatch(resource_id) if isinstance(resource_id, str) else None
+    if (
+        match is None
+        or match[2].casefold() != resource_group.casefold()
+        or match[3] != name
+        or str(app.get("type", "")).casefold() != "microsoft.app/containerapps"
+    ):
+        raise AzError(f"{name}: app read returned an unknown or mismatched resource scope")
+    props = _properties(app)
+    config = props.get("configuration")
+    if (
+        not isinstance(config, dict)
+        or str(config.get("activeRevisionsMode", "")).casefold() not in {"single", "multiple"}
+        or not isinstance(config.get("ingress"), dict)
+        or not isinstance(props.get("template"), dict)
+        or not isinstance(props.get("provisioningState"), str)
+        or not props["provisioningState"]
+    ):
+        raise AzError(f"{name}: app read returned incomplete revision configuration")
+    for key in ("latestReadyRevisionName", "latestRevisionName"):
+        if key not in props:
+            raise AzError(f"{name}: app read is missing {key}")
+        if props[key] not in (None, ""):
+            _revision_name(props[key], name)
+    if props["latestReadyRevisionName"] and not props["latestRevisionName"]:
+        raise AzError(f"{name}: ready revision has no corresponding latest revision metadata")
+    return match[0], match[1]
+
+
+def _app_observation_key(app: dict[str, Any]) -> tuple[Any, ...]:
+    props = _properties(app)
+    return (
+        app.get("id"), app.get("name"), app.get("etag"), app.get("systemData"),
+        props.get("latestReadyRevisionName"), props.get("latestRevisionName"),
+        props.get("provisioningState"), props.get("configuration"), props.get("template"),
+    )
+
+
+def read_current_observation(
+    resource_group: str,
+    name: str,
+    *,
+    subscription: str | None = None,
+    reference_revision: str | None = None,
+    allow_absent: bool = False,
+    read: Callable[[Sequence[str]], Any] | None = None,
+) -> CurrentObservation | None:
+    """Bind exact revision templates to stable app routing, never to desired images."""
+    query = read or az_json
+    scope = ["-g", resource_group, "-n", name]
+    if subscription is not None:
+        scope.extend(["--subscription", subscription])
+    try:
+        app = query(["containerapp", "show", *scope])
+    except AzError as exc:
+        if allow_absent and _is_not_found(str(exc)):
+            return None
+        raise
+    if app is None and allow_absent:
+        return None
+    if not isinstance(app, dict):
+        raise AzError(f"{name}: app read returned no usable state")
+    app_id, observed_subscription = _app_identity(app, resource_group, name)
+    if subscription is not None and subscription.casefold() != observed_subscription.casefold():
+        raise AzError(f"{name}: app read returned a different subscription")
+    if subscription is None:
+        scope.extend(["--subscription", observed_subscription])
+    current = traffic_revision(app)
+    if revisions_mode(app).casefold() == "single":
+        if current != (_properties(app).get("latestReadyRevisionName") or None):
+            raise AzError(f"{name}: traffic and latest ready revision disagree")
+
+    def read_revision(revision: str) -> RevisionObservation:
+        revision = _revision_name(revision, name)
+        detail = query(["containerapp", "revision", "show", *scope, "--revision", revision])
+        if (
+            not isinstance(detail, dict)
+            or detail.get("name") != revision
+            or str(detail.get("id", "")).casefold() != f"{app_id}/revisions/{revision}".casefold()
+            or str(detail.get("type", "")).casefold() != "microsoft.app/containerapps/revisions"
+        ):
+            raise AzError(f"{name}: exact revision {revision} returned a mismatched identity")
+        image, minimum = container_image(detail), min_replicas(detail)
+        if image is None or minimum is None:
+            raise AzError(f"{name}: revision {revision} has incomplete image or scale metadata")
+        return RevisionObservation(revision, app_id, detail, image, minimum)
+
+    serving = read_revision(current) if current else None
+    reference = (
+        serving if reference_revision and reference_revision == current
+        else read_revision(reference_revision) if reference_revision else None
+    )
+    after = query(["containerapp", "show", *scope])
+    if not isinstance(after, dict):
+        raise AzError(f"{name}: app disappeared during exact revision reads")
+    _app_identity(after, resource_group, name)
+    if _app_observation_key(app) != _app_observation_key(after):
+        raise AzError(f"{name}: app changed while reading exact revision metadata")
+    return CurrentObservation(app, observed_subscription, serving, reference)
 
 
 # --------------------------------------------------------------------------
@@ -475,23 +617,32 @@ def snapshot_app(
     last_error = ""
     for attempt in range(1, max(1, attempts) + 1):
         try:
-            app = az_json(["containerapp", "show", "-g", resource_group, "-n", name])
+            observation = read_current_observation(resource_group, name, allow_absent=True)
+            if observation is None:
+                return AppSnapshot(service=service, name=name, exists=False)
+            revision = observation.serving
+            if revision is not None:
+                problems = rollout_problems(
+                    service=service,
+                    previous_revision=None,
+                    current_revision=revision.name,
+                    revision_detail=revision.detail,
+                    require_replicas=revision.minReplicas > 0,
+                )
+                if problems:
+                    raise AzError("; ".join(problems))
         except AzError as exc:
             last_error = str(exc)
-            if _is_not_found(last_error):
-                return AppSnapshot(service=service, name=name, exists=False)
         else:
-            if not isinstance(app, dict):
-                return AppSnapshot(service=service, name=name, exists=False)
             return AppSnapshot(
                 service=service,
                 name=name,
                 exists=True,
-                revision=traffic_revision(app),
-                revisionsMode=revisions_mode(app),
-                minReplicas=min_replicas(app),
-                image=container_image(app),
-                fqdn=ingress_fqdn(app),
+                revision=revision.name if revision else None,
+                revisionsMode=revisions_mode(observation.app),
+                minReplicas=revision.minReplicas if revision else None,
+                image=revision.image if revision else None,
+                fqdn=ingress_fqdn(observation.app),
             )
         if attempt < attempts:
             do_sleep(delay)
@@ -554,8 +705,8 @@ def rollout_problems(
             "azd reported success but Container Apps never promoted a new template"
         )
     elif previous_image and current_image and previous_image == current_image:
-        # A NEW revision running the OLD image. Capture happens after
-        # `azd provision`, so when the caller cannot name the intended image the
+        # A NEW revision running the OLD image. When the caller cannot name the
+        # intended image the
         # only available signal is that it must have moved; an unchanged one
         # means the revision was created by something other than this deploy.
         problems.append(
@@ -568,12 +719,18 @@ def rollout_problems(
         problems.append(f"{service}: revision {current_revision} returned no state")
         return problems
 
-    if props.get("active") is False:
+    if props.get("active") is not True:
         problems.append(f"{service}: revision {current_revision} is not active")
 
+    provisioned = props.get("provisioningState")
+    if not isinstance(provisioned, str) or provisioned.casefold() != "provisioned":
+        problems.append(
+            f"{service}: revision {current_revision} provisioningState is "
+            f"{provisioned or 'unknown'} (expected Provisioned)"
+        )
     health = props.get("healthState")
     health_key = health.lower() if isinstance(health, str) else ""
-    if health_key and health_key not in HEALTHY_HEALTH_STATES:
+    if health_key not in HEALTHY_HEALTH_STATES:
         problems.append(
             f"{service}: revision {current_revision} healthState is {health} (expected Healthy)"
         )
@@ -581,9 +738,9 @@ def rollout_problems(
     running_state = props.get("runningState")
     running_key = running_state.lower() if isinstance(running_state, str) else ""
     replicas = props.get("replicas")
-    replicas = replicas if isinstance(replicas, int) else None
+    replicas = replicas if type(replicas) is int and replicas >= 0 else None
 
-    if running_key and running_key not in RUNNING_STATES:
+    if running_key not in RUNNING_STATES:
         # Scaled to zero is only acceptable for an app configured to allow it;
         # the HTTP probe is what proves such an app can still serve.
         if not (running_key in IDLE_RUNNING_STATES and not require_replicas):
@@ -599,8 +756,109 @@ def rollout_problems(
     return problems
 
 
+def _comparable_template(template: dict[str, Any]) -> dict[str, Any]:
+    # A copy changes only its generated suffix; every other revision-scoped field matters.
+    return {key: value for key, value in template.items() if key != "revisionSuffix"}
+
+
+def _pending_cutover_problems(observation: CurrentObservation) -> list[str]:
+    if revisions_mode(observation.app).casefold() != "single":
+        return []
+    serving = observation.serving
+    props = _properties(observation.app)
+    if (
+        serving is None or props.get("latestRevisionName") != serving.name
+        or str(props.get("provisioningState", "")).casefold() != "succeeded"
+        or _comparable_template(props["template"]) != _comparable_template(serving.template)
+    ):
+        return [
+            "a pending or different desired template could still replace the serving revision"
+        ]
+    return []
+
+
+def _validate_restore_target(
+    snapshot: AppSnapshot, observation: CurrentObservation
+) -> RevisionObservation:
+    target = observation.reference
+    if (
+        target is None or target.name != snapshot.revision
+        or not snapshot.image or target.image != snapshot.image
+        or type(snapshot.minReplicas) is not int or target.minReplicas != snapshot.minReplicas
+    ):
+        raise AzError(
+            f"{snapshot.name}: captured image/scale does not match the exact captured revision; "
+            "the existing state cannot authorize a restore"
+        )
+    if revisions_mode(observation.app).casefold() != snapshot.revisionsMode.casefold():
+        raise AzError(f"{snapshot.name}: revision mode changed since capture")
+    # Inactive immutable sources legitimately have no running/provisioning state.
+    # Active sources must still be ready; neither case trusts the app's desired template.
+    active = _properties(target.detail).get("active")
+    if active is not False:
+        problems = rollout_problems(
+            service=snapshot.service,
+            previous_revision=None,
+            current_revision=target.name,
+            revision_detail=target.detail,
+            require_replicas=target.minReplicas > 0,
+        )
+        if problems:
+            raise AzError("; ".join(problems))
+    return target
+
+
+def _restoration_problems(
+    snapshot: AppSnapshot, observation: CurrentObservation, target: RevisionObservation
+) -> list[str]:
+    serving = observation.serving
+    if serving is None:
+        return ["no revision is receiving traffic"]
+    if serving.app_id.casefold() != target.app_id.casefold():
+        return ["serving revision is outside the captured app resource scope"]
+    problems = rollout_problems(
+        service=snapshot.service,
+        previous_revision=None,
+        current_revision=serving.name,
+        revision_detail=serving.detail,
+        require_replicas=target.minReplicas > 0,
+        current_image=serving.image,
+        expected_image=snapshot.image,
+    )
+    if (
+        not snapshot.image or serving.image != snapshot.image
+        or _comparable_template(serving.template) != _comparable_template(target.template)
+    ):
+        problems.append("serving revision does not match the captured template")
+    app = observation.app
+    props = _properties(app)
+    mode = revisions_mode(app).casefold()
+    if mode != snapshot.revisionsMode.casefold():
+        problems.append("revision mode changed since capture")
+    if mode == "single":
+        problems.extend(_pending_cutover_problems(observation))
+    else:
+        traffic = props["configuration"].get("ingress", {}).get("traffic")
+        if (
+            not isinstance(traffic, list) or not traffic
+            or any(
+                not isinstance(row, dict)
+                or type(row.get("weight")) is not int
+                or row["weight"] < 0
+                or (
+                    row["weight"] > 0
+                    and (row.get("revisionName") != snapshot.revision or row.get("latestRevision") is True)
+                )
+                for row in traffic
+            )
+            or sum(row["weight"] for row in traffic) != 100
+        ):
+            problems.append("traffic is not pinned entirely to the captured revision")
+    return problems
+
+
 def rollback_commands(
-    *, resource_group: str, snapshot: AppSnapshot, current_revision: str | None
+    *, resource_group: str, snapshot: AppSnapshot, observation: CurrentObservation
 ) -> list[list[str]]:
     """The `az` argv needed to put ``snapshot.revision`` back in front of traffic.
 
@@ -615,12 +873,17 @@ def rollback_commands(
 
     Returns an empty list when there is nothing to undo: the app never existed,
     it had no captured revision (a greenfield first deploy has nothing to roll
-    back TO), or it is already serving the captured revision.
+    back TO), or the captured revision is healthy with no pending cutover.
     """
 
     if not snapshot.exists or not snapshot.revision:
         return []
-    if current_revision and current_revision == snapshot.revision:
+    target = _validate_restore_target(snapshot, observation)
+    if (
+        observation.serving is not None
+        and observation.serving.name == snapshot.revision
+        and not _restoration_problems(snapshot, observation, target)
+    ):
         return []
     if snapshot.revisionsMode.strip().lower() == "multiple":
         return [
@@ -633,6 +896,8 @@ def rollback_commands(
                 resource_group,
                 "-n",
                 snapshot.name,
+                "--subscription",
+                observation.subscription,
                 "--revision-weight",
                 f"{snapshot.revision}=100",
             ]
@@ -646,6 +911,8 @@ def rollback_commands(
             resource_group,
             "-n",
             snapshot.name,
+            "--subscription",
+            observation.subscription,
             "--from-revision",
             snapshot.revision,
         ]
@@ -1126,7 +1393,7 @@ def await_rollout(
     sleep: Callable[[float], None] | None = None,
     deadline: Deadline | None = None,
     expected_image: str | None = None,
-) -> tuple[list[str], dict | None, str | None]:
+) -> tuple[list[str], CurrentObservation | None, str | None]:
     """Poll the rollout assertions until they pass or the budget runs out.
 
     Reading this ONCE is the most dangerous false positive available here.
@@ -1137,73 +1404,44 @@ def await_rollout(
     passing a bad one, because it turns a working deploy into an outage AND
     teaches everyone to distrust the gate.
 
-    Returns (problems, live app payload, current revision).
+    Returns (problems, stable app/revision observation, current revision).
     """
 
     do_sleep = sleep or time.sleep
     problems: list[str] = [f"{service}: rollout was never evaluated"]
-    app: dict | None = None
+    observation: CurrentObservation | None = None
     current: str | None = None
     for attempt in range(1, max(1, attempts) + 1):
-        app, current = None, None
-        payload: Any = None
-        read_error: str | None = None
+        observation, current = None, None
         try:
-            payload = az_json(
-                ["containerapp", "show", "-g", resource_group, "-n", snapshot.name]
+            observation = read_current_observation(
+                resource_group, snapshot.name
             )
         except AzError as exc:
-            read_error = str(exc)
-        if read_error is not None:
-            problems = [f"{service}: could not read {snapshot.name} ({read_error})"]
-        elif not isinstance(payload, dict):
-            # `az containerapp show` exits 0 with a null body for an app that is
-            # not there. Without this branch the previous attempt's problem list
-            # would be reported for a deleted app.
-            problems = [f"{service}: {snapshot.name} does not exist after deploy"]
+            problems = [f"{service}: could not read {snapshot.name} ({exc})"]
         else:
-            app = payload
-            current = traffic_revision(app)
-            detail: Any = None
-            if current:
-                try:
-                    detail = az_json(
-                        [
-                            "containerapp",
-                            "revision",
-                            "show",
-                            "-g",
-                            resource_group,
-                            "-n",
-                            snapshot.name,
-                            "--revision",
-                            current,
-                        ]
-                    )
-                except AzError:
-                    # A revision ARM has not finished materialising reads as
-                    # missing; rollout_problems reports it and the next attempt
-                    # tries again.
-                    detail = None
-            configured_min = min_replicas(app)
+            revision = observation.serving if observation else None
+            current = revision.name if revision else None
             problems = rollout_problems(
                 service=service,
                 previous_revision=snapshot.revision,
                 current_revision=current,
-                revision_detail=detail,
-                require_replicas=bool(configured_min and configured_min > 0),
+                revision_detail=revision.detail if revision else None,
+                require_replicas=bool(revision and revision.minReplicas > 0),
                 previous_image=snapshot.image,
-                current_image=container_image(app),
+                current_image=revision.image if revision else None,
                 expected_image=expected_image,
             )
+            if observation is not None:
+                problems.extend(f"{service}: {problem}" for problem in _pending_cutover_problems(observation))
         if not problems:
-            return [], app, current
+            return [], observation, current
         if attempt < attempts:
             if deadline is not None and deadline.expired():
                 problems.append(f"{service}: ran out of verification time budget")
-                return problems, app, current
+                return problems, observation, current
             do_sleep(delay)
-    return problems, app, current
+    return problems, observation, current
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -1218,7 +1456,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         if snapshot is None:
             failures.append(f"{service}: not present in the capture state file")
             continue
-        problems, app, current = await_rollout(
+        problems, observation, current = await_rollout(
             resource_group=state.resourceGroup,
             service=service,
             snapshot=snapshot,
@@ -1227,15 +1465,15 @@ def cmd_verify(args: argparse.Namespace) -> int:
             deadline=deadline,
             expected_image=expected_images.get(service),
         )
-        if app is not None:
-            live[service] = app
+        if observation is not None:
+            live[service] = observation.app
         emit(
             "rollout",
             service=service,
             app=snapshot.name,
             previous=snapshot.revision,
             current=current,
-            image=container_image(app) if app else None,
+            image=observation.serving.image if observation and observation.serving else None,
             expected=expected_images.get(service),
             problems=problems or None,
         )
@@ -1444,6 +1682,8 @@ def confirm_restored(
     resource_group: str,
     snapshot: AppSnapshot,
     replaced_revision: str | None,
+    target: RevisionObservation,
+    pending_revision: str | None,
     attempts: int = 12,
     delay: float = 10.0,
     sleep: Callable[[float], None] | None = None,
@@ -1453,29 +1693,45 @@ def confirm_restored(
     ``revision copy`` returning 0 means ARM accepted the request. Reporting
     "restored" on that alone is the same class of claim this whole gate exists
     to stop believing. What must be true is that the app is now serving a
-    revision that is NOT the failed one and that runs the captured image.
+    healthy revision running the captured template, with no pending Single-mode
+    candidate still active. Multiple-mode restoration instead pins all traffic
+    to the exact captured revision, even if it was already the heaviest target.
 
     Returns (confirmed, revision now serving).
     """
 
     do_sleep = sleep or time.sleep
     current: str | None = None
+    problems = ["restore was never evaluated"]
     for attempt in range(1, max(1, attempts) + 1):
         try:
-            app = az_json(
-                ["containerapp", "show", "-g", resource_group, "-n", snapshot.name]
+            observation = read_current_observation(
+                resource_group, snapshot.name,
+                subscription=target.app_id.split("/")[2],
+                reference_revision=(
+                    pending_revision if snapshot.revisionsMode.casefold() == "single" else None
+                ),
             )
-        except AzError:
-            app = None
-        if isinstance(app, dict):
-            current = traffic_revision(app)
-            image = container_image(app)
-            moved_off_the_failure = bool(current) and current != replaced_revision
-            image_matches = snapshot.image is None or image == snapshot.image
-            if moved_off_the_failure and image_matches:
+            if observation is None:
+                raise AzError(f"{snapshot.name}: app is missing during restore confirmation")
+            current = observation.serving.name if observation.serving else None
+            problems = _restoration_problems(snapshot, observation, target)
+            if snapshot.revisionsMode.casefold() == "single":
+                if not current or current in (replaced_revision, snapshot.revision):
+                    problems.append("the requested copy is not the serving revision")
+                if (
+                    pending_revision is None or observation.reference is None
+                    or _properties(observation.reference.detail).get("active") is not False
+                ):
+                    problems.append("the previous latest candidate is not confirmed inactive")
+            if not problems:
                 return True, current
+        except AzError as exc:
+            current = None
+            problems = [str(exc)]
         if attempt < attempts:
             do_sleep(delay)
+    emit("restore_confirmation", service=snapshot.service, problems=problems)
     return False, current
 
 
@@ -1487,13 +1743,18 @@ def cmd_rollback(args: argparse.Namespace) -> int:
         snapshot = state.app(service)
         if snapshot is None:
             continue
+        if not snapshot.exists or not snapshot.revision:
+            emit("rollback", service=service, outcome="skipped", detail="no captured rollback target")
+            continue
         # Everything for one app is wrapped, so a timeout or a transient ARM
         # error on the first app cannot abandon the other two mid-rollback.
         try:
             try:
-                app = az_json(
-                    ["containerapp", "show", "-g", state.resourceGroup, "-n", snapshot.name]
+                observation = read_current_observation(
+                    state.resourceGroup, snapshot.name, reference_revision=snapshot.revision
                 )
+                if observation is None:
+                    raise AzError(f"{snapshot.name}: app is missing")
             except AzError as exc:
                 emit("rollback", service=service, outcome="unreadable", detail=str(exc))
                 annotate(
@@ -1502,11 +1763,12 @@ def cmd_rollback(args: argparse.Namespace) -> int:
                 )
                 failed += 1
                 continue
-            current = traffic_revision(app) if isinstance(app, dict) else None
+            current = observation.serving.name if observation.serving else None
+            target = _validate_restore_target(snapshot, observation)
             commands = rollback_commands(
                 resource_group=state.resourceGroup,
                 snapshot=snapshot,
-                current_revision=current,
+                observation=observation,
             )
             if not commands:
                 emit(
@@ -1515,7 +1777,7 @@ def cmd_rollback(args: argparse.Namespace) -> int:
                     outcome="skipped",
                     current=current,
                     captured=snapshot.revision,
-                    detail="nothing to restore",
+                    detail="captured revision is healthy with no pending cutover",
                 )
                 continue
             issued = True
@@ -1534,7 +1796,7 @@ def cmd_rollback(args: argparse.Namespace) -> int:
                     annotate(
                         "error",
                         f"{service}: could not restore revision {snapshot.revision}; "
-                        "the app is still serving the failed deploy.",
+                        "the serving or pending failed-deploy state remains unverified.",
                     )
                     failed += 1
                     issued = False
@@ -1545,6 +1807,8 @@ def cmd_rollback(args: argparse.Namespace) -> int:
                 resource_group=state.resourceGroup,
                 snapshot=snapshot,
                 replaced_revision=current,
+                target=target,
+                pending_revision=_properties(observation.app).get("latestRevisionName") or None,
                 attempts=args.confirm_attempts,
                 delay=args.confirm_delay,
             )
@@ -1570,8 +1834,8 @@ def cmd_rollback(args: argparse.Namespace) -> int:
                 )
                 annotate(
                     "error",
-                    f"{service}: the restore was accepted but the app is not yet serving "
-                    f"the captured image. Check `az containerapp revision list -g "
+                    f"{service}: the restore was accepted but serving the captured template "
+                    f"without a pending cutover is not confirmed. Check `az containerapp revision list -g "
                     f"{state.resourceGroup} -n {snapshot.name}` before trusting this app.",
                 )
         except AzError as exc:
