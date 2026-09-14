@@ -1231,12 +1231,34 @@ subscriptions, or Azure Lighthouse authority; approve the identity's dedication
 separately. See [REST role-assignment scope semantics](https://learn.microsoft.com/rest/api/authorization/role-assignments/list-for-scope)
 and [transitive assignment filtering](https://learn.microsoft.com/azure/role-based-access-control/role-assignments-list-rest).
 
-Unknown reads, warnings, malformed/duplicate rows and ARM continuation pages
-fail closed. There are no polling/replay loops: each CLI call is bounded to 30
-seconds/4 MiB, the whole command to 600 seconds/192 calls/128 MiB, and ARM
-inventories to 4,096 rows. GitHub variable inventory is bounded to eight pages
-and excludes unrelated values from the plan. A paginated ARM inventory needs a
-separately reviewed collection change, not an operator skip flag.
+Unknown reads, warnings and malformed/duplicate rows fail closed. **Only the
+Cognitive Services account inventory** may continue pages, using the capacity
+reporter's shared continuation validator. Each link must retain the exact
+subscription/resource-group account-list path, HTTPS ARM host, API version and
+the two observed query keys `api-version`/`$skiptoken`. The next request is rebuilt
+from the approved scope and decoded opaque cursor; server URLs are never
+followed directly. Changed filters, host/port/credentials, paths, versions,
+unknown/duplicate query keys, fragments and oversized cursors are refused.
+This does not add paging for identities, roles, assignments or federations.
+
+Account discovery is bounded to 64 pages and 4,096 **total** rows, including
+unselected accounts. Every page must have exact scoped IDs and unique names/IDs;
+selected catalog accounts must retain their ownership/provisioning proof.
+Repeated decoded cursors or a later failed/ambiguous page refuse the whole plan,
+including when the first page already contains all expected regions. A terminal
+empty page is valid; first-page candidates alone are not verified inventory.
+Cursor values and pagination layout are not added to plan output or digests;
+the same complete account evidence retains stable intents and ordering. The
+existing source hashes bind the shared validator as well as setup.
+
+There are no polling/replay loops: each CLI call is bounded to 30 seconds/4 MiB
+or the remaining allowance, and the whole command retains its 600-second,
+192-call and 128-MiB limits across pages. Other ARM inventories remain bounded
+to 4,096 rows with continuation refused. GitHub variable inventory is bounded
+to eight pages and excludes unrelated values from the plan. Unsupported
+pagination needs a separately reviewed collection change, not an operator skip
+flag. Offline page fixtures do not prove the dedicated reader's live permissions
+or authorize setup, configuration or activation.
 
 On Ctrl+C interruption or failure, keep the exact attempted resource IDs printed on
 stderr. A timed-out write may have succeeded. **Do not automatically retry,

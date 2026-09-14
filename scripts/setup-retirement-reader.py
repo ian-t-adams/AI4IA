@@ -20,7 +20,17 @@ from pathlib import Path
 from urllib.parse import urlencode
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from _capacity_evidence import EvidenceError, az_command, run_bounded, strict_json
+from _capacity_evidence import (
+    COGNITIVE_API,
+    MAX_ACCOUNT_PAGES,
+    NAMESPACE,
+    EvidenceError,
+    account_continuation,
+    az_command,
+    run_bounded,
+    strict_json,
+    token,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ".github/workflows/model-retirements.yml"
@@ -33,6 +43,7 @@ MODELS_READ = "Microsoft.CognitiveServices/locations/models/read"
 ISSUER = "https://token.actions.githubusercontent.com"
 AUDIENCE = "api://AzureADTokenExchange"
 MAX_BYTES = 4 * 1024 * 1024
+MAX_ACCOUNT_ROWS = 4096
 STEPS = ("identity", "metadata_role", "group_reader", "model_reader", "federation")
 VARIABLE_KEYS = {
     "REPORT_ENABLED", "REPORT_CLIENT_ID", "REPORT_TENANT_ID",
@@ -115,7 +126,9 @@ class Cli:
         self.calls += 1
         remaining = self.deadline - time.monotonic()
         require(self.calls <= 192 and remaining > 0, "Setup observation budget exhausted.")
-        result = run_bounded(cli_command(tool) + args, min(30, remaining), MAX_BYTES)
+        byte_limit = min(MAX_BYTES, 32 * MAX_BYTES - self.bytes)
+        require(byte_limit > 0, "Setup response budget exhausted.")
+        result = run_bounded(cli_command(tool) + args, min(30, remaining), byte_limit)
         self.bytes += len(result.body)
         require(self.bytes <= 32 * MAX_BYTES, "Setup response budget exhausted.")
         require(not result.warning, "CLI diagnostics were emitted; coverage unknown.")
@@ -398,8 +411,8 @@ def validate_step(name: str, row: dict, intent: dict) -> None:
 
 def account_context(cli: Cli, target: Target, catalog: dict) -> list[dict]:
     naming = object_value(catalog.get("naming"))
-    token = naming.get("foundryToken")
-    require(isinstance(token, str) and re.fullmatch(r"[a-z0-9-]{1,30}", token) is not None,
+    foundry_token = naming.get("foundryToken")
+    require(isinstance(foundry_token, str) and re.fullmatch(r"[a-z0-9-]{1,30}", foundry_token) is not None,
             "Unknown catalog account naming.")
     models = catalog.get("catalog")
     require(isinstance(models, list), "Unknown catalog model inventory.")
@@ -409,28 +422,57 @@ def account_context(cli: Cli, target: Target, catalog: dict) -> list[dict]:
         for deployment in model["deployments"]
     })
     require(0 < len(regions) <= 8, "Unsupported catalog regional coverage.")
-    rows = cli.rows(target.group + "/providers/Microsoft.CognitiveServices/accounts", "2024-10-01")
-    context = []
+    patterns = {}
     for region in regions:
         require(isinstance(region, str) and re.fullmatch(r"[a-z0-9]{1,32}", region) is not None,
                 "Malformed catalog region.")
-        pattern = re.compile(rf"mf-{re.escape(token)}-{target.environment}-{region}-[a-z0-9]{{13}}")
-        selected = [r for r in rows if isinstance(r.get("name"), str) and pattern.fullmatch(r["name"])]
-        require(len(selected) == 1, "Missing/ambiguous catalog account context; coverage unknown.")
-        row = selected[0]
-        resource(row, target.group + "/providers/Microsoft.CognitiveServices/accounts/" + row["name"],
-                 "Microsoft.CognitiveServices/accounts")
-        tags = object_value(row.get("tags"))
-        require(
-            row.get("kind") == "AIServices" and row.get("location") == region
-            and all(tags.get(k) == v for k, v in {
-                "env": target.environment, "azd-env-name": target.environment,
-                "workload": target.workload, "managedBy": "azd-bicep",
-            }.items()) and row["properties"].get("provisioningState") == "Succeeded",
-            "Account scope/environment/provisioning context does not match.",
-        )
-        context.append({"id": row["id"], "region": region, "version": digest(row)})
-    return context
+        patterns[region] = re.compile(rf"mf-{re.escape(foundry_token)}-{target.environment}-{region}-[a-z0-9]{{13}}")
+    path = target.group + "/providers/" + NAMESPACE
+    parameters: dict[str, str] = {}
+    found = {}
+    names: set[str] = set()
+    ids: set[str] = set()
+    cursors: set[str] = set()
+    row_count = 0
+    for _ in range(MAX_ACCOUNT_PAGES):
+        page = object_value(cli.get(path, COGNITIVE_API, parameters))
+        rows = page.get("value")
+        require(isinstance(rows, list), "Incomplete account inventory; coverage unknown.")
+        row_count += len(rows)
+        require(row_count <= MAX_ACCOUNT_ROWS, "Account inventory exceeds the total row bound.")
+        for row in rows:
+            row = object_value(row)
+            name = token(row.get("name"))
+            resource(row, path + "/" + name, NAMESPACE)
+            require(name.casefold() not in names and row["id"].casefold() not in ids,
+                    "Duplicate account name/ID across inventory pages.")
+            names.add(name.casefold())
+            ids.add(row["id"].casefold())
+            candidates = [region for region, pattern in patterns.items() if pattern.fullmatch(name)]
+            if not candidates:
+                continue
+            region = candidates[0]
+            require(region not in found, "Missing/ambiguous catalog account context; coverage unknown.")
+            tags = object_value(row.get("tags"))
+            require(
+                row.get("kind") == "AIServices" and row.get("location") == region
+                and all(tags.get(k) == v for k, v in {
+                    "env": target.environment, "azd-env-name": target.environment,
+                    "workload": target.workload, "managedBy": "azd-bicep",
+                }.items()) and row["properties"].get("provisioningState") == "Succeeded",
+                "Account scope/environment/provisioning context does not match.",
+            )
+            found[region] = {"id": row["id"], "region": region, "version": digest(row)}
+        # Expected regions on an early page are candidates, not a complete inventory.
+        next_link = page.get("nextLink")
+        if next_link is None or next_link == "":
+            require(len(found) == len(regions), "Missing/ambiguous catalog account context; coverage unknown.")
+            return [found[region] for region in regions]
+        parameters = account_continuation(next_link, target.group)
+        cursor = parameters["$skiptoken"]
+        require(cursor not in cursors, "Repeated account continuation cursor; coverage unknown.")
+        cursors.add(cursor)
+    raise SetupError("Account inventory exceeds the page bound; coverage unknown.")
 
 
 def observe(cli: Cli, target: Target) -> dict:

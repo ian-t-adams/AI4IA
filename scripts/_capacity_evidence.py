@@ -629,7 +629,7 @@ class AzureReader:
             if next_link is None or next_link == "":
                 return ReadResult({"value": combined}, warning, byte_count, pages=tuple(pages))
             try:
-                parameters = account_continuation(next_link, self.scope)
+                parameters = account_continuation(next_link, self.scope.group_path)
             except EvidenceError as exc:
                 return incomplete(exc.code)
             cursor = parameters["$skiptoken"]
@@ -640,7 +640,7 @@ class AzureReader:
                 return incomplete("account_page_limit_exceeded")
 
 
-def account_continuation(link: object, scope: Scope) -> dict[str, str]:
+def account_continuation(link: object, group_path: str) -> dict[str, str]:
     """Accept only the observed account-list continuation contract, never its URL."""
     if (
         not isinstance(link, str) or len(link) > MAX_ACCOUNT_LINK_BYTES
@@ -654,7 +654,7 @@ def account_continuation(link: object, scope: Scope) -> dict[str, str]:
         pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True, errors="strict", max_num_fields=2)
     except ValueError:
         raise EvidenceError("invalid_account_continuation") from None
-    expected_path = f"{scope.group_path}/providers/{NAMESPACE}"
+    expected_path = f"{group_path}/providers/{NAMESPACE}"
     if (
         parsed.scheme != "https" or parsed.netloc.casefold() != "management.azure.com"
         or parsed.path.casefold() != expected_path.casefold() or parsed.fragment
