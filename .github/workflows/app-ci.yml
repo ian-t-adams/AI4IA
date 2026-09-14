@@ -34,8 +34,17 @@ on:
       - "scripts/provision-foundry-routine.py"
       - "scripts/provision-foundry-a2a.py"
       - "scripts/tests/test_memory_cosmos_migration.py"
+      - "scripts/assess-conversation-deletion.py"
+      - "scripts/_deletion_assessment*.py"
+      - "scripts/conversation-deletion-assessment.schema.json"
+      - "scripts/fixtures/conversation-deletion-assessment.json"
+      - "scripts/tests/test_conversation_deletion_assessment.py"
       - "scripts/evaluations/**"
+      - "scripts/canaries/**"
+      - "scripts/_canary_contract.py"
       - "scripts/tests/test_behavioral_evaluations.py"
+      - "scripts/tests/test_live_evaluations.py"
+      - "scripts/tests/test_live_evaluation_api.py"
       - ".github/workflows/app-ci.yml"
 
 permissions:
@@ -136,9 +145,20 @@ jobs:
         if: ${{ !cancelled() && (steps.behavioral.outcome == 'success' || steps.behavioral.outcome == 'failure') }}
         working-directory: .
         run: |
-          ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py
+          ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py scripts/tests/test_live_evaluation_api.py
           pyright --project scripts/evaluations
-          python -m pytest -q scripts/tests/test_behavioral_evaluations.py
+          python -m pytest -q scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py scripts/tests/test_live_evaluation_api.py
       - name: Memory migration script tests
         working-directory: .
         run: pytest -q scripts/tests/test_memory_cosmos_migration.py
+      - name: Read-only deletion assessment controls
+        working-directory: .
+        run: |
+          ruff check --config app/api/pyproject.toml scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py scripts/tests/test_conversation_deletion_assessment.py
+          pyright --pythonversion 3.12 --level error scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py
+          python -m pytest -q scripts/tests/test_conversation_deletion_assessment.py
+      - name: Operational canary static controls
+        working-directory: .
+        run: |
+          ruff check --config app/api/pyproject.toml scripts/canaries scripts/_canary_contract.py scripts/tests/test_application_canary.py
+          pyright --project scripts/canaries

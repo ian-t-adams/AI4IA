@@ -237,6 +237,12 @@ param durableTaskHubName string = ''
 @description('Upper bound in seconds on a single durable workflow run.')
 param durableWorkflowTimeoutSeconds int = 1800
 
+@description('Enable owner-reviewed exact-call durable workflow approvals. Default OFF.')
+param workflowApprovalsEnabled bool = false
+
+@description('Enable finite safe-only schedules on the existing durable worker. Default OFF.')
+param workflowSchedulingEnabled bool = false
+
 @description('Enable the agent-callable generate_image tool. Default OFF. When on (and an image blob account is provisioned) any agent may attach generate_image; produced images persist to dedicated blob storage and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 
@@ -281,6 +287,16 @@ param customToolsKeyVaultUri string = ''
 
 @description('Allow explicit user consent to auto-approve enabled tools for a session or workflow run. Default OFF; emitted as AI4IA_TOOL_AUTO_APPROVE_ENABLED. Ownership, scope, destination and budget checks plus activity/receipts remain mandatory.')
 param toolAutoApproveEnabled bool = false
+
+@description('Default-off validated-claim application policy; uses only operator JSON and existing identity/entitlement state.')
+param groupPolicyEnabled bool = false
+
+@description('Bounded noncredential operator policy JSON; no directory/membership queries.')
+@maxLength(65536)
+param groupPolicyJson string = ''
+
+@description('Default-off independently reviewed publication in the existing agents/workflows owner partitions.')
+param assetPublishingEnabled bool = false
 
 @description('Default-off resumable deletion for new conversations only. No autonomous cleanup or implicit existing-record enrollment.')
 param sessionDeletionEnabled bool = false
@@ -682,6 +698,17 @@ var computeRawFilesEnv = (codeInterpreterRawFilesEnabled && documentUnderstandin
 // endpoint would fail startup validation, which is correct but a worse failure
 // than simply not claiming the feature is on. The task hub is the isolation
 // boundary, so both values must travel together.
+var workflowAutomationEnv = [
+  {
+    name: 'AI4IA_WORKFLOW_APPROVALS_ENABLED'
+    value: string(workflowApprovalsEnabled)
+  }
+  {
+    name: 'AI4IA_WORKFLOW_SCHEDULING_ENABLED'
+    value: string(workflowSchedulingEnabled)
+  }
+]
+
 var durableWorkflowsEnv = (durableWorkflowsEnabled && !empty(durableTaskEndpoint)) ? [
   {
     name: 'AI4IA_DURABLE_WORKFLOWS_ENABLED'
@@ -882,6 +909,21 @@ var toolApprovalEnv = [
   }
 ]
 
+var groupPolicyEnv = [
+  {
+    name: 'AI4IA_GROUP_POLICY_ENABLED'
+    value: string(groupPolicyEnabled)
+  }
+  {
+    name: 'AI4IA_GROUP_POLICY_JSON'
+    value: groupPolicyJson
+  }
+  {
+    name: 'AI4IA_ASSET_PUBLISHING_ENABLED'
+    value: string(assetPublishingEnabled)
+  }
+]
+
 var sessionDeletionEnv = [
   {
     name: 'AI4IA_SESSION_DELETION_ENABLED'
@@ -949,7 +991,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], openapiEnv, claudeEnv, toolApprovalEnv, hardQuotaEnv, sessionDeletionEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], openapiEnv, claudeEnv, toolApprovalEnv, groupPolicyEnv, hardQuotaEnv, sessionDeletionEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, workflowAutomationEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

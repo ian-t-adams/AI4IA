@@ -6,7 +6,10 @@ message operation first proves the parent session belongs to the user.
 """
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from ..workflows.automation_models import WorkflowCheckpoint
 
 from ..agents.consent import ToolConsentState
 from .deletion_models import (
@@ -29,6 +32,20 @@ class SessionConflictError(Exception):
 
 @runtime_checkable
 class SessionRepository(Protocol):
+    async def read_workflow_checkpoint(
+        self, user_id: str, session_id: str, checkpoint_id: str,
+    ) -> WorkflowCheckpoint | None: ...
+
+    async def claim_workflow_checkpoint(
+        self, user_id: str, user_message: Message, assistant: Message,
+        checkpoint: WorkflowCheckpoint,
+    ) -> bool: ...
+
+    async def replace_workflow_checkpoint(
+        self, user_id: str, checkpoint: WorkflowCheckpoint, assistant: Message, *,
+        expected: WorkflowCheckpoint, expected_assistant: Message,
+    ) -> bool: ...
+
     async def list_initializations(self, user_id: str, cursor: str = "") -> InitializationPage: ...
 
     async def check_deletion_ready(self) -> None: ...
@@ -72,6 +89,15 @@ class SessionRepository(Protocol):
     async def create_session(self, session: Session) -> Session: ...
 
     async def get_session(self, user_id: str, session_id: str) -> Session: ...
+
+    async def claim_fresh_session(self, user_id: str, expected: Session) -> Session | None:
+        """Consume one v1 session's fresh-turn slot on the exact owner/snapshot.
+
+        Only a successful atomic claim may build the constrained prompt. The
+        marker never expires or resets, including after failure or /clear.
+        This is not a fence against child mutations; v1 deletion owns those.
+        """
+        ...
 
     async def list_sessions(self, user_id: str) -> list[Session]: ...
 

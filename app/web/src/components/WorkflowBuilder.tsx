@@ -23,6 +23,7 @@ import { WorkflowDisclosure } from "./WorkflowDisclosure";
 import { TOOL_CONSENT_WARNING } from "./ToolConsentControls";
 import { WorkflowRunConsentNotice, findWorkflowRunMessage, type WorkflowRunWatch } from "./WorkflowRunConsentNotice";
 import { WorkflowRunReport } from "./WorkflowRunReport";
+import { WorkflowAutomationPanel } from "./WorkflowAutomationPanel";
 import { deriveSteps, evidenceFromMessage, pendingSteps, resultFromMessage, type RunState } from "./workflowRun";
 import { useLibraryConfig } from "./LibraryProvider";
 import {
@@ -32,6 +33,7 @@ import {
 } from "./workflowCapabilities";
 import { checkRow, ghostBtn, inputStyle, labelStyle, primaryBtn, secondaryBtn } from "./builderStyles";
 import { WORKFLOW_TEMPLATES, templateById } from "../lib/workflowTemplates";
+import { PublicationControls } from "./PublicationControls";
 
 // Client-only stable key so React can track step rows across reorder/remove
 // without the instruction/agent values "travelling" to the wrong row.
@@ -86,6 +88,16 @@ function formFrom(w: Workflow): WorkflowForm {
   };
 }
 
+function workflowDirty(form: WorkflowForm, saved: Workflow | null): boolean {
+  return saved === null || form.name !== saved.name || form.displayName !== saved.displayName ||
+    form.description !== saved.description || form.enabled !== saved.enabled ||
+    form.steps.length !== saved.steps.length || form.steps.some((step, index) => {
+      const original = saved.steps[index];
+      return step.agent !== original.agent || step.instruction !== original.instruction ||
+        JSON.stringify(step.extraTools) !== JSON.stringify(original.extraTools ?? []);
+    });
+}
+
 // Poll cadence for a scheduled durable run. The ceiling is a UI patience budget,
 // NOT a run deadline: giving up here abandons the poll, never the orchestration,
 // which keeps going server-side and writes its assistant turn to the session
@@ -134,6 +146,7 @@ export function WorkflowBuilder({
 }) {
   const [mine, setMine] = useState<Workflow[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
+  const [savedWorkflow, setSavedWorkflow] = useState<Workflow | null>(null);
   const firstAgentName = agents[0]?.name ?? "";
   const [form, setForm] = useState<WorkflowForm>(() => blankForm(firstAgentName));
   const [busy, setBusy] = useState(false);
@@ -284,6 +297,7 @@ export function WorkflowBuilder({
     setRunAutoApproveTools(false);
     setRunDurable(false);
     setEditing(null);
+    setSavedWorkflow(null);
     setForm(blankForm(firstAgentName));
     setError(null);
     setRunState({ phase: "idle" });
@@ -301,6 +315,7 @@ export function WorkflowBuilder({
     if (!template) return;
     const { workflow } = template;
     setEditing(null);
+    setSavedWorkflow(null);
     setForm({
       name: workflow.name,
       displayName: workflow.displayName ?? "",
@@ -323,6 +338,7 @@ export function WorkflowBuilder({
     setRunAutoApproveTools(false);
     setRunDurable(false);
     setEditing(w.name);
+    setSavedWorkflow(w);
     setForm(formFrom(w));
     setError(null);
     setRunState({ phase: "idle" });
@@ -434,8 +450,9 @@ export function WorkflowBuilder({
     setBusy(true);
     try {
       const saved = editing
-        ? await api.updateWorkflow(editing, body)
+        ? await api.updateWorkflow(editing, { ...body, expectedRevision: savedWorkflow?.revision })
         : await api.createWorkflow({ name: form.name, ...body });
+      setSavedWorkflow(saved);
       await refreshMine();
       setEditing(saved.name);
       setForm(formFrom(saved));
@@ -451,7 +468,7 @@ export function WorkflowBuilder({
     } finally {
       setBusy(false);
     }
-  }, [editing, form, firstMissingInput, refreshMine]);
+  }, [editing, form, savedWorkflow, firstMissingInput, refreshMine]);
 
   const remove = useCallback(
     async (name: string) => {
@@ -1094,6 +1111,13 @@ export function WorkflowBuilder({
                   </button>
                 )}
               </div>
+              <PublicationControls
+                kind="workflow"
+                saved={savedWorkflow}
+                ownerId={mine[0]?.userId}
+                dirty={workflowDirty(form, savedWorkflow)}
+                busy={busy}
+              />
             </>
           ) : !runTarget ? (
             <p style={{ ...labelStyle, margin: 0 }}>
@@ -1296,6 +1320,10 @@ export function WorkflowBuilder({
                   runAgainDisabled={runDisabled}
                 />
               )}
+              {runTarget ? <WorkflowAutomationPanel
+                key={`${runTarget.userId}:${runTarget.name}:${runTarget.updatedAt}:${runModel}:${selectedDocIds.join(",")}`}
+                workflow={runTarget} model={runModel} documentIds={selectedDocIds} onOpenChat={onRun}
+              /> : null}
             </>
           )}
         </div>

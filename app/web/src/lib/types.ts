@@ -12,6 +12,7 @@ export interface DeploymentOption {
   dataZone: string | null;
   sku: string;
   deploymentName: string;
+  modelVersion?: string | null;
   // Where processing may actually occur, derived server-side from the SKU:
   // "global" | "us" | "eu". Deliberately NOT the same as `dataZone`, which is
   // only the endpoint's geography — a GlobalStandard deployment in a Swedish
@@ -577,6 +578,15 @@ export interface AgentSummary {
 
 // --- User-defined agents & workflows ---
 
+// Server-owned immutable source identity, never an execution or review grant.
+export interface AssetVersionRef {
+  kind: "agent" | "workflow";
+  ownerId: string;
+  assetId: string;
+  version: number;
+  digest: string;
+}
+
 // Durable user-authored agent persona. `id === name`; `name` is immutable.
 export interface UserAgent {
   id: string;
@@ -591,6 +601,8 @@ export interface UserAgent {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+  revision?: number;
+  incarnation?: string | null;
 }
 
 // Create payload — carries `name`; server owns id/userId/timestamps.
@@ -614,6 +626,7 @@ export interface UserAgentUpdate {
   tools: string[];
   links: string[];
   enabled: boolean;
+  expectedRevision?: number;
 }
 
 // One step of a workflow: run `agent` with the rendered `instruction`
@@ -639,6 +652,9 @@ export interface Workflow {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+  revision?: number;
+  incarnation?: string | null;
+  sourceVersion?: AssetVersionRef | null;
 }
 
 export interface WorkflowCreate {
@@ -654,6 +670,7 @@ export interface WorkflowUpdate {
   description: string;
   steps: WorkflowStep[];
   enabled: boolean;
+  expectedRevision?: number;
 }
 
 export interface WorkflowRunRequest {

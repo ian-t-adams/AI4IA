@@ -4,6 +4,8 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
+from email.utils import format_datetime
 from typing import Any
 from uuid import uuid4
 
@@ -19,12 +21,13 @@ from ai4ia_api.sessions.deletion_models import FENCE_ID
 
 
 class Response(dict):
-    def __init__(self, body, token):
+    def __init__(self, body, token, now=None):
         super().__init__(copy.deepcopy(body))
         self.token = token
+        self.now = now or datetime(2026, 9, 10, tzinfo=timezone.utc)
 
     def get_response_headers(self):
-        return {"x-ms-session-token": self.token}
+        return {"x-ms-session-token": self.token, "Date": format_datetime(self.now, usegmt=True)}
 
 
 class Container:
@@ -42,12 +45,13 @@ class Container:
         self.queries: list[dict] = []
         self.writes: list[tuple[str, str, str]] = []
         self.properties = {"partitionKey": {"paths": ["/" + partition]}}
+        self.now = datetime(2026, 9, 10, tzinfo=timezone.utc)
 
     def _put(self, body):
         self.version += 1
         stored = copy.deepcopy(body) | {"_etag": str(self.version), "_lsn": self.version}
         self.items[(body[self.partition], body["id"])] = stored
-        return Response(stored, self._token(body[self.partition], self.version))
+        return Response(stored, self._token(body[self.partition], self.version), self.now)
 
     def _token(self, partition_key, version):
         return f"{self.token_id}:{partition_key}:{version}"
@@ -63,7 +67,7 @@ class Container:
             raw = self.items.get(key)
         if raw is None:
             raise CosmosResourceNotFoundError(message="missing")
-        return Response(raw, self._token(partition_key, raw["_lsn"]))
+        return Response(raw, self._token(partition_key, raw["_lsn"]), self.now)
 
     async def create_item(self, body):
         key = (body[self.partition], body["id"])
@@ -191,6 +195,8 @@ class Container:
             if "@uid" in params and raw.get("userId") != params["@uid"]:
                 continue
             if "@sid" in params and raw.get("sessionId") != params["@sid"]:
+                continue
+            if "@kind" in params and raw.get("kind") != params["@kind"]:
                 continue
             if "@cursor" in params and raw["id"] <= params["@cursor"]:
                 continue

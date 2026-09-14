@@ -10,6 +10,7 @@ transcripts.
 | View | Source | Freshness and unknown behavior |
 |---|---|---|
 | Requests, errors, dependencies | FastAPI/OpenTelemetry and instrumented `httpx` | Depends on Application Insights export; unavailable is not zero |
+| GenAI text-model calls | Content-free gateway model spans | Actual adapted Chat Completions, Responses and Claude calls; missing usage/response identity stays unknown |
 | Tokens and known cost | Per-user Cosmos usage ledger | Missing provider usage or price is counted as unknown |
 | Voice Live | `voice_live_completion` metadata event and usage ledger | Provider/model/outcome/close/frame metadata only |
 | MCP tools | Redacted structured MCP events | Process/log export availability controls freshness |
@@ -90,6 +91,55 @@ is preserved rather than overwritten by the recovery snapshot.
 - Correlation ids may cross API, SimpleL7Proxy, APIM, and Foundry; they are not
   credentials.
 
+## Content-free GenAI model spans
+
+`ai4ia_api.genai` contract 1.0.0 uses the existing connection-gated Azure Monitor
+exporter. No separate exporter, SDK integration, telemetry resource or permission
+is introduced. The current official GenAI conventions have moved to the
+[OpenTelemetry GenAI repository](https://github.com/open-telemetry/semantic-conventions-genai/blob/0c87594975195608dc91b3f702e250a7b240c151/docs/gen-ai/gen-ai-spans.md).
+The exact development revision
+`0c87594975195608dc91b3f702e250a7b240c151` is pinned in the span contract. It is
+not a stable release or a published schema URL. Do not upgrade the compatible
+Azure Monitor 1.8.9 / HTTPX 0.64b0 dependency train merely to acquire new constants.
+
+Each logical text-model call emits one CLIENT span. Its timestamps measure the
+operation through response completion, stream end, failure or cancellation.
+The existing Chat Completions stream-options retry remains within the same
+logical span; repeated cumulative token chunks replace counts, never add them.
+Child calls have their own spans, not duplicated parent token totals. The usage
+ledger and existing custom events are separate evidence, not extra model calls.
+
+The allowlist is operation/provider name, catalog-owned request/observed response
+model identifiers, actual post-admission adapted scalar controls, native enum
+finish reasons, validated input/output token counts, HTTP attempt count, coverage,
+the convention revision and a fixed error category. Provider name identifies the
+wire-adapter family, not a discovered Azure resource or billable publisher.
+Responses use their returned completion status or incomplete reason rather than
+inventing a model-internal decision. Unknown response model strings are omitted,
+not regex-sanitized into identifiers. Failed/truncated streams never turn missing
+usage into zero or export stale partial totals.
+
+The installed Azure exporter still classifies GenAI dependencies through the
+deprecated `gen_ai.system` attribute. A fixed compatibility alias equals
+`gen_ai.provider.name`; the alias does not add a span or content. Capture tests
+exercise both complete SDK spans and the installed exporter's actual Azure
+envelope conversion, without starting a network exporter.
+
+No prompt/completion/tool/schema/stop-sequence payload, URL/host, conversation id,
+user identity, baggage, exception event, exception message or status description
+is added. Duplicate automatic HTTPX dependency spans on these calls are
+suppressed, so URL/exception capture settings cannot reintroduce their content.
+No instrumentation context is kept across generator yields; ASGI disconnect
+cleanup may run in a different task. Content-capture environment variables do not
+broaden this explicit projection. Media/embeddings/realtime are not claimed as
+covered by this text-model span contract.
+
+This is an application-owned projection following the documented
+[Azure Monitor custom-telemetry path](https://learn.microsoft.com/en-us/azure/azure-monitor/app/opentelemetry-add-modify?tabs=python),
+not wholesale framework instrumentation. Framework documentation may demonstrate
+[opt-in content recording](https://learn.microsoft.com/en-us/azure/foundry/observability/how-to/trace-agent-framework);
+those examples are not authorization to enable it in AI4IA.
+
 ## Behavioral evaluations are not production telemetry
 
 The [offline behavioral evaluator](../behavioral-evaluations.md) exercises real
@@ -98,10 +148,13 @@ production traces. Its local/CI report contains version identifiers, check
 outcomes and synthetic counters only, not receipt payloads or identities.
 Fixture latency and token prices are not measured live model quality or billing.
 
-GenAI semantic-convention instrumentation, a paid judge, scheduled live evaluation,
-and production-content evaluation remain separate decisions. No `AppGenAIContent`
-routing, RBAC, retention or consent policy is established by running the offline
-suite. Keep the current telemetry dependency compatibility pair and no-content
+The separate default-off live authored-synthetic driver, activation variables,
+finite budgets and exact-owner cleanup policy are documented in the
+[evaluation guide](../behavioral-evaluations.md#separate-opt-in-live-authored-tasks).
+It is not a production-trace reader or a required PR gate. A paid judge and
+production-content ingestion remain disabled. No `AppGenAIContent` routing,
+RBAC, retention or consent policy is established by source tests or by running
+either evaluation suite. Keep the telemetry compatibility pair and no-content
 export contract intact.
 
 ## Diagnosing unavailable panels

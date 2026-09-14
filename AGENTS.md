@@ -78,6 +78,23 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    contract scope before dispatch, and never grant new tools or permissions.
    Include automatically injected registry tools such as `load_skill` and their
    meaningful resource metadata in those snapshots.
+   `ChatRequest.allowTools=false` and `allowAutomaticMemory=false` are
+   request-only denials, not grants or durable preference edits. Keep their
+   nested-AND context alive through SSE, tool dispatch and automatic memory IO.
+   The optional `requireFreshSession` path consumes an API-hidden v1 session
+   claim with the existing owner/ETag CAS before constructing its empty-context
+   prompt. Preserve `freshTurnClaimed` in durable serialization and every
+   patch/clear path; never reset it after errors or lost acknowledgements.
+   This is one-shot model admission, not a child-write or deletion fence.
+   The factory's canary dispatch guard additionally binds owner, claimed
+   generation, actual adapted sentinel-only payload and one dispatch; only
+   actor policy can require that guard, and the guard grants no authority.
+   The distinct default-absent realtime setup actor is selected only by
+   authenticated policy. Its one-open scope guards the shared relay writer and
+   receiver, allows one exact setup frame and ordered acknowledgements, and
+   refuses audio, response creation, tools and every other metered surface.
+   Keep its processing deadline across connection establishment and relay;
+   source/accounting/close cleanup must not become a new model permission.
 6. **No secret sprawl.** Do not log credentials, commit secrets, or put user MCP
    secrets in Cosmos; durable MCP secrets belong in Key Vault outside local.
 7. **Receipts show execution, never hidden reasoning.** Persist bounded,
@@ -205,14 +222,30 @@ Plus the Cosmos migration script tests from the repo root:
 pytest -q scripts/tests/test_memory_cosmos_migration.py
 ```
 
+The API job also runs the selected-cohort deletion assessment controls using the
+existing Azure SDK/dev dependencies:
+
+```powershell
+python -m pytest -q scripts/tests/test_conversation_deletion_assessment.py
+ruff check --config app/api/pyproject.toml scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py scripts/tests/test_conversation_deletion_assessment.py
+pyright --pythonversion 3.12 --level error scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py
+```
+
+Only the operator-invoked `collect` subcommand may construct its bounded SDK
+worker. Rehearsal/help/report checks stay offline. Preserve explicit owner/session
+cohorts, scalar query projections, exact endpoints/partitions, and the no-mutation
+transport. Complete inventory is not writer-drain, enrollment approval or absence
+proof; unresolved uploads never become clear through age or an empty scan. See
+`docs/runbooks/conversation-deletion.md` before changing this source contract.
+
 The same API job runs the development-only behavioral evaluation program from
 the repo root, using the already-installed API dev dependencies:
 
 ```powershell
 python -m scripts.evaluations run --output <new-local-report.json>
-ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py
+ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py scripts/tests/test_live_evaluation_api.py
 pyright --project scripts/evaluations
-python -m pytest -q scripts/tests/test_behavioral_evaluations.py
+python -m pytest -q scripts/tests/test_behavioral_evaluations.py scripts/tests/test_live_evaluations.py scripts/tests/test_live_evaluation_api.py
 ```
 
 `scripts/evaluations` drives real API, provider-adapter, orchestration, ownership,
@@ -225,6 +258,26 @@ before comparison. Do not add production-trace input, a paid judge, live calls o
 a schedule under this offline gate. See
 [`docs/behavioral-evaluations.md`](docs/behavioral-evaluations.md) for commands,
 version rules, limits and the remaining approval boundaries.
+
+`python -m scripts.evaluations.live` and `live-evaluations.yml` are separate,
+default-off authored-synthetic surfaces, never an escape from the offline worker's
+network/dotenv/credential/export isolation or a stochastic PR gate. A dedicated
+non-admin evaluation actor/policy capability (never the monitor's canaryActor),
+three request-reduction controls, priced supported caps and exact-owner cleanup
+proofs are prerequisites. All probes, four new fixtures and cleanup calls
+share one 48-request/240-second budget; cleanup retains eight requests/45 seconds.
+Unknown creation, cleanup or worker state stops later tasks and keeps every case
+in coverage. Client/request caps are not a proven Azure bill cap. No production
+trace input, judge, grants, resource changes or activation is implied.
+
+Content-free GenAI model spans reuse `logging_setup`'s exporter gate and observe
+post-admission adapted requests/native responses, including streamed Responses
+and Claude. Keep the pinned development-semantic contract and its fixed
+`gen_ai.system` exporter-compatibility alias; do not upgrade the telemetry pair.
+No payload, URL, identity, event, exception message or provider-internal reasoning
+belongs on these spans. Cumulative usage is recorded once per logical model call,
+not added across chunks or copied onto parent spans. The SDK/exporter capture
+controls and existing offline no-export controls must stay non-vacuous.
 
 **Any edit to `app/api/pyproject.toml` must be followed by `uv lock` in the same
 commit.** `uv.lock` records the declared specifier alongside resolved versions, so
@@ -404,7 +457,22 @@ Rollback state is captured **before `azd provision`**, not merely before
 application deployment: all three Bicep app modules use a quickstart placeholder
 image for greenfield creation, so an infrastructure reconciliation can create a
 placeholder revision before the image build starts. Capturing afterward would make
-that placeholder the rollback target.
+that placeholder the rollback target once it becomes ready.
+
+Capture, rollout and restore confirmation read the exact scoped serving revision's
+identity, template, image and scale between stable app reads. Single mode selects
+`latestReadyRevisionName`, never the latest-created fallback; Multiple mode selects
+the heaviest positive traffic target. The app's desired template is not serving-image
+evidence, and computed revision-list weights alone do not prove a pending
+placeholder serves traffic. Missing/contradictory metadata fails closed.
+An unchanged ready name cannot skip rollback while a different latest/desired
+template could cut over. Validate v1 captured image/scale against the immutable
+source revision before copying; never infer an unknown or mismatched saved image.
+Single-mode copy confirmation requires the actual new healthy/provisioned serving
+template, settled latest/desired state and the previous latest candidate inactive.
+Multiple mode pins all traffic to the exact captured revision without switching
+modes. Preserve min-zero support, per-app failure isolation and no write replay;
+see `docs/runbooks/deployment.md#automatic-and-manual-rollback`.
 
 ### Production image proofs
 
@@ -502,8 +570,10 @@ keeps endpoint and authentication configuration in the Foundry project connectio
 python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/redaction rules
 python3 -m unittest scripts.tests.test_speech_canary scripts.tests.test_voice_migration_docs
 python3 scripts/gen-voice-migration-docs.py --check              # public dates, never live proof
+python3 -m unittest scripts.tests.test_application_canary       # offline continuous monitor/state/identity controls
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
 python3 -m unittest scripts.tests.test_model_retirement         # dates, read-only reports and activation contracts
+python3 -m unittest scripts.tests.test_retirement_reader_setup  # real setup CLI with offline az/gh stubs
 python3 -m unittest scripts.tests.test_capacity_evidence scripts.tests.test_capacity_recommendations  # read-only collection and offline policy
 python3 -m unittest scripts.tests.test_postprovision_appconfig_sentinel scripts.tests.test_postprovision_cu_defaults scripts.tests.test_postprovision_hard_gates
 python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap
@@ -525,6 +595,7 @@ python3 -m unittest scripts.tests.test_documented_paths_exist   # repo paths nam
 python3 -m unittest scripts.tests.test_markdown_anchors         # Markdown #fragment links must resolve
 python3 -m unittest scripts.tests.test_markdown_tables          # tables cannot silently swallow rows/columns
 python3 -m unittest scripts.tests.test_gating_workflows         # required checks, checkout and job-token boundaries
+python3 -m unittest scripts.tests.test_live_evaluation_workflow # default-off separate actor/schedule and report-only retention
 python3 -m unittest scripts.tests.test_governance_contracts     # cross-file governance/Foundry/config invariants
 python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name reachable azd vars
 python3 -m unittest scripts.tests.test_foundry_assets_workflow  # Foundry handoff stays artifact-scoped
@@ -578,6 +649,17 @@ Keep SKU, model-inference and advisory public evidence distinct.
 configuration, never deployment authority. It retains bounded JSON/Markdown and
 a generated region-matrix preview, not source commits or Azure mutations.
 Report exit 2 means incomplete/unknown even if other known findings exist.
+`scripts/setup-retirement-reader.py` is a separate default-read-only operator
+plan, not an azd hook. Its explicit digest-approved apply creates only a
+dedicated UAMI, exact-workload-RG Reader, subscription `locations/models/read`
+custom role/assignment, and main-ref OIDC trust. It never selects a subscription,
+shares deploy authority, updates/revokes an existing resource, reads quota,
+changes GitHub settings, or activates reporting. Reuse the bounded CLI transport,
+derive profile/variable contracts from the current main workflow, and reject
+unknown, colliding, stale or overprivileged observations. Fresh plans classify
+partial setup; do not auto-clean up or replay an uncertain write. The separate
+read-only configuration check only prints an activation command after exact
+metadata readback; it is not live OIDC/report proof or approval to run it.
 See [the reporting runbook](docs/runbooks/deployment.md#read-only-model-retirement-reporting)
 before changing source authority, admission policy or activation.
 
@@ -588,6 +670,25 @@ and authenticated/model-path canaries. Auth challenges, redirects and malformed
 JSON cannot pass API health; unresolved targets and historical missing coverage
 remain unknown. API probes are bounded to 20 seconds and 4 KiB with no redirects,
 cookies or default credentials. Never publish response bodies or exception text.
+
+`application-canaries.yml` is operational scheduling, default-off for all app and
+model traffic, and independent of the anonymous portal snapshot. Its prepare
+job reads only this repository's exact predecessor run/artifact; its separately
+gated observation job alone exchanges dedicated OIDC for an API token. No ARM
+login, deploy identity, Graph, new resource, live test or settings mutation belongs
+in source validation. `scripts/canaries` shares the sentinel/catalog candidates
+and ordered Voice Live setup primitive with existing operator helpers, but uses
+strict bounded JSON, public DNS pinning, no redirects/cookies/default credentials,
+one application chat attempt, a finite lease and strict v1 owner cleanup.
+Missing state, ambiguous writes and partial cleanup never reset the failure
+count to a healthy zero or authorize another mutation. Retain only allowlisted
+content-free state; API sessions/receipts, private configuration and raw errors
+must never be uploaded. GA config/header alone is not an event canary, and an
+operator actor policy must admit the setup-only path separately. See
+`docs/runbooks/deployment.md#continuous-application-canaries` for the activation
+and notification boundaries. Its existing quality job installs the same pinned
+aiohttp transport for offline fixtures; app-ci also runs Ruff and Pyright over
+the monitor package.
 
 `security-scan` runs Trivy filesystem/config scans and gitleaks over the full
 proxy tree. `.trivyignore.yaml` suppresses only the untouched upstream Dockerfile
@@ -1007,6 +1108,35 @@ generator must be listed in `NON_BRAND_RASTERS`), colour (≥40% of saturated pi
 near the brand hue), and shape/weight against the portal's declared `og:image`
 dimensions and per-file size ceilings.
 
+## Resumable workflow automation
+
+`AI4IA_WORKFLOW_APPROVALS_ENABLED` and `AI4IA_WORKFLOW_SCHEDULING_ENABLED`
+are default-off, explicit v3 paths on the existing DTS worker. Legacy synchronous
+and durable histories stay separate. New runs require protocol-v1 conversations;
+never enroll an existing session or bypass its rollout prerequisite.
+
+An approval pauses the stored exact operation, not a request for a model to
+recreate it. Reuse normal one-time grant cryptography, owner/run/source/schema/
+destination/argument/expiry binding and full checkpoint/message CAS behind the
+child fence. Keep per-operation SDK options copied across every batch retry.
+Provider acceptance without a recoverable result is unknown and never replayable.
+Late cancellation evidence can grow without restoring authority; accounting
+does not require a new policy grant and survives conversation cleanup.
+
+Use `workflows.record_types` for owner-container control identity; never add a
+second publication or group-policy map. Queued user claims are not authority.
+Request constraints remain reduction-only across continuation. Safe-only means
+actual effects, including ambient writes, not only a declared tool label.
+Recheck previously supplied memory/resource context; stop rather than regenerate
+accepted work when revoked context cannot safely be excluded.
+
+Schedules use finite IANA once/daily/weekly rules, gap skip/fold first, no backfill
+storm, overlap denial, stable slot identities and bounded histories. Count actual
+shared application dispatches, not just loop iterations. Finite USD caps and
+hard-quota durable execution remain refused under the unproven downstream attempt
+envelope. See [the automation contract](docs/workflow-automation.md); source
+completion never implies live activation.
+
 ## Staged GA Realtime protocol
 
 `AI4IA_REALTIME_GA_ENABLED=false` stages no GA infrastructure; enabling it only
@@ -1060,6 +1190,35 @@ modality rates do not make mixed realtime/TTS usage priced or safely dollar-capp
 Follow the approved
 [activation/rollback procedure](docs/runbooks/feature-enablement.md#staged-ga-realtime).
 Issue #413 stays open for its live/model/TTS and phase-2 cleanup acceptance criteria.
+
+## Group policy and publication source contract
+
+- `policy` is the shared default-off application restriction layer; only
+  post-verification exact Entra role values/group IDs may match operator JSON.
+  Do not add Graph lookups, writable user grant fields, or user-ID-only authority
+  caches. Keep unavailable distinct from deny; limits remain per-user soft
+  restrictions, never a group pool or Azure bill cap.
+- `publishing` keeps private owner/name drafts and immutable reviewed versions
+  in existing owner partitions. Independent review requires explicit owner
+  submission consent; fresh owner activation is separate. Review grants are not
+  global admin or consumer execution grants. Do not copy BYO credentials,
+  unreviewed private dependencies or curated private prompt bodies.
+- `workflows/record_types.py` owns `recordKind` and the `:ai4ia:` control namespace,
+  including automation owner/schedule and publication records. Both definition
+  stores exclude control IDs even with malformed/missing kinds, reject unknown
+  definition kinds, and retain legacy positive controls.
+- Published source references, model-declared versions, `runtimeEnabled` and
+  `requiredRealtimeProtocol` when present, exact tool/schema/resource bindings,
+  required/optional profiles and actual subset digests must survive all consumers.
+  Missing required metadata is not a permitted narrowing. A reviewed excluded
+  skill profile is explicit, never an error fallback or removal of required skills.
+- Token expiry stops the next protected dispatch; it does not stop accepted-work
+  receipts, accounting, cancellation or cleanup. Unattended work cannot construct
+  an authenticated user from queued claims. Monitor, authored-evaluation and
+  realtime-setup actor markers are distinct and default absent. Their real
+  bounded guards enforce one-shot requests or setup-only frames; capability reads
+  never grant execution. A configured actor stays restricted while policy
+  evaluation is paused.
 
 ## Auth model and `apiFetch` contract
 

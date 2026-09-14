@@ -25,6 +25,7 @@ import io
 import json
 import sys
 import unittest
+from copy import deepcopy
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,15 @@ STATE_FILE = "state.json"
 # The image a captured revision was running, and therefore the image the app must
 # be back on before a rollback may claim it restored anything.
 RESTORED_IMAGE = "acr.azurecr.io/x:1"
+SUBSCRIPTION = "00000000-0000-0000-0000-000000000001"
+GROUP = "rg-ai4ia-slurmfactory"
+
+
+def app_id(name: str, resource_group: str = GROUP) -> str:
+    return (
+        f"/subscriptions/{SUBSCRIPTION}/resourceGroups/{resource_group}"
+        f"/providers/Microsoft.App/containerApps/{name}"
+    )
 
 
 def container_app(
@@ -59,12 +69,16 @@ def container_app(
     fqdn: str | None = "ca-api-slurmfactory.eastus2.azurecontainerapps.io",
     custom_domains: list[dict] | None = None,
     traffic: list[dict] | None = None,
+    resource_group: str = GROUP,
 ) -> dict:
     """An `az containerapp show` payload, shaped the way ARM actually returns it."""
 
     return {
         "name": name,
+        "id": app_id(name, resource_group),
+        "type": "Microsoft.App/containerApps",
         "properties": {
+            "provisioningState": "Succeeded",
             "latestReadyRevisionName": revision,
             "latestRevisionName": revision,
             "configuration": {
@@ -80,7 +94,11 @@ def container_app(
                 },
             },
             "template": {
-                "scale": {"minReplicas": min_replicas},
+                "revisionSuffix": revision.partition("--")[2],
+                "scale": {
+                    "minReplicas": min_replicas, "maxReplicas": 3,
+                    "cooldownPeriod": None, "pollingInterval": None, "rules": None,
+                },
                 "containers": [{"name": "api", "image": image}],
             },
         },
@@ -89,17 +107,30 @@ def container_app(
 
 def revision_payload(
     *,
+    name: str = "ca-api-slurmfactory--r2",
     active: bool = True,
-    health: str = "Healthy",
-    running: str = "Running",
+    health: str | None = "Healthy",
+    running: str | None = "Running",
+    provisioned: str | None = "Provisioned",
     replicas: int = 1,
+    image: str = "acr.azurecr.io/api:azd-deploy-2",
+    min_replicas: int = 1,
+    template: dict | None = None,
+    resource_group: str = GROUP,
 ) -> dict:
     return {
+        "name": name,
+        "id": f"{app_id(name.partition('--')[0], resource_group)}/revisions/{name}",
+        "type": "Microsoft.App/containerapps/revisions",
         "properties": {
             "active": active,
             "healthState": health,
             "runningState": running,
+            "provisioningState": provisioned,
             "replicas": replicas,
+            "template": deepcopy(template) if template is not None else container_app(
+                revision=name, image=image, min_replicas=min_replicas
+            )["properties"]["template"],
         }
     }
 
@@ -113,43 +144,103 @@ class FakeAz:
         apps: dict[str, dict] | None = None,
         revisions: dict[tuple[str, str], dict] | None = None,
         failing_writes: set[str] | None = None,
+        resource_group: str = GROUP,
     ) -> None:
         self.apps = apps or {}
         self.revisions = revisions or {}
         self.failing_writes = failing_writes or set()
+        self.resource_group = resource_group
         self.calls: list[list[str]] = []
 
     def __call__(self, args, *, timeout: float = 180.0) -> tuple[int, str, str]:
         argv = list(args)
         self.calls.append(argv)
-        joined = " ".join(argv)
         name = self._flag(argv, "-n")
+        group = self._flag(argv, "-g")
+        if group is None or name is None:
+            raise AssertionError(f"unscoped az invocation: {argv}")
+        app = self.apps.get(name)
+        if group != self.resource_group:
+            return 1, "", "ERROR: (ResourceNotFound) app not found in requested scope"
+        if "--subscription" in argv and self._flag(argv, "--subscription") != SUBSCRIPTION:
+            return 1, "", "ERROR: wrong subscription"
 
-        if "revision show" in joined:
+        if argv[:3] == ["containerapp", "revision", "show"]:
             revision = self._flag(argv, "--revision") or ""
             payload = self.revisions.get((name or "", revision))
             if payload is None:
                 return 1, "", "ERROR: revision not found"
             return 0, json.dumps(payload), ""
-        if "containerapp show" in joined:
+        if argv[:2] == ["containerapp", "show"]:
             payload = self.apps.get(name or "")
             if payload is None:
                 return 1, "", "ERROR: (ResourceNotFound) app not found"
             return 0, json.dumps(payload), ""
-        if "revision copy" in joined or "ingress traffic set" in joined:
+        if argv[:3] == ["containerapp", "revision", "copy"]:
             if name in self.failing_writes:
                 return 1, "", "ERROR: (RevisionOperationFailed) could not restore"
-            # Model the real effect: `revision copy` clones the SOURCE revision's
-            # template, so the app ends up on a new revision running the captured
-            # image. Without this, confirm_restored could never confirm and the
-            # tests would prove nothing about the confirmation path.
             source = self._flag(argv, "--from-revision")
-            app = self.apps.get(name or "")
-            if app is not None and source:
-                app["properties"]["latestReadyRevisionName"] = f"{source}-restored"
-                app["properties"]["template"]["containers"][0]["image"] = RESTORED_IMAGE
+            detail = self.revisions.get((name, source or ""))
+            if app is None or detail is None:
+                return 1, "", "ERROR: source revision not found"
+            if app["properties"]["configuration"]["activeRevisionsMode"].casefold() != "single":
+                raise AssertionError("this rollback fixture only copies in Single mode")
+            template = deepcopy(detail["properties"]["template"])
+            number = 1 + sum(
+                app_name == name and revision.startswith(f"{source}-restored")
+                for app_name, revision in self.revisions
+            )
+            restored = f"{source}-restored" + (f"-{number}" if number > 1 else "")
+            template["revisionSuffix"] = restored.partition("--")[2]
+            minimum = template["scale"]["minReplicas"]
+            for (app_name, _), old in self.revisions.items():
+                if app_name == name:
+                    old["properties"]["active"] = False
+                    for field in ("healthState", "provisioningState", "runningState"):
+                        old["properties"].pop(field, None)
+            self.revisions[(name, restored)] = revision_payload(
+                name=restored, template=template, replicas=minimum,
+                running="Running" if minimum else "ScaledToZero",
+                resource_group=group,
+            )
+            app["properties"].update(
+                latestReadyRevisionName=restored, latestRevisionName=restored,
+                template=deepcopy(template), provisioningState="Succeeded",
+            )
             return 0, "", ""
-        return 0, "", ""
+        if argv[:4] == ["containerapp", "ingress", "traffic", "set"]:
+            if name in self.failing_writes:
+                return 1, "", "ERROR: (RevisionOperationFailed) could not restore"
+            if app is None:
+                return 1, "", "ERROR: app not found"
+            config = app["properties"]["configuration"]
+            if config["activeRevisionsMode"].casefold() != "multiple":
+                raise AssertionError("traffic set is not supported in Single mode")
+            weight = self._flag(argv, "--revision-weight")
+            if weight is None:
+                raise AssertionError("missing exact traffic restore target")
+            target, _, percent = weight.partition("=")
+            if (name, target) not in self.revisions:
+                return 1, "", "ERROR: revision not found"
+            config["ingress"]["traffic"] = [{"revisionName": target, "weight": int(percent)}]
+            return 0, "", ""
+        raise AssertionError(f"unexpected az invocation: {argv}")
+
+    def promote_pending(self, name: str, revision: str) -> bool:
+        """Finish readiness only while the pending candidate still owns Single-mode promotion."""
+        app = self.apps[name]
+        candidate = self.revisions[(name, revision)]
+        if (
+            candidate["properties"]["active"] is not True
+            or app["properties"]["latestRevisionName"] != revision
+        ):
+            return False
+        candidate["properties"].update(
+            provisioningState="Provisioned", healthState="Healthy", runningState="Running", replicas=1
+        )
+        app["properties"]["latestReadyRevisionName"] = revision
+        app["properties"]["provisioningState"] = "Succeeded"
+        return True
 
     @staticmethod
     def _flag(argv: list[str], flag: str) -> str | None:
@@ -586,16 +677,31 @@ class RollbackCommandTests(unittest.TestCase):
             "exists": True,
             "revision": "ca-api-slurmfactory--r1",
             "revisionsMode": "Single",
+            "image": RESTORED_IMAGE,
+            "minReplicas": 1,
         }
         base.update(overrides)
         return pdv.AppSnapshot(**base)
+
+    def observation(self, revision: str = "r2", mode: str = "Single") -> Any:
+        az = world(api_revision=f"ca-api-{ENV}--{revision}")
+        config = az.apps[APPS["api"]]["properties"]["configuration"]
+        config["activeRevisionsMode"] = mode
+        if mode.casefold() == "multiple":
+            config["ingress"]["traffic"] = [
+                {"revisionName": f"ca-api-{ENV}--{revision}", "weight": 100}
+            ]
+        with patch.object(pdv, "run_az", az):
+            return pdv.read_current_observation(
+                GROUP, APPS["api"], reference_revision=f"ca-api-{ENV}--r1"
+            )
 
     def test_single_revision_mode_uses_revision_copy(self) -> None:
         """`ingress traffic set` is REJECTED in Single mode -- it would no-op."""
         commands = pdv.rollback_commands(
             resource_group="rg-ai4ia-slurmfactory",
             snapshot=self.snapshot(),
-            current_revision="ca-api-slurmfactory--r2",
+            observation=self.observation(),
         )
         self.assertEqual(len(commands), 1)
         self.assertIn("revision", commands[0])
@@ -608,7 +714,7 @@ class RollbackCommandTests(unittest.TestCase):
         commands = pdv.rollback_commands(
             resource_group="rg-ai4ia-slurmfactory",
             snapshot=self.snapshot(revisionsMode="Multiple"),
-            current_revision="ca-api-slurmfactory--r2",
+            observation=self.observation(mode="Multiple"),
         )
         self.assertEqual(len(commands), 1)
         self.assertIn("--revision-weight", commands[0])
@@ -618,7 +724,7 @@ class RollbackCommandTests(unittest.TestCase):
         commands = pdv.rollback_commands(
             resource_group="rg",
             snapshot=self.snapshot(revisionsMode="multiple"),
-            current_revision="ca-api-slurmfactory--r2",
+            observation=self.observation(mode="multiple"),
         )
         self.assertIn("--revision-weight", commands[0])
 
@@ -628,7 +734,7 @@ class RollbackCommandTests(unittest.TestCase):
             pdv.rollback_commands(
                 resource_group="rg",
                 snapshot=self.snapshot(),
-                current_revision="ca-api-slurmfactory--r1",
+                observation=self.observation("r1"),
             ),
             [],
         )
@@ -638,7 +744,7 @@ class RollbackCommandTests(unittest.TestCase):
             pdv.rollback_commands(
                 resource_group="rg",
                 snapshot=self.snapshot(exists=False, revision=None),
-                current_revision="ca-api-slurmfactory--r1",
+                observation=self.observation("r1"),
             ),
             [],
         )
@@ -646,7 +752,7 @@ class RollbackCommandTests(unittest.TestCase):
             pdv.rollback_commands(
                 resource_group="rg",
                 snapshot=self.snapshot(revision=None),
-                current_revision="ca-api-slurmfactory--r1",
+                observation=self.observation("r1"),
             ),
             [],
         )
@@ -1076,29 +1182,59 @@ def world(
     proxy_revision: str = f"ca-proxy-{ENV}--r2",
     api_detail: dict | None = None,
     custom_domains: list[dict] | None = None,
+    resource_group: str = GROUP,
 ) -> FakeAz:
     apps = {
         APPS["api"]: container_app(
-            name=APPS["api"], revision=api_revision, fqdn="api.test"
+            name=APPS["api"], revision=api_revision, fqdn="api.test", resource_group=resource_group
         ),
         APPS["web"]: container_app(
             name=APPS["web"],
             revision=web_revision,
             fqdn="web.test",
             custom_domains=custom_domains,
+            resource_group=resource_group,
         ),
         APPS["proxy"]: container_app(
-            name=APPS["proxy"], revision=proxy_revision, fqdn="proxy.test", min_replicas=0
+            name=APPS["proxy"], revision=proxy_revision, fqdn="proxy.test", min_replicas=0,
+            resource_group=resource_group,
         ),
     }
-    revisions = {
-        (APPS["api"], api_revision): api_detail or revision_payload(),
-        (APPS["web"], web_revision): revision_payload(),
-        (APPS["proxy"], proxy_revision): revision_payload(
-            running="ScaledToZero", replicas=0
-        ),
-    }
-    return FakeAz(apps=apps, revisions=revisions)
+    revisions = {}
+    for service, name in APPS.items():
+        props = apps[name]["properties"]
+        current = props["latestReadyRevisionName"]
+        captured = f"{name}--r1"
+        minimum = 0 if service == "proxy" else 1
+        if current == captured:
+            props["template"]["containers"][0]["image"] = RESTORED_IMAGE
+        revisions[(name, captured)] = revision_payload(
+            name=captured, active=False, health=None, running=None, provisioned=None,
+            replicas=0, image=RESTORED_IMAGE, min_replicas=minimum,
+            resource_group=resource_group,
+        )
+        revisions[(name, current)] = revision_payload(
+            name=current, template=props["template"], min_replicas=minimum, replicas=minimum,
+            running="Running" if minimum else "ScaledToZero", resource_group=resource_group,
+        )
+    if api_detail is not None:
+        revisions[(APPS["api"], api_revision)] = api_detail
+    return FakeAz(apps=apps, revisions=revisions, resource_group=resource_group)
+
+
+def pending_world(*, image: str = "mcr.microsoft.com/k8se/quickstart:latest") -> FakeAz:
+    az = world(api_revision=f"{APPS['api']}--r1")
+    pending = f"{APPS['api']}--pending"
+    detail = revision_payload(
+        name=pending, image=image, health="None", running="Processing", replicas=0
+    )
+    az.revisions[(APPS["api"], pending)] = detail
+    az.apps[APPS["api"]]["properties"].update(
+        latestRevisionName=pending,
+        template=deepcopy(detail["properties"]["template"]),
+        provisioningState="Failed",
+    )
+    return az
 
 
 class CaptureTests(unittest.TestCase):
@@ -1194,7 +1330,7 @@ class CaptureTests(unittest.TestCase):
     def test_the_workload_token_changes_the_resource_group(self) -> None:
         import tempfile
 
-        az = world()
+        az = world(resource_group=f"rg-nomad-{ENV}")
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / STATE_FILE
             with patch.object(pdv, "run_az", az), redirect_stdout(io.StringIO()):
@@ -1540,7 +1676,8 @@ class AwaitRolloutTests(unittest.TestCase):
 
 class RollbackTests(unittest.TestCase):
     def rollback(
-        self, az: FakeAz, *, captured: dict[str, str | None] | None = None
+        self, az: FakeAz, *, captured: dict[str, str | None] | None = None,
+        snapshot_overrides: dict[str, dict] | None = None,
     ) -> tuple[int, str, FakeAz]:
         import tempfile
 
@@ -1559,9 +1696,10 @@ class RollbackTests(unittest.TestCase):
                     "exists": captured[service] is not None,
                     "revision": captured[service],
                     "revisionsMode": "Single",
-                    "minReplicas": 1,
+                    "minReplicas": 0 if service == "proxy" else 1,
                     "image": RESTORED_IMAGE,
                     "fqdn": None,
+                    **(snapshot_overrides or {}).get(service, {}),
                 }
                 for service in pdv.SERVICES
             ],
@@ -1618,7 +1756,7 @@ class RollbackTests(unittest.TestCase):
         code, out, _ = self.rollback(az)
         self.assertEqual(code, 4)
         self.assertIn("::error::", out)
-        self.assertIn("still serving the failed deploy", out)
+        self.assertIn("serving or pending failed-deploy state remains unverified", out)
 
     def test_a_restore_that_did_not_take_is_reported_as_unconfirmed(self) -> None:
         """`revision copy` exiting 0 only means ARM accepted the request. Claiming
@@ -1664,6 +1802,407 @@ class RollbackTests(unittest.TestCase):
         code, out, _ = self.rollback(az)
         self.assertEqual(code, 4)
         self.assertIn("unreadable", out)
+
+
+class ServingRevisionContractTests(unittest.TestCase):
+    def snapshot(self, az: FakeAz) -> Any:
+        with patch.object(pdv, "run_az", az):
+            return pdv.snapshot_app(GROUP, "api", APPS["api"], attempts=1)
+
+    def test_capture_uses_the_ready_template_not_the_pending_template(self) -> None:
+        az = pending_world()
+        az.apps[APPS["api"]]["properties"]["template"]["scale"]["minReplicas"] = 0
+        snapshot = self.snapshot(az)
+        self.assertEqual(snapshot.revision, f"{APPS['api']}--r1")
+        self.assertEqual(snapshot.image, RESTORED_IMAGE)
+        self.assertEqual(snapshot.minReplicas, 1)
+        self.assertEqual(snapshot.to_dict()["image"], RESTORED_IMAGE)
+        reads = [call for call in az.calls if call[:3] == ["containerapp", "revision", "show"]]
+        self.assertEqual(
+            reads,
+            [[
+                "containerapp", "revision", "show", "-g", GROUP, "-n", APPS["api"],
+                "--subscription", SUBSCRIPTION, "--revision", snapshot.revision, "-o", "json",
+            ]],
+        )
+        self.assertEqual(len(az.calls), 3)
+        self.assertFalse([call for call in az.calls if "copy" in call or "set" in call])
+
+    def test_no_ready_revision_never_captures_the_placeholder(self) -> None:
+        az = pending_world()
+        self.assertEqual(self.snapshot(az).image, RESTORED_IMAGE)
+        az.apps[APPS["api"]]["properties"]["latestReadyRevisionName"] = ""
+        az.calls.clear()
+        snapshot = self.snapshot(az)
+        self.assertTrue(snapshot.exists)
+        self.assertIsNone(snapshot.revision)
+        self.assertIsNone(snapshot.image)
+        self.assertIsNone(snapshot.minReplicas)
+        self.assertFalse([call for call in az.calls if "--revision" in call])
+
+    def test_a_non_ready_selected_revision_cannot_be_captured(self) -> None:
+        az = pending_world()
+        self.assertEqual(self.snapshot(az).image, RESTORED_IMAGE)
+        az.apps[APPS["api"]]["properties"]["latestReadyRevisionName"] = f"{APPS['api']}--pending"
+        with self.assertRaisesRegex(pdv.VerifyInputError, "healthState is None"):
+            self.snapshot(az)
+
+    def test_expected_desired_image_is_not_proof_of_the_serving_image(self) -> None:
+        az = pending_world(image=DIGEST_B)
+        options = ["--skip-canary", "--expect-image", f"api={DIGEST_B}"]
+        code, out = VerifyTests().verify(az=az, extra_args=options)
+        self.assertEqual(code, 3, out)
+        self.assertIn("not the image this deploy pushed", out)
+        events = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+        api = next(row for row in events if row["event"] == "rollout" and row["service"] == "api")
+        self.assertEqual(api["current"], f"{APPS['api']}--r1")
+        self.assertEqual(api["image"], RESTORED_IMAGE)
+        self.assertTrue(az.promote_pending(APPS["api"], f"{APPS['api']}--pending"))
+        code, out = VerifyTests().verify(az=az, extra_args=options)
+        self.assertEqual(code, 0, out)
+
+    def test_even_the_expected_serving_image_does_not_hide_a_pending_cutover(self) -> None:
+        az = pending_world(image=RESTORED_IMAGE)
+        options = ["--skip-canary", "--expect-image", f"api={RESTORED_IMAGE}"]
+        code, out = VerifyTests().verify(az=az, extra_args=options)
+        self.assertEqual(code, 3, out)
+        self.assertIn("pending or different desired template", out)
+        self.assertTrue(az.promote_pending(APPS["api"], f"{APPS['api']}--pending"))
+        code, out = VerifyTests().verify(az=az, extra_args=options)
+        self.assertEqual(code, 0, out)
+
+    def test_replica_requirement_comes_from_the_selected_revision(self) -> None:
+        az = world()
+        props = az.apps[APPS["api"]]["properties"]
+        props["configuration"]["activeRevisionsMode"] = "Multiple"
+        props["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": f"{APPS['api']}--r2", "weight": 100}
+        ]
+        detail = az.revisions[(APPS["api"], f"{APPS['api']}--r2")]["properties"]
+        detail.update(runningState="ScaledToZero", replicas=0)
+        props["template"]["scale"]["minReplicas"] = 0
+        code, out = VerifyTests().verify(az=az)
+        self.assertEqual(code, 3, out)
+        self.assertIn("0 running replicas", out)
+        detail["template"]["scale"]["minReplicas"] = 0
+        props["template"]["scale"]["minReplicas"] = 1
+        code, out = VerifyTests().verify(az=az)
+        self.assertEqual(code, 0, out)
+
+    def test_missing_and_cross_scope_revision_metadata_fail_closed(self) -> None:
+        changes = [
+            (("name",), None),
+            (("name",), f"{APPS['web']}--r2"),
+            (("type",), "Microsoft.App/containerapps"),
+            (("id",), f"{app_id(APPS['web'])}/revisions/{APPS['api']}--r2"),
+            (("id",), f"{app_id(APPS['api'], 'rg-other')}/revisions/{APPS['api']}--r2"),
+            (("id",), f"{app_id(APPS['api'])}/revisions/{APPS['api']}--r1"),
+            (("properties", "template", "containers"), []),
+            (("properties", "template", "scale", "minReplicas"), None),
+            (("properties", "template", "scale", "minReplicas"), True),
+            (("properties", "template", "scale", "minReplicas"), -1),
+            (("properties", "active"), None),
+            (("properties", "healthState"), None),
+            (("properties", "provisioningState"), None),
+            (("properties", "runningState"), None),
+        ]
+        for path, value in changes:
+            with self.subTest(path=path, value=value):
+                az = world()
+                self.assertIsNotNone(self.snapshot(az).revision)
+                detail = az.revisions[(APPS["api"], f"{APPS['api']}--r2")]
+                parent = detail
+                for key in path[:-1]:
+                    parent = parent[key]
+                parent[path[-1]] = value
+                with self.assertRaises(pdv.VerifyInputError):
+                    self.snapshot(az)
+
+    def test_missing_revision_is_not_a_greenfield_app(self) -> None:
+        az = world()
+        self.assertTrue(self.snapshot(az).exists)
+        del az.revisions[(APPS["api"], f"{APPS['api']}--r2")]
+        with self.assertRaisesRegex(pdv.VerifyInputError, "revision not found"):
+            self.snapshot(az)
+
+    def test_missing_or_foreign_app_identity_is_not_a_valid_observation(self) -> None:
+        for key, value in (
+            ("id", None), ("id", app_id(APPS["api"], "rg-other")),
+            ("name", APPS["web"]), ("type", None),
+        ):
+            with self.subTest(key=key, value=value):
+                az = world()
+                self.assertTrue(self.snapshot(az).exists)
+                az.apps[APPS["api"]][key] = value
+                with self.assertRaises(pdv.VerifyInputError):
+                    self.snapshot(az)
+
+    def test_app_changes_during_exact_revision_reads_are_not_mixed(self) -> None:
+        for field, value in (
+            ("latestReadyRevisionName", f"{APPS['api']}--r1"),
+            ("latestRevisionName", f"{APPS['api']}--pending"),
+            ("provisioningState", "Updating"),
+            ("template", {"containers": [], "scale": {"minReplicas": 0}}),
+        ):
+            with self.subTest(field=field):
+                az = world()
+                self.assertTrue(self.snapshot(az).exists)
+
+                def change_during_read(args, **kwargs):
+                    response = az(args, **kwargs)
+                    if list(args)[:3] == ["containerapp", "revision", "show"] and APPS["api"] in args:
+                        az.apps[APPS["api"]]["properties"][field] = value
+                    return response
+
+                with self.assertRaisesRegex(pdv.VerifyInputError, "app changed"):
+                    self.snapshot(inert_az(az, change_during_read))
+
+    def test_failed_provision_pending_revision_is_copied_away_not_skipped(self) -> None:
+        az = pending_world()
+        pending = f"{APPS['api']}--pending"
+        unprotected = deepcopy(az)
+        self.assertTrue(unprotected.promote_pending(APPS["api"], pending))
+        self.assertNotEqual(self.snapshot(unprotected).image, RESTORED_IMAGE)
+        code, out, _ = RollbackTests().rollback(az)
+        self.assertEqual(code, 0, out)
+        copies = [call for call in az.calls if call[:3] == ["containerapp", "revision", "copy"]]
+        self.assertEqual(len(copies), 3)
+        self.assertIn([
+            "containerapp", "revision", "copy", "-g", GROUP, "-n", APPS["api"],
+            "--subscription", SUBSCRIPTION, "--from-revision", f"{APPS['api']}--r1", "-o", "none",
+        ], copies)
+        self.assertIn('"restored":3,"failed":0', out)
+        self.assertFalse(az.promote_pending(APPS["api"], pending))
+        self.assertEqual(self.snapshot(az).image, RESTORED_IMAGE)
+        props = az.apps[APPS["api"]]["properties"]
+        self.assertEqual(props["latestRevisionName"], props["latestReadyRevisionName"])
+        self.assertNotEqual(props["latestReadyRevisionName"], pending)
+        self.assertIs(az.revisions[(APPS["api"], pending)]["properties"]["active"], False)
+
+    def test_true_unchanged_ready_latest_and_template_is_a_noop(self) -> None:
+        az = world(api_revision=f"{APPS['api']}--r1")
+        code, out, _ = RollbackTests().rollback(az)
+        self.assertEqual(code, 0, out)
+        self.assertFalse([call for call in az.calls if "copy" in call and APPS["api"] in call])
+        self.assertIn("healthy with no pending cutover", out)
+        # Even same-image environment drift must restore the full captured template.
+        az = world(api_revision=f"{APPS['api']}--r1")
+        az.apps[APPS["api"]]["properties"]["template"]["containers"][0]["env"] = [
+            {"name": "MODE", "value": "pending"}
+        ]
+        code, out, _ = RollbackTests().rollback(az)
+        self.assertEqual(code, 0, out)
+        self.assertTrue([call for call in az.calls if "copy" in call and APPS["api"] in call])
+        self.assertNotIn("env", az.apps[APPS["api"]]["properties"]["template"]["containers"][0])
+
+    def test_copy_preserves_the_captured_full_template_and_zero_minimum(self) -> None:
+        az = pending_world()
+        source = az.revisions[(APPS["api"], f"{APPS['api']}--r1")]["properties"]
+        source["template"]["containers"][0].update(
+            env=[{"name": "MODE", "value": "captured"}],
+            probes=[{"type": "Readiness", "httpGet": {"path": "/ready", "port": 8080}}],
+        )
+        source["template"]["scale"]["minReplicas"] = 0
+        source.update(runningState="ScaledToZero", replicas=0)
+        expected = deepcopy(source["template"])
+        code, out, _ = RollbackTests().rollback(
+            az, snapshot_overrides={"api": {"minReplicas": 0}}
+        )
+        self.assertEqual(code, 0, out)
+        snapshot = self.snapshot(az)
+        self.assertEqual(snapshot.minReplicas, 0)
+        self.assertEqual(snapshot.image, RESTORED_IMAGE)
+        actual = az.revisions[(APPS["api"], snapshot.revision)]["properties"]["template"]
+        self.assertNotEqual(actual["revisionSuffix"], expected["revisionSuffix"])
+        actual.pop("revisionSuffix")
+        expected.pop("revisionSuffix")
+        self.assertEqual(actual, expected)
+
+    def test_old_state_must_match_current_captured_revision_bytes_before_any_copy(self) -> None:
+        for override in (
+            {"image": None}, {"image": "mcr.microsoft.com/k8se/quickstart:latest"},
+            {"minReplicas": None}, {"minReplicas": 0},
+        ):
+            with self.subTest(override=override):
+                az = pending_world()
+                code, out, _ = RollbackTests().rollback(az, snapshot_overrides={"api": override})
+                self.assertEqual(code, 4, out)
+                self.assertIn("existing state cannot authorize a restore", out)
+                self.assertFalse([call for call in az.calls if "copy" in call and APPS["api"] in call])
+                self.assertEqual(out.count('"outcome":"restored"'), 2)
+                control = pending_world()
+                code, out, _ = RollbackTests().rollback(control)
+                self.assertEqual(code, 0, out)
+                self.assertTrue([call for call in control.calls if "copy" in call and APPS["api"] in call])
+
+    def test_incomplete_or_changed_current_reads_do_not_abandon_other_apps(self) -> None:
+        for failure in ("missing", "identity", "configuration", "changed", "unavailable"):
+            with self.subTest(failure=failure):
+                az = world()
+                if failure == "missing":
+                    del az.revisions[(APPS["api"], f"{APPS['api']}--r1")]
+                elif failure == "identity":
+                    az.revisions[(APPS["api"], f"{APPS['api']}--r1")]["name"] = f"{APPS['web']}--r1"
+                elif failure == "configuration":
+                    del az.apps[APPS["api"]]["properties"]["latestRevisionName"]
+
+                def bad_read(args, **kwargs):
+                    if APPS["api"] in args and list(args)[:3] == ["containerapp", "revision", "show"]:
+                        if failure == "unavailable":
+                            az.calls.append(list(args))
+                            return 1, "", "ERROR: read unavailable"
+                        response = az(args, **kwargs)
+                        if failure == "changed":
+                            az.apps[APPS["api"]]["properties"]["provisioningState"] = "Updating"
+                        return response
+                    return az(args, **kwargs)
+
+                code, out, _ = RollbackTests().rollback(inert_az(az, bad_read))
+                self.assertEqual(code, 4, out)
+                self.assertIn('"outcome":"unreadable"', out)
+                self.assertEqual(out.count('"outcome":"restored"'), 2)
+                self.assertFalse([call for call in az.calls if "copy" in call and APPS["api"] in call])
+
+    def test_accepted_copy_needs_actual_healthy_template_and_retired_pending_candidate(self) -> None:
+        for fault in ("image", "health", "provisioned", "replicas", "active_pending", "latest_pending"):
+            with self.subTest(fault=fault):
+                az = pending_world()
+                pending = f"{APPS['api']}--pending"
+
+                def incomplete_copy(args, **kwargs):
+                    response = az(args, **kwargs)
+                    if list(args)[:3] != ["containerapp", "revision", "copy"] or APPS["api"] not in args:
+                        return response
+                    app = az.apps[APPS["api"]]["properties"]
+                    serving = az.revisions[(APPS["api"], app["latestReadyRevisionName"])]["properties"]
+                    if fault == "image":
+                        serving["template"]["containers"][0]["image"] = DIGEST_B
+                    elif fault == "health":
+                        serving["healthState"] = None
+                    elif fault == "provisioned":
+                        serving["provisioningState"] = "Provisioning"
+                    elif fault == "replicas":
+                        serving["replicas"] = 0
+                    else:
+                        az.revisions[(APPS["api"], pending)]["properties"]["active"] = True
+                        if fault == "latest_pending":
+                            app["latestRevisionName"] = pending
+                    return response
+
+                code, out, _ = RollbackTests().rollback(inert_az(az, incomplete_copy))
+                self.assertEqual(code, 4, out)
+                self.assertIn('"outcome":"unconfirmed"', out)
+                self.assertEqual(out.count('"outcome":"restored"'), 2)
+                if fault == "latest_pending":
+                    self.assertTrue(az.promote_pending(APPS["api"], pending))
+                    self.assertNotEqual(self.snapshot(az).image, RESTORED_IMAGE)
+                code, out, _ = RollbackTests().rollback(pending_world())
+                self.assertEqual(code, 0, out)
+
+    def test_confirmation_unknown_revision_read_is_not_success(self) -> None:
+        az = pending_world()
+
+        def missing_copy_metadata(args, **kwargs):
+            if "--revision" in args and any(arg.endswith("-restored") for arg in args):
+                az.calls.append(list(args))
+                return 1, "", "ERROR: copied revision read unavailable"
+            return az(args, **kwargs)
+
+        code, out, _ = RollbackTests().rollback(inert_az(az, missing_copy_metadata))
+        self.assertEqual(code, 4, out)
+        self.assertEqual(out.count('"outcome":"unconfirmed"'), 3)
+        self.assertEqual(len([call for call in az.calls if "copy" in call]), 3)
+
+    def test_an_accepted_copy_with_lost_acknowledgement_is_not_replayed(self) -> None:
+        az = pending_world()
+
+        def lost_ack(args, **kwargs):
+            response = az(args, **kwargs)
+            if list(args)[:3] == ["containerapp", "revision", "copy"] and APPS["api"] in args:
+                raise pdv.AzError("copy acknowledgement was lost")
+            return response
+
+        code, out, _ = RollbackTests().rollback(inert_az(az, lost_ack))
+        self.assertEqual(code, 4, out)
+        self.assertIn("copy acknowledgement was lost", out)
+        self.assertEqual(out.count('"outcome":"restored"'), 2)
+        self.assertEqual(len([call for call in az.calls if "copy" in call and APPS["api"] in call]), 1)
+        self.assertEqual(self.snapshot(az).image, RESTORED_IMAGE)
+
+    def test_confirmation_stays_bound_to_the_written_subscription(self) -> None:
+        other_subscription = "00000000-0000-0000-0000-000000000002"
+        for wrong_response in (False, True):
+            with self.subTest(wrong_response=wrong_response):
+                az = pending_world()
+                copied = False
+                confirmation_calls = []
+
+                def changed_default(args, **kwargs):
+                    nonlocal copied
+                    argv = list(args)
+                    if argv[:3] == ["containerapp", "revision", "copy"] and APPS["api"] in argv:
+                        copied = True
+                        return az(argv, **kwargs)
+                    if copied and APPS["api"] in argv:
+                        confirmation_calls.append(argv)
+                        requested = FakeAz._flag(argv, "--subscription")
+                        if wrong_response or requested in (None, other_subscription):
+                            translated = [
+                                SUBSCRIPTION if value == other_subscription else value for value in argv
+                            ]
+                            code, output, error = az(translated, **kwargs)
+                            if code == 0:
+                                payload = json.loads(output)
+                                payload["id"] = payload["id"].replace(SUBSCRIPTION, other_subscription)
+                                output = json.dumps(payload)
+                            return code, output, error
+                    return az(argv, **kwargs)
+
+                code, out, _ = RollbackTests().rollback(inert_az(az, changed_default))
+                self.assertEqual(code, 4 if wrong_response else 0, out)
+                self.assertTrue(confirmation_calls)
+                self.assertTrue(all(
+                    FakeAz._flag(call, "--subscription") == SUBSCRIPTION for call in confirmation_calls
+                ))
+                if wrong_response:
+                    self.assertIn("different subscription", out)
+                    self.assertIn('"outcome":"unconfirmed"', out)
+                    self.assertEqual(out.count('"outcome":"restored"'), 2)
+
+    def test_multiple_mode_restores_exact_weights_without_copying_the_unrouted_latest(self) -> None:
+        az = pending_world()
+        props = az.apps[APPS["api"]]["properties"]
+        captured = f"{APPS['api']}--r1"
+        pending = f"{APPS['api']}--pending"
+        props["configuration"]["activeRevisionsMode"] = "Multiple"
+        props["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": captured, "weight": 80},
+            {"revisionName": f"{APPS['api']}--other", "weight": 20},
+            {"revisionName": pending, "weight": 0},
+        ]
+        self.assertEqual(self.snapshot(az).image, RESTORED_IMAGE)
+        code, out = VerifyTests().verify(
+            az=az, extra_args=["--skip-canary", "--expect-image", f"api={RESTORED_IMAGE}"]
+        )
+        self.assertEqual(code, 0, out)
+        code, out, _ = RollbackTests().rollback(
+            az, snapshot_overrides={"api": {"revisionsMode": "Multiple"}}
+        )
+        self.assertEqual(code, 0, out)
+        writes = [call for call in az.calls if "set" in call and APPS["api"] in call]
+        self.assertEqual(writes, [[
+            "containerapp", "ingress", "traffic", "set", "-g", GROUP, "-n", APPS["api"],
+            "--subscription", SUBSCRIPTION, "--revision-weight", f"{captured}=100", "-o", "none",
+        ]])
+        self.assertFalse([call for call in az.calls if "copy" in call and APPS["api"] in call])
+        self.assertEqual(props["latestRevisionName"], pending)
+        self.assertIs(az.revisions[(APPS["api"], pending)]["properties"]["active"], True)
+        az.calls.clear()
+        code, out, _ = RollbackTests().rollback(
+            az, snapshot_overrides={"api": {"revisionsMode": "Multiple"}}
+        )
+        self.assertEqual(code, 0, out)
+        self.assertFalse([call for call in az.calls if "set" in call and APPS["api"] in call])
 
 
 class AzInvocationTests(unittest.TestCase):

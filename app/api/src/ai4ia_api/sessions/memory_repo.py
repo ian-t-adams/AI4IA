@@ -6,8 +6,12 @@ identical across stores.
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from ..workflows.automation_models import WorkflowCheckpoint
 
 from ..agents.consent import ToolConsentState
 from .deletion_models import (
@@ -52,6 +56,7 @@ class InMemorySessionRepository:
         self._attachment_storage_id = attachment_storage_id
         self._deletions: dict[tuple[str, str], tuple[DeletionRecord, int]] = {}
         self._uploads: dict[str, UploadIntent] = {}
+        self._workflow_checkpoints: dict[tuple[str, str], WorkflowCheckpoint] = {}
 
     async def check_ready(self) -> None:
         return None
@@ -83,6 +88,17 @@ class InMemorySessionRepository:
 
     async def get_session(self, user_id: str, session_id: str) -> Session:
         return (await self._owned_session(user_id, session_id)).model_copy(deep=True)
+
+    async def claim_fresh_session(self, user_id: str, expected: Session) -> Session | None:
+        async with self._lock:
+            current = await self._owned_session(user_id, expected.id)
+            if (
+                not self._deletion_enabled or current.deletionProtocol != 1
+                or current.freshTurnClaimed or current != expected
+            ):
+                return None
+            current.freshTurnClaimed = True
+            return current.model_copy(deep=True)
 
     async def list_sessions(self, user_id: str) -> list[Session]:
         items = [
@@ -303,6 +319,65 @@ class InMemorySessionRepository:
             bucket.append(message)
             return message
 
+    async def read_workflow_checkpoint(
+        self, user_id: str, session_id: str, checkpoint_id: str,
+    ) -> WorkflowCheckpoint | None:
+        async with self._lock:
+            session = await self._owned_session(user_id, session_id)
+            if session.deletionProtocol != 1:
+                raise DeletionMigrationRequiredError()
+            result = self._workflow_checkpoints.get((session_id, checkpoint_id))
+            if result is not None and (
+                result.userId != user_id or result.deletionEpoch != session.deletionEpoch
+            ):
+                raise DeletionIntegrityError("Workflow checkpoint ownership mismatch")
+            return result.model_copy(deep=True) if result else None
+
+    async def claim_workflow_checkpoint(
+        self, user_id: str, user_message: Message, assistant: Message,
+        checkpoint: WorkflowCheckpoint,
+    ) -> bool:
+        from ..workflows.automation_models import writable_body
+        from ..workflows.checkpoint_contract import validate_pair
+
+        async with self._lock:
+            session = await self._owned_session(user_id, checkpoint.sessionId)
+            validate_pair(session, checkpoint, assistant, user_message=user_message)
+            writable_body(checkpoint)
+            key = (session.id, checkpoint.id)
+            messages = self._messages.setdefault(session.id, [])
+            if key in self._workflow_checkpoints or any(
+                item.id in {user_message.id, assistant.id, checkpoint.id} for item in messages
+            ):
+                return False
+            self._workflow_checkpoints[key] = checkpoint.model_copy(deep=True)
+            messages.extend([user_message.model_copy(deep=True), assistant.model_copy(deep=True)])
+            return True
+
+    async def replace_workflow_checkpoint(
+        self, user_id: str, checkpoint: WorkflowCheckpoint, assistant: Message, *,
+        expected: WorkflowCheckpoint, expected_assistant: Message,
+    ) -> bool:
+        from ..workflows.automation_models import writable_body
+        from ..workflows.checkpoint_contract import validate_pair, validate_transition
+
+        async with self._lock:
+            session = await self._owned_session(user_id, checkpoint.sessionId)
+            validate_pair(session, checkpoint, assistant)
+            validate_transition(expected, checkpoint, expected_assistant, assistant)
+            writable_body(checkpoint)
+            key = (session.id, checkpoint.id)
+            messages = self._messages.setdefault(session.id, [])
+            index = next((i for i, message in enumerate(messages) if message.id == assistant.id), None)
+            if (
+                self._workflow_checkpoints.get(key) != expected
+                or index is None or messages[index] != expected_assistant
+            ):
+                return False
+            self._workflow_checkpoints[key] = checkpoint.model_copy(deep=True)
+            messages[index] = assistant.model_copy(deep=True)
+            return True
+
     async def list_messages(self, user_id: str, session_id: str) -> list[Message]:
         await self._owned_session(user_id, session_id)
         return sorted(
@@ -336,8 +411,13 @@ class InMemorySessionRepository:
             return False
 
     async def clear_messages(self, user_id: str, session_id: str) -> None:
+        from ..workflows.checkpoint_contract import cleared_checkpoint
+
         async with self._lock:
             await self._owned_session(user_id, session_id)
+            for key, state in list(self._workflow_checkpoints.items()):
+                if key[0] == session_id:
+                    self._workflow_checkpoints[key] = cleared_checkpoint(state)
             self._messages[session_id] = []
 
     async def add_document(self, user_id: str, document: Document) -> Document:
@@ -489,7 +569,15 @@ class InMemorySessionRepository:
                 self._messages[lease.record.id] = self._messages.get(
                     lease.record.id, []
                 )[CLEANUP_ITEMS:]
-            return not rows
+            controls = [] if documents else [
+                key for key in self._workflow_checkpoints if key[0] == lease.record.id
+            ][:max(0, CLEANUP_ITEMS - len(rows))]
+            for key in controls:
+                state = self._workflow_checkpoints[key]
+                if state.userId != lease.record.userId or state.deletionEpoch != lease.record.deletionEpoch:
+                    raise DeletionIntegrityError("Unexpected workflow checkpoint")
+                del self._workflow_checkpoints[key]
+            return not rows and not controls
 
     async def deletion_uploads(
         self, lease: DeletionLease, *, unsettled_only: bool

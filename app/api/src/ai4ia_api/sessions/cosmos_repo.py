@@ -15,7 +15,10 @@ Azure SDKs are imported lazily so the app and tests run without them installed.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..workflows.automation_models import WorkflowCheckpoint
 
 from pydantic import BaseModel
 
@@ -73,6 +76,8 @@ class CosmosSessionRepository(CosmosDeletionMixin):
     def _to_doc(model: Session | Message | Document) -> dict[str, Any]:
         doc = model.model_dump(mode="json")
         if isinstance(model, Session):
+            if model.freshTurnClaimed:
+                doc["freshTurnClaimed"] = True
             doc["toolConsentState"] = (
                 model.toolConsentState.model_dump(mode="json")
                 if model.toolConsentState is not None else None
@@ -147,6 +152,28 @@ class CosmosSessionRepository(CosmosDeletionMixin):
 
     async def get_session(self, user_id: str, session_id: str) -> Session:
         return await self._owned_session(user_id, session_id)
+
+    async def claim_fresh_session(self, user_id: str, expected: Session) -> Session | None:
+        from azure.cosmos.exceptions import CosmosAccessConditionFailedError
+
+        raw = await self._read_session_raw(user_id, expected.id)
+        self._assert_active(raw, user_id, expected.id)
+        if (
+            not self._deletion_enabled or raw.get("deletionProtocol") != 1
+            or "freshTurnClaimed" in raw or Session.model_validate(raw) != expected
+        ):
+            return None
+        try:
+            await self._patch_session_item(
+                user_id, expected.id,
+                [{"op": "set", "path": "/freshTurnClaimed", "value": True}],
+                etag=require_etag(raw),
+            )
+        except CosmosAccessConditionFailedError:
+            return None
+        # A lost acknowledgement never reaches this return. Its durable marker
+        # stays consumed; neither a retry nor an empty child scan can reopen it.
+        return expected.model_copy(update={"freshTurnClaimed": True}, deep=True)
 
     async def list_sessions(self, user_id: str) -> list[Session]:
         query = (
@@ -668,6 +695,119 @@ class CosmosSessionRepository(CosmosDeletionMixin):
             raise
         return True
 
+    async def read_workflow_checkpoint(
+        self, user_id: str, session_id: str, checkpoint_id: str,
+    ) -> WorkflowCheckpoint | None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        from ..workflows.automation_models import WorkflowCheckpoint, persisted_model
+
+        session = await self._owned_session(user_id, session_id)
+        if session.deletionProtocol != 1:
+            raise DeletionMigrationRequiredError()
+        self._assert_child_id(checkpoint_id)
+        try:
+            raw = await self._messages.read_item(item=checkpoint_id, partition_key=session_id)
+        except CosmosResourceNotFoundError:
+            return None
+        result = persisted_model(WorkflowCheckpoint, raw)
+        if (
+            result.id != checkpoint_id or result.userId != user_id
+            or result.sessionId != session_id or result.deletionEpoch != session.deletionEpoch
+        ):
+            raise DeletionIntegrityError("Workflow checkpoint ownership mismatch")
+        return result
+
+    async def claim_workflow_checkpoint(
+        self, user_id: str, user_message: Message, assistant: Message,
+        checkpoint: WorkflowCheckpoint,
+    ) -> bool:
+        from azure.cosmos.exceptions import CosmosBatchOperationError
+
+        from ..workflows.checkpoint_contract import validate_pair
+        from ..workflows.automation_models import writable_body
+
+        session = await self._owned_session(user_id, checkpoint.sessionId)
+        validate_pair(session, checkpoint, assistant, user_message=user_message)
+        for item_id in (checkpoint.id, user_message.id, assistant.id):
+            self._assert_child_id(item_id)
+        try:
+            await self._fenced_batch(self._messages, session, [
+                ("create", (self._to_doc(user_message),), {}),
+                ("create", (self._to_doc(assistant),), {}),
+                ("create", (writable_body(checkpoint),), {}),
+            ])
+        except CosmosBatchOperationError as exc:
+            if any(batch_failed_at(exc, index, 409) for index in (1, 2, 3)):
+                return False
+            raise
+        return True
+
+    async def replace_workflow_checkpoint(
+        self, user_id: str, checkpoint: WorkflowCheckpoint, assistant: Message, *,
+        expected: WorkflowCheckpoint, expected_assistant: Message,
+    ) -> bool:
+        from azure.cosmos.exceptions import CosmosBatchOperationError, CosmosResourceNotFoundError
+
+        from ..workflows.automation_models import WorkflowCheckpoint, persisted_model, writable_body
+        from ..workflows.checkpoint_contract import validate_pair, validate_transition
+
+        session = await self._owned_session(user_id, checkpoint.sessionId)
+        validate_pair(session, checkpoint, assistant)
+        validate_transition(expected, checkpoint, expected_assistant, assistant)
+        self._assert_child_id(checkpoint.id)
+        self._assert_child_id(assistant.id)
+        try:
+            raw = await self._messages.read_item(item=checkpoint.id, partition_key=session.id)
+            message_raw = await self._messages.read_item(item=assistant.id, partition_key=session.id)
+        except CosmosResourceNotFoundError:
+            return False
+        if (
+            persisted_model(WorkflowCheckpoint, raw) != expected
+            or Message.model_validate(message_raw) != expected_assistant
+        ):
+            return False
+        try:
+            await self._fenced_batch(self._messages, session, [
+                ("replace", (checkpoint.id, writable_body(checkpoint)),
+                 {"if_match_etag": require_etag(raw)}),
+                ("replace", (assistant.id, self._to_doc(assistant)),
+                 {"if_match_etag": require_etag(message_raw)}),
+            ])
+        except CosmosBatchOperationError as exc:
+            if any(batch_failed_at(exc, index, 404, 412) for index in (1, 2)):
+                return False
+            raise
+        return True
+
+    async def _clear_workflow_checkpoints(self, user_id: str, session: Session) -> None:
+        from azure.cosmos.exceptions import CosmosBatchOperationError
+
+        from ..workflows.automation_models import CHECKPOINT_KIND, WorkflowCheckpoint, persisted_model
+        from ..workflows.checkpoint_contract import cleared_checkpoint
+
+        query = "SELECT * FROM c WHERE c.sessionId = @sid AND c.kind = @kind"
+        async for raw in self._messages.query_items(
+            query=query, parameters=[
+                {"name": "@sid", "value": session.id}, {"name": "@kind", "value": CHECKPOINT_KIND},
+            ], partition_key=session.id,
+        ):
+            for attempt in range(CAS_ATTEMPTS):
+                state = persisted_model(WorkflowCheckpoint, raw)
+                if state.userId != user_id or state.deletionEpoch != session.deletionEpoch:
+                    raise DeletionIntegrityError("Workflow checkpoint ownership mismatch")
+                self._assert_child_id(state.id)
+                try:
+                    await self._fenced_batch(self._messages, session, [
+                        ("replace", (state.id, cleared_checkpoint(state).model_dump(mode="json")),
+                         {"if_match_etag": require_etag(raw)}),
+                    ])
+                    break
+                except CosmosBatchOperationError as exc:
+                    if not batch_failed_at(exc, 1, 412) or attempt == CAS_ATTEMPTS - 1:
+                        raise
+                    raw = await self._messages.read_item(item=state.id, partition_key=session.id)
+
     async def upsert_message(self, user_id: str, message: Message) -> Message:
         from azure.cosmos.exceptions import CosmosBatchOperationError, CosmosResourceNotFoundError
 
@@ -806,6 +946,8 @@ class CosmosSessionRepository(CosmosDeletionMixin):
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
         session = await self._owned_session(user_id, session_id)
+        if session.deletionProtocol == 1:
+            await self._clear_workflow_checkpoints(user_id, session)
         query = (
             "SELECT c.id FROM c WHERE c.sessionId = @sid AND NOT IS_DEFINED(c.kind)"
         )

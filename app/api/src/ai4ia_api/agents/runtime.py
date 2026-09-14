@@ -51,8 +51,9 @@ import copy
 import json
 import logging
 import time
+from ..request_constraints import tools_allowed
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from ..gateway.client import RESPONSES_OUTPUT_ITEMS_KEY, ModelGatewayClient
@@ -61,6 +62,11 @@ from ..model_evidence import ModelCallRecorder
 from ..receipts import ExecutionReceipt, ReceiptRuntime
 from ..safety import MessageSafety, merge_safety, parse_safety
 from ..logging_setup import emit_custom_event, emit_security_block
+from ..policy.context import canonical_tool_name, require_policy, tool_allowed, tool_policy_scope
+from ..policy.models import PolicyError, PolicyRequest
+from ..publishing.execution import observe_publication_offers
+from ..publishing.models import PublicationError
+from ..publishing.refs import PublicationEvidence
 from .prompt_budget import (
     TOOL_CONTEXT_RESERVE_TOKENS,
     bound_agent_context,
@@ -78,6 +84,9 @@ from .consent import ApprovalSource, ConsentDecision, ConsentRejected, tool_cont
 from .streaming import stream_iteration
 from .synthetic_governance import synthetic_spec
 from .tool_exec import ToolContext, ToolExecutor, ToolValidationError
+from .turn_checkpoint import (
+    TURN_BUDGET_KEYS, CheckpointRecorder, CheckpointResponse, TurnCheckpoint, TurnCheckpointController,
+)
 from .tools import (
     DenyReason, ToolRegistry, ToolRisk, ToolSpec, is_safe_tool_name, redact, redact_obj,
 )
@@ -181,6 +190,7 @@ class AgentRunResult:
     incomplete: bool = False
     incomplete_reason: str | None = None
     model_evidence: ModelCallRecorder | None = None
+    publication: PublicationEvidence | None = None
 
 
 class DelegatedToolResult(dict[str, Any]):
@@ -211,6 +221,15 @@ class AgentRunCancelled(asyncio.CancelledError):
     def __init__(self, partial: AgentRunResult) -> None:
         super().__init__("agent execution cancelled")
         self.partial = partial
+
+
+class AgentRunPaused(RuntimeError):
+    """An exact call is durably pending, with no synthetic denial/model retry."""
+
+    def __init__(self, partial: AgentRunResult, state: TurnCheckpoint) -> None:
+        super().__init__("agent execution awaits exact-call approval")
+        self.partial = partial
+        self.state = state
 
 
 class DelegatedAgentRunFailed(AgentRunFailed):
@@ -298,6 +317,7 @@ async def run_agent_turn(
     prompt_budget_bytes: int | None = None,
     retain_failed_request: bool = False,
     model_evidence: ModelCallRecorder | None = None,
+    checkpoint: TurnCheckpointController | None = None,
 ) -> AgentRunResult:
     """Run a single agent turn with tool calling and return the final answer.
 
@@ -324,6 +344,15 @@ async def run_agent_turn(
     the same reassembled tool calls, and the same bounds apply.
     """
     evidence = model_evidence if model_evidence is not None else ModelCallRecorder()
+    restored = checkpoint.restored if checkpoint is not None else None
+    if checkpoint is not None:
+        if on_delta is not None or max_iters > 2:
+            raise ValueError("Durable checkpoints require a bounded non-streaming workflow turn.")
+        evidence = CheckpointRecorder(evidence, restored)
+        if ctx.turn_budgets is None:
+            raise ValueError("Durable execution requires a persistent capability budget carrier.")
+        if restored is None:
+            ctx.turn_budgets.update({key: 0 for key in TURN_BUDGET_KEYS})
     convo: list[dict[str, Any]] = [dict(m) for m in messages]
     current_user_index = next(
         (
@@ -361,6 +390,10 @@ async def run_agent_turn(
             )
             if check.approved:
                 consented_names.add(name)
+    if checkpoint is not None:
+        # Selection permits discovery, not dispatch. Exact invocation approval is
+        # still required below; otherwise an unapproved tool could never be reviewed.
+        consented_names.update(resolved_tool_names)
     real_schema = executor.schema_for(
         resolved_tool_names, registry=registry, ctx=ctx, consented_names=consented_names,
     )
@@ -378,7 +411,13 @@ async def run_agent_turn(
             raise ValueError(
                 f"extra_handlers collide with executor tool names: {sorted(collisions)}"
             )
-    schema = copy.deepcopy([*real_schema, *(extra_tools or [])])
+    schema = copy.deepcopy([*real_schema, *(extra_tools or [])]) if tools_allowed() else []
+    schema = [
+        offered for offered in schema
+        if tool_allowed(canonical_tool_name(
+            (offered.get("function") or {}).get("name", ""), ctx.tool_aliases,
+        ))
+    ]
     contracts: dict[str, str] = {}
     for offered in schema:
         fn = offered.get("function") or {}
@@ -404,6 +443,7 @@ async def run_agent_turn(
         tool["function"]["name"]: tool["function"] for tool in offered_tools
         if isinstance(tool.get("function"), dict) and isinstance(tool["function"].get("name"), str)
     }
+    await observe_publication_offers(contracts, list(offered_functions))
     effective_prompt_budget = prompt_budget_bytes or (
         prompt_byte_budget(
             None, dict(params or {}), default_max_tokens=_DEFAULT_MAX_OUTPUT_TOKENS
@@ -452,6 +492,66 @@ async def run_agent_turn(
     current_approval: ApprovalSource | None = None
     current_consent_id: str | None = None
     current_call_id: str | None = None
+    iterations = 0
+    usage_agg = TokenUsage.empty()
+    pending_response: CheckpointResponse | None = None
+    next_tool_index = 0
+    current_tool_counted = False
+    response_appended = False
+    force_final = False
+    current_tool_index = 0
+
+    if restored is not None:
+        if contracts != restored.contracts:
+            raise AgentContextBudgetError("The persisted tool surface is no longer current.")
+        convo = copy.deepcopy(restored.conversation)
+        schema = copy.deepcopy(restored.toolSchema)
+        offered_tools = copy.deepcopy(restored.offeredTools)
+        steps = [AgentStep(**item) for item in restored.steps]
+        iterations = restored.iterations
+        completed_model_calls = restored.completedModelCalls
+        tool_calls_used = restored.toolCallsUsed
+        next_tool_index = restored.nextToolIndex
+        current_tool_counted = restored.currentToolCounted
+        pending_response = restored.response.model_copy(deep=True) if restored.response else None
+        response_appended = restored.responseAppended
+        untrusted_context = restored.untrustedContext
+        force_final = restored.forceFinal
+        denied_once = set(restored.deniedOnce)
+        usage_agg = restored.usage.model_copy(deep=True)
+        effective_prompt = copy.deepcopy(restored.effectivePrompt)
+        model_requests = copy.deepcopy(restored.modelRequests)
+        safety_agg = restored.safety.model_copy(deep=True) if restored.safety else None
+        dropped_context_messages = restored.droppedContextMessages
+        completed_text_parts = list(restored.completedText)
+        if ctx.turn_budgets is not None:
+            ctx.turn_budgets.update(restored.capabilityBudgets)
+        current_user_index = next(
+            (index for index in range(len(convo) - 1, -1, -1) if convo[index].get("role") == "user"),
+            -1,
+        )
+
+    def snapshot(phase: str) -> TurnCheckpoint:
+        return TurnCheckpoint.model_validate({
+            "version": 1, "phase": phase, "conversation": copy.deepcopy(convo),
+            "toolSchema": copy.deepcopy(schema), "offeredTools": copy.deepcopy(offered_tools),
+            "contracts": dict(contracts), "steps": [asdict(step) for step in steps],
+            "iterations": iterations, "completedModelCalls": completed_model_calls,
+            "toolCallsUsed": tool_calls_used, "nextToolIndex": next_tool_index,
+            "currentToolCounted": current_tool_counted,
+            "response": pending_response.model_dump(mode="json") if pending_response else None,
+            "responseAppended": response_appended, "untrustedContext": untrusted_context,
+            "forceFinal": force_final, "deniedOnce": sorted(denied_once),
+            "usage": usage_agg.model_dump(mode="json"),
+            "effectivePrompt": copy.deepcopy(effective_prompt),
+            "modelRequests": copy.deepcopy(model_requests),
+            "modelEvidence": [item.model_dump(mode="json") for item in evidence.snapshot()],
+            "modelEvidenceCount": evidence.count,
+            "safety": safety_agg.model_dump(mode="json") if safety_agg else None,
+            "droppedContextMessages": dropped_context_messages,
+            "completedText": list(completed_text_parts),
+            "capabilityBudgets": dict(ctx.turn_budgets or {}),
+        })
 
     def current_registry_contract(name: str) -> str | None:
         definition = executor.get(name)
@@ -584,6 +684,8 @@ async def run_agent_turn(
             if not effective_prompt:
                 effective_prompt = copy.deepcopy(_observable_messages(convo))
             model_requests.append(copy.deepcopy(_observable_messages(convo)))
+            if checkpoint is not None:
+                await checkpoint.before_model(snapshot("model"), request_params)
             request_started = True
             if stream_tokens:
                 iteration = await evidence.observe(stream_iteration(
@@ -695,6 +797,7 @@ async def run_agent_turn(
         trace (which records only what actually happened). The callback is
         best-effort so a UI/stream error can never break the turn.
         """
+        nonlocal next_tool_index, current_tool_counted
         if persist and step.kind in {"tool_result", "delegate", "tool_denied", "tool_error"}:
             if step.arguments is None:
                 step.arguments = redact_obj(call_arguments)
@@ -706,6 +809,19 @@ async def run_agent_turn(
                 step.call_id = current_call_id
         if persist:
             steps.append(step)
+        if checkpoint is not None and persist and step.kind in {
+            "tool_result", "delegate", "tool_denied", "tool_error",
+        }:
+            next_tool_index = current_tool_index + 1
+            current_tool_counted = False
+            try:
+                await checkpoint.tool_completed(snapshot("tools"), outcome=step.kind)
+            except asyncio.CancelledError as exc:
+                raise AgentRunCancelled(current_partial_result(include_current_attempt=False)) from exc
+            except Exception as exc:
+                raise AgentRunFailed(
+                    cause=exc, partial=current_partial_result(include_current_attempt=False),
+                ) from exc
         if on_step is not None:
             try:
                 await on_step(step)
@@ -754,16 +870,24 @@ async def run_agent_turn(
         digest: str,
     ) -> bool:
         reason = DenyReason.approval_required.value
+        draft = draft_for_call(
+            spec, tool=name, label=labels.get(name), arguments=parsed, digest=digest,
+        )
         if ctx.approval_sink is not None:
-            ctx.approval_sink.request(
-                draft_for_call(
-                    spec,
-                    tool=name,
-                    label=labels.get(name),
-                    arguments=parsed,
-                    digest=digest,
+            ctx.approval_sink.request(draft)
+        if checkpoint is not None:
+            paused = snapshot("tools")
+            try:
+                await checkpoint.hold(
+                    paused, spec=spec, draft=draft, arguments=parsed, contract=contracts[name],
                 )
-            )
+            except asyncio.CancelledError as exc:
+                raise AgentRunCancelled(current_partial_result(include_current_attempt=False)) from exc
+            except Exception as exc:
+                raise AgentRunFailed(
+                    cause=exc, partial=current_partial_result(include_current_attempt=False),
+                ) from exc
+            raise AgentRunPaused(current_partial_result(include_current_attempt=False), paused)
         emit_custom_event(
             "tool_authorization",
             {
@@ -788,21 +912,63 @@ async def run_agent_turn(
     for key in _RESERVED_PARAMS:
         base_params.pop(key, None)
 
-    usage_agg = TokenUsage.empty()
-    iterations = 0
-    while iterations < max_iters:
-        iterations += 1
-        req_params = dict(base_params)
-        if schema:
-            req_params["tools"] = schema
-            req_params["tool_choice"] = "auto"
-        (
-            content,
-            tool_calls,
-            response_output_items,
-            incomplete,
-            incomplete_reason,
-        ) = await call_model(req_params)
+    if restored is not None and restored.phase == "model":
+        raise AgentRunFailed(
+            cause=RuntimeError("An in-flight model outcome is unknown; it cannot be replayed."),
+            partial=current_partial_result(include_current_attempt=True),
+        )
+
+    async def before_tool(name: str, parsed: dict[str, Any]) -> None:
+        if checkpoint is None:
+            return
+        try:
+            await checkpoint.before_tool(
+                snapshot("tools"), tool=name, arguments=parsed, contract=contracts[name],
+            )
+        except asyncio.CancelledError as exc:
+            raise AgentRunCancelled(current_partial_result(include_current_attempt=False)) from exc
+        except Exception as exc:
+            raise AgentRunFailed(
+                cause=exc, partial=current_partial_result(include_current_attempt=False),
+            ) from exc
+
+    async def model_completed() -> None:
+        if checkpoint is None:
+            return
+        try:
+            await checkpoint.model_completed(snapshot("response"))
+        except asyncio.CancelledError as exc:
+            raise AgentRunCancelled(current_partial_result(include_current_attempt=False)) from exc
+        except Exception as exc:
+            raise AgentRunFailed(
+                cause=exc, partial=current_partial_result(include_current_attempt=False),
+            ) from exc
+
+    while pending_response is not None or iterations < max_iters:
+        if pending_response is None:
+            iterations += 1
+            req_params = dict(base_params)
+            if schema:
+                req_params["tools"] = schema
+                req_params["tool_choice"] = "auto"
+            content, tool_calls, output_items, incomplete, incomplete_reason = await call_model(req_params)
+            pending_response = CheckpointResponse(
+                content=content, toolCalls=tool_calls, outputItems=output_items,
+                incomplete=incomplete, incompleteReason=incomplete_reason,
+            ) if checkpoint is not None else None
+            response_appended = False
+            next_tool_index = 0
+            current_tool_counted = False
+            await model_completed()
+        else:
+            content = pending_response.content
+            tool_calls = pending_response.toolCalls
+            output_items = pending_response.outputItems
+            incomplete = pending_response.incomplete
+            incomplete_reason = pending_response.incompleteReason
+            if pending_response.tail:
+                await record(AgentStep(kind="final", detail="incomplete" if incomplete else "max_iters"))
+                return finish(content, iterations, incomplete=incomplete, incomplete_reason=incomplete_reason)
 
         if incomplete:
             await record(AgentStep(kind="final", detail="incomplete"))
@@ -824,12 +990,17 @@ async def run_agent_turn(
             "content": content or None,
             "tool_calls": tool_calls,
         }
-        if response_output_items:
-            assistant_message[RESPONSES_OUTPUT_ITEMS_KEY] = response_output_items
-        convo.append(assistant_message)
+        if output_items:
+            assistant_message[RESPONSES_OUTPUT_ITEMS_KEY] = output_items
+        if not response_appended:
+            convo.append(assistant_message)
+            response_appended = True
 
-        force_final = False
-        for call in tool_calls:
+        if not next_tool_index:
+            force_final = False
+        for current_tool_index, call in enumerate(tool_calls):
+            if current_tool_index < next_tool_index:
+                continue
             call_id = call.get("id")
             current_call_id = call_id
             current_approval = None
@@ -853,7 +1024,9 @@ async def run_agent_turn(
             known = name in handlers or registry.get(name) is not None
             safe_name = name if known and is_safe_tool_name(name) else "unknown_tool"
 
-            tool_calls_used += 1
+            if not current_tool_counted:
+                tool_calls_used += 1
+                current_tool_counted = checkpoint is not None
             if tool_calls_used > _MAX_TOOL_CALLS:
                 convo.append(
                     _tool_message(
@@ -866,7 +1039,19 @@ async def run_agent_turn(
                 continue
 
             try:
-                parsed = json.loads(raw_args) if str(raw_args).strip() else {}
+                if checkpoint is not None:
+                    from ..workflows.automation_common import AutomationError, exact_arguments
+
+                    try:
+                        parsed, _, _ = exact_arguments(
+                            raw_args, visible_resource_ids=checkpoint.visible_resource_ids,
+                        )
+                    except AutomationError as exc:
+                        raise AgentRunFailed(
+                            cause=exc, partial=current_partial_result(include_current_attempt=False),
+                        ) from exc
+                else:
+                    parsed = json.loads(raw_args) if str(raw_args).strip() else {}
                 if not isinstance(parsed, dict):
                     raise ValueError("arguments must be a JSON object")
             except (json.JSONDecodeError, ValueError) as exc:
@@ -1032,8 +1217,20 @@ async def run_agent_turn(
                     continue
                 if invocation_approved:
                     unspent_approvals.discard(approval_token)
+                await before_tool(name, parsed)
                 try:
-                    raw_result = await handlers[name](parsed, ctx)
+                    canonical = canonical_tool_name(name, ctx.tool_aliases)
+                    await require_policy(PolicyRequest(
+                        "tool.invoke", tool_name=canonical, tool_contract_digest=contracts.get(name),
+                    ))
+                    with tool_policy_scope(canonical):
+                        raw_result = await handlers[name](parsed, ctx)
+                except (PolicyError, PublicationError) as exc:
+                    if await deny(
+                        name=name, safe_name=safe_name, call_id=call_id, reason=str(exc),
+                    ):
+                        force_final = True
+                    continue
                 except asyncio.CancelledError as exc:
                     if isinstance(exc, DelegatedAgentRunCancelled):
                         delegated_runs.append(exc.trace)
@@ -1186,9 +1383,16 @@ async def run_agent_turn(
             if invocation_approved:
                 unspent_approvals.discard(approval_token)
 
+            await before_tool(name, parsed)
             started = time.monotonic()
             try:
                 raw_result = await executor.execute(name, parsed, ctx)
+            except (PolicyError, PublicationError) as exc:
+                if await deny(
+                    name=name, safe_name=safe_name, call_id=call_id, reason=str(exc),
+                ):
+                    force_final = True
+                continue
             except ConsentRejected as exc:
                 if await deny(
                     name=name, safe_name=safe_name, call_id=call_id, reason=exc.reason,
@@ -1291,13 +1495,23 @@ async def run_agent_turn(
 
         if force_final:
             schema = []  # disable tools so the next call yields a natural answer
+        pending_response = None
+        response_appended = False
+        next_tool_index = 0
+        current_tool_counted = False
 
     # Iterations exhausted: take one final answer with tools disabled so the model
     # must respond in natural language rather than request yet another tool. This
     # streams too when the turn is streaming — otherwise the last thing the user
     # waits on would be the one round trip that still went silent.
-    tail_text, _, _, incomplete, incomplete_reason = await call_model(dict(base_params))
     iterations += 1
+    tail_text, tail_calls, tail_items, incomplete, incomplete_reason = await call_model(dict(base_params))
+    if checkpoint is not None:
+        pending_response = CheckpointResponse(
+            content=tail_text, toolCalls=tail_calls, outputItems=tail_items,
+            incomplete=incomplete, incompleteReason=incomplete_reason, tail=True,
+        )
+        await model_completed()
     await record(
         AgentStep(
             kind="final",

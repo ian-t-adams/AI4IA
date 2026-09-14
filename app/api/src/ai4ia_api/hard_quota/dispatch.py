@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import httpx
 
@@ -21,6 +21,9 @@ from .models import (
 )
 from .service import ReservationService
 from .store import ReservationStore
+
+if TYPE_CHECKING:
+    from ..policy.service import PolicyService
 
 @dataclass
 class AdmissionContext:
@@ -72,6 +75,7 @@ class DispatchLease:
     usage: dict[str, Any] | None = None
     completed: bool = False
     payload: dict[str, Any] = field(default_factory=dict)
+    workflow_observed: bool = False
 
     def report(self, usage: dict[str, Any] | None = None, *, complete: bool = True) -> None:
         if usage is not None:
@@ -86,12 +90,14 @@ class AdmissionController:
         self, *, entitlements: EntitlementService, catalog: ModelCatalog,
         pricing: PricingBook, store: ReservationStore | None = None, enabled: bool = False,
         attempts: AttemptEnvelope | None = None,
+        policy: PolicyService | None = None,
     ) -> None:
         self.enabled = enabled
         self.entitlements = entitlements
         self.catalog = catalog
         self.pricing = pricing
         self.attempts = attempts
+        self.policy = policy
         self.reservations = ReservationService(store) if store is not None else None
 
     async def claim(
@@ -136,26 +142,44 @@ class AdmissionController:
 
 
 @asynccontextmanager
-async def admitted_dispatch(
+async def _quota_dispatch(
     surface: Surface, payload: dict[str, Any], *, deployment: str | None = None,
     target: str | None = None,
     required: bool = False, observe: Callable[[AdmissionEvidence], None] | None = None,
+    policy_required: bool = False,
 ) -> AsyncIterator[DispatchLease]:
+    from ..policy.dispatch import authorize_dispatch
+    from ..policy.context import current_binding
+
     context = _current.get()
+    binding = current_binding()
+    must_freeze = (
+        policy_required or (context is not None and context.controller.enabled)
+        or (binding is not None and binding.service.enabled)
+    )
+    frozen = (
+        json.loads(json.dumps(payload, ensure_ascii=True, allow_nan=False))
+        if must_freeze else payload
+    )
+    await authorize_dispatch(
+        surface, deployment=deployment, required=policy_required,
+        expected_owner=context.owner if context is not None else None,
+        service=context.controller.policy if context is not None else None,
+        payload=frozen,
+    )
     if context is None:
         if required:
             raise QuotaError("Hard quota dispatch has no authenticated owner.")
-        yield DispatchLease(payload=payload)
+        await authorize_dispatch(
+            surface, deployment=deployment, required=policy_required, payload=frozen, final=True,
+        )
+        yield DispatchLease(payload=frozen)
         return
     if required and not context.controller.enabled:
         raise QuotaError("Hard quota dispatch has incompatible coordination.")
     # Snapshot before the first policy/store await. The transport sends this
     # exact snapshot, so concurrent caller mutations cannot change an admitted
     # tool argument or model request behind its immutable digest/bound.
-    frozen = (
-        json.loads(json.dumps(payload, ensure_ascii=True, allow_nan=False))
-        if context.controller.enabled else payload
-    )
     record = await context.controller.claim(context, surface, frozen, deployment, target)
     lease = DispatchLease(reservation=record, payload=frozen)
     evidence_index = None
@@ -168,6 +192,11 @@ async def admitted_dispatch(
         if observe is not None:
             observe(pending)
     try:
+        await authorize_dispatch(
+            surface, deployment=deployment, required=policy_required,
+            expected_owner=context.owner, service=context.controller.policy,
+            payload=lease.payload, final=True,
+        )
         yield lease
     except asyncio.CancelledError:
         lease.outcome = "cancelled"
@@ -189,3 +218,50 @@ async def admitted_dispatch(
                 context.evidence[evidence_index] = evidence
             if observe is not None:
                 observe(evidence)
+
+
+@asynccontextmanager
+async def admitted_dispatch(
+    surface: Surface, payload: dict[str, Any], *, deployment: str | None = None,
+    target: str | None = None, required: bool = False,
+    observe: Callable[[AdmissionEvidence], None] | None = None,
+    policy_required: bool = False,
+) -> AsyncIterator[DispatchLease]:
+    from ..workflows.dispatch_scope import current_workflow_scope
+
+    workflow = current_workflow_scope()
+    if workflow is None:
+        async with _quota_dispatch(
+            surface, payload, deployment=deployment, target=target, required=required, observe=observe,
+            policy_required=policy_required,
+        ) as lease:
+            yield lease
+        return
+    context = _current.get()
+    if context is not None and context.owner != workflow.owner_id:
+        raise QuotaError("Workflow dispatch owner does not match admission.")
+    frozen = json.loads(json.dumps(payload, ensure_ascii=True, allow_nan=False))
+    ticket = await workflow.before_dispatch(surface, frozen, deployment=deployment, target=target)
+    lease = None
+    outcome = "error"
+    try:
+        async with _quota_dispatch(
+            surface, frozen, deployment=deployment, target=target, required=required, observe=observe,
+            policy_required=policy_required,
+        ) as active:
+            lease = active
+            active.workflow_observed = True
+            await workflow.authorize_dispatch(ticket)
+            yield active
+            outcome = active.outcome
+    except asyncio.CancelledError:
+        outcome = "cancelled"
+        raise
+    except (TimeoutError, httpx.TimeoutException):
+        outcome = "timeout"
+        raise
+    finally:
+        await workflow.after_dispatch(
+            ticket, usage=lease.usage if lease else None,
+            completed=lease.completed if lease else False, outcome=outcome,
+        )

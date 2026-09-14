@@ -52,6 +52,10 @@ import type {
   UserMcpServerUpdate,
 } from "./customTools";
 import { apiFetch } from "./auth";
+import type {
+  AutomationConfig, AutomationReview, AutomationRun, AutomationStart,
+  ScheduleWrite, WorkflowSchedule,
+} from "./workflowAutomation";
 
 export class ApiError extends Error {
   constructor(
@@ -155,6 +159,78 @@ export async function updateAgent(
 
 export function deleteAgent(name: string): Promise<void> {
   return deleteOrThrow(`/api/agents/${encodeURIComponent(name)}`, "agent");
+}
+
+const AUTOMATION_PATH = "/api/workflows/automation";
+
+export async function getWorkflowAutomationConfig(signal?: AbortSignal): Promise<AutomationConfig> {
+  return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/config`, { cache: "no-store", signal }));
+}
+
+export async function listWorkflowApprovals(signal?: AbortSignal): Promise<{ runs: AutomationRun[] }> {
+  return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/approvals`, { cache: "no-store", signal }));
+}
+
+export async function startResumableWorkflow(body: AutomationStart): Promise<AutomationRun> {
+  return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/runs`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  }));
+}
+
+export async function getAutomationRun(runId: string, signal?: AbortSignal): Promise<AutomationRun> {
+  return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/runs/${encodeURIComponent(runId)}`, {
+    cache: "no-store", signal,
+  }));
+}
+
+export async function cancelAutomationRun(runId: string): Promise<AutomationRun> {
+  return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }));
+}
+
+export async function recoverAutomationRun(runId: string): Promise<AutomationRun> {
+  return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/runs/${encodeURIComponent(runId)}/recover-start`, { method: "POST" }));
+}
+
+export async function reviewWorkflowApproval(runId: string, draftId: string): Promise<AutomationReview> {
+  return jsonOrThrow(await apiFetch(
+    `${AUTOMATION_PATH}/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(draftId)}/review`,
+    { method: "POST", cache: "no-store" },
+  ));
+}
+
+export async function decideWorkflowApproval(
+  runId: string, draftId: string, decision: "approve" | "deny",
+  challenge?: Pick<AutomationReview, "requestId" | "grant">,
+): Promise<AutomationRun> {
+  return jsonOrThrow(await apiFetch(
+    `${AUTOMATION_PATH}/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(draftId)}/decision`,
+    {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision, ...(decision === "approve" ? challenge : {}) }),
+    },
+  ));
+}
+
+export async function listWorkflowSchedules(signal?: AbortSignal): Promise<{ schedules: WorkflowSchedule[] }> {
+  return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/schedules`, { cache: "no-store", signal }));
+}
+
+export async function saveWorkflowSchedule(body: ScheduleWrite, scheduleId?: string): Promise<WorkflowSchedule> {
+  return jsonOrThrow(await apiFetch(
+    `${AUTOMATION_PATH}/schedules${scheduleId ? `/${encodeURIComponent(scheduleId)}` : ""}`,
+    { method: scheduleId ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+  ));
+}
+
+export async function disableWorkflowSchedule(id: string, revision: number): Promise<WorkflowSchedule> {
+  return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/schedules/${encodeURIComponent(id)}/disable`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expectedRevision: revision }),
+  }));
+}
+
+export async function recoverWorkflowSchedule(id: string): Promise<WorkflowSchedule> {
+  return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/schedules/${encodeURIComponent(id)}/recover-start`, { method: "POST" }));
 }
 
 export async function listWorkflows(): Promise<WorkflowListResult> {

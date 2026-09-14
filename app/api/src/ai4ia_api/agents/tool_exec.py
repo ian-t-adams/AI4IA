@@ -20,11 +20,18 @@ import operator
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
+
+if TYPE_CHECKING:
+    from ..memory.context_refs import MemoryReference
+    from ..memory.preferences import MemoryPreference
 
 from .approvals import ApprovalPolicy, ApprovalSink
-from .consent import ConsentChecker
+from .consent import ConsentChecker, tool_contract_hash
 from .tools import ToolRegistry, ToolRisk, ToolSpec
+from ..policy.context import canonical_tool_name, require_policy, tool_allowed, tool_policy_scope
+from ..policy.models import PolicyRequest
+from ..request_constraints import tools_allowed
 
 # A handler maps validated arguments + context to a JSON-serializable result. It
 # may be sync or async; :meth:`ToolExecutor.execute` awaits awaitables.
@@ -88,6 +95,11 @@ class ToolContext:
     approval_sink: ApprovalSink | None = None
     consent_checker: ConsentChecker | None = None
     prepare_model_context: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None
+    # Present only for resumable turns; capability counters survive handler rebuilds.
+    turn_budgets: dict[str, int] | None = None
+    capture_memory_context: Callable[
+        [MemoryPreference, list[MemoryReference]], Awaitable[None],
+    ] | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +110,21 @@ class ToolDefinition:
     parameters: dict[str, Any]
     handler: ToolHandler
     consent_metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+def take_turn_budget(
+    ctx: ToolContext | None, name: str, limit: int, legacy: dict[str, int],
+) -> bool:
+    durable = ctx.turn_budgets if ctx is not None else None
+    counter = legacy if durable is None else durable
+    key = "used" if durable is None else name
+    used = counter.get(key)
+    if type(used) is not int or used < 0:
+        raise ToolExecutionError("The tool-call budget state is unavailable.")
+    if used >= limit:
+        return False
+    counter[key] = used + 1
+    return True
 
 
 # --- Minimal JSON-Schema argument validation -----------------------------------
@@ -285,6 +312,7 @@ class ToolExecutor:
         registry: ToolRegistry,
         ctx: ToolContext,
         consented_names: Iterable[str] = (),
+        apply_policy: bool = True,
     ) -> list[dict[str, Any]]:
         """OpenAI ``tools`` array for ``names`` that are executable AND currently
         authorized for ``ctx`` — so the model never sees a tool it cannot use
@@ -292,6 +320,8 @@ class ToolExecutor:
         out: list[dict[str, Any]] = []
         consented = set(consented_names)
         for name in names:
+            if apply_policy and not tool_allowed(canonical_tool_name(name, ctx.tool_aliases)):
+                continue
             definition = self._defs.get(name)
             if definition is None:
                 continue
@@ -322,15 +352,26 @@ class ToolExecutor:
         :class:`ToolExecutionError` (or whatever the handler raises) on failure;
         the runtime turns both into a structured tool result for the model.
         """
+        if not tools_allowed():
+            raise ToolExecutionError("Tools are disabled for this request.")
         definition = self._defs.get(name)
         if definition is None:
             raise ToolExecutionError(f"unknown tool: {name}")
         errors = validate_args(definition.parameters, args)
         if errors:
             raise ToolValidationError("; ".join(errors))
-        result = definition.handler(args, ctx)
-        if inspect.isawaitable(result):
-            result = await result
+        canonical = canonical_tool_name(name, ctx.tool_aliases)
+        await require_policy(PolicyRequest(
+            "tool.invoke", tool_name=canonical,
+            tool_contract_digest=tool_contract_hash(
+                definition.spec, definition.parameters, description=definition.spec.description,
+                metadata=definition.consent_metadata,
+            ),
+        ))
+        with tool_policy_scope(canonical):
+            result = definition.handler(args, ctx)
+            if inspect.isawaitable(result):
+                result = await result
         return result
 
 

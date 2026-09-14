@@ -20,6 +20,9 @@ and comparing it in :func:`can_access`, or renaming the visibility to
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+from typing import Protocol, runtime_checkable
+
 from .models import UserDocument, Visibility
 from .repository import DocumentLibraryRepository, DocumentNotFoundError
 
@@ -33,7 +36,34 @@ def normalize_principal(email: str | None) -> str:
     return (email or "").strip().lower()
 
 
-def can_access(user_id: str, doc: UserDocument, *, email: str | None = None) -> bool:
+class ShareableRecord(Protocol):
+    @property
+    def userId(self) -> str: ...
+    @property
+    def visibility(self) -> Visibility: ...
+    @property
+    def acl(self) -> Sequence[str]: ...
+
+
+@runtime_checkable
+class TenantShareableRecord(ShareableRecord, Protocol):
+    @property
+    def tenantId(self) -> str: ...
+    @property
+    def groupAcl(self) -> Sequence[str]: ...
+
+
+def valid_grantee_email(value: str) -> bool:
+    if not value or " " in value or value.count("@") != 1:
+        return False
+    local, _, domain = value.partition("@")
+    return bool(local) and "." in domain and not domain.startswith(".") and not domain.endswith(".")
+
+
+def can_access(
+    user_id: str, doc: ShareableRecord, *, email: str | None = None,
+    tenant_id: str | None = None, groups: Iterable[str] = (),
+) -> bool:
     """True if the caller may *read* ``doc``.
 
     Owner always wins (by ``userId``). A ``public`` document is readable by any
@@ -41,17 +71,24 @@ def can_access(user_id: str, doc: UserDocument, *, email: str | None = None) -> 
     the caller's normalized ``email`` is in the document's ``acl``. Everything
     else is denied.
     """
+    tenant_bound = isinstance(doc, TenantShareableRecord)
+    if tenant_bound and (not tenant_id or doc.tenantId != tenant_id):
+        return False
     if doc.userId == user_id:
         return True
     if doc.visibility == Visibility.public:
         return True
     if doc.visibility == Visibility.shared:
         principal = normalize_principal(email)
-        return bool(principal) and principal in doc.acl
+        return (
+            bool(principal) and principal in doc.acl
+        ) or (
+            isinstance(doc, TenantShareableRecord) and bool(set(groups) & set(doc.groupAcl))
+        )
     return False
 
 
-def require_owner(user_id: str, doc: UserDocument) -> bool:
+def require_owner(user_id: str, doc: ShareableRecord) -> bool:
     """True only for the owner. Mutations (delete/update/share/annotate) and the
     owner-private features (annotations, save-to-memory) stay owner-only even with
     read-sharing enabled, so they use this rather than ``can_access``."""

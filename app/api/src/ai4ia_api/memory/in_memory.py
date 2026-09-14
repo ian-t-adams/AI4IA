@@ -20,6 +20,7 @@ import math
 from collections.abc import Sequence
 
 from .models import MemoryRecord
+from .context_refs import MemoryReference
 from .preferences import MemoryPreference, MemoryPreferenceConflict
 
 
@@ -55,6 +56,20 @@ class InMemoryVectorStore:
 
     async def get_preference(self, user_id: str) -> MemoryPreference:
         return self._preferences.get(user_id, MemoryPreference())
+
+    async def validate_context_references(
+        self, user_id: str, preference: MemoryPreference, references: Sequence[MemoryReference],
+    ) -> None:
+        current = self._preferences.get(user_id, MemoryPreference())
+        if current != preference or not current.automatic_enabled:
+            raise MemoryPreferenceConflict("Automatic memory context changed.")
+        records = {record.id: record for record, _ in self._by_user.get(user_id, [])}
+        if len(references) > 128 or any(
+            reference.id not in records
+            or MemoryReference.from_record(records[reference.id]) != reference
+            for reference in references
+        ):
+            raise MemoryPreferenceConflict("Previously supplied memory is no longer current.")
 
     async def set_preference(
         self, user_id: str, automatic_enabled: bool, *, expected_etag: str

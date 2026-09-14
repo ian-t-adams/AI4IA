@@ -21,6 +21,7 @@ from datetime import datetime
 
 from ..hard_quota.models import STATE_ID, STATE_KIND
 from .models import ROLLUP_FIELDS, UsageRecord, UsageRollupRow, UsageSummary, summarize_records
+from .repository import UsageRecordConflict
 
 #: Projected ``SELECT`` list for the admin rollup scan, derived from the field
 #: tuple the row type owns so the query and the parser can never drift.
@@ -50,6 +51,23 @@ class CosmosUsageRepository:
 
     async def record(self, record: UsageRecord) -> None:
         await self._usage.create_item(record.model_dump(mode="json"))
+
+    async def record_once(self, record: UsageRecord) -> bool:
+        from azure.cosmos.exceptions import CosmosResourceExistsError
+
+        body = record.model_dump(mode="json")
+        try:
+            await self._usage.create_item(body)
+            return True
+        except CosmosResourceExistsError:
+            existing = await self._usage.read_item(item=record.id, partition_key=record.userId)
+        if (
+            not isinstance(existing, dict)
+            or not set(body).issubset(existing)
+            or UsageRecord.model_validate(existing) != record
+        ):
+            raise UsageRecordConflict("Usage operation identity has different accounting.")
+        return False
 
     async def summarize(
         self, user_id: str, *, since: datetime, since_days: int, now: datetime

@@ -21,7 +21,8 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer
+from ..publishing.refs import AssetVersionRef
 
 _PACKAGED = Path(__file__).resolve().parent.parent / "data" / "agents.json"
 
@@ -39,6 +40,16 @@ class AgentSpec(BaseModel):
     # (supervisor / agent-as-tool pattern). Empty for a leaf agent.
     links: list[str] = []
     enabled: bool = True
+    sourceVersion: AssetVersionRef | None = None
+    publishedModes: list[str] | None = None
+
+    @model_serializer(mode="wrap")
+    def compatible_source(self, handler: SerializerFunctionWrapHandler):
+        value = handler(self)
+        for name in ("sourceVersion", "publishedModes"):
+            if value.get(name) is None:
+                value.pop(name, None)
+        return value
 
     def summary(self) -> AgentSummary:
         return AgentSummary(
@@ -46,6 +57,8 @@ class AgentSpec(BaseModel):
             displayName=self.displayName,
             description=self.description,
             enabled=self.enabled,
+            sourceVersion=self.sourceVersion,
+            publishedModes=self.publishedModes,
         )
 
 
@@ -56,24 +69,37 @@ class AgentSummary(BaseModel):
     displayName: str
     description: str
     enabled: bool = True
+    sourceVersion: AssetVersionRef | None = None
+    publishedModes: list[str] | None = None
+
+    @model_serializer(mode="wrap")
+    def public_projection(self, handler: SerializerFunctionWrapHandler):
+        value = handler(self)
+        for name in ("sourceVersion", "publishedModes"):
+            if value.get(name) is None:
+                value.pop(name, None)
+        return value
 
 
 class AgentCatalog(BaseModel):
     agents: list[AgentSpec]
+    conflicts: list[str] = []
 
     def get(self, name: str) -> AgentSpec | None:
         """Resolve an agent by name, case-insensitively (mentions are lowercased)."""
         if not name:
             return None
         key = name.lower()
+        if key in self.conflicts:
+            return None
         return next((a for a in self.agents if a.name.lower() == key), None)
 
     def enabled_agents(self) -> list[AgentSpec]:
-        return [a for a in self.agents if a.enabled]
+        return [a for a in self.agents if a.enabled and a.name.lower() not in self.conflicts]
 
     def public_list(self) -> list[AgentSummary]:
         """Enabled agents only, projected to the public summary shape."""
-        return [a.summary() for a in self.agents if a.enabled]
+        return [a.summary() for a in self.enabled_agents()]
 
 
 def _load_raw(explicit_path: str | None) -> dict:

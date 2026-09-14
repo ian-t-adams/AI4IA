@@ -56,6 +56,7 @@ class DeploymentOption(BaseModel):
     dataZone: str | None = None
     sku: str
     deploymentName: str
+    modelVersion: str | None = None
 
     @computed_field
     @property
@@ -219,11 +220,16 @@ class ModelCatalog(BaseModel):
     def get(self, model_id: str) -> ModelEntry | None:
         return next((m for m in self.models if m.id == model_id and m.runtimeEnabled), None)
 
-    def eligible_options(self, entry: ModelEntry) -> list[DeploymentOption]:
+    def eligible_options(
+        self, entry: ModelEntry, *, policy_filter: bool = True,
+    ) -> list[DeploymentOption]:
         """This model's deployments that are usable under the active policy."""
+        from .policy.context import model_allowed
+
         return [
             o for o in entry.options
             if entry.runtimeEnabled and o.satisfies(self.residencyPolicy)
+            and (not policy_filter or model_allowed(entry.category, o))
         ]
 
     def available(self, entry: ModelEntry) -> bool:
@@ -241,7 +247,8 @@ class ModelCatalog(BaseModel):
         return [m for m in self.models if m.conversational and self.available(m)]
 
     def resolve_deployment(
-        self, model_id: str, *, region: str | None = None, data_zone: str | None = None
+        self, model_id: str, *, region: str | None = None, data_zone: str | None = None,
+        policy_filter: bool = True,
     ) -> DeploymentOption | None:
         """Pick a deployment for a model, honoring an explicit region/data zone.
 
@@ -270,7 +277,7 @@ class ModelCatalog(BaseModel):
         entry = self.get(model_id)
         if entry is None or not entry.options:
             return None
-        options = self.eligible_options(entry)
+        options = self.eligible_options(entry, policy_filter=policy_filter)
         if region:
             options = [o for o in options if o.region == region]
         if data_zone:
@@ -297,6 +304,7 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                     "dataZone": regions.get(region, {}).get("dataZone"),
                     "sku": sku,
                     "deploymentName": f"{model['name']}-{token}-{region}-{sku_short[sku]}",
+                    "modelVersion": dep.get("version"),
                 }
             )
         models.append(

@@ -61,12 +61,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-09-03",
           "deploymentName": "gpt-6-astra-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-09-03",
           "deploymentName": "gpt-6-astra-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -99,24 +101,28 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-sol-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-sol-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-sol-slurmfactory-swedencentral-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "DataZoneStandard",
+          "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-sol-slurmfactory-swedencentral-dz"
         }
       ]
@@ -149,24 +155,28 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-terra-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-terra-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-terra-slurmfactory-swedencentral-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "DataZoneStandard",
+          "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-terra-slurmfactory-swedencentral-dz"
         }
       ]
@@ -199,24 +209,28 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-luna-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-luna-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-luna-slurmfactory-swedencentral-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "DataZoneStandard",
+          "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-luna-slurmfactory-swedencentral-dz"
         }
       ]
@@ -250,24 +264,28 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-03-05",
           "deploymentName": "gpt-5.4-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2026-03-05",
           "deploymentName": "gpt-5.4-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-03-05",
           "deploymentName": "gpt-5.4-slurmfactory-swedencentral-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "DataZoneStandard",
+          "modelVersion": "2026-03-05",
           "deploymentName": "gpt-5.4-slurmfactory-swedencentral-dz"
         }
       ]
@@ -301,18 +319,21 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-12-11",
           "deploymentName": "gpt-5.2-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2025-12-11",
           "deploymentName": "gpt-5.2-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-12-11",
           "deploymentName": "gpt-5.2-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -346,12 +367,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-11-13",
           "deploymentName": "gpt-5.1-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-11-13",
           "deploymentName": "gpt-5.1-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -385,12 +408,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-08-07",
           "deploymentName": "gpt-5-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-08-07",
           "deploymentName": "gpt-5-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -424,24 +449,28 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-08-07",
           "deploymentName": "gpt-5-nano-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2025-08-07",
           "deploymentName": "gpt-5-nano-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-08-07",
           "deploymentName": "gpt-5-nano-slurmfactory-swedencentral-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "DataZoneStandard",
+          "modelVersion": "2025-08-07",
           "deploymentName": "gpt-5-nano-slurmfactory-swedencentral-dz"
         }
       ]
@@ -473,24 +502,28 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-04-16",
           "deploymentName": "o3-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2025-04-16",
           "deploymentName": "o3-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-04-16",
           "deploymentName": "o3-slurmfactory-swedencentral-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "DataZoneStandard",
+          "modelVersion": "2025-04-16",
           "deploymentName": "o3-slurmfactory-swedencentral-dz"
         }
       ]
@@ -517,18 +550,21 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "grok-4-1-fast-reasoning-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "1",
           "deploymentName": "grok-4-1-fast-reasoning-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "grok-4-1-fast-reasoning-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -557,12 +593,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-10-06",
           "deploymentName": "gpt-5-pro-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-10-06",
           "deploymentName": "gpt-5-pro-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -593,12 +631,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-03-05",
           "deploymentName": "gpt-5.4-pro-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-03-05",
           "deploymentName": "gpt-5.4-pro-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -629,12 +669,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-09-15",
           "deploymentName": "gpt-5-codex-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-09-15",
           "deploymentName": "gpt-5-codex-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -667,18 +709,21 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-02-24",
           "deploymentName": "gpt-5.3-codex-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2026-02-24",
           "deploymentName": "gpt-5.3-codex-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-02-24",
           "deploymentName": "gpt-5.3-codex-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -706,24 +751,28 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "Mistral-Large-3-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "1",
           "deploymentName": "Mistral-Large-3-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "Mistral-Large-3-slurmfactory-swedencentral-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "DataZoneStandard",
+          "modelVersion": "1",
           "deploymentName": "Mistral-Large-3-slurmfactory-swedencentral-dz"
         }
       ]
@@ -757,24 +806,28 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-03-17",
           "deploymentName": "gpt-5.4-mini-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2026-03-17",
           "deploymentName": "gpt-5.4-mini-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-03-17",
           "deploymentName": "gpt-5.4-mini-slurmfactory-swedencentral-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "DataZoneStandard",
+          "modelVersion": "2026-03-17",
           "deploymentName": "gpt-5.4-mini-slurmfactory-swedencentral-dz"
         }
       ]
@@ -808,18 +861,21 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-03-17",
           "deploymentName": "gpt-5.4-nano-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2026-03-17",
           "deploymentName": "gpt-5.4-nano-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-03-17",
           "deploymentName": "gpt-5.4-nano-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -853,24 +909,28 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-08-07",
           "deploymentName": "gpt-5-mini-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2025-08-07",
           "deploymentName": "gpt-5-mini-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-08-07",
           "deploymentName": "gpt-5-mini-slurmfactory-swedencentral-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "DataZoneStandard",
+          "modelVersion": "2025-08-07",
           "deploymentName": "gpt-5-mini-slurmfactory-swedencentral-dz"
         }
       ]
@@ -897,24 +957,28 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-11-18",
           "deploymentName": "model-router-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2025-11-18",
           "deploymentName": "model-router-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-11-18",
           "deploymentName": "model-router-slurmfactory-swedencentral-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "DataZoneStandard",
+          "modelVersion": "2025-11-18",
           "deploymentName": "model-router-slurmfactory-swedencentral-dz"
         }
       ]
@@ -941,12 +1005,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "DeepSeek-V3.2-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "DeepSeek-V3.2-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -973,24 +1039,28 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-12-16",
           "deploymentName": "gpt-image-1.5-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2025-12-16",
           "deploymentName": "gpt-image-1.5-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-12-16",
           "deploymentName": "gpt-image-1.5-slurmfactory-swedencentral-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "DataZoneStandard",
+          "modelVersion": "2025-12-16",
           "deploymentName": "gpt-image-1.5-slurmfactory-swedencentral-dz"
         }
       ]
@@ -1017,12 +1087,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-04-21",
           "deploymentName": "gpt-image-2-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-04-21",
           "deploymentName": "gpt-image-2-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1049,12 +1121,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-10-06",
           "deploymentName": "gpt-image-1-mini-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-10-06",
           "deploymentName": "gpt-image-1-mini-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1085,6 +1159,7 @@
           "region": "westus",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-06-02",
           "deploymentName": "MAI-Image-2.5-slurmfactory-westus-glbl"
         }
       ]
@@ -1115,6 +1190,7 @@
           "region": "westus",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-06-19",
           "deploymentName": "MAI-Image-2.5-Pro-slurmfactory-westus-glbl"
         }
       ]
@@ -1145,6 +1221,7 @@
           "region": "westus",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-06-02",
           "deploymentName": "MAI-Image-2.5-Flash-slurmfactory-westus-glbl"
         }
       ]
@@ -1175,6 +1252,7 @@
           "region": "westus",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-07-31",
           "deploymentName": "MAI-Image-2.6-slurmfactory-westus-glbl"
         }
       ]
@@ -1205,6 +1283,7 @@
           "region": "westus",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-07-31",
           "deploymentName": "MAI-Image-2.6-Flash-slurmfactory-westus-glbl"
         }
       ]
@@ -1238,12 +1317,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "FLUX.2-pro-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "FLUX.2-pro-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1277,12 +1358,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "FLUX.2-flex-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "FLUX.2-flex-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1314,12 +1397,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "FLUX.1-Kontext-pro-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "FLUX.1-Kontext-pro-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1353,12 +1438,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "FLUX-1.1-pro-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "FLUX-1.1-pro-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1386,12 +1473,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "mistral-document-ai-2512-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "mistral-document-ai-2512-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1419,12 +1508,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "mistral-ocr-4-0-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "mistral-ocr-4-0-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1451,24 +1542,28 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "text-embedding-3-large-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "1",
           "deploymentName": "text-embedding-3-large-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "text-embedding-3-large-slurmfactory-swedencentral-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "DataZoneStandard",
+          "modelVersion": "1",
           "deploymentName": "text-embedding-3-large-slurmfactory-swedencentral-dz"
         }
       ]
@@ -1495,12 +1590,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "embed-v-4-0-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "1",
           "deploymentName": "embed-v-4-0-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1527,12 +1624,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-08-28",
           "deploymentName": "gpt-realtime-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-08-28",
           "deploymentName": "gpt-realtime-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1559,6 +1658,7 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-05-06",
           "deploymentName": "gpt-realtime-2-slurmfactory-eastus2-glbl"
         }
       ]
@@ -1585,6 +1685,7 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-02-23",
           "deploymentName": "gpt-realtime-1.5-slurmfactory-eastus2-glbl"
         }
       ]
@@ -1611,12 +1712,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-12-15",
           "deploymentName": "gpt-realtime-mini-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-12-15",
           "deploymentName": "gpt-realtime-mini-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1643,12 +1746,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-08-28",
           "deploymentName": "gpt-audio-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-08-28",
           "deploymentName": "gpt-audio-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1675,12 +1780,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-02-23",
           "deploymentName": "gpt-audio-1.5-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-02-23",
           "deploymentName": "gpt-audio-1.5-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1707,12 +1814,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "Standard",
+          "modelVersion": "001",
           "deploymentName": "whisper-slurmfactory-eastus2-std"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "Standard",
+          "modelVersion": "001",
           "deploymentName": "whisper-slurmfactory-swedencentral-std"
         }
       ]
@@ -1739,6 +1848,7 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-12-15",
           "deploymentName": "gpt-4o-mini-tts-slurmfactory-eastus2-glbl"
         }
       ]
@@ -1765,6 +1875,7 @@
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "Standard",
+          "modelVersion": "001",
           "deploymentName": "tts-hd-slurmfactory-swedencentral-std"
         }
       ]
@@ -1791,12 +1902,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-12-08",
           "deploymentName": "sora-2-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-12-08",
           "deploymentName": "sora-2-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1828,6 +1941,7 @@
           "region": "westus",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2025-06-26",
           "deploymentName": "o3-deep-research-slurmfactory-westus-glbl"
         }
       ]
@@ -1854,12 +1968,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-06-01",
           "deploymentName": "MAI-Thinking-1-slurmfactory-eastus2-glbl"
         },
         {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
+          "modelVersion": "2026-06-01",
           "deploymentName": "MAI-Thinking-1-slurmfactory-swedencentral-glbl"
         }
       ]
@@ -1886,12 +2002,14 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
+          "modelVersion": "2",
           "deploymentName": "claude-opus-4-8-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
+          "modelVersion": "2",
           "deploymentName": "claude-opus-4-8-slurmfactory-eastus2-dz"
         }
       ]

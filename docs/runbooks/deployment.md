@@ -134,7 +134,9 @@ The capture happens **before `azd provision`**, not after the build. This orderi
 is load-bearing: each Container App Bicep module must submit an image, and a
 greenfield template can use a quickstart placeholder. Provisioning can therefore
 create a new placeholder revision before release images exist. Capturing after
-provision would record that placeholder as the rollback target.
+provision could lose the prior rollback target once the placeholder becomes ready.
+Capture reads the exact selected revision's image and scale, not the app's
+desired template: while a replacement is pending, those templates can differ.
 
 The workflow then builds each service once, tags it with the commit SHA, pushes
 it to the azd-managed ACR, reads the digest assigned by the registry, and deploys
@@ -567,6 +569,14 @@ pre-provision revisions. A manual workflow run that skips provision does not
 roll back for a build/preflight failure that touched no app. Deploy and
 verification failures still roll back.
 
+Capture, rollout, and rollback confirmation bind an exact, scoped revision read
+to app reads on both sides. In `Single` mode the selected revision is
+`latestReadyRevisionName`, never the latest-created fallback; in `Multiple` mode
+it is the heaviest positive traffic target. Images and minimum replicas come from
+that revision, not `properties.template` on the app. Missing revision identity,
+image, scale, readiness metadata, or changing app observations fail closed.
+An existing app with no ready revision records no rollback image or target.
+
 A failure to reacquire the **post-deploy** canary token is the deliberate
 exception: the exact-digest release remains live but is reported unverified.
 The grant is preflighted before deploy, and verification acquires a fresh token
@@ -578,7 +588,8 @@ after deploy so an expired token cannot roll back a healthy release.
 |---|---|
 | Active revision moved when expected | Deployment never promoted a new template |
 | Running image equals this run's `--expect-image` digest | A stale or unrelated revision is serving |
-| Revision is active, healthy, and running | ARM accepted a revision that never became ready |
+| Revision is active, provisioned, healthy, and running | ARM accepted a revision that never became ready |
+| Single-mode latest and desired template match the ready revision | An unverified pending replacement can still cut over |
 | Running replicas are positive where minimum replicas require them | Crash loop or failed replica startup |
 | API `/health/live` and `/health/ready` return 200 | Process failure or inability to reach the canonical session store (cached, bounded check) |
 | Web `/` returns 2xx/3xx without following redirects | Next.js failed to render |
@@ -608,19 +619,200 @@ media, or realtime. It is one identity and cannot detect per-user entitlement or
 ownership defects. Rollback does not run after manual cancellation or the
 180-minute job timeout because the runner is terminated.
 
+### Continuous application canaries
+
+`.github/workflows/application-canaries.yml` is a separate **default-off**
+operational monitor, not deployment verification, user workflow scheduling, or
+a quality evaluator. `python -m scripts.canaries` implements its bounded
+`locate`, `prepare`, `observe` and `notify` steps. The existing anonymous API
+liveness/readiness observations in portal snapshots remain independent.
+
+The six-hour schedule does not authorize inference. Without explicit enablement,
+the preparation job records disabled/unscored coverage and maintains its
+content-free state chain using only repository/Actions read permissions.
+Only an admitted main-ref, first-attempt observation job can request OIDC. It
+exchanges the current workflow assertion directly for the configured API
+audience; there is no Azure CLI login, ARM token, Graph/userinfo request, saved
+credential, new identity, Azure resource, or repository creation.
+
+Before enabling, the owner must approve the dedicated Entra application/subject,
+its exact API audience and main-ref federation, restrictive operator actor
+policy, finite observation lease, expenditure context, and scoped v1 cleanup.
+The actor must not be the deployment identity, API application, administrator
+or publisher. The API capability endpoint must observe actual policy-factory
+wiring and eligible v1 new-session deletion support. A readiness flag, HTTP
+catalog response, or configured identity is not a lasting dispatch grant.
+The actual guard consumes one claimed-turn allowance at model egress and
+rechecks owner, generation, reductions, deployment and adapted payload.
+
+These are **workflow-only repository variables**, not azd/Bicep inputs:
+
+| Variable | Meaning |
+|---|---|
+| `AI4IA_CANARY_ENABLED` | Exactly `true` opts in; absent or `false` is disabled. |
+| `AI4IA_CANARY_CONFIG` | Strict, non-secret JSON shown below. Unknown/missing fields and non-Boolean postures are rejected. |
+| `AI4IA_CANARY_HARD_USD_CAP` | Must be absent. Any asserted hard-dollar cap refuses activation because the provider/proxy retry envelope is not proven. |
+| `AZURE_CLIENT_ID` | Read only to reject reuse of the existing deployment principal; never used to acquire the canary token. |
+
+The placeholders below are a schema illustration, **not an approval or a
+copyable activation configuration**:
+
+```json
+{
+  "tenant_id": "<approved-lowercase-tenant-guid>",
+  "client_id": "<dedicated-application-client-guid>",
+  "object_id": "<dedicated-service-principal-object-guid>",
+  "audience": "api://<API-application-guid>",
+  "web_origin": "https://<exact-public-web-host>",
+  "api_origin": "https://<exact-public-API-host>",
+  "approval_id": "<new-reviewed-lease-guid>",
+  "expires_at": "<UTC-YYYY-MM-DDTHH:MM:SSZ>",
+  "approved_runs": 4,
+  "interval_seconds": 21600,
+  "acknowledge_no_hard_bill_cap": true,
+  "actor_ready": true,
+  "cleanup_approved": true,
+  "ga_enabled": false,
+  "realtime_actor": null
+}
+```
+
+A lease is at most seven days and 28 observations, with six hours between
+attempted observations, including failed authentication attempts. The remaining
+approval lifetime must cover the bounded run. After configuration is approved,
+an explicit main-ref **bootstrap** dispatch records an unscored control, not
+health or cleanup success. Subsequent **observe** runs may execute. Bootstrap
+cannot reset a used approval, erase an unresolved write, or shorten the
+inter-attempt delay. Renewing a finite lease requires a new reviewed approval;
+changing a JSON field is not a way to reset its count.
+
+The chat probe intersects the API catalog with the source catalog, requires a
+known price and a compatible non-reasoning/`none`-effort conversational path,
+then requests the explicit `least_estimated_cost` operation from the
+policy-owned capability reader. The server selects the cheapest compatible
+**currently policy-allowed** option, and the client verifies that choice against
+both catalogs and its pre-dispatch price snapshot. It never
+hardcodes a deployment or switches to a more expensive model after dispatch.
+One new, exact-owner, empty-scope session sends the shared non-sensitive
+sentinel through **web -> API -> SimpleL7Proxy -> APIM -> Foundry**, with tools
+and automatic memory denied and a one-winner fresh v1 claim. At most one
+application chat POST is sent; neither ambiguous creation nor chat is replayed.
+The adapted output limit, receipt, provider usage and price-version evidence
+must agree. Missing or mismatched evidence is unknown, not free or successful.
+The monitor reads back the exact persisted exchange before cleanup.
+
+Cleanup uses only that invocation's server-created id. It records the v1 delete
+intent, allows at most two explicitly approved owner-resume passes, and requires
+exact-id terminal status/readback with message, document, attachment and
+unresolved-upload coverage. It never enrolls legacy data, scans sessions,
+force-completes upload intents or runs an autonomous purge. Legacy 204 plus
+exact-id 404 is **logical deletion/partial only** and blocks further mutations.
+Ambiguous creation/dispatch, cancellation or incomplete cleanup also blocks the
+next observation. One absolute 105-second application deadline and the UTC
+approval expiry are rechecked before each request, including cleanup in a
+cancellation `finally`; expiry cannot start another destructive pass. Tombstones,
+backups, service telemetry and independent usage
+ledger retention remain outside this scoped cleanup proof. See
+[conversation deletion](conversation-deletion.md) before approving its separate
+activation; enabling the canary cannot activate that protocol.
+
+Optional GA setup uses only the application's direct
+`wss://<API-host>/api/voice/live` relay. It requires server config `ga`, the
+resolved connection's `X-AI4IA-Realtime-Protocol: ga`, the bearer subprotocol,
+and ordered `session.created`/`session.updated` events. Neither a caller query
+nor the header alone is a GA pass. The only sent frame is a bounded
+`session.update` with turn detection off; no audio, history seed, response
+creation, tools, or voice persistence is covered. The setup needs its own
+approved server actor envelope and can consume provider resources even without
+audio. Preview, Speech, missing authority and unknown protocol remain unscored
+or failed; the monitor never selects or activates the server protocol.
+
+When `ga_enabled` is true, `realtime_actor` must contain distinct, approved
+`client_id` and `object_id` GUIDs. Neither the sentinel, deployment nor API
+application identity may be reused. The second OIDC exchange happens only after
+the server reports GA. Its own authenticated catalog and
+`/api/canary/realtime-capabilities` observation must admit the setup-only
+operation before the socket opens. The monitor and evaluation identities remain
+chat-only. A client field or profile label cannot select the server actor policy.
+The operator policy's distinct `realtimeCanaryActor` marker selects
+`realtime-setup-canary`, requires the realtime-only model domain and current
+strict limits, and invokes the real one-open guard at provider dispatch. The
+same scope protects both shared relay pumps. Its 15-second processing deadline
+includes the connection handshake, not a second full interval afterward.
+
+Evidence is deliberately smaller than an execution receipt: allowlisted stages,
+outcomes, reason codes, counts, UTC observation times, latency, coverage,
+public catalog/price versions and workflow lineage. It contains no prompt,
+reply, tool payload, owner/session id, token, URL, private configuration or raw
+exception. Only opaque scope/approval digests bind private configuration.
+The API request correlation is `application-canary-<workflow-run-id>-1`, which
+lets an authorized incident responder find the run without publishing session
+ids or copying runtime traces into GitHub.
+
+Each run reads the **immediately preceding** main workflow run, validates its
+repository/workflow/branch/attempt/SHA and exact artifact identity, then checks
+the strict state schema and timestamps. An older successful artifact cannot
+substitute for a missing, cancelled, malformed, expired or out-of-sequence
+predecessor. More than 18 hours of missing coverage is stale. The seven-day
+artifacts retain only the bounded handoff and final state, not local inputs or
+the checkout. A killed runner may publish no final state; that is an unknown
+stop on the next tick, never a new zero-failure baseline.
+
+Three consecutive scored failures fire an alert transition. An observed pass
+records recovery; unknown/unscored coverage interrupts the failure streak but
+does not clear an active alert. The final state is uploaded **before** the alert
+step fails the workflow. Alerts use existing GitHub annotations, job summaries
+and configured workflow-failure notifications only, not new email/webhooks.
+Collection success is not application health: early failures and unscored
+observations may have a successful collection job. Continued active alerts are
+warnings, not repeated firing transitions; GitHub's own delivery/subscription
+semantics are not a promised exactly-once notification channel. A blocked state
+is an operational error requiring owner investigation, not permission to retry
+or clean other data.
+
+Source tests are entirely offline. Identity provisioning, actor-policy mapping,
+v1 writer cutover/cleanup approval, GA capability and protocol activation,
+frequency/spend approval, a live run and demonstrated alert/recovery remain
+separate operator acceptance. Do not close #412 based only on this source.
+
 ### Automatic and manual rollback
 
-For each app whose active revision moved, rollback restores the captured revision
-and confirms the captured image is serving again. A failed confirmation remains
-a failed job.
+Rollback restores an app when its serving revision moved **or** a different
+Single-mode latest/desired template is pending. An unchanged ready revision is
+not enough to skip restoration. A pending placeholder can coexist with an old,
+healthy serving revision; computed revision-list traffic weights alone do not
+prove a placeholder is serving or that an outage occurred.
 
 | Revision mode | Restore primitive |
 |---|---|
 | `Single` (this stack) | `az containerapp revision copy --from-revision <captured>` |
 | `Multiple` | `az containerapp ingress traffic set --revision-weight <captured>=100` |
 
-A greenfield app has no prior revision and cannot be rolled back on its first
-deployment. An app that did not move is left unchanged.
+Before either write, the captured image and minimum replicas must match an exact
+read of the captured revision in the current app's resource scope. State version
+1 remains supported, but an unknown image or an older mixed ready-name/desired-image
+capture is refused, even when the ready name has not moved. Do not repair such a
+state by guessing from logs; recovery requires independently verified revision
+and image evidence. Inactive immutable source revisions need not report running
+states, but active sources must still pass the readiness checks.
+
+A successful copy command is not restoration proof. Confirmation reads the
+actual new serving revision, requires the captured full template (apart from
+the generated revision suffix), health, provisioning and replica posture, and
+checks that latest/desired state has settled onto it. The previous latest
+candidate must also read back inactive, so finishing its readiness checks cannot
+later promote the known pending failure. Multiple-mode confirmation instead
+requires all traffic pinned to the captured named revision, not a dynamic
+`latestRevision` rule; an unrelated unrouted latest revision is not copied.
+These checks use the platform's
+[revision lifecycle and Single-mode promotion contract](https://learn.microsoft.com/azure/container-apps/revisions).
+They detect changes across the reads, not lock out a later external writer.
+
+A failed or unknown confirmation remains a failed job. An ambiguous write
+acknowledgement is not replayed, and one app's failure does not abandon the other
+apps. A greenfield app has no prior revision and cannot be rolled back on its
+first deployment. Only a healthy, genuinely unchanged app without a pending
+cutover is left unchanged.
 
 To disable only the end-to-end model turn, set
 `AI4IA_DEPLOY_VERIFY_CANARY=false`. Rollout, health, web, proxy, and domain checks
@@ -902,6 +1094,178 @@ client IDs alone do not prove read-only grants: the operator must verify them.
 | `AI4IA_MODEL_RETIREMENT_ENV_NAME` | Existing azd environment used with catalog naming to identify Foundry accounts |
 | `AI4IA_MODEL_RETIREMENT_CAPACITY_PROFILE` | Explicit `baseline`, `production` or `maximum`, matching the environment; production requires the reviewed catalog policy but report mode remains inventory/offerings-only, never quota collection or activation |
 | `AI4IA_MODEL_RETIREMENT_CLAUDE_ENABLED` | Explicit `true` or `false`, matching the environment's desired catalog scope |
+
+#### Set up the dedicated reader (operator approval required)
+
+`scripts/setup-retirement-reader.py` is the concrete setup command, **not a
+deployment hook**. Its default is a read-only plan. It never writes GitHub
+settings, activates or dispatches a workflow, selects a subscription, logs in,
+queries quotas, invokes models, or changes an existing resource. Source/CI
+delivery of this command is **not approval to execute its Azure apply path**.
+Keep #408 open until separately approved activation and real scheduled evidence.
+
+The reviewed reader grants are deliberately asymmetric:
+
+| Scope | Reader authority |
+| --- | --- |
+| Exact existing `rg-<workload>-<environment>` | Built-in **Reader**, `b24988ac-6180-42a0-ab88-20f7382dd24c`, for group/account/deployment metadata |
+| Exact subscription | One custom role with **only** `Microsoft.CognitiveServices/locations/models/read`; empty `notActions`, `dataActions`, and `notDataActions`; exactly that subscription in `assignableScopes` |
+
+Do not substitute subscription Reader, Contributor, Cognitive Services User,
+Foundry User, keys, or data-plane grants. **Cognitive Services Usages Reader**
+(`bba48692-92b0-4667-a9ad-c31c7b334ac2`) grants `locations/usages/read`, not the
+model-offering read required here. The scheduled retirement report does not need
+quota-counter access. If this exact action is insufficient for an upstream API,
+stop with unknown coverage; do not broaden it speculatively.
+
+Use Python and the existing Azure CLI/GitHub CLI installations, with separately
+approved operator sign-ins already established. The operator needs read access
+to the exact subscription/tenant, workload group/accounts, identities,
+federations, custom-role definitions, and role assignments (including inherited
+and group-based assignments), plus repository variables and current-main source.
+Approved apply additionally needs identity/federation writes at the workload
+group and custom-role/assignment writes at the named scopes. The script does not
+grant these operator permissions. GitHub variable editing authority is a
+separate approval, not part of Azure setup.
+
+Start from an up-to-date main checkout. Choose values from the approved existing
+environment, not another reporter or the deployment principal:
+
+```powershell
+$reader = @(
+  '--subscription', '<approved-subscription-uuid>',
+  '--tenant', '<approved-tenant-uuid>',
+  '--resource-group', 'rg-<workload>-<environment>',
+  '--environment', '<existing-environment>',
+  '--workload', '<existing-workload>',
+  '--repository', 'ian-t-adams/AI4IA',
+  '--capacity-profile', '<approved-current-profile>',
+  '--claude-enabled', '<true-or-false>'
+)
+python scripts\setup-retirement-reader.py @reader
+if ($LASTEXITCODE -ne 0) { throw 'Reader plan failed; do not apply or activate.' }
+```
+
+The profile allowlist is read from the **current main workflow's guard**, not
+maintained separately in the setup script. Workload/environment names must be
+lowercase Azure tokens of at most 20 characters, and the resource group must
+match Bicep's naming rule and ownership tags. The same-evidence account context
+must contain exactly one properly tagged, Succeeded AI Services account per
+selected catalog region. No model offerings are fetched by setup.
+
+Review the complete JSON plan before applying: exact subscription, tenant,
+group, repository, account coverage, resource IDs, identity tags, custom-role
+action/assignable scope, two role assignments, and OIDC properties. The stable
+identity and custom-role names/UUIDs are derived from this scope; name/ID or
+permission collisions are refused, never overwritten. The trust is exactly
+`https://token.actions.githubusercontent.com`, audience
+`api://AzureADTokenExchange`, subject
+`repo:ian-t-adams/AI4IA:ref:refs/heads/main`. The workflow must not acquire a
+GitHub environment: that would change its OIDC subject.
+
+The `plan_sha256` binds those inputs, source hashes, selected repository
+configuration, observed IDs and resource versions (including returned ETags).
+It is a freshness/scope acknowledgement, **not proof of human review or Azure
+authority**. Values and resource IDs in local plans are operator evidence; do
+not commit them. Plans and `--what-if` do not prove reader permissions work.
+Costs are not estimated: the command creates no new workload service, but
+activating reporting can incur Actions and artifact-retention charges.
+
+Only after **specific Azure authority approval**, use the exact reviewed digest:
+
+```powershell
+$approvedPlan = '<sha256-from-the-reviewed-plan>'
+# Python's explicit --what-if is the guard; PowerShell's ambient -WhatIf is not.
+python scripts\setup-retirement-reader.py @reader --apply --approve-plan $approvedPlan --what-if
+if ($LASTEXITCODE -ne 0) { throw 'Reader preview failed.' }
+python scripts\setup-retirement-reader.py @reader --apply --approve-plan $approvedPlan
+if ($LASTEXITCODE -ne 0) { throw 'Reader setup is partial/unknown; do not configure or activate.' }
+```
+
+Apply performs fresh same-scope reads before the first write and before each
+missing step, then strict readback. The only writes are creation of the dedicated
+UAMI, the one custom role, the two assignments, and its one federation. Role
+assignments use the UAMI's **`principalId`** from ARM; only its different
+**`clientId`** is emitted for GitHub login. Verification uses literal IDs at the
+scope, never an assignee-name/directory lookup. Role references accept the
+documented provider-root or same-subscription spelling of the **same exact**
+role UUID, never another subscription or role. Each create requests
+`If-None-Match: *`; there is no replace/update fallback when a provider refuses a
+condition or a collision. This is not a cross-resource transaction or a lock on
+another administrator: do not perform concurrent identity/RBAC/configuration
+maintenance while applying.
+
+Re-running after success creates nothing. To resume an approved existing reader,
+the same generated ID is sufficient; `--identity-resource-id '<exact-UAMI-ID>'`
+also accepts an explicitly selected identity in the same group **only if its
+dedicated ownership tags already match**. The script never retags or adopts a
+deployment identity. Additional trust, role permissions, extra/inherited/group
+grants, mismatched tenant, or stale dedicated variables block setup/readiness;
+nothing is auto-revoked. ARM role inspection covers the subscription, its
+ancestors, and child scopes, including transitive group grants through the
+documented `assignedTo` filter. It does **not** certify directory roles, external
+subscriptions, or Azure Lighthouse authority; approve the identity's dedication
+separately. See [REST role-assignment scope semantics](https://learn.microsoft.com/rest/api/authorization/role-assignments/list-for-scope)
+and [transitive assignment filtering](https://learn.microsoft.com/azure/role-based-access-control/role-assignments-list-rest).
+
+Unknown reads, warnings, malformed/duplicate rows and ARM continuation pages
+fail closed. There are no polling/replay loops: each CLI call is bounded to 30
+seconds/4 MiB, the whole command to 600 seconds/192 calls/128 MiB, and ARM
+inventories to 4,096 rows. GitHub variable inventory is bounded to eight pages
+and excludes unrelated values from the plan. A paginated ARM inventory needs a
+separately reviewed collection change, not an operator skip flag.
+
+On Ctrl+C interruption or failure, keep the exact attempted resource IDs printed on
+stderr. A timed-out write may have succeeded. **Do not automatically retry,
+delete, revoke, or activate.** After resolving the read/propagation issue, obtain
+a fresh plan: it classifies each exact existing resource and each missing step.
+After a forced process termination that cannot emit recovery output, use the
+reviewed plan's exact target IDs and the same fresh-plan procedure.
+Review and approve that new digest to resume only the missing steps. If rollback
+is chosen, obtain fresh scope-specific deletion approval; inspect the exact
+assignment IDs and federation first, and remove only this reader's grants/trust,
+then the dedicated identity/custom role after confirming no other consumers.
+Never remove an unrelated role or use a broad cleanup command.
+
+#### Configure and activate separately
+
+A completely read-back setup emits seven **manual** `configuration_commands`
+using the actual UAMI client ID, tenant and approved scope/profile inputs.
+There are no secrets to copy and no command sets `REPORT_ENABLED`. With separate
+GitHub configuration approval, run those exact `gh variable set ... --repo
+'ian-t-adams/AI4IA' --body ...` commands, checking `$LASTEXITCODE` after **each**.
+Leave `AI4IA_MODEL_RETIREMENT_REPORT_ENABLED` absent or literal `false` throughout;
+an already enabled or ambiguous flag is refused by setup.
+
+Re-run the read-only pre-activation check with the same operator inputs:
+
+```powershell
+python scripts\setup-retirement-reader.py @reader --verify-configuration
+if ($LASTEXITCODE -ne 0) { throw 'Reader readiness is unknown; do not enable reporting.' }
+```
+
+Only complete exact RBAC/trust, account context, matching dedicated variables,
+and unchanged current-main workflow/catalog observations produce an
+`activation_command`. It is **printed, not executed**. Review it and obtain
+separate schedule/activation approval before running it. This check does not
+exercise OIDC, and an enabled flag alone is not live evidence. The main-only
+workflow will collect on its next daily `06:17 UTC` schedule; if a manual dispatch
+is desired, obtain that separate approval and run:
+
+```powershell
+gh workflow run model-retirements.yml --repo ian-t-adams/AI4IA --ref main
+if ($LASTEXITCODE -ne 0) { throw 'Retirement report dispatch failed.' }
+gh run list --repo ian-t-adams/AI4IA --workflow model-retirements.yml --limit 5
+```
+
+Inspect the actual OIDC login, job result, unknown/omitted coverage and the three
+same-run artifacts. A report exit `1` can be complete attention evidence; `2` or
+missing artifacts cannot. Retain a real **scheduled** run for #408, then review
+and separately promote the generated documentation preview. To suspend
+collection, obtain approval and set only
+`AI4IA_MODEL_RETIREMENT_REPORT_ENABLED=false`; retain the identity/grants and
+evidence pending any separately approved cleanup. Neither setup nor this source
+PR performs activation, dispatch, documentation promotion or issue closure.
 
 These are workflow-only settings, not new azd/app feature flags. No live
 activation is part of the code implementation. Desired Anthropic targets respect

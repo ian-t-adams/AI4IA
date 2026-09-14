@@ -283,6 +283,7 @@ def test_rollup_projection_covers_exactly_the_fields_the_aggregates_read():
         "status",
         "billable",
         "providerCompleted",
+        "workflowDispatchClaimed",
         "usageKnown",
         "costKnown",
         "createdAt",

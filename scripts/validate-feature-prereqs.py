@@ -212,6 +212,23 @@ def main(*, require_deployment_attestation: bool = False) -> int:
 
     app_environment = text(parameter_value(parameters, "appEnvironment", "dev")).lower()
     auth_provider = text(parameter_value(parameters, "apiAuthProvider", "dev")).lower()
+    approvals = truthy(parameter_value(parameters, "workflowApprovalsEnabled", False))
+    scheduling = truthy(parameter_value(parameters, "workflowSchedulingEnabled", False))
+    if scheduling and not approvals:
+        errors.append("workflowSchedulingEnabled=true requires workflowApprovalsEnabled=true.")
+    if approvals:
+        if not truthy(parameter_value(parameters, "enableDurableWorkflows", False)):
+            errors.append("workflowApprovalsEnabled=true requires the existing durable workflow host.")
+        if not truthy(parameter_value(parameters, "sessionDeletionEnabled", False)):
+            errors.append("workflowApprovalsEnabled=true requires protocol-v1 session deletion readiness.")
+        if app_environment != "local" and auth_provider != "entra":
+            errors.append("workflowApprovalsEnabled=true requires Entra authentication outside local.")
+        try:
+            timeout = int(text(parameter_value(parameters, "durableWorkflowTimeoutSeconds", 1800)))
+        except (ValueError, TypeError):
+            timeout = 0
+        if not 1 <= timeout <= 86400:
+            errors.append("Workflow automation requires a finite positive runtime of at most 86400 seconds.")
     if app_environment not in {"dev", "prod"}:
         errors.append("appEnvironment must be dev or prod.")
     if auth_provider not in {"dev", "entra"}:
@@ -227,6 +244,33 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             "toolAutoApproveEnabled=true requires apiAuthProvider=entra so durable "
             "user consent cannot be granted through spoofable development identity."
         )
+
+    group_policy = truthy(parameter_value(parameters, "groupPolicyEnabled", False))
+    publishing = truthy(parameter_value(parameters, "assetPublishingEnabled", False))
+    policy_json = text(parameter_value(parameters, "groupPolicyJson"))
+    if group_policy or publishing:
+        if auth_provider != "entra":
+            errors.append("Group policy and asset publishing require apiAuthProvider=entra.")
+        if publishing and not group_policy:
+            errors.append("assetPublishingEnabled=true requires groupPolicyEnabled=true.")
+        if not policy_json or len(policy_json.encode("utf-8")) > 65536:
+            errors.append("Enabled group policy requires bounded, nonempty groupPolicyJson.")
+        else:
+            try:
+                policy_config = json.loads(policy_json)
+            except (ValueError, RecursionError):
+                errors.append("groupPolicyJson must be valid JSON.")
+            else:
+                if not isinstance(policy_config, dict) or (
+                    type(policy_config.get("version", 1)) is not int
+                    or policy_config.get("version", 1) != 1
+                    or not isinstance(policy_config.get("domains", {}), dict)
+                ):
+                    errors.append("groupPolicyJson requires the version-1 object contract.")
+                elif set(policy_config) - {
+                    "version", "domains", "spend", "adminCeiling", "canaryActor", "evaluationActor",
+                }:
+                    errors.append("groupPolicyJson contains unsupported top-level policy fields.")
 
     if auth_provider == "entra":
         for name in ("entraTenantId", "entraAudience", "entraWebClientId"):

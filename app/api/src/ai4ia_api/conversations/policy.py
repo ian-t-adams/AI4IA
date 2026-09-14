@@ -5,6 +5,9 @@ from dataclasses import dataclass
 
 from ..agents.agent_catalog import AgentSpec
 from ..sessions.models import Session
+from ..policy.context import current_binding
+from ..policy.models import PolicyDecision, PolicyError
+from ..publishing.models import PublicationError, PublicationExecutionMode
 
 
 @dataclass(frozen=True)
@@ -25,6 +28,7 @@ async def resolve_conversation_policy(
     session: Session,
     *,
     explicit_agent: str | None = None,
+    mode: PublicationExecutionMode = "chat",
 ) -> EffectiveConversationPolicy:
     """Compose durable session settings with an optional one-turn agent override.
 
@@ -35,9 +39,18 @@ async def resolve_conversation_policy(
     selected = (explicit_agent or session.agentName or "").strip()
     agent = None
     if selected:
-        catalog = await state.agent_service.catalog_for(user_id, state.agents)
-        candidate = catalog.get(selected)
+        candidate = await state.agent_service.resolve_for(user_id, selected, state.agents, mode=mode)
+        if session.agentVersion is not None and not explicit_agent:
+            binding = current_binding()
+            if binding is None or binding.owner_id != user_id:
+                raise PolicyError(PolicyDecision("unavailable", "reauthentication_required"))
+            resolved = await state.publications.resolve_for_execution(
+                await binding.resolve(), session.agentVersion, mode=mode,
+            )
+            candidate = state.publications.agent_projection(resolved, selected)
         if candidate is not None and candidate.enabled:
+            if candidate.sourceVersion is not None and not explicit_agent and session.agentVersion is None:
+                raise PublicationError("publication_selection_unpinned")
             agent = candidate
 
     inherited = tuple(dict.fromkeys(agent.tools if agent is not None else ()))

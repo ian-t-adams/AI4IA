@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from ..auth.admin import evaluate_admin, require_admin
+from ..auth.admin import authorized_admin_operations, require_admin
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..metrics.models import OperationalMetricsReport, ResourceMetricsReport
@@ -102,6 +102,7 @@ class WhoAmI(BaseModel):
     isAdmin: bool
     email: str | None = None
     name: str | None = None
+    adminOperations: list[str] = Field(default_factory=list)
 
 
 class AdminUserRow(UserUsageBucket):
@@ -236,9 +237,11 @@ async def whoami(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> WhoAmI:
-    settings = request.app.state.settings
-    is_admin = evaluate_admin(user, settings, request.headers.get("X-Admin-Secret"))
-    return WhoAmI(subject=user.subject, isAdmin=is_admin, email=user.email, name=user.name)
+    operations = await authorized_admin_operations(request, user)
+    return WhoAmI(
+        subject=user.subject, isAdmin=bool(operations), email=user.email, name=user.name,
+        adminOperations=operations,
+    )
 
 
 # ---- usage aggregation (all require_admin) ----
