@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI4IA read-only conversation deletion assessment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "reportKind", "source", "mode", "startedAt", "observedAt", "scopeSha256", "inputSha256", "referenceInputSha256", "claims", "status", "layout", "retention", "humanReferences", "cohort", "summary", "limits", "collection", "reportSha256"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "reportKind": {"const": "conversation_deletion_assessment"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolRevision", "assessorSha256", "cosmosSdkSurface", "cosmosSdkVersion", "cosmosDataApi", "cosmosArmApi", "storageArmApi", "querySha256"],
+      "properties": {
+        "protocolRevision": {"const": "a077e094172819e2ab299e573370936f49f5732c"},
+        "assessorSha256": {"$ref": "#/$defs/hash"},
+        "cosmosSdkSurface": {"const": "CosmosClient/ContainerProxy.read/query_items"},
+        "cosmosSdkVersion": {"type": "string", "pattern": "^(4\\.[0-9]{1,3}\\.[0-9]{1,3}|not_used|unknown)$"},
+        "cosmosDataApi": {"const": "2020-07-15"},
+        "cosmosArmApi": {"const": "2024-11-15"},
+        "storageArmApi": {"const": "2023-05-01"},
+        "querySha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "mode": {"enum": ["live", "synthetic"]},
+    "startedAt": {"$ref": "#/$defs/time"},
+    "observedAt": {"$ref": "#/$defs/time"},
+    "scopeSha256": {"$ref": "#/$defs/hash"},
+    "inputSha256": {"$ref": "#/$defs/hash"},
+    "referenceInputSha256": {"anyOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+    "claims": {
+      "const": {
+        "readOnly": true, "writerDrainProven": false, "absenceProven": false,
+        "enrollmentApproved": false, "cleanupAuthorized": false, "backupsErased": false,
+        "physicalErasureDeadline": null, "observation": "non_atomic_session_consistent_metadata_only"
+      }
+    },
+    "status": {"enum": ["complete", "unknown"]},
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["account", "sessions", "messages", "documents"],
+      "properties": {
+        "account": {"anyOf": [{"$ref": "#/$defs/account"}, {"$ref": "#/$defs/unknown"}]},
+        "sessions": {"anyOf": [{"$ref": "#/$defs/container"}, {"$ref": "#/$defs/unknown"}]},
+        "messages": {"anyOf": [{"$ref": "#/$defs/container"}, {"$ref": "#/$defs/unknown"}]},
+        "documents": {"anyOf": [{"$ref": "#/$defs/container"}, {"$ref": "#/$defs/unknown"}]}
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cosmosBackup", "inlineBlob", "scope", "excluded"],
+      "properties": {
+        "cosmosBackup": {"anyOf": [{"$ref": "#/$defs/backup"}, {"$ref": "#/$defs/unknown"}]},
+        "inlineBlob": {"anyOf": [{"$ref": "#/$defs/blob"}, {"$ref": "#/$defs/unknown"}]},
+        "scope": {"const": "configuration_only_no_backup_or_blob_content_reads"},
+        "excluded": {"const": ["provider_backups", "blob_versions_and_soft_deleted_copies", "library", "memory", "generated_media", "telemetry"]}
+      }
+    },
+    "humanReferences": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/references"}]},
+    "cohort": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"$ref": "#/$defs/cohort"}},
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["declared", "inventoryComplete", "classifications", "withIssues"],
+      "properties": {
+        "declared": {"type": "integer", "minimum": 1, "maximum": 12},
+        "inventoryComplete": {"$ref": "#/$defs/count"},
+        "withIssues": {"$ref": "#/$defs/count"},
+        "classifications": {
+          "type": "object", "minProperties": 1, "maxProperties": 7,
+          "propertyNames": {"$ref": "#/$defs/classification"},
+          "additionalProperties": {"$ref": "#/$defs/count"}
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cohort", "pageItems", "pagesPerScan", "rowsPerScan", "samplesPerSurface", "pageBytes", "totalBytes", "calls", "sourceSeconds", "collectionSeconds"],
+      "properties": {
+        "cohort": {"const": 12}, "pageItems": {"const": 25}, "pagesPerScan": {"const": 4},
+        "rowsPerScan": {"const": 100}, "samplesPerSurface": {"const": 8},
+        "pageBytes": {"const": 131072}, "totalBytes": {"const": 4194304},
+        "calls": {"const": 160}, "sourceSeconds": {"const": 15}, "collectionSeconds": {"const": 120}
+      }
+    },
+    "collection": {
+      "type": "object", "additionalProperties": false, "required": ["facadeCalls", "projectedMetadataBytes"],
+      "properties": {"facadeCalls": {"$ref": "#/$defs/count"}, "projectedMetadataBytes": {"$ref": "#/$defs/count"}}
+    },
+    "reportSha256": {"$ref": "#/$defs/hash"}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "time": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "code": {"type": "string", "pattern": "^[a-z_]{1,64}$"},
+    "issue": {"anyOf": [{"$ref": "#/$defs/code"}, {"type": "null"}]},
+    "issues": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/code"}},
+    "classification": {"enum": ["legacy", "v1_active", "initializing", "deleting", "verified", "malformed", "unavailable"]},
+    "unknown": {
+      "type": "object", "additionalProperties": false, "required": ["status", "issue"],
+      "properties": {"status": {"const": "unknown"}, "issue": {"$ref": "#/$defs/code"}}
+    },
+    "account": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "writeLocations", "multipleWriteLocations", "consistency", "issue"],
+      "properties": {
+        "status": {"enum": ["compatible", "incompatible"]},
+        "writeLocations": {"type": "integer", "minimum": 1, "maximum": 16},
+        "multipleWriteLocations": {"type": "boolean"},
+        "consistency": {"enum": ["Session", "Strong", "BoundedStaleness", "ConsistentPrefix", "Eventual"]},
+        "issue": {"$ref": "#/$defs/issue"}
+      }
+    },
+    "container": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "partitionPath", "defaultTtl", "analyticalStorageTtl", "issue"],
+      "properties": {
+        "status": {"enum": ["compatible", "incompatible"]},
+        "partitionPath": {"enum": ["/userId", "/sessionId"]},
+        "defaultTtl": {"type": ["integer", "null"]},
+        "analyticalStorageTtl": {"type": ["integer", "null"]},
+        "issue": {"$ref": "#/$defs/issue"}
+      }
+    },
+    "backup": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "mode", "tier", "retentionHours", "issue"],
+      "properties": {
+        "status": {"const": "observed"}, "mode": {"enum": ["Continuous", "Periodic"]},
+        "tier": {"enum": ["Continuous7Days", "Continuous30Days", null]},
+        "retentionHours": {"type": ["integer", "null"], "minimum": 1, "maximum": 10000},
+        "issue": {"type": "null"}
+      }
+    },
+    "softDelete": {
+      "type": "object", "additionalProperties": false, "required": ["enabled", "days"],
+      "properties": {"enabled": {"type": "boolean"}, "days": {"type": ["integer", "null"], "minimum": 1, "maximum": 365}}
+    },
+    "blob": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "issue", "versioning", "deleteRetentionPolicy", "containerDeleteRetentionPolicy", "hasLegalHold", "hasImmutabilityPolicy"],
+      "properties": {
+        "status": {"const": "observed"}, "issue": {"type": "null"}, "versioning": {"type": "boolean"},
+        "deleteRetentionPolicy": {"$ref": "#/$defs/softDelete"},
+        "containerDeleteRetentionPolicy": {"$ref": "#/$defs/softDelete"},
+        "hasLegalHold": {"type": "boolean"}, "hasImmutabilityPolicy": {"type": "boolean"}
+      }
+    },
+    "sample": {
+      "type": "object", "additionalProperties": false,
+      "required": ["identitySha256", "kind", "etagSha256", "timestamp", "generationSha256", "ttl", "closed", "settled", "uploadStartedAt", "documentIdentitySha256"],
+      "properties": {
+        "identitySha256": {"$ref": "#/$defs/hash"},
+        "kind": {"enum": ["ordinary", "fence", "upload", "legacy", "v1_active", "initializing", "deleting", "verified"]},
+        "etagSha256": {"$ref": "#/$defs/hash"}, "timestamp": {"$ref": "#/$defs/count"},
+        "generationSha256": {"anyOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "ttl": {"enum": [-1, null]}, "closed": {"type": ["boolean", "null"]}, "settled": {"type": ["boolean", "null"]},
+        "uploadStartedAt": {"anyOf": [{"$ref": "#/$defs/time"}, {"type": "null"}]},
+        "documentIdentitySha256": {"anyOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]}
+      }
+    },
+    "surface": {
+      "type": "object", "additionalProperties": false,
+      "required": ["coverage", "pages", "rowsReceived", "validRows", "invalidRows", "ordinary", "settledUploads", "unresolvedUploads", "fence", "samples", "samplesTruncated", "metadataChainSha256", "issues"],
+      "properties": {
+        "coverage": {"enum": ["not_read", "partial", "complete"]}, "pages": {"$ref": "#/$defs/count"},
+        "rowsReceived": {"$ref": "#/$defs/count"}, "validRows": {"$ref": "#/$defs/count"}, "invalidRows": {"$ref": "#/$defs/count"},
+        "ordinary": {"$ref": "#/$defs/count"}, "settledUploads": {"$ref": "#/$defs/count"}, "unresolvedUploads": {"$ref": "#/$defs/count"},
+        "fence": {"enum": ["unknown", "missing", "open", "closed"]},
+        "samples": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/sample"}},
+        "samplesTruncated": {"type": "boolean"}, "metadataChainSha256": {"$ref": "#/$defs/hash"},
+        "issues": {"$ref": "#/$defs/issues"}
+      }
+    },
+    "cohort": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cohortSha256", "classification", "parentObservation", "parentMetadata", "lastRecordedVerifiedAt", "parentReadStable", "inventoryComplete", "fenceAgreement", "uploadTerminalState", "attachmentTargetBinding", "parentPages", "parentRowsReceived", "messages", "documents", "issues"],
+      "properties": {
+        "cohortSha256": {"$ref": "#/$defs/hash"}, "classification": {"$ref": "#/$defs/classification"},
+        "parentObservation": {"$ref": "#/$defs/classification"},
+        "parentMetadata": {"anyOf": [{"$ref": "#/$defs/sample"}, {"type": "null"}]},
+        "lastRecordedVerifiedAt": {"anyOf": [{"$ref": "#/$defs/time"}, {"type": "null"}]},
+        "parentReadStable": {"type": ["boolean", "null"]}, "inventoryComplete": {"type": "boolean"},
+        "fenceAgreement": {"enum": ["unknown", "legacy_no_fences", "matching_open", "matching_closed", "incomplete_or_conflicting"]},
+        "uploadTerminalState": {"enum": ["unknown", "unresolved", "none_observed_not_absence_proof"]},
+        "attachmentTargetBinding": {"enum": ["unknown", "not_required", "matched"]},
+        "parentPages": {"$ref": "#/$defs/count"}, "parentRowsReceived": {"$ref": "#/$defs/count"},
+        "messages": {"$ref": "#/$defs/surface"}, "documents": {"$ref": "#/$defs/surface"},
+        "issues": {"$ref": "#/$defs/issues"}
+      }
+    },
+    "references": {
+      "type": "object", "additionalProperties": false,
+      "required": ["basis", "observedAt", "freshWithin24Hours", "references"],
+      "properties": {
+        "basis": {"const": "human_reference_not_verified"}, "observedAt": {"$ref": "#/$defs/time"}, "freshWithin24Hours": {"type": "boolean"},
+        "references": {
+          "type": "array", "minItems": 1, "maxItems": 8,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["kind", "referenceSha256"],
+            "properties": {"kind": {"enum": ["writer_fleet", "recovery_retention"]}, "referenceSha256": {"$ref": "#/$defs/hash"}}
+          }
+        }
+      }
+    }
+  }
+}

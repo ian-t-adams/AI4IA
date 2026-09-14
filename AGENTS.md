@@ -219,6 +219,22 @@ Plus the Cosmos migration script tests from the repo root:
 pytest -q scripts/tests/test_memory_cosmos_migration.py
 ```
 
+The API job also runs the selected-cohort deletion assessment controls using the
+existing Azure SDK/dev dependencies:
+
+```powershell
+python -m pytest -q scripts/tests/test_conversation_deletion_assessment.py
+ruff check --config app/api/pyproject.toml scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py scripts/tests/test_conversation_deletion_assessment.py
+pyright --pythonversion 3.12 --level error scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py
+```
+
+Only the operator-invoked `collect` subcommand may construct its bounded SDK
+worker. Rehearsal/help/report checks stay offline. Preserve explicit owner/session
+cohorts, scalar query projections, exact endpoints/partitions, and the no-mutation
+transport. Complete inventory is not writer-drain, enrollment approval or absence
+proof; unresolved uploads never become clear through age or an empty scan. See
+`docs/runbooks/conversation-deletion.md` before changing this source contract.
+
 The same API job runs the development-only behavioral evaluation program from
 the repo root, using the already-installed API dev dependencies:
 
@@ -537,6 +553,7 @@ python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/red
 python3 -m unittest scripts.tests.test_application_canary       # offline continuous monitor/state/identity controls
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
 python3 -m unittest scripts.tests.test_model_retirement         # dates, read-only reports and activation contracts
+python3 -m unittest scripts.tests.test_retirement_reader_setup  # real setup CLI with offline az/gh stubs
 python3 -m unittest scripts.tests.test_capacity_evidence scripts.tests.test_capacity_recommendations  # read-only collection and offline policy
 python3 -m unittest scripts.tests.test_postprovision_appconfig_sentinel scripts.tests.test_postprovision_cu_defaults scripts.tests.test_postprovision_hard_gates
 python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap
@@ -612,6 +629,17 @@ Keep SKU, model-inference and advisory public evidence distinct.
 configuration, never deployment authority. It retains bounded JSON/Markdown and
 a generated region-matrix preview, not source commits or Azure mutations.
 Report exit 2 means incomplete/unknown even if other known findings exist.
+`scripts/setup-retirement-reader.py` is a separate default-read-only operator
+plan, not an azd hook. Its explicit digest-approved apply creates only a
+dedicated UAMI, exact-workload-RG Reader, subscription `locations/models/read`
+custom role/assignment, and main-ref OIDC trust. It never selects a subscription,
+shares deploy authority, updates/revokes an existing resource, reads quota,
+changes GitHub settings, or activates reporting. Reuse the bounded CLI transport,
+derive profile/variable contracts from the current main workflow, and reject
+unknown, colliding, stale or overprivileged observations. Fresh plans classify
+partial setup; do not auto-clean up or replay an uncertain write. The separate
+read-only configuration check only prints an activation command after exact
+metadata readback; it is not live OIDC/report proof or approval to run it.
 See [the reporting runbook](docs/runbooks/deployment.md#read-only-model-retirement-reporting)
 before changing source authority, admission policy or activation.
 
