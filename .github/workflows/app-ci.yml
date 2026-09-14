@@ -34,6 +34,11 @@ on:
       - "scripts/provision-foundry-routine.py"
       - "scripts/provision-foundry-a2a.py"
       - "scripts/tests/test_memory_cosmos_migration.py"
+      - "scripts/assess-conversation-deletion.py"
+      - "scripts/_deletion_assessment*.py"
+      - "scripts/conversation-deletion-assessment.schema.json"
+      - "scripts/fixtures/conversation-deletion-assessment.json"
+      - "scripts/tests/test_conversation_deletion_assessment.py"
       - "scripts/evaluations/**"
       - "scripts/tests/test_behavioral_evaluations.py"
       - ".github/workflows/app-ci.yml"
@@ -142,3 +147,9 @@ jobs:
       - name: Memory migration script tests
         working-directory: .
         run: pytest -q scripts/tests/test_memory_cosmos_migration.py
+      - name: Read-only deletion assessment controls
+        working-directory: .
+        run: |
+          ruff check --config app/api/pyproject.toml scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py scripts/tests/test_conversation_deletion_assessment.py
+          pyright --pythonversion 3.12 --level error scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py
+          python -m pytest -q scripts/tests/test_conversation_deletion_assessment.py

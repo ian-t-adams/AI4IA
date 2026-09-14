@@ -202,6 +202,22 @@ Plus the Cosmos migration script tests from the repo root:
 pytest -q scripts/tests/test_memory_cosmos_migration.py
 ```
 
+The API job also runs the selected-cohort deletion assessment controls using the
+existing Azure SDK/dev dependencies:
+
+```powershell
+python -m pytest -q scripts/tests/test_conversation_deletion_assessment.py
+ruff check --config app/api/pyproject.toml scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py scripts/tests/test_conversation_deletion_assessment.py
+pyright --pythonversion 3.12 --level error scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py
+```
+
+Only the operator-invoked `collect` subcommand may construct its bounded SDK
+worker. Rehearsal/help/report checks stay offline. Preserve explicit owner/session
+cohorts, scalar query projections, exact endpoints/partitions, and the no-mutation
+transport. Complete inventory is not writer-drain, enrollment approval or absence
+proof; unresolved uploads never become clear through age or an empty scan. See
+`docs/runbooks/conversation-deletion.md` before changing this source contract.
+
 The same API job runs the development-only behavioral evaluation program from
 the repo root, using the already-installed API dev dependencies:
 
