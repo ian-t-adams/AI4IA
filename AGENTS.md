@@ -1187,6 +1187,30 @@ hard-quota durable execution remain refused under the unproven downstream attemp
 envelope. See [the automation contract](docs/workflow-automation.md); source
 completion never implies live activation.
 
+The additive per-run monetary contract reserves shared catalog/price bounds in
+the existing owner ETag CAS before actual dispatch. It is an immutable USD
+application-meter limit, not an owner balance or Azure bill cap. Preserve
+settled/held/unknown totals and compacted-charge floors when removing delivered
+effects; missing accounting is not zero and unknown work never expires into a
+refund. Reserve escaped state space for every later settlement transition.
+Accounting survives caller expiry and conversation cleanup without new grants.
+Draft spend evidence binds exact owner/source/run/operation/schema/destination/
+arguments/expiry, original prices/coverage/attempt identity and current run
+budget revision. A changed quote cannot use an old one-time challenge; ordinary
+reads never reprice it. Local zero requires the actual repository handler and a
+task-inherited no-metered-effect guard, not tool annotations.
+The first finite profile is explicitly stateless text, with tools and automatic
+memory denied and no selected tool/resource requirements silently discarded.
+Shipping attempt proof remains absent; flags, metadata or local fixtures cannot
+enable finite admission. Unknown remote meters and the independent hard-quota
+durable/nonlocal refusals remain unchanged.
+Monetary retirement selection and validation share the invocation-key timestamp
+and replay floor, not the later run creation time. Retain ineligible or unresolved
+rows without blocking unrelated valid admission. HTTP financial projections must
+include their defaulted currency/scope and explicit unknown nulls; recursively
+excluding unset/none fields breaks consumers. Actual API responses and browser
+validators share `app/web/test-fixtures/workflow_money.json`.
+
 ## Staged GA Realtime protocol
 
 `AI4IA_REALTIME_GA_ENABLED=false` stages no GA infrastructure; enabling it only

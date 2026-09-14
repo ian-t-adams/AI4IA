@@ -25,6 +25,7 @@ from ..websearch.contracts import WEBIQ_TOOL_NAMES
 from .automation_common import AutomationError, AutomationModel, ExecutionLimits, digest, json_bytes
 from .automation_models import FrozenWorkflow, WorkflowCheckpoint
 from .models import Workflow
+from .monetary_profile import require_capped_profile
 
 
 class WorkflowSelection(AutomationModel):
@@ -211,6 +212,7 @@ class WorkflowAccess:
                 "digest": digest(workflow.model_dump(mode="json")),
                 "agentsDigest": digest(agents.model_dump(mode="json")),
             }
+        require_capped_profile(workflow, agents, selection.documentIds, limits)
         deployment = self.state.catalog.resolve_deployment(
             selection.model, region=selection.region, data_zone=selection.dataZone, policy_filter=False,
         )

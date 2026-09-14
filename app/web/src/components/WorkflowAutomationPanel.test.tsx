@@ -100,3 +100,53 @@ it("edits a saved schedule with its revision and requires renewed confirmation",
   expect(mocks.save.mock.calls[1][0].expectedRevision).toBe(1);
   expect(mocks.save.mock.calls[1][1]).toBe("schedule");
 });
+
+it("does not offer a finite USD mode based on flags alone", async () => {
+  await fill();
+  expect(screen.getByRole("option", { name: "USD application-meter maximum" })).toBeDisabled();
+  expect(screen.getByText(/verifies its bounded gateway transport/)).toBeInTheDocument();
+});
+
+it("requires explicit text-only reductions and transmits an exact immutable per-run amount", async () => {
+  mocks.config.mockResolvedValueOnce({
+    approvalsAvailable: true, schedulesAvailable: true, maxRuntimeSeconds: 1800,
+    maxSchedules: 10, monetaryCapAvailable: true, monetaryCapProfile: "stateless_text_only",
+  });
+  const user = userEvent.setup();
+  render(<WorkflowAutomationPanel workflow={workflow} model="model" documentIds={[]} onOpenChat={() => {}} />);
+  await user.type(await screen.findByRole("textbox", { name: "Automation input" }), "Summarize this text.");
+  await user.selectOptions(screen.getByRole("combobox", { name: "Spending limit" }), "usd_app_meter");
+  await user.type(screen.getByRole("textbox", { name: "Maximum USD per run" }), "1.000001");
+  await user.click(screen.getByRole("checkbox", { name: /per-run app-meter maximum/ }));
+  expect(screen.getByRole("button", { name: "Start resumable run" })).toBeDisabled();
+  await user.click(screen.getByRole("checkbox", { name: "Disable tools for this request" }));
+  await user.click(screen.getByRole("checkbox", { name: "Disable automatic memory for this request" }));
+  await user.click(screen.getByRole("checkbox", { name: /per-run app-meter maximum/ }));
+  await user.click(screen.getByRole("button", { name: "Start resumable run" }));
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledTimes(1));
+  expect(mocks.start.mock.calls[0][0]).toMatchObject({
+    limits: { spendMode: "usd_app_meter", maxSpendMicroUsd: 1_000_001, maxToolCalls: 0 },
+    allowTools: false, allowAutomaticMemory: false,
+  });
+});
+
+it("preserves a capped schedule's amount and reductions when editing cannot currently run", async () => {
+  mocks.schedules.mockResolvedValueOnce({ schedules: [{
+    id: "saved", workflow: "Report", workflowName: "flow", status: "active", enabled: true,
+    revision: 3, generation: 2, input: "Existing text", consumed: 1, next: null, tools: [],
+    limits: {
+      maxRuntimeSeconds: 1800, maxApplicationDispatches: 64, maxOutputTokens: 1024,
+      maxModelCalls: 18, maxToolCalls: 0, spendMode: "usd_app_meter", maxSpendMicroUsd: 2_000_001,
+    },
+    rule: { frequency: "daily", timezone: "UTC", localTime: "09:00", maxOccurrences: 5 },
+    allowTools: false, allowAutomaticMemory: false,
+  }] });
+  const user = await fill();
+  await user.click(await screen.findByRole("button", { name: "Edit schedule" }));
+  expect(screen.getByRole("textbox", { name: "Maximum USD per run" })).toHaveValue("2.000001");
+  expect(screen.getByRole("checkbox", { name: "Disable tools for this request" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Disable automatic memory for this request" })).toBeChecked();
+  await user.click(screen.getByRole("checkbox", { name: /per-run app-meter maximum/ }));
+  expect(screen.getByRole("button", { name: "Save revised safe schedule" })).toBeDisabled();
+  expect(mocks.save).not.toHaveBeenCalled();
+});
