@@ -55,7 +55,7 @@ OUTPUT_LIMIT = 4 * 1024 * 1024
 TOTAL_SECONDS = 25 * 60
 STAGES = (
     "source", "toolchain", "public_packages", "original_install", "original_guard",
-    "original_native", "candidate_lock", "candidate_delta", "candidate_install",
+    "original_native", "candidate_lock", "candidate_projection", "candidate_delta", "candidate_install",
     "candidate_guard", "candidate_native", "candidate_tests", "candidate_lint",
     "candidate_typecheck", "candidate_build", "immutability",
 )
@@ -936,6 +936,31 @@ def verify_candidate(original_manifest: bytes, original_lock: bytes, candidate_m
     require(original_lock == npm_json(text_control), "existing_lock_text_changed")
 
 
+def project_generated_native(original_manifest: bytes, original_lock: bytes, raw_manifest: bytes,
+                             raw_lock: bytes, native: dict) -> bytes:
+    require(max(map(len, (original_manifest, original_lock, raw_manifest, raw_lock))) <= LOCK_LIMIT,
+            "projection_input_limit")
+    require(raw_manifest == original_manifest, "raw_candidate_manifest_changed")
+    original = object_json(original_lock)
+    raw = object_json(raw_lock)
+    before, generated = original.get("packages"), raw.get("packages")
+    require(isinstance(before, dict) and isinstance(generated, dict), "raw_candidate_packages_missing")
+    assert isinstance(before, dict) and isinstance(generated, dict)
+    require(NATIVE_KEY not in before and NATIVE_KEY in generated, "raw_candidate_native_inventory")
+    require(set(generated) == set(before) | {NATIVE_KEY}, "raw_candidate_inventory_changed")
+    require(
+        encode({key: value for key, value in original.items() if key != "packages"})
+        == encode({key: value for key, value in raw.items() if key != "packages"}),
+        "raw_candidate_top_level_changed",
+    )
+    require(encode(generated.get("")) == encode(before.get("")), "raw_candidate_root_changed")
+    before[NATIVE_KEY] = generated[NATIVE_KEY]
+    projected = npm_json(original)
+    require(len(projected) <= LOCK_LIMIT, "projection_output_limit")
+    verify_candidate(original_manifest, original_lock, raw_manifest, projected, native)
+    return projected
+
+
 def verify_native(output: bytes, native: dict) -> dict:
     value = object_json(output)
     require(encode(value) == encode({
@@ -1163,10 +1188,38 @@ class Diagnostic:
             node, str(npm), "install", f"next@{VERSION}", "--save-exact", "--package-lock-only", *NPM_FLAGS,
         ], 120)
         require(generated.status == "succeeded", "candidate_generation_failed")
-        self.active_stage = "candidate_delta"
-        candidate_lock = read_bytes(candidate / "package-lock.json", LOCK_LIMIT)
-        self.report["candidateInventory"] = candidate_inventory(manifests["package-lock.json"], candidate_lock)
+        self.active_stage = "candidate_projection"
+        raw_lock = read_bytes(candidate / "package-lock.json", LOCK_LIMIT)
+        raw_manifest = read_bytes(candidate / "package.json", LOCK_LIMIT)
+        raw_inventory = candidate_inventory(manifests["package-lock.json"], raw_lock)
+        self.report["rawGeneration"] = {
+            "accepted": False, "lockSha256": sha256(raw_lock),
+            "manifestSha256": sha256(raw_manifest), "inventory": raw_inventory,
+        }
         self.save()
+        require(raw_inventory["status"] == "observed", "raw_candidate_inventory_unavailable")
+        projected_lock = project_generated_native(
+            manifests["package.json"], manifests["package-lock.json"], raw_manifest, raw_lock, native,
+        )
+        raw_native = object_json(raw_lock)["packages"][NATIVE_KEY]
+        projected_native = object_json(projected_lock)["packages"][NATIVE_KEY]
+        require(encode(raw_native) == encode(projected_native), "native_projection_changed")
+        self.report["repairedCandidate"] = {
+            "lockSha256": sha256(projected_lock),
+            "inventory": candidate_inventory(manifests["package-lock.json"], projected_lock),
+            "nativeRecordSource": "actual_npm_generated_record",
+            "rawNativeRecordSha256": sha256(encode(raw_native)),
+            "projectedNativeRecordSha256": sha256(encode(projected_native)),
+            "discardedExistingRecordChanges": raw_inventory["changed"]["count"],
+        }
+        (candidate / "package-lock.json").write_bytes(projected_lock)
+        candidate_lock = read_bytes(candidate / "package-lock.json", LOCK_LIMIT)
+        require(candidate_lock == projected_lock, "projection_write_mismatch")
+        self.success("candidate_projection", {
+            "rawGenerationAccepted": False, "nativeRecordCopiedExactly": True,
+            "rawLockSha256": sha256(raw_lock), "projectedLockSha256": sha256(projected_lock),
+        })
+        self.active_stage = "candidate_delta"
         verify_candidate(
             manifests["package.json"], manifests["package-lock.json"],
             read_bytes(candidate / "package.json", LOCK_LIMIT), candidate_lock, native,

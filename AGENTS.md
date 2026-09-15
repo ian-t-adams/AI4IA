@@ -166,8 +166,12 @@ Source export uses process-scoped Git EOL options so Windows checkout preference
 cannot rewrite the pinned blob bytes; mismatches retain bounded input hashes and
 presence, never normalized files or replacement expected hashes.
 Candidate generation refreshes only the already-declared exact Next parent after
-checking the untouched inputs and verified metadata. Rejected candidates retain
-bounded inventory counts and allowlisted paths, never an approved lock or fallback.
+checking the untouched inputs and verified metadata. Raw generation is never
+accepted wholesale: an audited projection may copy only its actual verified native
+record into the original lock after strict raw manifest/top/root/inventory checks.
+Separate bounded raw/repaired inventories, hashes and record provenance expose
+discarded churn. The unchanged final verifier still gates the repaired copy before
+installation; no synthesized fields, extra resolver attempt or fallback is allowed.
 It disables install lifecycle scripts and invokes only the reviewed native probe
 and tool entrypoints. Archive limits cover the complete decompressed stream before
 tar parsing, including extension records and padding. Windows subprocesses enter

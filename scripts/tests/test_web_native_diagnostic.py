@@ -845,6 +845,115 @@ class CandidateInventoryTests(unittest.TestCase):
         self.assertLess(len(diag.encode(evidence)), 16 * 1024)
 
 
+class NativeRecordProjectionTests(unittest.TestCase):
+    def test_only_actual_generated_native_record_crosses_the_projection(self):
+        original, metadata = fixture()
+        for index in range(40):
+            original["packages"][f"node_modules/existing-{index}"] = {"version": "1.0.0", "optional": True}
+        raw = add_record(original, metadata["packages"][diag.NATIVE])
+        for index in range(40):
+            raw["packages"][f"node_modules/existing-{index}"] = {"version": "99.0.0", "unapproved": "private-marker"}
+        raw["packages"][diag.NATIVE_KEY] = dict(reversed(list(raw["packages"][diag.NATIVE_KEY].items())))
+        before, generated = lock_bytes(original), lock_bytes(raw)
+        manifest = b'{"dependencies":{"next":"16.3.5"}}\n'
+        projected_bytes = diag.project_generated_native(manifest, before, manifest, generated,
+                                                       metadata["packages"][diag.NATIVE])
+        projected = json.loads(projected_bytes)
+        self.assertEqual(set(projected["packages"]), set(original["packages"]) | {diag.NATIVE_KEY})
+        for name, value in original["packages"].items():
+            self.assertTrue(projected["packages"][name] == value, "Existing original record changed")
+        self.assertTrue(projected["packages"][diag.NATIVE_KEY] == raw["packages"][diag.NATIVE_KEY],
+                        "Generated native record values changed")
+        self.assertEqual(list(projected["packages"][diag.NATIVE_KEY]), list(raw["packages"][diag.NATIVE_KEY]))
+        self.assertEqual(diag.sha256(diag.encode(projected["packages"][diag.NATIVE_KEY])),
+                         diag.sha256(diag.encode(raw["packages"][diag.NATIVE_KEY])))
+        self.assertEqual(diag.candidate_inventory(before, generated)["changed"]["count"], 40)
+        self.assertEqual(diag.candidate_inventory(before, projected_bytes)["changed"]["count"], 0)
+        self.assertNotIn(b"private-marker", projected_bytes)
+        del projected["packages"][diag.NATIVE_KEY]
+        self.assertTrue(diag.npm_json(projected) == before, "Original lock text changed")
+        self.assertTrue(lock_bytes(original) == before and lock_bytes(raw) == generated)
+        diag.verify_candidate(manifest, before, manifest, projected_bytes, metadata["packages"][diag.NATIVE])
+        with self.assertRaisesRegex(diag.DiagnosticError, "existing_lock_record_changed"):
+            diag.verify_candidate(manifest, before, manifest, generated, metadata["packages"][diag.NATIVE])
+
+    def test_wrong_or_missing_native_record_is_never_reconstructed_from_metadata(self):
+        original, metadata = fixture()
+        native = metadata["packages"][diag.NATIVE]
+        before = lock_bytes(original)
+        raw = add_record(original, native)
+        for change in (
+            {"version": "0.0.0"}, {"integrity": sri(b"wrong")},
+            {"resolved": "https://example.invalid/native.tgz"}, {"os": ["linux"]},
+            {"cpu": ["arm64"]}, {"engines": {"node": ">=99"}}, {"optional": False},
+            {"optional": 1}, {"license": "wrong"}, {"extra": "unapproved"},
+        ):
+            changed = copy.deepcopy(raw)
+            changed["packages"][diag.NATIVE_KEY].update(change)
+            with self.subTest(change=change), self.assertRaises(diag.DiagnosticError):
+                diag.project_generated_native(b"{}", before, b"{}", lock_bytes(changed), native)
+        for field in raw["packages"][diag.NATIVE_KEY]:
+            changed = copy.deepcopy(raw)
+            del changed["packages"][diag.NATIVE_KEY][field]
+            with self.subTest(missing_field=field), self.assertRaises(diag.DiagnosticError):
+                diag.project_generated_native(b"{}", before, b"{}", lock_bytes(changed), native)
+        changed = copy.deepcopy(raw)
+        changed["packages"][diag.NATIVE_KEY] = None
+        with self.assertRaises(diag.DiagnosticError):
+            diag.project_generated_native(b"{}", before, b"{}", lock_bytes(changed), native)
+        with self.assertRaisesRegex(diag.DiagnosticError, "raw_candidate_native_inventory"):
+            diag.project_generated_native(b"{}", before, b"{}", before, native)
+        projected = diag.project_generated_native(b"{}", before, b"{}", lock_bytes(raw), native)
+        diag.verify_candidate(b"{}", before, b"{}", projected, native)
+
+    def test_projection_cannot_expand_the_existing_lock_byte_budget(self):
+        original, metadata = fixture()
+        native = metadata["packages"][diag.NATIVE]
+        original["packages"]["node_modules/large-original"] = {"value": "x" * 4096}
+        raw = add_record(original, native)
+        raw["packages"]["node_modules/large-original"] = {"value": ""}
+        before, generated = lock_bytes(original), lock_bytes(raw)
+        expected = lock_bytes(add_record(original, native))
+        self.assertLess(len(generated), len(before))
+        self.assertGreater(len(expected), len(before))
+        with patch.object(diag, "LOCK_LIMIT", len(before)):
+            with self.assertRaisesRegex(diag.DiagnosticError, "projection_output_limit"):
+                diag.project_generated_native(b"{}", before, b"{}", generated, native)
+        with patch.object(diag, "LOCK_LIMIT", len(expected)):
+            projected = diag.project_generated_native(b"{}", before, b"{}", generated, native)
+            self.assertTrue(projected == expected)
+
+    def test_raw_manifest_top_root_and_inventory_changes_refuse_before_projection(self):
+        original, metadata = fixture()
+        native = metadata["packages"][diag.NATIVE]
+        raw = add_record(original, native)
+        before = lock_bytes(original)
+        with self.assertRaisesRegex(diag.DiagnosticError, "raw_candidate_manifest_changed"):
+            diag.project_generated_native(b"{}", before, b'{"changed":true}', lock_bytes(raw), native)
+        for kind, reason in (
+            ("extra", "raw_candidate_inventory_changed"),
+            ("removed", "raw_candidate_inventory_changed"),
+            ("top", "raw_candidate_top_level_changed"),
+            ("root", "raw_candidate_root_changed"),
+        ):
+            changed = copy.deepcopy(raw)
+            if kind == "extra":
+                changed["packages"]["node_modules/unapproved"] = {}
+            elif kind == "removed":
+                del changed["packages"]["node_modules/@next/swc-darwin-arm64"]
+            elif kind == "top":
+                changed["lockfileVersion"] = 2
+            else:
+                changed["packages"][""]["dependencies"]["next"] = "99.0.0"
+            with self.subTest(kind=kind), self.assertRaisesRegex(diag.DiagnosticError, reason):
+                diag.project_generated_native(b"{}", before, b"{}", lock_bytes(changed), native)
+        with patch.object(diag, "LOCK_LIMIT", len(before) - 1):
+            with self.assertRaisesRegex(diag.DiagnosticError, "projection_input_limit"):
+                diag.project_generated_native(b"{}", before, b"{}", lock_bytes(raw), native)
+        projected = diag.project_generated_native(b"{}", before, b"{}", lock_bytes(raw), native)
+        diag.verify_candidate(b"{}", before, b"{}", projected, native)
+
+
 class ArchiveStreamLimitTests(unittest.TestCase):
     def test_complete_decompressed_stream_is_bounded_before_tar_parsing(self):
         _, metadata = fixture()
@@ -1433,30 +1542,55 @@ class OrchestrationTests(unittest.TestCase):
         self.assertTrue(any("install" in command for command, *_ in calls))
 
     def test_rejected_candidate_inventory_is_retained_without_retaining_or_retrying_the_lock(self):
-        for shape in ("noop", "pruned", "unknown", "changed"):
+        for shape in ("noop", "pruned", "unknown"):
             with self.subTest(shape=shape):
                 report, calls, output = self.exercise(candidate_shape=shape)
                 self.assertFalse(report["candidateValidated"])
-                self.assertEqual(report["stages"]["candidate_delta"]["status"], "failed")
+                self.assertEqual(report["stages"]["candidate_projection"]["status"], "failed")
+                self.assertEqual(report["stages"]["candidate_delta"]["status"], "not_run")
                 self.assertEqual(report["stages"]["candidate_install"]["status"], "not_run")
-                self.assertTrue("candidateInventory" in report, "candidate inventory observation missing")
-                self.assertEqual(report["candidateInventory"]["status"], "observed")
-                inventory = report["candidateInventory"]
+                self.assertTrue("rawGeneration" in report, "raw generation observation missing")
+                self.assertFalse(report["rawGeneration"]["accepted"])
+                inventory = report["rawGeneration"]["inventory"]
+                self.assertEqual(inventory["status"], "observed")
                 self.assertEqual(inventory["bytesUnchanged"], shape == "noop")
                 self.assertEqual(inventory["afterNativePresent"], shape != "noop")
                 self.assertEqual(inventory["removed"]["count"], 1 if shape == "pruned" else 0)
                 self.assertEqual(inventory["added"]["unknownCount"], 1 if shape == "unknown" else 0)
-                self.assertEqual(inventory["changed"]["count"], 1 if shape == "changed" else 0)
+                self.assertEqual(inventory["changed"]["count"], 0)
                 self.assertNotIn("private-unapproved-name", json.dumps(report))
                 self.assertEqual({path.name for path in output.iterdir()}, {"report.json"})
-                self.assertEqual(json.loads((output / "report.json").read_bytes())["candidateInventory"],
+                self.assertEqual(json.loads((output / "report.json").read_bytes())["rawGeneration"]["inventory"],
                                  inventory)
                 self.assertEqual(sum("install" in command for command, *_ in calls), 1)
                 self.assertFalse(any("update" in command for command, *_ in calls))
         report, _, output = self.exercise()
         self.assertTrue(report["candidateValidated"])
-        self.assertTrue("candidateInventory" in report, "candidate inventory observation missing")
-        self.assertEqual(report["candidateInventory"]["added"]["knownPaths"], [diag.NATIVE_KEY])
+        self.assertTrue("rawGeneration" in report, "raw generation observation missing")
+        self.assertFalse(report["rawGeneration"]["accepted"])
+        self.assertEqual(report["repairedCandidate"]["inventory"]["added"]["knownPaths"], [diag.NATIVE_KEY])
+        self.assertEqual({path.name for path in output.iterdir()},
+                         {"report.json", "candidate-package-lock.json", "candidate-lock.diff"})
+
+    def test_existing_raw_churn_is_audited_and_discarded_not_accepted(self):
+        report, calls, output = self.exercise(candidate_shape="changed")
+        self.assertTrue(report["candidateValidated"])
+        self.assertFalse(report["originalValidated"])
+        self.assertFalse(report["rawGeneration"]["accepted"])
+        self.assertEqual(report["rawGeneration"]["inventory"]["changed"]["count"], 1)
+        repaired = report["repairedCandidate"]
+        self.assertEqual(repaired["inventory"]["changed"]["count"], 0)
+        self.assertEqual(repaired["discardedExistingRecordChanges"], 1)
+        self.assertEqual(repaired["rawNativeRecordSha256"], repaired["projectedNativeRecordSha256"])
+        self.assertEqual(repaired["nativeRecordSource"], "actual_npm_generated_record")
+        candidate = (output / "candidate-package-lock.json").read_bytes()
+        self.assertEqual(diag.sha256(candidate), repaired["lockSha256"])
+        self.assertNotEqual(diag.sha256(candidate), report["rawGeneration"]["lockSha256"])
+        self.assertEqual(json.loads(candidate)["packages"]["node_modules/next"]["version"], diag.VERSION)
+        self.assertEqual(sum("install" in command for command, *_ in calls), 1)
+        self.assertEqual(report["stages"]["candidate_projection"]["status"], "succeeded")
+        self.assertEqual(report["stages"]["candidate_delta"]["status"], "succeeded")
+        self.assertFalse(report["stages"]["candidate_projection"]["evidence"]["rawGenerationAccepted"])
         self.assertEqual({path.name for path in output.iterdir()},
                          {"report.json", "candidate-package-lock.json", "candidate-lock.diff"})
 
