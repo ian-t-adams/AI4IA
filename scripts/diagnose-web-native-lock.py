@@ -22,6 +22,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import zlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -673,7 +674,7 @@ def inspect_tarball(path: Path, metadata: dict) -> dict:
                             digest.update(chunk)
                         require(size == member.size, "native_member_truncated")
                         binaries[member.name] = digest.hexdigest()
-    except (tarfile.TarError, OSError, EOFError) as exc:
+    except (tarfile.TarError, OSError, EOFError, zlib.error) as exc:
         raise DiagnosticError("invalid_package_archive") from exc
     if not isinstance(manifest, dict):
         raise DiagnosticError("package_manifest_missing")

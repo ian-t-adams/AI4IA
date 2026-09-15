@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zlib
 from email.message import Message
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -432,6 +433,115 @@ class WebNativeDiagnosticTests(unittest.TestCase):
         self.assertEqual(partial["operations"]["node_release"]["httpStatus"], 403)
         self.assertTrue(all(partial["operations"][name]["status"] == "not_run"
                             for name in diag.PUBLIC_OPERATIONS[1:]))
+
+    def test_collect_worker_preserves_completed_operations_for_matching_sri_invalid_deflate(self):
+        lock, metadata = fixture()
+        next_metadata = metadata["packages"]["next"]
+        native_metadata = metadata["packages"][diag.NATIVE]
+        next_tgz = archive_bytes({"package/package.json": diag.encode({
+            "name": "next", "version": diag.VERSION, "optionalDependencies": next_metadata["optionalDependencies"],
+        })}, True)
+        native_binary = b"synthetic native archive member"
+        native_tgz = archive_bytes({
+            "package/package.json": diag.encode({
+                "name": diag.NATIVE, "version": diag.VERSION, "cpu": ["x64"], "os": ["win32"],
+                "main": "native.node",
+            }),
+            "package/native.node": native_binary,
+        }, True)
+        # Valid gzip framing, but reserved DEFLATE block type 3.
+        malformed_tgz = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x07" + b"\x00" * 8
+        with self.assertRaises(zlib.error):
+            gzip.decompress(malformed_tgz)
+        next_metadata["dist"]["integrity"] = sri(next_tgz)
+        lock["packages"]["node_modules/next"]["integrity"] = sri(next_tgz)
+        worker = """
+import base64, hashlib, importlib.util, json, sys
+from pathlib import Path
+script, response_path, public, lock_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("deflate_worker", script)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+responses = json.loads(Path(response_path).read_bytes())
+def download(url, destination, limit):
+    body = base64.b64decode(responses[url], validate=True)
+    assert len(body) <= limit
+    destination.write_bytes(body)
+    return hashlib.sha512(body).digest()
+module.download = download
+sys.argv = [script, "--collect", public, "--lock", lock_path]
+raise SystemExit(module.main())
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            public = root / "pr477-native-deflate-control" / "public"
+            public.mkdir(parents=True)
+            lock_path = public.parent / "source" / "app" / "web" / "package-lock.json"
+            lock_path.parent.mkdir(parents=True)
+            lock_path.write_bytes(lock_bytes(lock))
+            event_path = root / "event.json"
+            event_path.write_bytes(diag.encode({
+                "number": 477, "pull_request": {
+                    "number": 477, "head": {"sha": "a" * 40, "repo": {"full_name": diag.REPOSITORY}},
+                },
+            }))
+            env = {
+                **diag.child_env(dict(os.environ), root / "home"),
+                "RUNNER_TEMP": str(root), "GITHUB_ACTIONS": "true",
+                "GITHUB_REPOSITORY": diag.REPOSITORY, "GITHUB_SERVER_URL": "https://github.com",
+                "GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF": "refs/pull/477/merge",
+                "GITHUB_EVENT_PATH": str(event_path), "RUNNER_OS": "Windows", "RUNNER_ARCH": "X64",
+                "GITHUB_SHA": "b" * 40, "GITHUB_WORKFLOW_SHA": "b" * 40,
+                "GITHUB_WORKFLOW_REF": f"{diag.REPOSITORY}/.github/workflows/app-ci.yml@refs/pull/477/merge",
+                "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+            }
+            responses_path = root / "responses.json"
+            for index, tarball in enumerate((native_tgz, malformed_tgz, native_tgz)):
+                with self.subTest(control=index):
+                    native_metadata["dist"]["integrity"] = sri(tarball)
+                    responses = {
+                        diag.NODE_INDEX: diag.encode([{
+                            "version": f"v{diag.NODE_VERSION}", "npm": diag.NPM_VERSION,
+                            "files": ["win-x64-zip"],
+                        }]),
+                        diag.metadata_url("next"): diag.encode(next_metadata),
+                        diag.tarball_url("next"): next_tgz,
+                        diag.metadata_url(diag.NATIVE): diag.encode(native_metadata),
+                        diag.tarball_url(diag.NATIVE): tarball,
+                    }
+                    responses_path.write_bytes(diag.encode({
+                        url: base64.b64encode(body).decode() for url, body in responses.items()
+                    }))
+                    result = subprocess.run(
+                        [sys.executable, "-c", worker, str(SCRIPT), str(responses_path),
+                         str(public), str(lock_path)],
+                        cwd=root, env=env, stdin=subprocess.DEVNULL,
+                        capture_output=True, timeout=10, check=False,
+                    )
+                    self.assertEqual(result.returncode, 2 if index == 1 else 0, result.stderr.decode())
+                    self.assertEqual(result.stderr, b"")
+                    self.assertGreater(len(result.stdout), 0)
+                    self.assertLessEqual(len(result.stdout), diag.REPORT_LIMIT)
+                    report = diag.object_json(result.stdout)
+                    operations = report["operations"]
+                    diag.verify_operations(operations)
+                    self.assertEqual({name: row["status"] for name, row in operations.items()}, {
+                        name: "failed" if index == 1 and name == "native_tarball" else "succeeded"
+                        for name in diag.PUBLIC_OPERATIONS
+                    })
+                    self.assertEqual(operations["native_tarball"]["sha512"], sri(tarball)[7:])
+                    self.assertEqual(operations["native_tarball"]["bytes"], len(tarball))
+                    self.assertIn("next", report["packages"])
+                    if index == 1:
+                        self.assertEqual(report["error"], "invalid_package_archive")
+                        self.assertEqual(operations["native_tarball"]["reason"], "invalid_package_archive")
+                        self.assertIsNone(operations["native_tarball"]["httpStatus"])
+                        self.assertNotIn(diag.NATIVE, report["packages"])
+                    else:
+                        self.assertNotIn("error", report)
+                        self.assertEqual(report["packages"][diag.NATIVE]["binarySha256"],
+                                         hashlib.sha256(native_binary).hexdigest())
 
     def test_tarball_rejects_wrong_platform_main_or_package_identity(self):
         _, metadata = fixture()
