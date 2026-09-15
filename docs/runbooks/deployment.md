@@ -1381,9 +1381,10 @@ Select the correct capacity profile and Claude posture rather than copying the
 example blindly. The collector checks the selected CLI subscription once against
 `AZURE_SUBSCRIPTION_ID`; missing or mismatched context refuses resource collection.
 It then carries that checked ID as `--subscription` on every resource-group,
-account, deployment and regional-offering read. Later environment or CLI-default
-changes cannot retarget the report, and a scoped read failure never retries
-against the default. It never logs in or selects a subscription on your behalf.
+account, deployment and regional-offering read. Later CLI-default or
+`AZURE_SUBSCRIPTION_ID` changes cannot retarget the checked subscription, and a
+scoped read failure never retries against the default. It never logs in or
+selects a subscription on your behalf.
 It reads only account context, resource-group existence, Cognitive
 Services accounts/deployments and regional model offerings. It never runs the
 provider preflight, queries/changes quota, invokes inference, updates capacity,
