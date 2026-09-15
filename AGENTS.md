@@ -704,6 +704,11 @@ Keep SKU, model-inference and advisory public evidence distinct.
 `model-retirements.yml` is default-off and requires dedicated approved read-only
 configuration, never deployment authority. It retains bounded JSON/Markdown and
 a generated region-matrix preview, not source commits or Azure mutations.
+Report collection checks ambient CLI context once against the explicit target,
+then binds that checked ID to every subsequent Azure request with `--subscription`.
+Later CLI-default or environment changes cannot retarget evidence; scoped read
+failures remain unavailable without retrying against the default. The collector
+never selects a subscription or logs in.
 Report exit 2 means incomplete/unknown even if other known findings exist.
 `scripts/setup-retirement-reader.py` is a separate default-read-only operator
 plan, not an azd hook. Its explicit digest-approved apply creates only a

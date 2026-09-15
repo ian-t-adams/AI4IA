@@ -60,7 +60,7 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -252,6 +252,7 @@ def existing_deployment_inventory(
     environment_name: str | None,
     foundry_endpoints_raw: str | None = None,
     region_reads: dict[str, retirement.SourceRead] | None = None,
+    read: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> tuple[dict[tuple[str, str], dict[str, Any]], list[str]]:
     """Inventory exact deployments azd would reconcile, or enter explicit addition mode.
 
@@ -277,7 +278,8 @@ def existing_deployment_inventory(
             )
         ]
 
-    exists_result = _az("group", "exists", "--name", resource_group, "-o", "json")
+    query = read or _az
+    exists_result = query("group", "exists", "--name", resource_group, "-o", "json")
     if exists_result.returncode != 0:
         _json_result(exists_result, f"could not test whether resource group {resource_group} exists")
     exists_text = str(exists_result.stdout or "").strip().casefold()
@@ -301,7 +303,7 @@ def existing_deployment_inventory(
         ]
 
     accounts = _json_result(
-        _az("cognitiveservices", "account", "list", "--resource-group", resource_group, "-o", "json"),
+        query("cognitiveservices", "account", "list", "--resource-group", resource_group, "-o", "json"),
         f"could not list Cognitive Services accounts in {resource_group}",
     )
     if (
@@ -321,6 +323,7 @@ def existing_deployment_inventory(
                 accounts, region=region, resource_group=resource_group,
                 expected_name=explicit_accounts.get(_normal_location(region)),
                 environment_name=environment_name, foundry_token=foundry_token,
+                read=query,
             )
         except (SystemExit, OSError):
             if region_reads is None:
@@ -346,6 +349,7 @@ def _regional_deployment_inventory(
     expected_name: str | None,
     environment_name: str,
     foundry_token: str,
+    read: Callable[..., subprocess.CompletedProcess[str]],
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Read a whole account atomically so malformed rows cannot become partial absence."""
     normalized_region = _normal_location(region)
@@ -383,7 +387,7 @@ def _regional_deployment_inventory(
         raise SystemExit("ERROR: the selected Foundry account has a different kind or region.")
     account_name = str(candidates[0].get("name") or "")
     deployments = _json_result(
-        _az(
+        read(
             "cognitiveservices", "account", "deployment", "list",
             "--resource-group", resource_group, "--name", account_name, "-o", "json",
         ),
@@ -484,9 +488,12 @@ def all_deployments_exact_existing(
     )
 
 
-def offered_models(region: str) -> list[dict[str, Any]]:
+def offered_models(
+    region: str, *, read: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> list[dict[str, Any]]:
+    query = read or _az
     offered = _json_result(
-        _az("cognitiveservices", "model", "list", "--location", region, "-o", "json"),
+        query("cognitiveservices", "model", "list", "--location", region, "-o", "json"),
         f"could not list model offerings in {region}",
     )
     if not isinstance(offered, list) or len(offered) > MAX_OFFERED_MODELS:
@@ -579,7 +586,7 @@ def run_retirement_report(
                 "public-evidence-file", None, "unavailable", retirement.timestamp(started),
                 "invalid-or-unreadable-public-evidence",
             ))
-    authenticated = False
+    report_az: Callable[..., subprocess.CompletedProcess[str]] | None = None
     inventory: dict[tuple[str, str], dict[str, Any]] = {}
     inventory_reads: dict[str, retirement.SourceRead] = {}
     environment = (args.environment_name or os.environ.get("AZURE_ENV_NAME") or "").strip()
@@ -589,8 +596,12 @@ def run_retirement_report(
         expected = (os.environ.get("AZURE_SUBSCRIPTION_ID") or "").strip()
         if not expected or not (resource_group or environment) or not (environment or endpoints):
             raise SystemExit("Explicit report subscription and target account context are required.")
-        active_subscription(expected)
-        authenticated = True
+        subscription_id = active_subscription(expected)["id"]
+
+        def scoped_az(*command: str) -> subprocess.CompletedProcess[str]:
+            return _az(*command, "--subscription", subscription_id)
+
+        report_az = scoped_az
         sources.append(retirement.SourceRead(
             "subscription-context", None, "observed", retirement.timestamp(datetime.now(UTC))
         ))
@@ -599,12 +610,13 @@ def run_retirement_report(
             "subscription-context", None, "unavailable", retirement.timestamp(datetime.now(UTC)),
             "missing-context-or-subscription-read-failed",
         ))
-    if authenticated:
+    if report_az is not None:
         try:
             inventory, _ = existing_deployment_inventory(
                 {**models, "regions": {region: models["regions"][region] for region in regions}},
                 resource_group=resource_group, environment_name=environment,
                 foundry_endpoints_raw=endpoints, region_reads=inventory_reads,
+                read=report_az,
             )
         except (SystemExit, OSError):
             for region in regions:
@@ -622,9 +634,9 @@ def run_retirement_report(
     observations = []
     for region in regions:
         offered = None
-        if authenticated:
+        if report_az is not None:
             try:
-                offered = offered_models(region)
+                offered = offered_models(region, read=report_az)
                 sources.append(retirement.SourceRead(
                     "model-offerings", region, "observed", retirement.timestamp(datetime.now(UTC))
                 ))
