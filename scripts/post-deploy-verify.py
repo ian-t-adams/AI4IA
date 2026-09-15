@@ -1308,7 +1308,9 @@ def _cleanup_http_request(
                 data.extend(chunk)
                 if len(data) > body_limit:
                     return HttpOutcome(status=None, error="response_too_large")
-                if not chunk:
+                # read1 can close a complete response and its last socket
+                # reference. Do not set a timeout on that socket again.
+                if not chunk or response.isclosed():
                     break
             if length is not None and int(length) != len(data):
                 return HttpOutcome(status=None, error="invalid_response")

@@ -540,6 +540,10 @@ upload or exhausted budget can pass cleanup. Public responses hide protocol and
 generation: keep server fencing and actual API/shared-fixture parity tests, not
 invented fields. Creation stays single-attempt and existing chat retries stay
 unchanged; cleanup never adds model calls, enrollment, a sweep or rollout authority.
+Retain actual stdlib framing controls, not only transport-interface fakes:
+`HTTPResponse.read1` can close the last socket reference on a complete body.
+Content-Length, chunked and EOF completion must still reject truncation/overflow
+without another operation on that closed socket or relaxing the deadline.
 See `docs/runbooks/conversation-deletion.md#existing-post-deployment-canary-cleanup`.
 
 ### Production image proofs

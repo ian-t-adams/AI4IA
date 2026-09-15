@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import io
 import json
+import socket
 import threading
 import sys
 import unittest
@@ -1580,6 +1581,88 @@ class CanaryTests(unittest.TestCase):
 
 
 class CleanupTransportTests(unittest.TestCase):
+    def native_canary(self, *, framing: str, v1: bool):
+        http = FakeHttp(canary_script(ok({"message": {"content": "ready"}}), v1=v1))
+        responses = []
+
+        class Connection(pdv._CleanupConnection):
+            peer = None
+
+            def connect(self):
+                self.sock, self.peer = socket.socketpair()
+                self.read_socket = self.sock
+                outcome = responses.pop(0)
+                body = outcome.body
+                headers = b"Connection: close\r\nContent-Type: application/json\r\n"
+                if framing == "overflow":
+                    body += b" " * (pdv.MAX_CLEANUP_BODY_BYTES + 1 - len(body))
+                if outcome.status == 204:
+                    headers += b"Content-Length: 0\r\n"
+                elif framing.startswith("length") or framing == "overflow":
+                    length = len(body) + (1 if framing == "length-truncated" else 0)
+                    headers += f"Content-Length: {length}\r\n".encode()
+                elif framing.startswith("chunked"):
+                    headers += b"Transfer-Encoding: chunked\r\n"
+                    body = (f"{len(body):x}\r\n".encode() + body + b"\r\n") if body else b""
+                    if framing != "chunked-truncated":
+                        body += b"0\r\n\r\n"
+                elif framing == "eof-malformed":
+                    body = body[:-1]
+                self.peer.sendall(f"HTTP/1.1 {outcome.status} Synthetic\r\n".encode() + headers + b"\r\n" + body)
+
+            def request(self, method, path, **kwargs):
+                super().request(method, path, **kwargs)
+                # An unread request makes Windows close the peer with a reset,
+                # not the orderly EOF this response-framing control needs.
+                self.peer.settimeout(1)
+                received = b""
+                while b"\r\n\r\n" not in received:
+                    chunk = self.peer.recv(1024)
+                    assert chunk and len(received) + len(chunk) <= 8192
+                    received += chunk
+                assert received.startswith(f"{method} {path} HTTP/1.1\r\n".encode())
+                assert kwargs["body"] is None
+
+            def close(self):
+                super().close()
+                if self.peer is not None:
+                    self.peer.close()
+
+        def request(method, url, **kwargs):
+            outcome = http(method, url, **kwargs)
+            if kwargs.get("deadline") is not None:
+                responses.append(outcome)
+                return pdv.http_request(method, url, **kwargs)
+            return outcome
+
+        # Real HTTPConnection/HTTPResponse and socket lifetime, without DNS,
+        # TLS, Azure or a model. Only connection establishment is substituted.
+        with patch.object(pdv, "_CleanupConnection", Connection):
+            result = pdv.run_canary(
+                api_base="https://api.test", token=TOKEN, catalog_doc=CATALOG, request=request,
+            )
+        return result, http
+
+    def test_actual_stdlib_framing_preserves_complete_cleanup(self) -> None:
+        for framing in ("length", "chunked", "eof"):
+            for v1 in (False, True):
+                with self.subTest(framing=framing, v1=v1):
+                    result, http = self.native_canary(framing=framing, v1=v1)
+                    self.assertTrue(result.ok, result.detail)
+                    self.assertEqual(cleanup_calls(http), [
+                        ("DELETE", SESSION_PATH),
+                        ("POST", f"{SESSION_PATH}/deletion/reconcile"),
+                        ("POST", f"{SESSION_PATH}/deletion/reconcile"),
+                        ("GET", f"{SESSION_PATH}/deletion"),
+                    ] if v1 else [("DELETE", SESSION_PATH)])
+
+    def test_actual_stdlib_truncation_and_overflow_cannot_pass(self) -> None:
+        for framing in ("length-truncated", "chunked-truncated", "eof-malformed", "overflow"):
+            with self.subTest(framing=framing):
+                result, http = self.native_canary(framing=framing, v1=True)
+                self.assertFalse(result.ok)
+                self.assertEqual(cleanup_calls(http), [("DELETE", SESSION_PATH)])
+
     def test_dns_headers_and_body_deadlines_bound_the_actual_canary_cleanup(self) -> None:
         for boundary in ("connect", "headers", "body"):
             for blocked in (False, True):
@@ -1670,7 +1753,7 @@ class CleanupTransportTests(unittest.TestCase):
                             return default
                         return SimpleNamespace(
                             status=302 if fault == "redirect" else 200,
-                            getheader=header, read1=self.read1,
+                            getheader=header, read1=self.read1, isclosed=lambda: False,
                         )
 
                     def read1(self, amount):
