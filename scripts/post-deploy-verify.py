@@ -48,17 +48,24 @@ Exit codes: 0 ok, 2 usage/configuration error, 3 verification failed,
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
+import math
 import os
+import queue
 import re
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit, urlunsplit
@@ -67,8 +74,9 @@ from _image_refs import SERVICES, ImageInputError as VerifyInputError, parse_exp
 from _canary_contract import (
     CANARY_PROMPT as CANARY_PROMPT, CANARY_TITLE as CANARY_TITLE,
     CANARY_CATEGORY_ORDER as CANARY_CATEGORY_ORDER, catalog_model_preferences,
-    chat_payload, session_payload,
+    SESSION_ID_RE, chat_payload, deletion_status_valid, session_payload, verified_cleanup,
 )
+from canaries.contracts import CanaryError, obj, strict_json
 
 STATE_VERSION = 1
 APP_NAME_PREFIX = {"api": "ca-api-", "web": "ca-web-", "proxy": "ca-proxy-"}
@@ -90,6 +98,10 @@ IDLE_RUNNING_STATES = frozenset({"scaledtozero", "scaleddown", "stopped"})
 
 MAX_SAFE_CHARS = 512
 MAX_BODY_BYTES = 64 * 1024
+MAX_CLEANUP_REQUESTS = 4
+MAX_CLEANUP_RECONCILES = 2
+MAX_CLEANUP_SECONDS = 60.0
+MAX_CLEANUP_BODY_BYTES = 8192
 MAX_CUTOVER_DIFFERENCE_AREAS = 12
 MAX_PROBE_FIELD_SHAPES = 2
 
@@ -1185,6 +1197,8 @@ def http_request(
     headers: dict[str, str] | None = None,
     body: bytes | None = None,
     timeout: float = 30.0,
+    deadline: Deadline | None = None,
+    body_limit: int = MAX_BODY_BYTES,
 ) -> HttpOutcome:
     """One request. Never raises, never leaks the request into the message.
 
@@ -1193,6 +1207,11 @@ def http_request(
     only the exception's class name is ever reported.
     """
 
+    if deadline is not None:
+        return _cleanup_http_request(
+            method, url, headers=headers, body=body, timeout=timeout,
+            deadline=deadline, body_limit=body_limit,
+        )
     request = urllib.request.Request(url, method=method, data=body)  # noqa: S310 - https validated
     for key, value in (headers or {}).items():
         request.add_header(key, value)
@@ -1207,6 +1226,112 @@ def http_request(
         return HttpOutcome(status=exc.code, body=payload)
     except Exception as exc:  # noqa: BLE001 - see docstring
         return HttpOutcome(status=None, error=type(exc).__name__)
+
+
+class _CleanupConnection(http.client.HTTPSConnection):
+    """One cleanup request; shutdown must not wait for a buffered-reader lock."""
+
+    def __init__(self, host: str, port: int, timeout: float) -> None:
+        self.tls_context = ssl.create_default_context()
+        super().__init__(host, port=port, timeout=timeout, context=self.tls_context)
+        self.read_socket: socket.socket | None = None
+
+    def connect(self) -> None:
+        raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
+        self.read_socket = raw
+        try:
+            self.sock = self.tls_context.wrap_socket(raw, server_hostname=self.host)
+            self.read_socket = self.sock
+        except BaseException:
+            raw.close()
+            raise
+
+    def interrupt_read(self) -> None:
+        if self.read_socket is not None:
+            try:
+                self.read_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass  # The request worker still closes its own connection.
+
+
+def _cleanup_http_request(
+    method: str, url: str, *, headers: dict[str, str] | None, body: bytes | None,
+    timeout: float, deadline: Deadline, body_limit: int,
+) -> HttpOutcome:
+    # As in evaluations.live_http, socket timeouts alone cannot bound DNS or
+    # trickling headers/body. Supervise one attempt, never a background retry.
+    results: queue.Queue[HttpOutcome] = queue.Queue(maxsize=1)
+    cancelled = threading.Event()
+    active: list[_CleanupConnection] = []
+
+    def check_time() -> float:
+        remaining = min(timeout, deadline.remaining())
+        if cancelled.is_set() or not math.isfinite(remaining) or remaining <= 0:
+            raise TimeoutError()
+        return remaining
+
+    def exchange() -> HttpOutcome:
+        connection = None
+        try:
+            parsed = urlsplit(url)
+            if (
+                parsed.scheme != "https" or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment
+            ):
+                return HttpOutcome(status=None, error="invalid_response")
+            port = parsed.port if parsed.port is not None else 443
+            connection = _CleanupConnection(parsed.hostname, port, check_time())
+            active.append(connection)
+            check_time()
+            connection.connect()
+            # A DNS/TLS operation that finishes after expiry cannot send HTTP.
+            check_time()
+            connection.request(method, parsed.path, body=body, headers={
+                **(headers or {}), "Accept-Encoding": "identity", "Connection": "close",
+            })
+            response = connection.getresponse()
+            if response.getheader("Content-Encoding", "identity") != "identity":
+                return HttpOutcome(status=None, error="invalid_response")
+            length = response.getheader("Content-Length")
+            if length is not None and (
+                not length.isascii() or not length.isdecimal() or int(length) > body_limit
+            ):
+                return HttpOutcome(status=None, error="invalid_response")
+            data = bytearray()
+            while True:
+                remaining = check_time()
+                if connection.read_socket is not None:
+                    connection.read_socket.settimeout(remaining)
+                chunk = response.read1(min(8192, body_limit + 1 - len(data)))
+                check_time()
+                data.extend(chunk)
+                if len(data) > body_limit:
+                    return HttpOutcome(status=None, error="response_too_large")
+                if not chunk:
+                    break
+            if length is not None and int(length) != len(data):
+                return HttpOutcome(status=None, error="invalid_response")
+            return HttpOutcome(status=response.status, body=bytes(data))
+        except TimeoutError:
+            return HttpOutcome(status=None, error="deadline")
+        except (OSError, http.client.HTTPException, ValueError):
+            return HttpOutcome(status=None, error="transport")
+        finally:
+            if connection is not None:
+                connection.close()
+
+    remaining = min(timeout, deadline.remaining())
+    if not math.isfinite(remaining) or remaining <= 0:
+        return HttpOutcome(status=None, error="deadline")
+    threading.Thread(target=lambda: results.put_nowait(exchange()), daemon=True).start()
+    try:
+        return results.get(timeout=remaining)
+    except queue.Empty:
+        cancelled.set()
+        for connection in active:
+            connection.interrupt_read()
+        return HttpOutcome(status=None, error="deadline")
 
 
 def is_retryable(outcome: HttpOutcome) -> bool:
@@ -1292,7 +1417,7 @@ def ingress_or_redirect(outcome: HttpOutcome) -> bool:
 # canary
 # --------------------------------------------------------------------------
 
-def select_canary_model(catalog_doc: Any, available_ids: Sequence[str]) -> str:
+def select_canary_model(catalog_doc: Any, available_ids: Sequence[object]) -> str:
     """First catalog preference the live API says it will actually route to."""
 
     available = {i for i in available_ids if isinstance(i, str)}
@@ -1323,6 +1448,109 @@ class CanaryResult:
     detail: str | None = None
     reply_chars: int | None = None
     elapsed_ms: int | None = None
+
+
+class _CleanupError(Exception):
+    """Fixed content-free cleanup diagnostics, never response text or identifiers."""
+
+
+def cleanup_canary_session(
+    api_base: str, session_id: str, *, headers: dict[str, str],
+    request: Callable[..., HttpOutcome], clock: Callable[[], float],
+    timeout: float, deadline: Deadline | None,
+) -> str | None:
+    budget = Deadline(MAX_CLEANUP_SECONDS, clock=clock)
+    calls = 0
+
+    def remaining() -> float:
+        value = min(budget.remaining(), deadline.remaining() if deadline is not None else math.inf)
+        if not math.isfinite(value) or value <= 0:
+            raise _CleanupError("session cleanup deadline exhausted")
+        return value
+
+    def send(method: str, suffix: str, ceiling: float) -> HttpOutcome:
+        nonlocal calls
+        if calls >= MAX_CLEANUP_REQUESTS:
+            raise _CleanupError("session cleanup request budget exhausted")
+        request_timeout = min(timeout, ceiling, remaining())
+        if not math.isfinite(request_timeout) or request_timeout <= 0:
+            raise _CleanupError("session cleanup deadline exhausted")
+        calls += 1
+        request_deadline = Deadline(request_timeout, clock=clock)
+        outcome = request(
+            method, f"{api_base}/api/sessions/{session_id}{suffix}",
+            headers=headers, body=None, timeout=request_timeout,
+            deadline=request_deadline, body_limit=MAX_CLEANUP_BODY_BYTES,
+        )
+        remaining()
+        if request_deadline.expired() or outcome.error == "deadline":
+            raise _CleanupError("session cleanup deadline exhausted")
+        if outcome.status is None:
+            raise _CleanupError("session cleanup did not complete")
+        if (
+            type(outcome.status) is not int or outcome.error is not None
+            or len(outcome.body) > MAX_CLEANUP_BODY_BYTES
+        ):
+            raise _CleanupError("session cleanup response invalid or too large")
+        return outcome
+
+    def status(outcome: HttpOutcome, *, readback: bool = False) -> dict[str, Any]:
+        if type(outcome.status) is not int or outcome.status not in ((200,) if readback else (200, 202)):
+            code = str(outcome.status) if type(outcome.status) is int else "unknown"
+            raise _CleanupError(f"session cleanup returned HTTP {code}")
+        value = obj(strict_json(outcome.body, limit=MAX_CLEANUP_BODY_BYTES))
+        now = datetime.now(timezone.utc)
+        if not deletion_status_valid(value, session_id, now=now):
+            raise _CleanupError("session cleanup status invalid or mismatched")
+        verified = verified_cleanup(value, session_id, now=now)
+        if not readback and (outcome.status == 200) != verified:
+            raise _CleanupError("session cleanup verification missing or inconsistent")
+        if value["state"] == "cleanup_verified" and not verified:
+            raise _CleanupError("session cleanup verification missing or inconsistent")
+        return value
+
+    try:
+        if not SESSION_ID_RE.fullmatch(session_id):
+            raise _CleanupError("session cleanup has no safe created id")
+        deleted = send("DELETE", "", 8.0)
+        # Session hides enrollment/epoch. Only the API's empty legacy 204 may
+        # select best-effort deletion; a v1 status can never downgrade to it.
+        if deleted.status == 204:
+            if deleted.body:
+                raise _CleanupError("session cleanup legacy response was not empty")
+            remaining()
+            return None
+        current = status(deleted)
+        intent = current["requestedAt"]
+        for attempt in range(MAX_CLEANUP_RECONCILES + 1):
+            if current["requestedAt"] != intent:
+                raise _CleanupError("session cleanup intent changed")
+            if verified_cleanup(current, session_id, now=datetime.now(timezone.utc)):
+                observed = status(send("GET", "/deletion", 5.0), readback=True)
+                if observed != current or not verified_cleanup(
+                    observed, session_id, now=datetime.now(timezone.utc),
+                ):
+                    raise _CleanupError("session cleanup verified readback mismatched")
+                remaining()
+                return None
+            if (
+                current["pendingUploads"] or current["pendingUploadsTruncated"]
+                or current["retryReason"] == "uploads_unresolved"
+            ):
+                raise _CleanupError("session cleanup has unresolved uploads")
+            if current["retryReason"] in ("integrity_mismatch", "artifact_store_required"):
+                raise _CleanupError("session cleanup integrity or storage scope unavailable")
+            if attempt == MAX_CLEANUP_RECONCILES:
+                raise _CleanupError("session cleanup pending after reconcile budget exhausted")
+            resumed = status(send("POST", "/deletion/reconcile", 22.0))
+            if resumed["attempts"] < current["attempts"]:
+                raise _CleanupError("session cleanup progress regressed")
+            current = resumed
+    except CanaryError:
+        return "session cleanup response malformed or too large"
+    except _CleanupError as exc:
+        return str(exc)
+    return "session cleanup not verified"
 
 
 def run_canary(
@@ -1405,10 +1633,13 @@ def run_canary(
         return CanaryResult(
             ok=False, model=model, detail=_http_detail("POST /api/sessions", created)
         )
-    session = created.json()
+    try:
+        session = obj(strict_json(created.body, limit=MAX_BODY_BYTES - 1))
+    except CanaryError:
+        return CanaryResult(ok=False, model=model, detail="session create response is invalid; cleanup unknown")
     session_id = session.get("id") if isinstance(session, dict) else None
-    if not isinstance(session_id, str) or not session_id:
-        return CanaryResult(ok=False, model=model, detail="session create returned no id")
+    if not isinstance(session_id, str) or not SESSION_ID_RE.fullmatch(session_id):
+        return CanaryResult(ok=False, model=model, detail="session create returned no safe id; cleanup unknown")
 
     try:
         chat, _ = probe(
@@ -1466,20 +1697,12 @@ def run_canary(
     finally:
         # Cleanup is part of the canary contract: a command intended for recurring
         # use must fail rather than silently leak one session per run.
-        deleted = do_request(
-            "DELETE",
-            f"{api_base}/api/sessions/{session_id}",
-            headers=auth,
-            body=None,
-            timeout=min(timeout, 60.0),
+        cleanup_detail = cleanup_canary_session(
+            api_base, session_id, headers=auth, request=do_request, clock=clock,
+            timeout=timeout, deadline=deadline,
         )
-        if deleted.status not in (200, 202, 204, 404):
+        if cleanup_detail is not None:
             result.ok = False
-            cleanup_detail = (
-                f"DELETE /api/sessions cleanup returned HTTP {deleted.status}"
-                if deleted.status is not None
-                else "DELETE /api/sessions cleanup did not complete"
-            )
             result.detail = (
                 f"{result.detail}; {cleanup_detail}"
                 if result.detail

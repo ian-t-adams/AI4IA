@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import copy
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +14,9 @@ from ai4ia_api.documents.ephemeral_store import EphemeralAttachmentStore, sessio
 from ai4ia_api.library.blob_store import AzureBlobStore, InMemoryBlobStore
 from ai4ia_api.main import create_app
 from ai4ia_api.sessions.deletion_service import ConversationDeletionService
+from ai4ia_api.sessions.deletion_models import FENCE_ID
 from tests.conftest import make_settings
+from tests.cosmos_deletion_fake import CosmosState
 
 
 def new_session(client):
@@ -89,6 +94,101 @@ def test_pausing_gate_never_uses_legacy_hard_delete_for_v1():
         app.state.session_repo._deletion_enabled = False
         assert client.delete(f"/api/sessions/{sid}").json()["code"] == "deletion_disabled"
         assert client.get(f"/api/sessions/{sid}").status_code == 200
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_post_deploy_cleanup_fixture_matches_actual_session_and_status_wire_shapes(enabled):
+    fixture = json.loads((
+        Path(__file__).resolve().parents[3] / "scripts" / "fixtures" / "conversation-cleanup.json"
+    ).read_text(encoding="utf-8"))
+
+    def check_shape(actual, name, dynamic_fields):
+        expected = fixture[name]
+        normalized = copy.deepcopy(actual)
+        for field in dynamic_fields:
+            assert field in actual
+            if field.endswith("At"):
+                assert datetime.fromisoformat(actual[field].replace("Z", "+00:00")).utcoffset().total_seconds() == 0
+            normalized[field] = expected[field]
+        assert normalized == expected
+        assert "deletionEpoch" not in actual and "deletionProtocol" not in actual
+
+    app = create_app(make_settings(session_deletion_enabled=enabled))
+    with TestClient(app) as client:
+        created = client.post("/api/sessions", json={
+            "title": fixture["session"]["title"], "model": fixture["session"]["model"],
+        })
+        assert created.status_code == 201
+        session = created.json()
+        sid, uid = session["id"], session["userId"]
+        check_shape(session, "session", ("id", "userId", "createdAt", "updatedAt"))
+        assert client.portal is not None
+        internal = client.portal.call(app.state.session_repo.get_session, uid, sid)
+        assert internal.deletionProtocol == (1 if enabled else None)
+        assert bool(internal.deletionEpoch) == enabled
+        assert client.post(f"/api/sessions/{sid}/voice-turns", json={"turns": [
+            {"role": "user", "text": "synthetic request"},
+            {"role": "assistant", "text": "synthetic response"},
+        ]}).status_code == 201
+        assert len(client.get(f"/api/sessions/{sid}/messages").json()) == 2
+        deleted = client.delete(f"/api/sessions/{sid}")
+        if not enabled:
+            assert deleted.status_code == 204 and deleted.content == b""
+            assert client.get(f"/api/sessions/{sid}/deletion").status_code == 404
+            return
+        assert deleted.status_code == 202 and deleted.json()["sessionId"] == sid
+        check_shape(deleted.json(), "pending", ("sessionId", "requestedAt", "updatedAt"))
+        assert client.get(f"/api/sessions/{sid}/deletion").json() == deleted.json()
+        progress = client.post(f"/api/sessions/{sid}/deletion/reconcile")
+        assert progress.status_code == 202 and progress.json()["sessionId"] == sid
+        check_shape(progress.json(), "progress", ("sessionId", "requestedAt", "updatedAt"))
+        verified = client.post(f"/api/sessions/{sid}/deletion/reconcile")
+        assert verified.status_code == 200 and verified.json()["sessionId"] == sid
+        check_shape(verified.json(), "verified", (
+            "sessionId", "requestedAt", "updatedAt", "lastVerifiedAt",
+        ))
+        assert verified.json()["requestedAt"] == deleted.json()["requestedAt"]
+        assert client.get(f"/api/sessions/{sid}/deletion").json() == verified.json()
+        assert client.delete(f"/api/sessions/{sid}").json() == verified.json()
+        # Ordinary not-found coexists with the retained proof; it is not that proof.
+        assert client.get(f"/api/sessions/{sid}").status_code == 404
+
+
+@pytest.mark.parametrize("surface", ["messages", "documents"])
+@pytest.mark.parametrize("wrong_generation", [False, True])
+def test_owner_api_cleanup_refuses_wrong_generation_before_child_removal(surface, wrong_generation):
+    state = CosmosState()
+    for container in (state.sessions, state.messages, state.documents):
+        container.now = datetime.now(timezone.utc)
+    app = create_app(make_settings(session_deletion_enabled=True))
+    with TestClient(app) as client:
+        app.state.session_repo = state.repo()
+        session = new_session(client)
+        sid = session["id"]
+        assert client.post(f"/api/sessions/{sid}/voice-turns", json={"turns": [
+            {"role": "user", "text": "synthetic request"},
+            {"role": "assistant", "text": "synthetic response"},
+        ]}).status_code == 201
+        children = {key for key in state.messages.items if key != (sid, FENCE_ID)}
+        assert len(children) == 2
+        assert client.delete(f"/api/sessions/{sid}").status_code == 202
+        if wrong_generation:
+            container = getattr(state, surface)
+            raw = container.items[(sid, FENCE_ID)]
+            container._put(raw | {"epoch": "another-generation"})
+        assert client.post(f"/api/sessions/{sid}/deletion/reconcile").status_code == 202
+        result = client.post(f"/api/sessions/{sid}/deletion/reconcile")
+        assert result.status_code == (202 if wrong_generation else 200)
+        status = result.json()
+        assert status["sessionId"] == sid
+        assert client.get(f"/api/sessions/{sid}/deletion").json() == status
+        if wrong_generation:
+            assert status["state"] == "retryable" and status["retryReason"] == "integrity_mismatch"
+            assert status["lastVerifiedAt"] is None
+            assert children <= state.messages.items.keys()
+        else:
+            assert status["state"] == "cleanup_verified" and status["lastVerifiedAt"]
+            assert not children & state.messages.items.keys()
 
 
 @pytest.mark.parametrize("delete_during_put", [False, True])

@@ -78,7 +78,10 @@ ADVERTISED = {"models": [
 BOOK = PricingBook(
     {"test-chat": PriceRate(1, 2)}, currency="USD", version="synthetic-v1",
 )
-SID = "c" * 32
+CLEANUP_FIXTURE = json.loads(
+    (ROOT / "scripts" / "fixtures" / "conversation-cleanup.json").read_text(encoding="utf-8")
+)
+SID = CLEANUP_FIXTURE["session"]["id"]
 
 
 def environment(run=RUN, config=CONFIG):
@@ -141,16 +144,7 @@ def ready_capability():
 
 
 def deletion_status(*, complete=True):
-    return {
-        "sessionId": SID, "state": "cleanup_verified" if complete else "pending",
-        "phase": "complete" if complete else "messages",
-        "requestedAt": stamp(NOW), "updatedAt": stamp(NOW),
-        "lastVerifiedAt": stamp(NOW) if complete else None,
-        "messagesVerified": complete, "documentsVerified": complete, "attachmentsVerified": complete,
-        "pendingUploads": [], "pendingUploadsTruncated": False, "retryReason": None,
-        "attempts": 1, "scope": "conversation_content_and_inline_originals",
-        "backupsErased": False, "coordinationRetained": True, "autonomousCleanup": False,
-    }
+    return copy.deepcopy(CLEANUP_FIXTURE["verified" if complete else "pending"])
 
 
 def realtime_capability():
@@ -178,6 +172,7 @@ class FakeApp:
         self.handshake_protocol = "ga"
         self.websocket = FakeWebSocket()
         self.sockets = []
+        self.cleanup_passes = 0
 
     async def __aenter__(self):
         return self
@@ -211,6 +206,9 @@ class FakeApp:
         if key == ("DELETE", f"/api/sessions/{SID}"):
             return response(deletion_status(complete=False), 202)
         if key == ("POST", f"/api/sessions/{SID}/deletion/reconcile"):
+            self.cleanup_passes += 1
+            if self.cleanup_passes == 1:
+                return response(copy.deepcopy(CLEANUP_FIXTURE["progress"]), 202)
             return response(deletion_status(), 200)
         if key == ("GET", f"/api/sessions/{SID}/deletion"):
             return response(deletion_status(), 200)

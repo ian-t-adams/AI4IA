@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import sys
 import unittest
 from copy import deepcopy
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
 from unittest.mock import patch
@@ -275,11 +277,16 @@ class FakeHttp:
         self.calls: list[tuple[str, str]] = []
         self.headers: list[dict[str, str]] = []
         self.bodies: list[bytes | None] = []
+        self.options: list[dict[str, Any]] = []
 
-    def __call__(self, method, url, *, headers=None, body=None, timeout=30.0):
+    def __call__(
+        self, method, url, *, headers=None, body=None, timeout=30.0,
+        deadline=None, body_limit=None,
+    ):
         self.calls.append((method, url))
         self.headers.append(dict(headers or {}))
         self.bodies.append(body)
+        self.options.append({"timeout": timeout, "deadline": deadline, "body_limit": body_limit})
         for key, responses in self.script.items():
             want_method, _, suffix = key.partition(" ")
             if method == want_method and url.endswith(suffix) and responses:
@@ -978,27 +985,57 @@ CATALOG = {
         {"name": "tiny-fast", "category": "chat-fast", "deployments": [{"region": "e"}]}
     ]
 }
+CLEANUP_FIXTURE = json.loads(
+    (ROOT / "scripts" / "fixtures" / "conversation-cleanup.json").read_text(encoding="utf-8")
+)
+SID = CLEANUP_FIXTURE["session"]["id"]
+SESSION_PATH = f"/api/sessions/{SID}"
 
 
-def canary_script(chat: Any) -> dict[str, list[Any]]:
-    return {
+def canary_script(chat: Any, *, v1: bool = False) -> dict[str, list[Any]]:
+    script = {
         "GET /api/models": [ok({"models": [{"id": "tiny-fast"}]})],
-        "POST /api/sessions": [ok({"id": "sess-1"}, status=201)],
+        "POST /api/sessions": [ok(CLEANUP_FIXTURE["session"], status=201)],
         "POST /api/chat": [chat],
-        "DELETE /api/sessions/sess-1": [pdv.HttpOutcome(status=204)],
+        f"DELETE {SESSION_PATH}": [pdv.HttpOutcome(status=204)],
     }
+    if v1:
+        script[f"DELETE {SESSION_PATH}"] = [ok(CLEANUP_FIXTURE["pending"], status=202)]
+        script[f"POST {SESSION_PATH}/deletion/reconcile"] = [
+            ok(CLEANUP_FIXTURE["progress"], 202), ok(CLEANUP_FIXTURE["verified"]),
+        ]
+        script[f"GET {SESSION_PATH}/deletion"] = [ok(CLEANUP_FIXTURE["verified"])]
+    return script
+
+
+def cleanup_calls(http: FakeHttp) -> list[tuple[str, str]]:
+    return [
+        (method, urlsplit(url).path) for method, url in http.calls
+        if urlsplit(url).path.startswith(SESSION_PATH)
+    ]
+
+
+def two_pass_cleanup_script(*, complete: bool) -> dict[str, list[Any]]:
+    script = canary_script(ok({"message": {"content": "ready", "status": "complete"}}), v1=True)
+    pending = deepcopy(CLEANUP_FIXTURE["progress"])
+    final = {**CLEANUP_FIXTURE["verified" if complete else "progress"], "attempts": 2}
+    script[f"POST {SESSION_PATH}/deletion/reconcile"] = [
+        ok(pending, status=202), ok(final, status=200 if complete else 202),
+    ]
+    script[f"GET {SESSION_PATH}/deletion"] = [ok(final)]
+    return script
 
 
 class CanaryTests(unittest.TestCase):
     def run_canary(self, http: FakeHttp, **kwargs: Any) -> Any:
+        kwargs.setdefault("monotonic", lambda: 0.0)
+        kwargs.setdefault("sleep", lambda _: None)
         with redirect_stdout(io.StringIO()) as captured:
             result = pdv.run_canary(
                 api_base="https://api.test",
                 token=TOKEN,
                 catalog_doc=CATALOG,
                 request=http,
-                sleep=lambda _: None,
-                monotonic=lambda: 0.0,
                 **kwargs,
             )
         self.captured = captured.getvalue()
@@ -1071,7 +1108,7 @@ class CanaryTests(unittest.TestCase):
         """Even on failure -- otherwise every bad deploy leaves litter in Cosmos."""
         http = FakeHttp(canary_script(pdv.HttpOutcome(status=502)))
         self.run_canary(http, attempts=1)
-        self.assertEqual(http.calls[-1], ("DELETE", "https://api.test/api/sessions/sess-1"))
+        self.assertEqual(http.calls[-1], ("DELETE", f"https://api.test{SESSION_PATH}"))
 
     def test_ambiguous_session_create_is_never_retried(self) -> None:
         script = {
@@ -1092,7 +1129,7 @@ class CanaryTests(unittest.TestCase):
         script = canary_script(
             ok({"message": {"content": "ready", "status": "complete"}})
         )
-        script["DELETE /api/sessions/sess-1"] = [pdv.HttpOutcome(status=503)]
+        script[f"DELETE {SESSION_PATH}"] = [pdv.HttpOutcome(status=503)]
         result = self.run_canary(FakeHttp(script), attempts=1)
         self.assertFalse(result.ok)
         self.assertIn("cleanup returned HTTP 503", result.detail)
@@ -1130,11 +1167,538 @@ class CanaryTests(unittest.TestCase):
         self.assertNotIn("aaaaaaaaaaaaaaaaaa", result.detail)
         self.assertIn("[REDACTED]", result.detail)
 
+    def test_legacy_and_v1_use_only_the_created_owner_session(self) -> None:
+        for v1 in (False, True):
+            with self.subTest(v1=v1):
+                http = FakeHttp(canary_script(
+                    ok({"message": {"content": "ready", "status": "complete"}}), v1=v1,
+                ))
+                result = self.run_canary(http)
+                self.assertTrue(result.ok, result.detail)
+                expected = [("DELETE", SESSION_PATH)]
+                if v1:
+                    expected += [
+                        ("POST", f"{SESSION_PATH}/deletion/reconcile"),
+                        ("POST", f"{SESSION_PATH}/deletion/reconcile"),
+                        ("GET", f"{SESSION_PATH}/deletion"),
+                    ]
+                self.assertEqual(cleanup_calls(http), expected)
+                self.assertEqual(http.calls[:3], [
+                    ("GET", "https://api.test/api/models"),
+                    ("POST", "https://api.test/api/sessions"),
+                    ("POST", "https://api.test/api/chat"),
+                ])
+                for index in range(3, len(http.calls)):
+                    self.assertEqual(http.headers[index], http.headers[0])
+                    self.assertIsNone(http.bodies[index])
+                    self.assertEqual(http.options[index]["body_limit"], pdv.MAX_CLEANUP_BODY_BYTES)
+                    self.assertLessEqual(http.options[index]["timeout"], 22)
+
+    def test_accepted_cleanup_is_not_success_and_reconciles_are_finite(self) -> None:
+        for complete in (False, True):
+            with self.subTest(complete=complete):
+                http = FakeHttp(two_pass_cleanup_script(complete=complete))
+                result = self.run_canary(http, attempts=9)
+                self.assertEqual(result.ok, complete, result.detail)
+                expected = [
+                    ("DELETE", SESSION_PATH),
+                    ("POST", f"{SESSION_PATH}/deletion/reconcile"),
+                    ("POST", f"{SESSION_PATH}/deletion/reconcile"),
+                ]
+                if complete:
+                    expected.append(("GET", f"{SESSION_PATH}/deletion"))
+                else:
+                    self.assertIn("pending after reconcile budget exhausted", result.detail)
+                self.assertEqual(cleanup_calls(http), expected)
+                self.assertEqual(sum(url.endswith("/api/chat") for _, url in http.calls), 1)
+                self.assertEqual(sum(url.endswith("/api/sessions") for _, url in http.calls), 1)
+
+    def test_request_budget_includes_the_verified_readback(self) -> None:
+        for maximum in (3, 4):
+            with self.subTest(maximum=maximum), patch.object(pdv, "MAX_CLEANUP_REQUESTS", maximum):
+                http = FakeHttp(two_pass_cleanup_script(complete=True))
+                result = self.run_canary(http)
+                self.assertEqual(result.ok, maximum == 4, result.detail)
+                self.assertEqual(len(cleanup_calls(http)), maximum)
+                if maximum == 3:
+                    self.assertIn("request budget exhausted", result.detail)
+
+    def test_already_verified_delete_still_requires_identical_status_readback(self) -> None:
+        for matched in (False, True):
+            script = canary_script(ok({"message": {"content": "ready"}}), v1=True)
+            script[f"DELETE {SESSION_PATH}"] = [ok(CLEANUP_FIXTURE["verified"])]
+            if not matched:
+                changed = {**CLEANUP_FIXTURE["verified"], "attempts": 3}
+                script[f"GET {SESSION_PATH}/deletion"] = [ok(changed)]
+            http = FakeHttp(script)
+            result = self.run_canary(http)
+            self.assertEqual(result.ok, matched, result.detail)
+            self.assertEqual(cleanup_calls(http), [
+                ("DELETE", SESSION_PATH), ("GET", f"{SESSION_PATH}/deletion"),
+            ])
+
+    def test_cleanup_http_and_transport_failures_never_retry_or_downgrade(self) -> None:
+        steps = [
+            ("DELETE", SESSION_PATH), ("POST", f"{SESSION_PATH}/deletion/reconcile"),
+            ("GET", f"{SESSION_PATH}/deletion"),
+        ]
+        for method, path in steps:
+            for code in (None, 301, 302, 307, 401, 403, 404, 409, 429, 500, 503):
+                with self.subTest(method=method, code=code):
+                    script = canary_script(ok({"message": {"content": "ready"}}), v1=True)
+                    script[f"{method} {path}"] = [pdv.HttpOutcome(
+                        status=code, error="private transport text" if code is None else None,
+                        body=json.dumps({"detail": f"private cleanup content {TOKEN} {SID}"}).encode(),
+                    )]
+                    http = FakeHttp(script)
+                    result = self.run_canary(http, attempts=5)
+                    self.assertFalse(result.ok)
+                    expected = [steps[0]]
+                    if method != "DELETE":
+                        expected.append(steps[1])
+                    if method == "GET":
+                        expected += [steps[1], steps[2]]
+                    self.assertEqual(cleanup_calls(http), expected)
+                    for private in ("private", TOKEN, SID):
+                        self.assertNotIn(private, result.detail)
+                    if code is not None:
+                        self.assertIn(f"HTTP {code}", result.detail)
+        for method, path in steps[1:]:
+            script = canary_script(ok({"message": {"content": "ready"}}), v1=True)
+            script[f"{method} {path}"] = [pdv.HttpOutcome(status=204)]
+            self.assertFalse(self.run_canary(FakeHttp(script)).ok)
+
+    def test_legacy_accepts_only_empty_204_not_missing_or_accepted(self) -> None:
+        for code, body, success in [
+            (204, b"", True), (204, b"not empty", False), (404, b"", False),
+            (200, b"", False), (202, b"{}", False), (204.0, b"", False),
+        ]:
+            script = canary_script(ok({"message": {"content": "ready"}}))
+            script[f"DELETE {SESSION_PATH}"] = [pdv.HttpOutcome(status=code, body=body)]
+            http = FakeHttp(script)
+            result = self.run_canary(http)
+            self.assertEqual(result.ok, success, result.detail)
+            self.assertEqual(cleanup_calls(http), [("DELETE", SESSION_PATH)])
+
+    def test_v1_identity_and_undeclared_protocol_fields_cannot_authorize_cleanup(self) -> None:
+        steps = [
+            ("DELETE", SESSION_PATH, "pending", 202),
+            ("POST", f"{SESSION_PATH}/deletion/reconcile", "verified", 200),
+            ("GET", f"{SESSION_PATH}/deletion", "verified", 200),
+        ]
+        for method, path, fixture, code in steps:
+            for changes in (
+                {"sessionId": "d" * 32}, {"sessionId": None},
+                {"deletionProtocol": 0}, {"deletionProtocol": 1},
+                {"deletionEpoch": "another-generation"},
+                {"reconcileUrl": "https://untrusted.invalid/cleanup"},
+                {"scope": "everything"}, {"coordinationRetained": False},
+                {"backupsErased": True}, {"autonomousCleanup": True},
+            ):
+                with self.subTest(method=method, changes=changes):
+                    script = canary_script(ok({"message": {"content": "ready"}}), v1=True)
+                    script[f"{method} {path}"] = [ok({**CLEANUP_FIXTURE[fixture], **changes}, code)]
+                    http = FakeHttp(script)
+                    self.assertFalse(self.run_canary(http).ok)
+                    self.assertTrue(all(
+                        url.startswith(f"https://api.test{SESSION_PATH}")
+                        for _, url in http.calls[3:]
+                    ))
+                    self.assertEqual(http.calls[-1], (method, f"https://api.test{path}"))
+
+    def test_every_verification_field_is_required_at_reconcile_and_readback(self) -> None:
+        for method, suffix in (("POST", "/deletion/reconcile"), ("GET", "/deletion")):
+            for missing in CLEANUP_FIXTURE["verified"]:
+                with self.subTest(method=method, missing=missing):
+                    incomplete = deepcopy(CLEANUP_FIXTURE["verified"])
+                    del incomplete[missing]
+                    script = canary_script(ok({"message": {"content": "ready"}}), v1=True)
+                    script[f"{method} {SESSION_PATH}{suffix}"] = [ok(incomplete)]
+                    self.assertFalse(self.run_canary(FakeHttp(script)).ok)
+        for missing in CLEANUP_FIXTURE["pending"]:
+            incomplete = deepcopy(CLEANUP_FIXTURE["pending"])
+            del incomplete[missing]
+            script = canary_script(ok({"message": {"content": "ready"}}), v1=True)
+            script[f"DELETE {SESSION_PATH}"] = [ok(incomplete, 202)]
+            http = FakeHttp(script)
+            self.assertFalse(self.run_canary(http).ok)
+            self.assertEqual(cleanup_calls(http), [("DELETE", SESSION_PATH)])
+
+    def test_verified_label_requires_consistent_typed_evidence(self) -> None:
+        changes = [
+            {"state": "pending"}, {"phase": "messages"}, {"lastVerifiedAt": None},
+            {"messagesVerified": False}, {"documentsVerified": False},
+            {"attachmentsVerified": False}, {"messagesVerified": 1},
+            {"pendingUploadsTruncated": 0}, {"pendingUploads": {}},
+            {"pendingUploadsTruncated": True}, {"retryReason": "uploads_unresolved"},
+            {"attempts": 0}, {"attempts": True}, {"attempts": 1.0}, {"attempts": 1001},
+        ]
+        for field in ("requestedAt", "updatedAt", "lastVerifiedAt"):
+            changes.extend({field: invalid} for invalid in (
+                None, "", "not a date", "2026-09-10T12:00:00", "2999-01-01T00:00:00Z",
+            ))
+        changes += [
+            {"lastVerifiedAt": "2026-09-10T11:59:59Z"},
+            {"updatedAt": "2026-09-10T11:59:59Z"},
+            {"lastVerifiedAt": "2026-09-10T12:00:02Z"},
+        ]
+        for change in changes:
+            with self.subTest(change=change):
+                script = canary_script(ok({"message": {"content": "ready"}}), v1=True)
+                script[f"POST {SESSION_PATH}/deletion/reconcile"] = [
+                    ok({**CLEANUP_FIXTURE["verified"], **change}),
+                ]
+                script[f"GET {SESSION_PATH}/deletion"] = [
+                    ok({**CLEANUP_FIXTURE["verified"], **change}),
+                ]
+                http = FakeHttp(script)
+                self.assertFalse(self.run_canary(http).ok)
+                self.assertEqual(len(cleanup_calls(http)), 2)
+
+    def test_cleanup_json_is_strict_and_bounded_before_any_further_request(self) -> None:
+        pending = json.dumps(CLEANUP_FIXTURE["pending"]).encode()
+        malformed = [
+            b"", b"[]", b"null", b"{}", b"\xff", b"{", b'{"attempts":NaN}',
+            b'{"attempts":1e999}', b'{"sessionId":"wrong",' + pending[1:],
+            b"[" * 20 + b"0" + b"]" * 20,
+            pending + b" " * (pdv.MAX_CLEANUP_BODY_BYTES + 1),
+        ]
+        for body in malformed:
+            with self.subTest(body=body[:30]):
+                script = canary_script(ok({"message": {"content": "ready"}}), v1=True)
+                script[f"DELETE {SESSION_PATH}"] = [pdv.HttpOutcome(status=202, body=body)]
+                http = FakeHttp(script)
+                self.assertFalse(self.run_canary(http).ok)
+                self.assertEqual(cleanup_calls(http), [("DELETE", SESSION_PATH)])
+        # Exact body bound is allowed; overflow is not silently truncated.
+        for extra in (0, 1):
+            script = canary_script(ok({"message": {"content": "ready"}}), v1=True)
+            body = pending + b" " * (pdv.MAX_CLEANUP_BODY_BYTES - len(pending) + extra)
+            script[f"DELETE {SESSION_PATH}"] = [pdv.HttpOutcome(status=202, body=body)]
+            self.assertEqual(self.run_canary(FakeHttp(script)).ok, extra == 0)
+
+    def test_changed_intent_or_regressing_attempt_cannot_be_read_as_verified(self) -> None:
+        for changed in (False, True):
+            script = canary_script(ok({"message": {"content": "ready"}}), v1=True)
+            proof = deepcopy(CLEANUP_FIXTURE["verified"])
+            if changed:
+                proof["requestedAt"] = "2026-09-10T11:59:59Z"
+            script[f"POST {SESSION_PATH}/deletion/reconcile"] = [ok(proof)]
+            script[f"GET {SESSION_PATH}/deletion"] = [ok(proof)]
+            self.assertEqual(self.run_canary(FakeHttp(script)).ok, not changed)
+        script = two_pass_cleanup_script(complete=True)
+        script[f"POST {SESSION_PATH}/deletion/reconcile"][0] = ok(
+            {**CLEANUP_FIXTURE["pending"], "attempts": 3}, 202,
+        )
+        result = self.run_canary(FakeHttp(script))
+        self.assertFalse(result.ok)
+        self.assertIn("progress regressed", result.detail)
+
+    def test_unresolved_uploads_and_integrity_unknowns_are_not_cleared_by_an_empty_scan(self) -> None:
+        for changes in (
+            {"pendingUploads": [{
+                "id": "synthetic-upload", "documentId": "synthetic-document",
+                "startedAt": "2026-09-10T12:00:00Z",
+            }]},
+            {"pendingUploadsTruncated": True}, {"retryReason": "uploads_unresolved"},
+            {"state": "retryable", "retryReason": "integrity_mismatch"},
+            {"state": "retryable", "retryReason": "artifact_store_required"},
+        ):
+            for method, suffix in (("DELETE", ""), ("POST", "/deletion/reconcile")):
+                with self.subTest(changes=changes, method=method):
+                    script = canary_script(ok({"message": {"content": "ready"}}), v1=True)
+                    script[f"{method} {SESSION_PATH}{suffix}"] = [
+                        ok({**CLEANUP_FIXTURE["pending"], **changes}, 202),
+                        ok(CLEANUP_FIXTURE["verified"]),
+                    ]
+                    http = FakeHttp(script)
+                    self.assertFalse(self.run_canary(http).ok)
+                    self.assertEqual(http.calls[-1], (method, f"https://api.test{SESSION_PATH}{suffix}"))
+
+    def test_retryable_status_can_resume_without_replaying_chat_or_delete(self) -> None:
+        script = two_pass_cleanup_script(complete=True)
+        script[f"POST {SESSION_PATH}/deletion/reconcile"][0] = ok({
+            **CLEANUP_FIXTURE["pending"], "state": "retryable",
+            "retryReason": "storage_unavailable", "attempts": 1,
+        }, 202)
+        http = FakeHttp(script)
+        self.assertTrue(self.run_canary(http).ok)
+        self.assertEqual(len(cleanup_calls(http)), 4)
+        self.assertEqual(sum(method == "DELETE" for method, _ in http.calls), 1)
+        self.assertEqual(sum(url.endswith("/api/chat") for _, url in http.calls), 1)
+
+    def test_invalid_or_ambiguous_created_id_never_drives_chat_or_cleanup(self) -> None:
+        for identifier in (
+            None, "", [], True, "../other", f"{SID}/deletion", f"{SID}?other=1",
+            f"{SID}#ignored", f"{SID}\n", "https://untrusted.invalid", SID.upper(), "x" * 1024,
+        ):
+            script = canary_script(ok({"message": {"content": "ready"}}), v1=True)
+            script["POST /api/sessions"] = [ok({**CLEANUP_FIXTURE["session"], "id": identifier}, 201)]
+            http = FakeHttp(script)
+            result = self.run_canary(http)
+            self.assertFalse(result.ok)
+            self.assertIn("cleanup unknown", result.detail)
+            self.assertEqual(len(http.calls), 2)
+        for body in (
+            b"not json", b'{"id":"wrong","id":"' + SID.encode() + b'"}',
+            b'{"id":"' + SID.encode() + b'",',
+        ):
+            script = canary_script(ok({"message": {"content": "ready"}}))
+            script["POST /api/sessions"] = [pdv.HttpOutcome(status=201, body=body)]
+            http = FakeHttp(script)
+            self.assertFalse(self.run_canary(http).ok)
+            self.assertEqual(len(http.calls), 2)
+
+    def test_cleanup_preserves_failures_before_and_after_model_replies(self) -> None:
+        for chat, detail in (
+            (pdv.HttpOutcome(status=502), "HTTP 502"),
+            (pdv.HttpOutcome(status=None, error="TimeoutError"), "did not complete"),
+            (ok({"message": {"content": "", "status": "complete"}}), "empty reply"),
+            (ok({"message": {"content": "partial", "status": "error"}}), "status is error"),
+        ):
+            for failed_cleanup in (False, True):
+                script = canary_script(chat, v1=True)
+                if failed_cleanup:
+                    script[f"GET {SESSION_PATH}/deletion"] = [pdv.HttpOutcome(status=404)]
+                http = FakeHttp(script)
+                result = self.run_canary(http, attempts=1)
+                self.assertFalse(result.ok)
+                self.assertIn(detail, result.detail)
+                if failed_cleanup:
+                    self.assertIn("cleanup returned HTTP 404", result.detail)
+                self.assertEqual(len(cleanup_calls(http)), 4)
+
+    def test_expired_run_cannot_begin_cleanup_after_a_model_reply(self) -> None:
+        for expired in (False, True):
+            now = [0.0]
+            class TimedHttp(FakeHttp):
+                def __call__(self, method, url, **kwargs):
+                    outcome = super().__call__(method, url, **kwargs)
+                    if url.endswith("/api/chat"):
+                        now[0] = 10.0 if expired else 9.0
+                    return outcome
+            http = TimedHttp(canary_script(ok({"message": {"content": "ready"}})))
+            deadline = pdv.Deadline(10.0, clock=lambda: now[0])
+            result = self.run_canary(http, monotonic=lambda: now[0], deadline=deadline)
+            self.assertEqual(result.ok, not expired)
+            self.assertEqual(len(cleanup_calls(http)), 0 if expired else 1)
+            if not expired:
+                self.assertEqual(http.options[-1]["timeout"], 1.0)
+
+    def test_local_and_shared_cleanup_deadlines_clamp_every_request(self) -> None:
+        for boundary in ("cleanup", "run"):
+            for expired in (False, True):
+                with self.subTest(boundary=boundary, expired=expired):
+                    now = [0.0]
+                    class TimedHttp(FakeHttp):
+                        def __call__(self, method, url, **kwargs):
+                            outcome = super().__call__(method, url, **kwargs)
+                            if method == "DELETE":
+                                now[0] += 1.0
+                            if url.endswith("/deletion/reconcile") and sum(
+                                path.endswith("/deletion/reconcile") for _, path in self.calls
+                            ) == 1:
+                                now[0] += 4.0 if expired else 3.0
+                            return outcome
+                    http = TimedHttp(canary_script(ok({"message": {"content": "ready"}}), v1=True))
+                    deadline = pdv.Deadline(5.0 if boundary == "run" else 100, clock=lambda: now[0])
+                    with patch.object(pdv, "MAX_CLEANUP_SECONDS", 5.0 if boundary == "cleanup" else 60):
+                        result = self.run_canary(http, monotonic=lambda: now[0], deadline=deadline)
+                    self.assertEqual(result.ok, not expired, result.detail)
+                    self.assertEqual(
+                        [option["timeout"] for option in http.options[3:]],
+                        [5, 4] if expired else [5, 4, 1, 1],
+                    )
+                    if expired:
+                        self.assertIn("deadline exhausted", result.detail)
+
+    def test_a_late_cleanup_response_cannot_pass_even_if_it_says_verified(self) -> None:
+        for target in ("DELETE", "POST", "GET"):
+            for expired in (False, True):
+                with self.subTest(target=target, expired=expired):
+                    now = [0.0]
+                    class TimedHttp(FakeHttp):
+                        def __call__(self, method, url, **kwargs):
+                            outcome = super().__call__(method, url, **kwargs)
+                            if kwargs.get("deadline") is not None and method == target:
+                                now[0] += kwargs["timeout"] * (1.0 if expired else 0.5)
+                            return outcome
+                    http = TimedHttp(canary_script(ok({"message": {"content": "ready"}}), v1=True))
+                    result = self.run_canary(http, monotonic=lambda: now[0])
+                    self.assertEqual(result.ok, not expired, result.detail)
+                    if expired:
+                        self.assertEqual(http.calls[-1][0], target)
+
+    def test_unverified_cleanup_cannot_be_successful_command_or_release_evidence(self) -> None:
+        for complete in (False, True):
+            for release in (False, True):
+                with self.subTest(complete=complete, release=release):
+                    http = FakeHttp(two_pass_cleanup_script(complete=complete))
+                    args = pdv.build_parser().parse_args(
+                        ["verify", "--state", STATE_FILE] if release
+                        else ["canary", "--api-url", "https://api.test"]
+                    )
+                    with (
+                        patch.dict("os.environ", {pdv.DEFAULT_TOKEN_ENV: TOKEN}),
+                        patch.object(pdv, "load_model_catalog", return_value=CATALOG),
+                        patch.object(pdv, "http_request", http),
+                        redirect_stdout(io.StringIO()) as captured,
+                    ):
+                        result = pdv._canary_failures(args, "https://api.test") if release else pdv.cmd_canary(args)
+                    self.assertEqual(result == [] if release else result == 0, complete)
+                    if not release and not complete:
+                        self.assertEqual(result, 3)
+                    printed = captured.getvalue()
+                    self.assertIn('"outcome":"passed"' if complete else '"outcome":"failed"', printed)
+                    for private in (TOKEN, SID, "synthetic-owner", "requestedAt", "lastVerifiedAt"):
+                        self.assertNotIn(private, printed)
+
+    def test_deadline_includes_final_proof_validation(self) -> None:
+        for expired in (False, True):
+            now = [0.0]
+            http = FakeHttp(canary_script(ok({"message": {"content": "ready"}}), v1=True))
+            verify = pdv.verified_cleanup
+
+            def proof(*args, **kwargs):
+                result = verify(*args, **kwargs)
+                if len(cleanup_calls(http)) == 4:
+                    now[0] = pdv.MAX_CLEANUP_SECONDS - (0 if expired else 1)
+                return result
+
+            with patch.object(pdv, "verified_cleanup", proof):
+                result = self.run_canary(http, monotonic=lambda: now[0])
+            self.assertEqual(result.ok, not expired, result.detail)
+            self.assertEqual(len(cleanup_calls(http)), 4)
+            if expired:
+                self.assertIn("deadline exhausted", result.detail)
+
     def test_canary_only_command_is_available_without_deploy_state(self) -> None:
         args = pdv.build_parser().parse_args(
             ["canary", "--api-url", "https://api.test"]
         )
         self.assertIs(args.func, pdv.cmd_canary)
+
+
+class CleanupTransportTests(unittest.TestCase):
+    def test_dns_headers_and_body_deadlines_bound_the_actual_canary_cleanup(self) -> None:
+        for boundary in ("connect", "headers", "body"):
+            for blocked in (False, True):
+                with self.subTest(boundary=boundary, blocked=blocked):
+                    connections = []
+                    wire_calls = []
+
+                    class Connection:
+                        def __init__(self, *args):
+                            self.released = threading.Event()
+                            self.closed = threading.Event()
+                            self.read_socket = SimpleNamespace(settimeout=lambda _: None)
+                            connections.append(self)
+
+                        def pause(self, phase):
+                            if blocked and phase == boundary:
+                                self.released.wait(1)
+
+                        def connect(self):
+                            self.pause("connect")
+
+                        def request(self, method, path, **kwargs):
+                            wire_calls.append((method, path))
+
+                        def getresponse(self):
+                            self.pause("headers")
+                            return SimpleNamespace(
+                                status=204, read1=self.read1,
+                                getheader=lambda name, default=None: "0" if name == "Content-Length" else default,
+                            )
+
+                        def read1(self, limit):
+                            self.pause("body")
+                            return b""
+
+                        def interrupt_read(self):
+                            self.released.set()
+
+                        def close(self):
+                            self.closed.set()
+
+                    http = FakeHttp(canary_script(ok({"message": {"content": "ready"}})))
+
+                    def request(method, url, **kwargs):
+                        scripted = http(method, url, **kwargs)
+                        if kwargs.get("deadline") is not None:
+                            return pdv.http_request(method, url, **kwargs)
+                        return scripted
+
+                    with patch.object(pdv, "_CleanupConnection", Connection):
+                        result = pdv.run_canary(
+                            api_base="https://api.test", token=TOKEN, catalog_doc=CATALOG,
+                            request=request, timeout=0.05,
+                        )
+                        self.assertEqual(result.ok, not blocked, result.detail)
+                        self.assertEqual(len(connections), 1)
+                        self.assertTrue(connections[0].closed.wait(1))
+                    self.assertEqual(wire_calls, [] if blocked and boundary == "connect" else [
+                        ("DELETE", SESSION_PATH),
+                    ])
+                    self.assertEqual(cleanup_calls(http), [("DELETE", SESSION_PATH)])
+
+    def test_native_cleanup_body_limit_and_response_headers_fail_closed(self) -> None:
+        proof = json.dumps(CLEANUP_FIXTURE["verified"]).encode()
+        for fault in ("none", "overflow", "truncated", "encoding", "redirect"):
+            with self.subTest(fault=fault):
+                reads = []
+                limit = pdv.MAX_CLEANUP_BODY_BYTES
+                body = proof + b" " * (limit - len(proof) + (1 if fault == "overflow" else 0))
+
+                class Connection:
+                    def __init__(self, *args):
+                        self.stream = io.BytesIO(body)
+                        self.read_socket = SimpleNamespace(settimeout=lambda _: None)
+
+                    def connect(self):
+                        pass
+
+                    def request(self, method, path, **kwargs):
+                        pass
+
+                    def getresponse(self):
+                        def header(name, default=None):
+                            if name == "Content-Encoding" and fault == "encoding":
+                                return "gzip"
+                            if name == "Content-Length" and fault == "truncated":
+                                return str(limit - 1)
+                            return default
+                        return SimpleNamespace(
+                            status=302 if fault == "redirect" else 200,
+                            getheader=header, read1=self.read1,
+                        )
+
+                    def read1(self, amount):
+                        reads.append(amount)
+                        return self.stream.read(amount)
+
+                    def interrupt_read(self):
+                        pass
+
+                    def close(self):
+                        self.stream.close()
+
+                http = FakeHttp(canary_script(ok({"message": {"content": "ready"}}), v1=True))
+
+                def request(method, url, **kwargs):
+                    scripted = http(method, url, **kwargs)
+                    return pdv.http_request(method, url, **kwargs) if kwargs.get("deadline") else scripted
+
+                with patch.object(pdv, "_CleanupConnection", Connection):
+                    result = pdv.run_canary(
+                        api_base="https://api.test", token=TOKEN, catalog_doc=CATALOG,
+                        request=request,
+                    )
+                self.assertEqual(result.ok, fault == "none", result.detail)
+                self.assertLessEqual(max(reads, default=0), limit)
+                self.assertEqual(cleanup_calls(http), [
+                    ("DELETE", SESSION_PATH), ("GET", f"{SESSION_PATH}/deletion"),
+                ] if fault == "none" else [("DELETE", SESSION_PATH)])
 
 
 class RedactionTests(unittest.TestCase):

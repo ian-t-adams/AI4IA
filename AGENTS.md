@@ -532,6 +532,16 @@ Multiple mode pins all traffic to the exact captured revision without switching
 modes. Preserve min-zero support, per-app failure isolation and no write replay;
 see `docs/runbooks/deployment.md#automatic-and-manual-rollback`.
 
+The existing post-deploy canary accepts an empty legacy DELETE 204 only as best
+effort. V1 200/202 requires the shared strict public status proof, at most two
+owner/session-bound reconciles, and an identical verified status readback, within
+four requests/60 seconds and 8 KiB per response. No accepted request, 404, unknown
+upload or exhausted budget can pass cleanup. Public responses hide protocol and
+generation: keep server fencing and actual API/shared-fixture parity tests, not
+invented fields. Creation stays single-attempt and existing chat retries stay
+unchanged; cleanup never adds model calls, enrollment, a sweep or rollout authority.
+See `docs/runbooks/conversation-deletion.md#existing-post-deployment-canary-cleanup`.
+
 ### Production image proofs
 
 Before the first `azd deploy`, `deploy.yml` scans all three exact ACR digests with
