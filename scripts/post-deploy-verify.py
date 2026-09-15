@@ -1232,10 +1232,13 @@ class _CleanupConnection(http.client.HTTPSConnection):
     """One cleanup request; shutdown must not wait for a buffered-reader lock."""
 
     def __init__(self, host: str, port: int, timeout: float) -> None:
-        self.tls_context = ssl.create_default_context()
-        if self.tls_context.minimum_version < ssl.TLSVersion.TLSv1_2:
-            self.tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
-        super().__init__(host, port=port, timeout=timeout, context=self.tls_context)
+        context = ssl.create_default_context()
+        original_minimum = context.minimum_version
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        if original_minimum > ssl.TLSVersion.TLSv1_2:
+            context.minimum_version = original_minimum
+        self.tls_context = context
+        super().__init__(host, port=port, timeout=timeout, context=context)
         self.read_socket: socket.socket | None = None
 
     def connect(self) -> None:
