@@ -23,6 +23,7 @@ import tarfile
 import tempfile
 import time
 import zlib
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -826,6 +827,44 @@ def extract_source(data: bytes, destination: Path) -> None:
                     shutil.copyfileobj(stream, output, 65536)
 
 
+def export_canonical_source(git: Callable[..., bytes], destination: Path) -> None:
+    # git archive applies checkout conversion unless its EOL settings are scoped.
+    extract_source(git(
+        "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+        "archive", "--format=tar", "HEAD", "app/web", "app/api/tests/citation_contract.json",
+        limit=SOURCE_LIMIT,
+    ), destination)
+
+
+def source_inputs(web: Path, evidence: dict) -> dict[str, bytes]:
+    paths = {
+        "package.json": web / "package.json",
+        "package-lock.json": web / "package-lock.json",
+        "nativeLockCoverage.test.ts": web / "src" / "lib" / "nativeLockCoverage.test.ts",
+    }
+    evidence.update({
+        name: {"present": path.is_file(), "bytes": None, "sha256": None}
+        for name, path in paths.items()
+    })
+    manifests = {}
+    for name, path in paths.items():
+        if not evidence[name]["present"]:
+            continue
+        require(not path.is_symlink(), "regular_file_required")
+        limit = LOCK_LIMIT if name in ORIGINAL_HASHES else SOURCE_LIMIT
+        with path.open("rb") as stream:
+            data = stream.read(limit + 1)
+        require(len(data) <= limit, "file_size_limit")
+        evidence[name].update(bytes=len(data), sha256=sha256(data))
+        if name in ORIGINAL_HASHES:
+            manifests[name] = data
+    for name, prefix in (("package.json", "source_manifest"), ("package-lock.json", "source_lock")):
+        require(evidence[name]["present"], f"{prefix}_missing")
+        require(evidence[name]["sha256"] == ORIGINAL_HASHES[name], f"{prefix}_hash_mismatch")
+    require(evidence["nativeLockCoverage.test.ts"]["present"], "source_native_guard_missing")
+    return manifests
+
+
 def verify_candidate(original_manifest: bytes, original_lock: bytes, candidate_manifest: bytes,
                      candidate_lock: bytes, native: dict) -> None:
     require(candidate_manifest == original_manifest, "candidate_manifest_changed")
@@ -967,17 +1006,10 @@ class Diagnostic:
         }
         checkout_hashes = {path.name: sha256(data) for path, data in self.immutable.items()}
         source = work / "source"
-        extract_source(git(
-            "archive", "--format=tar", "HEAD", "app/web", "app/api/tests/citation_contract.json",
-            limit=SOURCE_LIMIT,
-        ), source)
+        export_canonical_source(git, source)
         web = source / "app" / "web"
-        manifests = {name: read_bytes(web / name, LOCK_LIMIT) for name in ORIGINAL_HASHES}
-        require(
-            {name: sha256(data) for name, data in manifests.items()} == ORIGINAL_HASHES
-            and (web / "src" / "lib" / "nativeLockCoverage.test.ts").is_file(),
-            "original_manifest_or_guard_changed",
-        )
+        self.report["sourceInputs"] = {}
+        manifests = source_inputs(web, self.report["sourceInputs"])
         lock = object_json(manifests["package-lock.json"])
         require(NATIVE_KEY not in lock["packages"], "original_missing_record_precondition")
         self.success("source", {"checkoutDependencyHashes": checkout_hashes})

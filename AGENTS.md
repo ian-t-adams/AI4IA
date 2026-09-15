@@ -162,6 +162,9 @@ The temporary `PR477 Windows native diagnostic` job in `app-ci.yml` is scoped to
 this repository's PR #477, not a new required check or an updater. It preserves
 the original lock and ordinary CI, verifies public metadata/tarball hashes, and
 tests a package-manager-generated candidate only in isolated runner directories.
+Source export uses process-scoped Git EOL options so Windows checkout preferences
+cannot rewrite the pinned blob bytes; mismatches retain bounded input hashes and
+presence, never normalized files or replacement expected hashes.
 It disables install lifecycle scripts and invokes only the reviewed native probe
 and tool entrypoints. Archive limits cover the complete decompressed stream before
 tar parsing, including extension records and padding. Windows subprocesses enter

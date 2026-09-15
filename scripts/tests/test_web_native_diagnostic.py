@@ -1061,9 +1061,125 @@ class WindowsProcessLifetimeTests(unittest.TestCase):
         self.exercise_lifetime("exited", termination_error=True)
 
 
+class CanonicalSourceExportTests(unittest.TestCase):
+    def git(self, env, *args, limit=diag.LOCK_LIMIT):
+        result = diag.run_process(["git", *args], ROOT, env, 30, limit)
+        self.assertEqual(result.status, "succeeded", result.reason)
+        self.assertEqual(result.exit_code, 0)
+        return result.output
+
+    def committed_inputs(self, env):
+        paths = {
+            "package.json": "app/web/package.json",
+            "package-lock.json": "app/web/package-lock.json",
+            "nativeLockCoverage.test.ts": "app/web/src/lib/nativeLockCoverage.test.ts",
+        }
+        bodies = {name: self.git(env, "cat-file", "blob", f"HEAD:{path}") for name, path in paths.items()}
+        self.assertEqual({name: diag.sha256(bodies[name]) for name in diag.ORIGINAL_HASHES},
+                         diag.ORIGINAL_HASHES)
+        return paths, bodies
+
+    def test_real_git_export_preserves_blobs_despite_ambient_eol_and_text_attributes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            env = diag.child_env(dict(os.environ), root / "home")
+            paths, blobs = self.committed_inputs(env)
+            attributes = root / "fixture.attributes"
+            attributes.write_bytes(b"*.json text\n*.ts text\n")
+            for index, (autocrlf, eol) in enumerate((("true", "crlf"), ("false", "crlf"), ("false", "lf"))):
+                with self.subTest(autocrlf=autocrlf, eol=eol):
+                    configured = {
+                        **env, "GIT_CONFIG_COUNT": "3",
+                        "GIT_CONFIG_KEY_0": "core.autocrlf", "GIT_CONFIG_VALUE_0": autocrlf,
+                        "GIT_CONFIG_KEY_1": "core.eol", "GIT_CONFIG_VALUE_1": eol,
+                        "GIT_CONFIG_KEY_2": "core.attributesFile", "GIT_CONFIG_VALUE_2": str(attributes),
+                    }
+                    plain = root / f"plain-{index}"
+                    data = self.git(
+                        configured, "archive", "--format=tar", "HEAD", "app/web",
+                        "app/api/tests/citation_contract.json", limit=diag.SOURCE_LIMIT,
+                    )
+                    diag.extract_source(data, plain)
+                    should_convert = autocrlf == "true" or eol == "crlf"
+                    for name, path in paths.items():
+                        exported = (plain / path).read_bytes()
+                        self.assertEqual(exported == blobs[name], not should_convert, name)
+                        if should_convert:
+                            self.assertGreater(exported.count(b"\r\n"), 0)
+                    plain_evidence = {}
+                    if should_convert:
+                        with self.assertRaisesRegex(diag.DiagnosticError, "^source_manifest_hash_mismatch$"):
+                            diag.source_inputs(plain / "app" / "web", plain_evidence)
+                    else:
+                        diag.source_inputs(plain / "app" / "web", plain_evidence)
+                    canonical = root / f"canonical-{index}"
+
+                    def git(*args, limit):
+                        return self.git(configured, *args, limit=limit)
+
+                    diag.export_canonical_source(git, canonical)
+                    for name, path in paths.items():
+                        self.assertEqual((canonical / path).read_bytes(), blobs[name], name)
+                    evidence = {}
+                    self.assertEqual(
+                        diag.source_inputs(canonical / "app" / "web", evidence),
+                        {name: blobs[name] for name in diag.ORIGINAL_HASHES},
+                    )
+                    self.assertTrue(all(row["present"] for row in evidence.values()))
+                    for name, row in evidence.items():
+                        self.assertEqual(set(row), {"present", "bytes", "sha256"})
+                        self.assertEqual(row["sha256"], diag.sha256(blobs[name]))
+                    self.assertEqual(self.git(configured, "config", "--get", "core.autocrlf").strip(),
+                                     autocrlf.encode())
+                    self.assertEqual(self.git(configured, "config", "--get", "core.eol").strip(), eol.encode())
+
+    def test_source_input_presence_hashes_and_fixed_refusals_do_not_expose_contents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            env = diag.child_env(dict(os.environ), root / "home")
+            paths, blobs = self.committed_inputs(env)
+            for name, path in paths.items():
+                target = root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(blobs[name])
+            for name, reason in (
+                ("package.json", "source_manifest_missing"),
+                ("package-lock.json", "source_lock_missing"),
+                ("nativeLockCoverage.test.ts", "source_native_guard_missing"),
+            ):
+                with self.subTest(name=name):
+                    evidence = {}
+                    target = root / paths[name]
+                    target.unlink()
+                    with self.assertRaisesRegex(diag.DiagnosticError, f"^{reason}$"):
+                        diag.source_inputs(root / "app" / "web", evidence)
+                    self.assertEqual(evidence[name], {"present": False, "bytes": None, "sha256": None})
+                    self.assertTrue(all(row["present"] for key, row in evidence.items() if key != name))
+                    target.write_bytes(blobs[name])
+                    self.assertEqual(
+                        diag.source_inputs(root / "app" / "web", {}),
+                        {key: blobs[key] for key in diag.ORIGINAL_HASHES},
+                    )
+            for name, reason in (
+                ("package.json", "source_manifest_hash_mismatch"),
+                ("package-lock.json", "source_lock_hash_mismatch"),
+            ):
+                target = root / paths[name]
+                altered = blobs[name] + b"private-content-marker"
+                target.write_bytes(altered)
+                evidence = {}
+                with self.assertRaisesRegex(diag.DiagnosticError, f"^{reason}$"):
+                    diag.source_inputs(root / "app" / "web", evidence)
+                self.assertEqual(evidence[name]["sha256"], diag.sha256(altered))
+                self.assertEqual(evidence[name]["bytes"], len(altered))
+                self.assertNotIn("private-content-marker", json.dumps(evidence))
+                target.write_bytes(blobs[name])
+                diag.source_inputs(root / "app" / "web", {})
+
+
 class OrchestrationTests(unittest.TestCase):
     def exercise(self, original_install=1, candidate_stage_failure=None, mutate_original=False,
-                 public_failure=False, npm_version=None):
+                 public_failure=False, npm_version=None, source_change=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -1080,6 +1196,12 @@ class OrchestrationTests(unittest.TestCase):
             (repo / "app" / "web" / name).write_bytes(data)
         files = {f"app/web/{name}": data for name, data in manifests.items()}
         files["app/web/src/lib/nativeLockCoverage.test.ts"] = b"synthetic existing guard"
+        if source_change == "manifest":
+            files["app/web/package.json"] += b" "
+        elif source_change == "lock":
+            files["app/web/package-lock.json"] += b" "
+        elif source_change == "guard":
+            del files["app/web/src/lib/nativeLockCoverage.test.ts"]
         archive = archive_bytes(files)
         node = root / "toolchain" / "node.exe"
         npm = node.parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
@@ -1096,7 +1218,7 @@ class OrchestrationTests(unittest.TestCase):
             self.assertNotIn("NODE_OPTIONS", environment)
             self.assertLessEqual(timeout, 300)
             if command[0] == "git":
-                if command[1] == "archive":
+                if "archive" in command:
                     return diag.CommandResult("succeeded", 0, archive)
                 if command[1] == "rev-parse":
                     return diag.CommandResult("succeeded", 0, (source + "\n").encode())
@@ -1203,6 +1325,29 @@ class OrchestrationTests(unittest.TestCase):
         report, calls, _ = self.exercise()
         self.assertTrue(report["candidateValidated"])
         self.assertTrue(any("update" in command for command, *_ in calls))
+
+    def test_source_refusals_retain_fixed_input_evidence_before_public_collection(self):
+        for change, reason in (
+            ("manifest", "source_manifest_hash_mismatch"),
+            ("lock", "source_lock_hash_mismatch"),
+            ("guard", "source_native_guard_missing"),
+        ):
+            report, calls, output = self.exercise(source_change=change)
+            self.assertEqual(report["errors"], [{"stage": "source", "reason": reason}])
+            self.assertEqual(report["stages"]["source"]["status"], "failed")
+            self.assertEqual(report["stages"]["public_packages"]["status"], "not_run")
+            self.assertFalse(any("--collect" in command for command, *_ in calls))
+            inputs = report["sourceInputs"]
+            self.assertEqual(set(inputs), {"package.json", "package-lock.json", "nativeLockCoverage.test.ts"})
+            self.assertEqual(inputs["nativeLockCoverage.test.ts"]["present"], change != "guard")
+            for name in ("package.json", "package-lock.json"):
+                self.assertTrue(inputs[name]["present"])
+                self.assertIsInstance(inputs[name]["bytes"], int)
+                self.assertRegex(inputs[name]["sha256"], "^[0-9a-f]{64}$")
+            self.assertEqual(json.loads((output / "report.json").read_bytes())["sourceInputs"], inputs)
+        report, calls, _ = self.exercise()
+        self.assertEqual(report["stages"]["source"]["status"], "succeeded")
+        self.assertTrue(any("--collect" in command for command, *_ in calls))
 
 @unittest.skipUnless(sys.platform == "win32", "The native-probe contract runs in the Windows diagnostic job")
 class NativeProbeContractTests(unittest.TestCase):
