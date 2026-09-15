@@ -774,9 +774,13 @@ pair a passing test with an intentional failing test and zero discovery.
 No-replay tests drive public proxy sends and compile the actual APIM fragment
 expressions with the installed SDK compiler against offline context projections
 and loopback providers. They are not an Azure policy compiler or live capability
-proof. Generated backend fragments omit only parser-identified XML comment nodes
-to fit the unchanged 48 KiB compiler ceiling; authored comments and C# bytes stay
-intact.
+proof. The generated-catalog routing controls also invoke the stdlib Python
+generator with synthetic model variants, execute its catalog fragments through
+both HTTP policy chains, and evaluate its preview/GA handshake conditions.
+Retain their disabled/enabled and protocol controls: a preselected fake backend
+does not prove the generated runtime gate. Generated backend fragments omit only
+parser-identified XML comment nodes to fit the unchanged 48 KiB compiler ceiling;
+authored comments and C# bytes stay intact.
 
 When a proxy project dependency changes, refresh from the top-level test project
 with `dotnet restore ... --force-evaluate`. NuGet does not recalculate
