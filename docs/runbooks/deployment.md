@@ -654,8 +654,19 @@ python scripts/post-deploy-verify.py canary --api-url https://<api-fqdn>
 
 This canary-only mode authenticates, lists models, creates a Cosmos-backed
 session, completes one governed FastAPI -> proxy -> APIM -> Foundry turn, and
-deletes the session. It emits only model id, reply length, elapsed time, and
-bounded/redacted failure detail; cleanup failure fails the command.
+cleans only that owner's newly created session. Empty legacy DELETE 204 remains
+best effort. V1 DELETE acceptance is not success: up to two bounded reconcile
+passes and an identical owner-status readback must establish the scoped
+`cleanup_verified` evidence. Cleanup permits at most four requests, 60 seconds
+(also bounded by the remaining verification deadline), and 8 KiB per response.
+Unknown uploads, 404, malformed proof, HTTP/authentication errors and exhausted
+budgets fail rather than becoming release evidence. See the
+[cleanup contract](conversation-deletion.md#existing-post-deployment-canary-cleanup).
+Session creation remains single-attempt; existing operator-helper chat retries
+are unchanged, and cleanup never dispatches another chat. It emits only model
+id, reply length, elapsed time, and bounded/redacted failure detail; new cleanup
+diagnostics contain no response bodies or owner/session identifiers. Cleanup
+failure fails the command without changing rollback policy.
 
 It does not assess response quality, streaming, tools, MCP, documents, memory,
 media, or realtime. It is one identity and cannot detect per-user entitlement or

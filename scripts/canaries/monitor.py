@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import math
-import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode
 
@@ -16,8 +15,8 @@ import aiohttp
 
 from app.api.src.ai4ia_api.usage.pricing import PricingBook, load_pricing
 from scripts._canary_contract import (
-    SetupOrderError, SetupState, acknowledge_setup, catalog_model_preferences,
-    chat_payload, session_payload,
+    SESSION_ID_RE, SetupOrderError, SetupState, acknowledge_setup, catalog_model_preferences,
+    chat_payload, session_payload, verified_cleanup,
 )
 from ai4ia_api.realtime_canary import SETUP_INPUT
 
@@ -27,8 +26,6 @@ from .contracts import (
     encoded, integer, obj, strict_json, timestamp, utc_now,
 )
 from .transport import Response, Transport
-
-_SESSION_ID = re.compile(r"[0-9a-f]{32}\Z")
 
 
 @dataclass(frozen=True)
@@ -165,7 +162,7 @@ def inspect_message(
     if (
         message.get("role") != "assistant" or message.get("status") != "complete"
         or not isinstance(message.get("model"), str) or message["model"] not in selected.deployments
-        or not isinstance(message.get("id"), str) or not _SESSION_ID.fullmatch(message["id"])
+        or not isinstance(message.get("id"), str) or not SESSION_ID_RE.fullmatch(message["id"])
         or message.get("agent") is not None or message.get("attachments") != []
         or message.get("pendingApprovals") not in (None, [])
         or not isinstance(message.get("content"), str) or not 1 <= len(message["content"]) <= 2048
@@ -229,43 +226,6 @@ def inspect_message(
     return message
 
 
-def _verified_cleanup(status: dict[str, Any], session_id: str) -> bool:
-    required = {
-        "sessionId", "state", "phase", "requestedAt", "updatedAt", "lastVerifiedAt",
-        "messagesVerified", "documentsVerified", "attachmentsVerified", "pendingUploads",
-        "pendingUploadsTruncated", "retryReason", "attempts", "scope", "backupsErased",
-        "coordinationRetained", "autonomousCleanup",
-    }
-    if set(status) != required:
-        return False
-    if (
-        status["sessionId"] != session_id or status["state"] != "cleanup_verified"
-        or status["phase"] != "complete" or status["pendingUploads"] != []
-        or status["pendingUploadsTruncated"] is not False or status["retryReason"] is not None
-        or status["scope"] != "conversation_content_and_inline_originals"
-        or status["backupsErased"] is not False or status["coordinationRetained"] is not True
-        or status["autonomousCleanup"] is not False
-        or any(status[key] is not True for key in (
-            "messagesVerified", "documentsVerified", "attachmentsVerified",
-        ))
-    ):
-        return False
-    integer(status["attempts"], 1, 1000)
-    dates = []
-    for key in ("requestedAt", "updatedAt", "lastVerifiedAt"):
-        raw = status[key]
-        if not isinstance(raw, str) or len(raw) > 40:
-            return False
-        try:
-            value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            return False
-        if value.utcoffset() != timezone.utc.utcoffset(value) or value > utc_now():
-            return False
-        dates.append(value)
-    return dates[0] <= dates[2] <= dates[1]
-
-
 async def _cleanup(
     transport: Transport, config: Configuration, token: str,
     session_id: str, report: Report, *, chat_settled: bool, budget: Budget,
@@ -298,7 +258,7 @@ async def _cleanup(
         elif deleted.status in (200, 202):
             status = deleted.object()
             for _ in range(2):
-                if _verified_cleanup(status, session_id):
+                if verified_cleanup(status, session_id, now=utc_now()):
                     break
                 if status.get("sessionId") != session_id or status.get("state") not in ("pending", "retryable"):
                     raise CanaryError("invalid_response")
@@ -309,11 +269,11 @@ async def _cleanup(
                 if resumed.status not in (200, 202):
                     raise CanaryError("cleanup_failed")
                 status = resumed.object()
-            if _verified_cleanup(status, session_id):
+            if verified_cleanup(status, session_id, now=utc_now()):
                 readback = await send("GET", "/deletion", 5)
                 if (
                     readback.status == 200 and readback.object() == status
-                    and _verified_cleanup(readback.object(), session_id)
+                    and verified_cleanup(readback.object(), session_id, now=utc_now())
                 ):
                     report.cleanup_safe = True
                     report.mark("cleanup", "pass", "cleanup_verified", elapsed=time.monotonic() - started, attempts=calls)
@@ -392,7 +352,7 @@ async def chat(
             raise CanaryError("session_rejected")
         value = require_response(created, 201)
         identifier = value.get("id")
-        if not isinstance(identifier, str) or not _SESSION_ID.fullmatch(identifier):
+        if not isinstance(identifier, str) or not SESSION_ID_RE.fullmatch(identifier):
             raise CanaryError("create_unknown")
         session_id = identifier
         chat_settled = True
