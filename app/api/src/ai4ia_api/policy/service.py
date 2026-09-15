@@ -17,7 +17,7 @@ from ..entitlements.models import Entitlement, EntitlementLimits
 from ..entitlements.service import EntitlementService
 from .models import (
     ADMIN_OPERATIONS, DOCUMENT_TOOL_FEATURES, LIMIT_FIELDS,
-    ClaimRule, DomainPolicy, EffectivePolicy, PolicyConfig, PolicyDecision,
+    ActorRestrictions, ClaimRule, DomainPolicy, EffectivePolicy, PolicyConfig, PolicyDecision,
     PolicyDomain, PolicyError, PolicyRequest, ResolvedDomain, SpendMapping,
     RestrictedProfile, parse_policy_config, policy_digest,
 )
@@ -154,41 +154,99 @@ class PolicyService:
                     for rule in (domain.default, *domain.mappings):
                         if (set(rule.allow) | set(rule.deny) | set(rule.restrict or ())) - known:
                             raise ValueError("Unknown model category in policy.")
+                for marker in (parsed.canaryActor, parsed.evaluationActor, parsed.realtimeCanaryActor):
+                    if marker is not None and marker.restrictions is not None:
+                        if set(marker.restrictions.models) - known:
+                            raise ValueError("Unknown model category in actor restrictions.")
             except ValueError as exc:
                 raise PolicyError(PolicyDecision("unavailable", "policy_unavailable")) from exc
             self._raw, self._config = raw, parsed
         return self._config
 
+    def _actor_restrictions(
+        self, config: PolicyConfig, user: AuthenticatedUser | None,
+    ) -> ActorRestrictions | None:
+        if user is None or user.provider != "entra":
+            return None
+        for marker in (config.canaryActor, config.evaluationActor, config.realtimeCanaryActor):
+            if marker is not None and (
+                user.tenant_id == marker.tenantId and user.subject == marker.subject
+                and user.internal_user_id == internal_user_id(
+                    provider="entra",
+                    issuer=f"https://login.microsoftonline.com/{marker.tenantId}/v2.0",
+                    subject=marker.subject, tenant_id=marker.tenantId,
+                )
+            ):
+                return marker.restrictions
+        return None
+
+    def actor_restriction_digest(self, user: AuthenticatedUser) -> str | None:
+        config = self._configuration() if self.enabled else self._config
+        if config is not None and self._actor_restrictions(config, user) is not None:
+            return policy_digest(config)
+        return None
+
+    def _domains(
+        self, config: PolicyConfig, user: AuthenticatedUser | None,
+    ) -> dict[str, ResolvedDomain]:
+        domains = {
+            name: _compose(name, domain, user) for name, domain in config.domains.items()
+        }
+        restrictions = self._actor_restrictions(config, user)
+        if restrictions is None:
+            return domains
+        claims = user.policy_claims if user is not None else None
+        invalid = (
+            claims is None or not (claims.roles_complete and claims.groups_complete)
+            or any(domain.invalid or domain.unavailable for domain in domains.values())
+            or (user is not None and self._identity_decision(user, user.internal_user_id) is not None)
+        )
+        for name, values in (
+            ("models", frozenset(restrictions.models)),
+            ("tools", frozenset()), ("documents", frozenset()),
+        ):
+            base = domains.get(name)
+            if base is None:
+                # An omitted ordinary domain is unrestricted, not a grant to
+                # union with the actor's explicit reduction.
+                domains[name] = ResolvedDomain(values, frozenset(), values, invalid=invalid)
+            else:
+                domains[name] = replace(
+                    base, allowed=base.allowed & values,
+                    restricted=values if base.restricted is None else base.restricted & values,
+                    invalid=invalid,
+                )
+        return domains
+
     def allows_model_snapshot(
         self, user: AuthenticatedUser | None, category: str, deployment: DeploymentOption,
     ) -> bool:
         if not self.enabled:
-            return True
+            return user is None or self.actor_restriction_digest(user) is None
         config = self._configuration()
+        domains = self._domains(config, user)
         constraints: tuple[tuple[PolicyDomain, str], ...] = (
             ("models", category), ("zones", deployment.residency),
         )
         for name, value in constraints:
-            configured = config.domains.get(name)
-            if configured is not None:
-                domain = _compose(name, configured, user)
+            domain = domains.get(name)
+            if domain is not None:
                 if domain.invalid or domain.unavailable or value not in domain.allowed:
                     return False
         return True
 
     def allows_tool_snapshot(self, user: AuthenticatedUser | None, name: str) -> bool:
         if not self.enabled:
-            return True
+            return user is None or self.actor_restriction_digest(user) is None
         config = self._configuration()
-        configured = config.domains.get("tools")
-        if configured is not None:
-            domain = _compose("tools", configured, user)
+        domains = self._domains(config, user)
+        domain = domains.get("tools")
+        if domain is not None:
             if domain.invalid or domain.unavailable or name not in domain.allowed:
                 return False
         feature = DOCUMENT_TOOL_FEATURES.get(name)
-        documents = config.domains.get("documents")
-        if feature is not None and documents is not None:
-            domain = _compose("documents", documents, user)
+        domain = domains.get("documents")
+        if feature is not None and domain is not None:
             return not domain.invalid and not domain.unavailable and feature in domain.allowed
         return True
 
@@ -233,13 +291,14 @@ class PolicyService:
                 config.spend.default,
                 *(rule.limits for rule in config.spend.mappings if _matched(rule, user)),
             ])
+        restrictions = self._actor_restrictions(config, user)
+        if restrictions is not None:
+            limits = minimum_limits(limits, [restrictions.spend])
         return replace(
             empty, digest=policy_digest(config), limits=limits,
             limits_unavailable=unavailable, spend_invalid=spend_invalid,
             spend_unattended=spend_unattended,
-            domains=MappingProxyType({
-                name: _compose(name, domain, user) for name, domain in config.domains.items()
-            }),
+            domains=MappingProxyType(self._domains(config, user)),
         )
 
     def _domain(
@@ -263,10 +322,14 @@ class PolicyService:
         return PolicyDecision("allow" if allowed else "deny", "allowed" if allowed else "policy_denied")
 
     def identity_decision(self, policy: EffectivePolicy) -> PolicyDecision | None:
-        user = policy.user
+        return self._identity_decision(policy.user, policy.owner_id)
+
+    def _identity_decision(
+        self, user: AuthenticatedUser | None, owner_id: str,
+    ) -> PolicyDecision | None:
         if user is None:
             return None
-        if user.internal_user_id != policy.owner_id:
+        if user.internal_user_id != owner_id:
             return PolicyDecision("deny", "owner_mismatch")
         if user.provider == "entra":
             claims = user.policy_claims

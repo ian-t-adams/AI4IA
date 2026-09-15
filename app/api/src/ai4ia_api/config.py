@@ -1158,7 +1158,11 @@ class Settings(BaseSettings):
                     raise RuntimeError("AI4IA_ASSET_PUBLISHING_ENABLED requires group policy and Entra.")
                 if self.env != Environment.local and self.session_store != SessionStoreKind.cosmos:
                     raise RuntimeError("AI4IA_ASSET_PUBLISHING_ENABLED requires Cosmos outside local.")
-            if self.group_policy_enabled and policy.spend is not None and (
+            has_actor_spend = any(
+                marker is not None and marker.restrictions is not None
+                for marker in (policy.canaryActor, policy.evaluationActor, policy.realtimeCanaryActor)
+            )
+            if self.group_policy_enabled and (policy.spend is not None or has_actor_spend) and (
                 not self.entitlements_enabled or not self.usage_metering_enabled
             ):
                 raise RuntimeError("Group spend policy requires soft entitlements and metering.")
