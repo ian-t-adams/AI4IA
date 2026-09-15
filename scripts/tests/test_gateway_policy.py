@@ -67,6 +67,20 @@ class GatewayPolicyTests(unittest.TestCase):
         for ga in (False, True):
             self.assertNotIn("gpt-realtime-2-", gateway_generator.generate_realtime_policy(models, ga=ga))
 
+    def test_fragment_compaction_preserves_code_and_string_bytes(self) -> None:
+        source = (
+            '<fragment><!-- remove this XML comment -->\n'
+            '<set-variable name="fixture" value="@{\n'
+            '// keep this C# comment\n'
+            'return &quot;&lt;!-- keep this string --&gt;&quot;;\n'
+            '}" />\n'
+            '<set-body><![CDATA[<!-- keep this literal -->]]></set-body>'
+            '</fragment>\n'
+        )
+        expected = source.replace("<!-- remove this XML comment -->", "")
+        self.assertEqual(gateway_generator._without_xml_comments(source), expected)
+        self.assertEqual(gateway_generator._without_xml_comments(expected), expected)
+
     def test_ga_routes_are_generated_from_the_same_realtime_catalog(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
         generated = gateway_generator.generate_realtime_policy(models, ga=True)
@@ -529,6 +543,20 @@ class GatewayPolicyTests(unittest.TestCase):
             len(priority_output.encode("utf-8")),
             gateway_generator.APIM_API_POLICY_MAX_BYTES,
         )
+        attempts_output = gateway_generator.ATTEMPTS_OUTPUT_PATH.read_text(encoding="utf-8")
+        self.assertEqual(attempts_output, gateway_generator.generate_attempts_policy(priority_output))
+        gateway_generator.validate_policy_expressions(attempts_output, "attempts-v1-policy.xml")
+        self.assertLessEqual(len(attempts_output.encode("utf-8")), gateway_generator.APIM_API_POLICY_MAX_BYTES)
+        attempts = ElementTree.fromstring(attempts_output)
+        self.assertEqual(attempts.findall(".//base"), [])
+        self.assertEqual(
+            [node.get("fragment-id") for node in attempts.findall(".//include-fragment")],
+            [node.get("fragment-id") for node in ElementTree.fromstring(priority_output).findall(".//include-fragment")],
+        )
+        inbound = list(attempts.find("inbound"))
+        self.assertEqual(inbound[0].get("name"), "attemptsV1Path")
+        self.assertEqual(inbound[1].tag, "choose")
+        self.assertEqual(inbound[2].get("fragment-id"), "simplel7proxy_inbound_pre_32")
         rollback_policy = (
             ROOT / "infra/policies/simplel7proxy-rollback-policy.xml"
         ).read_text(encoding="utf-8")
@@ -1178,7 +1206,10 @@ class GatewayPolicyTests(unittest.TestCase):
                     "X-Policy-LastError must fall back to the real APIM error",
                 )
                 # Requeue/retry hints are only meaningful for a throttled backend.
-                for header in ('name="S7PREQUEUE"', 'name="retry-after-ms"'):
+                for header in (
+                    'name="S7PREQUEUE" exists-action="override"',
+                    'name="retry-after-ms" exists-action="override"',
+                ):
                     self.assertLess(
                         policy.index(
                             'condition="@(!context.Variables.GetValueOrDefault'

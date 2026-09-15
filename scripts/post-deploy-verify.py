@@ -57,6 +57,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -89,6 +90,8 @@ IDLE_RUNNING_STATES = frozenset({"scaledtozero", "scaleddown", "stopped"})
 
 MAX_SAFE_CHARS = 512
 MAX_BODY_BYTES = 64 * 1024
+MAX_CUTOVER_DIFFERENCE_AREAS = 12
+MAX_PROBE_FIELD_SHAPES = 2
 
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _ENVIRONMENT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,60}\Z", re.IGNORECASE)
@@ -756,9 +759,58 @@ def rollout_problems(
     return problems
 
 
-def _comparable_template(template: dict[str, Any]) -> dict[str, Any]:
-    # A copy changes only its generated suffix; every other revision-scoped field matters.
-    return {key: value for key, value in template.items() if key != "revisionSuffix"}
+def _comparable_template(template: dict[str, Any]) -> str:
+    """Compare writable intent, preserving all but the evidenced ARM projection differences."""
+    comparable = deepcopy(template)
+    comparable.pop("revisionSuffix", None)
+    # ARM 2025-01-01 CommonDefinitions: these optional int32 fields default when
+    # unset. Its SDK exposes int | None; an explicit zero/nondefault is not unset.
+    scale = comparable.get("scale")
+    if not isinstance(scale, dict):
+        raise AzError("template scale metadata is missing or malformed")
+    for setting, default in (("cooldownPeriod", 300), ("pollingInterval", 30)):
+        value = scale.get(setting)
+        if value is None:
+            scale[setting] = default
+        elif type(value) is not int or not -(2 ** 31) <= value < 2 ** 31:
+            raise AzError(f"template scale.{setting} must be an int32 or unset")
+
+    # Both collections inherit BaseContainer.resources. Only ephemeralStorage
+    # is explicitly readOnly; CPU, memory and unknown resource fields remain.
+    for collection in ("containers", "initContainers"):
+        containers = comparable.get(collection)
+        if containers is None and collection == "initContainers":
+            continue
+        if not isinstance(containers, list):
+            raise AzError(f"template {collection} metadata is missing or malformed")
+        for container in containers:
+            if not isinstance(container, dict):
+                raise AzError(f"template {collection} contains malformed container metadata")
+            resources = container.get("resources")
+            if resources is None:
+                continue
+            if not isinstance(resources, dict):
+                raise AzError(f"template {collection}.resources metadata is malformed")
+            ephemeral = resources.get("ephemeralStorage")
+            if ephemeral is not None and not isinstance(ephemeral, str):
+                raise AzError("template resources.ephemeralStorage must be a string or unset")
+            resources.pop("ephemeralStorage", None)
+    try:
+        # Python equality conflates bool/int/float values. Do not silently turn a
+        # malformed or changed JSON value into equality, including unknown fields.
+        return json.dumps(comparable, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise AzError("template comparison contains malformed JSON values") from exc
+
+
+def _template_problems(
+    left: dict[str, Any], right: dict[str, Any], mismatch: str
+) -> list[str]:
+    try:
+        matches = _comparable_template(left) == _comparable_template(right)
+    except AzError as exc:
+        return [str(exc)]
+    return [] if matches else [mismatch]
 
 
 def _pending_cutover_problems(observation: CurrentObservation) -> list[str]:
@@ -769,12 +821,128 @@ def _pending_cutover_problems(observation: CurrentObservation) -> list[str]:
     if (
         serving is None or props.get("latestRevisionName") != serving.name
         or str(props.get("provisioningState", "")).casefold() != "succeeded"
-        or _comparable_template(props["template"]) != _comparable_template(serving.template)
     ):
         return [
             "a pending or different desired template could still replace the serving revision"
         ]
-    return []
+    return _template_problems(
+        props["template"], serving.template,
+        "a pending or different desired template could still replace the serving revision",
+    )
+
+
+def _template_difference_areas(left: dict[str, Any], right: dict[str, Any]) -> tuple[list[str], bool]:
+    """Use fixed area labels, never template values or caller-controlled field names."""
+    def encoded(value: Any) -> str:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+    def field(value: dict[str, Any], key: str) -> tuple[bool, Any]:
+        return key in value, value.get(key)
+
+    areas = []
+    container_fields = ("name", "image", "env", "resources", "command", "args", "probes", "volumeMounts")
+    for collection in ("containers", "initContainers"):
+        if encoded(field(left, collection)) == encoded(field(right, collection)):
+            continue
+        before, after = left.get(collection), right.get(collection)
+        if not isinstance(before, list) or not isinstance(after, list) or len(before) != len(after):
+            areas.append(f"{collection}.layout")
+            continue
+        for key in container_fields:
+            if encoded([field(row, key) for row in before]) != encoded([field(row, key) for row in after]):
+                areas.append(f"{collection}.{key}")
+        before_other = [{k: v for k, v in row.items() if k not in container_fields} for row in before]
+        after_other = [{k: v for k, v in row.items() if k not in container_fields} for row in after]
+        if encoded(before_other) != encoded(after_other):
+            areas.append(f"{collection}.other")
+    scale_fields = ("minReplicas", "maxReplicas", "cooldownPeriod", "pollingInterval", "rules")
+    for key in scale_fields:
+        if encoded(field(left["scale"], key)) != encoded(field(right["scale"], key)):
+            areas.append(f"scale.{key}")
+    if encoded({k: v for k, v in left["scale"].items() if k not in scale_fields}) != encoded(
+        {k: v for k, v in right["scale"].items() if k not in scale_fields}
+    ):
+        areas.append("scale.other")
+    root_fields = ("volumes", "serviceBinds", "terminationGracePeriodSeconds")
+    for key in root_fields:
+        if encoded(field(left, key)) != encoded(field(right, key)):
+            areas.append(key)
+    known = {"containers", "initContainers", "scale", *root_fields}
+    if encoded({k: v for k, v in left.items() if k not in known}) != encoded(
+        {k: v for k, v in right.items() if k not in known}
+    ):
+        areas.append("other")
+    return areas[:MAX_CUTOVER_DIFFERENCE_AREAS], len(areas) > MAX_CUTOVER_DIFFERENCE_AREAS
+
+
+def _probe_field_shapes(left: dict[str, Any], right: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+    def encoded(row: dict[str, Any]) -> str:
+        return json.dumps(
+            ("probes" in row, row.get("probes")),
+            sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
+
+    def shape(row: dict[str, Any]) -> dict[str, Any]:
+        if "probes" not in row:
+            return {"kind": "missing"}
+        value = row["probes"]
+        kind = {
+            type(None): "null", bool: "boolean", int: "number", float: "number",
+            str: "string", list: "array", dict: "object",
+        }[type(value)]
+        return {"kind": kind, "count": len(value)} if isinstance(value, list) else {"kind": kind}
+
+    shapes: list[dict[str, Any]] = []
+    for collection in ("containers", "initContainers"):
+        before, after = left.get(collection), right.get(collection)
+        if not isinstance(before, list) or not isinstance(after, list) or len(before) != len(after):
+            continue
+        for index, (desired, serving) in enumerate(zip(before, after, strict=True)):
+            if encoded(desired) == encoded(serving):
+                continue
+            if len(shapes) == MAX_PROBE_FIELD_SHAPES:
+                return shapes, True
+            shapes.append({
+                "area": f"{collection}.probes", "index": index,
+                "desired": shape(desired), "serving": shape(serving),
+            })
+    return shapes, False
+
+
+def _cutover_evidence(observation: CurrentObservation | None) -> dict[str, Any]:
+    if observation is None:
+        return {"observation": "unavailable"}
+    single = revisions_mode(observation.app).casefold() == "single"
+    serving = observation.serving
+    result: dict[str, Any] = {
+        "observation": "complete", "singleMode": single, "servingObserved": serving is not None,
+    }
+    if not single:
+        return result
+    props = _properties(observation.app)
+    result.update(
+        latestMatchesServing=bool(serving and props.get("latestRevisionName") == serving.name),
+        appProvisioningSucceeded=str(props.get("provisioningState", "")).casefold() == "succeeded",
+    )
+    if serving is None:
+        return {**result, "templateComparison": "unavailable"}
+    try:
+        desired = _comparable_template(props["template"])
+        actual = _comparable_template(serving.template)
+        areas, truncated = [], False
+        shapes, shapes_truncated = [], False
+        if desired != actual:
+            left, right = json.loads(desired), json.loads(actual)
+            areas, truncated = _template_difference_areas(left, right)
+            shapes, shapes_truncated = _probe_field_shapes(left, right)
+    except (AzError, ValueError, TypeError, RecursionError):
+        return {**result, "templateComparison": "invalid"}
+    if shapes:
+        result.update(probeFieldShapes=shapes, probeFieldShapesTruncated=shapes_truncated)
+    return {
+        **result, "templateComparison": "equal" if desired == actual else "different",
+        "templateDifferenceAreas": areas, "differenceAreasTruncated": truncated,
+    }
 
 
 def _validate_restore_target(
@@ -792,6 +960,7 @@ def _validate_restore_target(
         )
     if revisions_mode(observation.app).casefold() != snapshot.revisionsMode.casefold():
         raise AzError(f"{snapshot.name}: revision mode changed since capture")
+    _comparable_template(target.template)
     # Inactive immutable sources legitimately have no running/provisioning state.
     # Active sources must still be ready; neither case trusts the app's desired template.
     active = _properties(target.detail).get("active")
@@ -825,11 +994,13 @@ def _restoration_problems(
         current_image=serving.image,
         expected_image=snapshot.image,
     )
-    if (
-        not snapshot.image or serving.image != snapshot.image
-        or _comparable_template(serving.template) != _comparable_template(target.template)
-    ):
+    if not snapshot.image or serving.image != snapshot.image:
         problems.append("serving revision does not match the captured template")
+    else:
+        problems.extend(_template_problems(
+            serving.template, target.template,
+            "serving revision does not match the captured template",
+        ))
     app = observation.app
     props = _properties(app)
     mode = revisions_mode(app).casefold()
@@ -1476,6 +1647,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             image=observation.serving.image if observation and observation.serving else None,
             expected=expected_images.get(service),
             problems=problems or None,
+            cutover=_cutover_evidence(observation),
         )
         failures.extend(problems)
 

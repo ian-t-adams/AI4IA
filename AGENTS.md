@@ -120,6 +120,21 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    Deployed activation remains
    blocked pending the boundaries in `docs/hard-quota-admission.md`; neither an
    acknowledgement flag nor a local fake proves a Cosmos cutover or bill cap.
+   `gateway.attempts` is a default-absent, reduction-only one-attempt source
+   contract, not activation authority. Only an exact, fresh server-verified
+   gateway capability may prepare a request-bound envelope before admission.
+   Keep the shipping verifier absent; no header or operator Boolean proves the
+   deployed proxy/APIM/ingress transport. Ordinary retries stay unchanged.
+   `AI4IA_GATEWAY_ATTEMPTS_V1_STAGED` is a separate default-off infrastructure
+   gate, not capability issuance. The isolated `ai4ia-attempts-v1` API has only
+   three exact POST operations, mandatory route/HMAC membership, no inherited
+   `base` policies and a distinct API-only proxy key. Keep the exact non-stripping
+   Host prefix; absent membership or a missing bounded host must never select
+   catch-all/legacy work. V1 Claude is unsupported even on a generic chat path.
+   Capability readback binds the API revision, operation inventory, key scope and
+   transition-fenced evidence epoch; raw hashes and TTL alone prove none of them.
+   New physical nonce reuse is not globally deduplicated; workflow owner CAS is
+   a distinct operation fence.
 
 ## CI build / test / lint commands
 
@@ -136,6 +151,15 @@ npm run build --if-present
 
 Package scripts resolve to `eslint .`, `vitest run`, and `next build`. Local dev
 uses `npm run dev`.
+
+`nativeLockCoverage.test.ts` derives the native SWC packages from the locked
+Next.js declarations and requires a matching lock record for every platform,
+including platforms absent from the CI runner. A missing optional binary can
+otherwise pass Linux CI while leaving Windows without its locked native package.
+The guard checks recorded version, public artifact reference and integrity
+metadata; it does not prove registry availability or native execution. Repair a
+missing record through the package manager with verified metadata, never a
+guessed integrity hash or a WASM fallback presented as native validation.
 
 `npm ci` prints benign `ERESOLVE overriding peer dependency` warnings for
 `eslint-config-next`'s bundled plugins, whose published peer ranges still cap at
@@ -278,6 +302,19 @@ No payload, URL, identity, event, exception message or provider-internal reasoni
 belongs on these spans. Cumulative usage is recorded once per logical model call,
 not added across chunks or copied onto parent spans. The SDK/exporter capture
 controls and existing offline no-export controls must stay non-vacuous.
+
+Request spans instrument the actual `create_app` instance through the public
+FastAPI instrumentor, not the distro's replacement of a prebound constructor.
+Keep the per-app connection/exporter gate and exactly-once instrumentation. The
+request tracer facade delegates to the same SDK provider/sampler/exporter while
+projecting route-template/status metadata before recording; no raw path/query,
+credentials, identities, exception payloads or caller-written metadata may reach
+it or GenAI children. Do not register a second provider, increase sampling or
+enable raw request metrics to make coverage appear healthy. The shipping
+1.8.9/b55/1.43.0/0.64b0 integration controls use the actual app and SDK, not only a
+constructor-order mock; metadata-only package checks do not prove imported SDK
+source. See `docs/runbooks/telemetry.md` for the bounded post-deployment observation
+and the distinction between missing coverage and proven exporter failure.
 
 **Any edit to `app/api/pyproject.toml` must be followed by `uv lock` in the same
 commit.** `uv.lock` records the declared specifier alongside resolved versions, so
@@ -453,6 +490,12 @@ pushed. A digest is content-addressed, so an identical rebuild yields an identic
 reference; the older "new revision, changed image string" heuristic remains only as
 a fallback for callers that cannot name the image. Do not drop those flags.
 
+The workflow uses `azd provision --no-prompt --no-state`: the pinned azd's
+unchanged-template/parameter shortcut is not a live drift check and can skip
+reconciliation after application rollback. Keep the supported `--no-state`
+option, not state-file deletion or an unsupported `--force` substitute. The
+explicit manual `provision=false` opt-out remains unchanged.
+
 Rollback state is captured **before `azd provision`**, not merely before
 application deployment: all three Bicep app modules use a quickstart placeholder
 image for greenfield creation, so an infrastructure reconciliation can create a
@@ -470,6 +513,18 @@ template could cut over. Validate v1 captured image/scale against the immutable
 source revision before copying; never infer an unknown or mismatched saved image.
 Single-mode copy confirmation requires the actual new healthy/provisioned serving
 template, settled latest/desired state and the previous latest candidate inactive.
+Compare writable template intent using only the evidenced ARM projection rules:
+exclude the explicitly read-only `resources.ephemeralStorage` in containers and
+init containers, and resolve only unset/missing scale `cooldownPeriod` and
+`pollingInterval` to their published 300/30-second defaults. Preserve explicit
+zero/nondefaults and every other field; malformed types, unknown changes and
+bool/int/float equality shortcuts must not become a pass. Same-version raw GETs
+also expose these differences, so changing CLI transport alone is not a fix.
+Candidate acceptance must exercise actual pending/restoration/rollout predicates;
+capture or healthy-image reads alone do not cover writable-template comparison.
+Cutover diagnostics retain fixed difference areas and bounded probe-field
+presence/type/counts from those same reads, never probe configuration values.
+These shapes do not equate missing/null/empty probes or relax a failed comparison.
 Multiple mode pins all traffic to the exact captured revision without switching
 modes. Preserve min-zero support, per-app failure isolation and no write replay;
 see `docs/runbooks/deployment.md#automatic-and-manual-rollback`.
@@ -660,6 +715,14 @@ unknown, colliding, stale or overprivileged observations. Fresh plans classify
 partial setup; do not auto-clean up or replay an uncertain write. The separate
 read-only configuration check only prints an activation command after exact
 metadata readback; it is not live OIDC/report proof or approval to run it.
+Setup may continue only account inventory through the shared
+`_capacity_evidence.account_continuation` validator, rebuilding the exact scoped
+GET from the approved version and opaque cursor. Keep 64 pages, 4,096 total rows
+and the existing shared call/time/byte budgets; reject cross-page duplicates,
+repeated cursors and conflicting ownership before accepting terminal coverage.
+All expected regions on an early page are still candidates until a terminal
+page is validated. Identity/role/assignment/federation continuation remains
+unsupported. Keep the shared helper source hash bound into plan approval.
 See [the reporting runbook](docs/runbooks/deployment.md#read-only-model-retirement-reporting)
 before changing source authority, admission policy or activation.
 
@@ -702,8 +765,18 @@ The vendored proxy plus AI4IA auth guard tests use .NET 10:
 ```powershell
 dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --locked-mode
 dotnet build   proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-restore
-dotnet test    proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-build --no-restore
+dotnet test    proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-build --no-restore --nologo -- --minimum-expected-tests 40
 ```
+
+The existing MSTest bridge runs actual tests after locked restore/build. The
+minimum discovery floor also rejects an empty run; the isolated runner controls
+pair a passing test with an intentional failing test and zero discovery.
+No-replay tests drive public proxy sends and compile the actual APIM fragment
+expressions with the installed SDK compiler against offline context projections
+and loopback providers. They are not an Azure policy compiler or live capability
+proof. Generated backend fragments omit only parser-identified XML comment nodes
+to fit the unchanged 48 KiB compiler ceiling; authored comments and C# bytes stay
+intact.
 
 When a proxy project dependency changes, refresh from the top-level test project
 with `dotnet restore ... --force-evaluate`. NuGet does not recalculate
@@ -776,6 +849,16 @@ exact-run job/artifact reads, without checkout or OIDC. Deployment admission
 stays permissionless. These source contracts do not configure live GitHub policy.
 
 ## Dependency updates and issue closeout
+
+Before updating an exact action-pin assertion, resolve the official version tag
+to its release commit and review the action metadata and shipped code. Keep
+`test_foundry_assets_workflow.py`'s exact Azure login pin and complete OIDC input
+map; a prefix or SHA-shape check does not approve a release. The reviewed
+`azure/login` v3.1.0 defaults retain `api://AzureADTokenExchange`, `azurecloud`,
+`SERVICE_PRINCIPAL` and client-ID masking. Its unmasking and PowerShell context
+inputs remain unused. Reuse `test_gating_workflows.py`'s consumer-derived
+permission checks rather than copying a workflow/job grant map. A dependency
+update does not authorize new inputs, credentials, federated subjects or grants.
 
 Routine API updates stay in `api-deps`. FastAPI and Starlette are a compatibility
 pair in `api-framework`; `azure-ai-projects` stays ungrouped so its exact SDK,
@@ -1136,6 +1219,30 @@ shared application dispatches, not just loop iterations. Finite USD caps and
 hard-quota durable execution remain refused under the unproven downstream attempt
 envelope. See [the automation contract](docs/workflow-automation.md); source
 completion never implies live activation.
+
+The additive per-run monetary contract reserves shared catalog/price bounds in
+the existing owner ETag CAS before actual dispatch. It is an immutable USD
+application-meter limit, not an owner balance or Azure bill cap. Preserve
+settled/held/unknown totals and compacted-charge floors when removing delivered
+effects; missing accounting is not zero and unknown work never expires into a
+refund. Reserve escaped state space for every later settlement transition.
+Accounting survives caller expiry and conversation cleanup without new grants.
+Draft spend evidence binds exact owner/source/run/operation/schema/destination/
+arguments/expiry, original prices/coverage/attempt identity and current run
+budget revision. A changed quote cannot use an old one-time challenge; ordinary
+reads never reprice it. Local zero requires the actual repository handler and a
+task-inherited no-metered-effect guard, not tool annotations.
+The first finite profile is explicitly stateless text, with tools and automatic
+memory denied and no selected tool/resource requirements silently discarded.
+Shipping attempt proof remains absent; flags, metadata or local fixtures cannot
+enable finite admission. Unknown remote meters and the independent hard-quota
+durable/nonlocal refusals remain unchanged.
+Monetary retirement selection and validation share the invocation-key timestamp
+and replay floor, not the later run creation time. Retain ineligible or unresolved
+rows without blocking unrelated valid admission. HTTP financial projections must
+include their defaulted currency/scope and explicit unknown nulls; recursively
+excluding unset/none fields breaks consumers. Actual API responses and browser
+validators share `app/web/test-fixtures/workflow_money.json`.
 
 ## Staged GA Realtime protocol
 

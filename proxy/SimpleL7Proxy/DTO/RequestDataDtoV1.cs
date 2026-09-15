@@ -2,6 +2,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using SimpleL7Proxy.Proxy;
 
 namespace SimpleL7Proxy.DTO
 {
@@ -22,6 +23,7 @@ namespace SimpleL7Proxy.DTO
         public int Priority2 { get; set; }
         public int Timeout { get; set; }
         public int version { get; set; } = 1;
+        public string? AttemptContract { get; set; }
         public ProxyEventDto ProxyEvent { get; set; }
         public string BlobContainerName { get; set; }
         public string FullURL { get; set; }
@@ -35,6 +37,7 @@ namespace SimpleL7Proxy.DTO
 
         public RequestDataDtoV1(RequestData data)
         {
+            NoReplayAttempt.RefusePersistence(data);
             AsyncBlobAccessTimeoutSecs = data.AsyncBlobAccessTimeoutSecs;
             LifetimeBackendAttempts = data.LifetimeBackendAttempts;
             LifetimePolicyCycleCounter = data.LifetimePolicyCycleCounter;
@@ -136,7 +139,10 @@ namespace SimpleL7Proxy.DTO
 
         public void PopulateInto(RequestData data)
         {
-
+            NoReplayAttempt.RefusePersistence(data);
+            if (AttemptContract is not null || NoReplayAttempt.IsVersionedPath(Path) ||
+                Headers.Keys.Any(NoReplayAttempt.IsInternalHeader))
+                throw new InvalidOperationException("Bounded gateway requests cannot be recovered.");
             data.Populate(Guid.ToString(), Guid, MID, Path, Method, Timestamp, Headers);
             data.AsyncBlobAccessTimeoutSecs = this.AsyncBlobAccessTimeoutSecs;
             data.LifetimeBackendAttempts = this.LifetimeBackendAttempts;

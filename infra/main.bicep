@@ -122,6 +122,9 @@ param voiceLiveEnabled bool = false
 @description('Stage the separate GA Realtime APIM API/key. Default OFF. Requires voiceLiveEnabled and leaves preview selected until realtimeProtocol is explicitly changed with approval.')
 param realtimeGaEnabled bool = false
 
+@description('Stage only the isolated one-attempt v1 routes/key on the existing APIM. Default OFF; does not select bounded runtime traffic or activate quotas.')
+param gatewayAttemptsV1Staged bool = false
+
 @allowed([
   'preview'
   'ga'
@@ -830,6 +833,7 @@ module gateway 'modules/gateway.bicep' = {
     containerEnvName: platform.outputs.containerEnvName
     speechVoiceLiveEnabled: speechVoiceLiveEnabled
     realtimeGaEnabled: realtimeGaEnabled
+    gatewayAttemptsV1Staged: gatewayAttemptsV1Staged
     // Speech Voice Live reuses the existing eastus2 AIServices account computed
     // above; no new AIServices account is provisioned for this capability.
     speechVoiceLiveAccountName: speechVoiceLiveAccountName
@@ -965,6 +969,7 @@ module api 'modules/api.bicep' = {
     modelGatewayAuthMode: 'api_key'
     modelGatewayApiKey: gateway.outputs.proxyIngressKey
     modelGatewayApiKeyHeader: 'S7P-KEY'
+    gatewayAttemptsV1Staged: gatewayAttemptsV1Staged
     // Realtime stays on the FastAPI relay -> APIM path because the proxy does
     // not support WebSockets. The separately scoped subscription key cannot call
     // the normal APIM model API, so compatible traffic cannot bypass the proxy.

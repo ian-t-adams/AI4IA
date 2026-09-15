@@ -37,6 +37,7 @@ public class RequeueDelayWorker : IRequeueWorker, IShutdownParticipant, IDisposa
 
     public void DelayAsync(RequestData request, int delayMs)
     {
+        NoReplayAttempt.RefusePersistence(request);
         request.Requeued = true;
         request.SkipDispose = true;
 

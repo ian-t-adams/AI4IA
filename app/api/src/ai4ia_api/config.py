@@ -127,6 +127,8 @@ class Settings(BaseSettings):
     gateway_provider_style: GatewayProviderStyle = GatewayProviderStyle.azure_openai_native
     gateway_api_version: str = "2025-04-01-preview"
     gateway_timeout_seconds: float = 120.0
+    # Staging is not capability issuance or runtime selection.
+    gateway_attempts_v1_staged: bool = False
     # Image generation has its own api-version + timeout: image models
     # (gpt-image-2 etc.) can take much longer than a chat turn and may track a
     # different supported api-version than chat. 2024-10-21 (GA) is verified
@@ -1146,6 +1148,25 @@ class Settings(BaseSettings):
                     f"do not reuse AI4IA_{name}."
                 )
 
+    def validate_gateway_attempts_v1(self) -> None:
+        if not self.gateway_attempts_v1_staged:
+            return
+        url = urlparse(self.model_gateway_url)
+        if (
+            url.scheme != "https" or not url.hostname or url.username or url.password
+            or url.query or url.fragment or url.path.rstrip("/") != "/openai"
+            or self.model_gateway_auth_mode != GatewayAuthMode.api_key
+            or not self.model_gateway_api_key
+            or self.model_gateway_api_key_header.lower() != "s7p-key"
+            or self.gateway_provider_style != GatewayProviderStyle.azure_openai_native
+            or self.gateway_chat_path
+        ):
+            raise RuntimeError(
+                "AI4IA_GATEWAY_ATTEMPTS_V1_STAGED requires the governed HTTPS /openai "
+                "proxy ingress, S7P-KEY authentication and native unmodified routes. "
+                "Staging does not supply a verified runtime capability."
+            )
+
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
         self._validate_data_residency()
@@ -1194,6 +1215,7 @@ class Settings(BaseSettings):
                 "AI4IA_MODEL_GATEWAY_AUTH_MODE=api_key|bearer."
             )
         self._validate_model_gateway_posture()
+        self.validate_gateway_attempts_v1()
         if (
             self.model_gateway_auth_mode == GatewayAuthMode.api_key
             and not self.model_gateway_api_key

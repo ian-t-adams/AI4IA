@@ -121,6 +121,8 @@ def configure_telemetry(connection_string: str | None) -> bool:
         configure_azure_monitor(
             connection_string=connection_string,
             logger_name=TELEMETRY_LOGGER_NAME,
+            # Instance instrumentation owns request privacy and the per-app gate.
+            instrumentation_options={"fastapi": {"enabled": False}},
         )
     except Exception:  # pragma: no cover - defensive: telemetry never breaks boot
         logging.getLogger(__name__).warning(
@@ -135,9 +137,8 @@ def configure_telemetry(connection_string: str | None) -> bool:
     # path emits its own structured stdout usage line for Log Analytics.
     _telemetry_logger.propagate = False
 
-    # The distro instruments FastAPI + the Azure SDKs but not httpx, which the
-    # chat path uses for outbound model-gateway calls. Instrument it so those
-    # surface as App Insights dependencies.
+    # FastAPI is instrumented per instance by the application factory. The distro
+    # instruments Azure SDKs but not httpx, so wire outbound dependencies here.
     try:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 

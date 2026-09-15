@@ -26,8 +26,9 @@ from ..request_constraints import (
     constrain_tool_parameters, contains_tool_output, fresh_session_required, tools_allowed,
 )
 from ..http_retry import request_with_retry
-from ..hard_quota.dispatch import DispatchLease, admitted_dispatch
-from ..hard_quota.models import Surface
+from ..hard_quota.coverage import AttemptEnvelope
+from ..hard_quota.dispatch import DispatchLease, admitted_dispatch, current_dispatch_owner
+from ..hard_quota.models import QuotaError, Surface
 from ..model_traits import (
     is_anthropic_messages_deployment,
     is_reasoning_deployment,
@@ -42,6 +43,10 @@ from .anthropic import (
     parse_anthropic_event,
 )
 from .priority import PRIORITY_HEADER, get_request_priority
+from .attempts import (
+    GatewayCapabilityVerifier, bounded_http_client, no_replay_selected, prepare_attempt,
+    versioned_target,
+)
 
 # Azure OpenAI reasoning models (the GPT-5 family and the o-series) reject the
 # classic Chat Completions sampling/limit parameters. The predicate lives in
@@ -245,6 +250,12 @@ def _normalize_params_for_responses(params: dict[str, Any] | None) -> dict[str, 
       ``stream``/``stream_options`` keys (``stream`` is set by the builder).
     """
     out: dict[str, Any] = dict(params or {})
+    if no_replay_selected() and any(
+        type(out[name]) is not int or out[name] <= 0
+        for name in ("max_output_tokens", "max_completion_tokens", "max_tokens")
+        if name in out
+    ):
+        raise QuotaError("Bounded Responses requires a positive integer output maximum.")
     max_out = out.pop("max_output_tokens", None)
     for key in ("max_completion_tokens", "max_tokens"):
         value = out.pop(key, None)
@@ -257,6 +268,10 @@ def _normalize_params_for_responses(params: dict[str, Any] | None) -> dict[str, 
     out["max_output_tokens"] = (
         max_out if fresh_session_required() and type(max_out) is int and max_out > 0 else floored
     )
+    if no_replay_selected() and type(max_out) is int and max_out > 0:
+        # A reduction-only request must not silently widen its admitted maximum.
+        # This does not select or grant the distinct fresh-session actor path.
+        out["max_output_tokens"] = max_out
 
     effort = out.pop("reasoning_effort", None)
     if effort:
@@ -467,7 +482,10 @@ def _default_transcription_path(style: GatewayProviderStyle) -> str:
 
 
 class ModelGatewayClient:
-    def __init__(self, settings: Settings, http_client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self, settings: Settings, http_client: httpx.AsyncClient | None = None, *,
+        attempt_verifier: GatewayCapabilityVerifier | None = None,
+    ) -> None:
         self._base = settings.model_gateway_url.rstrip("/")
         self._style = settings.gateway_provider_style
         self._api_version = settings.gateway_api_version
@@ -495,6 +513,22 @@ class ModelGatewayClient:
         self._hard_quota_enabled = settings.hard_quota_enabled
         self._model_telemetry = ModelTelemetry(settings)
         self._group_policy_enabled = settings.group_policy_enabled
+        self._attempt_verifier = attempt_verifier
+        settings.validate_gateway_attempts_v1()
+        self._attempt_staged = settings.gateway_attempts_v1_staged
+
+    @property
+    def attempt_capability(self) -> AttemptEnvelope | None:
+        """Availability only; admission requires the exact prepared request proof."""
+        capability = self._attempt_verifier.capability if self._attempt_staged and self._attempt_verifier else None
+        if capability is None:
+            return None
+        capability.validate(self._base)
+        return capability.envelope
+
+    def attempt_capability_for(self, api: str) -> AttemptEnvelope | None:
+        """Provider-aware availability, still not a prepared request proof."""
+        return self.attempt_capability if api in {"chat", "responses", "embedding"} else None
 
     async def _post(
         self, client: httpx.AsyncClient, url: str, *, surface: Surface,
@@ -502,8 +536,19 @@ class ModelGatewayClient:
         evidence: CapturedModelCall | None = None, telemetry: ModelSpan | None = None,
         **kwargs: Any,
     ) -> httpx.Response:
-        async with admitted_dispatch(
-            surface, payload, deployment=deployment, target=url, required=self._hard_quota_enabled,
+        if no_replay_selected() and set(kwargs) - {"headers", "json"}:
+            raise QuotaError("Unsupported bounded gateway transport options.")
+        if no_replay_selected():
+            url = versioned_target(self._base, url, surface=surface, deployment=deployment, api=api)
+        async with prepare_attempt(
+            surface, payload, deployment=deployment, target=url, gateway_url=self._base,
+            owner=current_dispatch_owner(), verifier=self._attempt_verifier,
+            credential_header=self._api_key_header,
+            has_credential=self._auth_mode == GatewayAuthMode.api_key and bool(self._api_key),
+            staged=self._attempt_staged, api=api,
+        ) as attempt, admitted_dispatch(
+            surface, json.loads(attempt.body) if attempt else payload,
+            deployment=deployment, target=url, required=self._hard_quota_enabled,
             observe=evidence.report_admission if evidence is not None else None,
             policy_required=self._group_policy_enabled,
         ) as admission:
@@ -511,8 +556,17 @@ class ModelGatewayClient:
                 kwargs["json"] = admission.payload
             if telemetry is not None:
                 telemetry.request(admission.payload)
-            with telemetry.http_scope() if telemetry is not None else nullcontext():
-                response = await client.post(url, **kwargs)
+            async with AsyncExitStack() as stack:
+                if attempt is not None:
+                    client = await stack.enter_async_context(bounded_http_client(self._timeout))
+                    kwargs["headers"] = attempt.claim(admission.payload, kwargs.get("headers", {}))
+                    kwargs.pop("json", None)
+                    kwargs["content"] = attempt.body
+                    kwargs["follow_redirects"] = False
+                with telemetry.http_scope() if telemetry is not None else nullcontext():
+                    response = await client.post(url, **kwargs)
+                if attempt is not None:
+                    attempt.check_response(response)
             if (admission.reservation is not None or admission.workflow_observed) and response.is_success:
                 usage = None
                 if surface in {"chat", "embedding"}:
@@ -539,19 +593,38 @@ class ModelGatewayClient:
     async def _stream_request(
         self, client: httpx.AsyncClient, req: GatewayRequest, *, deployment: str,
         evidence: CapturedModelCall | None, telemetry: ModelSpan | None = None,
+        api: str = "chat",
     ) -> AsyncIterator[tuple[httpx.Response, DispatchLease]]:
-        async with admitted_dispatch(
-            "chat", req.json, deployment=deployment, target=req.url, required=self._hard_quota_enabled,
+        url = versioned_target(
+            self._base, req.url, surface="chat", deployment=deployment, api=api,
+        ) if no_replay_selected() else req.url
+        async with prepare_attempt(
+            "chat", req.json, deployment=deployment, target=url, gateway_url=self._base,
+            owner=current_dispatch_owner(), verifier=self._attempt_verifier,
+            credential_header=self._api_key_header,
+            has_credential=self._auth_mode == GatewayAuthMode.api_key and bool(self._api_key),
+            staged=self._attempt_staged, api=api,
+        ) as attempt, admitted_dispatch(
+            "chat", json.loads(attempt.body) if attempt else req.json,
+            deployment=deployment, target=url, required=self._hard_quota_enabled,
             observe=evidence.report_admission if evidence is not None else None,
             policy_required=self._group_policy_enabled,
         ) as admission:
             if telemetry is not None:
                 telemetry.request(admission.payload)
             async with AsyncExitStack() as stack:
+                headers = req.headers
+                body_args: dict[str, Any] = {"json": admission.payload}
+                if attempt is not None:
+                    client = await stack.enter_async_context(bounded_http_client(self._timeout))
+                    headers = attempt.claim(admission.payload, headers)
+                    body_args = {"content": attempt.body, "follow_redirects": False}
                 with telemetry.http_scope() if telemetry is not None else nullcontext():
                     response = await stack.enter_async_context(client.stream(
-                        "POST", req.url, headers=req.headers, json=admission.payload,
+                        "POST", url, headers=headers, **body_args,
                     ))
+                if attempt is not None:
+                    attempt.check_response(response)
                 yield response, admission
 
     def _auth_headers(self, correlation_id: str | None) -> dict[str, str]:
@@ -1342,7 +1415,10 @@ class ModelGatewayClient:
             # is rejected with 400 (before any bytes are yielded), retry once
             # without it. 400 is the unsupported-parameter signal; other statuses
             # (401/403/429/5xx) are not param-related and propagate immediately.
-            attempts = [True, False] if self._stream_include_usage else [False]
+            attempts = (
+                [True, False] if self._stream_include_usage and not no_replay_selected()
+                else [self._stream_include_usage]
+            )
             for attempt_idx, include_usage in enumerate(attempts):
                 req = self.build_request(
                     deployment=deployment,
@@ -1417,6 +1493,7 @@ class ModelGatewayClient:
                 evidence.request(req.json)
             async with self._stream_request(
                 client, req, deployment=deployment, evidence=evidence, telemetry=telemetry,
+                api=ANTHROPIC_API,
             ) as (resp, admission):
                 if resp.status_code >= 400:
                     body = await resp.aread()
@@ -1495,6 +1572,7 @@ class ModelGatewayClient:
                 evidence.request(req.json)
             async with self._stream_request(
                 client, req, deployment=deployment, evidence=evidence, telemetry=telemetry,
+                api="responses",
             ) as (resp, admission):
                 if resp.status_code >= 400:
                     body = await resp.aread()

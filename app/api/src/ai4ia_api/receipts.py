@@ -51,13 +51,14 @@ import hashlib
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
 from .agents.tools import is_safe_tool_name, redact, redact_obj
 from .agents.consent import ApprovalSource, ToolConsentSummary
 from .model_evidence import ModelCallEvidence, ModelCallRecorder, ReceiptCostSummary, combine_costs
 from .safety import MessageSafety
 from .usage.models import TokenUsage
+from .usage.workflow_evidence import ReceiptWorkflowMoney
 from .publishing.refs import PublicationEvidence
 
 # Receipt schema generation. Bumped when the shape changes in a way a reader
@@ -386,6 +387,14 @@ class ExecutionReceipt(BaseModel):
     # Fixed, bounded machine-readable markers for why (``prompt_capped``,
     # ``tool_calls_capped``, ``receipt_size_capped``, ``receipt_build_failed``).
     notes: list[str] = Field(default_factory=list)
+    workflowMoney: ReceiptWorkflowMoney | None = None
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_shape(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        body = handler(self)
+        if self.workflowMoney is None:
+            body.pop("workflowMoney", None)
+        return body
 
 
 def _note(receipt: ExecutionReceipt, marker: str) -> None:

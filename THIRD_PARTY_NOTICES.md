@@ -18,6 +18,8 @@ Upstream license: MIT License, copyright Microsoft Corporation. A copy of the up
 upstream-equivalent, AI4IA-patched, and AI4IA-added file. See `proxy/README.md`
 for the audited pin, current drift assessment, patch rationale, and regeneration
 procedure; do not copy counts into this notice because the manifest owns them.
+The AI4IA one-attempt transport, authenticated request binding and replay fences
+are local adaptations over that unchanged pin, documented in the same inventory.
 
 ## Application dependencies
 

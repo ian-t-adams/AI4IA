@@ -1,4 +1,52 @@
 <fragment>
+<!-- Authenticated reduction only. The HMAC binds the original bytes, model,
+		     method, path/query and nonce to the existing scoped proxy credential.
+		     This is not a deployment-capability handshake or a replay cache. -->
+<set-variable name="attemptValidation" value="@{
+			var headers = context.Request.Headers;
+			var names = headers.Keys.Where(k => k.StartsWith(&quot;x-ai4ia-attempt&quot;, StringComparison.OrdinalIgnoreCase) || k.StartsWith(&quot;x-ai4ia-proxy-attempt&quot;, StringComparison.OrdinalIgnoreCase)).ToArray();
+			if (names.Length == 0) { return 0; }
+			if (names.Length != 2 || context.Subscription == null ||
+				!headers.ContainsKey(&quot;x-ai4ia-attempt&quot;) || !headers.ContainsKey(&quot;x-ai4ia-proxy-attempt&quot;) ||
+				headers[&quot;x-ai4ia-attempt&quot;].Length != 1 || headers[&quot;x-ai4ia-proxy-attempt&quot;].Length != 1 ||
+				!headers.ContainsKey(&quot;x-LLMModel&quot;) || headers[&quot;x-LLMModel&quot;].Length != 1) { return -1; }
+			string value = headers[&quot;x-ai4ia-attempt&quot;][0];
+			string signature = headers[&quot;x-ai4ia-proxy-attempt&quot;][0];
+			var match = System.Text.RegularExpressions.Regex.Match(value, @&quot;\Aai4ia-one-attempt-v1\.([0-9a-f]{32})\.([0-9a-f]{64})\z&quot;);
+			if (!match.Success || !System.Text.RegularExpressions.Regex.IsMatch(signature, @&quot;\A[0-9a-f]{64}\z&quot;) || context.Request.Method != &quot;POST&quot;) { return -1; }
+			byte[] body = context.Request.Body.As&lt;byte[]&gt;(preserveContent: true);
+			if (body.Length > 1048576) { return -1; }
+			string digest = BitConverter.ToString(System.Security.Cryptography.SHA256.Create().ComputeHash(body)).Replace(&quot;-&quot;, &quot;&quot;).ToLowerInvariant();
+			if (digest != match.Groups[2].Value) { return -1; }
+			string query = context.Request.OriginalUrl.QueryString;
+			string path = context.Request.OriginalUrl.Path + (string.IsNullOrEmpty(query) ? &quot;&quot; : &quot;?&quot; + query.TrimStart('?'));
+			string signed = value + &quot;\nPOST\n&quot; + path + &quot;\n&quot; + headers[&quot;x-LLMModel&quot;][0];
+			foreach (string key in new[] { context.Subscription.PrimaryKey, context.Subscription.SecondaryKey }) {
+				if (string.IsNullOrEmpty(key)) { continue; }
+				string expected = BitConverter.ToString(new System.Security.Cryptography.HMACSHA256(System.Text.Encoding.UTF8.GetBytes(key)).ComputeHash(System.Text.Encoding.UTF8.GetBytes(signed))).Replace(&quot;-&quot;, &quot;&quot;).ToLowerInvariant();
+				int difference = 0;
+				for (int i = 0; i &lt; expected.Length; i++) { difference |= expected[i] ^ signature[i]; }
+				if (difference == 0) { return 1; }
+			}
+			return -1;
+		}" />
+<choose>
+			<when condition="@(context.Variables.GetValueOrDefault&lt;int>(&quot;attemptValidation&quot;, -1) &lt; 0)">
+				<return-response>
+					<set-status code="400" reason="Invalid gateway attempt contract" />
+					<set-body>{"error":{"code":"invalid_attempt_contract"}}</set-body>
+				</return-response>
+			</when>
+		</choose>
+<set-variable name="noReplay" value="@(context.Variables.GetValueOrDefault&lt;int>(&quot;attemptValidation&quot;, -1) == 1)" />
+<set-variable name="attemptAck" value="@{
+			string value = context.Request.Headers.GetValueOrDefault(&quot;x-ai4ia-attempt&quot;, &quot;&quot;);
+			return context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) ? value.Substring(0, value.LastIndexOf('.')) : &quot;&quot;;
+		}" />
+<set-variable name="attemptClaimed" value="@(false)" />
+<set-header name="x-ai4ia-attempt" exists-action="delete" />
+<set-header name="x-ai4ia-proxy-attempt" exists-action="delete" />
+<set-header name="x-ai4ia-attempt-ack" exists-action="delete" />
 <choose>
 			<when condition="@(context.Request.Url.Path.EndsWith(&quot;/openai/status&quot;, StringComparison.OrdinalIgnoreCase))">
 				<return-response>

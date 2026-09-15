@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
+from xml.parsers import expat
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _generator import build_parser
@@ -50,6 +51,8 @@ PRIORITY_POLICY_PATH = (
 PRIORITY_OUTPUT_PATH = (
     ROOT / "infra" / "policies" / "simplel7proxy-priority-policy.xml"
 )
+ATTEMPTS_GUARD_PATH = ROOT / "infra" / "policies" / "attempts-v1-guard.xml"
+ATTEMPTS_OUTPUT_PATH = ROOT / "infra" / "policies" / "attempts-v1-policy.xml"
 PRIORITY_FRAGMENT_IDS = (
     "simplel7proxy_inbound_pre_32",
     "simplel7proxy_inbound_post_32",
@@ -693,10 +696,34 @@ def _node_tag(node: str) -> str:
     return match.group(1) if match else ""
 
 
-def _serialize_fragment(children: list[str]) -> str:
+def _serialize_fragment(children: list[str], *, compact_comments: bool = False) -> str:
     body = "\n".join(child.rstrip() for child in children)
-    body = "\n".join(line.rstrip() for line in body.splitlines())
-    return f"<fragment>\n{body}\n</fragment>\n"
+    fragment = f"<fragment>\n{body}\n</fragment>\n"
+    if compact_comments:
+        fragment = _without_xml_comments(fragment)
+    return "\n".join(line.rstrip() for line in fragment.splitlines()) + "\n"
+
+
+def _without_xml_comments(xml_text: str) -> str:
+    """Remove only parser-identified XML comments; preserve all expression bytes."""
+    raw = xml_text.encode("utf-8")
+    parser = expat.ParserCreate()
+    ranges: list[tuple[int, int]] = []
+
+    def comment(_text: str) -> None:
+        start = parser.CurrentByteIndex
+        end = raw.index(b"-->", start) + 3
+        ranges.append((start, end))
+
+    parser.CommentHandler = comment
+    parser.Parse(raw, True)
+    chunks: list[bytes] = []
+    position = 0
+    for start, end in ranges:
+        chunks.append(raw[position:start])
+        position = end
+    chunks.append(raw[position:])
+    return b"".join(chunks).decode("utf-8")
 
 
 def generate_priority_policies() -> tuple[str, tuple[str, ...]]:
@@ -763,7 +790,10 @@ def generate_priority_policies() -> tuple[str, tuple[str, ...]]:
     fragments = (
         _serialize_fragment(inbound_pre),
         _serialize_fragment(inbound_post),
-        _serialize_fragment(backend_children),
+        # Keep explanatory comments in the authored policy, not in the bounded
+        # deployed fragment. The one-attempt guards must fit the observed APIM
+        # compiler ceiling without splitting a retry scope or raising the limit.
+        _serialize_fragment(backend_children, compact_comments=True),
         _serialize_fragment(outbound_children),
         _serialize_fragment(on_error_children),
     )
@@ -800,6 +830,30 @@ def generate_priority_policies() -> tuple[str, tuple[str, ...]]:
         + "</policies>\n"
     )
     return wrapper, fragments
+
+
+def generate_attempts_policy(wrapper: str) -> str:
+    guard = ATTEMPTS_GUARD_PATH.read_text(encoding="utf-8")
+    guard_nodes = _section_nodes(guard, "fragment")
+    ordinary_start = (
+        "    <base />\n"
+        f'    <include-fragment fragment-id="{PRIORITY_FRAGMENT_IDS[0]}" />\n'
+    )
+    if wrapper.count(ordinary_start) != 1:
+        raise ValueError("versioned gateway requires the exact shared inbound chain")
+    selected = wrapper.replace(
+        ordinary_start,
+        "\n".join(guard_nodes) + "\n"
+        f'    <include-fragment fragment-id="{PRIORITY_FRAGMENT_IDS[0]}" />\n',
+        1,
+    )
+    # A mandatory guard before <base/> cannot bound metered inherited policies.
+    # This API owns its full chain; the legacy API retains normal inheritance.
+    sections = []
+    for name in ("inbound", "backend", "outbound", "on-error"):
+        nodes = [node for node in _section_nodes(selected, name) if _node_tag(node) != "base"]
+        sections.append(f"  <{name}>\n" + "\n".join(nodes) + f"\n  </{name}>\n")
+    return "<policies>\n" + "".join(sections) + "</policies>\n"
 
 
 def generate_endpoint_policies() -> tuple[str, tuple[str, ...]]:
@@ -1272,6 +1326,7 @@ def main() -> int:
             PRIORITY_POLICY_PATH.read_text(encoding="utf-8"),
         ),
         (PRIORITY_OUTPUT_PATH, priority_generated),
+        (ATTEMPTS_OUTPUT_PATH, generate_attempts_policy(priority_generated)),
         (REALTIME_OUTPUT_PATH, realtime_generated),
         (REALTIME_GA_OUTPUT_PATH, realtime_ga_generated),
     )
@@ -1302,7 +1357,9 @@ def main() -> int:
             code_interpreter_policy,
             str(CODE_INTERPRETER_POLICY_PATH.relative_to(ROOT)),
         )
-        if len(priority_generated.encode("utf-8")) > APIM_API_POLICY_MAX_BYTES:
+        if max(len(content.encode("utf-8")) for content in (
+            priority_generated, generate_attempts_policy(priority_generated),
+        )) > APIM_API_POLICY_MAX_BYTES:
             raise ValueError(
                 f"{PRIORITY_OUTPUT_PATH.relative_to(ROOT)} exceeds "
                 f"{APIM_API_POLICY_MAX_BYTES} bytes"
@@ -1315,6 +1372,7 @@ def main() -> int:
         generated_outputs = (
             *fragments,
             (PRIORITY_OUTPUT_PATH, priority_generated),
+            (ATTEMPTS_OUTPUT_PATH, generate_attempts_policy(priority_generated)),
             (REALTIME_OUTPUT_PATH, realtime_generated),
             (REALTIME_GA_OUTPUT_PATH, realtime_ga_generated),
         )
@@ -1334,6 +1392,7 @@ def main() -> int:
     for path, content in (
         *fragments,
         (PRIORITY_OUTPUT_PATH, priority_generated),
+        (ATTEMPTS_OUTPUT_PATH, generate_attempts_policy(priority_generated)),
         (REALTIME_OUTPUT_PATH, realtime_generated),
         (REALTIME_GA_OUTPUT_PATH, realtime_ga_generated),
     ):

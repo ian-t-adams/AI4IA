@@ -56,6 +56,7 @@ import type {
   AutomationConfig, AutomationReview, AutomationRun, AutomationStart,
   ScheduleWrite, WorkflowSchedule,
 } from "./workflowAutomation";
+import { validateAutomationMoney, validateWorkflowSpend } from "./workflowAutomation";
 
 export class ApiError extends Error {
   constructor(
@@ -168,19 +169,21 @@ export async function getWorkflowAutomationConfig(signal?: AbortSignal): Promise
 }
 
 export async function listWorkflowApprovals(signal?: AbortSignal): Promise<{ runs: AutomationRun[] }> {
-  return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/approvals`, { cache: "no-store", signal }));
+  const value = await jsonOrThrow<{ runs: AutomationRun[] }>(await apiFetch(`${AUTOMATION_PATH}/approvals`, { cache: "no-store", signal }));
+  value.runs.forEach(validateAutomationMoney);
+  return value;
 }
 
 export async function startResumableWorkflow(body: AutomationStart): Promise<AutomationRun> {
-  return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/runs`, {
+  return validateAutomationMoney(await jsonOrThrow<AutomationRun>(await apiFetch(`${AUTOMATION_PATH}/runs`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-  }));
+  })));
 }
 
 export async function getAutomationRun(runId: string, signal?: AbortSignal): Promise<AutomationRun> {
-  return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/runs/${encodeURIComponent(runId)}`, {
+  return validateAutomationMoney(await jsonOrThrow<AutomationRun>(await apiFetch(`${AUTOMATION_PATH}/runs/${encodeURIComponent(runId)}`, {
     cache: "no-store", signal,
-  }));
+  })));
 }
 
 export async function cancelAutomationRun(runId: string): Promise<AutomationRun> {
@@ -191,11 +194,20 @@ export async function recoverAutomationRun(runId: string): Promise<AutomationRun
   return jsonOrThrow(await apiFetch(`${AUTOMATION_PATH}/runs/${encodeURIComponent(runId)}/recover-start`, { method: "POST" }));
 }
 
-export async function reviewWorkflowApproval(runId: string, draftId: string): Promise<AutomationReview> {
-  return jsonOrThrow(await apiFetch(
+export async function reviewWorkflowApproval(
+  runId: string, draftId: string, refreshSpendQuote = false,
+): Promise<AutomationReview> {
+  const value = await jsonOrThrow<AutomationReview>(await apiFetch(
     `${AUTOMATION_PATH}/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(draftId)}/review`,
-    { method: "POST", cache: "no-store" },
+    {
+      method: "POST", cache: "no-store",
+      ...(refreshSpendQuote ? {
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refreshSpendQuote: true }),
+      } : {}),
+    },
   ));
+  if (value.spendEvidence !== undefined) validateWorkflowSpend(value.spendEvidence);
+  return validateAutomationMoney(value);
 }
 
 export async function decideWorkflowApproval(

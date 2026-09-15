@@ -209,6 +209,19 @@ class StagedRealtimeTests(unittest.TestCase):
 
 
 class CommittedParametersTests(unittest.TestCase):
+    def test_versioned_gateway_staging_is_default_off_and_never_activates_hard_quota(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        self.assertEqual(parameters["gatewayAttemptsV1Staged"]["value"], "${AI4IA_GATEWAY_ATTEMPTS_V1_STAGED=false}")
+        for staged in ("false", "true"):
+            with _environment(AI4IA_GATEWAY_ATTEMPTS_V1_STAGED=staged):
+                code, out, err = _run(REAL_PARAMETERS)
+                self.assertEqual(code, 0, err)
+                self.assertEqual("Runtime capability is still unavailable" in out + err, staged == "true")
+            with _environment(AI4IA_GATEWAY_ATTEMPTS_V1_STAGED=staged, AI4IA_HARD_QUOTA_ENABLED="true"):
+                code, _, err = _run(REAL_PARAMETERS)
+                self.assertEqual(code, 1)
+                self.assertIn("hardQuotaEnabled=true has no approved durable activation", err)
+
     def test_hard_quota_default_off_and_deployed_activation_refused(self) -> None:
         for enabled in ("true", "false"):
             with _environment(AI4IA_HARD_QUOTA_ENABLED=enabled):

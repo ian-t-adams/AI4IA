@@ -30,6 +30,18 @@ deployment job can start. Missing values fail the workflow with their names;
 they never produce a successful skipped job. A repository with no deployment
 target must declare that posture with `AI4IA_DEPLOYMENT_ENABLED=false`.
 
+The provisioning step uses `azd provision --no-prompt --no-state`. In the pinned
+azd, unchanged templates and parameters can otherwise produce a successful
+"There are no changes to provision" result without reconciling live resources.
+That is not a drift check: an application rollback can restore an older template
+after provisioning succeeded, while leaving azd's stored deployment state
+unchanged. `--no-state` requests a fresh Bicep deployment; it does not change the
+declared resources, feature choices, permissions, or ARM deployment mode. The
+pre-provision rollback capture remains mandatory. A manual workflow run with
+`provision=false` still deliberately skips provisioning; it is not configuration
+reconciliation. Do not delete state files or use the unsupported `--force` flag
+as a substitute.
+
 This source guard does not replace the independently configured `production`
 environment branch policy. An operator must still restrict that environment as
 described in the standup guide: allow only an exact **branch** rule named `main`,
@@ -602,6 +614,29 @@ timeout. The canary intersects `infra/models.json` with the models the live API
 advertises, never hardcodes a deployment, never prints its bearer token or model
 reply, and logs successful replies only as a character count.
 
+Each `rollout` event also records `cutover` evidence from the same stable app and
+revision reads, without another Azure call. In Single mode this distinguishes
+`latestMatchesServing`, `appProvisioningSucceeded`, and an equal, different,
+invalid, or unavailable writable-template comparison. A difference reports at
+most twelve fixed area labels, such as `containers.env` or `scale.maxReplicas`,
+plus an explicit truncation flag. The difference summary never logs template
+values, environment-variable names, custom field names, or template hashes.
+Multiple mode does not claim these Single-mode checks passed.
+
+Differing probe fields also record at most two container-array positions in
+`probeFieldShapes`: a fixed collection label, index, desired/serving JSON kinds
+(including `missing`), and an item count for arrays. `probeFieldShapesTruncated`
+marks additional differences. Probe paths, header names, values, and container
+names are never emitted. Missing, null, and empty arrays remain distinct in the
+comparison; identical kinds/counts do not prove equal probe configurations. This
+retains representation evidence from the actual failed observation without
+changing health probes, adding Azure calls, or weakening the cutover guard.
+
+Inspect this evidence before retrying a failed release. A healthy serving image
+alone does not clear a pending cutover, and an app read after rollback cannot
+reconstruct the historical desired template. Missing historical evidence remains
+unknown; the diagnostics do not relax verification or authorize a restore.
+
 The same proof can run independently of a deployment or rollback state file:
 
 ```powershell
@@ -798,7 +833,8 @@ states, but active sources must still pass the readiness checks.
 
 A successful copy command is not restoration proof. Confirmation reads the
 actual new serving revision, requires the captured full template (apart from
-the generated revision suffix), health, provisioning and replica posture, and
+the generated revision suffix and the exact schema-backed projection rules
+below), health, provisioning and replica posture, and
 checks that latest/desired state has settled onto it. The previous latest
 candidate must also read back inactive, so finishing its readiness checks cannot
 later promote the known pending failure. Multiple-mode confirmation instead
@@ -807,6 +843,28 @@ requires all traffic pinned to the captured named revision, not a dynamic
 These checks use the platform's
 [revision lifecycle and Single-mode promotion contract](https://learn.microsoft.com/azure/container-apps/revisions).
 They detect changes across the reads, not lock out a later external writer.
+
+App and revision GETs can represent the same writable template differently,
+even under the same ARM API version. Comparison uses only these published
+exceptions from the pinned
+[ARM 2025-01-01 CommonDefinitions](https://github.com/Azure/azure-rest-api-specs/blob/885bc71210faa273dae935ca980c86b244b37fa3/specification/app/resource-manager/Microsoft.App/ContainerApps/stable/2025-01-01/CommonDefinitions.json):
+`containers[*].resources.ephemeralStorage` and the same field in `initContainers`
+are explicitly `readOnly`, so they are excluded from writable-intent comparison.
+Only unset/missing `scale.cooldownPeriod` and `scale.pollingInterval` resolve to
+their documented defaults of 300 and 30 seconds. The
+[SDK's nullable scale contract](https://learn.microsoft.com/python/api/azure-mgmt-appcontainers/azure.mgmt.appcontainers.models.scale)
+also represents these optional fields as `int | None`.
+
+Explicit zero and nondefault integers remain distinct from unset/default values;
+Boolean, floating-point, string and out-of-int32 substitutes are refused, not
+coerced. All other fields, including CPU, memory, environment values, secret
+references, probes, min/max replicas, volumes and unknown/null fields, remain in
+the comparison. Inputs are not mutated, and comparison errors contain no template
+values. These rules compare writable configuration, not physical ephemeral-storage
+capacity. Do not replace them with broad null removal or a writable-field allowlist.
+Capture-only evidence does not exercise this comparison: a candidate acceptance
+must execute the pending-cutover, restoration and rollout predicates on real
+scoped observations, with the currently verified images supplied independently.
 
 A failed or unknown confirmation remains a failed job. An ambiguous write
 acknowledgement is not replayed, and one app's failure does not abandon the other
@@ -1208,12 +1266,34 @@ subscriptions, or Azure Lighthouse authority; approve the identity's dedication
 separately. See [REST role-assignment scope semantics](https://learn.microsoft.com/rest/api/authorization/role-assignments/list-for-scope)
 and [transitive assignment filtering](https://learn.microsoft.com/azure/role-based-access-control/role-assignments-list-rest).
 
-Unknown reads, warnings, malformed/duplicate rows and ARM continuation pages
-fail closed. There are no polling/replay loops: each CLI call is bounded to 30
-seconds/4 MiB, the whole command to 600 seconds/192 calls/128 MiB, and ARM
-inventories to 4,096 rows. GitHub variable inventory is bounded to eight pages
-and excludes unrelated values from the plan. A paginated ARM inventory needs a
-separately reviewed collection change, not an operator skip flag.
+Unknown reads, warnings and malformed/duplicate rows fail closed. **Only the
+Cognitive Services account inventory** may continue pages, using the capacity
+reporter's shared continuation validator. Each link must retain the exact
+subscription/resource-group account-list path, HTTPS ARM host, API version and
+the two observed query keys `api-version`/`$skiptoken`. The next request is rebuilt
+from the approved scope and decoded opaque cursor; server URLs are never
+followed directly. Changed filters, host/port/credentials, paths, versions,
+unknown/duplicate query keys, fragments and oversized cursors are refused.
+This does not add paging for identities, roles, assignments or federations.
+
+Account discovery is bounded to 64 pages and 4,096 **total** rows, including
+unselected accounts. Every page must have exact scoped IDs and unique names/IDs;
+selected catalog accounts must retain their ownership/provisioning proof.
+Repeated decoded cursors or a later failed/ambiguous page refuse the whole plan,
+including when the first page already contains all expected regions. A terminal
+empty page is valid; first-page candidates alone are not verified inventory.
+Cursor values and pagination layout are not added to plan output or digests;
+the same complete account evidence retains stable intents and ordering. The
+existing source hashes bind the shared validator as well as setup.
+
+There are no polling/replay loops: each CLI call is bounded to 30 seconds/4 MiB
+or the remaining allowance, and the whole command retains its 600-second,
+192-call and 128-MiB limits across pages. Other ARM inventories remain bounded
+to 4,096 rows with continuation refused. GitHub variable inventory is bounded
+to eight pages and excludes unrelated values from the plan. Unsupported
+pagination needs a separately reviewed collection change, not an operator skip
+flag. Offline page fixtures do not prove the dedicated reader's live permissions
+or authorize setup, configuration or activation.
 
 On Ctrl+C interruption or failure, keep the exact attempted resource IDs printed on
 stderr. A timed-out write may have succeeded. **Do not automatically retry,

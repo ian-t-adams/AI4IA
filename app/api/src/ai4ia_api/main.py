@@ -6,7 +6,8 @@ import logging
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, Request, status
+from fastapi import Request, status
+from fastapi.applications import FastAPI
 
 from .auth.factory import build_auth_provider
 from .agents.agent_catalog import load_agent_catalog
@@ -126,11 +127,8 @@ _MEMORY_WARMUP_TIMEOUT_S = 10.0
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
-    # Initialize Azure Monitor / OpenTelemetry export BEFORE the FastAPI app is
-    # constructed below: the distro instruments FastAPI by patching its class, so
-    # apps built after this call are auto-instrumented. No-op (and zero overhead)
-    # unless an Application Insights connection string is configured, so local/dev
-    # and tests are unaffected.
+    # Configure the shared exporter first; instrument the actual app instance
+    # below, not the FastAPI class bound when this module was imported.
     configure_telemetry(settings.applicationinsights_connection_string)
     settings.validate_runtime()
 
@@ -650,6 +648,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(policy_router.router)
     app.include_router(admin_usage_router.whoami_router)
     app.include_router(admin_usage_router.router)
+    from .request_telemetry import instrument_app
+
+    instrument_app(app, settings.applicationinsights_connection_string)
     return app
 
 

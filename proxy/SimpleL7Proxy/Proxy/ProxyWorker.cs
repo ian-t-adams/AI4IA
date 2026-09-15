@@ -230,6 +230,7 @@ public class ProxyWorker : IConfigChangeSubscriber
 
             if (incomingRequest.RecoveryProcessor != null)
             {
+                NoReplayAttempt.RefusePersistence(incomingRequest);
                 incomingRequest.DequeueTime = DateTime.UtcNow;
                 // Call the recovery processor to rehydrate the request from Blob storage
                 await incomingRequest.RecoveryProcessor.HydrateRequestAsync(incomingRequest);
@@ -836,6 +837,7 @@ public class ProxyWorker : IConfigChangeSubscriber
         ArgumentNullException.ThrowIfNull(request.Body, nameof(request.Body));
         ArgumentNullException.ThrowIfNull(request.Headers, nameof(request.Headers));
         ArgumentNullException.ThrowIfNull(request.Method, nameof(request.Method));
+        NoReplayAttempt.ValidateState(request);
 
         _logger.LogDebug("[ProxyToBackEnd:{Guid}] Starting proxy attempt - Path: {Path}, Method: {Method}",
             request.Guid, request.Path, request.Method);
@@ -899,6 +901,7 @@ public class ProxyWorker : IConfigChangeSubscriber
 
         BaseHostHealth? host;
         while (request.BackendAttempts < maxSharedAttempts
+            && request.NoReplay?.Claimed != true
             && TryGetNextHost(hostIterator, sharedIterator, out host) && host != null)
         {
             DateTime proxyStartDate = DateTime.UtcNow;
@@ -922,6 +925,7 @@ public class ProxyWorker : IConfigChangeSubscriber
             string requestState = "Init";
             // bool newcode = false;
             ProxyEvent requestAttempt = null!;
+            HttpClient? boundedClient = null;
 
             requestAttempt = new ProxyEvent(request.EventData)
             {
@@ -942,7 +946,7 @@ public class ProxyWorker : IConfigChangeSubscriber
                 // if (request.Context?.Request.Url != null)
                 //     requestAttempt.Uri = request.Context!.Request.Url!;
                 // else
-                requestAttempt.Uri = new Uri(modifiedPath);
+                requestAttempt.Uri = new Uri(host.Config.BuildDestinationUrl(modifiedPath));
 
 
                 switch (host.Config.AuthMode)
@@ -1074,8 +1078,19 @@ public class ProxyWorker : IConfigChangeSubscriber
 
                             // DO NOT ADD A USING BLOCK HERE - we need to process the response outside of this block
 
-                            var proxyResponse = await _options.Client!.SendAsync(
+                            boundedClient = request.NoReplay is not null ? NoReplayAttempt.CreateClient() : null;
+                            request.NoReplay?.Claim(request, proxyRequest, bodyBytes, host.Config);
+                            var proxyResponse = await (boundedClient ?? _options.Client!).SendAsync(
                                 proxyRequest, HttpCompletionOption.ResponseHeadersRead, requestCts.Token).ConfigureAwait(false);
+                            try
+                            {
+                                request.NoReplay?.CheckResponse(proxyResponse);
+                            }
+                            catch (ProxyErrorException)
+                            {
+                                proxyResponse.Dispose();
+                                throw;
+                            }
                             responseDate = DateTime.UtcNow;
                             lastStatusCode = proxyResponse.StatusCode;
                             requestAttempt.Status = proxyResponse.StatusCode;
@@ -1087,7 +1102,8 @@ public class ProxyWorker : IConfigChangeSubscriber
 
                             // Check if the status code of the response is in the set of allowed status codes, else try the next host
                             intCode = (int)proxyResponse.StatusCode;
-                            if ((intCode > 300 && intCode < 400) || intCode == 404 || intCode == 412 || intCode >= 500)
+                            if (request.NoReplay is null &&
+                                ((intCode > 300 && intCode < 400) || intCode == 404 || intCode == 412 || intCode >= 500))
                             {
                                 requestState = $"Backend proxy status code: {intCode}";
 
@@ -1166,13 +1182,15 @@ public class ProxyWorker : IConfigChangeSubscriber
                                 }
                             }
 
-                            var (shouldRequeue, retryMs) = CheckRequeueResponse(proxyResponse, intCode, requestAttempt, ref requestState);
+                            var (shouldRequeue, retryMs) = request.NoReplay is null
+                                ? CheckRequeueResponse(proxyResponse, intCode, requestAttempt, ref requestState)
+                                : (false, 0);
 
                             if (shouldRequeue)
                             {
                                 throw new S7PRequeueException("Requeue request", pr, retryMs);
                             }
-                            else if (intCode == 429)
+                            else if (intCode == 429 && request.NoReplay is null)
                             {
                                 // S7PREQUEUE was not "true" — capture backend response headers
                                 // (e.g. backendLog, retry-after) into the attempt summary before
@@ -1213,6 +1231,8 @@ public class ProxyWorker : IConfigChangeSubscriber
 
                             SuccessfulRequest = true;
                             TriggerHostCB = false;
+                            pr!.OwnedClient = boundedClient;
+                            boundedClient = null;
                             return pr ?? throw new ArgumentNullException(nameof(pr));
                         }   // closes the using on requestCts
                     }
@@ -1235,6 +1255,7 @@ public class ProxyWorker : IConfigChangeSubscriber
             }
             catch (S7PRequeueException e)
             {
+                NoReplayAttempt.RefusePersistence(request);
                 TriggerHostCB = false;
                 intCode = (int)HttpStatusCode.TooManyRequests; // 429
                 PopulateRequestAttemptError(requestAttempt, HttpStatusCode.TooManyRequests,
@@ -1249,6 +1270,8 @@ public class ProxyWorker : IConfigChangeSubscriber
             {
                 PopulateRequestAttemptError(requestAttempt, e.StatusCode, e.Message);
                 intCode = (int)e.StatusCode;
+                if (request.NoReplay is not null)
+                    throw;
 
                 if (e.Type == ProxyErrorException.ErrorType.TTLExpired)
                 {
@@ -1333,6 +1356,7 @@ public class ProxyWorker : IConfigChangeSubscriber
             }
             finally
             {
+                boundedClient?.Dispose();
                 // Add the request attempt to the summary
                 requestAttempt.Duration = DateTime.UtcNow - proxyStartDate;
                 requestAttempt.SendEvent();  // Log the dependent request attempt
@@ -1990,7 +2014,15 @@ public class ProxyWorker : IConfigChangeSubscriber
         else
         {
             _asyncExpelSource = null;
-            cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeout));
+            if (request.NoReplay is not null)
+            {
+                cts = CancellationTokenSource.CreateLinkedTokenSource(_cancellationToken);
+                cts.CancelAfter(TimeSpan.FromMilliseconds(timeout));
+            }
+            else
+            {
+                cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeout));
+            }
         }
 
         return (cts, timeout);

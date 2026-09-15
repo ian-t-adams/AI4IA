@@ -1,0 +1,81 @@
+{
+  "uncappedBudget": {
+    "mode": "no_hard_dollar_cap",
+    "currency": "USD",
+    "budgetId": null,
+    "revision": null,
+    "limitMicroUsd": null,
+    "settledMicroUsd": null,
+    "heldMicroUsd": null,
+    "unknownMicroUsd": null,
+    "remainingMicroUsd": null,
+    "blocked": false
+  },
+  "cappedBudget": {
+    "mode": "usd_app_meter",
+    "currency": "USD",
+    "budgetId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revision": 0,
+    "limitMicroUsd": 140,
+    "settledMicroUsd": 0,
+    "heldMicroUsd": 0,
+    "unknownMicroUsd": 0,
+    "remainingMicroUsd": 140,
+    "blocked": false
+  },
+  "legacySpend": {
+    "scope": "exact_tool_operation",
+    "status": "legacy_unquoted",
+    "impact": {
+      "coverage": "unknown",
+      "amountMicroUsd": null,
+      "currency": "USD",
+      "basis": "legacy-unquoted",
+      "reason": "legacy-unquoted",
+      "bounds": null,
+      "localContractDigest": null
+    },
+    "quote": null
+  },
+  "quotedSpend": {
+    "scope": "exact_tool_operation",
+    "status": "quoted",
+    "impact": {
+      "coverage": "unknown",
+      "amountMicroUsd": null,
+      "currency": "USD",
+      "basis": "unbounded-operation",
+      "reason": "meter-coverage-unknown",
+      "bounds": null,
+      "localContractDigest": null
+    },
+    "quote": {
+      "version": "workflow-approval-spend-v1",
+      "quoteDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bindingDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "quotedAt": "2099-01-01T00:00:00Z",
+      "expiresAt": "2099-01-01T00:10:00Z",
+      "impact": {
+        "coverage": "unknown",
+        "amountMicroUsd": null,
+        "currency": "USD",
+        "basis": "unbounded-operation",
+        "reason": "meter-coverage-unknown",
+        "bounds": null,
+        "localContractDigest": null
+      },
+      "budget": {
+        "mode": "no_hard_dollar_cap",
+        "currency": "USD",
+        "budgetId": null,
+        "revision": null,
+        "limitMicroUsd": null,
+        "settledMicroUsd": null,
+        "heldMicroUsd": null,
+        "unknownMicroUsd": null,
+        "remainingMicroUsd": null,
+        "blocked": false
+      }
+    }
+  }
+}

@@ -249,6 +249,7 @@ jobs:
       AI4IA_SEARCH_ENABLED: ${{ vars.AI4IA_SEARCH_ENABLED }}
       AI4IA_VOICE_LIVE_ENABLED: ${{ vars.AI4IA_VOICE_LIVE_ENABLED }}
       AI4IA_REALTIME_GA_ENABLED: ${{ vars.AI4IA_REALTIME_GA_ENABLED }}
+      AI4IA_GATEWAY_ATTEMPTS_V1_STAGED: ${{ vars.AI4IA_GATEWAY_ATTEMPTS_V1_STAGED }}
       AI4IA_REALTIME_PROTOCOL: ${{ vars.AI4IA_REALTIME_PROTOCOL }}
       AI4IA_VOICE_LIVE_TOOLS_ENABLED: ${{ vars.AI4IA_VOICE_LIVE_TOOLS_ENABLED }}
       AI4IA_AUTO_SUMMARIZATION_ENABLED: ${{ vars.AI4IA_AUTO_SUMMARIZATION_ENABLED }}
@@ -496,7 +497,7 @@ jobs:
       # login on `inputs.provision` would leave those runs with no verification at
       # all and no way to roll back.
       - name: Log in to Azure CLI (OIDC)
-        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
@@ -641,9 +642,9 @@ jobs:
       - name: Provision infrastructure
         id: provision
         # Skipped only when a manual run explicitly opts out; push events always
-        # reconcile infra (azd provision is idempotent).
+        # reconcile infra. Stored template hashes do not detect rollback drift.
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
-        run: azd provision --no-prompt
+        run: azd provision --no-prompt --no-state
 
       # Preserve the endpoint produced by THIS successful provision for the
       # workflow_run consumer. A GitHub variable can fall back across scopes and

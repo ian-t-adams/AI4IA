@@ -1,4 +1,16 @@
 <fragment>
+<choose>
+			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))">
+				<return-response>
+					<set-status code="502" reason="Bounded gateway attempt failed" />
+					<set-header name="S7PREQUEUE" exists-action="delete" />
+					<set-header name="x-ai4ia-attempt-ack" exists-action="override">
+						<value>@(context.Variables.GetValueOrDefault&lt;string>("attemptAck", ""))</value>
+					</set-header>
+					<set-body>{"error":{"code":"bounded_attempt_failed"}}</set-body>
+				</return-response>
+			</when>
+		</choose>
 <!-- Separate a request that failed BEFORE backend selection (APIM authorization, a malformed
 		     catalog, or a policy expression fault) from one that genuinely exhausted its backends.
 		     listBackends is only populated by the endpoint-selection fragments, so an empty list

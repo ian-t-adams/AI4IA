@@ -507,6 +507,7 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                             {
                                 rd.Debug = rd.Headers["S7PDEBUG"] != null && string.Equals(rd.Headers["S7PDEBUG"], "true", StringComparison.OrdinalIgnoreCase);
                                 string? authAppID = rd.Headers[_options.ValidateAuthAppIDHeader];
+                                bool authenticatedKey = false;
 
                                 if (_authValidator.ValidateAuthViaKey)
                                 {
@@ -533,6 +534,7 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                                     else if (authMode is IncomingAuthModeEnum.Mixed or IncomingAuthModeEnum.Key)
                                     {
                                         (isValid, message) = ValidateAuthKey(incomingKey, message);
+                                        authenticatedKey = isValid;
                                     }
 
                                     if (!isValid && string.IsNullOrEmpty(message))
@@ -549,6 +551,10 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                                         );
                                     }
                                 }
+
+                                // Bind before configurable stripping/profiles can remove
+                                // the reduction or replace it with caller-controlled metadata.
+                                NoReplayAttempt.BindAuthenticated(rd, authenticatedKey, _options);
 
                                 if (_options.ValidateAuthAppID)
                                 {
@@ -742,6 +748,8 @@ public class Server : BackgroundService, IConfigChangeSubscriber
 
                                     Console.WriteLine($"[ASYNC] Received status check request for GUID {rd.Headers["Guid"]}"); 
                                 }
+
+                                NoReplayAttempt.ValidateState(rd);
 
                                 // Determine priority boost based on the UserID
                                 _userPriority.addRequest(requestGuid, rd.UserID );

@@ -206,6 +206,9 @@
     "realtimeGaEnabled": {
       "value": "${AI4IA_REALTIME_GA_ENABLED=false}"
     },
+    "gatewayAttemptsV1Staged": {
+      "value": "${AI4IA_GATEWAY_ATTEMPTS_V1_STAGED=false}"
+    },
     "realtimeProtocol": {
       "value": "${AI4IA_REALTIME_PROTOCOL=preview}"
     },

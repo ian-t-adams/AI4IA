@@ -194,6 +194,7 @@ public class RequestData : IDisposable, IAsyncDisposable
     // Number of times Proxy calls the backend
     public int BackendAttempts { get; set; } = 0;
     public int LifetimeBackendAttempts { get; set; } = 0;
+    public NoReplayAttempt? NoReplay { get; internal set; }
     
     // Total attempts including retries by downstream services
     public int LifetimePolicyCycleCounter { get; set; } = 0; 

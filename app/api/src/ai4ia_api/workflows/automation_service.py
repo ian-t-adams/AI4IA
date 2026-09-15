@@ -3,13 +3,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 from uuid import uuid4
 
 from ..agents.approvals import consume_grant, draft_for_call, mint_pending_approval
 from ..auth.base import AuthenticatedUser
+from ..gateway.attempts import no_replay_scope
+from ..hard_quota.coverage import AttemptEnvelope
+from ..hard_quota.dispatch import AdmissionController, admission_scope
+from ..hard_quota.models import QuotaError
 from ..policy.context import unattended_policy_scope
 from ..policy.models import PolicyError
 from ..request_constraints import automatic_memory_allowed, constrain_request, fresh_session_required, tools_allowed
@@ -33,6 +38,10 @@ from .durable import (
     _truncate_for_payload, durable_message_ids, durable_run_id,
 )
 from .runner import MAX_CARRY_LEN, run_workflow_step
+from .monetary_models import BudgetView, RunMoney, budget_identity
+from .monetary_quotes import quote_for_call, require_quote_current, run_account
+from .monetary_profile import require_capped_profile
+from .monetary_ledger import can_retire_run
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +70,53 @@ class WorkflowAutomationService:
             )
         if self.host is None or not self.state.usage.enabled:
             raise AutomationError("automation_unavailable", "Durable execution or usage is unavailable.", status=503)
+
+    def require_spend_support(self, bundle: FrozenWorkflow, limits: ExecutionLimits) -> None:
+        if limits.maxSpendMicroUsd is None:
+            return
+        require_capped_profile(bundle.workflow, bundle.agents, bundle.selectedDocuments, limits)
+        if bundle.toolContracts or any(bundle.stepContracts):
+            raise AutomationError(
+                "spend_profile_unsupported", "The capped profile cannot omit a selected tool contract.", status=422,
+            )
+        if not self.monetary_available(bundle.api):
+            raise AutomationError(
+                "spend_transport_unavailable",
+                "A finite USD application-meter cap requires a verified bounded gateway transport.",
+                status=422,
+            )
+
+    def monetary_available(self, api: str | None = None) -> bool:
+        admission = getattr(self.state, "hard_quota", None)
+        if (
+            self.state.settings.hard_quota_enabled
+            or not isinstance(admission, AdmissionController) or admission.enabled
+        ):
+            return False
+        try:
+            if api is None:
+                envelope = getattr(self.state.gateway, "attempt_capability", None)
+            else:
+                lookup = getattr(self.state.gateway, "attempt_capability_for", None)
+                envelope = lookup(api) if callable(lookup) else None
+        except QuotaError:
+            return False
+        return isinstance(envelope, AttemptEnvelope) and envelope.max_attempts == 1
+
+    @contextmanager
+    def monetary_scope(self, owner: str, limits: ExecutionLimits) -> Iterator[None]:
+        if limits.maxSpendMicroUsd is None:
+            yield
+            return
+        admission = getattr(self.state, "hard_quota", None)
+        if not isinstance(admission, AdmissionController) or admission.enabled:
+            raise AutomationError(
+                "hard_quota_durable_unsupported", "Hard-quota durable execution remains unsupported.",
+            )
+        # The caller has revalidated the canonical run and current unattended
+        # policy. This reuses the existing owner boundary, never queued JWTs.
+        with admission_scope(admission, owner), no_replay_scope(owner):
+            yield
 
     async def owner(self, owner_id: str, *, create: bool = False) -> Stored[AutomationOwner]:
         current = await self.store.read_owner(owner_id)
@@ -93,11 +149,7 @@ class WorkflowAutomationService:
         floor = now - timedelta(days=30)
         removable = {
             key for key, run in owner.runs.items()
-            if run.terminal and not run.active and request_time(run.idempotencyKey) < floor
-            and all(
-                effect.state == "complete" and (effect.usage is None or effect.delivered)
-                for effect in owner.effects.values() if effect.runId == key
-            )
+            if can_retire_run(owner, run, floor)
         }
         for key in removable:
             del owner.runs[key]
@@ -112,6 +164,8 @@ class WorkflowAutomationService:
         self.require_enabled(scheduling=schedule_id is not None)
         if fresh_session_required():
             raise AutomationError("request_restricted", "A fresh canary request cannot create durable workflow authority.")
+        limits = ExecutionLimits.model_validate(limits.model_dump())
+        self.require_spend_support(bundle, limits)
         await self.access.recheck(bundle, user=user)
         # An interactive start is not a durable delegation of that JWT.
         await self.access.recheck(bundle, user=None)
@@ -161,6 +215,12 @@ class WorkflowAutomationService:
                 fingerprint=fingerprint, workflowKey=workflow_key, idempotencyKey=key,
                 createdAt=now, active=True, terminal=False, modelCalls=0, toolCalls=0, dispatches=0,
                 operationFloor=-1, scheduleId=schedule_id, scheduleGeneration=schedule_generation,
+                money=RunMoney.new(
+                    budget_identity(
+                        bundle.executionOwnerId, value.epoch, run_id, fingerprint, limits.maxSpendMicroUsd,
+                    ),
+                    limits.maxSpendMicroUsd,
+                ) if limits.maxSpendMicroUsd is not None else None,
             )
 
         if schedule_id is None:
@@ -224,6 +284,7 @@ class WorkflowAutomationService:
                 memoryContext=None, turn=None, draft=None, approvalHistory=[],
                 operationId=None, operationState="idle", scheduleId=schedule_id,
                 scheduleGeneration=schedule_generation, wakeRevision=0,
+                budgetEvidence=BudgetView.from_account(handle.money) if handle.money is not None else None,
             )
             user_id, _ = durable_message_ids(run_id)
             user_message = Message(
@@ -265,6 +326,7 @@ class WorkflowAutomationService:
         state = await self.state.session_repo.read_workflow_checkpoint(owner, handle.sessionId, handle.checkpointId)
         if state is None or state.fingerprint != handle.fingerprint or state.ownerEpoch != current.value.epoch:
             raise AutomationError("coordination_missing", "The run's canonical checkpoint is unavailable.", status=503)
+        run_account(current.value, state)
         _, assistant_id = durable_message_ids(run_id)
         messages = await self.state.session_repo.list_messages(owner, handle.sessionId)
         message = next((item for item in messages if item.id == assistant_id), None)
@@ -276,6 +338,10 @@ class WorkflowAutomationService:
         self, expected: WorkflowCheckpoint, previous: Message, updated: WorkflowCheckpoint,
     ) -> tuple[WorkflowCheckpoint, Message]:
         updated.revision = expected.revision + 1
+        if updated.limits.maxSpendMicroUsd is not None:
+            updated.budgetEvidence = BudgetView.from_account(
+                run_account((await self.owner(updated.userId)).value, updated),
+            )
         message = project_message(updated, previous)
         if not await self.state.session_repo.replace_workflow_checkpoint(
             expected.userId, updated, message, expected=expected, expected_assistant=previous,
@@ -407,7 +473,10 @@ class WorkflowAutomationService:
             )
         return (await self.load(owner, run_id))[0]
 
-    async def review(self, owner: str, run_id: str, draft_id: str, user: AuthenticatedUser) -> tuple[WorkflowCheckpoint, str]:
+    async def review(
+        self, owner: str, run_id: str, draft_id: str, user: AuthenticatedUser, *,
+        refresh_spend: bool = False,
+    ) -> tuple[WorkflowCheckpoint, str]:
         self.require_enabled()
         state, message = await self.load(owner, run_id)
         draft = state.draft
@@ -447,15 +516,27 @@ class WorkflowAutomationService:
         )
         if identity != draft.argumentsDigest:
             raise AutomationError("state_corrupt", "The pending arguments no longer match.")
+        account = run_account((await self.owner(owner)).value, state)
+        definition = self.state.tool_executor.get(draft.canonicalTool)
+        updated = state.model_copy(deep=True)
+        if updated.draft is None:
+            raise AutomationError("approval_unavailable", "The pending approval changed.")
+        if refresh_spend:
+            updated.draft.spend = quote_for_call(
+                state, draft, account, definition=definition, now=now,
+            )
+            updated.draft.challengeSpendDigest = None
+        require_quote_current(
+            state, updated.draft, account, definition=definition, now=now,
+        )
         challenge, grant = mint_pending_approval(
             draft_for_call(contract.spec, tool=draft.tool, label=draft.label, arguments=arguments),
             now=now, ttl_seconds=max(1, int((draft.expiresAt - now).total_seconds())),
         )
-        updated = state.model_copy(deep=True)
-        if updated.draft is None:
-            raise AutomationError("approval_unavailable", "The pending approval changed.")
         updated.draft.challenge = challenge
         updated.draft.challengeGeneration += 1
+        if updated.draft.spend is not None:
+            updated.draft.challengeSpendDigest = updated.draft.spend.quoteDigest
         updated, _ = await self.commit(state, message, updated)
         return updated, grant
 
@@ -482,6 +563,10 @@ class WorkflowAutomationService:
             raise AutomationError("invalid_decision", "Approve or deny this exact call.", status=422)
         await self.access.recheck(state.bundle, user=user)
         await self.access.check_context(state)
+        require_quote_current(
+            state, draft, run_account((await self.owner(owner)).value, state),
+            definition=self.state.tool_executor.get(draft.canonicalTool), now=now, challenged=True,
+        )
         challenge = draft.challenge
         if challenge is None or challenge.id != request_id or not consume_grant(challenge, grant, now=now).granted:
             raise AutomationError("grant_rejected", "The one-time approval is invalid, expired or already used.")
@@ -548,6 +633,7 @@ class WorkflowAutomationService:
         try:
             actor = await self.access.recheck(state.bundle, user=user)
             await self.access.check_context(state)
+            self.require_spend_support(state.bundle, state.limits)
             surface = await self.access.surface(
                 actor, state.bundle.workflow, state.bundle.agents, state.step,
                 session_id=state.sessionId, documents=state.bundle.selectedDocuments,
@@ -578,7 +664,10 @@ class WorkflowAutomationService:
             raise AutomationError("context_revoked", "The execution source was cleared.")
         remaining = max(0.001, (state.deadline - now).total_seconds())
         try:
-            with unattended_policy_scope(self.state.policy, owner), workflow_execution_scope(control):
+            with (
+                unattended_policy_scope(self.state.policy, owner), workflow_execution_scope(control),
+                self.monetary_scope(owner, state.limits),
+            ):
                 async with asyncio.timeout(remaining):
                     step = bundle.workflow.steps[state.step]
                     result = await run_workflow_step(
@@ -595,6 +684,8 @@ class WorkflowAutomationService:
         except TimeoutError:
             state = await self.stop(owner, run_id, "timed_out", "runtime_exceeded")
             return {"terminal": True, "status": state.status}
+        if state.limits.maxSpendMicroUsd is not None and result.admission_refused:
+            await control.refuse_undispatched_model("spend_admission_refused")
         try:
             state, message = await self.load(owner, run_id)
         except SessionNotFoundError:

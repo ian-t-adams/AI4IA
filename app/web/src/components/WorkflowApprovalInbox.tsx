@@ -5,6 +5,7 @@ import * as api from "@/lib/api";
 import type { AutomationReview, AutomationRun } from "@/lib/workflowAutomation";
 import { DialogFrame } from "./DialogFrame";
 import { primaryBtn, secondaryBtn } from "./builderStyles";
+import { WorkflowSpendEvidence } from "./WorkflowSpendEvidence";
 
 export function WorkflowApprovalInboxEntry({ disabled = false }: { disabled?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -99,12 +100,12 @@ export function WorkflowApprovalInbox() {
     return () => { controller.abort(); clearTimeout(timer); };
   }, [revision]);
 
-  async function inspect(run: AutomationRun) {
+  async function inspect(run: AutomationRun, refreshSpend = false) {
     if (!run.approval || busy) return;
     const request = ++intent.current;
     setBusy(true); setError(null); setReview(null); setNotice(null);
     try {
-      const result = await api.reviewWorkflowApproval(run.runId, run.approval.id);
+      const result = await api.reviewWorkflowApproval(run.runId, run.approval.id, refreshSpend);
       if (mounted.current && request === intent.current) setReview(result);
     } catch (reason) {
       if (mounted.current && request === intent.current) setError(api.apiErrorDetail(reason));
@@ -181,6 +182,7 @@ export function WorkflowApprovalInbox() {
           {["pending", "acceptance_unknown"].includes(run.status) ? <button type="button" style={secondaryBtn} disabled={busy} onClick={() => void recover(run)}>Recover original run start</button> : null}
           {run.approval?.state === "pending" ? <>
             <button type="button" style={primaryBtn} disabled={busy} onClick={() => void inspect(run)}>Review exact call</button>
+            <button type="button" style={secondaryBtn} disabled={busy} onClick={() => void inspect(run, true)}>Refresh spend quote</button>
             <button type="button" style={secondaryBtn} disabled={busy} onClick={() => void decide(run, "deny")}>Deny and stop</button>
           </> : null}
           <button type="button" style={secondaryBtn} disabled={busy} onClick={() => void cancel(run)}>Stop run</button>
@@ -198,7 +200,8 @@ export function WorkflowApprovalInbox() {
       </dl>
       <p className="workflow-run-hint">The complete argument JSON is shown below. Approval resumes this stored call; it does not ask a model to recreate it.</p>
       <pre className="workflow-automation-json">{review.argumentsJson}</pre>
-      <p className="workflow-run-hint">{review.spendImpact}</p>
+      {review.spendEvidence ? <WorkflowSpendEvidence spend={review.spendEvidence} />
+        : <p className="workflow-run-hint">{review.spendImpact}</p>}
       {expired ? <p role="alert" className="studio-alert">This approval expired. It cannot be used to resume the run.</p> : null}
       <div className="workflow-automation-actions">
         <button type="button" style={primaryBtn} disabled={busy || expired} onClick={() => void decide(review, "approve")}>Approve this call and resume</button>
