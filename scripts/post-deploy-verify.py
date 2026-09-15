@@ -1233,6 +1233,8 @@ class _CleanupConnection(http.client.HTTPSConnection):
 
     def __init__(self, host: str, port: int, timeout: float) -> None:
         self.tls_context = ssl.create_default_context()
+        if self.tls_context.minimum_version < ssl.TLSVersion.TLSv1_2:
+            self.tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
         super().__init__(host, port=port, timeout=timeout, context=self.tls_context)
         self.read_socket: socket.socket | None = None
 

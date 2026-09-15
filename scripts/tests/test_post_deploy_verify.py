@@ -24,16 +24,18 @@ from __future__ import annotations
 import io
 import json
 import socket
+import ssl
 import threading
 import sys
 import unittest
+import warnings
 from copy import deepcopy
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import yaml
 
@@ -1581,6 +1583,82 @@ class CanaryTests(unittest.TestCase):
 
 
 class CleanupTransportTests(unittest.TestCase):
+    def assert_cleanup_tls_context(self, context, expected_minimum):
+        preserved = {
+            "protocol": context.protocol,
+            "maximum": context.maximum_version,
+            "verify_mode": context.verify_mode,
+            "check_hostname": context.check_hostname,
+            "verify_flags": context.verify_flags,
+            "certificates": context.cert_store_stats(),
+            "ciphers": context.get_ciphers(),
+        }
+        raw = Mock(spec=socket.socket)
+        encrypted = Mock(spec=ssl.SSLSocket)
+        observed = []
+
+        def wrap(active, sock, *, server_hostname):
+            self.assertIs(active, context)
+            self.assertIs(sock, raw)
+            self.assertEqual(server_hostname, "api.test")
+            self.assertEqual(active.minimum_version, expected_minimum)
+            self.assertEqual(active.protocol, ssl.PROTOCOL_TLS_CLIENT)
+            self.assertEqual(active.verify_mode, ssl.CERT_REQUIRED)
+            self.assertIs(active.check_hostname, True)
+            self.assertEqual(active.maximum_version, ssl.TLSVersion.MAXIMUM_SUPPORTED)
+            self.assertTrue(ssl.HAS_TLSv1_3)
+            self.assertIn("TLSv1.3", {cipher["protocol"] for cipher in active.get_ciphers()})
+            self.assertEqual({
+                "protocol": active.protocol,
+                "maximum": active.maximum_version,
+                "verify_mode": active.verify_mode,
+                "check_hostname": active.check_hostname,
+                "verify_flags": active.verify_flags,
+                "certificates": active.cert_store_stats(),
+                "ciphers": active.get_ciphers(),
+            }, preserved)
+            observed.append(active.minimum_version)
+            return encrypted
+
+        with (
+            patch.object(pdv.ssl, "create_default_context", return_value=context) as factory,
+            patch.object(pdv.socket, "create_connection", return_value=raw) as dial,
+            patch.object(ssl.SSLContext, "wrap_socket", autospec=True, side_effect=wrap) as handshake,
+        ):
+            connection = pdv._CleanupConnection("api.test", 443, 1)
+            try:
+                self.assertIs(connection.tls_context, context)
+                connection.connect()
+                self.assertIs(connection.sock, encrypted)
+                self.assertIs(connection.read_socket, encrypted)
+                factory.assert_called_once_with()
+                dial.assert_called_once_with(("api.test", 443), timeout=1)
+                handshake.assert_called_once_with(context, raw, server_hostname="api.test")
+                self.assertEqual(observed, [expected_minimum])
+            finally:
+                connection.close()
+        encrypted.close.assert_called_once_with()
+
+    def test_cleanup_tls_floor_upgrades_lowered_real_contexts(self) -> None:
+        for minimum in (ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1):
+            with self.subTest(initial_floor=minimum):
+                context = ssl.create_default_context()
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    context.minimum_version = minimum
+                self.assertEqual(context.minimum_version, minimum)
+                self.assertLess(context.minimum_version, ssl.TLSVersion.TLSv1_2)
+                self.assert_cleanup_tls_context(context, ssl.TLSVersion.TLSv1_2)
+
+    def test_cleanup_tls_preserves_default_and_stricter_verified_contexts(self) -> None:
+        for minimum in (None, ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_3):
+            with self.subTest(initial_floor=minimum):
+                context = ssl.create_default_context()
+                if minimum is not None:
+                    context.minimum_version = minimum
+                expected = max(context.minimum_version, ssl.TLSVersion.TLSv1_2)
+                self.assert_cleanup_tls_context(context, expected)
+
     def native_canary(self, *, framing: str, v1: bool):
         http = FakeHttp(canary_script(ok({"message": {"content": "ready"}}), v1=v1))
         responses = []
