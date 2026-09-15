@@ -158,30 +158,6 @@ metadata; it does not prove registry availability or native execution. Repair a
 missing record through the package manager with verified metadata, never a
 guessed integrity hash or a WASM fallback presented as native validation.
 
-The temporary `PR477 Windows native diagnostic` job in `app-ci.yml` is scoped to
-this repository's PR #477, not a new required check or an updater. It preserves
-the original lock and ordinary CI, verifies public metadata/tarball hashes, and
-tests a package-manager-generated candidate only in isolated runner directories.
-Source export uses process-scoped Git EOL options so Windows checkout preferences
-cannot rewrite the pinned blob bytes; mismatches retain bounded input hashes and
-presence, never normalized files or replacement expected hashes.
-Candidate generation refreshes only the already-declared exact Next parent after
-checking the untouched inputs and verified metadata. Raw generation is never
-accepted wholesale: an audited projection may copy only its actual verified native
-record into the original lock after strict raw manifest/top/root/inventory checks.
-Separate bounded raw/repaired inventories, hashes and record provenance expose
-discarded churn. The unchanged final verifier still gates the repaired copy before
-installation; no synthesized fields, extra resolver attempt or fallback is allowed.
-It disables install lifecycle scripts and invokes only the reviewed native probe
-and tool entrypoints. Archive limits cover the complete decompressed stream before
-tar parsing, including extension records and padding. Windows subprocesses enter
-an owned Job Object at creation; descendant cleanup cannot depend on leader life.
-A candidate pass does not clear an original-source failure
-or authorize adoption. Its seven-day artifact excludes raw logs, credentials,
-caches and installed dependencies. Remove this temporary job and its diagnostic
-helpers after the approved investigation; do not broaden its target or grants.
-Offline controls: `python -m unittest scripts.tests.test_web_native_diagnostic`.
-
 `npm ci` prints benign `ERESOLVE overriding peer dependency` warnings for
 `eslint-config-next`'s bundled plugins, whose published peer ranges still cap at
 `eslint@^9`. Install exits 0 and everything dedupes to the single installed
@@ -412,6 +388,9 @@ and a later `azd deploy` can resolve the same tag to different images with no di
 anywhere. The MAJOR(.MINOR) must track the CI version deliberately;
 `scripts/tests/test_base_image_pins.py` enforces that against `app-ci.yml` and
 fails if a pin is dropped or the multi-stage web file's stages desync.
+Toolchain versions come from the shipping `web` and `api` jobs, not diagnostic
+setup steps. Missing or conflicting primary declarations fail; version precision
+is not reduced to make an image tag match.
 
 Refresh with:
 
@@ -546,6 +525,9 @@ capture or healthy-image reads alone do not cover writable-template comparison.
 Cutover diagnostics retain fixed difference areas and bounded probe-field
 presence/type/counts from those same reads, never probe configuration values.
 These shapes do not equate missing/null/empty probes or relax a failed comparison.
+The web container declares `probes: []` to match its verified no-custom-probe
+serving configuration. Preserve that explicit intent rather than ignoring probe
+differences; API/proxy container health probes and proxy backend polling are separate.
 Multiple mode pins all traffic to the exact captured revision without switching
 modes. Preserve min-zero support, per-app failure isolation and no write replay;
 see `docs/runbooks/deployment.md#automatic-and-manual-rollback`.

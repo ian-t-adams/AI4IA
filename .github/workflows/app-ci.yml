@@ -80,47 +80,6 @@ jobs:
       - name: Build
         run: npm run build --if-present
 
-  pr477-windows-native:
-    name: PR477 Windows native diagnostic
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.repository == 'ian-t-adams/AI4IA' &&
-      github.event.pull_request.number == 477 &&
-      github.event.pull_request.head.repo.full_name == 'ian-t-adams/AI4IA'
-    runs-on: windows-2022
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22.23.2"
-          package-manager-cache: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Offline diagnostic controls
-        run: python -m unittest scripts.tests.test_web_native_diagnostic
-      - name: Observe original and isolated candidate
-        id: diagnostic
-        run: python scripts\diagnose-web-native-lock.py --output "$env:RUNNER_TEMP\pr477-native-evidence"
-      - name: Retain bounded diagnostic evidence, including failures
-        if: ${{ !cancelled() && (steps.diagnostic.outcome == 'success' || steps.diagnostic.outcome == 'failure') }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: pr477-windows-native-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/pr477-native-evidence/report.json
-            ${{ runner.temp }}/pr477-native-evidence/candidate-package-lock.json
-            ${{ runner.temp }}/pr477-native-evidence/candidate-lock.diff
-          if-no-files-found: error
-          retention-days: 7
-
   api:
     runs-on: ubuntu-latest
     timeout-minutes: 20

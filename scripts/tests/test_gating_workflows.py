@@ -49,7 +49,7 @@ DEPLOY_WORKFLOW = WORKFLOWS / "deploy.yml"
 # Workflow file -> the status-check contexts it reports. A context is the job's
 # `name:` when set, otherwise its job id.
 GATING_WORKFLOWS: dict[str, set[str]] = {
-    "app-ci.yml": {"web", "api", "PR477 Windows native diagnostic"},
+    "app-ci.yml": {"web", "api"},
     "infra-validate.yml": {"bicep-lint-build"},
     "docker-build.yml": {"web image", "api image", "dockerignore context boundary"},
 }
@@ -388,74 +388,6 @@ class WorkflowCheckoutCredentialTests(unittest.TestCase):
                             "No current workflow needs a checkout credential after fetching source.",
                         )
         self.assertGreaterEqual(checked, 15, "checkout discovery is no longer exercising the workflows")
-
-
-class TemporaryWindowsDiagnosticWorkflowTests(unittest.TestCase):
-    def assert_diagnostic(self, job: dict) -> None:
-        condition = re.sub(r"\s+", "", job.get("if", ""))
-        self.assertEqual(condition, (
-            "github.event_name=='pull_request'&&github.repository=='ian-t-adams/AI4IA'&&"
-            "github.event.pull_request.number==477&&"
-            "github.event.pull_request.head.repo.full_name=='ian-t-adams/AI4IA'"
-        ))
-        self.assertEqual(job["name"], "PR477 Windows native diagnostic")
-        self.assertEqual(job["runs-on"], "windows-2022")
-        self.assertEqual(job["permissions"], {"contents": "read"})
-        self.assertEqual(job["timeout-minutes"], 30)
-        self.assertNotIn("needs", job)
-        self.assertNotIn("environment", job)
-        self.assertNotIn("continue-on-error", job)
-        steps = job["steps"]
-        self.assertEqual(len(steps), 6)
-        self.assertEqual(steps[0]["with"]["ref"], "${{ github.event.pull_request.head.sha }}")
-        self.assertIs(steps[0]["with"]["persist-credentials"], False)
-        self.assertEqual(steps[0]["with"]["fetch-depth"], 0)
-        self.assertEqual(steps[1]["with"]["node-version"], "22.23.2")
-        self.assertIs(steps[1]["with"]["package-manager-cache"], False)
-        self.assertEqual(steps[2]["with"]["python-version"], "3.12")
-        self.assertEqual(steps[3]["run"], "python -m unittest scripts.tests.test_web_native_diagnostic")
-        self.assertEqual(steps[4]["run"], (
-            'python scripts\\diagnose-web-native-lock.py --output "$env:RUNNER_TEMP\\pr477-native-evidence"'
-        ))
-        self.assertEqual(steps[4]["id"], "diagnostic")
-        self.assertIn("steps.diagnostic.outcome == 'failure'", steps[5]["if"])
-        self.assertEqual(steps[5]["with"]["retention-days"], 7)
-        self.assertEqual(steps[5]["with"]["if-no-files-found"], "error")
-        self.assertEqual(set(steps[5]["with"]["path"].splitlines()), {
-            "${{ runner.temp }}/pr477-native-evidence/report.json",
-            "${{ runner.temp }}/pr477-native-evidence/candidate-package-lock.json",
-            "${{ runner.temp }}/pr477-native-evidence/candidate-lock.diff",
-        })
-        for step in steps:
-            self.assertNotIn("continue-on-error", step)
-            self.assertNotIn("env", step)
-
-    def test_temporary_job_is_exact_pr_only_read_only_and_failure_retaining(self):
-        document = yaml.safe_load((WORKFLOWS / "app-ci.yml").read_text(encoding="utf-8"))
-        self.assert_diagnostic(document["jobs"]["pr477-windows-native"])
-        self.assertNotIn("workflow_dispatch", document.get("on", document.get(True, {})))
-        for name in ("web", "api"):
-            self.assertEqual(document["jobs"][name]["runs-on"], "ubuntu-latest")
-            self.assertNotIn("if", document["jobs"][name])
-            self.assertNotIn("needs", document["jobs"][name])
-
-    def test_diagnostic_scope_permissions_and_artifact_controls_are_non_vacuous(self):
-        document = yaml.safe_load((WORKFLOWS / "app-ci.yml").read_text(encoding="utf-8"))
-        original = document["jobs"]["pr477-windows-native"]
-        mutations = (
-            {"if": original["if"].replace("477", "478")},
-            {"if": original["if"].replace("pull_request", "pull_request_target")},
-            {"runs-on": "ubuntu-latest"}, {"permissions": {"contents": "write"}},
-            {"environment": "production"}, {"continue-on-error": True},
-        )
-        for change in mutations:
-            with self.subTest(change=change), self.assertRaises(AssertionError):
-                self.assert_diagnostic({**deepcopy(original), **change})
-        leaked = deepcopy(original)
-        leaked["steps"][-1]["with"]["path"] = "${{ runner.temp }}/**"
-        with self.assertRaises(AssertionError):
-            self.assert_diagnostic(leaked)
-        self.assert_diagnostic(original)
 
 
 class WorkflowPermissionBoundaryTests(unittest.TestCase):
