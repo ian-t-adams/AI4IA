@@ -388,6 +388,9 @@ and a later `azd deploy` can resolve the same tag to different images with no di
 anywhere. The MAJOR(.MINOR) must track the CI version deliberately;
 `scripts/tests/test_base_image_pins.py` enforces that against `app-ci.yml` and
 fails if a pin is dropped or the multi-stage web file's stages desync.
+Toolchain versions come from the shipping `web` and `api` jobs, not diagnostic
+setup steps. Missing or conflicting primary declarations fail; version precision
+is not reduced to make an image tag match.
 
 Refresh with:
 

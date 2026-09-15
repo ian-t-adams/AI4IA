@@ -38,8 +38,12 @@ fails there, loudly, on the PR that introduces it.
 from __future__ import annotations
 
 import re
+import tempfile
 import unittest
+from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 # A hard import, deliberately not guarded by `unittest.skipIf`: a gate that
 # skips silently reports success while checking nothing. The workflow step
@@ -99,17 +103,118 @@ def _dockerfiles_built_by_ci() -> set[str]:
 
 
 def _setup_versions() -> dict[str, str]:
-    """`node-version` / `python-version` as declared in app-ci.yml."""
+    """Unambiguous toolchain declarations from the protected shipping jobs."""
 
     document = yaml.safe_load(APP_CI.read_text(encoding="utf-8"))
+    jobs = document.get("jobs") or {}
     versions: dict[str, str] = {}
-    for job in (document.get("jobs") or {}).values():
-        for step in (job or {}).get("steps") or []:
-            with_block = step.get("with") or {}
-            for key in ("node-version", "python-version"):
-                if key in with_block:
-                    versions[key] = str(with_block[key])
+    for job_id, action, key in (
+        ("web", "actions/setup-node", "node-version"),
+        ("api", "actions/setup-python", "python-version"),
+    ):
+        job = jobs.get(job_id)
+        if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
+            raise AssertionError(f"{job_id}: missing shipping job steps")
+        declared = set()
+        for step in job["steps"]:
+            if not isinstance(step, dict) or not str(step.get("uses", "")).startswith(f"{action}@"):
+                continue
+            with_block = step.get("with")
+            value = with_block.get(key) if isinstance(with_block, dict) else None
+            if (
+                not isinstance(value, (str, int, float)) or isinstance(value, bool)
+                or not str(value).strip()
+            ):
+                raise AssertionError(f"{job_id}: missing shipping {key} declaration")
+            declared.add(str(value))
+        if len(declared) != 1:
+            raise AssertionError(f"{job_id}: missing or conflicting shipping {key} declarations")
+        versions[key] = declared.pop()
     return versions
+
+
+class ShippingToolchainSelectionTests(unittest.TestCase):
+    def workflow(self) -> dict:
+        return {"jobs": {
+            "web": {"steps": [{"uses": "actions/setup-node@reviewed", "with": {"node-version": "22"}}]},
+            "api": {"steps": [{"uses": "actions/setup-python@reviewed", "with": {"python-version": "3.12"}}]},
+            "later-diagnostic": {"steps": [
+                {"uses": "actions/setup-node@reviewed", "with": {"node-version": "22.23.2"}},
+                {"uses": "actions/setup-python@reviewed", "with": {"python-version": "3.14"}},
+            ]},
+        }}
+
+    @contextmanager
+    def using_workflow(self, document):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "app-ci.yml"
+            path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+            with patch(f"{__name__}.APP_CI", path):
+                yield
+
+    def test_shipping_versions_are_not_shadowed_by_later_diagnostics(self):
+        with self.using_workflow(self.workflow()):
+            self.assertEqual(_setup_versions(), {"node-version": "22", "python-version": "3.12"})
+            BaseImagePinTests().test_pinned_major_matches_the_ci_toolchain()
+
+    def test_wrong_shipping_versions_cannot_be_hidden_by_later_diagnostics(self):
+        for diagnostic_node in ("22.23.2", "22"):
+            document = self.workflow()
+            document["jobs"]["web"]["steps"][0]["with"]["node-version"] = "26"
+            document["jobs"]["later-diagnostic"]["steps"][0]["with"]["node-version"] = diagnostic_node
+            with self.using_workflow(document):
+                self.assertEqual(_setup_versions()["node-version"], "26")
+                with self.assertRaisesRegex(AssertionError, "node-version: '26'"):
+                    BaseImagePinTests().test_pinned_major_matches_the_ci_toolchain()
+        document = self.workflow()
+        document["jobs"]["api"]["steps"][0]["with"]["python-version"] = "3.14"
+        document["jobs"]["later-diagnostic"]["steps"][1]["with"]["python-version"] = "3.12"
+        with self.using_workflow(document):
+            self.assertEqual(_setup_versions()["python-version"], "3.14")
+            with self.assertRaisesRegex(AssertionError, "python-version: '3.14'"):
+                BaseImagePinTests().test_pinned_major_matches_the_ci_toolchain()
+
+    def test_missing_primary_jobs_actions_and_versions_are_rejected(self):
+        for job_id, key in (("web", "node-version"), ("api", "python-version")):
+            for missing in ("job", "steps", "action", "version", "empty-version"):
+                document = self.workflow()
+                job = document["jobs"][job_id]
+                if missing == "job":
+                    del document["jobs"][job_id]
+                elif missing == "steps":
+                    job["steps"] = []
+                elif missing == "action":
+                    job["steps"][0]["uses"] = "actions/not-the-shipping-setup@reviewed"
+                elif missing == "version":
+                    del job["steps"][0]["with"][key]
+                else:
+                    job["steps"][0]["with"][key] = ""
+                with self.subTest(job=job_id, missing=missing), self.using_workflow(document):
+                    with self.assertRaisesRegex(AssertionError, f"{job_id}: missing"):
+                        _setup_versions()
+
+    def test_conflicting_primary_versions_fail_but_equal_declarations_are_unambiguous(self):
+        for job_id, key, other in (("web", "node-version", "26"), ("api", "python-version", "3.14")):
+            document = self.workflow()
+            steps = document["jobs"][job_id]["steps"]
+            steps.append(deepcopy(steps[0]))
+            with self.using_workflow(document):
+                self.assertEqual(_setup_versions(), {"node-version": "22", "python-version": "3.12"})
+            steps[-1]["with"][key] = other
+            with self.using_workflow(document):
+                with self.assertRaisesRegex(AssertionError, f"{job_id}: missing or conflicting"):
+                    _setup_versions()
+
+    def test_declared_precision_is_not_reduced_to_match_a_base_major(self):
+        for job_id, key, value in (
+            ("web", "node-version", "22.23.2"), ("api", "python-version", "3.12.10"),
+        ):
+            document = self.workflow()
+            document["jobs"][job_id]["steps"][0]["with"][key] = value
+            with self.using_workflow(document):
+                self.assertEqual(_setup_versions()[key], value)
+                with self.assertRaisesRegex(AssertionError, f"{key}: '{re.escape(value)}'"):
+                    BaseImagePinTests().test_pinned_major_matches_the_ci_toolchain()
 
 
 class BaseImagePinTests(unittest.TestCase):
