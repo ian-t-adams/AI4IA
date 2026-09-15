@@ -163,7 +163,10 @@ this repository's PR #477, not a new required check or an updater. It preserves
 the original lock and ordinary CI, verifies public metadata/tarball hashes, and
 tests a package-manager-generated candidate only in isolated runner directories.
 It disables install lifecycle scripts and invokes only the reviewed native probe
-and tool entrypoints. A candidate pass does not clear an original-source failure
+and tool entrypoints. Archive limits cover the complete decompressed stream before
+tar parsing, including extension records and padding. Windows subprocesses enter
+an owned Job Object at creation; descendant cleanup cannot depend on leader life.
+A candidate pass does not clear an original-source failure
 or authorize adoption. Its seven-day artifact excludes raw logs, credentials,
 caches and installed dependencies. Remove this temporary job and its diagnostic
 helpers after the approved investigation; do not broaden its target or grants.

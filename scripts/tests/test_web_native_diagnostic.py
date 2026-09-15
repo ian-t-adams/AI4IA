@@ -4,6 +4,8 @@ from __future__ import annotations
 import base64
 import contextlib
 import copy
+import ctypes
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -14,6 +16,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
+import time
 import unittest
 from email.message import Message
 from pathlib import Path
@@ -558,6 +562,315 @@ class WebNativeDiagnosticTests(unittest.TestCase):
             self.assertEqual(report["stages"]["source"]["status"], "failed")
             self.assertEqual(report["stages"]["public_packages"]["status"], "not_run")
             self.assertFalse(report["candidateValidated"])
+
+
+class ArchiveStreamLimitTests(unittest.TestCase):
+    def test_complete_decompressed_stream_is_bounded_before_tar_parsing(self):
+        _, metadata = fixture()
+        native = metadata["packages"][diag.NATIVE]
+        manifest = diag.encode({
+            "name": diag.NATIVE, "version": diag.VERSION, "cpu": ["x64"], "os": ["win32"],
+            "main": "native.node",
+        })
+        for kind in ("pax", "gnu", "member", "padding"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                raw = io.BytesIO()
+                options = {"format": tarfile.GNU_FORMAT} if kind == "gnu" else {"format": tarfile.PAX_FORMAT}
+                if kind == "pax":
+                    options["pax_headers"] = {"comment": "x" * 8192}
+                with tarfile.open(fileobj=raw, mode="w:", **options) as archive:
+                    members = {"package/package.json": manifest, "package/native.node": b"synthetic"}
+                    if kind == "gnu":
+                        members["package/" + "x" * 8192] = b"small"
+                    if kind == "member":
+                        members["package/large.txt"] = b"x" * 8192
+                    for name, body in members.items():
+                        member = tarfile.TarInfo(name)
+                        member.size = len(body)
+                        archive.addfile(member, io.BytesIO(body))
+                body = raw.getvalue() + (b"\0" * 8192 if kind == "padding" else b"")
+                path = Path(directory) / "package.tgz"
+                path.write_bytes(gzip.compress(body))
+                with patch.object(diag, "UNPACKED_LIMIT", len(body)):
+                    self.assertIn("binarySha256", diag.inspect_tarball(path, native))
+                for limit in (8192, len(body) - 1):
+                    with (
+                        patch.object(diag, "UNPACKED_LIMIT", limit),
+                        patch.object(diag.tarfile, "open", wraps=tarfile.open) as parser,
+                    ):
+                        with self.assertRaisesRegex(diag.DiagnosticError, "package_archive_limit"):
+                            diag.inspect_tarball(path, native)
+                        parser.assert_not_called()
+                with patch.object(diag, "UNPACKED_LIMIT", len(body)):
+                    self.assertIn("binarySha256", diag.inspect_tarball(path, native))
+
+    def test_temporary_decompressed_bytes_are_closed_on_success_and_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compressed = root / "bounded.gz"
+            compressed.write_bytes(gzip.compress(b"x" * 1024))
+            streams = []
+            real_temporary = tempfile.TemporaryFile
+
+            def temporary(**kwargs):
+                stream = real_temporary(**kwargs)
+                streams.append(stream)
+                return stream
+
+            with patch.object(diag.tempfile, "TemporaryFile", side_effect=temporary):
+                with patch.object(diag, "UNPACKED_LIMIT", 1024):
+                    with diag.bounded_tar_stream(compressed) as stream:
+                        self.assertEqual(stream.read(), b"x" * 1024)
+                with patch.object(diag, "UNPACKED_LIMIT", 1023):
+                    with self.assertRaisesRegex(diag.DiagnosticError, "package_archive_limit"):
+                        with diag.bounded_tar_stream(compressed):
+                            self.fail("Oversized bytes were exposed to the parser")
+            self.assertEqual(len(streams), 2)
+            self.assertTrue(all(stream.closed for stream in streams))
+            self.assertEqual(list(root.iterdir()), [compressed])
+
+
+class ProcessCleanupContractTests(unittest.TestCase):
+    def test_exited_leader_still_triggers_tree_termination_and_pipe_close(self):
+        for descendants in (False, True):
+            pipe = Mock()
+            pipe.read.return_value = b""
+            process = Mock(stdout=pipe, returncode=0)
+            process.poll.return_value = 0
+            with (
+                patch.object(diag, "launch_process", return_value=process),
+                patch.object(diag.os, "set_blocking"),
+                patch.object(diag, "active_descendants", return_value=descendants),
+                patch.object(diag, "stop_tree") as terminate,
+            ):
+                result = diag.run_process(["synthetic"], Path("."), {}, 1)
+            terminate.assert_called_once_with(process)
+            pipe.close.assert_called_once()
+            self.assertEqual(result.status, "failed" if descendants else "succeeded")
+            self.assertEqual(result.exit_code, 0)
+
+    def test_pipe_errors_and_tree_cleanup_errors_still_close_the_pipe(self):
+        for setup_error, terminate_error in ((OSError("private-marker"), None), (None, diag.DiagnosticError("command_cleanup_unknown"))):
+            pipe = Mock()
+            pipe.read.return_value = b""
+            process = Mock(stdout=pipe, returncode=0)
+            process.poll.return_value = 0
+            with (
+                patch.object(diag, "launch_process", return_value=process),
+                patch.object(diag.os, "set_blocking", side_effect=setup_error),
+                patch.object(diag, "active_descendants", return_value=False),
+                patch.object(diag, "stop_tree", side_effect=terminate_error) as terminate,
+            ):
+                with self.assertRaisesRegex(diag.DiagnosticError, "^command_cleanup_unknown$"):
+                    diag.run_process(["synthetic"], Path("."), {}, 1)
+            terminate.assert_called_once_with(process)
+            pipe.close.assert_called_once()
+
+
+@unittest.skipUnless(sys.platform == "win32", "Actual Windows descendant and pipe lifetime controls")
+class WindowsProcessLifetimeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from ctypes import wintypes
+
+        cls.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        cls.kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        cls.kernel.OpenProcess.restype = wintypes.HANDLE
+        cls.kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        cls.kernel.WaitForSingleObject.restype = wintypes.DWORD
+        cls.kernel.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+        cls.kernel.TerminateProcess.restype = wintypes.BOOL
+        cls.kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        cls.kernel.CloseHandle.restype = wintypes.BOOL
+        cls.kernel.IsProcessInJob.argtypes = (wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL))
+        cls.kernel.IsProcessInJob.restype = wintypes.BOOL
+
+    def test_job_membership_is_established_inside_the_native_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = diag.child_env(dict(os.environ), root / "home")
+            api = diag._WindowsAPI()
+            update = api.update_attribute
+            create = api.create_process
+            order = []
+
+            def update_attribute(*args):
+                value = update(*args)
+                order.append(args[2])
+                return value
+
+            def create_process(*args):
+                order.append("create")
+                return create(*args)
+
+            api.update_attribute = update_attribute
+            api.create_process = create_process
+            process = None
+            try:
+                with patch.object(diag, "_WindowsAPI", return_value=api):
+                    process = diag._WindowsJobProcess(
+                        [sys.executable, "-c", "import time; time.sleep(20)"], root, env,
+                    )
+                member = ctypes.c_int32()
+                self.assertTrue(self.kernel.IsProcessInJob(process.handle, process.job, ctypes.byref(member)))
+                self.assertEqual(member.value, 1, "The launched process is not in its exact owned job")
+                self.assertLess(order.index(0x2000D), order.index("create"))
+                self.assertEqual(process.active_processes(), 1)
+            finally:
+                if process is not None:
+                    self.kernel.TerminateProcess(process.handle, 1)
+                    self.kernel.WaitForSingleObject(process.handle, 5000)
+                    process.close()
+
+    def test_job_enrollment_failure_never_starts_the_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "started"
+            env = diag.child_env(dict(os.environ), root / "home")
+            api = diag._WindowsAPI()
+            update = api.update_attribute
+            api.update_attribute = lambda *args: False if args[2] == 0x2000D else update(*args)
+            api.create_process = Mock(wraps=api.create_process)
+            command = [
+                sys.executable, "-c",
+                "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text('started')", str(marker),
+            ]
+            with patch.object(diag, "_WindowsAPI", return_value=api):
+                with self.assertRaisesRegex(diag.DiagnosticError, "command_ownership_failed"):
+                    diag.run_process(command, root, env, 5)
+            api.create_process.assert_not_called()
+            self.assertFalse(marker.exists())
+            self.assertEqual(diag.run_process(command, root, env, 5).exit_code, 0)
+            self.assertTrue(marker.exists())
+
+    def exercise_lifetime(self, mode, inherit_stdout=True, termination_error=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child = root / "child.py"
+            child.write_text(
+                "import pathlib, sys, time\n"
+                "ready = pathlib.Path(sys.argv[1])\n"
+                "ready.write_text('ready')\n"
+                "until = time.monotonic() + 10\n"
+                "while not (ready.parent / 'release').exists() and time.monotonic() < until:\n"
+                "    time.sleep(0.01)\n"
+                "time.sleep(0.2 if sys.argv[2] == 'completed' else 20)\n",
+                encoding="utf-8",
+            )
+            leader = root / "leader.py"
+            leader.write_text(
+                "import os, pathlib, subprocess, sys, time\n"
+                "root = pathlib.Path(sys.argv[1])\n"
+                "mode = sys.argv[2]\n"
+                "stream = None if sys.argv[3] == 'inherit' else subprocess.DEVNULL\n"
+                "child = subprocess.Popen([sys.executable, str(root / 'child.py'), "
+                "str(root / 'ready'), mode], stdout=stream, stderr=stream)\n"
+                "(root / 'pids.tmp').write_text(__import__('json').dumps([os.getpid(), child.pid]))\n"
+                "(root / 'pids.tmp').replace(root / 'pids.json')\n"
+                "until = time.monotonic() + 10\n"
+                "while not (root / 'release').exists() and time.monotonic() < until:\n"
+                "    time.sleep(0.01)\n"
+                "if mode == 'live':\n"
+                "    time.sleep(20)\n"
+                "elif mode == 'completed':\n"
+                "    child.wait(timeout=5)\n",
+                encoding="utf-8",
+            )
+            env = diag.child_env(dict(os.environ), root / "home")
+            unrelated = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(20)"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=env,
+            )
+            results = []
+            errors = []
+            closed_streams = []
+            original_close = diag.close_process
+
+            def close(process):
+                original_close(process)
+                closed_streams.append(process.stdout.closed)
+
+            def run():
+                try:
+                    results.append(diag.run_process(
+                        [sys.executable, str(leader), str(root), mode,
+                         "inherit" if inherit_stdout else "detached"],
+                        root, env, 2 if mode == "live" else 5,
+                    ))
+                except Exception as exc:
+                    errors.append(exc)
+
+            worker = threading.Thread(target=run, daemon=True)
+            handles = []
+            tracker = patch.object(diag, "close_process", side_effect=close)
+            termination = (
+                patch.object(diag, "stop_tree", side_effect=diag.DiagnosticError("command_cleanup_unknown"))
+                if termination_error else contextlib.nullcontext()
+            )
+            try:
+                with tracker, termination:
+                    worker.start()
+                    deadline = time.monotonic() + 5
+                    while not (root / "ready").is_file() or not (root / "pids.json").is_file():
+                        self.assertLess(time.monotonic(), deadline, "The real child did not start")
+                        time.sleep(0.01)
+                    pids = json.loads((root / "pids.json").read_text())
+                    for pid in pids:
+                        handle = self.kernel.OpenProcess(0x100001, False, pid)
+                        self.assertTrue(handle, "Could not retain the exact test process identity")
+                        handles.append(handle)
+                    self.assertEqual(self.kernel.WaitForSingleObject(handles[1], 0), 258)
+                    (root / "release").write_text("go", encoding="utf-8")
+                    worker.join(timeout=8)
+                    self.assertFalse(worker.is_alive(), "run_process did not finish within its bound")
+                    if termination_error:
+                        self.assertEqual(len(errors), 1)
+                        self.assertIsInstance(errors[0], diag.DiagnosticError)
+                        self.assertEqual(str(errors[0]), "command_cleanup_unknown")
+                    else:
+                        self.assertFalse(errors, errors)
+                    self.assertEqual(self.kernel.WaitForSingleObject(handles[1], 1000), 0,
+                                     "A descendant survived the command's return")
+                    self.assertEqual(self.kernel.WaitForSingleObject(handles[0], 1000), 0)
+                    self.assertIsNone(unrelated.poll(), "Unrelated same-executable process was terminated")
+                    self.assertEqual(closed_streams, [True])
+                    if termination_error:
+                        self.assertEqual(results, [])
+                        return
+                    self.assertEqual(len(results), 1)
+                    result = results[0]
+                    if mode == "completed":
+                        self.assertEqual((result.status, result.exit_code), ("succeeded", 0))
+                    else:
+                        self.assertEqual(result.status, "failed")
+                        self.assertEqual(result.reason, "command_timeout" if mode == "live"
+                                         else "command_descendants_running")
+                        if mode == "exited":
+                            self.assertEqual(result.exit_code, 0)
+            finally:
+                for handle in handles:
+                    if self.kernel.WaitForSingleObject(handle, 0) == 258:
+                        self.kernel.TerminateProcess(handle, 1)
+                    self.kernel.WaitForSingleObject(handle, 5000)
+                    self.kernel.CloseHandle(handle)
+                if unrelated.poll() is None:
+                    unrelated.kill()
+                unrelated.wait(timeout=5)
+                worker.join(timeout=5)
+
+    def test_exited_leader_cannot_leave_stdout_descendant_alive(self):
+        self.exercise_lifetime("exited")
+
+    def test_exited_leader_cannot_leave_a_descendant_without_stdout_alive(self):
+        self.exercise_lifetime("exited", inherit_stdout=False)
+
+    def test_live_parent_timeout_and_completed_child_have_real_controls(self):
+        self.exercise_lifetime("live")
+        self.exercise_lifetime("completed")
+
+    def test_job_close_still_terminates_descendants_if_explicit_termination_fails(self):
+        self.exercise_lifetime("exited", termination_error=True)
 
 
 class OrchestrationTests(unittest.TestCase):

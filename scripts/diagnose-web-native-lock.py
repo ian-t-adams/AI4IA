@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ctypes
 import difflib
+import gzip
 import hashlib
 import http.client
 import io
@@ -19,8 +21,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
@@ -213,18 +215,255 @@ class CommandResult:
         }
 
 
-def stop_tree(process: subprocess.Popen) -> None:
-    if process.poll() is None:
-        if os.name == "nt":
-            killer = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
-            result = subprocess.run(
-                [str(killer), "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False,
+class _BasicJobLimits(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+        ("LimitFlags", ctypes.c_uint32), ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", ctypes.c_uint32),
+        ("Affinity", ctypes.c_size_t), ("PriorityClass", ctypes.c_uint32),
+        ("SchedulingClass", ctypes.c_uint32),
+    ]
+
+
+class _ExtendedJobLimits(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _BasicJobLimits), ("IoInfo", ctypes.c_uint64 * 6),
+        ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+class _JobAccounting(ctypes.Structure):
+    _fields_ = [
+        ("TotalUserTime", ctypes.c_int64), ("TotalKernelTime", ctypes.c_int64),
+        ("ThisPeriodTotalUserTime", ctypes.c_int64), ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+        ("TotalPageFaultCount", ctypes.c_uint32), ("TotalProcesses", ctypes.c_uint32),
+        ("ActiveProcesses", ctypes.c_uint32), ("TotalTerminatedProcesses", ctypes.c_uint32),
+    ]
+
+
+class _StartupInfo(ctypes.Structure):
+    _fields_ = [
+        ("cb", ctypes.c_uint32), ("lpReserved", ctypes.c_wchar_p),
+        ("lpDesktop", ctypes.c_wchar_p), ("lpTitle", ctypes.c_wchar_p),
+        *[(name, ctypes.c_uint32) for name in (
+            "dwX", "dwY", "dwXSize", "dwYSize", "dwXCountChars", "dwYCountChars",
+            "dwFillAttribute", "dwFlags",
+        )],
+        ("wShowWindow", ctypes.c_uint16), ("cbReserved2", ctypes.c_uint16),
+        ("lpReserved2", ctypes.c_void_p), ("hStdInput", ctypes.c_void_p),
+        ("hStdOutput", ctypes.c_void_p), ("hStdError", ctypes.c_void_p),
+    ]
+
+
+class _StartupInfoEx(ctypes.Structure):
+    _fields_ = [("StartupInfo", _StartupInfo), ("lpAttributeList", ctypes.c_void_p)]
+
+
+class _ProcessInformation(ctypes.Structure):
+    _fields_ = [
+        ("hProcess", ctypes.c_void_p), ("hThread", ctypes.c_void_p),
+        ("dwProcessId", ctypes.c_uint32), ("dwThreadId", ctypes.c_uint32),
+    ]
+
+
+class _WindowsAPI:
+    def __init__(self):
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        pointer = ctypes.c_void_p
+        dword = ctypes.c_uint32
+        boolean = ctypes.c_int32
+
+        def bind(name, result, *arguments):
+            function = getattr(kernel, name)
+            function.restype = result
+            function.argtypes = arguments
+            return function
+
+        self.create_job = bind("CreateJobObjectW", pointer, pointer, ctypes.c_wchar_p)
+        self.set_job = bind("SetInformationJobObject", boolean, pointer, dword, pointer, dword)
+        self.query_job = bind("QueryInformationJobObject", boolean, pointer, dword, pointer, dword, pointer)
+        self.terminate_job = bind("TerminateJobObject", boolean, pointer, dword)
+        self.initialize_attributes = bind(
+            "InitializeProcThreadAttributeList", boolean, pointer, dword, dword, ctypes.POINTER(ctypes.c_size_t),
+        )
+        self.update_attribute = bind(
+            "UpdateProcThreadAttribute", boolean, pointer, dword, ctypes.c_size_t, pointer,
+            ctypes.c_size_t, pointer, pointer,
+        )
+        self.delete_attributes = bind("DeleteProcThreadAttributeList", None, pointer)
+        self.create_process = bind(
+            "CreateProcessW", boolean, ctypes.c_wchar_p, ctypes.c_wchar_p, pointer, pointer,
+            boolean, dword, pointer, ctypes.c_wchar_p, ctypes.POINTER(_StartupInfoEx),
+            ctypes.POINTER(_ProcessInformation),
+        )
+        self.close_handle = bind("CloseHandle", boolean, pointer)
+        self.wait = bind("WaitForSingleObject", dword, pointer, dword)
+        self.exit_code = bind("GetExitCodeProcess", boolean, pointer, ctypes.POINTER(dword))
+
+
+class _WindowsJobProcess:
+    """JOB_LIST enrollment happens inside CreateProcessW, before any child code runs."""
+
+    def __init__(self, command: list[str], cwd: Path, env: dict[str, str]):
+        import msvcrt
+
+        self.api = _WindowsAPI()
+        self.job = None
+        self.handle = None
+        self.stdout = None
+        self.returncode: int | None = None
+        self.pid = 0
+        self.args = command
+        info = _ProcessInformation()
+        read_fd = write_fd = input_fd = None
+        attributes = None
+        ready = False
+        try:
+            self.job = self.api.create_job(None, None)
+            require(bool(self.job), "command_ownership_failed")
+            limits = _ExtendedJobLimits()
+            limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            require(bool(self.api.set_job(self.job, 9, ctypes.byref(limits), ctypes.sizeof(limits))),
+                    "command_ownership_failed")
+            read_fd, write_fd = os.pipe()
+            input_fd = os.open(os.devnull, os.O_RDONLY)
+            for descriptor in (write_fd, input_fd):
+                os.set_inheritable(descriptor, True)
+            inherited = (ctypes.c_void_p * 2)(
+                msvcrt.get_osfhandle(input_fd), msvcrt.get_osfhandle(write_fd),
             )
-            require(result.returncode == 0, "command_cleanup_unknown")
-        else:
+            jobs = (ctypes.c_void_p * 1)(self.job)
+            size = ctypes.c_size_t()
+            ctypes.set_last_error(0)
+            self.api.initialize_attributes(None, 2, 0, ctypes.byref(size))
+            require(ctypes.get_last_error() == 122 and size.value > 0, "command_ownership_failed")
+            buffer = ctypes.create_string_buffer(size.value)
+            require(bool(self.api.initialize_attributes(buffer, 2, 0, ctypes.byref(size))),
+                    "command_ownership_failed")
+            attributes = buffer
+            for attribute, values in (
+                (0x20002, inherited),  # PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+                (0x2000D, jobs),       # PROC_THREAD_ATTRIBUTE_JOB_LIST
+            ):
+                require(bool(self.api.update_attribute(
+                    attributes, 0, attribute, values, ctypes.sizeof(values), None, None,
+                )), "command_ownership_failed")
+            startup = _StartupInfoEx()
+            startup.StartupInfo.cb = ctypes.sizeof(startup)
+            startup.StartupInfo.dwFlags = 0x100  # STARTF_USESTDHANDLES
+            startup.StartupInfo.hStdInput = inherited[0]
+            startup.StartupInfo.hStdOutput = inherited[1]
+            startup.StartupInfo.hStdError = inherited[1]
+            startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
+            executable = shutil.which(command[0], path=env.get("PATH"))
+            if executable is None:
+                raise FileNotFoundError("command_executable_missing")
+            environment = ctypes.create_unicode_buffer(
+                "\0".join(f"{name}={env[name]}" for name in sorted(env, key=str.upper)) + "\0",
+            )
+            commandline = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
+            require(bool(self.api.create_process(
+                executable, commandline, None, None, True,
+                0x80000 | 0x400 | 0x200,  # EXTENDED_STARTUPINFO_PRESENT, UNICODE_ENVIRONMENT, NEW_PROCESS_GROUP
+                environment, str(cwd), ctypes.byref(startup), ctypes.byref(info),
+            )), "command_start_failed")
+            self.handle = info.hProcess
+            self.pid = info.dwProcessId
+            self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+            read_fd = None
+            ready = True
+        finally:
+            if attributes is not None:
+                self.api.delete_attributes(attributes)
+            cleanup_failed = bool(info.hThread) and not self.api.close_handle(info.hThread)
+            for descriptor in (read_fd, write_fd, input_fd):
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        cleanup_failed = True
+            if not ready or cleanup_failed:
+                self.close()
+            require(not cleanup_failed, "command_cleanup_unknown")
+
+    def poll(self):
+        if self.returncode is None:
+            state = self.api.wait(self.handle, 0)
+            require(state in (0, 258), "command_cleanup_unknown")
+            if state == 0:
+                code = ctypes.c_uint32()
+                require(bool(self.api.exit_code(self.handle, ctypes.byref(code))), "command_cleanup_unknown")
+                self.returncode = code.value
+        return self.returncode
+
+    def wait(self, timeout: float):
+        require(self.api.wait(self.handle, max(0, int(timeout * 1000))) == 0, "command_cleanup_unknown")
+        return self.poll()
+
+    def active_processes(self):
+        info = _JobAccounting()
+        require(bool(self.api.query_job(self.job, 1, ctypes.byref(info), ctypes.sizeof(info), None)),
+                "command_cleanup_unknown")
+        return info.ActiveProcesses
+
+    def terminate_tree(self):
+        require(bool(self.api.terminate_job(self.job, 1)), "command_cleanup_unknown")
+        deadline = time.monotonic() + 10
+        self.wait(10)
+        while self.active_processes():
+            require(time.monotonic() < deadline, "command_cleanup_unknown")
+            time.sleep(0.01)
+
+    def close(self):
+        try:
+            if self.stdout is not None:
+                self.stdout.close()
+        finally:
+            handles = (self.job, self.handle)
+            self.job = self.handle = None
+            failures = [handle for handle in handles if handle and not self.api.close_handle(handle)]
+            require(not failures, "command_cleanup_unknown")
+
+
+def launch_process(command: list[str], cwd: Path, env: dict[str, str]):
+    if os.name == "nt":
+        return _WindowsJobProcess(command, cwd, env)
+    return subprocess.Popen(
+        command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0, start_new_session=True,
+    )
+
+
+def active_descendants(process) -> bool:
+    if os.name == "nt":
+        require(isinstance(process, _WindowsJobProcess), "command_ownership_failed")
+        return process.active_processes() > 0
+    try:
+        os.killpg(process.pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def stop_tree(process) -> None:
+    if os.name == "nt":
+        require(isinstance(process, _WindowsJobProcess), "command_ownership_failed")
+        process.terminate_tree()
+    else:
+        try:
             os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         process.wait(timeout=10)
+
+
+def close_process(process) -> None:
+    try:
+        process.stdout.close()
+    finally:
+        if isinstance(process, _WindowsJobProcess):
+            process.close()
 
 
 def run_process(command: list[str], cwd: Path, env: dict[str, str], timeout: float,
@@ -232,55 +471,59 @@ def run_process(command: list[str], cwd: Path, env: dict[str, str], timeout: flo
     if timeout <= 0:
         return CommandResult("not_run", None, reason="total_deadline")
     output = bytearray()
-    overflow = threading.Event()
-    read_error = threading.Event()
     try:
-        process = subprocess.Popen(
-            command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
-            start_new_session=os.name != "nt",
-        )
+        process = launch_process(command, cwd, env)
     except OSError:
         return CommandResult("failed", None, reason="command_start_failed")
     stream = process.stdout
     assert stream is not None
-
-    def drain():
-        try:
-            while chunk := stream.read(65536):
-                remaining = limit - len(output)
-                output.extend(chunk[:remaining])
-                if len(chunk) > remaining:
-                    overflow.set()
-        except OSError:
-            read_error.set()
-
-    reader = threading.Thread(target=drain, daemon=True)
-    reader.start()
     deadline = time.monotonic() + timeout
     reason = None
-    try:
-        while process.poll() is None:
-            if overflow.is_set() or time.monotonic() >= deadline:
-                reason = "output_limit" if overflow.is_set() else "command_timeout"
-                stop_tree(process)
-                break
-            time.sleep(0.05)
-        reader.join(timeout=2)
-        require(not reader.is_alive() and not read_error.is_set(), "command_cleanup_unknown")
-        if overflow.is_set():
+
+    def capture(chunk: bytes):
+        nonlocal reason
+        remaining = limit - len(output)
+        output.extend(chunk[:remaining])
+        if len(chunk) > remaining:
             reason = "output_limit"
+
+    try:
+        try:
+            # Python 3.12+ supports nonblocking anonymous pipes on Windows.
+            # No reader thread can outlive the owned command or retain its pipe.
+            os.set_blocking(stream.fileno(), False)
+            while process.poll() is None:
+                chunk = stream.read(65536)
+                if chunk:
+                    capture(chunk)
+                if reason or time.monotonic() >= deadline:
+                    reason = reason or "command_timeout"
+                    break
+                if not chunk:
+                    time.sleep(0.01)
+            if reason is None and active_descendants(process):
+                reason = "command_descendants_running"
+        finally:
+            try:
+                # The Job Object/process group outlives its leader. Always
+                # terminate it, even after exit 0 and even if stdout is closed.
+                stop_tree(process)
+                drain_deadline = time.monotonic() + 2
+                while True:
+                    require(time.monotonic() < drain_deadline, "command_cleanup_unknown")
+                    chunk = stream.read(65536)
+                    if chunk == b"":
+                        break
+                    if chunk:
+                        capture(chunk)
+                    else:
+                        time.sleep(0.01)
+            finally:
+                close_process(process)
         status = "succeeded" if process.returncode == 0 and reason is None else "failed"
         return CommandResult(status, process.returncode, bytes(output), reason)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise DiagnosticError("command_cleanup_unknown") from exc
-    finally:
-        if process.poll() is None:
-            stop_tree(process)
-            reader.join(timeout=2)
-        if not reader.is_alive():
-            stream.close()
 
 
 def metadata_url(name: str) -> str:
@@ -383,13 +626,25 @@ def verify_metadata(name: str, value: dict, lock: dict) -> dict:
     return selected
 
 
+@contextmanager
+def bounded_tar_stream(path: Path):
+    with gzip.open(path, "rb") as compressed, tempfile.TemporaryFile(dir=path.parent) as uncompressed:
+        total = 0
+        while chunk := compressed.read(min(65536, UNPACKED_LIMIT - total + 1)):
+            total += len(chunk)
+            require(total <= UNPACKED_LIMIT, "package_archive_limit")
+            uncompressed.write(chunk)
+        uncompressed.seek(0)
+        yield uncompressed
+
+
 def inspect_tarball(path: Path, metadata: dict) -> dict:
     manifest = None
     binaries = {}
     total = 0
     count = 0
     try:
-        with tarfile.open(path, "r|gz") as archive:
+        with bounded_tar_stream(path) as uncompressed, tarfile.open(fileobj=uncompressed, mode="r|") as archive:
             for member in archive:
                 count += 1
                 total += member.size
