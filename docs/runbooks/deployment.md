@@ -30,6 +30,18 @@ deployment job can start. Missing values fail the workflow with their names;
 they never produce a successful skipped job. A repository with no deployment
 target must declare that posture with `AI4IA_DEPLOYMENT_ENABLED=false`.
 
+The provisioning step uses `azd provision --no-prompt --no-state`. In the pinned
+azd, unchanged templates and parameters can otherwise produce a successful
+"There are no changes to provision" result without reconciling live resources.
+That is not a drift check: an application rollback can restore an older template
+after provisioning succeeded, while leaving azd's stored deployment state
+unchanged. `--no-state` requests a fresh Bicep deployment; it does not change the
+declared resources, feature choices, permissions, or ARM deployment mode. The
+pre-provision rollback capture remains mandatory. A manual workflow run with
+`provision=false` still deliberately skips provisioning; it is not configuration
+reconciliation. Do not delete state files or use the unsupported `--force` flag
+as a substitute.
+
 This source guard does not replace the independently configured `production`
 environment branch policy. An operator must still restrict that environment as
 described in the standup guide: allow only an exact **branch** rule named `main`,

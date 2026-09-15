@@ -642,9 +642,9 @@ jobs:
       - name: Provision infrastructure
         id: provision
         # Skipped only when a manual run explicitly opts out; push events always
-        # reconcile infra (azd provision is idempotent).
+        # reconcile infra. Stored template hashes do not detect rollback drift.
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
-        run: azd provision --no-prompt
+        run: azd provision --no-prompt --no-state
 
       # Preserve the endpoint produced by THIS successful provision for the
       # workflow_run consumer. A GitHub variable can fall back across scopes and

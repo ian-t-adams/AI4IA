@@ -487,6 +487,12 @@ pushed. A digest is content-addressed, so an identical rebuild yields an identic
 reference; the older "new revision, changed image string" heuristic remains only as
 a fallback for callers that cannot name the image. Do not drop those flags.
 
+The workflow uses `azd provision --no-prompt --no-state`: the pinned azd's
+unchanged-template/parameter shortcut is not a live drift check and can skip
+reconciliation after application rollback. Keep the supported `--no-state`
+option, not state-file deletion or an unsupported `--force` substitute. The
+explicit manual `provision=false` opt-out remains unchanged.
+
 Rollback state is captured **before `azd provision`**, not merely before
 application deployment: all three Bicep app modules use a quickstart placeholder
 image for greenfield creation, so an infrastructure reconciliation can create a
