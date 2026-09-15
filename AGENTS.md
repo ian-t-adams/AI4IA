@@ -165,6 +165,9 @@ tests a package-manager-generated candidate only in isolated runner directories.
 Source export uses process-scoped Git EOL options so Windows checkout preferences
 cannot rewrite the pinned blob bytes; mismatches retain bounded input hashes and
 presence, never normalized files or replacement expected hashes.
+Candidate generation refreshes only the already-declared exact Next parent after
+checking the untouched inputs and verified metadata. Rejected candidates retain
+bounded inventory counts and allowlisted paths, never an approved lock or fallback.
 It disables install lifecycle scripts and invokes only the reviewed native probe
 and tool entrypoints. Archive limits cover the complete decompressed stream before
 tar parsing, including extension records and padding. Windows subprocesses enter

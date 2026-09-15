@@ -865,6 +865,48 @@ def source_inputs(web: Path, evidence: dict) -> dict[str, bytes]:
     return manifests
 
 
+def candidate_inventory(original_lock: bytes, candidate_lock: bytes) -> dict:
+    if max(len(original_lock), len(candidate_lock)) > LOCK_LIMIT:
+        return {"status": "unavailable", "reason": "candidate_inventory_input_limit"}
+    try:
+        original = object_json(original_lock)
+        candidate = object_json(candidate_lock)
+        before = original.get("packages")
+        after = candidate.get("packages")
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return {"status": "unavailable", "reason": "candidate_inventory_packages_missing"}
+        before_keys, after_keys = set(before), set(after)
+        allowlist = before_keys | {NATIVE_KEY}
+
+        def changes(paths: set[str]) -> dict:
+            known = paths & allowlist
+            displayed = sorted(
+                path for path in known if path.startswith("node_modules/")
+                and len(path) <= 256 and re.fullmatch(r"[A-Za-z0-9@._/-]+", path)
+            )[:16]
+            return {
+                "count": len(paths), "knownCount": len(known), "unknownCount": len(paths - known),
+                "knownPaths": displayed, "omittedKnownPaths": len(known) - len(displayed),
+            }
+
+        return {
+            "status": "observed",
+            "beforeRecordCount": len(before_keys), "afterRecordCount": len(after_keys),
+            "beforeNativePresent": NATIVE_KEY in before_keys, "afterNativePresent": NATIVE_KEY in after_keys,
+            "bytesUnchanged": original_lock == candidate_lock,
+            "topLevelUnchanged": encode({key: value for key, value in original.items() if key != "packages"})
+            == encode({key: value for key, value in candidate.items() if key != "packages"}),
+            "rootRecordUnchanged": encode(before.get("")) == encode(after.get("")),
+            "added": changes(after_keys - before_keys),
+            "removed": changes(before_keys - after_keys),
+            "changed": changes({
+                key for key in before_keys & after_keys if encode(before[key]) != encode(after[key])
+            }),
+        }
+    except (DiagnosticError, UnicodeError):
+        return {"status": "unavailable", "reason": "candidate_inventory_invalid_json"}
+
+
 def verify_candidate(original_manifest: bytes, original_lock: bytes, candidate_manifest: bytes,
                      candidate_lock: bytes, native: dict) -> None:
     require(candidate_manifest == original_manifest, "candidate_manifest_changed")
@@ -1104,12 +1146,27 @@ class Diagnostic:
             invoke("original", "guard", [node, vitest, "run", guard], 60)
             native_control("original")
 
+        self.active_stage = "candidate_lock"
+        require(
+            read_bytes(candidate / "package.json", LOCK_LIMIT) == manifests["package.json"]
+            and read_bytes(candidate / "package-lock.json", LOCK_LIMIT) == manifests["package-lock.json"],
+            "candidate_refresh_inputs_changed",
+        )
+        dependencies = object_json(manifests["package.json"]).get("dependencies")
+        require(
+            isinstance(dependencies, dict) and dependencies.get("next") == VERSION
+            and metadata["packages"]["next"]["name"] == "next"
+            and metadata["packages"]["next"]["version"] == VERSION,
+            "candidate_refresh_parent_mismatch",
+        )
         generated = invoke("candidate", "lock", [
-            node, str(npm), "update", NATIVE, "--package-lock-only", *NPM_FLAGS,
+            node, str(npm), "install", f"next@{VERSION}", "--save-exact", "--package-lock-only", *NPM_FLAGS,
         ], 120)
         require(generated.status == "succeeded", "candidate_generation_failed")
         self.active_stage = "candidate_delta"
         candidate_lock = read_bytes(candidate / "package-lock.json", LOCK_LIMIT)
+        self.report["candidateInventory"] = candidate_inventory(manifests["package-lock.json"], candidate_lock)
+        self.save()
         verify_candidate(
             manifests["package.json"], manifests["package-lock.json"],
             read_bytes(candidate / "package.json", LOCK_LIMIT), candidate_lock, native,

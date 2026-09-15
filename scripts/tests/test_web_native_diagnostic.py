@@ -752,6 +752,99 @@ raise SystemExit(module.main())
             self.assertFalse(report["candidateValidated"])
 
 
+class CandidateInventoryTests(unittest.TestCase):
+    def test_noop_addition_pruning_and_record_changes_remain_distinct(self):
+        original, metadata = fixture()
+        before = lock_bytes(original)
+        noop = diag.candidate_inventory(before, before)
+        self.assertEqual(noop["status"], "observed")
+        self.assertTrue(noop["bytesUnchanged"])
+        self.assertEqual(noop["beforeRecordCount"], noop["afterRecordCount"])
+        self.assertFalse(noop["beforeNativePresent"])
+        self.assertFalse(noop["afterNativePresent"])
+        self.assertTrue(noop["topLevelUnchanged"])
+        self.assertTrue(noop["rootRecordUnchanged"])
+        self.assertTrue(all(noop[key]["count"] == 0 for key in ("added", "removed", "changed")))
+
+        candidate = add_record(original, metadata["packages"][diag.NATIVE])
+        added = diag.candidate_inventory(before, lock_bytes(candidate))
+        self.assertEqual(added["afterRecordCount"], added["beforeRecordCount"] + 1)
+        self.assertTrue(added["afterNativePresent"])
+        self.assertEqual(added["added"], {
+            "count": 1, "knownCount": 1, "unknownCount": 0,
+            "knownPaths": [diag.NATIVE_KEY], "omittedKnownPaths": 0,
+        })
+        self.assertEqual(added["removed"]["count"], 0)
+        self.assertEqual(added["changed"]["count"], 0)
+
+        pruned = copy.deepcopy(candidate)
+        del pruned["packages"]["node_modules/@next/swc-darwin-arm64"]
+        evidence = diag.candidate_inventory(before, lock_bytes(pruned))
+        self.assertEqual(evidence["beforeRecordCount"], evidence["afterRecordCount"])
+        self.assertEqual(evidence["removed"]["knownPaths"], ["node_modules/@next/swc-darwin-arm64"])
+        self.assertEqual(evidence["added"]["count"], 1)
+        self.assertFalse(evidence["bytesUnchanged"])
+
+        changed = copy.deepcopy(candidate)
+        changed["packages"]["node_modules/next"]["version"] = "99.0.0"
+        changed["packages"][""]["dependencies"][diag.NATIVE] = diag.VERSION
+        changed["lockfileVersion"] = 2
+        evidence = diag.candidate_inventory(before, lock_bytes(changed))
+        self.assertFalse(evidence["topLevelUnchanged"])
+        self.assertFalse(evidence["rootRecordUnchanged"])
+        self.assertEqual(evidence["changed"]["count"], 2)
+        self.assertEqual(evidence["changed"]["knownPaths"], ["node_modules/next"])
+        self.assertEqual(evidence["changed"]["omittedKnownPaths"], 1)
+        self.assertNotIn("99.0.0", json.dumps(evidence))
+
+    def test_unknown_names_are_counts_only_and_known_paths_have_explicit_bounds(self):
+        original, _ = fixture()
+        for index in range(40):
+            original["packages"][f"node_modules/known-{index}"] = {"version": "1.0.0"}
+        original["packages"]["node_modules/" + "x" * 300] = {}
+        original["packages"]["node_modules/private-marker\ncredential"] = {}
+        candidate = copy.deepcopy(original)
+        for name in set(candidate["packages"]) - {"", "node_modules/next"}:
+            del candidate["packages"][name]
+        for index in range(100):
+            candidate["packages"][f"node_modules/private-added-marker-{index}"] = {}
+        evidence = diag.candidate_inventory(lock_bytes(original), lock_bytes(candidate))
+        self.assertEqual(evidence["added"]["count"], 100)
+        self.assertEqual(evidence["added"]["unknownCount"], 100)
+        self.assertEqual(evidence["added"]["knownPaths"], [])
+        self.assertEqual(len(evidence["removed"]["knownPaths"]), 16)
+        self.assertEqual(evidence["removed"]["knownCount"], 43)
+        self.assertEqual(evidence["removed"]["omittedKnownPaths"], 27)
+        self.assertTrue(all(len(path) <= 256 for path in evidence["removed"]["knownPaths"]))
+        self.assertNotIn("private-", json.dumps(evidence))
+        self.assertLess(len(diag.encode(evidence)), 16 * 1024)
+
+    def test_unreadable_inventory_is_explicitly_unknown_and_does_not_validate_a_candidate(self):
+        original, metadata = fixture()
+        before = lock_bytes(original)
+        for candidate in (b"{", b"[]", b'{"packages":null}', b'{"packages":{"x":{"value":NaN}}}'):
+            evidence = diag.candidate_inventory(before, candidate)
+            self.assertEqual(evidence["status"], "unavailable")
+            self.assertNotIn("afterRecordCount", evidence)
+            with self.assertRaises(diag.DiagnosticError):
+                diag.verify_candidate(b"{}", before, b"{}", candidate, metadata["packages"][diag.NATIVE])
+        self.assertEqual(diag.candidate_inventory(before, b"x" * (diag.LOCK_LIMIT + 1)),
+                         {"status": "unavailable", "reason": "candidate_inventory_input_limit"})
+        self.assertEqual(diag.candidate_inventory(before, before)["status"], "observed")
+
+    def test_known_path_display_bounds_include_the_exact_length_boundary(self):
+        prefix = "node_modules/"
+        names = [prefix + "x" * (256 - len(prefix) - 2) + f"{index:02}" for index in range(20)]
+        original = {"packages": {name: {} for name in names}}
+        original["packages"][prefix + "y" * (257 - len(prefix))] = {}
+        evidence = diag.candidate_inventory(lock_bytes(original), lock_bytes({"packages": {}}))
+        self.assertEqual(evidence["removed"]["knownCount"], 21)
+        self.assertEqual(len(evidence["removed"]["knownPaths"]), 16)
+        self.assertTrue(all(len(path) == 256 for path in evidence["removed"]["knownPaths"]))
+        self.assertEqual(evidence["removed"]["omittedKnownPaths"], 5)
+        self.assertLess(len(diag.encode(evidence)), 16 * 1024)
+
+
 class ArchiveStreamLimitTests(unittest.TestCase):
     def test_complete_decompressed_stream_is_bounded_before_tar_parsing(self):
         _, metadata = fixture()
@@ -1179,7 +1272,8 @@ class CanonicalSourceExportTests(unittest.TestCase):
 
 class OrchestrationTests(unittest.TestCase):
     def exercise(self, original_install=1, candidate_stage_failure=None, mutate_original=False,
-                 public_failure=False, npm_version=None, source_change=None):
+                 public_failure=False, npm_version=None, source_change=None,
+                 candidate_shape=None, root_next=diag.VERSION, mutate_refresh_inputs=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -1190,7 +1284,7 @@ class OrchestrationTests(unittest.TestCase):
             path.mkdir(parents=True)
         lock, metadata = fixture()
         native = metadata["packages"][diag.NATIVE]
-        manifests = {"package.json": diag.encode({"dependencies": {"next": diag.VERSION}}),
+        manifests = {"package.json": diag.encode({"dependencies": {"next": root_next}}),
                      "package-lock.json": lock_bytes(lock)}
         for name, data in manifests.items():
             (repo / "app" / "web" / name).write_bytes(data)
@@ -1234,11 +1328,20 @@ class OrchestrationTests(unittest.TestCase):
             if "--version" in command:
                 return diag.CommandResult("succeeded", 0, ((npm_version or diag.NPM_VERSION) + "\n").encode())
             kind = "original" if "original" in cwd.parts else "candidate"
-            if "update" in command:
-                self.assertEqual(command[3], diag.NATIVE)
-                self.assertIn("--package-lock-only", command)
-                self.assertIn("--ignore-scripts", command)
-                (cwd / "package-lock.json").write_bytes(lock_bytes(add_record(lock, native)))
+            if len(command) > 2 and command[2] == "install":
+                self.assertEqual(command[2:], [
+                    "install", f"next@{diag.VERSION}", "--save-exact", "--package-lock-only", *diag.NPM_FLAGS,
+                ])
+                value = add_record(lock, native)
+                if candidate_shape == "noop":
+                    value = lock
+                elif candidate_shape == "pruned":
+                    del value["packages"]["node_modules/@next/swc-darwin-arm64"]
+                elif candidate_shape == "unknown":
+                    value["packages"]["node_modules/private-unapproved-name"] = {"version": "1.0.0"}
+                elif candidate_shape == "changed":
+                    value["packages"]["node_modules/next"]["version"] = "99.0.0"
+                (cwd / "package-lock.json").write_bytes(lock_bytes(value))
                 return diag.CommandResult("succeeded", 0)
             if "ci" in command:
                 self.assertIn("--ignore-scripts", command)
@@ -1249,6 +1352,9 @@ class OrchestrationTests(unittest.TestCase):
                     return diag.CommandResult("succeeded", 0, b'{"native":true}')
                 return diag.CommandResult("succeeded", 0, native_result(native))
             if kind == "original":
+                if mutate_refresh_inputs:
+                    target = work / "candidate" / "app" / "web" / "package.json"
+                    target.write_bytes(manifests["package.json"] + b" ")
                 return diag.CommandResult("failed", 1)
             if mutate_original and "build" in command:
                 (work / "original" / "app" / "web" / "package-lock.json").write_bytes(b"changed")
@@ -1321,10 +1427,51 @@ class OrchestrationTests(unittest.TestCase):
             report, calls, _ = self.exercise(**arguments)
             self.assertFalse(report["candidateValidated"])
             self.assertEqual(report["stages"]["candidate_lock"]["status"], "not_run")
-            self.assertFalse(any("ci" in command or "update" in command for command, *_ in calls))
+            self.assertFalse(any("ci" in command or "install" in command for command, *_ in calls))
         report, calls, _ = self.exercise()
         self.assertTrue(report["candidateValidated"])
-        self.assertTrue(any("update" in command for command, *_ in calls))
+        self.assertTrue(any("install" in command for command, *_ in calls))
+
+    def test_rejected_candidate_inventory_is_retained_without_retaining_or_retrying_the_lock(self):
+        for shape in ("noop", "pruned", "unknown", "changed"):
+            with self.subTest(shape=shape):
+                report, calls, output = self.exercise(candidate_shape=shape)
+                self.assertFalse(report["candidateValidated"])
+                self.assertEqual(report["stages"]["candidate_delta"]["status"], "failed")
+                self.assertEqual(report["stages"]["candidate_install"]["status"], "not_run")
+                self.assertTrue("candidateInventory" in report, "candidate inventory observation missing")
+                self.assertEqual(report["candidateInventory"]["status"], "observed")
+                inventory = report["candidateInventory"]
+                self.assertEqual(inventory["bytesUnchanged"], shape == "noop")
+                self.assertEqual(inventory["afterNativePresent"], shape != "noop")
+                self.assertEqual(inventory["removed"]["count"], 1 if shape == "pruned" else 0)
+                self.assertEqual(inventory["added"]["unknownCount"], 1 if shape == "unknown" else 0)
+                self.assertEqual(inventory["changed"]["count"], 1 if shape == "changed" else 0)
+                self.assertNotIn("private-unapproved-name", json.dumps(report))
+                self.assertEqual({path.name for path in output.iterdir()}, {"report.json"})
+                self.assertEqual(json.loads((output / "report.json").read_bytes())["candidateInventory"],
+                                 inventory)
+                self.assertEqual(sum("install" in command for command, *_ in calls), 1)
+                self.assertFalse(any("update" in command for command, *_ in calls))
+        report, _, output = self.exercise()
+        self.assertTrue(report["candidateValidated"])
+        self.assertTrue("candidateInventory" in report, "candidate inventory observation missing")
+        self.assertEqual(report["candidateInventory"]["added"]["knownPaths"], [diag.NATIVE_KEY])
+        self.assertEqual({path.name for path in output.iterdir()},
+                         {"report.json", "candidate-package-lock.json", "candidate-lock.diff"})
+
+    def test_parent_refresh_refuses_changed_inputs_or_a_different_root_dependency(self):
+        for options, reason in (
+            ({"mutate_refresh_inputs": True, "original_install": 0}, "candidate_refresh_inputs_changed"),
+            ({"root_next": "16.3.4"}, "candidate_refresh_parent_mismatch"),
+        ):
+            report, calls, _ = self.exercise(**options)
+            self.assertFalse(any("install" in command for command, *_ in calls))
+            self.assertEqual(report["errors"][0], {"stage": "candidate_lock", "reason": reason})
+            self.assertFalse(report["candidateValidated"])
+        report, calls, _ = self.exercise()
+        self.assertTrue(report["candidateValidated"])
+        self.assertEqual(sum("install" in command for command, *_ in calls), 1)
 
     def test_source_refusals_retain_fixed_input_evidence_before_public_collection(self):
         for change, reason in (
