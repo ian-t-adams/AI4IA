@@ -158,6 +158,17 @@ metadata; it does not prove registry availability or native execution. Repair a
 missing record through the package manager with verified metadata, never a
 guessed integrity hash or a WASM fallback presented as native validation.
 
+The temporary `PR477 Windows native diagnostic` job in `app-ci.yml` is scoped to
+this repository's PR #477, not a new required check or an updater. It preserves
+the original lock and ordinary CI, verifies public metadata/tarball hashes, and
+tests a package-manager-generated candidate only in isolated runner directories.
+It disables install lifecycle scripts and invokes only the reviewed native probe
+and tool entrypoints. A candidate pass does not clear an original-source failure
+or authorize adoption. Its seven-day artifact excludes raw logs, credentials,
+caches and installed dependencies. Remove this temporary job and its diagnostic
+helpers after the approved investigation; do not broaden its target or grants.
+Offline controls: `python -m unittest scripts.tests.test_web_native_diagnostic`.
+
 `npm ci` prints benign `ERESOLVE overriding peer dependency` warnings for
 `eslint-config-next`'s bundled plugins, whose published peer ranges still cap at
 `eslint@^9`. Install exits 0 and everything dedupes to the single installed
