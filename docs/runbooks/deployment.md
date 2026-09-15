@@ -1378,9 +1378,14 @@ python scripts/check-model-availability.py `
 ```
 
 Select the correct capacity profile and Claude posture rather than copying the
-example blindly. The collector verifies the active subscription before any
-inventory/offering query; it never selects a different subscription on your
-behalf. It reads only account context, resource-group existence, Cognitive
+example blindly. The collector checks the selected CLI subscription once against
+`AZURE_SUBSCRIPTION_ID`; missing or mismatched context refuses resource collection.
+It then carries that checked ID as `--subscription` on every resource-group,
+account, deployment and regional-offering read. Later CLI-default or
+`AZURE_SUBSCRIPTION_ID` changes cannot retarget the checked subscription, and a
+scoped read failure never retries against the default. It never logs in or
+selects a subscription on your behalf.
+It reads only account context, resource-group existence, Cognitive
 Services accounts/deployments and regional model offerings. It never runs the
 provider preflight, queries/changes quota, invokes inference, updates capacity,
 rewrites the catalog, registers providers or creates/updates/deletes deployments.
