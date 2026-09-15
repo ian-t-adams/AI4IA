@@ -78,7 +78,10 @@ ADVERTISED = {"models": [
 BOOK = PricingBook(
     {"test-chat": PriceRate(1, 2)}, currency="USD", version="synthetic-v1",
 )
-SID = "c" * 32
+CLEANUP_FIXTURE = json.loads(
+    (ROOT / "scripts" / "fixtures" / "conversation-cleanup.json").read_text(encoding="utf-8")
+)
+SID = CLEANUP_FIXTURE["session"]["id"]
 
 
 def environment(run=RUN, config=CONFIG):
@@ -141,16 +144,7 @@ def ready_capability():
 
 
 def deletion_status(*, complete=True):
-    return {
-        "sessionId": SID, "state": "cleanup_verified" if complete else "pending",
-        "phase": "complete" if complete else "messages",
-        "requestedAt": stamp(NOW), "updatedAt": stamp(NOW),
-        "lastVerifiedAt": stamp(NOW) if complete else None,
-        "messagesVerified": complete, "documentsVerified": complete, "attachmentsVerified": complete,
-        "pendingUploads": [], "pendingUploadsTruncated": False, "retryReason": None,
-        "attempts": 1, "scope": "conversation_content_and_inline_originals",
-        "backupsErased": False, "coordinationRetained": True, "autonomousCleanup": False,
-    }
+    return copy.deepcopy(CLEANUP_FIXTURE["verified" if complete else "pending"])
 
 
 def realtime_capability():
@@ -178,6 +172,7 @@ class FakeApp:
         self.handshake_protocol = "ga"
         self.websocket = FakeWebSocket()
         self.sockets = []
+        self.cleanup_passes = 0
 
     async def __aenter__(self):
         return self
@@ -211,6 +206,9 @@ class FakeApp:
         if key == ("DELETE", f"/api/sessions/{SID}"):
             return response(deletion_status(complete=False), 202)
         if key == ("POST", f"/api/sessions/{SID}/deletion/reconcile"):
+            self.cleanup_passes += 1
+            if self.cleanup_passes == 1:
+                return response(copy.deepcopy(CLEANUP_FIXTURE["progress"]), 202)
             return response(deletion_status(), 200)
         if key == ("GET", f"/api/sessions/{SID}/deletion"):
             return response(deletion_status(), 200)
@@ -479,6 +477,38 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(any(call[0] == "POST" for call in fake.calls), priced)
             if not priced:
                 self.assertEqual(report.stages["catalog"].code, "unpriced")
+
+    async def test_runtime_catalog_gate_and_shared_v1_proof_both_apply(self):
+        for enabled in (False, True):
+            for verified in (False, True):
+                with self.subTest(runtimeEnabled=enabled, messagesVerified=verified):
+                    source = copy.deepcopy(SOURCE)
+                    source["catalog"][0]["runtimeEnabled"] = enabled
+                    fake = FakeApp()
+                    proof = {**deletion_status(), "messagesVerified": verified}
+                    path = f"/api/sessions/{SID}"
+                    fake.overrides["POST", f"{path}/deletion/reconcile"] = response(proof)
+                    fake.overrides["GET", f"{path}/deletion"] = response(proof)
+                    report = Report(RUN, stamp(NOW))
+                    await chat(fake, CONFIG, "secret", source, report, pricing=BOOK)
+                    calls = [(method, urlsplit(url).path) for method, url, _ in fake.calls]
+                    if not enabled:
+                        self.assertEqual(calls, [("GET", "/api/models")])
+                        self.assertEqual(report.stages["catalog"].code, "no_compatible_model")
+                        self.assertEqual(report.chat_attempts, 0)
+                        continue
+                    self.assertEqual(calls.count(("POST", "/api/sessions")), 1)
+                    self.assertEqual(calls.count(("POST", "/api/chat")), 1)
+                    self.assertEqual(report.stages["model"].outcome, "pass")
+                    self.assertEqual(report.cleanup_safe, verified)
+                    expected = [("DELETE", path), ("POST", f"{path}/deletion/reconcile")]
+                    if verified:
+                        expected.append(("GET", f"{path}/deletion"))
+                        self.assertEqual(report.stages["cleanup"].code, "cleanup_verified")
+                    self.assertEqual(
+                        [call for call in calls if call[1].startswith(path) and call[1] != f"{path}/messages"],
+                        expected,
+                    )
 
     async def test_ambiguous_create_and_chat_are_never_replayed_or_unsafely_deleted(self):
         for path in ("/api/sessions", "/api/chat"):

@@ -391,6 +391,9 @@ and a later `azd deploy` can resolve the same tag to different images with no di
 anywhere. The MAJOR(.MINOR) must track the CI version deliberately;
 `scripts/tests/test_base_image_pins.py` enforces that against `app-ci.yml` and
 fails if a pin is dropped or the multi-stage web file's stages desync.
+Toolchain versions come from the shipping `web` and `api` jobs, not diagnostic
+setup steps. Missing or conflicting primary declarations fail; version precision
+is not reduced to make an image tag match.
 
 Refresh with:
 
@@ -525,9 +528,28 @@ capture or healthy-image reads alone do not cover writable-template comparison.
 Cutover diagnostics retain fixed difference areas and bounded probe-field
 presence/type/counts from those same reads, never probe configuration values.
 These shapes do not equate missing/null/empty probes or relax a failed comparison.
+The web container declares `probes: []` to match its verified no-custom-probe
+serving configuration. Preserve that explicit intent rather than ignoring probe
+differences; API/proxy container health probes and proxy backend polling are separate.
 Multiple mode pins all traffic to the exact captured revision without switching
 modes. Preserve min-zero support, per-app failure isolation and no write replay;
 see `docs/runbooks/deployment.md#automatic-and-manual-rollback`.
+
+The existing post-deploy canary accepts an empty legacy DELETE 204 only as best
+effort. V1 200/202 requires the shared strict public status proof, at most two
+owner/session-bound reconciles, and an identical verified status readback, within
+four requests/60 seconds and 8 KiB per response. No accepted request, 404, unknown
+upload or exhausted budget can pass cleanup. Public responses hide protocol and
+generation: keep server fencing and actual API/shared-fixture parity tests, not
+invented fields. Creation stays single-attempt and existing chat retries stay
+unchanged. Runtime-disabled desired models remain excluded from both post-deploy
+and scheduled canary selection; cleanup never adds model calls, enrollment, a sweep
+or rollout authority.
+Retain actual stdlib framing controls, not only transport-interface fakes:
+`HTTPResponse.read1` can close the last socket reference on a complete body.
+Content-Length, chunked and EOF completion must still reject truncation/overflow
+without another operation on that closed socket or relaxing the deadline.
+See `docs/runbooks/conversation-deletion.md#existing-post-deployment-canary-cleanup`.
 
 ### Production image proofs
 
@@ -703,6 +725,11 @@ Keep SKU, model-inference and advisory public evidence distinct.
 `model-retirements.yml` is default-off and requires dedicated approved read-only
 configuration, never deployment authority. It retains bounded JSON/Markdown and
 a generated region-matrix preview, not source commits or Azure mutations.
+Report collection checks ambient CLI context once against the explicit target,
+then binds that checked ID to every subsequent Azure request with `--subscription`.
+Later CLI-default or `AZURE_SUBSCRIPTION_ID` changes cannot retarget the checked
+subscription; scoped read failures remain unavailable without retrying against the
+default. The collector never selects a subscription or logs in.
 Report exit 2 means incomplete/unknown even if other known findings exist.
 `scripts/setup-retirement-reader.py` is a separate default-read-only operator
 plan, not an azd hook. Its explicit digest-approved apply creates only a

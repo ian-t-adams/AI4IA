@@ -394,6 +394,45 @@ coordination, integrity mismatch or a missing original artifact target.
 originals only; coordination metadata stays retained and `backupsErased` remains
 false. No result establishes an erase deadline or changes provider retention.
 
+### Existing post-deployment canary cleanup
+
+`scripts/post-deploy-verify.py` and its standalone `canary` command clean only the
+conversation whose safe server-generated id that invocation received from
+creation, using the same authenticated owner and fixed session endpoints.
+Creation stays single-attempt; the operator helper's existing chat retry setting
+is unchanged. Cleanup never calls a model, retries creation, enumerates owners,
+follows response-provided URLs, or starts an orphan sweep.
+
+The public `Session` and `DeletionStatus` do not expose the internal protocol or
+generation. An empty DELETE 204 selects only the API's documented legacy
+best-effort result, not verified erasure. DELETE 200/202 instead requires the
+strict public v1 status contract shared with the scheduled monitor. Acceptance
+is not success: the helper permits two owner-requested reconcile passes, then
+requires `cleanup_verified`, all three verification Booleans, an ordered UTC
+`lastVerifiedAt`, no unresolved uploads, and the exact retained-scope declarations.
+A final owner-scoped GET must return the identical verified status. The original
+session id and deletion `requestedAt` stay bound throughout; generation and
+protocol fencing remain server responsibilities, covered by API/repository tests
+rather than invented response fields.
+
+Cleanup has a separate ceiling of four requests and 60 seconds, further reduced
+by the verification run's remaining deadline. DELETE, reconcile and status reads
+have 8-, 22- and 5-second ceilings respectively. Each response is limited to
+8 KiB with one extra byte for overflow detection; strict JSON rejects duplicate
+keys, nonfinite numbers and malformed shapes. The cleanup-only HTTP path bounds
+DNS, TLS, headers and body processing, does not follow redirects, and cannot
+issue its HTTP request after an expired connection attempt.
+
+Pending work at the budget boundary, a failed/expired transport or authentication,
+missing/mismatched evidence, integrity failure, and unresolved upload intent all
+fail the canary. No HTTP error is replayed; in particular, a v1 404 or later 204
+cannot replace retained verification. An empty upload scan cannot clear an
+observed unresolved intent. Cleanup failure preserves any earlier turn failure
+and prevents successful command/release evidence without changing rollback
+policy. The shared synthetic fixture is checked against actual API responses;
+offline success authorizes neither production activation nor existing-record
+enrollment. Enabled legacy records still return 409 `migration_required`.
+
 ## Rollback and remaining acceptance
 
 Before any v1 records exist, leaving the flag off preserves the legacy path.

@@ -589,8 +589,116 @@ class MultiRegionAzure(FakeAzure):
         return subprocess.CompletedProcess(["az", *args], 0, json.dumps(payload), "")
 
 
+class StatefulAzureSubprocess:
+    """Exercise real _az argv against two subscriptions and a mutable CLI default."""
+
+    EXECUTABLE = "offline-az"
+    OTHER_SUBSCRIPTION = "other-private-subscription-id"
+    REGIONS = ("eastus2", "westus")
+    REPORT_READS = [
+        ("context", None), ("group", None), ("accounts", None),
+        ("deployments", "eastus2"), ("deployments", "westus"),
+        ("offerings", "eastus2"), ("offerings", "westus"),
+    ]
+
+    def __init__(
+        self, *, flip_default: bool = False, mutate_environment: bool = False,
+        default_subscription: str | None = None, context_id: str | None = None,
+        fail: tuple[str, str | None] | None = None, allow_quota: bool = False,
+    ):
+        self.default_subscription = default_subscription or READ_ENV["AZURE_SUBSCRIPTION_ID"]
+        self.context_id = context_id
+        self.flip_default = flip_default
+        self.mutate_environment = mutate_environment
+        self.environment_retargeted = False
+        self.fail = fail
+        self.calls = []
+        self.reads = []
+        self.backends = {
+            READ_ENV["AZURE_SUBSCRIPTION_ID"]: FakeAzure(allow_quota=allow_quota),
+            self.OTHER_SUBSCRIPTION: FakeAzure(
+                [offered(instant(-1)), offered(instant(-1), version="2")],
+                actual=deployed(version="2", capacity=55), allow_quota=allow_quota,
+            ),
+        }
+        self.models = copy.deepcopy(CATALOG)
+        self.models["regions"]["westus"] = {}
+        self.models["catalog"][0]["deployments"].append({
+            **self.models["catalog"][0]["deployments"][0], "region": "westus",
+        })
+
+    def __call__(self, command, **kwargs):
+        assert command[0] == self.EXECUTABLE
+        assert kwargs == {
+            "capture_output": True, "text": True, "check": False, "encoding": "utf-8", "timeout": 30,
+        }
+        args = tuple(command[1:])
+        self.calls.append(args)
+        assert args.count("--subscription") <= 1
+        subscription = (
+            args[args.index("--subscription") + 1] if "--subscription" in args
+            else self.default_subscription
+        )
+        backend = self.backends[subscription.casefold()]
+        other = subscription.casefold() == self.OTHER_SUBSCRIPTION
+        accounts = {
+            region: ACCOUNT.replace("eastus2", region).replace(
+                "privateaccount", "otheraccount" if other else "privateaccount"
+            )
+            for region in self.REGIONS
+        }
+        region = None
+        if args[:2] == ("account", "show"):
+            source = "context"
+        elif args[:2] == ("group", "exists"):
+            source = "group"
+        elif args[:3] == ("cognitiveservices", "account", "list"):
+            source = "accounts"
+        elif args[:4] == ("cognitiveservices", "account", "deployment", "list"):
+            source = "deployments"
+            name = args[args.index("--name") + 1]
+            region = next((r for r in self.REGIONS if r in name), None)
+        elif args[:3] in (
+            ("cognitiveservices", "model", "list"), ("cognitiveservices", "usage", "list"),
+        ):
+            source = "offerings" if args[1] == "model" else "quota"
+            region = args[args.index("--location") + 1]
+        else:
+            raise AssertionError(f"Unexpected or non-read-only Azure operation: {args}")
+        self.reads.append((source, region))
+        if (
+            not other and (source, region) == self.fail
+            or source == "deployments" and args[args.index("--name") + 1] not in accounts.values()
+        ):
+            result = subprocess.CompletedProcess(
+                command, 1, "", "PRIVATE_SCOPED_ERROR https://private.error.invalid?key=SECRET",
+            )
+        else:
+            result = backend(*args)
+            payload = json.loads(result.stdout)
+            if source == "context":
+                payload["id"] = subscription if self.context_id is None else self.context_id
+            elif source == "accounts":
+                payload = [
+                    {"name": name, "kind": "AIServices", "location": region}
+                    for region, name in accounts.items()
+                ]
+            elif source == "deployments":
+                payload[0]["name"] = payload[0]["name"].replace("eastus2", region)
+            result = subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+        if source == "context" and self.flip_default:
+            self.default_subscription = self.OTHER_SUBSCRIPTION
+        if source == "group" and self.mutate_environment:
+            os.environ["AZURE_SUBSCRIPTION_ID"] = self.OTHER_SUBSCRIPTION
+            self.environment_retargeted = True
+        return result
+
+
 class RetirementCliTests(unittest.TestCase):
-    def run_main(self, fake, *, report_mode=True, models=None, environment=None, public=None, workflow_args=False):
+    def run_main(
+        self, fake, *, report_mode=True, models=None, environment=None, public=None,
+        workflow_args=False, subprocess_mode=False,
+    ):
         with tempfile.TemporaryDirectory() as tmp:
             temp = Path(tmp)
             catalog = temp / "models.json"
@@ -609,9 +717,14 @@ class RetirementCliTests(unittest.TestCase):
                 path.write_text(json.dumps(public), encoding="utf-8")
                 argv += ["--public-evidence", str(path)]
             stdout, stderr = io.StringIO(), io.StringIO()
+            azure = (
+                patch.object(AVAILABILITY.subprocess, "run", side_effect=fake)
+                if subprocess_mode else patch.object(AVAILABILITY, "_az", side_effect=fake)
+            )
             with (
                 patch.object(AVAILABILITY, "MODELS_FILE", catalog),
-                patch.object(AVAILABILITY, "_az", side_effect=fake),
+                azure,
+                patch.object(AVAILABILITY.shutil, "which", return_value=StatefulAzureSubprocess.EXECUTABLE),
                 patch.object(AVAILABILITY, "datetime", FixedClock),
                 patch.object(os, "environ", dict(READ_ENV if environment is None else environment)),
                 patch.object(sys, "argv", argv),
@@ -620,6 +733,154 @@ class RetirementCliTests(unittest.TestCase):
                 code = AVAILABILITY.main()
             artifacts = {path.name: path.read_text(encoding="utf-8") for path in output.iterdir()} if output.exists() else {}
             return code, artifacts, stdout.getvalue() + stderr.getvalue()
+
+    def assert_scoped_reads(self, fake, *, reads=None, subscription=None):
+        self.assertEqual(fake.reads, fake.REPORT_READS if reads is None else reads)
+        self.assertNotIn("--subscription", fake.calls[0])
+        for call in fake.calls[1:]:
+            self.assertEqual(call.count("--subscription"), 1, call)
+            self.assertEqual(
+                call[call.index("--subscription") + 1],
+                subscription or READ_ENV["AZURE_SUBSCRIPTION_ID"],
+            )
+
+    def test_default_flip_cannot_mix_other_subscription_inventory_and_offerings(self):
+        for flip in (False, True):
+            with self.subTest(flip=flip):
+                fake = StatefulAzureSubprocess(flip_default=flip)
+                code, artifacts, output = self.run_main(
+                    fake, models=fake.models, subprocess_mode=True,
+                )
+                data = json.loads(artifacts["model-retirements.json"])
+                self.assertEqual(fake.reads, fake.REPORT_READS)
+                self.assertEqual(data["total_observations"], 2)
+                for row in data["observations"]:
+                    self.assertIsNotNone(row["deployed"])
+                    self.assertEqual(row["deployed"]["version"], "1")
+                    self.assertEqual(row["deployed"]["capacity"], 50)
+                    self.assertEqual(row["drift"], [])
+                    dates = [
+                        e["window"] for e in row["catalog_evidence"]
+                        if e["field"] == "model.skus[].deprecationDate"
+                    ]
+                    self.assertEqual(dates, ["beyond-90-days"])
+                self.assertEqual(code, 0)
+                self.assertEqual(data["unknown_observations"], 0)
+                self.assertTrue(all(s["status"] == "observed" for s in data["sources"]))
+                combined = output + "".join(artifacts.values())
+                for secret in (
+                    READ_ENV["AZURE_SUBSCRIPTION_ID"], READ_ENV["AZURE_RESOURCE_GROUP"],
+                    fake.OTHER_SUBSCRIPTION, ACCOUNT, "otheraccount",
+                    "PRIVATE_SUB_NAME", "PRIVATE_TENANT", "PRIVATE_ARM_ID", "PRIVATE_ENDPOINT",
+                ):
+                    self.assertNotIn(secret, combined)
+
+    def test_every_followup_argv_uses_the_checked_id_despite_later_environment_changes(self):
+        checked_id = READ_ENV["AZURE_SUBSCRIPTION_ID"].upper()
+        for mutate in (False, True):
+            with self.subTest(mutate=mutate):
+                fake = StatefulAzureSubprocess(
+                    context_id=checked_id, mutate_environment=mutate, flip_default=True,
+                )
+                code, _, _ = self.run_main(
+                    fake, models=fake.models, subprocess_mode=True,
+                    environment={**READ_ENV, "AZURE_SUBSCRIPTION_ID": checked_id},
+                )
+                self.assertEqual(fake.environment_retargeted, mutate)
+                self.assert_scoped_reads(fake, subscription=checked_id)
+                self.assertEqual(code, 0)
+
+    def test_subprocess_context_refusals_prevent_all_followup_reads(self):
+        for reason, fake, environment, expected_calls in (
+            ("missing target", StatefulAzureSubprocess(), {**READ_ENV, "AZURE_SUBSCRIPTION_ID": " "}, 0),
+            ("wrong default", StatefulAzureSubprocess(
+                default_subscription=StatefulAzureSubprocess.OTHER_SUBSCRIPTION,
+            ), READ_ENV, 1),
+            ("missing context ID", StatefulAzureSubprocess(context_id=""), READ_ENV, 1),
+            ("failed context", StatefulAzureSubprocess(fail=("context", None)), READ_ENV, 1),
+        ):
+            with self.subTest(reason=reason):
+                code, artifacts, output = self.run_main(
+                    fake, models=fake.models, environment=environment, subprocess_mode=True,
+                )
+                self.assertEqual(code, 2)
+                self.assertEqual(len(fake.calls), expected_calls)
+                data = json.loads(artifacts["model-retirements.json"])
+                self.assertEqual(data["total_observations"], 2)
+                self.assertEqual(data["unknown_observations"], 2)
+                self.assertTrue(all(s["status"] == "unavailable" for s in data["sources"]))
+                self.assertNotIn("PRIVATE_SCOPED_ERROR", output + "".join(artifacts.values()))
+        healthy = StatefulAzureSubprocess()
+        self.assertEqual(self.run_main(healthy, models=healthy.models, subprocess_mode=True)[0], 0)
+        self.assert_scoped_reads(healthy)
+
+    def test_scoped_read_failure_stays_partial_without_retrying_the_healthy_default(self):
+        for failure in (None, ("group", None), ("accounts", None), ("deployments", "westus"), ("offerings", "westus")):
+            with self.subTest(failure=failure):
+                fake = StatefulAzureSubprocess(flip_default=True, fail=failure)
+                code, artifacts, output = self.run_main(
+                    fake, models=fake.models, subprocess_mode=True,
+                )
+                reads = fake.REPORT_READS
+                if failure in {("group", None), ("accounts", None)}:
+                    reads = reads[:2 if failure[0] == "group" else 3] + reads[-2:]
+                self.assert_scoped_reads(fake, reads=reads)
+                self.assertEqual(code, 0 if failure is None else 2)
+                data = json.loads(artifacts["model-retirements.json"])
+                self.assertEqual(data["total_observations"], 2)
+                self.assertEqual(data["omitted_observations"], 0)
+                for row in data["observations"]:
+                    inventory_failed = failure in {
+                        ("group", None), ("accounts", None), ("deployments", row["region"]),
+                    }
+                    self.assertEqual(row["inventory_state"], "unavailable" if inventory_failed else "observed")
+                    if inventory_failed:
+                        self.assertEqual(row["admission_decision"], "unknown")
+                    else:
+                        self.assertEqual(row["deployed"]["version"], "1")
+                sources = {(s["source"], s["region"]): s["status"] for s in data["sources"]}
+                for region in fake.REGIONS:
+                    self.assertEqual(
+                        sources[("model-offerings", region)],
+                        "unavailable" if failure == ("offerings", region) else "observed",
+                    )
+                combined = output + "".join(artifacts.values())
+                for secret in ("PRIVATE_SCOPED_ERROR", "private.error.invalid", "SECRET", fake.OTHER_SUBSCRIPTION):
+                    self.assertNotIn(secret, combined)
+
+    def test_report_binding_is_per_invocation_not_shared_between_subscriptions(self):
+        for subscription, version, expected in (
+            (READ_ENV["AZURE_SUBSCRIPTION_ID"], "1", 0),
+            (StatefulAzureSubprocess.OTHER_SUBSCRIPTION, "2", 1),
+        ):
+            with self.subTest(subscription=subscription):
+                fake = StatefulAzureSubprocess(default_subscription=subscription)
+                code, artifacts, _ = self.run_main(
+                    fake, models=fake.models, subprocess_mode=True,
+                    environment={**READ_ENV, "AZURE_SUBSCRIPTION_ID": subscription},
+                )
+                self.assertEqual(code, expected)
+                self.assert_scoped_reads(fake, subscription=subscription)
+                data = json.loads(artifacts["model-retirements.json"])
+                self.assertTrue(all(row["deployed"]["version"] == version for row in data["observations"]))
+
+    def test_only_report_reads_are_bound_and_ordinary_preprovision_still_reads_quota(self):
+        for report_mode in (False, True):
+            with self.subTest(report_mode=report_mode):
+                fake = StatefulAzureSubprocess(allow_quota=True)
+                code, _, _ = self.run_main(
+                    fake, models=fake.models, report_mode=report_mode, subprocess_mode=True,
+                )
+                self.assertEqual(code, 0)
+                if report_mode:
+                    self.assert_scoped_reads(fake)
+                else:
+                    self.assertTrue(all("--subscription" not in call for call in fake.calls))
+                    self.assertEqual(fake.reads, [
+                        *fake.REPORT_READS[:5],
+                        ("offerings", "eastus2"), ("quota", "eastus2"),
+                        ("offerings", "westus"), ("quota", "westus"),
+                    ])
 
     def test_read_only_collector_and_workflow_command_emit_all_three_artifacts(self):
         fake = FakeAzure()

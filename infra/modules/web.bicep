@@ -251,6 +251,8 @@ resource webApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
             memory: '1Gi'
           }
           env: webEnv
+          // Preserve the explicit no-custom-probe shape of verified serving templates.
+          probes: []
         }
       ]
       scale: {
