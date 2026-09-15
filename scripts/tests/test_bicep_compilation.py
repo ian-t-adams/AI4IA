@@ -78,6 +78,31 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertEqual(actual, expected)
         self.assertIn("swedencentral", actual)
 
+    def test_web_explicit_probe_list_preserves_backend_health_probes(self) -> None:
+        def container(module: str) -> dict:
+            resources = self.template["resources"][module]["properties"]["template"]["resources"]
+            rows = resources.values() if isinstance(resources, dict) else resources
+            apps = [row for row in rows if row["type"] == "Microsoft.App/containerApps"]
+            self.assertEqual(len(apps), 1)
+            containers = apps[0]["properties"]["template"]["containers"]
+            self.assertEqual(len(containers), 1)
+            return containers[0]
+
+        web = container("web")
+        self.assertIn("probes", web)
+        self.assertEqual(web["probes"], [])
+        for module, expected in (
+            ("api", {"Liveness": "/health/live", "Readiness": "/health/ready"}),
+            ("gateway", {"Startup": "/startup", "Liveness": "/liveness", "Readiness": "/readiness"}),
+        ):
+            with self.subTest(module=module):
+                probes = container(module)["probes"]
+                self.assertEqual(len(probes), len(expected))
+                self.assertEqual(
+                    {probe["type"]: probe["httpGet"]["path"] for probe in probes}, expected,
+                )
+                self.assertTrue(all(probe["httpGet"]["port"] == 8080 for probe in probes))
+
     def test_capacity_profile_defaults_and_real_module_selection(self) -> None:
         parameter = self.template["parameters"]["modelCapacityProfile"]
         self.assertEqual(parameter["defaultValue"], "baseline")
