@@ -942,6 +942,22 @@ class CanaryModelSelectionTests(unittest.TestCase):
         self.assertNotIn("a-picture", preferences)
         self.assertNotIn("undeployed", preferences)
 
+    def test_runtime_disabled_inventory_is_not_a_canary_candidate(self) -> None:
+        source = deepcopy(self.CATALOG)
+        first = next(entry for entry in source["catalog"] if entry["name"] == "tiny-fast")
+        for disabled in (False, "true", 1, None):
+            with self.subTest(runtimeEnabled=disabled):
+                first["runtimeEnabled"] = disabled
+                self.assertEqual(pdv.catalog_model_preferences(source), ["a-chat", "big-chat"])
+                self.assertEqual(
+                    pdv.select_canary_model(source, ["tiny-fast", "a-chat"]), "a-chat",
+                )
+        first["runtimeEnabled"] = True
+        self.assertEqual(pdv.catalog_model_preferences(source)[0], "tiny-fast")
+        self.assertEqual(pdv.select_canary_model(source, ["tiny-fast", "a-chat"]), "tiny-fast")
+        del first["runtimeEnabled"]
+        self.assertEqual(pdv.catalog_model_preferences(source)[0], "tiny-fast")
+
     def test_selection_takes_the_first_model_the_live_api_advertises(self) -> None:
         """The API filters by data-residency policy, so the catalog alone is not enough."""
         self.assertEqual(
@@ -1033,11 +1049,11 @@ class CanaryTests(unittest.TestCase):
     def run_canary(self, http: FakeHttp, **kwargs: Any) -> Any:
         kwargs.setdefault("monotonic", lambda: 0.0)
         kwargs.setdefault("sleep", lambda _: None)
+        kwargs.setdefault("catalog_doc", CATALOG)
         with redirect_stdout(io.StringIO()) as captured:
             result = pdv.run_canary(
                 api_base="https://api.test",
                 token=TOKEN,
-                catalog_doc=CATALOG,
                 request=http,
                 **kwargs,
             )
@@ -1196,6 +1212,47 @@ class CanaryTests(unittest.TestCase):
                     self.assertIsNone(http.bodies[index])
                     self.assertEqual(http.options[index]["body_limit"], pdv.MAX_CLEANUP_BODY_BYTES)
                     self.assertLessEqual(http.options[index]["timeout"], 22)
+
+    def test_runtime_selection_keeps_chat_retries_and_strict_v1_cleanup(self) -> None:
+        for enabled in (False, True):
+            for verified in (False, True):
+                with self.subTest(runtimeEnabled=enabled, messagesVerified=verified):
+                    source = deepcopy(CanaryModelSelectionTests.CATALOG)
+                    first = next(row for row in source["catalog"] if row["name"] == "tiny-fast")
+                    first["runtimeEnabled"] = enabled
+                    model = "tiny-fast" if enabled else "a-chat"
+                    script = canary_script(
+                        ok({"message": {"content": "ready", "status": "complete"}}), v1=True,
+                    )
+                    script["GET /api/models"] = [
+                        ok({"models": [{"id": "tiny-fast"}, {"id": "a-chat"}]}),
+                    ]
+                    script["POST /api/chat"].insert(0, pdv.HttpOutcome(status=502))
+                    proof = {**CLEANUP_FIXTURE["verified"], "messagesVerified": verified}
+                    script[f"POST {SESSION_PATH}/deletion/reconcile"][-1] = ok(proof)
+                    script[f"GET {SESSION_PATH}/deletion"] = [ok(proof)]
+                    http = FakeHttp(script)
+                    result = self.run_canary(http, catalog_doc=source, attempts=2)
+                    self.assertEqual(result.model, model)
+                    self.assertEqual(result.ok, verified, result.detail)
+                    self.assertEqual(http.calls[:4], [
+                        ("GET", "https://api.test/api/models"),
+                        ("POST", "https://api.test/api/sessions"),
+                        ("POST", "https://api.test/api/chat"),
+                        ("POST", "https://api.test/api/chat"),
+                    ])
+                    for body in http.bodies[1:4]:
+                        self.assertEqual(json.loads(body)["model"], model)
+                    expected = [
+                        ("DELETE", SESSION_PATH),
+                        ("POST", f"{SESSION_PATH}/deletion/reconcile"),
+                        ("POST", f"{SESSION_PATH}/deletion/reconcile"),
+                    ]
+                    if verified:
+                        expected.append(("GET", f"{SESSION_PATH}/deletion"))
+                    else:
+                        self.assertIn("verification missing or inconsistent", result.detail)
+                    self.assertEqual(cleanup_calls(http), expected)
 
     def test_accepted_cleanup_is_not_success_and_reconciles_are_finite(self) -> None:
         for complete in (False, True):

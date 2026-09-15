@@ -1883,7 +1883,10 @@ export function ChatApp() {
     [refreshSessions],
   );
 
-  const realtimeModelList = useMemo(() => realtimeModels(models), [models]);
+  const realtimeModelList = useMemo(
+    () => realtimeModels(models, voiceProviderConfig?.openaiRealtimeProtocol ?? "preview"),
+    [models, voiceProviderConfig?.openaiRealtimeProtocol],
+  );
   const authorizedVoiceProviders = useMemo(
     () => resolveAuthorizedVoiceProviders(voiceProviderConfig),
     [voiceProviderConfig],
