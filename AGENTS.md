@@ -522,6 +522,9 @@ capture or healthy-image reads alone do not cover writable-template comparison.
 Cutover diagnostics retain fixed difference areas and bounded probe-field
 presence/type/counts from those same reads, never probe configuration values.
 These shapes do not equate missing/null/empty probes or relax a failed comparison.
+The web container declares `probes: []` to match its verified no-custom-probe
+serving configuration. Preserve that explicit intent rather than ignoring probe
+differences; API/proxy container health probes and proxy backend polling are separate.
 Multiple mode pins all traffic to the exact captured revision without switching
 modes. Preserve min-zero support, per-app failure isolation and no write replay;
 see `docs/runbooks/deployment.md#automatic-and-manual-rollback`.

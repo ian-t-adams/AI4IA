@@ -632,6 +632,14 @@ comparison; identical kinds/counts do not prove equal probe configurations. This
 retains representation evidence from the actual failed observation without
 changing health probes, adding Azure calls, or weakening the cutover guard.
 
+The web Bicep container explicitly declares `probes: []`, matching the verified
+serving configuration with no custom web probes. A full provision exposed an
+omitted desired field versus an empty serving array; declaring the intended
+empty list keeps that representation stable without ignoring probe differences.
+API and proxy container health probes, proxy backend polling, and post-deploy
+HTTP checks are unchanged. Null, missing, and configured probes remain distinct
+in verification; this is not a new comparison-normalization exception.
+
 Inspect this evidence before retrying a failed release. A healthy serving image
 alone does not clear a pending cutover, and an app read after rollback cannot
 reconstruct the historical desired template. Missing historical evidence remains
