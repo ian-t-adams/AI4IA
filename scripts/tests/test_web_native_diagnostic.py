@@ -109,6 +109,26 @@ def native_result(native):
     })
 
 
+def worker_report_category(output):
+    if not output:
+        return "worker_report_missing"
+    if len(output) > diag.REPORT_LIMIT:
+        return "worker_report_oversized"
+    try:
+        report = diag.object_json(output)
+    except diag.DiagnosticError:
+        return "worker_report_invalid"
+    reason = report.get("error")
+    if reason is not None:
+        allowed = {
+            "only_pr477_windows_actions", "unexpected_pull_request", "invalid_source_sha",
+            "invalid_workflow_sha", "invalid_workflow_identity", "invalid_worker_directory",
+            "invalid_package_archive", "public_worker_io_failure", "public_report_limit",
+        }
+        return reason if isinstance(reason, str) and reason in allowed else "worker_error_unrecognized"
+    return "worker_operations_present" if isinstance(report.get("operations"), dict) else "worker_operations_missing"
+
+
 class WebNativeDiagnosticTests(unittest.TestCase):
     def test_original_hashes_bind_git_blobs_not_windows_line_endings(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -474,7 +494,7 @@ sys.argv = [script, "--collect", public, "--lock", lock_path]
 raise SystemExit(module.main())
 """
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             public = root / "pr477-native-deflate-control" / "public"
             public.mkdir(parents=True)
             lock_path = public.parent / "source" / "app" / "web" / "package-lock.json"
@@ -519,11 +539,13 @@ raise SystemExit(module.main())
                         cwd=root, env=env, stdin=subprocess.DEVNULL,
                         capture_output=True, timeout=10, check=False,
                     )
-                    self.assertEqual(result.returncode, 2 if index == 1 else 0, result.stderr.decode())
-                    self.assertEqual(result.stderr, b"")
+                    category = worker_report_category(result.stdout)
+                    self.assertEqual(result.returncode, 2 if index == 1 else 0, category)
+                    self.assertFalse(bool(result.stderr), category)
                     self.assertGreater(len(result.stdout), 0)
                     self.assertLessEqual(len(result.stdout), diag.REPORT_LIMIT)
                     report = diag.object_json(result.stdout)
+                    self.assertTrue(isinstance(report.get("operations"), dict), category)
                     operations = report["operations"]
                     diag.verify_operations(operations)
                     self.assertEqual({name: row["status"] for name, row in operations.items()}, {
@@ -542,6 +564,62 @@ raise SystemExit(module.main())
                         self.assertNotIn("error", report)
                         self.assertEqual(report["packages"][diag.NATIVE]["binarySha256"],
                                          hashlib.sha256(native_binary).hexdigest())
+
+    def test_collect_worker_ignores_inherited_hosted_identity_metadata(self):
+        synthetic = {
+            "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "hosted-fixture/example",
+            "GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF": "refs/pull/999/merge",
+            "GITHUB_SHA": "c" * 40, "GITHUB_WORKFLOW_SHA": "d" * 40,
+            "GITHUB_WORKFLOW_REF": "hosted-fixture/example/.github/workflows/test.yml@refs/pull/999/merge",
+            "GITHUB_RUN_ID": "999999", "GITHUB_RUN_ATTEMPT": "3",
+            "GITHUB_EVENT_PATH": r"C:\synthetic-hosted-fixture\event.json",
+            "GITHUB_WORKSPACE": r"D:\a\synthetic-hosted-fixture\synthetic-hosted-fixture",
+            "RUNNER_OS": "Windows", "RUNNER_ARCH": "X64",
+            "RUNNER_TEMP": r"D:\a\synthetic-hosted-fixture\_temp",
+        }
+        with patch.object(os, "environ", {**os.environ, **synthetic}):
+            self.test_collect_worker_preserves_completed_operations_for_matching_sri_invalid_deflate()
+
+    def test_collect_worker_canonicalizes_fixture_temp_paths(self):
+        with tempfile.TemporaryDirectory(prefix="pr477 hosted temp ") as directory:
+            root = Path(directory).resolve()
+            intermediate = root / "indirect"
+            intermediate.mkdir()
+            aliases = [intermediate / ".."]
+            if sys.platform == "win32":
+                from ctypes import wintypes
+
+                api = ctypes.WinDLL("kernel32", use_last_error=True)
+                api.GetShortPathNameW.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+                api.GetShortPathNameW.restype = wintypes.DWORD
+                buffer = ctypes.create_unicode_buffer(32768)
+                length = api.GetShortPathNameW(str(root), buffer, len(buffer))
+                self.assertTrue(0 < length < len(buffer))
+                short = Path(buffer.value)
+                if short != root:
+                    aliases.append(short)
+            for alias in aliases:
+                with self.subTest(alias_kind="short" if alias.name != ".." else "parent"):
+                    self.assertNotEqual(alias, root)
+                    self.assertEqual(alias.resolve(), root)
+                    with patch.object(tempfile, "tempdir", str(alias)):
+                        self.test_collect_worker_preserves_completed_operations_for_matching_sri_invalid_deflate()
+
+    def test_worker_failure_assertions_expose_only_bounded_allowlisted_categories(self):
+        self.assertEqual(worker_report_category(diag.encode({"error": "invalid_worker_directory"})),
+                         "invalid_worker_directory")
+        for output, expected in (
+            (b"", "worker_report_missing"),
+            (b"{" + b"x" * diag.REPORT_LIMIT, "worker_report_oversized"),
+            (b"private-marker", "worker_report_invalid"),
+            (diag.encode({"error": "private-marker"}), "worker_error_unrecognized"),
+            (diag.encode({"error": {"private-marker": True}}), "worker_error_unrecognized"),
+            (diag.encode({"unexpected": "private-marker"}), "worker_operations_missing"),
+            (diag.encode({"operations": {}}), "worker_operations_present"),
+        ):
+            category = worker_report_category(output)
+            self.assertEqual(category, expected)
+            self.assertNotIn("private-marker", category)
 
     def test_tarball_rejects_wrong_platform_main_or_package_identity(self):
         _, metadata = fixture()
