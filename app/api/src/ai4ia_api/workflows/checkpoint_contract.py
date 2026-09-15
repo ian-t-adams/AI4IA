@@ -48,6 +48,14 @@ def validate_transition(
         or updated.revision != prior.revision + 1
         or updated.createdAt != prior.createdAt or updated.deadline != prior.deadline
         or updated.limits != prior.limits
+        or (
+            prior.budgetEvidence is not None and (
+                updated.budgetEvidence is None
+                or updated.budgetEvidence.budgetId != prior.budgetEvidence.budgetId
+                or updated.budgetEvidence.revision is None or prior.budgetEvidence.revision is None
+                or updated.budgetEvidence.revision < prior.budgetEvidence.revision
+            )
+        )
         or (not prior.allowTools and updated.allowTools)
         or (not prior.allowAutomaticMemory and updated.allowAutomaticMemory)
         or updated.bundle != prior.bundle or updated.input != prior.input

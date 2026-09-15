@@ -20,19 +20,30 @@ internal sealed class ApimPolicyHarness
     private static readonly string[] Sections = ["inbound_pre", "inbound_post", "backend", "outbound", "on_error"];
     internal static readonly Dictionary<string, XElement> Policies = Sections.ToDictionary(
         s => s, s => LoadPolicy(System.IO.Path.Combine(PolicyDirectory, $"simplel7proxy_{s}_32.xml")));
+    private static readonly XElement VersionedPolicy = LoadPolicy(
+        System.IO.Path.Combine(PolicyDirectory, "attempts-v1-policy.xml"));
+    private static readonly XElement LegacyPolicy = LoadPolicy(
+        System.IO.Path.Combine(PolicyDirectory, "simplel7proxy-priority-policy.xml"));
     private static readonly Lazy<Func<string, ApimContext, object>> Evaluator = new(Compile);
     internal static void CompileBeforeTimedRequests() => _ = Evaluator.Value;
     internal readonly ApimContext Context = new();
     internal int Sends;
     internal int Limit = 0;
+    internal XElement? InheritedInbound;
     private string _phase = "";
     private string _backend = "";
     private string _path = "";
+    private readonly bool _versioned;
 
     internal ApimPolicyHarness(WireRequest request, params WireServer[] servers)
     {
+        _versioned = request.Path.StartsWith("/ai4ia-attempts-v1/", StringComparison.Ordinal);
+        Context.Api.Path = _versioned ? "ai4ia-attempts-v1" : "openai";
+        Context.Subscription!.Id = _versioned ? "__AI4IA_ATTEMPTS_SUBSCRIPTION_ID__" : "proxy-models";
+        Context.Subscription.PrimaryKey = _versioned ? NoReplayWorkerTests.Key : NoReplayWorkerTests.LegacyKey;
         Context.Request.Headers = new(request.Headers.ToDictionary(p => p.Key, p => new[] { p.Value }), StringComparer.OrdinalIgnoreCase);
         Context.Request.Body = new ApimBody(request.Body);
+        Context.Request.Method = request.Method;
         Context.Request.OriginalUrl = new ApimUrl(request.Path);
         Context.Request.Url = new ApimUrl(request.Path);
         Context.Request.MatchedParameters["path"] = request.Path.Split('?')[0].Replace("/openai/", "");
@@ -62,11 +73,11 @@ internal sealed class ApimPolicyHarness
     {
         try
         {
-            foreach (string phase in new[] { "inbound_pre", "inbound_post", "backend", "outbound" })
+            foreach (string phase in new[] { "inbound", "backend", "outbound" })
             {
                 _phase = phase;
                 if (phase == "backend") beforeBackend?.Invoke(Context);
-                await Execute(Policies[phase]);
+                await Children((_versioned ? VersionedPolicy : LegacyPolicy).Element(phase)!);
             }
         }
         catch (PolicyReturn) { }
@@ -74,7 +85,10 @@ internal sealed class ApimPolicyHarness
         {
             Context.LastError.Reason = "FixtureTransportFailure";
             _phase = "on_error";
-            try { await Execute(Policies["on_error"]); }
+            try
+            {
+                await Children((_versioned ? VersionedPolicy : LegacyPolicy).Element("on-error")!);
+            }
             catch (PolicyReturn) { }
         }
     }
@@ -97,6 +111,16 @@ internal sealed class ApimPolicyHarness
             case "when":
             case "otherwise":
                 await Children(node);
+                break;
+            case "include-fragment":
+                string fragment = node.Attribute("fragment-id")!.Value;
+                string? section = Sections.FirstOrDefault(s => fragment == $"simplel7proxy_{s}_32");
+                if (section is not null) await Execute(Policies[section]);
+                else if (fragment != "endpoint_selection_setup_32" &&
+                    !Enumerable.Range(0, 12).Any(i => fragment == $"endpoint_selection_catalog_{i}_32"))
+                    throw new AssertFailedException($"Unprojected policy fragment: {fragment}");
+                // The same synthetic catalog/loopback backends used by legacy
+                // controls stand in for the generated catalog's named values.
                 break;
             case "choose":
                 var branch = node.Elements("when").FirstOrDefault(Condition) ?? node.Element("otherwise");
@@ -178,8 +202,11 @@ internal sealed class ApimPolicyHarness
             case "cache-lookup-value":
             case "cache-store-value":
             case "set-query-parameter":
-            case "base":
                 // No inherited policy, remote cache or credential query in the fixture.
+                break;
+            case "base":
+                if (_phase == "inbound" && InheritedInbound is not null)
+                    await Execute(InheritedInbound);
                 break;
             default:
                 throw new AssertFailedException($"Unprojected policy instruction: {node.Name}");
@@ -188,7 +215,7 @@ internal sealed class ApimPolicyHarness
 
     private static Func<string, ApimContext, object> Compile()
     {
-        var expressions = Policies.Values.SelectMany(p => p.DescendantsAndSelf())
+        var expressions = Policies.Values.Append(VersionedPolicy).SelectMany(p => p.DescendantsAndSelf())
             .SelectMany(n => n.Attributes().Select(a => a.Value).Concat(n.HasElements ? [] : new[] { n.Value }))
             .Where(v => v.StartsWith("@(") || v.StartsWith("@{")).Distinct().ToArray();
         string scratch = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ai4ia-policy-" + Guid.NewGuid().ToString("N"));
@@ -284,10 +311,14 @@ public sealed class ApimContext
     public Guid RequestId { get; } = Guid.NewGuid();
     public TimeSpan Elapsed => TimeSpan.FromMilliseconds(10);
 }
-public sealed class ApimApi { public string Id => "fixture"; }
+public sealed class ApimApi
+{
+    public string Id => "fixture";
+    public string Path { get; set; } = "openai";
+}
 public sealed class ApimSubscription
 {
-    public string Id => "proxy-models";
+    public string Id { get; set; } = "proxy-models";
     public string PrimaryKey { get; set; } = NoReplayWorkerTests.Key;
     public string SecondaryKey { get; set; } = "";
 }

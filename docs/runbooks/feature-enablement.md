@@ -22,6 +22,7 @@ feature posture.
 | Feature | API flag / setting | Web flag | IaC parameter | Deployed prerequisites |
 |---|---|---|---|---|
 | Atomic application admission (source only) | `AI4IA_HARD_QUOTA_ENABLED` | none | `hardQuotaEnabled` | Default `false`; deployed activation and local Cosmos are refused. Explicit local test seed only; reviewed durable bootstrap, reconciliation, replay recovery and fleet cutover remain unimplemented |
+| Versioned one-attempt gateway staging | `AI4IA_GATEWAY_ATTEMPTS_V1_STAGED` | none | `gatewayAttemptsV1Staged` | Default `false`; stages only the isolated API/operations/policy/scoped proxy key on the existing APIM. Governed HTTPS native proxy ingress and S7P-KEY auth required; no shipping runtime verifier or cap activation. See [construction prerequisites](../hard-quota-admission.md#versioned-route-staging-and-construction-contract) |
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | `voiceLiveEnabled` | Browser Origin allowlist outside local |
 | Voice Live tools | `AI4IA_REALTIME_TOOLS_ENABLED` | advertised by web env | `voiceLiveToolsEnabled` | Voice Live enabled |
 | Staged GA Realtime | `AI4IA_REALTIME_GA_ENABLED` + `AI4IA_REALTIME_PROTOCOL` | read-only `openaiRealtimeProtocol` from API config | `realtimeGaEnabled` + `realtimeProtocol` | Defaults `false` + `preview`; Voice Live, distinct GA APIM URL/key; approved canary before selection/cutover |

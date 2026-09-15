@@ -122,6 +122,16 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    gateway capability may prepare a request-bound envelope before admission.
    Keep the shipping verifier absent; no header or operator Boolean proves the
    deployed proxy/APIM/ingress transport. Ordinary retries stay unchanged.
+   `AI4IA_GATEWAY_ATTEMPTS_V1_STAGED` is a separate default-off infrastructure
+   gate, not capability issuance. The isolated `ai4ia-attempts-v1` API has only
+   three exact POST operations, mandatory route/HMAC membership, no inherited
+   `base` policies and a distinct API-only proxy key. Keep the exact non-stripping
+   Host prefix; absent membership or a missing bounded host must never select
+   catch-all/legacy work. V1 Claude is unsupported even on a generic chat path.
+   Capability readback binds the API revision, operation inventory, key scope and
+   transition-fenced evidence epoch; raw hashes and TTL alone prove none of them.
+   New physical nonce reuse is not globally deduplicated; workflow owner CAS is
+   a distinct operation fence.
 
 ## CI build / test / lint commands
 
@@ -138,6 +148,15 @@ npm run build --if-present
 
 Package scripts resolve to `eslint .`, `vitest run`, and `next build`. Local dev
 uses `npm run dev`.
+
+`nativeLockCoverage.test.ts` derives the native SWC packages from the locked
+Next.js declarations and requires a matching lock record for every platform,
+including platforms absent from the CI runner. A missing optional binary can
+otherwise pass Linux CI while leaving Windows without its locked native package.
+The guard checks recorded version, public artifact reference and integrity
+metadata; it does not prove registry availability or native execution. Repair a
+missing record through the package manager with verified metadata, never a
+guessed integrity hash or a WASM fallback presented as native validation.
 
 `npm ci` prints benign `ERESOLVE overriding peer dependency` warnings for
 `eslint-config-next`'s bundled plugins, whose published peer ranges still cap at
@@ -468,6 +487,12 @@ pushed. A digest is content-addressed, so an identical rebuild yields an identic
 reference; the older "new revision, changed image string" heuristic remains only as
 a fallback for callers that cannot name the image. Do not drop those flags.
 
+The workflow uses `azd provision --no-prompt --no-state`: the pinned azd's
+unchanged-template/parameter shortcut is not a live drift check and can skip
+reconciliation after application rollback. Keep the supported `--no-state`
+option, not state-file deletion or an unsupported `--force` substitute. The
+explicit manual `provision=false` opt-out remains unchanged.
+
 Rollback state is captured **before `azd provision`**, not merely before
 application deployment: all three Bicep app modules use a quickstart placeholder
 image for greenfield creation, so an infrastructure reconciliation can create a
@@ -494,6 +519,9 @@ bool/int/float equality shortcuts must not become a pass. Same-version raw GETs
 also expose these differences, so changing CLI transport alone is not a fix.
 Candidate acceptance must exercise actual pending/restoration/rollout predicates;
 capture or healthy-image reads alone do not cover writable-template comparison.
+Cutover diagnostics retain fixed difference areas and bounded probe-field
+presence/type/counts from those same reads, never probe configuration values.
+These shapes do not equate missing/null/empty probes or relax a failed comparison.
 Multiple mode pins all traffic to the exact captured revision without switching
 modes. Preserve min-zero support, per-app failure isolation and no write replay;
 see `docs/runbooks/deployment.md#automatic-and-manual-rollback`.
@@ -816,6 +844,16 @@ exact-run job/artifact reads, without checkout or OIDC. Deployment admission
 stays permissionless. These source contracts do not configure live GitHub policy.
 
 ## Dependency updates and issue closeout
+
+Before updating an exact action-pin assertion, resolve the official version tag
+to its release commit and review the action metadata and shipped code. Keep
+`test_foundry_assets_workflow.py`'s exact Azure login pin and complete OIDC input
+map; a prefix or SHA-shape check does not approve a release. The reviewed
+`azure/login` v3.1.0 defaults retain `api://AzureADTokenExchange`, `azurecloud`,
+`SERVICE_PRINCIPAL` and client-ID masking. Its unmasking and PowerShell context
+inputs remain unused. Reuse `test_gating_workflows.py`'s consumer-derived
+permission checks rather than copying a workflow/job grant map. A dependency
+update does not authorize new inputs, credentials, federated subjects or grants.
 
 Routine API updates stay in `api-deps`. FastAPI and Starlette are a compatibility
 pair in `api-framework`; `azure-ai-projects` stays ungrouped so its exact SDK,
@@ -1176,6 +1214,30 @@ shared application dispatches, not just loop iterations. Finite USD caps and
 hard-quota durable execution remain refused under the unproven downstream attempt
 envelope. See [the automation contract](docs/workflow-automation.md); source
 completion never implies live activation.
+
+The additive per-run monetary contract reserves shared catalog/price bounds in
+the existing owner ETag CAS before actual dispatch. It is an immutable USD
+application-meter limit, not an owner balance or Azure bill cap. Preserve
+settled/held/unknown totals and compacted-charge floors when removing delivered
+effects; missing accounting is not zero and unknown work never expires into a
+refund. Reserve escaped state space for every later settlement transition.
+Accounting survives caller expiry and conversation cleanup without new grants.
+Draft spend evidence binds exact owner/source/run/operation/schema/destination/
+arguments/expiry, original prices/coverage/attempt identity and current run
+budget revision. A changed quote cannot use an old one-time challenge; ordinary
+reads never reprice it. Local zero requires the actual repository handler and a
+task-inherited no-metered-effect guard, not tool annotations.
+The first finite profile is explicitly stateless text, with tools and automatic
+memory denied and no selected tool/resource requirements silently discarded.
+Shipping attempt proof remains absent; flags, metadata or local fixtures cannot
+enable finite admission. Unknown remote meters and the independent hard-quota
+durable/nonlocal refusals remain unchanged.
+Monetary retirement selection and validation share the invocation-key timestamp
+and replay floor, not the later run creation time. Retain ineligible or unresolved
+rows without blocking unrelated valid admission. HTTP financial projections must
+include their defaulted currency/scope and explicit unknown nulls; recursively
+excluding unset/none fields breaks consumers. Actual API responses and browser
+validators share `app/web/test-fixtures/workflow_money.json`.
 
 ## Staged GA Realtime protocol
 

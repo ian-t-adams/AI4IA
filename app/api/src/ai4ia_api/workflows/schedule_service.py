@@ -43,13 +43,14 @@ class WorkflowScheduleService:
         automation.require_enabled(scheduling=True)
         owner = user.internal_user_id
         issued = request_time(key)
+        bundle = await automation.access.freeze(
+            user, selection, limits, session_id="schedule-admission", safe_only=True,
+        )
+        automation.require_spend_support(bundle, limits)
         current = await automation.owner(owner, create=True)
         if issued > current.now + timedelta(minutes=5) or issued < current.now - timedelta(days=30):
             raise AutomationError("stale_invocation", "This schedule request is outside its recovery horizon.")
         identifier = schedule_id or stable_id(owner, "schedule", key)[:32]
-        bundle = await automation.access.freeze(
-            user, selection, limits, session_id="schedule-admission", safe_only=True,
-        )
         if not text.strip() or len(text) > 8000:
             raise AutomationError("invalid_input", "Schedule input must contain 1-8000 characters.", status=422)
         write_digest = digest({

@@ -140,7 +140,8 @@ namespace SimpleL7Proxy.DTO
         public void PopulateInto(RequestData data)
         {
             NoReplayAttempt.RefusePersistence(data);
-            if (AttemptContract is not null || Headers.Keys.Any(NoReplayAttempt.IsInternalHeader))
+            if (AttemptContract is not null || NoReplayAttempt.IsVersionedPath(Path) ||
+                Headers.Keys.Any(NoReplayAttempt.IsInternalHeader))
                 throw new InvalidOperationException("Bounded gateway requests cannot be recovered.");
             data.Populate(Guid.ToString(), Guid, MID, Path, Method, Timestamp, Headers);
             data.AsyncBlobAccessTimeoutSecs = this.AsyncBlobAccessTimeoutSecs;

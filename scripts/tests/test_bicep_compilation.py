@@ -106,6 +106,98 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             json.dumps(self.template["variables"]["deployableCatalog"]),
         )
 
+    def test_versioned_gateway_has_only_conditional_exact_operations_and_api_only_key(self) -> None:
+        flag = "gatewayAttemptsV1Staged"
+        self.assertIs(self.template["parameters"][flag]["defaultValue"], False)
+        gateway_module = self.template["resources"]["gateway"]["properties"]
+        api_module = self.template["resources"]["api"]["properties"]
+        for module in (gateway_module, api_module):
+            self.assertEqual(module["parameters"][flag]["value"], f"[parameters('{flag}')]")
+            self.assertIs(module["template"]["parameters"][flag]["defaultValue"], False)
+        gateway = gateway_module["template"]
+        resources = gateway["resources"]
+        expected = {
+            "sharedAttemptsApi": "Microsoft.ApiManagement/service/apis",
+            "sharedAttemptsOperations": "Microsoft.ApiManagement/service/apis/operations",
+            "sharedAttemptsApiPolicy": "Microsoft.ApiManagement/service/apis/policies",
+            "sharedProxyAttemptsSubscription": "Microsoft.ApiManagement/service/subscriptions",
+        }
+        staged = {name: value for name, value in resources.items() if flag in value.get("condition", "")}
+        self.assertEqual(set(staged), set(expected))
+        for name, kind in expected.items():
+            self.assertEqual(resources[name]["type"], kind)
+            self.assertEqual(resources[name]["condition"], f"[parameters('{flag}')]")
+        self.assertTrue(resources["sharedApim"]["existing"])
+        self.assertEqual(resources["sharedAttemptsApi"]["properties"], {
+            "displayName": "AI4IA versioned one-attempt model boundary",
+            "path": "ai4ia-attempts-v1", "protocols": ["https"],
+            "serviceUrl": "[variables('foundryOpenAiUrl')]",
+            "subscriptionRequired": True, "apiType": "http",
+        })
+        operations = gateway["variables"]["attemptsOperations"]
+        self.assertEqual(operations, [
+            {"name": "responses", "path": "/openai/responses", "deployment": False},
+            {"name": "chat-completions", "path": "/openai/deployments/{deployment}/chat/completions", "deployment": True},
+            {"name": "embeddings", "path": "/openai/deployments/{deployment}/embeddings", "deployment": True},
+        ])
+        operation = resources["sharedAttemptsOperations"]
+        self.assertEqual(operation["copy"]["count"], "[length(variables('attemptsOperations'))]")
+        self.assertEqual(operation["properties"]["method"], "POST")
+        self.assertEqual(
+            operation["properties"]["urlTemplate"], "[variables('attemptsOperations')[copyIndex()].path]",
+        )
+        self.assertIn("ai4ia-attempts-v1", operation["name"])
+        subscription = resources["sharedProxyAttemptsSubscription"]
+        self.assertIn("ai4ia-attempts-v1", subscription["properties"]["scope"])
+        self.assertNotEqual(subscription["properties"]["scope"], resources["sharedProxyModelSubscription"]["properties"]["scope"])
+        self.assertIn("sharedAttemptsApiPolicy", subscription["dependsOn"])
+        self.assertIn("sharedAttemptsOperations", resources["sharedAttemptsApiPolicy"]["dependsOn"])
+        self.assertEqual(
+            resources["sharedAttemptsApiPolicy"]["properties"]["value"], "[variables('attemptsApiPolicyValue')]",
+        )
+        self.assertIn("proxyAttemptsSubscriptionName", gateway["variables"]["attemptsApiPolicyValue"])
+        self.assertIn("normalizedModelPolicyFragmentDefinitions", gateway["variables"]["attemptsApiPolicyValue"])
+        policy_input = re.search(r"replace\(variables\('([^']+)'\), '__AI4IA_ATTEMPTS_SUBSCRIPTION_ID__'", gateway["variables"]["attemptsApiPolicyValue"])
+        self.assertIsNotNone(policy_input)
+        deployed_policy = gateway["variables"][policy_input[1]]
+        self.assertIn("ai4ia-attempts-v1", deployed_policy)
+        self.assertIn("__AI4IA_ATTEMPTS_SUBSCRIPTION_ID__", deployed_policy)
+        self.assertNotIn("<base", deployed_policy)
+        for enabled in (False, True):
+            # All four emitted conditions are the exact parameter, not a second
+            # independently interpreted flag or an always-created child.
+            count = sum((3 if name == "sharedAttemptsOperations" else 1) for name in staged if enabled)
+            self.assertEqual(count, 6 if enabled else 0)
+        host_env = gateway["variables"]["hostEnv"]
+        self.assertIn(f"if(parameters('{flag}')", host_env)
+        self.assertIn("path=/ai4ia-attempts-v1;stripprefix=false", host_env)
+        self.assertIn("mode=apim;probe=/;processor=OpenAI", host_env)
+        self.assertIn("retryafter=false", host_env)
+        self.assertIn("Host2-api-key", host_env)
+        secrets = resources["proxyApp"]["properties"]["configuration"]["secrets"]
+        self.assertIn(f"if(parameters('{flag}')", secrets)
+        self.assertIn("proxy-apim-attempts-v1-key", secrets)
+        self.assertIn("listSecrets(", secrets)
+        self.assertNotIn("proxy-apim-attempts-v1-key", json.dumps(api_module))
+
+    def test_versioned_prefix_cannot_resolve_to_any_legacy_gateway_api(self) -> None:
+        resources = self.template["resources"]["gateway"]["properties"]["template"]["resources"]
+        apis = {
+            name: value["properties"]["path"] for name, value in resources.items()
+            if value["type"] == "Microsoft.ApiManagement/service/apis"
+        }
+        self.assertEqual(set(apis.values()), {
+            "openai", "openai/realtime", "openai/v1/realtime",
+            "code-interpreter", "speech/voice-live/realtime", "ai4ia-attempts-v1",
+        })
+        for name, path in apis.items():
+            self.assertTrue(path and "*" not in path)
+            if name != "sharedAttemptsApi":
+                self.assertFalse("ai4ia-attempts-v1/openai/responses".startswith(path + "/"))
+        wildcard = resources["sharedModelOperations"]
+        self.assertEqual(wildcard["properties"]["urlTemplate"], "/{*path}")
+        self.assertNotIn("ai4ia-attempts-v1", wildcard["name"])
+
     def test_tool_auto_approval_is_an_explicit_default_off_api_gate(self) -> None:
         self.assertFalse(
             self.template["parameters"]["toolAutoApproveEnabled"]["defaultValue"]

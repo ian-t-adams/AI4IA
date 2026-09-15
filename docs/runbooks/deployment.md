@@ -30,6 +30,18 @@ deployment job can start. Missing values fail the workflow with their names;
 they never produce a successful skipped job. A repository with no deployment
 target must declare that posture with `AI4IA_DEPLOYMENT_ENABLED=false`.
 
+The provisioning step uses `azd provision --no-prompt --no-state`. In the pinned
+azd, unchanged templates and parameters can otherwise produce a successful
+"There are no changes to provision" result without reconciling live resources.
+That is not a drift check: an application rollback can restore an older template
+after provisioning succeeded, while leaving azd's stored deployment state
+unchanged. `--no-state` requests a fresh Bicep deployment; it does not change the
+declared resources, feature choices, permissions, or ARM deployment mode. The
+pre-provision rollback capture remains mandatory. A manual workflow run with
+`provision=false` still deliberately skips provisioning; it is not configuration
+reconciliation. Do not delete state files or use the unsupported `--force` flag
+as a substitute.
+
 This source guard does not replace the independently configured `production`
 environment branch policy. An operator must still restrict that environment as
 described in the standup guide: allow only an exact **branch** rule named `main`,
@@ -601,6 +613,29 @@ The assertions share a 20-minute wall-clock budget inside a 30-minute step
 timeout. The canary intersects `infra/models.json` with the models the live API
 advertises, never hardcodes a deployment, never prints its bearer token or model
 reply, and logs successful replies only as a character count.
+
+Each `rollout` event also records `cutover` evidence from the same stable app and
+revision reads, without another Azure call. In Single mode this distinguishes
+`latestMatchesServing`, `appProvisioningSucceeded`, and an equal, different,
+invalid, or unavailable writable-template comparison. A difference reports at
+most twelve fixed area labels, such as `containers.env` or `scale.maxReplicas`,
+plus an explicit truncation flag. The difference summary never logs template
+values, environment-variable names, custom field names, or template hashes.
+Multiple mode does not claim these Single-mode checks passed.
+
+Differing probe fields also record at most two container-array positions in
+`probeFieldShapes`: a fixed collection label, index, desired/serving JSON kinds
+(including `missing`), and an item count for arrays. `probeFieldShapesTruncated`
+marks additional differences. Probe paths, header names, values, and container
+names are never emitted. Missing, null, and empty arrays remain distinct in the
+comparison; identical kinds/counts do not prove equal probe configurations. This
+retains representation evidence from the actual failed observation without
+changing health probes, adding Azure calls, or weakening the cutover guard.
+
+Inspect this evidence before retrying a failed release. A healthy serving image
+alone does not clear a pending cutover, and an app read after rollback cannot
+reconstruct the historical desired template. Missing historical evidence remains
+unknown; the diagnostics do not relax verification or authorize a restore.
 
 The same proof can run independently of a deployment or rollback state file:
 

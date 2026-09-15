@@ -20,6 +20,10 @@ from .automation_common import (
     AutomationError, AutomationModel, ExecutionLimits, digest, json_bytes, utc,
 )
 from .models import MAX_RUN_INPUT_LEN, MAX_STEPS, Workflow
+from .monetary_models import (
+    ApprovalSpend, BudgetView, DispatchMoney, MonetaryCompatibleModel, RunMoney, budget_identity,
+)
+from .monetary_ledger import monetary_transition_bytes, validate_money_balances
 from .runner import WorkflowStepResult
 from .scheduling import ScheduleOccurrence, ScheduleRule
 
@@ -60,7 +64,8 @@ class FrozenWorkflow(AutomationModel):
     nonce: str
 
 
-class InvocationDraft(AutomationModel):
+class InvocationDraft(MonetaryCompatibleModel):
+    legacy_optional_fields = ("spend", "challengeSpendDigest")
     id: str
     operationId: str
     runId: str
@@ -83,6 +88,8 @@ class InvocationDraft(AutomationModel):
     challenge: PendingToolApproval | None
     challengeGeneration: int = Field(ge=0, strict=True)
     decidedAt: datetime | None
+    spend: ApprovalSpend | None = None
+    challengeSpendDigest: str | None = Field(default=None, pattern=SHA256_PATTERN)
 
     @model_validator(mode="after")
     def valid_lifetime(self) -> InvocationDraft:
@@ -90,6 +97,10 @@ class InvocationDraft(AutomationModel):
             raise ValueError("An approval expiry must follow its creation.")
         if self.challenge is not None and utc(self.challenge.expiresAt) > utc(self.expiresAt):
             raise ValueError("A review challenge cannot extend its draft.")
+        if self.spend is not None and utc(self.spend.expiresAt) != utc(self.expiresAt):
+            raise ValueError("The monetary quote cannot outlive or shorten its exact-call draft.")
+        if self.spend is None and self.challengeSpendDigest is not None:
+            raise ValueError("The review challenge lost its monetary evidence.")
         return self
 
 
@@ -98,7 +109,8 @@ class CompletedWorkflowStep(AutomationModel):
     usage: TokenUsage
 
 
-class WorkflowCheckpoint(AutomationModel):
+class WorkflowCheckpoint(MonetaryCompatibleModel):
+    legacy_optional_fields = ("budgetEvidence",)
     id: str
     kind: Literal["workflow_checkpoint_v3"] = CHECKPOINT_KIND
     userId: str
@@ -134,6 +146,7 @@ class WorkflowCheckpoint(AutomationModel):
     scheduleGeneration: int | None
     wakeRevision: int = Field(ge=0, strict=True)
     ttl: Literal[-1] = -1
+    budgetEvidence: BudgetView | None = None
 
     @model_validator(mode="after")
     def valid_state(self) -> WorkflowCheckpoint:
@@ -145,10 +158,23 @@ class WorkflowCheckpoint(AutomationModel):
             raise ValueError("The frozen execution owner does not match.")
         if self.draft is not None and self.draft.runId != self.runId:
             raise ValueError("The approval belongs to a different run.")
+        budget = self.budgetEvidence
+        if self.limits.maxSpendMicroUsd is not None:
+            if (
+                budget is None or budget.mode != "usd_app_meter"
+                or budget.limitMicroUsd != self.limits.maxSpendMicroUsd
+                or budget.budgetId != budget_identity(
+                    self.userId, self.ownerEpoch, self.runId, self.fingerprint, self.limits.maxSpendMicroUsd,
+                )
+            ):
+                raise ValueError("the capped checkpoint lost its immutable budget contract")
+        elif budget is not None:
+            raise ValueError("an uncapped checkpoint has no monetary contract")
         return self
 
 
-class RunHandle(AutomationModel):
+class RunHandle(MonetaryCompatibleModel):
+    legacy_optional_fields = ("money",)
     runId: str
     sessionId: str
     checkpointId: str
@@ -164,9 +190,11 @@ class RunHandle(AutomationModel):
     operationFloor: int = Field(ge=-1, strict=True)
     scheduleId: str | None
     scheduleGeneration: int | None
+    money: RunMoney | None = None
 
 
-class EffectIntent(AutomationModel):
+class EffectIntent(MonetaryCompatibleModel):
+    legacy_optional_fields = ("money",)
     id: str
     runId: str
     sessionId: str
@@ -178,6 +206,7 @@ class EffectIntent(AutomationModel):
     resultDigest: str | None
     usage: UsageRecord | None
     delivered: bool
+    money: DispatchMoney | None = None
 
 
 class AutomationOwner(AutomationModel):
@@ -199,11 +228,18 @@ class AutomationOwner(AutomationModel):
         for key, handle in self.runs.items():
             if key != handle.runId:
                 raise ValueError("A run handle identity does not match.")
+            if handle.money is not None and handle.money.budgetId != budget_identity(
+                self.userId, self.epoch, handle.runId, handle.fingerprint, handle.money.limitMicroUsd,
+            ):
+                raise ValueError("The monetary scope does not match the immutable run.")
         for key, effect in self.effects.items():
             if key != effect.id or effect.runId not in self.runs:
                 raise ValueError("An effect has no matching run handle.")
             if effect.usage is not None and effect.usage.userId != self.userId:
                 raise ValueError("Usage belongs to a different owner.")
+            if effect.money is not None and effect.category != "dispatch":
+                raise ValueError("A monetary reservation must bind an actual application dispatch.")
+        validate_money_balances(self)
         return self
 
 
@@ -248,7 +284,8 @@ StoredModel = TypeVar("StoredModel", bound=AutomationModel)
 
 
 def persisted_model(model: type[StoredModel], raw: Any) -> StoredModel:
-    if not isinstance(raw, Mapping) or not set(model.model_fields).issubset(raw):
+    required = set(model.model_fields) - set(getattr(model, "legacy_optional_fields", ()))
+    if not isinstance(raw, Mapping) or not required.issubset(raw):
         raise AutomationError("state_corrupt", "Required workflow coordination state is missing.")
     clean = {key: value for key, value in raw.items() if not key.startswith("_")}
     result = model.model_validate(clean)
@@ -280,6 +317,7 @@ def writable_body(model: AutomationModel, *, reserve: bool = True) -> dict[str, 
     body = type(model).model_validate(model.model_dump(mode="json")).model_dump(mode="json")
     reserved = TRANSITION_RESERVE_BYTES if reserve else 0
     if isinstance(model, AutomationOwner):
+        reserved += monetary_transition_bytes(body)
         for effect in model.effects.values():
             if effect.usage is not None:
                 json_bytes(effect.usage.model_dump(mode="json"), limit=8192)

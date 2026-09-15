@@ -1584,6 +1584,245 @@ class VerifyTests(unittest.TestCase):
                 self.assertEqual(pdv.main(["verify", "--state", str(bad)]), 2)
 
 
+class CutoverEvidenceTests(unittest.TestCase):
+    def verify_web(self, az: FakeAz) -> tuple[int, dict, str]:
+        code, out = VerifyTests().verify(az=az)
+        events = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+        event = next(row for row in events if row["event"] == "rollout" and row["service"] == "web")
+        return code, event["cutover"], out
+
+    def test_each_failed_cutover_condition_is_distinguishable(self) -> None:
+        changes = (
+            ("latest", "latestMatchesServing"),
+            ("provisioning", "appProvisioningSucceeded"),
+            ("template", "templateComparison"),
+        )
+        for change, field in changes:
+            with self.subTest(change=change):
+                az = world()
+                code, healthy, _ = self.verify_web(az)
+                self.assertEqual(code, 0)
+                self.assertEqual(healthy["templateComparison"], "equal")
+                self.assertTrue(healthy["latestMatchesServing"])
+                self.assertTrue(healthy["appProvisioningSucceeded"])
+                props = az.apps[APPS["web"]]["properties"]
+                saved = deepcopy(props)
+                if change == "latest":
+                    props["latestRevisionName"] = f"{APPS['web']}--pending"
+                elif change == "provisioning":
+                    props["provisioningState"] = "Updating"
+                else:
+                    props["template"]["scale"]["maxReplicas"] = 4
+                code, evidence, _ = self.verify_web(az)
+                self.assertEqual(code, 3)
+                self.assertEqual(evidence[field], "different" if change == "template" else False)
+                if change == "template":
+                    self.assertEqual(evidence["templateDifferenceAreas"], ["scale.maxReplicas"])
+                az.apps[APPS["web"]]["properties"] = saved
+                self.assertEqual(self.verify_web(az)[0], 0)
+
+    def test_diagnostics_reuse_projection_and_preserve_json_types(self) -> None:
+        az = world()
+        desired = az.apps[APPS["web"]]["properties"]["template"]
+        actual = az.revisions[(APPS["web"], f"{APPS['web']}--r2")]["properties"]["template"]
+        desired["containers"][0]["resources"] = {"cpu": 0.5, "memory": "1Gi", "ephemeralStorage": "2Gi"}
+        actual["containers"][0]["resources"] = {"cpu": 0.5, "memory": "1Gi"}
+        desired["scale"].update(cooldownPeriod=300, pollingInterval=30)
+        code, evidence, _ = self.verify_web(az)
+        self.assertEqual(code, 0)
+        self.assertEqual(evidence["templateComparison"], "equal")
+        for changed in (3.0, True):
+            with self.subTest(changed=changed):
+                desired["scale"]["maxReplicas"] = changed
+                code, evidence, _ = self.verify_web(az)
+                self.assertEqual(code, 3)
+                self.assertEqual(evidence["templateDifferenceAreas"], ["scale.maxReplicas"])
+        desired["scale"]["maxReplicas"] = 3
+        self.assertEqual(self.verify_web(az)[0], 0)
+
+    def test_values_and_unknown_field_names_never_reach_logs(self) -> None:
+        az = world()
+        self.assertEqual(self.verify_web(az)[0], 0)
+        desired = az.apps[APPS["web"]]["properties"]["template"]
+        private_name = "private-infrastructure-label"
+        private_value = "unstructured-sensitive-setting"
+        desired["containers"][0]["env"] = [{"name": private_name, "value": private_value}]
+        desired[private_name] = private_value
+        code, evidence, out = self.verify_web(az)
+        self.assertEqual(code, 3)
+        self.assertEqual(evidence["templateDifferenceAreas"], ["containers.env", "other"])
+        self.assertNotIn(private_name, out)
+        self.assertNotIn(private_value, out)
+        self.assertNotIn("api.test", json.dumps(evidence))
+        del desired["containers"][0]["env"]
+        del desired[private_name]
+        self.assertEqual(self.verify_web(az)[0], 0)
+
+    def test_difference_summary_has_a_fixed_bound(self) -> None:
+        az = world()
+        desired = az.apps[APPS["web"]]["properties"]["template"]
+        actual = az.revisions[(APPS["web"], f"{APPS['web']}--r2")]["properties"]["template"]
+        for template in (desired, actual):
+            template["initContainers"] = [{"name": "init", "image": "acr.azurecr.io/init:1"}]
+        self.assertEqual(self.verify_web(az)[0], 0)
+        for collection in ("containers", "initContainers"):
+            desired[collection][0].update(
+                name="different", image="acr.azurecr.io/changed:1",
+                env=[{"name": "private", "value": "not-for-logs"}],
+                resources={"cpu": 0.25}, command=["private-command"],
+                args=["private-argument"], probes=[{"type": "Liveness"}],
+                volumeMounts=[{"volumeName": "private-volume", "mountPath": "/private"}],
+                private_field="not-for-logs",
+            )
+        code, evidence, _ = self.verify_web(az)
+        self.assertEqual(code, 3)
+        self.assertEqual(len(evidence["templateDifferenceAreas"]), 12)
+        self.assertTrue(evidence["differenceAreasTruncated"])
+        self.assertLessEqual(len(json.dumps(evidence, ensure_ascii=True).encode()), 1024)
+
+    def test_probe_field_shapes_distinguish_missing_null_empty_and_other_json_types(self) -> None:
+        cases = (
+            ({}, {"kind": "missing"}),
+            ({"probes": None}, {"kind": "null"}),
+            ({"probes": [{"private-field": "private-probe-value"}]}, {"kind": "array", "count": 1}),
+            ({"probes": {"private-field": "private-probe-value"}}, {"kind": "object"}),
+            ({"probes": "private-probe-value"}, {"kind": "string"}),
+            ({"probes": True}, {"kind": "boolean"}),
+            ({"probes": 1}, {"kind": "number"}),
+            ({"probes": 1.5}, {"kind": "number"}),
+        )
+        for changed, expected_shape in cases:
+            with self.subTest(shape=expected_shape):
+                az = world()
+                desired = az.apps[APPS["web"]]["properties"]["template"]["containers"][0]
+                actual = az.revisions[(APPS["web"], f"{APPS['web']}--r2")]["properties"]["template"]["containers"][0]
+                desired["probes"] = []
+                actual["probes"] = []
+                code, healthy, _ = self.verify_web(az)
+                self.assertEqual(code, 0)
+                self.assertNotIn("probeFieldShapes", healthy)
+                del desired["probes"]
+                desired.update(changed)
+                before_apps, before_revisions = deepcopy(az.apps), deepcopy(az.revisions)
+                az.calls.clear()
+                code, evidence, out = self.verify_web(az)
+                self.assertEqual(code, 3)
+                self.assertEqual(evidence["templateComparison"], "different")
+                self.assertEqual(evidence["templateDifferenceAreas"], ["containers.probes"])
+                self.assertIn("probeFieldShapes", evidence)
+                self.assertEqual(evidence["probeFieldShapes"], [{
+                    "area": "containers.probes", "index": 0,
+                    "desired": expected_shape, "serving": {"kind": "array", "count": 0},
+                }])
+                self.assertFalse(evidence["probeFieldShapesTruncated"])
+                self.assertNotIn("private-field", out)
+                self.assertNotIn("private-probe-value", out)
+                self.assertEqual(len(az.calls), 9)
+                self.assertEqual(az.apps, before_apps)
+                self.assertEqual(az.revisions, before_revisions)
+                desired["probes"] = []
+                self.assertEqual(self.verify_web(az)[0], 0)
+
+    def test_matching_probe_shapes_do_not_hide_changed_configuration(self) -> None:
+        az = world()
+        desired = az.apps[APPS["web"]]["properties"]["template"]["containers"][0]
+        actual = az.revisions[(APPS["web"], f"{APPS['web']}--r2")]["properties"]["template"]["containers"][0]
+        probes = [{
+            "type": "Readiness",
+            "httpGet": {
+                "path": "/private-probe-path", "port": 8080,
+                "httpHeaders": [{"name": "private-header-name", "value": "private-header-value"}],
+            },
+        }]
+        desired["probes"] = deepcopy(probes)
+        actual["probes"] = deepcopy(probes)
+        self.assertEqual(self.verify_web(az)[0], 0)
+        desired["probes"][0]["httpGet"]["httpHeaders"][0]["value"] = "private-changed-value"
+        code, evidence, out = self.verify_web(az)
+        self.assertEqual(code, 3)
+        self.assertEqual(evidence["templateComparison"], "different")
+        for private in ("private-probe-path", "private-header-name", "private-header-value", "private-changed-value"):
+            self.assertNotIn(private, out)
+        self.assertIn("probeFieldShapes", evidence)
+        self.assertEqual(evidence["probeFieldShapes"], [{
+            "area": "containers.probes", "index": 0,
+            "desired": {"kind": "array", "count": 1}, "serving": {"kind": "array", "count": 1},
+        }])
+        desired["probes"] = deepcopy(probes)
+        self.assertEqual(self.verify_web(az)[0], 0)
+
+    def test_probe_shape_bound_covers_both_container_collections(self) -> None:
+        for collection in ("containers", "initContainers"):
+            with self.subTest(collection=collection):
+                az = world()
+                desired = az.apps[APPS["web"]]["properties"]["template"]
+                actual = az.revisions[(APPS["web"], f"{APPS['web']}--r2")]["properties"]["template"]
+                containers = [
+                    {**deepcopy(actual["containers"][0]), "name": f"private-container-{i}", "probes": []}
+                    for i in range(3)
+                ]
+                desired[collection] = deepcopy(containers)
+                actual[collection] = deepcopy(containers)
+                self.assertEqual(self.verify_web(az)[0], 0)
+                for container in desired[collection]:
+                    container["probes"] = None
+                code, evidence, out = self.verify_web(az)
+                self.assertEqual(code, 3)
+                self.assertIn("probeFieldShapes", evidence)
+                self.assertEqual(evidence["probeFieldShapes"], [
+                    {
+                        "area": f"{collection}.probes", "index": i,
+                        "desired": {"kind": "null"}, "serving": {"kind": "array", "count": 0},
+                    }
+                    for i in range(2)
+                ])
+                self.assertTrue(evidence["probeFieldShapesTruncated"])
+                self.assertLessEqual(len(json.dumps(evidence, ensure_ascii=True).encode()), 1024)
+                self.assertNotIn("private-container", out)
+                desired[collection] = deepcopy(containers)
+                self.assertEqual(self.verify_web(az)[0], 0)
+
+    def test_unavailable_and_invalid_are_not_equal(self) -> None:
+        az = world()
+        self.assertEqual(self.verify_web(az)[0], 0)
+        az.apps[APPS["web"]]["properties"]["template"]["scale"]["cooldownPeriod"] = "private-invalid"
+        code, evidence, out = self.verify_web(az)
+        self.assertEqual(code, 3)
+        self.assertEqual(evidence["templateComparison"], "invalid")
+        self.assertNotIn("private-invalid", out)
+        del az.apps[APPS["web"]]
+        code, evidence, _ = self.verify_web(az)
+        self.assertEqual(code, 3)
+        self.assertEqual(evidence, {"observation": "unavailable"})
+
+    def test_multiple_mode_does_not_claim_single_mode_checks(self) -> None:
+        az = world()
+        self.assertEqual(self.verify_web(az)[0], 0)
+        props = az.apps[APPS["web"]]["properties"]
+        props["configuration"]["activeRevisionsMode"] = "Multiple"
+        props["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": f"{APPS['web']}--r2", "weight": 100}
+        ]
+        props["latestRevisionName"] = f"{APPS['web']}--pending"
+        props["template"]["scale"]["maxReplicas"] = 4
+        code, evidence, _ = self.verify_web(az)
+        self.assertEqual(code, 0)
+        self.assertFalse(evidence["singleMode"])
+        self.assertTrue(evidence["servingObserved"])
+        self.assertNotIn("templateComparison", evidence)
+
+    def test_evidence_uses_existing_observation_without_additional_reads(self) -> None:
+        az = world()
+        code, evidence, _ = self.verify_web(az)
+        self.assertEqual(code, 0)
+        self.assertEqual(evidence["observation"], "complete")
+        self.assertEqual(len(az.calls), 9)
+        self.assertTrue(all(
+            call[:2] == ["containerapp", "show"] or call[:3] == ["containerapp", "revision", "show"]
+            for call in az.calls
+        ))
+
+
 class AwaitRolloutTests(unittest.TestCase):
     """ARM lags `azd deploy`; a single read would roll back healthy releases."""
 

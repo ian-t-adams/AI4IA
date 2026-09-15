@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import unittest
 from pathlib import Path
@@ -137,6 +138,38 @@ case "$*" in
 esac
 exit 0
 """
+
+
+@unittest.skipIf(BASH is None, "bash is unavailable on this machine")
+class ProvisionStepTests(unittest.TestCase):
+    def run_step(self, exit_code: int = 0) -> subprocess.CompletedProcess[str]:
+        assert BASH is not None
+        script = _step(PROVISION_STEP)["run"]
+        arguments = shlex.split(script, comments=True)
+        self.assertEqual(arguments[:2], ["azd", "provision"])
+        self.assertTrue(all(arg in {"--no-prompt", "--no-state"} for arg in arguments[2:]))
+        stub = """
+azd() {
+  printf '%s\\n' "$@"
+  return "$STUB_AZD_EXIT"
+}
+"""
+        return subprocess.run(
+            [BASH, "-e", "-o", "pipefail", "-c", stub + script],
+            cwd=ROOT,
+            env={**os.environ, "STUB_AZD_EXIT": str(exit_code)},
+            capture_output=True, text=True, timeout=15,
+        )
+
+    def test_provision_dispatch_bypasses_stored_template_state(self) -> None:
+        result = self.run_step()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["provision", "--no-prompt", "--no-state"])
+
+    def test_provision_failure_is_not_suppressed(self) -> None:
+        result = self.run_step(exit_code=29)
+        self.assertEqual(result.returncode, 29)
+        self.assertEqual(result.stdout.splitlines(), ["provision", "--no-prompt", "--no-state"])
 
 
 @unittest.skipIf(BASH is None, "bash is unavailable on this machine")
@@ -357,6 +390,12 @@ class BuildAndPushStepTests(unittest.TestCase):
 
 class DeployWiringTests(unittest.TestCase):
     """The wiring around the step, which no stub can observe."""
+
+    def test_provision_still_preserves_the_explicit_manual_opt_out(self) -> None:
+        self.assertEqual(
+            _step(PROVISION_STEP)["if"],
+            "${{ github.event_name != 'workflow_dispatch' || inputs.provision }}",
+        )
 
     def test_every_azure_yaml_service_is_deployed_by_digest(self) -> None:
         run = _step(DEPLOY_STEP)["run"]

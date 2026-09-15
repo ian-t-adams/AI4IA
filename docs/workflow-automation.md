@@ -34,6 +34,16 @@ silently substituted with a private definition or a publisher's data.
 In the existing workflow builder, select a saved workflow and model, then use
 **Resumable runs and safe schedules**. Choose input, finite runtime/output/request
 bounds, and explicitly select execution **without a hard dollar cap**.
+The separate **USD application-meter maximum** choice is unavailable unless the
+server has a verified bounded transport. The shipping factory currently has no
+such proof; enabling the workflow flags does not make this choice available.
+Preflight also checks the frozen provider API through
+`attempt_capability_for(bundle.api)`: v1 accepts only the supported OpenAI
+text operations, not Claude's legacy generic proxy path. Unsupported sources,
+tools or required metadata are refused, never removed to manufacture coverage.
+The exact versioned URL joins the adapted payload in the existing owner-CAS
+operation digest; settlement still uses its persisted immutable Bounds after
+the request proof is consumed.
 
 The run captures the owned source revision/digest or exact reviewed source,
 resolved agents, effective tool contracts, resources and model deployment.
@@ -47,7 +57,7 @@ When an otherwise executable call needs approval:
 2. **Workflow approvals** shows an owner-scoped pending item independently of the
    original request or browser tab.
 3. **Review exact call** shows the complete safe argument JSON, destination, risk,
-   source identity and expiry. It issues a short-lived normal one-time grant;
+   source identity, immutable spend evidence and expiry. It issues a short-lived normal one-time grant;
    only the grant hash is stored. Reloading requires a fresh review, not
    recovering a bearer secret from storage.
 4. **Approve this call and resume** consumes that grant by conditional write.
@@ -65,6 +75,29 @@ An approval is bound to owner, conversation generation, source/run, operation,
 tool/schema/scopes, destination, exact argument digest and expiry. A review in
 another tab can invalidate an older challenge. A grant cannot authorize a new
 run, changed arguments or a later repetition of the same tool call.
+
+New drafts also bind an immutable spend quote to that exact operation, the
+run's source/limit fingerprint and the current monetary-account revision.
+The quote records USD, a conservative amount or typed unknown, coverage/basis,
+versioned prices and the attempt contract when applicable, and the exact
+remaining run budget. The one-time challenge binds the quote digest as well as
+the stored arguments. A changed quote, budget, schema or destination cannot use
+an older challenge. Quotes grant neither money nor execution permission.
+
+Ordinary reads never reprice a historical quote. **Refresh spend quote** is an
+explicit new review of the same stored call: it rotates the challenge, does not
+extend the original expiry, and does not repeat accepted model/tool work.
+Old v3 drafts without spend fields remain unquoted and cost-unknown; they do not
+acquire invented zero balances on read. The older text-only review response
+remains alongside the validated structured spend DTO for rolling web/API
+compatibility.
+
+An operation quote covers **only that exact tool operation**, not model work
+after it. Remote MCP, WebIQ, Content Understanding, media, voice and other
+unbounded service effects remain unknown and are not approvable under a finite
+cap. Only a matching repository-owned local handler plus an execution-time
+no-metered-effects guard can establish zero; a risk label or tool hint cannot.
+The current finite profile does not admit tools, including those local tools.
 
 ## Calendar contract
 
@@ -126,6 +159,50 @@ force. Null, unpriced or incomplete usage never becomes a guaranteed zero or
 enforced dollar limit. Already observed rates and effective model parameters are
 retained; reads and retries do not reprice history.
 
+### Per-run monetary source contract
+
+`spendMode="usd_app_meter"` with an integer `maxSpendMicroUsd` expresses a USD
+application-meter maximum for **one run**, not an owner/group balance or Azure
+infrastructure bill cap. `1_000_000` micro-USD is USD 1. The limit is immutable
+after admission; changing a schedule creates a new generation for future runs.
+The normal `no_hard_dollar_cap` mode requires a null/absent monetary limit.
+
+The first bounded profile is deliberately limited to stateless text with no
+tools, automatic memory, selected documents, opaque continuation or
+provider-hosted operations. Both request reductions (`allowTools=false`,
+`allowAutomaticMemory=false`) must be explicit. A selected agent/step with tool
+requirements is rejected, not narrowed behind the user's back. Uncapped runs
+retain their ordinary tools, memory and exact-call approvals. Metadata, a local
+test transport or an acknowledgment flag is not the required shipping
+request-level attempt proof.
+
+The source ledger is in the existing owner/run/effect records:
+
+| Event | Monetary behavior |
+| --- | --- |
+| Actual protected dispatch | One owner ETag CAS reserves the conservative shared catalog/price bound before egress |
+| Concurrent reservations | The same run balance is re-read on CAS contention; combined holds cannot spend the same remaining amount |
+| Complete consistent usage | Settle with the original frozen rates and one-attempt contract; unused reservation can be released |
+| Missing/partial usage, cancellation or lost outcome | Keep the full charged reservation, including across deadlines, restart and conversation cleanup |
+| Replayed identity or changed payload | No second reservation or dispatch; an identical settlement acknowledgment does not charge twice |
+| Delivered effect compaction | Retain cumulative settled money and reservation counts in the run account; unknown liabilities are not pruned |
+| Observed bound violation | Retain the observed amount and block more work; do not relabel a failed assumption as a working cap |
+| Accounting after owner stop/expiry | Continue known-work accounting without reconstructing execution permission |
+
+Escaped JSON capacity, including SDK separators and future settlement fields,
+is reserved for every admitted monetary transition. Incomplete money records do
+not deserialize as empty accounts. The existing thirty-day replay floor permits
+retiring a fully settled, delivered, inactive run; it never retires unresolved
+money. Selection and validation use the same invocation-key timestamp, not a
+later run creation time. A valid unrelated admission is not blocked by an
+ineligible historical row. New per-run accounting does not enroll old histories, bootstrap an owner
+hard balance, or relax the separate hard-quota durable/nonlocal refusals.
+
+This ledger and quote engine do not by themselves complete all monetary
+coverage. A verified shipping attempt integration is still required, and
+quantified remote-tool/service bounds remain unsupported. The source contract
+does not claim that merging it activates a monetary cap.
+
 ## Recovery and uncertainty
 
 Run and schedule start requests use a timestamped idempotency key. Retries must
@@ -168,6 +245,11 @@ Four active runs, row limits, escaped byte budgets and reserved transition space
 bound coordination. Missing or malformed required state fails closed; there is
 no empty-state reset or automatic unknown-hold cleanup. A full state is
 unavailable, not silently truncated permission.
+
+Financial HTTP responses retain explicit currency, scope and unknown nulls even
+when those values originated as model defaults. The API and browser share a
+financial response fixture covering uncapped/capped budgets and new/legacy
+approvals; omitting a discriminator is a contract failure, not a free amount.
 
 Usage records have stable operation identities and strict outbox delivery.
 Duplicate acknowledgment confirms the same row; it does not record another
