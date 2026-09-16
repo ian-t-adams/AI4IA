@@ -699,6 +699,19 @@ catalog response, or configured identity is not a lasting dispatch grant.
 The actual guard consumes one claimed-turn allowance at model egress and
 rechecks owner, generation, reductions, deployment and adapted payload.
 
+The operator policy supports explicit restriction-only settings on each
+execution-actor marker; see
+[group policy and reviewed publishing](feature-enablement.md#group-policy-and-reviewed-publishing)
+for the schema. Separate roleless/no-group chat and realtime identities can
+then use different catalog-category subsets and existing soft limits without
+restricting ordinary users through shared defaults. The monitor token validator
+still requires empty roles and scopes plus its exact application, object,
+tenant and audience bindings. No assumption about whether Entra can emit
+service-principal groups is needed. Actor restrictions cannot override global
+denies, owner caps/disabled state, incomplete claims or privileged-identity
+refusal, and do not supply the finite observation lease or any activation
+approval. Existing configurations without the block keep their prior behavior.
+
 These are **workflow-only repository variables**, not azd/Bicep inputs:
 
 | Variable | Meaning |

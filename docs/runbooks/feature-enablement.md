@@ -298,6 +298,74 @@ single-prompt profile and at most 256. Other model/tool/media paths are refused.
 `GET /api/execution-capabilities` is a current compatibility observation, never
 a bearer grant. Missing profile, policy, v1 readiness or real guard is not ready.
 
+Each execution-actor marker may explicitly opt into a `restrictions` block.
+Its required `models` list contains exact categories from the authoritative
+model catalog, never deployment names. Its required `spend` object uses the
+existing strict entitlement fields and must contain at least one applicable
+numeric request/token/cost limit; a compute-only limit is insufficient.
+These are existing **soft** limits, not reserved tokens, hard admission or an
+Azure bill cap. Numeric values intersect the owner, shared defaults and matched
+claim caps by minimum; any disabled flag remains disabled.
+
+The block intersects the current model domain and materializes empty tools and
+documents for that exact authenticated tenant/subject/owner only. An omitted
+ordinary domain is unrestricted, so narrowing it for the dedicated actor is a
+restriction, not a grant. Existing denies, restrict sets, unavailable state and
+incomplete claim evidence cannot be removed. Admin/publication domains are not
+erased: an underlying administrator or publisher still fails the actor envelope.
+Ordinary users retain their existing model, tool, document and privileged
+operation behavior. No directory role/group, caller profile selector or writable
+user grant field is introduced.
+
+For example, separately approved roleless/no-group monitor and realtime
+identities can coexist without restrictive shared defaults. This synthetic
+schema illustration is **not an activation configuration or approval of limits**:
+
+```json
+{
+  "version": 1,
+  "canaryActor": {
+    "tenantId": "<approved-tenant-guid>",
+    "subject": "<dedicated-monitor-service-principal-object-guid>",
+    "restrictions": {
+      "models": ["chat", "chat-fast"],
+      "spend": {"requestsPerMinute": 2}
+    }
+  },
+  "realtimeCanaryActor": {
+    "tenantId": "<approved-tenant-guid>",
+    "subject": "<distinct-realtime-service-principal-object-guid>",
+    "restrictions": {
+      "models": ["realtime"],
+      "spend": {"requestsPerMinute": 2}
+    }
+  }
+}
+```
+
+`evaluationActor` supports the same explicit block but remains a separate
+authenticated profile. Omission or `null` preserves the previous behavior and
+policy digest: the existing envelope must still be satisfied by ordinary
+policy/entitlement composition. Previously incompatible shared-default
+configurations do not become compatible automatically. Empty model lists
+deny model access; the unchanged envelope refuses an unrestricted catalog.
+Unknown categories/fields, malformed blocks and missing applicable limits
+fail closed, including configured JSON while policy evaluation is paused.
+Enabled actor spend requires both existing soft entitlements and usage metering
+at startup. Restrictions participate in current catalog/tool filtering and
+configuration digests; an in-flight explicitly restricted actor refuses changed
+or removed configuration instead of falling back to ordinary authority.
+
+If current policy becomes malformed or unknown after startup, authentication
+still binds the verified owner for canonical session/message reads, accepted-work
+accounting and owner-resumed cleanup. The request retains explicit policy
+unavailability and any known restricted profile; model/tool catalogs and
+protected operations fail unavailable rather than returning a healthy empty
+catalog or falling back to ordinary authority. Restoring or pausing policy
+cannot authorize protected work in that failed binding; a later authenticated
+request must resolve valid current policy. Invalid startup configuration still
+fails, and valid actor changes are refreshed even for previously ordinary users.
+
 The distinct optional `realtimeCanaryActor` marker uses the same exact
 `tenantId`/`subject` shape but selects only `realtime-setup-canary`. All three
 markers must differ. It requires a model domain restricted to `realtime`, empty

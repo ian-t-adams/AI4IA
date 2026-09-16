@@ -121,9 +121,27 @@ class SpendPolicy(StrictRecord):
     mappings: tuple[SpendMapping, ...] = Field(default=(), max_length=MAX_MAPPINGS)
 
 
+class ActorRestrictions(StrictRecord):
+    models: ValueSet
+    spend: SpendLimits
+
+    @field_validator("models")
+    @classmethod
+    def exact_categories(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        DomainRule(restrict=values)
+        return values
+
+    @model_validator(mode="after")
+    def bounded_spend(self) -> ActorRestrictions:
+        if not any(getattr(self.spend, name) is not None for name in LIMIT_FIELDS[:-1]):
+            raise ValueError("Actor restrictions require an applicable numeric soft limit.")
+        return self
+
+
 class CanaryActor(StrictRecord):
     tenantId: PolicyValue
     subject: PolicyValue
+    restrictions: ActorRestrictions | None = None
 
     @field_validator("tenantId", "subject")
     @classmethod
@@ -206,8 +224,13 @@ def parse_policy_config(raw: str) -> PolicyConfig:
 
 
 def policy_digest(config: PolicyConfig) -> str:
+    value = config.model_dump(mode="json")
+    for name in ("canaryActor", "evaluationActor", "realtimeCanaryActor"):
+        marker = value[name]
+        if marker is not None and marker["restrictions"] is None:
+            del marker["restrictions"]
     return hashlib.sha256(json.dumps(
-        config.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+        value, sort_keys=True, separators=(",", ":"),
         ensure_ascii=True, allow_nan=False,
     ).encode("ascii")).hexdigest()
 
