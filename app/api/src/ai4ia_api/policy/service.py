@@ -180,8 +180,8 @@ class PolicyService:
                 return marker.restrictions
         return None
 
-    def actor_restriction_digest(self, user: AuthenticatedUser) -> str | None:
-        config = self._configuration() if self.enabled else self._config
+    def actor_restriction_digest(self, user: AuthenticatedUser, *, cached: bool = False) -> str | None:
+        config = self._config if cached or not self.enabled else self._configuration()
         if config is not None and self._actor_restrictions(config, user) is not None:
             return policy_digest(config)
         return None

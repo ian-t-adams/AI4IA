@@ -356,6 +356,16 @@ at startup. Restrictions participate in current catalog/tool filtering and
 configuration digests; an in-flight explicitly restricted actor refuses changed
 or removed configuration instead of falling back to ordinary authority.
 
+If current policy becomes malformed or unknown after startup, authentication
+still binds the verified owner for canonical session/message reads, accepted-work
+accounting and owner-resumed cleanup. The request retains explicit policy
+unavailability and any known restricted profile; model/tool catalogs and
+protected operations fail unavailable rather than returning a healthy empty
+catalog or falling back to ordinary authority. Restoring or pausing policy
+cannot authorize protected work in that failed binding; a later authenticated
+request must resolve valid current policy. Invalid startup configuration still
+fails, and valid actor changes are refreshed even for previously ordinary users.
+
 The distinct optional `realtimeCanaryActor` marker uses the same exact
 `tenantId`/`subject` shape but selects only `realtime-setup-canary`. All three
 markers must differ. It requires a model domain restricted to `realtime`, empty

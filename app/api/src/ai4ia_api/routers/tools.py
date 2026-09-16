@@ -62,6 +62,9 @@ async def list_tools(
     agent_name: str | None = Query(default=None, alias="agentName"),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ToolCatalogResponse:
+    binding = current_binding()
+    if binding is not None:
+        binding.require_configuration()
     if session_id and agent_name:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -296,7 +299,6 @@ async def list_tools(
                     ownership="unknown",
                 )
             )
-    binding = current_binding()
     if binding is not None:
         for item in items:
             if not tool_allowed(item.name):

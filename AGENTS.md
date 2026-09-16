@@ -1338,6 +1338,11 @@ Issue #413 stays open for its remaining live/model/TTS acceptance criteria.
   cannot restore ordinary authority mid-request. Shared-app offline controls
   cover roleless/no-group chat with v1 cleanup, distinct native realtime setup,
   and unchanged ordinary execution; none authorizes directory grants or rollout.
+  Failed current configuration refresh is explicit request-bound unavailability,
+  not an authentication failure or an ordinary-profile fallback. Keep canonical
+  owner reads, accepted-work accounting and cleanup available while protected
+  operations/catalogs refuse; retain known restricted profiles and startup
+  rejection. A failed binding cannot gain authority through restoration or pause.
 
 ## Auth model and `apiFetch` contract
 

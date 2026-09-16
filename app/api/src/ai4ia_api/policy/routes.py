@@ -93,7 +93,7 @@ async def authorize_http_operation(request: Request) -> None:
     if binding is None:
         return
     profile = binding.restricted_profile or binding.service.restricted_profile(binding.owner_id, cached=True)
-    if not binding.service.enabled and profile is None:
+    if not binding.service.enabled and profile is None and binding.configuration_error is None:
         return
     module, name = route_identity(request)
     operations: tuple[PolicyOperation, ...] = ()
