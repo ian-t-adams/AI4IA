@@ -24,8 +24,26 @@ class PolicyBinding:
     user: AuthenticatedUser | None = None
     canary_required: bool = False
     restricted_profile: RestrictedProfile | None = None
+    actor_policy_digest: str | None = None
+    configuration_error: PolicyDecision | None = None
+
+    def require_configuration(self) -> None:
+        if self.configuration_error is not None:
+            raise PolicyError(self.configuration_error)
+
+    def actor_policy_current(self) -> bool:
+        if self.restricted_profile is None:
+            return True
+        if not self.service.enabled or self.service.profile_owner(self.restricted_profile) != self.owner_id:
+            return False
+        return self.actor_policy_digest is None or self.actor_policy_digest == policy_digest(
+            self.service._configuration(),
+        )
 
     async def resolve(self) -> EffectivePolicy:
+        self.require_configuration()
+        if not self.actor_policy_current():
+            raise PolicyError(PolicyDecision("unavailable", "canary_policy_unconfigured"))
         if self.user is not None:
             return await self.service.resolve(self.user, expected_owner=self.owner_id)
         return await self.service.resolve_unattended(self.owner_id)
@@ -48,10 +66,22 @@ def clear_policy_context() -> None:
 
 
 def bind_authenticated(service: PolicyService, user: AuthenticatedUser) -> None:
+    error = None
+    try:
+        digest = service.actor_restriction_digest(user)
+    except PolicyError as exc:
+        if exc.decision != PolicyDecision("unavailable", "policy_unavailable"):
+            raise
+        # Owner reads/cleanup need identity, not a new execution grant. Retain
+        # both the failure and known restrictions for every protected consumer.
+        error = exc.decision
+        digest = service.actor_restriction_digest(user, cached=True)
     _current.set(PolicyBinding(
         service, user.internal_user_id, user.model_copy(deep=True),
         canary_required=user.internal_user_id == service.canary_owner(cached=True),
         restricted_profile=service.restricted_profile(user.internal_user_id, cached=True),
+        actor_policy_digest=digest,
+        configuration_error=error,
     ))
 
 
@@ -108,6 +138,10 @@ def current_tool() -> str | None:
 
 def model_allowed(category: str, deployment: DeploymentOption) -> bool:
     binding = _current.get()
+    if binding is not None:
+        binding.require_configuration()
+    if binding is not None and binding.actor_policy_digest is not None and not binding.actor_policy_current():
+        return False
     return binding is None or binding.service.allows_model_snapshot(
         binding.user, category, deployment,
     )
@@ -115,6 +149,10 @@ def model_allowed(category: str, deployment: DeploymentOption) -> bool:
 
 def tool_allowed(name: str) -> bool:
     binding = _current.get()
+    if binding is not None:
+        binding.require_configuration()
+    if binding is not None and binding.actor_policy_digest is not None and not binding.actor_policy_current():
+        return False
     return binding is None or binding.service.allows_tool_snapshot(binding.user, name)
 
 
@@ -124,6 +162,7 @@ async def require_policy(request: PolicyRequest, *, owner_id: str | None = None)
         return
     if owner_id is not None and binding.owner_id != owner_id:
         raise PolicyError(PolicyDecision("deny", "owner_mismatch"))
+    binding.require_configuration()
     profile = binding.restricted_profile or binding.service.restricted_profile(binding.owner_id, cached=True)
     if profile is not None and not binding.service.enabled:
         raise PolicyError(PolicyDecision("unavailable", "canary_policy_unconfigured"))

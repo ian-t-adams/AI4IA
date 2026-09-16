@@ -137,6 +137,33 @@ class GroupPolicyPrerequisiteTests(unittest.TestCase):
                     self.assertEqual(code, 1)
                     self.assertIn(expected, err)
 
+    def test_distinct_restriction_only_actor_markers_reach_runtime_validation(self) -> None:
+        config = {"version": 1}
+        for name, subject, categories in (
+            ("canaryActor", "synthetic-monitor", ["chat", "chat-fast"]),
+            ("evaluationActor", "synthetic-evaluator", ["chat"]),
+            ("realtimeCanaryActor", "synthetic-realtime", ["realtime"]),
+        ):
+            config[name] = {
+                "tenantId": "synthetic-tenant", "subject": subject,
+                "restrictions": {"models": categories, "spend": {"requestsPerMinute": 2}},
+            }
+        settings = {
+            "groupPolicyEnabled": True, "apiAuthProvider": "entra",
+            "entraTenantId": "synthetic-tenant", "entraAudience": "api://synthetic-app",
+            "entraWebClientId": "synthetic-web",
+        }
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            code, _, err = _run(_write_parameters(tmp, {
+                **settings, "groupPolicyJson": json.dumps(config),
+            }))
+            self.assertEqual(code, 0, err)
+            code, _, err = _run(_write_parameters(tmp, {
+                **settings, "groupPolicyJson": json.dumps({**config, "callerProfile": "monitor-canary"}),
+            }))
+            self.assertEqual(code, 1)
+            self.assertIn("unsupported top-level", err)
+
 
 class WorkflowAutomationPrerequisites(unittest.TestCase):
     def test_default_off_values_are_reachable(self) -> None:
