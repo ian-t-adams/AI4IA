@@ -269,6 +269,7 @@ def main(*, require_deployment_attestation: bool = False) -> int:
                     errors.append("groupPolicyJson requires the version-1 object contract.")
                 elif set(policy_config) - {
                     "version", "domains", "spend", "adminCeiling", "canaryActor", "evaluationActor",
+                    "realtimeCanaryActor",
                 }:
                     errors.append("groupPolicyJson contains unsupported top-level policy fields.")
 

@@ -1315,6 +1315,9 @@ replacement from preview advertisement and execution. Keep this and
 `runtimeEnabled` in publication/source comparisons; an older saved model choice
 must fail explicitly, not alias another model. Speech's curated managed subset
 does not inherit the replacement.
+Actor category reductions intersect these runtime/protocol gates, including on
+fresh and cached bindings. An entirely unrunnable catalog must not turn a failed
+policy binding into healthy empty inventory or prevent canonical owner cleanup.
 
 This is source preparation only: no live success claim, flag/default cutover,
 allocation approval or physical legacy removal. Full provision applies the
@@ -1332,7 +1335,7 @@ Issue #413 stays open for its live/model/TTS and phase-2 cleanup acceptance crit
 ## Group policy and publication source contract
 
 - `policy` is the shared default-off application restriction layer; only
-  post-verification exact Entra role values/group IDs may match operator JSON.
+  post-verification exact Entra role values/group IDs may match claim mappings.
   Do not add Graph lookups, writable user grant fields, or user-ID-only authority
   caches. Keep unavailable distinct from deny; limits remain per-user soft
   restrictions, never a group pool or Azure bill cap.
@@ -1357,6 +1360,21 @@ Issue #413 stays open for its live/model/TTS and phase-2 cleanup acceptance crit
   bounded guards enforce one-shot requests or setup-only frames; capability reads
   never grant execution. A configured actor stays restricted while policy
   evaluation is paused.
+- An execution actor's optional `restrictions` block requires explicit
+  catalog-category `models` and applicable numeric soft `spend` limits. Compose
+  it only for the exact authenticated tenant/subject/owner: intersect existing
+  domains and owner/claim/default caps, materializing actor-only empty tools and
+  documents when ordinary domains are unrestricted. Preserve invalid/unavailable
+  evidence, disabled flags and underlying admin/publisher rejection. Omission
+  keeps legacy behavior/digests; bound actor configuration changes or removal
+  cannot restore ordinary authority mid-request. Shared-app offline controls
+  cover roleless/no-group chat with v1 cleanup, distinct native realtime setup,
+  and unchanged ordinary execution; none authorizes directory grants or rollout.
+  Failed current configuration refresh is explicit request-bound unavailability,
+  not an authentication failure or an ordinary-profile fallback. Keep canonical
+  owner reads, accepted-work accounting and cleanup available while protected
+  operations/catalogs refuse; retain known restricted profiles and startup
+  rejection. A failed binding cannot gain authority through restoration or pause.
 
 ## Auth model and `apiFetch` contract
 

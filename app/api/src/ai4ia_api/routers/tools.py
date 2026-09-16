@@ -17,7 +17,7 @@ from ..auth.dependencies import get_current_user
 from ..conversations.policy import resolve_conversation_policy
 from ..memory.context import MemoryContextGuard
 from ..websearch.contracts import MAX_CONTENT_CHARS, MAX_RESULTS, WEBIQ_TOOL_NAMES, tool_schema
-from ..policy.context import current_binding
+from ..policy.context import current_binding, tool_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,9 @@ async def list_tools(
     agent_name: str | None = Query(default=None, alias="agentName"),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ToolCatalogResponse:
+    binding = current_binding()
+    if binding is not None:
+        binding.require_configuration()
     if session_id and agent_name:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -296,10 +299,9 @@ async def list_tools(
                     ownership="unknown",
                 )
             )
-    binding = current_binding()
-    if binding is not None and binding.service.enabled:
+    if binding is not None:
         for item in items:
-            if not binding.service.allows_tool_snapshot(user, item.name):
+            if not tool_allowed(item.name):
                 item.available = False
                 item.selectable = False
                 item.detail = "This tool is not permitted by the current application policy."

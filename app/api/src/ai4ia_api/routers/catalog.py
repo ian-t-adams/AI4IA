@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..catalog import ModelCatalog
+from ..policy.context import current_binding
 
 router = APIRouter(prefix="/api", tags=["catalog"])
 
@@ -27,6 +28,9 @@ async def list_models(
     point being that a GlobalStandard deployment in an EU region is not EU-
     resident.
     """
+    binding = current_binding()
+    if binding is not None:
+        binding.require_configuration()
     catalog: ModelCatalog = request.app.state.catalog
     protocol = request.app.state.settings.realtime_protocol
     return ModelCatalog(
