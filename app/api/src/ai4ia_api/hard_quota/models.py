@@ -100,6 +100,16 @@ class Reservation(ContractModel):
     settlementDigest: Digest | None = None
     charged: Amounts
 
+    def has_complete_usage(self, outcome: Outcome | None, actual: Amounts | None) -> bool:
+        return (
+            outcome == "complete" and actual is not None
+            and all(
+                getattr(self.bounds.amounts, dimension) is None
+                or getattr(actual, dimension) is not None
+                for dimension in ("tokens", "microUsd")
+            )
+        )
+
     @property
     def protected(self) -> bool:
         # Unknown/ambiguous dispatches never age out or get refunded by a lease.
@@ -160,20 +170,37 @@ class QuotaState(ContractModel):
                 raise ValueError("invalid quota operation scope")
             if entry.expiresAt < entry.reservedAt:
                 raise ValueError("invalid quota reservation lease")
-            if entry.phase == "reserved" and entry.dispatchedAt is not None:
-                raise ValueError("reserved operation was already dispatched")
+            if entry.phase in {"reserved", "released"} and entry.dispatchedAt is not None:
+                raise ValueError("undispatched operation has dispatch evidence")
             if entry.phase in {"dispatched", "settled", "unknown"} and entry.dispatchedAt is None:
                 raise ValueError("missing quota dispatch evidence")
             if entry.phase in {"settled", "unknown", "released"} and entry.settledAt is None:
                 raise ValueError("missing quota settlement evidence")
+            if entry.phase in {"reserved", "dispatched"} and entry.settledAt is not None:
+                raise ValueError("unfinished operation has settlement evidence")
+            if entry.phase in {"settled", "unknown"}:
+                if entry.outcome is None or entry.settlementDigest is None:
+                    raise ValueError("missing quota settlement identity")
+                if entry.phase == "settled" and not entry.has_complete_usage(
+                    entry.outcome, entry.charged,
+                ):
+                    raise ValueError("incomplete known quota settlement")
+            elif entry.outcome is not None or entry.settlementDigest is not None:
+                raise ValueError("unsettled operation has settlement identity")
             if entry.phase == "released" and entry.charged != Amounts.zero():
                 raise ValueError("released operation retains a charge")
             if entry.protected and entry.charged != entry.bounds.amounts:
                 raise ValueError("unsettled or unknown reservation lost its bound")
             if entry.reservedAt > self.observedAt:
                 raise ValueError("quota reservation is ahead of the coordination clock")
+            if entry.dispatchedAt is not None and (
+                entry.dispatchedAt < entry.reservedAt or entry.dispatchedAt > entry.expiresAt
+                or entry.dispatchedAt > self.observedAt
+            ):
+                raise ValueError("invalid quota dispatch time")
             if entry.settledAt is not None and (
                 entry.settledAt < entry.reservedAt or entry.settledAt > self.observedAt
+                or (entry.dispatchedAt is not None and entry.settledAt < entry.dispatchedAt)
             ):
                 raise ValueError("invalid quota settlement time")
         return self

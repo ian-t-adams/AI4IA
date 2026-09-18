@@ -369,6 +369,25 @@ Persisted request/compute quantities must also match their dispatch surface.
 Defaults remain available for normal in-memory model construction, not recovery
 of an incomplete durable accounting document.
 
+Key presence alone is not complete accounting. Persisted reads and the shared
+snapshot/write validation reject phase-inconsistent evidence before reconciliation
+or rolling-window aging. A known settled record requires `outcome=complete`, a
+settlement identity, and known charges for every originally bounded token/dollar
+axis; measured zero is valid and an originally unsupported axis may remain null.
+Unknown records require an outcome and settlement identity but retain the full
+bound, including when `outcome=complete` arrived without complete usage. They
+never become known history merely because their held amounts are finite.
+Reserved/dispatched records have no terminal evidence. Released records have no
+dispatch, outcome or settlement identity and retain an explicit zero charge.
+Dispatch timestamps must fall within the original inclusive reservation lease;
+settlement cannot precede dispatch, but accepted work may settle after lease
+expiry or the replay horizon. No malformed row is repaired, repriced or refunded.
+
+The settlement digest is an idempotency identity, not recoverable raw usage.
+It hashes the original settlement input before request/compute attempt counts
+are normalized. Validation therefore does not reconstruct it from the retained
+charge or infer the missing actual usage of an unknown record.
+
 The adapter requires observed single-region writes, the exact owner partition,
 non-expiring container retention, a compatible existing document, and an ETag.
 It uses the Cosmos response `Date` for coordination time, with no replica-clock

@@ -11,6 +11,7 @@ from email.utils import format_datetime
 import pytest
 from azure.core import MatchConditions
 from azure.cosmos.exceptions import CosmosAccessConditionFailedError, CosmosResourceNotFoundError
+from pydantic import ValidationError
 
 from ai4ia_api.entitlements.models import DAY_SECONDS, MONTH_SECONDS, EntitlementLimits
 from ai4ia_api.hard_quota.cosmos_store import CosmosReservationStore
@@ -134,6 +135,52 @@ async def reserve(contract, *, owner="alice", op=None, payload=None, limits=None
         surface="chat", bounds=Bounds(amounts=Amounts(tokens=tokens), basis="request-v1"),
         limits=limits or EntitlementLimits(requestsPerMinute=7, tokensPerDay=70),
     )
+
+
+def accounting_bounds(amounts):
+    if amounts.microUsd is None:
+        return Bounds(amounts=amounts, basis="request-v1")
+    return Bounds(
+        amounts=amounts, basis="catalog-text-v1", priceVersion="fixture-v1",
+        inputRate="1", outputRate="2", attemptVersion="fixture-single-send-v1", maxAttempts=1,
+    )
+
+
+def inject_accounting(contract, snapshot, state):
+    # Bypass writes only in the test doubles to exercise malformed persisted reads.
+    if contract["container"] is None:
+        contract["store"]._rows["alice"] = (state, int(snapshot.etag))
+    else:
+        contract["container"].rows[("alice", STATE_ID)] = {
+            **state.model_dump(mode="json"), "_etag": snapshot.etag,
+        }
+
+
+async def assert_invalid_accounting(contract, snapshot, state):
+    with pytest.raises(ValidationError):
+        QuotaState.model_validate(
+            state.model_dump(mode="json"), context={"persisted_quota": True},
+        )
+    with pytest.raises(ValidationError):
+        state_document(state)
+    if contract["container"] is not None:
+        with pytest.raises(QuotaError, match="incompatible") as caught:
+            await contract["store"].read("alice")
+        assert caught.value.code == 503
+        assert contract["container"].rows[("alice", STATE_ID)] == {
+            **state.model_dump(mode="json"), "_etag": snapshot.etag,
+        }
+    else:
+        retained = await contract["store"].read("alice")
+        assert retained.state == state and retained.etag == snapshot.etag
+
+
+METER_WINDOWS = [
+    pytest.param("tokens", "tokensPerDay", DAY_SECONDS, id="daily-tokens"),
+    pytest.param("tokens", "tokensPerMonth", MONTH_SECONDS, id="monthly-tokens"),
+    pytest.param("microUsd", "costPerDayMicroUsd", DAY_SECONDS, id="daily-dollars"),
+    pytest.param("microUsd", "costPerMonthMicroUsd", MONTH_SECONDS, id="monthly-dollars"),
+]
 
 
 @pytest.mark.parametrize("cap", ["requestsPerMinute", "tokensPerDay", "tokensPerMonth"])
@@ -376,8 +423,6 @@ def test_cannot_reseed_existing_owner_even_when_empty():
 
 
 def test_invalid_quantity_and_state_version_are_rejected():
-    from pydantic import ValidationError
-
     for value in (-1, True, 1.1, "1"):
         with pytest.raises(ValidationError):
             Amounts(tokens=value)
@@ -451,6 +496,216 @@ async def test_persisted_attempt_counts_must_match_the_actual_surface(contract, 
         await contract["store"].read("alice")
     container.rows[("alice", STATE_ID)] = original
     assert (await contract["store"].read("alice")).state.entries[record.operationId].charged.compute == 1
+
+
+@pytest.mark.parametrize("axis,cap,seconds", METER_WINDOWS)
+@pytest.mark.parametrize("missing", ["charged", "outcome", "settlementDigest"])
+async def test_incomplete_settlement_cannot_age_into_admission(contract, axis, cap, seconds, missing):
+    service, store = contract["service"], contract["store"]
+    bounds = accounting_bounds(Amounts(**{axis: 10}))
+    limits = EntitlementLimits(**{cap: 10})
+    record = await service.reserve(
+        "alice", key=key(contract), payload={}, surface="chat", bounds=bounds, limits=limits,
+    )
+    await service.dispatch("alice", record)
+    settled = await service.settle(
+        "alice", record, outcome="complete", actual=Amounts(**{axis: 3}),
+    )
+    snapshot = await store.read("alice")
+    broken = settled.model_copy(update={
+        missing: settled.charged.model_copy(update={axis: None}) if missing == "charged" else None,
+    })
+    malformed = snapshot.state.model_copy(update={"entries": {record.operationId: broken}})
+    contract["clock"][0] += seconds + 1
+    candidate = dict(key=key(contract), payload={}, surface="chat", bounds=bounds, limits=limits)
+    inject_accounting(contract, snapshot, malformed)
+    try:
+        error = QuotaError if contract["container"] is not None else ValidationError
+        with pytest.raises(error) as caught:
+            await service.reserve("alice", **candidate)
+        if isinstance(caught.value, QuotaError):
+            assert caught.value.code == 503
+        await assert_invalid_accounting(contract, snapshot, malformed)
+    finally:
+        inject_accounting(contract, snapshot, snapshot.state)
+        # The identical admission must work when only the valid accounting is restored.
+        admitted = await service.reserve("alice", **candidate)
+        assert admitted.phase == "reserved" and admitted.charged == bounds.amounts
+
+
+@pytest.mark.parametrize("phase,field,value", [
+    ("reserved", "dispatchedAt", NOW),
+    ("reserved", "settledAt", NOW + 2),
+    ("reserved", "outcome", "complete"),
+    ("reserved", "settlementDigest", "a" * 64),
+    ("dispatched", "dispatchedAt", None),
+    ("dispatched", "dispatchedAt", NOW - 1),
+    ("dispatched", "dispatchedAt", NOW + 3),
+    ("dispatched", "settledAt", NOW + 2),
+    ("dispatched", "outcome", "complete"),
+    ("dispatched", "settlementDigest", "a" * 64),
+    ("settled", "outcome", "cancelled"),
+    ("settled", "outcome", "timeout"),
+    ("settled", "outcome", "error"),
+    ("settled", "outcome", "unknown"),
+    ("settled", "dispatchedAt", None),
+    ("settled", "dispatchedAt", NOW - 1),
+    ("settled", "dispatchedAt", NOW + 121),
+    ("settled", "settledAt", None),
+    ("settled", "settledAt", NOW),
+    ("unknown", "outcome", None),
+    ("unknown", "settlementDigest", None),
+    ("unknown", "charged.tokens", None),
+    ("unknown", "charged.microUsd", None),
+    ("unknown", "charged.tokens", 3),
+    ("unknown", "charged.microUsd", 3),
+    ("unknown", "phase", "dispatched"),
+    ("released", "dispatchedAt", NOW),
+    ("released", "outcome", "complete"),
+    ("released", "settlementDigest", "a" * 64),
+    ("expiry", "dispatchedAt", NOW),
+    ("expiry", "outcome", "complete"),
+    ("expiry", "settlementDigest", "a" * 64),
+])
+async def test_phase_evidence_must_match_service_transitions(contract, phase, field, value):
+    service, store = contract["service"], contract["store"]
+    bounds = accounting_bounds(Amounts(tokens=10, microUsd=10))
+    record = await service.reserve(
+        "alice", key=key(contract), payload={}, surface="chat",
+        bounds=bounds, limits=EntitlementLimits(),
+    )
+    if phase in {"dispatched", "settled", "unknown"}:
+        contract["clock"][0] = NOW + 1
+        await service.dispatch("alice", record)
+    contract["clock"][0] = NOW + 2
+    if phase in {"settled", "unknown"}:
+        # Completion after lease expiry is legitimate for already-dispatched work.
+        contract["clock"][0] = record.expiresAt + 2
+        await service.settle(
+            "alice", record, outcome="complete",
+            actual=Amounts(tokens=3, microUsd=3) if phase == "settled" else None,
+        )
+    elif phase == "released":
+        await service.release("alice", record)
+    elif phase == "expiry":
+        contract["clock"][0] = record.expiresAt + 1
+    await service.reconcile("alice")
+    snapshot = await store.read("alice")
+    original = snapshot.state.entries[record.operationId]
+    assert original.phase == ("released" if phase == "expiry" else phase)
+    if field.startswith("charged."):
+        update = {"charged": original.charged.model_copy(update={field.split(".")[1]: value})}
+    else:
+        update = {field: value}
+    malformed = snapshot.state.model_copy(update={"entries": {
+        record.operationId: original.model_copy(update=update),
+    }})
+    inject_accounting(contract, snapshot, malformed)
+    try:
+        error = QuotaError if contract["container"] is not None else ValidationError
+        with pytest.raises(error) as caught:
+            await service.reconcile("alice")
+        if isinstance(caught.value, QuotaError):
+            assert caught.value.code == 503
+        await assert_invalid_accounting(contract, snapshot, malformed)
+    finally:
+        inject_accounting(contract, snapshot, snapshot.state)
+        assert (await store.read("alice")).state == snapshot.state
+        assert await service.reconcile("alice") == snapshot.state
+
+
+@pytest.mark.parametrize("axis,cap,seconds", METER_WINDOWS)
+@pytest.mark.parametrize("actual", [None, 0, 3])
+@pytest.mark.parametrize("age", ["window", "retention"])
+async def test_known_usage_ages_but_true_unknown_retains_each_meter(
+    contract, axis, cap, seconds, actual, age,
+):
+    service, store = contract["service"], contract["store"]
+    bounds = accounting_bounds(Amounts(**{axis: 10}))
+    record = await service.reserve(
+        "alice", key=key(contract), payload={}, surface="chat",
+        bounds=bounds, limits=EntitlementLimits(**{cap: 10}),
+    )
+    await service.dispatch("alice", record)
+    settled = await service.settle(
+        "alice", record, outcome="complete",
+        actual=Amounts(**{axis: actual}) if actual is not None else None,
+    )
+    assert settled.phase == ("unknown" if actual is None else "settled")
+    assert getattr(settled.charged, axis) == (10 if actual is None else actual)
+    contract["clock"][0] += seconds + 1 if age == "window" else MONTH_SECONDS * 2
+    state = await service.reconcile("alice")
+    if actual is None:
+        assert state.entries[record.operationId] == settled
+    candidate = dict(key=key(contract), payload={}, surface="chat", bounds=bounds)
+    if actual is None:
+        with pytest.raises(QuotaError, match="would be exceeded") as caught:
+            await service.reserve("alice", **candidate, limits=EntitlementLimits(**{cap: 10}))
+        assert caught.value.code == 429
+    admitted = await service.reserve(
+        "alice", **candidate, limits=EntitlementLimits(**{cap: 20 if actual is None else 10}),
+    )
+    assert admitted.phase == "reserved"
+    state = (await store.read("alice")).state
+    assert QuotaState.model_validate(
+        state_document(state), context={"persisted_quota": True},
+    ) == state
+
+
+@pytest.mark.parametrize("bounded,actual,phase", [
+    pytest.param(Amounts(tokens=10), Amounts(tokens=3), "settled", id="tokens-only"),
+    pytest.param(Amounts(microUsd=10), Amounts(microUsd=3), "settled", id="dollars-only"),
+    pytest.param(Amounts(), Amounts(), "settled", id="request-only"),
+    pytest.param(Amounts(), Amounts(tokens=3, microUsd=3), "settled", id="unbounded-measurements"),
+    pytest.param(
+        Amounts(tokens=0, microUsd=0), Amounts.zero(), "settled", id="measured-zero",
+    ),
+    pytest.param(
+        Amounts(tokens=10, microUsd=10), Amounts(requests=0, compute=7, tokens=3, microUsd=3),
+        "settled", id="normalized-attempt-counts",
+    ),
+    pytest.param(Amounts(), None, "unknown", id="missing-request-only-usage"),
+    pytest.param(Amounts(tokens=10), Amounts(), "unknown", id="missing-bounded-tokens"),
+    pytest.param(Amounts(microUsd=10), Amounts(), "unknown", id="missing-bounded-dollars"),
+    pytest.param(
+        Amounts(tokens=10, microUsd=10), Amounts(tokens=3), "unknown", id="partial-tokens",
+    ),
+    pytest.param(
+        Amounts(tokens=10, microUsd=10), Amounts(microUsd=3), "unknown", id="partial-dollars",
+    ),
+])
+@pytest.mark.parametrize("surface", ["chat", "compute"])
+@pytest.mark.parametrize("delay", [1, MONTH_SECONDS * 2], ids=["after-lease", "after-replay-horizon"])
+async def test_settlement_completeness_preserves_valid_axes_and_attempt_counts(
+    contract, bounded, actual, phase, surface, delay,
+):
+    from ai4ia_api.hard_quota.models import canonical_digest
+
+    service, store = contract["service"], contract["store"]
+    bounds = accounting_bounds(bounded.model_copy(update={"compute": int(surface == "compute")}))
+    record = await service.reserve(
+        "alice", key=key(contract), payload={}, surface=surface,
+        bounds=bounds, limits=EntitlementLimits(),
+    )
+    contract["clock"][0] = record.expiresAt
+    await service.dispatch("alice", record)  # The inclusive lease boundary is still valid.
+    contract["clock"][0] += delay
+    settled = await service.settle("alice", record, outcome="complete", actual=actual)
+    assert settled.phase == phase and settled.outcome == "complete"
+    assert settled.charged == (actual if phase == "settled" else bounds.amounts).model_copy(update={
+        "requests": 1, "compute": bounds.amounts.compute,
+    })
+    # Identity hashes original usage, not the normalized attempt counters.
+    assert settled.settlementDigest == canonical_digest({
+        "outcome": "complete", "actual": actual.model_dump(mode="json") if actual is not None else None,
+    })
+    if phase == "unknown":
+        contract["clock"][0] += MONTH_SECONDS * 2
+    assert await service.settle("alice", record, outcome="complete", actual=actual) == settled
+    state = (await store.read("alice")).state
+    assert QuotaState.model_validate(
+        state_document(state), context={"persisted_quota": True},
+    ) == state
 
 
 @pytest.mark.parametrize("finish", ["complete", "unknown", "release", "expiry"])

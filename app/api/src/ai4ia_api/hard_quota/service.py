@@ -195,14 +195,7 @@ class ReservationService:
                 return state, record
             if record.phase != "dispatched":
                 raise QuotaError("Hard quota operation was not dispatched.", code=409)
-            complete = (
-                outcome == "complete" and actual is not None
-                and all(
-                    getattr(record.bounds.amounts, dimension) is None
-                    or getattr(actual, dimension) is not None
-                    for dimension in ("tokens", "microUsd")
-                )
-            )
+            complete = record.has_complete_usage(outcome, actual)
             charged = actual if complete else record.bounds.amounts
             assert charged is not None
             # Requests/compute count dispatch, not successful output. Never
