@@ -478,6 +478,38 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             if not priced:
                 self.assertEqual(report.stages["catalog"].code, "unpriced")
 
+    async def test_runtime_catalog_gate_and_shared_v1_proof_both_apply(self):
+        for enabled in (False, True):
+            for verified in (False, True):
+                with self.subTest(runtimeEnabled=enabled, messagesVerified=verified):
+                    source = copy.deepcopy(SOURCE)
+                    source["catalog"][0]["runtimeEnabled"] = enabled
+                    fake = FakeApp()
+                    proof = {**deletion_status(), "messagesVerified": verified}
+                    path = f"/api/sessions/{SID}"
+                    fake.overrides["POST", f"{path}/deletion/reconcile"] = response(proof)
+                    fake.overrides["GET", f"{path}/deletion"] = response(proof)
+                    report = Report(RUN, stamp(NOW))
+                    await chat(fake, CONFIG, "secret", source, report, pricing=BOOK)
+                    calls = [(method, urlsplit(url).path) for method, url, _ in fake.calls]
+                    if not enabled:
+                        self.assertEqual(calls, [("GET", "/api/models")])
+                        self.assertEqual(report.stages["catalog"].code, "no_compatible_model")
+                        self.assertEqual(report.chat_attempts, 0)
+                        continue
+                    self.assertEqual(calls.count(("POST", "/api/sessions")), 1)
+                    self.assertEqual(calls.count(("POST", "/api/chat")), 1)
+                    self.assertEqual(report.stages["model"].outcome, "pass")
+                    self.assertEqual(report.cleanup_safe, verified)
+                    expected = [("DELETE", path), ("POST", f"{path}/deletion/reconcile")]
+                    if verified:
+                        expected.append(("GET", f"{path}/deletion"))
+                        self.assertEqual(report.stages["cleanup"].code, "cleanup_verified")
+                    self.assertEqual(
+                        [call for call in calls if call[1].startswith(path) and call[1] != f"{path}/messages"],
+                        expected,
+                    )
+
     async def test_ambiguous_create_and_chat_are_never_replayed_or_unsafely_deleted(self):
         for path in ("/api/sessions", "/api/chat"):
             for failure in (CanaryError("deadline"), response({"detail": "unknown"}, 503)):

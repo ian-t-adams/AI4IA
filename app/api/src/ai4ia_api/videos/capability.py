@@ -62,7 +62,7 @@ def _one_line(text: str, limit: int = _FIELD_LIMIT) -> str:
 
 
 def _video_model_ids(catalog: ModelCatalog) -> list[str]:
-    return [m.id for m in catalog.models if m.category == "video"]
+    return [m.id for m in catalog.models if m.category == "video" and catalog.available(m)]
 
 
 def build_video_capability(

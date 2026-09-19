@@ -1,0 +1,46 @@
+[
+  {
+    "name": "gpt-realtime-2",
+    "format": "OpenAI",
+    "version": "2026-05-06",
+    "region": "eastus2",
+    "sku": "GlobalStandard",
+    "source_url": "https://learn.microsoft.com/azure/foundry/openai/concepts/model-retirement-schedule",
+    "observed_at": "2026-09-10T16:39:48Z",
+    "date": "2026-08-31",
+    "qualifier": "exact"
+  },
+  {
+    "name": "gpt-realtime-1.5",
+    "format": "OpenAI",
+    "version": "2026-02-23",
+    "region": "eastus2",
+    "sku": "GlobalStandard",
+    "source_url": "https://learn.microsoft.com/azure/foundry/openai/concepts/model-retirement-schedule",
+    "observed_at": "2026-09-10T16:39:48Z",
+    "date": "2027-08-24",
+    "qualifier": "exact"
+  },
+  {
+    "name": "gpt-4o-mini-tts",
+    "format": "OpenAI",
+    "version": "2025-03-20",
+    "region": "eastus2",
+    "sku": "GlobalStandard",
+    "source_url": "https://learn.microsoft.com/azure/foundry/openai/concepts/model-retirement-schedule",
+    "observed_at": "2026-09-10T16:39:48Z",
+    "date": "2026-10-15",
+    "qualifier": "exact"
+  },
+  {
+    "name": "gpt-4o-mini-tts",
+    "format": "OpenAI",
+    "version": "2025-12-15",
+    "region": "eastus2",
+    "sku": "GlobalStandard",
+    "source_url": "https://learn.microsoft.com/azure/foundry/openai/concepts/model-retirement-schedule",
+    "observed_at": "2026-09-10T16:39:48Z",
+    "date": "2027-06-15",
+    "qualifier": "exact"
+  }
+]

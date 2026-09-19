@@ -62,7 +62,7 @@ def _one_line(text: str, limit: int = _FIELD_LIMIT) -> str:
 
 
 def _image_model_ids(catalog: ModelCatalog) -> list[str]:
-    return [m.id for m in catalog.models if m.category == "image"]
+    return [m.id for m in catalog.models if m.category == "image" and catalog.available(m)]
 
 
 def build_image_capability(
@@ -97,7 +97,8 @@ def build_image_capability(
         f"{model.id} supports sizes {', '.join(model.imageSizes or [])} and "
         f"qualities {', '.join(model.imageQualities or [])}"
         for model in catalog.models
-        if model.category == "image" and (model.imageSizes or model.imageQualities)
+        if model.category == "image" and catalog.available(model)
+        and (model.imageSizes or model.imageQualities)
     ]
     constraints_hint = (
         f" Provider-specific constraints: {'; '.join(constrained)}." if constrained else ""
@@ -110,6 +111,11 @@ def build_image_capability(
         if preferred.models
         else ""
     )
+    if any(model_id not in image_ids for model_id in preferred.models):
+        preference_hint = (
+            " This conversation has unavailable image model selections. Ask the user "
+            "to choose available models; do not substitute another model automatically."
+        )
 
     schema: dict[str, Any] = {
         "type": "function",
