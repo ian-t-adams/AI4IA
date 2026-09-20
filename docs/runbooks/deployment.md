@@ -1142,8 +1142,11 @@ claim. See the [evidence policy](../region-capability-matrix.md#retirement-evide
 
 Fix — if another version of the same model is `GenerallyAvailable`/`Preview`, repin
 `version` in `infra/models.json`. If not (the whole family may go at once, as GPT-4.1 did),
-remove the model and **migrate anything that referenced it by name**. That last step is the
-dangerous one: `config.py memory_extraction_model` and `main.bicep
+remove the model and **review source dependencies and saved selections that reference it**.
+Do not rewrite user sessions, agents, workflows, receipts or price history as part
+of a catalog change. Users must explicitly choose a supported alternative; an
+unavailable saved model continues to fail rather than silently changing models.
+Source dependencies need particular care: `config.py memory_extraction_model` and `main.bicep
 effectiveCodeInterpreterModel` both name a model directly, and an unresolvable
 memory-extraction model degrades to `NoopMemoryService` with only a log line — memory
 silently stops working. `docs/region-capability-matrix.md` tracks which models are
@@ -1156,6 +1159,54 @@ python scripts/gen-model-catalog.py
 python scripts/gen-gateway-policy.py
 python scripts/validate-catalog.py
 ```
+
+### Coordinated catalog retirement
+
+The owner-approved first wave removes these deployment-backed models from the
+desired catalog; it does not assert that every removed model has already retired.
+Retained choices are alternatives to evaluate, **not aliases or equivalent outputs**:
+
+| Removed models | Retained alternatives |
+| --- | --- |
+| `gpt-5.1`, `gpt-5`, `gpt-5-nano`, `o3`, `gpt-5-pro`, `gpt-5-codex` | `gpt-6-astra`, the GPT-5.6 family, `gpt-5.4`, `gpt-5.4-nano`, `gpt-5.4-pro`, `gpt-5.3-codex` |
+| `MAI-Image-2.5`, `MAI-Image-2.5-Pro`, `MAI-Image-2.5-Flash` | `MAI-Image-2.6`, `MAI-Image-2.6-Flash` |
+| `FLUX.1-Kontext-pro`, `FLUX-1.1-pro` | `FLUX.2-pro`, `FLUX.2-flex` |
+| `gpt-audio` | `gpt-audio-1.5` |
+
+Keep `sora-2` by explicit owner choice and `gpt-image-1.5` for its distinct
+DataZoneStandard image capability. Content Understanding's `gpt-5.2`,
+memory/Code Interpreter's `gpt-5.4-mini`, `text-embedding-3-large` and its
+3072-dimensional vectors, the `gpt-5-mini` canary, preview `gpt-realtime`,
+explicit Mistral analyzer names and `o3-deep-research` remain unchanged.
+Speech Voice Live's independent managed `gpt-5.1` is not a deployment row in
+this removal set. Claude remains disabled by default.
+
+The same source change repins only `gpt-4o-mini-tts` from `2025-03-20` to
+GA `2025-12-15`, keeping eastus2/GlobalStandard, baseline 10, maximum 600,
+deployment name and pool metadata. The 2026-09-19 subscription offering
+observation supports that target; it is not live TTS, quota or rollback proof.
+Realtime migration, GA cutover and live acceptance remain separate work under
+[issue #413](https://github.com/ian-t-adams/AI4IA/issues/413).
+
+For an existing environment, coordinate these steps before provisioning:
+
+1. Review fresh, exact subscription/resource/deployment inventory against the
+   source diff: 25 removals and one TTS version repin, no retained allocation
+   changes. Unknown traffic is not measured zero. Obtain separate approval for
+   the exact live actions, interruption window and rollback limits.
+2. Coordinate the regenerated application/APIM catalog rollout with
+   operator-controlled removal of only the approved live deployment IDs and the
+   in-place TTS version change. Incremental ARM does not delete omitted children;
+   the strict postprovision topology check must still reject removed-but-live
+   resources. Do not bypass it or add an automatic cleanup sweep.
+3. Read back exact surviving model/version/SKU/capacity and serving image state;
+   perform separately authorized governed application/TTS validation. Preserve
+   canonical user data, explicit unavailable-model errors and historical prices.
+
+Deletion may be irreversible: a deprecating model can be impossible to recreate.
+Application-image rollback does not restore deleted deployments, and repinning
+TTS back to a preview version is not guaranteed. Source review and green CI do
+not authorize cleanup, tenant/Claude changes, capacity-profile changes or release.
 
 ### Read-only model retirement reporting
 
@@ -1473,8 +1524,10 @@ foreach ($r in 'eastus2','swedencentral','westus') {
 }
 ```
 
-That prints `used=2 limit=2` for all three — including **eastus2, which does not offer
-MAI-Image at all**. The subscription's only deployment is in westus.
+At the time of this incident, that printed `used=2 limit=2` for all three,
+including eastus2, which did not offer that model. The subscription's only
+deployment was in westus. This historical example is not a current offering or
+quota claim for the retained MAI-Image-2.6 family.
 
 So a catalog can pass every per-region check and still fail: asking for capacity 2 in each
 of two regions is fine region-by-region (2 ≤ 2 twice) but it is 4 against a shared limit of

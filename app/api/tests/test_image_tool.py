@@ -138,14 +138,14 @@ def test_session_image_preferences_override_model_authored_tool_arguments(client
         uid,
         sink,
         ImageGenerationPreferences(
-            models=["FLUX.1-Kontext-pro"],
+            models=["FLUX.2-pro"],
             size="1024x1024",
             quality="auto",
         ),
     )
 
     description = tools[0]["function"]["description"]
-    assert "currently selects FLUX.1-Kontext-pro" in description
+    assert "currently selects FLUX.2-pro" in description
     out = asyncio.run(
         handlers[GENERATE_IMAGE_TOOL_NAME](
             {
@@ -158,11 +158,11 @@ def test_session_image_preferences_override_model_authored_tool_arguments(client
         )
     )
 
-    assert out["model"] == "FLUX.1-Kontext-pro"
+    assert out["model"] == "FLUX.2-pro"
     assert sink[0].costKnown is True
-    assert sink[0].estimatedCostUsd == 0.04
+    assert sink[0].estimatedCostUsd == 0.030729
     call = client.app.state.gateway.calls[-1]
-    assert call["deployment"].startswith("FLUX.1-Kontext-pro")
+    assert call["deployment"].startswith("FLUX.2-pro")
     assert call["size"] == "1024x1024"
     assert call["extra"] is None
 
@@ -183,7 +183,7 @@ def test_selected_models_generate_side_by_side_with_one_prompt(client):
 
     out = asyncio.run(
         handlers[GENERATE_IMAGE_TOOL_NAME](
-            {"prompt": "the same red bird", "model": "MAI-Image-2.5"},
+            {"prompt": "the same red bird", "model": "MAI-Image-2.6"},
             ToolContext(),
         )
     )

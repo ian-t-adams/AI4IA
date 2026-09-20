@@ -90,21 +90,21 @@ def test_session_image_preferences_are_catalog_validated_and_patchable(client):
         f"/api/sessions/{created.json()['id']}",
         json={
             "imagePreferences": {
-                "models": ["FLUX.1-Kontext-pro"],
+                "models": ["FLUX.2-flex"],
                 "size": "1024x1024",
                 "quality": "auto",
             }
         },
     )
     assert updated.status_code == 200, updated.text
-    assert updated.json()["imagePreferences"]["models"] == ["FLUX.1-Kontext-pro"]
+    assert updated.json()["imagePreferences"]["models"] == ["FLUX.2-flex"]
 
 
 @pytest.mark.parametrize(
     "preferences",
     [
         {"models": ["gpt-5.2"]},
-        {"models": ["FLUX.1-Kontext-pro"], "size": "1536x1024"},
+        {"models": ["FLUX.2-pro"], "size": "1024x1440"},
         {"models": ["FLUX.2-pro"], "quality": "high"},
         {"models": [], "size": "1024x1024"},
         {

@@ -126,6 +126,12 @@ class ClaudeBindingTests(unittest.TestCase):
                 claude.verify_routes(b, self.reader, enabled=True)
             self.reader.responses[key] = original
             claude.verify_routes(b, self.reader, enabled=True)
+        subscription = self.reader.responses[(False, b["sourceApimResourceId"] + "/subscriptions/ai4ia-proxy-models")]
+        subscription["properties"]["scope"] = "/apis/openai"
+        claude.verify_routes(b, self.reader, enabled=True)
+        subscription["properties"]["scope"] = "/apis/openai-extra"
+        with self.assertRaisesRegex(EvidenceError, "claude_proxy_subscription_scope"):
+            claude.verify_routes(b, self.reader, enabled=True)
 
     def test_binding_change_requires_observed_disabled_policy_not_an_operator_flag(self):
         b = self.binding
@@ -158,10 +164,12 @@ class ClaudeBindingTests(unittest.TestCase):
                 self.assertIn("GET", command)
                 self.assertLessEqual(timeout, 20)
                 self.assertLessEqual(limit, 1024 * 1024)
+            reader.get(False, self.binding["sourceApimResourceId"] + "/apis/openai/policies/policy", "2024-05-01")
+            self.assertIn("&format=rawxml", calls[-1][0][calls[-1][0].index("--url") + 1])
             reader.runner = lambda *a, **kw: (_ for _ in ()).throw(EvidenceError("source_unavailable"))
             with self.assertRaisesRegex(EvidenceError, "source_unavailable"):
                 reader.get(True, self.binding.account_id, "2025-04-01-preview")
-            self.assertEqual(reader.calls, 3)
+            self.assertEqual(reader.calls, 4)
 
     def test_empty_target_plan_uses_exact_version_usage_name_not_quota_replicas(self):
         from datetime import UTC, datetime, timedelta

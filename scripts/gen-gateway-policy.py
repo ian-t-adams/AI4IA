@@ -95,8 +95,6 @@ JOBJECT_INDEX_INITIALIZER_PATTERN = re.compile(
 BFL_MODEL_PATHS = {
     "FLUX.2-pro": "flux-2-pro",
     "FLUX.2-flex": "flux-2-flex",
-    "FLUX.1-Kontext-pro": "flux-kontext-pro",
-    "FLUX-1.1-pro": "flux-pro-1.1",
 }
 
 # Model categories the gateway can actually route. Each one corresponds to a

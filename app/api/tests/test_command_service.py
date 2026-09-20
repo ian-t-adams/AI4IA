@@ -97,10 +97,10 @@ async def test_system_uses_agent_source_and_rejects_competing_edit():
 
 async def test_model_switch_valid():
     repo, user, session = await _setup()
-    msg = await _run(repo, user, session, "/model gpt-5.1")
-    assert msg.content == "Model switched to gpt-5.1."
+    msg = await _run(repo, user, session, "/model gpt-5.4")
+    assert msg.content == "Model switched to gpt-5.4."
     stored = await repo.get_session(user.internal_user_id, session.id)
-    assert stored.model == "gpt-5.1"
+    assert stored.model == "gpt-5.4"
 
 
 async def test_model_unknown_does_not_change_session():

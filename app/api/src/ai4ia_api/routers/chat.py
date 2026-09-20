@@ -360,7 +360,7 @@ def _effective_params(params: dict, entry: ModelEntry | None) -> dict:
     ``reasoning_effort`` is dropped when the model does not accept it, or when
     the value is outside the model's allowed set. That set is per-model and not
     predictable from the name (``gpt-5.6`` rejects the ``minimal`` that
-    ``gpt-5.4`` accepts; ``gpt-5-pro`` is narrower still), so it is read from the
+    ``gpt-5.4`` accepts; ``gpt-5.4-pro`` is narrower still), so it is read from the
     catalog rather than inferred here. An unchecked value reaching Foundry
     surfaces as an opaque mid-stream 400 rather than anything actionable.
     Dropping degrades to the model's own default, which mirrors how the gateway

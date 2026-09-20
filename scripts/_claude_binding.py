@@ -202,6 +202,8 @@ class Reader:
     def get(self, target: bool, path: str, version: str, *, graph: bool = False) -> dict[str, Any]:
         host = "https://graph.microsoft.com/v1.0" if graph else "https://management.azure.com"
         query = "" if graph else f"?api-version={version}"
+        if not graph and (path.endswith("/policies/policy") or "/policyFragments/" in path):
+            query += "&format=rawxml"
         return self.command(target, ["rest", "--method", "GET", "--url", host + path + query])
 
 
@@ -238,8 +240,10 @@ def verify_identity(binding: Binding, reader: Reader, *, attached: bool) -> None
         "claude_apim_system_identity_changed",
     )
     if attached:
-        users = principal.get("userAssignedIdentities", {})
-        observed = users.get(binding["sourceIdentityResourceId"], {})
+        users = object_value(principal.get("userAssignedIdentities"))
+        matching = [value for key, value in users.items() if key.lower() == binding["sourceIdentityResourceId"].lower()]
+        require(len(matching) == 1, "claude_uami_not_attached")
+        observed = object_value(matching[0])
         require(
             observed.get("clientId") == binding["sourceIdentityClientId"]
             and observed.get("principalId") == binding["sourceIdentityPrincipalId"],
@@ -460,7 +464,7 @@ def verify_routes(binding: Binding, reader: Reader, *, enabled: bool) -> None:
     subscription = reader.get(False, apim + "/subscriptions/" + binding["workload"] + "-proxy-models", "2024-05-01")
     props = subscription.get("properties", {})
     require(
-        props.get("scope", "").lower() == api_path.lower()
+        props.get("scope", "").lower() in {api_path.lower(), "/apis/openai"}
         and props.get("state") == "active" and props.get("allowTracing") is False,
         "claude_proxy_subscription_scope",
     )

@@ -353,23 +353,24 @@ def test_effective_params_drops_minimal_for_gpt56():
 
 def test_effective_params_drops_minimal_for_o_series():
     # "minimal" is a GPT-5-only value; o-series deployments 400 on it.
-    entry = load_catalog().get("o3")
+    entry = load_catalog().get("o3-deep-research")
     assert entry is not None
     assert "minimal" not in entry.reasoningEffortOptions
     out = _effective_params({"reasoning_effort": "minimal"}, entry)
     assert "reasoning_effort" not in out
-    # a value o3 does accept survives
+    # A value the retained o-series model accepts survives.
     assert _effective_params({"reasoning_effort": "high"}, entry)["reasoning_effort"] == "high"
 
 
-def test_effective_params_narrows_to_the_single_value_gpt5_pro_takes():
-    entry = load_catalog().get("gpt-5-pro")
+def test_effective_params_narrows_to_gpt54_pro_efforts():
+    entry = load_catalog().get("gpt-5.4-pro")
     assert entry is not None
-    for rejected in ("none", "minimal", "low", "medium", "xhigh"):
+    for rejected in ("none", "minimal", "low"):
         assert "reasoning_effort" not in _effective_params(
             {"reasoning_effort": rejected}, entry
         ), rejected
-    assert _effective_params({"reasoning_effort": "high"}, entry)["reasoning_effort"] == "high"
+    for accepted in ("medium", "high", "xhigh"):
+        assert _effective_params({"reasoning_effort": accepted}, entry)["reasoning_effort"] == accepted
 
 
 def test_effective_params_drops_reasoning_effort_for_non_reasoning_models():

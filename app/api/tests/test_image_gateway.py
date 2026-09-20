@@ -92,8 +92,10 @@ def test_bfl_image_request_uses_server_owned_native_shape():
 @pytest.mark.parametrize(
     "deployment",
     [
+        # Historical wire-shape control, not an available catalog deployment.
         "MAI-Image-2.5-example-westus-glbl",
         "MAI-Image-2.6-example-westus-glbl",
+        "MAI-Image-2.6-Flash-example-westus-glbl",
     ],
 )
 @pytest.mark.parametrize("style", list(GatewayProviderStyle))
@@ -138,7 +140,7 @@ def test_mai_image_request_uses_native_shape_and_disables_grounding(
 def test_mai_image_request_rejects_multiple_images():
     with pytest.raises(ValueError, match="one image"):
         _client().build_image_request(
-            deployment="MAI-Image-2.5-example-westus-glbl",
+            deployment="MAI-Image-2.6-example-westus-glbl",
             prompt="an orange square",
             api="mai",
             n=2,

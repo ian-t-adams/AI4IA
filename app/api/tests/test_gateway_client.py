@@ -576,7 +576,7 @@ def test_build_responses_request_native_shape():
         gateway_api_version="2025-04-01-preview",
     )
     req = client.build_responses_request(
-        deployment="gpt-5-pro-slurmfactory-eastus2-glbl",
+        deployment="gpt-5.4-pro-slurmfactory-eastus2-glbl",
         messages=[
             {"role": "system", "content": "be terse"},
             {"role": "user", "content": "hi"},
@@ -586,7 +586,7 @@ def test_build_responses_request_native_shape():
     )
     # Path is /responses (NOT /deployments/{dep}/...); deployment is model in body.
     assert req.url == "http://gw.test/openai/responses?api-version=2025-04-01-preview"
-    assert req.json["model"] == "gpt-5-pro-slurmfactory-eastus2-glbl"
+    assert req.json["model"] == "gpt-5.4-pro-slurmfactory-eastus2-glbl"
     assert req.json["instructions"] == "be terse"
     assert req.json["input"] == [{"role": "user", "content": "hi"}]
     assert req.json["max_output_tokens"] == 16384

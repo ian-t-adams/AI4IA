@@ -1,6 +1,8 @@
 """End-to-end tests for workflow CRUD + execution through the API."""
 from __future__ import annotations
 
+import pytest
+
 _USAGE = {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
 
 
@@ -127,7 +129,7 @@ def test_run_supports_responses_model(client):
     sid = _session(client)
     resp = client.post(
         "/api/workflows/summarize/run",
-        json={"sessionId": sid, "input": "hi", "model": "gpt-5-pro"},
+        json={"sessionId": sid, "input": "hi", "model": "gpt-5.4-pro"},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["ok"] is True
@@ -144,7 +146,7 @@ def test_incomplete_responses_step_stops_workflow(client):
 
     response = client.post(
         "/api/workflows/summarize/run",
-        json={"sessionId": sid, "input": "hi", "model": "gpt-5-pro"},
+        json={"sessionId": sid, "input": "hi", "model": "gpt-5.4-pro"},
     )
 
     assert response.status_code == 200, response.text
@@ -299,21 +301,39 @@ def test_run_unknown_step_agent_persists_failure(client):
     assert client.get("/api/usage").json()["totalRequests"] == 0
 
 
-def test_pre_run_guards_persist_nothing(client):
+@pytest.mark.parametrize("unavailable", ["missing-model", "gpt-5-pro"])
+@pytest.mark.parametrize("saved_selection", [False, True])
+def test_pre_run_guards_persist_nothing(client, unavailable, saved_selection):
     """An unknown model refused BEFORE the run must leave no messages and
     no usage — the user turn is only persisted once the run is actually allowed."""
-    client.app.state.gateway = _EchoGateway()
+    gateway = _EchoGateway()
+    client.app.state.gateway = gateway
     assert _mk_agent(client, "drafter").status_code == 201
     assert _mk_agent(client, "editor").status_code == 201
     assert client.post("/api/workflows", json=_wf_body()).status_code == 201
-    sid = _session(client)
+    saved_model = unavailable if saved_selection else "gpt-5.4"
+    sid = _session(client, model=saved_model)
+    body = {"sessionId": sid, "input": "hi"}
+    if not saved_selection:
+        body["model"] = unavailable
     resp = client.post(
         "/api/workflows/summarize/run",
-        json={"sessionId": sid, "input": "hi", "model": "missing-model"},
+        json=body,
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 400, resp.text
+    assert unavailable in resp.json()["detail"]
+    assert gateway.apis == []
     assert client.get(f"/api/sessions/{sid}/messages").json() == []
+    assert client.get(f"/api/sessions/{sid}").json()["model"] == saved_model
     assert client.get("/api/usage").json()["totalRequests"] == 0
+
+    allowed = client.post(
+        "/api/workflows/summarize/run",
+        json={**body, "model": "gpt-5.4-pro"},
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["ok"] is True
+    assert gateway.apis == ["responses", "responses"]
 
 
 class _FailSecondCallGateway:

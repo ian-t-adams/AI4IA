@@ -1,3 +1,5 @@
+import pytest
+
 from ai4ia_api.catalog import load_catalog
 
 
@@ -29,6 +31,53 @@ def test_resolve_deployment_prefers_region():
 def test_resolve_deployment_unknown_model_returns_none():
     catalog = load_catalog()
     assert catalog.resolve_deployment("does-not-exist") is None
+
+
+@pytest.mark.parametrize(
+    ("retired", "retained"),
+    [
+        ("gpt-5.1", "gpt-5.4"),
+        ("gpt-5", "gpt-5.6-sol"),
+        ("gpt-5-nano", "gpt-5.4-nano"),
+        ("o3", "gpt-6-astra"),
+        ("gpt-5-pro", "gpt-5.4-pro"),
+        ("gpt-5-codex", "gpt-5.3-codex"),
+        ("MAI-Image-2.5", "MAI-Image-2.6"),
+        ("MAI-Image-2.5-Pro", "MAI-Image-2.6"),
+        ("MAI-Image-2.5-Flash", "MAI-Image-2.6-Flash"),
+        ("FLUX.1-Kontext-pro", "FLUX.2-pro"),
+        ("FLUX-1.1-pro", "FLUX.2-flex"),
+        ("gpt-audio", "gpt-audio-1.5"),
+    ],
+)
+def test_retired_models_are_unavailable_not_aliased(client, retired, retained):
+    catalog = client.app.state.catalog
+    assert catalog.get(retired) is None
+    assert catalog.resolve_deployment(retired) is None
+    assert catalog.get(retained) is not None
+    assert catalog.resolve_deployment(retained) is not None
+
+    response = client.get("/api/models")
+    assert response.status_code == 200, response.text
+    advertised = {model["id"] for model in response.json()["models"]}
+    assert retired not in advertised
+    assert retained in advertised
+
+
+def test_tts_ga_version_keeps_the_existing_runtime_deployment():
+    entry = load_catalog().get("gpt-4o-mini-tts")
+    assert entry is not None
+    assert [
+        (option.modelVersion, option.region, option.sku, option.deploymentName)
+        for option in entry.options
+    ] == [
+        (
+            "2025-12-15",
+            "eastus2",
+            "GlobalStandard",
+            "gpt-4o-mini-tts-slurmfactory-eastus2-glbl",
+        )
+    ]
 
 
 def test_resolve_deployment_rejects_unsatisfiable_region():
@@ -94,8 +143,8 @@ def test_conversational_categories_are_chat_targets():
     catalog = load_catalog()
     for model_id in (
         "gpt-5.4",          # chat
-        "gpt-5-nano",       # chat-fast
-        "o3",               # reasoning
+        "gpt-5.4-nano",     # chat-fast
+        "gpt-5.4-pro",      # reasoning
         "MAI-Thinking-1",   # Microsoft adaptive reasoning
         "claude-opus-5",    # Anthropic Messages, explicit reduced profile
         "claude-sonnet-5",
@@ -115,7 +164,7 @@ def test_capability_and_voice_models_are_not_chat_targets():
         "sora-2",                   # video
         "gpt-4o-mini-tts",          # tts
         "whisper",                  # transcription
-        "gpt-audio",                # audio
+        "gpt-audio-1.5",            # audio
         "gpt-realtime",             # realtime
         "text-embedding-3-large",   # embedding
     ):
@@ -154,9 +203,9 @@ def test_reasoning_models_do_not_advertise_sampling():
         "gpt-6-astra",
         "gpt-5.6-sol",
         "gpt-5.4",
-        "gpt-5",
-        "o3",
-        "gpt-5-codex",
+        "gpt-5.2",
+        "o3-deep-research",
+        "gpt-5.3-codex",
         "MAI-Thinking-1",
         "claude-opus-5",
         "claude-sonnet-5",
@@ -199,7 +248,7 @@ def test_new_gpt_models_use_responses_and_reject_minimal():
         ], model_id
         assert entry.api == "responses", model_id
 
-    for model_id in ("gpt-5", "gpt-5.1", "gpt-5.2", "gpt-5.4"):
+    for model_id in ("gpt-5-mini", "gpt-5.2", "gpt-5.4"):
         entry = catalog.get(model_id)
         assert entry is not None, model_id
         assert "minimal" in entry.reasoningEffortOptions, model_id
@@ -221,9 +270,6 @@ def test_astra_metadata_and_residency():
 
 def test_mai_images_use_native_api_and_single_region():
     for model_id in (
-        "MAI-Image-2.5",
-        "MAI-Image-2.5-Pro",
-        "MAI-Image-2.5-Flash",
         "MAI-Image-2.6",
         "MAI-Image-2.6-Flash",
     ):
@@ -244,23 +290,18 @@ def test_o_series_excludes_minimal_reasoning_effort():
     # option list is per-model and must come from the server rather than a
     # hardcoded UI array.
     catalog = load_catalog()
-    entry = catalog.get("o3")
+    entry = catalog.get("o3-deep-research")
     assert entry is not None
     assert entry.reasoningEffortOptions == ["low", "medium", "high", "xhigh"]
     assert "minimal" not in entry.reasoningEffortOptions
     assert "none" not in entry.reasoningEffortOptions
 
 
-def test_gpt5_pro_offers_only_high():
-    """The narrowest model in the catalog, and the one a heuristic gets worst.
-
-    gpt-5-pro rejects every reasoning_effort except "high". A family-wide rule
-    would have offered it four values, three of which are a 400.
-    """
+def test_gpt54_pro_offers_only_its_probed_efforts():
     catalog = load_catalog()
-    entry = catalog.get("gpt-5-pro")
+    entry = catalog.get("gpt-5.4-pro")
     assert entry is not None
-    assert entry.reasoningEffortOptions == ["high"]
+    assert entry.reasoningEffortOptions == ["medium", "high", "xhigh"]
 
 
 def test_every_reasoning_model_has_probed_effort_values():
@@ -268,7 +309,7 @@ def test_every_reasoning_model_has_probed_effort_values():
 
     The fallback is deliberately conservative (low/medium/high), so relying on
     it silently drops "xhigh" from every model that supports it and would have
-    offered gpt-5-pro two values it rejects. Adding a reasoning model means
+    offered gpt-5.4-pro "low", which it rejects. Adding a reasoning model means
     probing it -- this is the gate that says so.
     """
     from ai4ia_api.model_traits import is_reasoning_deployment
@@ -327,8 +368,6 @@ def test_flux_models_are_image_only_and_provider_constrained():
     expected = {
         "FLUX.2-pro": {"1024x1024", "1024x1536", "1536x1024", "auto"},
         "FLUX.2-flex": {"1024x1024", "1024x1536", "1536x1024", "auto"},
-        "FLUX.1-Kontext-pro": {"1024x1024", "auto"},
-        "FLUX-1.1-pro": {"1024x1024", "1024x1440", "1440x1024", "auto"},
     }
     for model_id, sizes in expected.items():
         entry = catalog.get(model_id)
@@ -383,18 +422,18 @@ def test_catalog_values_win_over_the_heuristic():
     from ai4ia_api.model_traits import reasoning_effort_options
 
     probed = ModelEntry(
-        id="gpt-5-pro",
+        id="gpt-5.4-pro",
         displayName="x",
         category="reasoning",
         format="OpenAI",
-        reasoningEffort=["high"],
+        reasoningEffort=["medium", "high", "xhigh"],
         options=[],
     )
-    assert probed.reasoningEffortOptions == ["high"]
-    assert reasoning_effort_options("gpt-5-pro") == ["low", "medium", "high"]
+    assert probed.reasoningEffortOptions == ["medium", "high", "xhigh"]
+    assert reasoning_effort_options("gpt-5.4-pro") == ["low", "medium", "high"]
 
     unprobed = ModelEntry(
-        id="gpt-5-pro",
+        id="gpt-5.4-pro",
         displayName="x",
         category="reasoning",
         format="OpenAI",
@@ -405,7 +444,7 @@ def test_catalog_values_win_over_the_heuristic():
     # An empty list is data ("this model takes no effort value"), not absence,
     # so it must NOT fall through to the floor.
     none_taken = ModelEntry(
-        id="gpt-5-pro",
+        id="gpt-5.4-pro",
         displayName="x",
         category="reasoning",
         format="OpenAI",

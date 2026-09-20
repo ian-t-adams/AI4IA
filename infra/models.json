@@ -320,168 +320,6 @@
       ]
     },
     {
-      "name": "gpt-5.1",
-      "format": "OpenAI",
-      "category": "chat",
-      "contextWindow": 400000,
-      "maxOutputTokens": 128000,
-      "reasoningEffort": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-11-13",
-          "maxCapacity": 500,
-          "maxCapacityPool": "global"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-11-13",
-          "maxCapacity": 500,
-          "maxCapacityPool": "global"
-        }
-      ]
-    },
-    {
-      "name": "gpt-5",
-      "format": "OpenAI",
-      "category": "chat",
-      "contextWindow": 400000,
-      "maxOutputTokens": 128000,
-      "reasoningEffort": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-08-07",
-          "maxCapacity": 950,
-          "maxCapacityPool": "global"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-08-07",
-          "maxCapacity": 50,
-          "maxCapacityPool": "global"
-        }
-      ]
-    },
-    {
-      "name": "gpt-5-nano",
-      "format": "OpenAI",
-      "category": "chat-fast",
-      "contextWindow": 400000,
-      "maxOutputTokens": 128000,
-      "reasoningEffort": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 100,
-          "version": "2025-08-07",
-          "maxCapacity": 4900,
-          "maxCapacityPool": "global"
-        },
-        {
-          "region": "eastus2",
-          "sku": "DataZoneStandard",
-          "capacity": 100,
-          "version": "2025-08-07",
-          "maxCapacity": 2000,
-          "maxCapacityPool": "data-zone:US"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 100,
-          "version": "2025-08-07",
-          "maxCapacity": 100,
-          "maxCapacityPool": "global"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "DataZoneStandard",
-          "capacity": 100,
-          "version": "2025-08-07",
-          "maxCapacity": 2000,
-          "maxCapacityPool": "data-zone:EU"
-        }
-      ]
-    },
-    {
-      "name": "o3",
-      "format": "OpenAI",
-      "category": "reasoning",
-      "contextWindow": 200000,
-      "maxOutputTokens": 100000,
-      "reasoningEffort": [
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-04-16",
-          "maxCapacity": 1000,
-          "maxCapacityPool": "region:eastus2"
-        },
-        {
-          "region": "eastus2",
-          "sku": "DataZoneStandard",
-          "capacity": 50,
-          "version": "2025-04-16",
-          "maxCapacity": 300,
-          "maxCapacityPool": "data-zone:US"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-04-16",
-          "maxCapacity": 1000,
-          "maxCapacityPool": "region:swedencentral"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "DataZoneStandard",
-          "capacity": 50,
-          "version": "2025-04-16",
-          "maxCapacity": 300,
-          "maxCapacityPool": "data-zone:EU"
-        }
-      ]
-    },
-    {
       "name": "grok-4-1-fast-reasoning",
       "format": "xAI",
       "category": "reasoning",
@@ -515,35 +353,6 @@
       ]
     },
     {
-      "name": "gpt-5-pro",
-      "format": "OpenAI",
-      "category": "reasoning",
-      "api": "responses",
-      "contextWindow": 400000,
-      "maxOutputTokens": 128000,
-      "reasoningEffort": [
-        "high"
-      ],
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-10-06",
-          "maxCapacity": 110,
-          "maxCapacityPool": "global"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-10-06",
-          "maxCapacity": 50,
-          "maxCapacityPool": "global"
-        }
-      ]
-    },
-    {
       "name": "gpt-5.4-pro",
       "format": "OpenAI",
       "category": "reasoning",
@@ -570,37 +379,6 @@
           "capacity": 50,
           "version": "2026-03-05",
           "maxCapacity": 80,
-          "maxCapacityPool": "global"
-        }
-      ]
-    },
-    {
-      "name": "gpt-5-codex",
-      "format": "OpenAI",
-      "category": "reasoning",
-      "api": "responses",
-      "contextWindow": 400000,
-      "maxOutputTokens": 128000,
-      "reasoningEffort": [
-        "low",
-        "medium",
-        "high"
-      ],
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-09-15",
-          "maxCapacity": 950,
-          "maxCapacityPool": "global"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-09-15",
-          "maxCapacity": 50,
           "maxCapacityPool": "global"
         }
       ]
@@ -985,72 +763,6 @@
       ]
     },
     {
-      "name": "MAI-Image-2.5",
-      "format": "Microsoft",
-      "category": "image",
-      "api": "mai",
-      "imageSizes": [
-        "1024x1024"
-      ],
-      "imageQualities": [
-        "auto"
-      ],
-      "deployments": [
-        {
-          "region": "westus",
-          "sku": "GlobalStandard",
-          "capacity": 2,
-          "version": "2026-06-02",
-          "maxCapacity": 2,
-          "maxCapacityPool": "global"
-        }
-      ]
-    },
-    {
-      "name": "MAI-Image-2.5-Pro",
-      "format": "Microsoft",
-      "category": "image",
-      "api": "mai",
-      "imageSizes": [
-        "1024x1024"
-      ],
-      "imageQualities": [
-        "auto"
-      ],
-      "deployments": [
-        {
-          "region": "westus",
-          "sku": "GlobalStandard",
-          "capacity": 2,
-          "version": "2026-06-19",
-          "maxCapacity": 2,
-          "maxCapacityPool": "global"
-        }
-      ]
-    },
-    {
-      "name": "MAI-Image-2.5-Flash",
-      "format": "Microsoft",
-      "category": "image",
-      "api": "mai",
-      "imageSizes": [
-        "1024x1024"
-      ],
-      "imageQualities": [
-        "auto"
-      ],
-      "deployments": [
-        {
-          "region": "westus",
-          "sku": "GlobalStandard",
-          "capacity": 2,
-          "version": "2026-06-02",
-          "maxCapacity": 2,
-          "maxCapacityPool": "global"
-        }
-      ]
-    },
-    {
       "name": "MAI-Image-2.6",
       "format": "Microsoft",
       "category": "image",
@@ -1152,70 +864,6 @@
           "capacity": 1,
           "version": "1",
           "maxCapacity": 2,
-          "maxCapacityPool": "global"
-        }
-      ]
-    },
-    {
-      "name": "FLUX.1-Kontext-pro",
-      "format": "Black Forest Labs",
-      "category": "image",
-      "api": "bfl",
-      "imageSizes": [
-        "1024x1024",
-        "auto"
-      ],
-      "imageQualities": [
-        "auto"
-      ],
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 1,
-          "version": "1",
-          "maxCapacity": 15,
-          "maxCapacityPool": "global"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 1,
-          "version": "1",
-          "maxCapacity": 15,
-          "maxCapacityPool": "global"
-        }
-      ]
-    },
-    {
-      "name": "FLUX-1.1-pro",
-      "format": "Black Forest Labs",
-      "category": "image",
-      "api": "bfl",
-      "imageSizes": [
-        "1024x1024",
-        "1024x1440",
-        "1440x1024",
-        "auto"
-      ],
-      "imageQualities": [
-        "auto"
-      ],
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 1,
-          "version": "1",
-          "maxCapacity": 15,
-          "maxCapacityPool": "global"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 1,
-          "version": "1",
-          "maxCapacity": 15,
           "maxCapacityPool": "global"
         }
       ]
@@ -1404,29 +1052,6 @@
       ]
     },
     {
-      "name": "gpt-audio",
-      "format": "OpenAI",
-      "category": "audio",
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 10,
-          "version": "2025-08-28",
-          "maxCapacity": 30000,
-          "maxCapacityPool": "region:eastus2"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 10,
-          "version": "2025-08-28",
-          "maxCapacity": 30000,
-          "maxCapacityPool": "region:swedencentral"
-        }
-      ]
-    },
-    {
       "name": "gpt-audio-1.5",
       "format": "OpenAI",
       "category": "audio",
@@ -1481,7 +1106,7 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 10,
-          "version": "2025-03-20",
+          "version": "2025-12-15",
           "maxCapacity": 600,
           "maxCapacityPool": "global"
         }
