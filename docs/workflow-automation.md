@@ -189,6 +189,11 @@ The source ledger is in the existing owner/run/effect records:
 | Observed bound violation | Retain the observed amount and block more work; do not relabel a failed assumption as a working cap |
 | Accounting after owner stop/expiry | Continue known-work accounting without reconstructing execution permission |
 
+The first blocking reason remains immutable. If accounting for another accepted
+dispatch would overflow the cumulative monetary counter, record its outcome as
+unknown and retain its full original reservation, including after the run stops.
+This neither restores dispatch authority nor authorizes reconciliation or refunds.
+
 Escaped JSON capacity, including SDK separators and future settlement fields,
 is reserved for every admitted monetary transition. Incomplete money records do
 not deserialize as empty accounts. The existing thirty-day replay floor permits

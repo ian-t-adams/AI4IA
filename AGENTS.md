@@ -1277,6 +1277,8 @@ settled/held/unknown totals and compacted-charge floors when removing delivered
 effects; missing accounting is not zero and unknown work never expires into a
 refund. Reserve escaped state space for every later settlement transition.
 Accounting survives caller expiry and conversation cleanup without new grants.
+Later cumulative overflow preserves the first blocking reason and retains the
+accepted operation's full unknown liability without restoring execution authority.
 Draft spend evidence binds exact owner/source/run/operation/schema/destination/
 arguments/expiry, original prices/coverage/attempt identity and current run
 budget revision. A changed quote cannot use an old one-time challenge; ordinary

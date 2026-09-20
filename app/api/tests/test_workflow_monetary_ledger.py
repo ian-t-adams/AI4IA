@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from ai4ia_api.hard_quota.coverage import AttemptEnvelope, reservation_bounds
+from ai4ia_api.hard_quota.models import MAX_QUANTITY
 from ai4ia_api.usage.models import UsageRecord
 from ai4ia_api.workflows.automation_common import AutomationError, MAX_STATE_BYTES, digest, json_bytes
 from ai4ia_api.workflows.automation_models import AutomationOwner, EffectIntent, RunHandle, persisted_model, writable_body
@@ -351,6 +352,53 @@ async def test_bound_violation_retains_observed_charge_and_blocks_further_work(s
     assert account.remaining_micro_usd == 0
     with pytest.raises(AutomationError, match="no longer"):
         await service.mutate_owner("owner", lambda value, now: reserve(value, "two"))
+
+
+@pytest.mark.parametrize("first_charge", [10, MAX_QUANTITY])
+@pytest.mark.parametrize("overflow", [False, True])
+async def test_late_overflow_keeps_the_first_stop_reason_and_accepted_liability(store, first_charge, overflow):
+    await store.create_owner(funded(store, 280))
+    service = WorkflowAutomationService(None, store, None)
+    await service.mutate_owner("owner", lambda value, now: reserve(value, "one"))
+    await service.mutate_owner("owner", lambda value, now: reserve(value, "two"))
+    await service.mutate_owner("owner", lambda value, now: settle(
+        value, "one", usage={"prompt_tokens": first_charge, "completion_tokens": 0},
+    ))
+    before = (await store.read_owner("owner")).value
+    original = before.effects["two"].money
+    assert before.runs[RUN].money.settledMicroUsd == first_charge
+    assert before.runs[RUN].money.heldMicroUsd == 140
+    assert before.runs[RUN].money.reason == ("bound_exceeded" if first_charge == MAX_QUANTITY else None)
+
+    def stop(value, now):
+        value.runs[RUN].active = False
+        value.runs[RUN].terminal = True
+
+    await service.mutate_owner("owner", stop)
+    usage = {"prompt_tokens": MAX_QUANTITY - first_charge + int(overflow), "completion_tokens": 0}
+    await service.mutate_owner("owner", lambda value, now: settle(value, "two", usage=usage))
+    after = (await store.read_owner("owner")).value
+    account = after.runs[RUN].money
+    assert account.settledMicroUsd == (first_charge if overflow else MAX_QUANTITY)
+    assert account.heldMicroUsd == account.unknownMicroUsd == (140 if overflow else 0)
+    assert account.blocked
+    assert account.reason == (
+        "accounting_overflow" if overflow and first_charge < MAX_QUANTITY else "bound_exceeded"
+    )
+    assert account.reservations == 2
+    assert account.limitMicroUsd == before.runs[RUN].money.limitMicroUsd
+    assert after.effects["two"].money.bounds == original.bounds
+    assert after.effects["two"].money.phase == ("unknown" if overflow else "settled")
+    assert after.effects["two"].state == ("unknown" if overflow else "complete")
+    assert after.effects["two"].resultDigest is not None
+    await service.mutate_owner("owner", lambda value, now: settle(value, "two", usage=usage))
+    assert (await store.read_owner("owner")).value.runs[RUN].money == account
+    with pytest.raises(AutomationError, match="no longer"):
+        await service.mutate_owner("owner", lambda value, now: reserve(value, "three"))
+    if overflow:
+        WorkflowAutomationService.compact(after, NOW + timedelta(days=365))
+        assert after.runs[RUN].money == account
+        assert after.effects["two"].money.bounds == original.bounds
 
 
 def test_legacy_owner_shape_is_preserved_but_money_record_cannot_default_missing_fields():
