@@ -76,7 +76,7 @@ def settle_money(
     reason = account.reason
     if charged is not None and account.settledMicroUsd + charged > MAX_QUANTITY:
         charged = None
-        reason = "accounting_overflow"
+        reason = reason or "accounting_overflow"
     if actual is not None and (
         (actual.microUsd is not None and actual.microUsd > reservation.chargedMicroUsd)
         or (
