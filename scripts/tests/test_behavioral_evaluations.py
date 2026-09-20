@@ -78,6 +78,22 @@ def test_golden_controls_execute_every_case(dataset, golden_report):
         assert coverage.scored + coverage.unknown + coverage.unscored == coverage.total
 
 
+def test_offline_claude_posture_explicitly_stages_both_runtime_gates(dataset):
+    from scripts.evaluations import offline
+
+    case = next(case for case in dataset.cases if case.protocol == "anthropic")
+    assert execute_case(dataset, case).status == "passed"
+    original = offline.settings_for
+
+    def unstaged(case):
+        return original(case).model_copy(update={"claude_external_enabled": False})
+
+    with patch.object(offline, "settings_for", side_effect=unstaged):
+        with pytest.raises(RuntimeError, match="CLAUDE_EXTERNAL_ENABLED"):
+            execute_case(dataset, case)
+    assert execute_case(dataset, case).status == "passed"
+
+
 def test_offline_execution_suppresses_an_already_active_exporter(dataset):
     from opentelemetry.instrumentation.httpx import (
         AsyncOpenTelemetryTransport, SyncOpenTelemetryTransport,

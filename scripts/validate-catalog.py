@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _capacity_evidence import EvidenceError
 from _production_capacity import parse_policy
+from _model_targets import model_target
 
 HERE = Path(__file__).resolve().parent
 MODELS = HERE.parent / "infra" / "models.json"
@@ -44,6 +45,18 @@ def main() -> int:
 
     for model in data["catalog"]:
         name = model["name"]
+        try:
+            model_target(model)
+        except ValueError as exc:
+            errors.append(f"{name}: {exc}")
+        if model.get("anthropicThinking") is not None and (
+            model.get("api") != "anthropic"
+            or model["anthropicThinking"] != "disabled"
+            or not model.get("reasoningEffort")
+            or set(model["reasoningEffort"]) - {"low", "medium", "high"}
+            or model.get("samplingSupported") is not False
+        ):
+            errors.append(f"{name}: unsupported Anthropic unified-history profile")
         api = model.get("api", "chat")
         if api not in {
             "chat",

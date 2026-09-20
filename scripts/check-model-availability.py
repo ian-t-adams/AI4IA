@@ -66,9 +66,17 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
-import _model_retirement as retirement
 import _capacity_evidence as capacity_evidence
-from _production_capacity import PROFILES, bind_scope, check_live_pools, effective_capacity, parse_policy
+import _model_retirement as retirement
+from _claude_binding import verify_configured
+from _model_targets import ModelTarget, model_target
+from _production_capacity import (
+    PROFILES,
+    bind_scope,
+    check_live_pools,
+    effective_capacity,
+    parse_policy,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_FILE = ROOT / "infra" / "models.json"
@@ -148,6 +156,7 @@ def catalog_requirements(
     *,
     include_anthropic: bool = True,
     capacity_profile: str = "baseline",
+    target: ModelTarget | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Group desired deployment records by region, including their exact ARM names."""
     if capacity_profile not in PROFILES:
@@ -163,6 +172,9 @@ def catalog_requirements(
     sku_short = naming.get("skuShort") or {}
     by_region: dict[str, list[dict[str, Any]]] = {}
     for entry in models.get("catalog", []):
+        declared_target = model_target(entry)
+        if target is not None and declared_target != target:
+            continue
         if not include_anthropic and entry.get("format") == "Anthropic":
             continue
         for deployment in entry.get("deployments", []):
@@ -191,6 +203,7 @@ def catalog_requirements(
                     ),
                     "versionUpgradeOption": "NoAutoUpgrade",
                     "region": region,
+                    **({"deploymentTarget": declared_target} if declared_target != "source" else {}),
                 }
             )
     return by_region
@@ -544,6 +557,12 @@ def retirement_observations(
     for item in required:
         key = (_normal_location(region), str(item["deploymentName"]).casefold())
         seen.add(key)
+        if item.get("deploymentTarget") == "external-claude":
+            observations.append(retirement.observe_deployment(
+                item, None, [], None, now=now, inventory_state="unavailable",
+                inventory_observed_at=None,
+            ))
+            continue
         observations.append(retirement.observe_deployment(
             item, inventory.get(key), existing_deployment_drift(item, inventory),
             offered, now=now, inventory_state=inventory_state,
@@ -576,6 +595,11 @@ def run_retirement_report(
     if not regions or len(regions) > MAX_REPORT_REGIONS or set(regions) - set(models["regions"]):
         raise ValueError("Retirement reporting requires one to eight catalog regions.")
     sources: list[retirement.SourceRead] = []
+    if any(item.get("deploymentTarget") == "external-claude" for rows in by_region.values() for item in rows):
+        sources.append(retirement.SourceRead(
+            "external-claude", None, "unavailable", retirement.timestamp(started),
+            "separate-target-retirement-reader-required",
+        ))
     public: tuple[retirement.PublicObservation, ...] = ()
     if args.public_evidence:
         try:
@@ -1221,6 +1245,14 @@ def main() -> int:
         return 2 if args.retirement_report else 1
     if args.retirement_report:
         return run_retirement_report(args, models, catalog_bytes)
+    try:
+        external_count = verify_configured(models)
+        if external_count:
+            print(f"Verified {external_count} external Claude deployments in their exact target scope.", flush=True)
+    except (capacity_evidence.EvidenceError, ValueError, KeyError, TypeError) as exc:
+        code = exc.code if isinstance(exc, capacity_evidence.EvidenceError) else "claude_readback_invalid"
+        print(f"ERROR: cross-tenant Claude preflight unavailable ({code}).", file=sys.stderr)
+        return 1
     public = retirement.load_public_observations(args.public_evidence, datetime.now(UTC))
     account = active_subscription(os.environ.get("AZURE_SUBSCRIPTION_ID"))
     account_label = f"{account['name']} ({account['id']})" if account["name"] else account["id"]
@@ -1230,6 +1262,7 @@ def main() -> int:
         models,
         include_anthropic=claude_enabled,
         capacity_profile=args.capacity_profile,
+        target="source",
     )
     regions = sorted(models["regions"] if args.capacity_profile == "production" else set(args.region or by_region))
     existing_deployments, inventory_warnings = existing_deployment_inventory(

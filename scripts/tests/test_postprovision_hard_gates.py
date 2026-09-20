@@ -180,6 +180,86 @@ $value = if ({_ps_literal(name)} -eq 'Get-CognitiveServicesToken') {{
     return _run_pwsh(command, cwd=REPO)
 
 
+def _run_claude_dispatch(*, enabled: str, python_exit: int = 0) -> dict[str, object]:
+    source = SCRIPT.read_text(encoding="utf-8")
+    dispatch = source[source.index("$checks = @("):source.index("$pass = @(")]
+    command = rf"""
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+  {_ps_literal(str(SCRIPT))}, [ref]$tokens, [ref]$errors
+)
+if ($errors.Count -gt 0) {{ throw ($errors | Out-String) }}
+# Load only actual script-scope declarations. Recursive AST extraction would
+# wrongly promote a nested check to global scope and conceal dispatcher failure.
+foreach ($statement in $ast.EndBlock.Statements) {{
+  if ($statement -is [System.Management.Automation.Language.FunctionDefinitionAst]) {{
+    # Invoke-Expression loses the original file's automatic PSScriptRoot.
+    # Bind only that path literal; preserve the function's original scope.
+    Invoke-Expression $statement.Extent.Text.Replace(
+      '$PSScriptRoot', {_ps_literal(_ps_literal(str(SCRIPT.parent)))}
+    )
+  }}
+}}
+$script:Results = [System.Collections.Generic.List[object]]::new()
+$script:PythonCalls = @()
+$script:Executed = @()
+$ErrorActionPreference = 'Stop'
+function Get-EnvValue {{
+  param([Parameter(Mandatory)][string]$Name)
+  switch ($Name) {{
+    'AI4IA_CLAUDE_EXTERNAL_ENABLED' {{ return {_ps_literal(enabled)} }}
+    'AZURE_PROXY_URL' {{ return 'https://proxy.example.test' }}
+    'AZURE_MODEL_GATEWAY_URL' {{ return 'https://proxy.example.test/openai' }}
+    'AZURE_APIM_GATEWAY_URL' {{ return 'https://apim.example.test' }}
+    'AZURE_REALTIME_GATEWAY_URL' {{ return 'https://apim.example.test/openai' }}
+    default {{ return $null }}
+  }}
+}}
+function python {{
+  $script:PythonCalls += ,([string[]]@($args))
+  $global:LASTEXITCODE = {python_exit}
+}}
+function Test-ModelDeployment {{ $script:Executed += 'models' }}
+function Test-ApiHealth {{ $script:Executed += 'api' }}
+function Test-CustomDomainDns {{ $script:Executed += 'dns' }}
+function Register-AppConfigurationSentinel {{ $script:Executed += 'sentinel' }}
+function Register-ContentUnderstandingDefault {{ $script:Executed += 'content' }}
+function az {{ throw 'Azure CLI must not execute in an offline dispatcher test' }}
+function azd {{ throw 'azd must not execute in an offline dispatcher test' }}
+{dispatch}
+[pscustomobject]@{{
+  results=@($script:Results); pythonCalls=$script:PythonCalls
+  executed=$script:Executed
+  exitCode=[int](@($script:Results | Where-Object {{ $_.Status -eq 'FAIL' }}).Count -gt 0)
+}} | ConvertTo-Json -Depth 8 -Compress
+"""
+    return _run_pwsh(command, cwd=REPO)
+
+
+class ClaudeBindingDispatcherTests(unittest.TestCase):
+    def test_default_off_dispatch_leaves_normal_topology_and_never_invokes_python(self):
+        for disabled in ("", "false", "FALSE"):
+            with self.subTest(disabled=disabled):
+                payload = _run_claude_dispatch(enabled=disabled)
+                self.assertEqual(payload["exitCode"], 0, payload["results"])
+                self.assertEqual(payload["pythonCalls"], [])
+                self.assertEqual([row["Name"] for row in payload["results"]], ["gateway-topology"])
+                self.assertEqual(payload["executed"], ["models", "api", "dns", "sentinel", "content"])
+
+    def test_staged_dispatch_passes_or_fails_from_actual_routed_python_result(self):
+        for exit_code in (0, 1):
+            with self.subTest(exit_code=exit_code):
+                payload = _run_claude_dispatch(enabled="true", python_exit=exit_code)
+                self.assertEqual(payload["exitCode"], exit_code, payload["results"])
+                self.assertEqual(payload["pythonCalls"], [[str(SCRIPT.parent / "check-claude-binding.py"), "--routed"]])
+                self.assertEqual(
+                    [(row["Name"], row["Status"]) for row in payload["results"]],
+                    [("gateway-topology", "PASS"), ("claude-binding", "FAIL" if exit_code else "PASS")],
+                )
+                self.assertEqual(payload["executed"], ["models", "api", "dns", "sentinel", "content"])
+
+
 class TokenAcquisitionTests(unittest.TestCase):
     def test_azd_raw_token_output_is_used_for_management(self) -> None:
         payload = _run_token_helper("Get-MgmtToken")

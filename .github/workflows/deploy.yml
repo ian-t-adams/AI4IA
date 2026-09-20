@@ -52,6 +52,9 @@ on:
       - "scripts/_image_refs.py"
       - "scripts/check-resource-providers.py"
       - "scripts/check-model-availability.py"
+      - "scripts/check-claude-binding.py"
+      - "scripts/_claude_binding.py"
+      - "scripts/_model_targets.py"
       - "scripts/_production_capacity.py"
       - "scripts/_model_naming.py"
       - "scripts/_capacity_evidence.py"
@@ -104,6 +107,8 @@ jobs:
       AI4IA_BUDGET_START_DATE: ${{ vars.AI4IA_BUDGET_START_DATE }}
       AI4IA_ALERT_EMAIL: ${{ vars.AI4IA_ALERT_EMAIL }}
       AI4IA_CLAUDE_ENABLED: ${{ vars.AI4IA_CLAUDE_ENABLED }}
+      AI4IA_CLAUDE_EXTERNAL_ENABLED: ${{ vars.AI4IA_CLAUDE_EXTERNAL_ENABLED }}
+      AI4IA_CLAUDE_BINDING_JSON: ${{ vars.AI4IA_CLAUDE_BINDING_JSON }}
       AI4IA_CLAUDE_ORGANIZATION_NAME: ${{ vars.AI4IA_CLAUDE_ORGANIZATION_NAME }}
       AI4IA_CLAUDE_COUNTRY_CODE: ${{ vars.AI4IA_CLAUDE_COUNTRY_CODE }}
       AI4IA_CLAUDE_INDUSTRY: ${{ vars.AI4IA_CLAUDE_INDUSTRY }}
@@ -187,6 +192,25 @@ jobs:
               ;;
           esac
 
+          claude_external="${AI4IA_CLAUDE_EXTERNAL_ENABLED:-}"
+          case "${claude_external,,}" in
+            true)
+              if [ -z "${AI4IA_CLAUDE_BINDING_JSON:-}" ]; then
+                missing+=("AI4IA_CLAUDE_BINDING_JSON")
+              fi
+              ;;
+            ""|false)
+              if [ "${AI4IA_CLAUDE_ENABLED,,}" = "true" ]; then
+                echo "::error::Claude requires the separately approved external binding."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::AI4IA_CLAUDE_EXTERNAL_ENABLED must be true, false, or unset."
+              exit 1
+              ;;
+          esac
+
           if [ "${#missing[@]}" -ne 0 ]; then
             printf -v missing_names '%s, ' "${missing[@]}"
             echo "::error::Deployment is enabled but required repository variables are missing: ${missing_names%, }. Configure them under Settings > Secrets and variables > Actions > Variables, or set AI4IA_DEPLOYMENT_ENABLED=false to declare an intentional disabled posture."
@@ -227,6 +251,8 @@ jobs:
       AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AI4IA_CLAUDE_ENABLED: ${{ vars.AI4IA_CLAUDE_ENABLED }}
+      AI4IA_CLAUDE_EXTERNAL_ENABLED: ${{ vars.AI4IA_CLAUDE_EXTERNAL_ENABLED }}
+      AI4IA_CLAUDE_BINDING_JSON: ${{ vars.AI4IA_CLAUDE_BINDING_JSON }}
       # Anthropic Marketplace attestation. These values auto-accept the offer
       # through modelProviderData and must describe the real legal entity.
       AI4IA_CLAUDE_ORGANIZATION_NAME: ${{ vars.AI4IA_CLAUDE_ORGANIZATION_NAME }}
@@ -479,6 +505,15 @@ jobs:
           echo "$tools/gh_${GH_VERSION}_linux_amd64/bin" >> "$GITHUB_PATH"
           echo "$tools" >> "$GITHUB_PATH"
 
+      - name: Validate cross-tenant Claude binding configuration
+        run: |
+          set -euo pipefail
+          python scripts/check-claude-binding.py --check
+          claude_external="${AI4IA_CLAUDE_EXTERNAL_ENABLED:-}"
+          if [ "${claude_external,,}" = "true" ]; then
+            echo "AI4IA_CLAUDE_TARGET_AZURE_CONFIG_DIR=${RUNNER_TEMP}/claude-target-reader" >> "$GITHUB_ENV"
+          fi
+
       - name: Log in to Azure (OIDC federated credentials)
         run: |
           azd auth login \
@@ -502,6 +537,22 @@ jobs:
           client-id: ${{ env.AZURE_CLIENT_ID }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      # A distinct, approved reader identity/trust. Never reuse the runtime app
+      # or change the source CLI profile; absent Graph/ARM reads fail explicitly.
+      - name: Log in isolated Claude target reader (OIDC)
+        if: ${{ env.AI4IA_CLAUDE_EXTERNAL_ENABLED == 'true' }}
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        env:
+          AZURE_CONFIG_DIR: ${{ runner.temp }}/claude-target-reader
+        with:
+          client-id: ${{ fromJSON(env.AI4IA_CLAUDE_BINDING_JSON || '{}').targetReaderClientId }}
+          tenant-id: ${{ fromJSON(env.AI4IA_CLAUDE_BINDING_JSON || '{}').targetTenantId }}
+          subscription-id: ${{ fromJSON(env.AI4IA_CLAUDE_BINDING_JSON || '{}').targetSubscriptionId }}
+
+      - name: Verify cross-tenant Claude target and identity
+        if: ${{ env.AI4IA_CLAUDE_EXTERNAL_ENABLED == 'true' }}
+        run: python scripts/check-claude-binding.py
 
       - name: Resolve deploy principal ID for Foundry and API Center data-plane setup
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
@@ -1031,6 +1082,10 @@ jobs:
       # scripts/tests/test_immutable_image_promotion.py: a service added there
       # but not here would silently stop being deployed, which the old
       # deploy-everything form could not do.
+      - name: Verify current Claude routes before image rollout
+        if: ${{ env.AI4IA_CLAUDE_EXTERNAL_ENABLED == 'true' }}
+        run: python scripts/check-claude-binding.py --routed
+
       - name: Deploy application
         id: deploy
         env:

@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _generator import build_parser, check_or_write
+from _model_targets import model_target
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE = REPO_ROOT / "infra" / "models.json"
@@ -39,6 +40,7 @@ def build_catalog(models: dict) -> dict:
 
     items = []
     for model in models["catalog"]:
+        target = model_target(model)
         options = []
         for dep in model["deployments"]:
             region = dep["region"]
@@ -69,6 +71,8 @@ def build_catalog(models: dict) -> dict:
                 "imageSizes": model.get("imageSizes"),
                 "imageQualities": model.get("imageQualities"),
                 "reasoningEffort": model.get("reasoningEffort"),
+                **({"deploymentTarget": target} if target != "source" else {}),
+                **{key: model[key] for key in ("samplingSupported", "anthropicThinking") if key in model},
                 "options": options,
             }
         )

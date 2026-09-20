@@ -37,6 +37,11 @@ on:
       - "scripts/tests/test_bicep_naming.py"
       - "scripts/tests/test_cosmos_backup_policy.py"
       - "scripts/gen-gateway-policy.py"
+      - "scripts/_model_targets.py"
+      - "scripts/_claude_binding.py"
+      - "scripts/check-claude-binding.py"
+      - "scripts/tests/test_claude_binding.py"
+      - "scripts/tests/_claude_fixture.py"
       - "scripts/tests/test_gateway_policy.py"
       - "scripts/tests/test_policy_json_shape.py"
       - "scripts/gen-voice-provider-catalog.py"
@@ -115,6 +120,7 @@ jobs:
         run: |
           python scripts/gen-gateway-policy.py --check
           python -m unittest scripts.tests.test_gateway_policy
+          python -m unittest scripts.tests.test_claude_binding
 
       # A duplicate property name in any policy JObject is a RUNTIME failure that
       # compiles cleanly: Newtonsoft throws "Property with the same name already

@@ -146,7 +146,8 @@ def test_conversational_categories_are_chat_targets():
         "gpt-5.4-nano",     # chat-fast
         "gpt-5.4-pro",      # reasoning
         "MAI-Thinking-1",   # Microsoft adaptive reasoning
-        "claude-opus-4-8",  # Anthropic Messages reasoning
+        "claude-opus-5",    # Anthropic Messages, explicit reduced profile
+        "claude-sonnet-5",
         "DeepSeek-V3.2",    # reasoning-oss
         "model-router",     # router
         "o3-deep-research", # research
@@ -206,7 +207,8 @@ def test_reasoning_models_do_not_advertise_sampling():
         "o3-deep-research",
         "gpt-5.3-codex",
         "MAI-Thinking-1",
-        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-sonnet-5",
     ):
         entry = catalog.get(model_id)
         assert entry is not None, model_id
@@ -337,7 +339,7 @@ def test_non_reasoning_models_offer_no_reasoning_effort():
         "Mistral-Large-3",
         "model-router",
         "DeepSeek-V3.2",
-        "claude-opus-4-8",
+        "MAI-Thinking-1",
     ):
         entry = catalog.get(model_id)
         assert entry is not None, model_id
@@ -454,14 +456,16 @@ def test_catalog_values_win_over_the_heuristic():
 
 def test_claude_is_wired_for_chat_and_agents_through_messages():
     catalog = load_catalog()
-    entry = catalog.get("claude-opus-4-8")
+    entry = catalog.get("claude-opus-5")
     assert entry is not None
-    assert entry.displayName == "Claude Opus 4.8"
+    assert entry.displayName == "Claude Opus 5"
     assert entry.api == "anthropic"
     assert entry.conversational is True
     assert entry.contextWindow == 1_000_000
     assert entry.maxOutputTokens == 128_000
-    assert entry.reasoningEffortOptions == []
+    assert entry.reasoningEffortOptions == ["low", "medium", "high"]
+    assert entry.anthropicThinking == "disabled"
+    assert entry.deploymentTarget == "external-claude"
     assert entry.supportsSampling is False
     assert {(option.region, option.sku) for option in entry.options} == {
         ("eastus2", "GlobalStandard"),
@@ -473,11 +477,13 @@ def test_claude_entitlement_gate_removes_model_from_runtime_catalog():
     disabled = load_catalog(None, "global", False)
     enabled = load_catalog(None, "global", True)
 
-    assert disabled.get("claude-opus-4-8") is None
-    assert "claude-opus-4-8" not in {
+    assert disabled.get("claude-opus-5") is None
+    assert "claude-opus-5" not in {
         model.id for model in disabled.conversational_models()
     }
-    assert enabled.get("claude-opus-4-8") is not None
+    assert enabled.get("claude-opus-5") is not None
+    assert enabled.get("claude-sonnet-5") is not None
+    assert enabled.get("claude-opus-4-8") is None
 
 
 def test_request_shape_traits_are_serialized():
@@ -500,14 +506,23 @@ def test_catalog_traits_agree_with_the_gateway_normalizer():
     Asserted against the gateway's real normalizer rather than a second copy of
     the rule, so the two cannot drift.
     """
-    from ai4ia_api.gateway.client import _normalize_params_for_deployment
+    from ai4ia_api.gateway.client import ModelGatewayClient, _normalize_params_for_deployment
+    from tests.conftest import make_settings
 
     catalog = load_catalog()
     checked = 0
     for entry in catalog.conversational_models():
         deployment = entry.options[0].deploymentName
         kept = {"temperature": 0.5, "top_p": 0.9}
-        _normalize_params_for_deployment(kept, deployment)
+        if entry.api == "anthropic":
+            # Anthropic does not use the OpenAI normalizer; exercise the actual
+            # request adapter rather than a proxy for its sampling behavior.
+            client = ModelGatewayClient(make_settings(claude_enabled=True, claude_external_enabled=True))
+            kept = client.build_anthropic_request(
+                deployment=deployment, messages=[{"role": "user", "content": "synthetic"}], params=kept,
+            ).json
+        else:
+            _normalize_params_for_deployment(kept, deployment)
         survived = "temperature" in kept and "top_p" in kept
         assert survived is entry.supportsSampling, entry.id
         checked += 1

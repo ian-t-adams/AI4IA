@@ -1,5 +1,13 @@
 <fragment>
 <choose>
+			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;claudeFederated&quot;, false))">
+				<return-response>
+					<set-status code="502" reason="Claude gateway unavailable" />
+					<set-body>{"error":{"code":"claude_gateway_unavailable"}}</set-body>
+				</return-response>
+			</when>
+		</choose>
+<choose>
 			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))">
 				<return-response>
 					<set-status code="502" reason="Bounded gateway attempt failed" />

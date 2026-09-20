@@ -171,6 +171,7 @@ def settings_for(case: Case):
     return make_settings(
         model_gateway_url=GATEWAY_URL,
         claude_enabled=True,
+        claude_external_enabled=True,
         custom_tools_enabled=(
             case.scenario == "approval" or
             (case.scenario == "workflow" and case.expected.status == "error")

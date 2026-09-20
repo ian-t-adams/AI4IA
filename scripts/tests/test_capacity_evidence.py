@@ -258,6 +258,28 @@ class Fixture:
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_external_rows_stay_unknown_even_with_same_named_healthy_source_deployments(self):
+        document = catalog_document()
+        real = json.loads((ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
+        document["catalog"].extend(
+            model for model in real["catalog"] if model.get("deploymentTarget") == "external-claude"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Fixture(Path(tmp), document)
+            report = fixture.report()
+        external = [row for row in report["deployments"] if row["catalog"].get("deploymentTarget") == "external-claude"]
+        self.assertEqual(len(report["deployments"]), 5)
+        self.assertEqual(len(external), 3)
+        self.assertTrue(all(row["inventoryStatus"] == "unknown" and row["live"] is None for row in external))
+        self.assertTrue(all(row["account"] is None for row in external))
+        self.assertTrue(all(
+            value["status"] == "unknown" and value["total"] is None
+            for row in external for value in row["usage"].values()
+        ))
+        source = [row for row in report["deployments"] if row not in external]
+        self.assertTrue(all(row["inventoryStatus"] == "matched" for row in source))
+        self.assertEqual(report["status"], "partial")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

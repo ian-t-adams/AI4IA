@@ -1,0 +1,79 @@
+<fragment>
+    <choose>
+        <when condition="@(context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;claudeFederated&quot;, false))">
+            <set-variable name="claudeBindingValid" value="@{
+                string tenant = &quot;{{claude-target-tenant}}&quot;;
+                string client = &quot;{{claude-app-client}}&quot;;
+                string identity = &quot;{{claude-uami-client}}&quot;;
+                string endpoint = &quot;{{claude-target-endpoint}}&quot;;
+                string guid = @&quot;\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z&quot;;
+                if (new[] { tenant, client, identity }.Any(v => !System.Text.RegularExpressions.Regex.IsMatch(v, guid) || v == Guid.Empty.ToString())) { return false; }
+                if (!System.Text.RegularExpressions.Regex.IsMatch(endpoint, @&quot;\Ahttps:&quot; + &quot;/&quot; + @&quot;/mf-claude-[a-z0-9-]{3,48}\.services\.ai\.azure\.com\z&quot;)) { return false; }
+                if (context.Subscription == null || context.Subscription.Id != &quot;{{claude-proxy-subscription}}&quot;) { return false; }
+                if (context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;noReplay&quot;, false) || context.Request.Method != &quot;POST&quot;) { return false; }
+                string model = context.Variables.GetValueOrDefault&lt;string&gt;(&quot;model&quot;, &quot;&quot;);
+                string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);
+                if (path != &quot;deployments/&quot; + model + &quot;/chat/completions&quot;) { return false; }
+                JArray backends = (JArray)context.Variables[&quot;listBackends&quot;];
+                if (backends.Count != 1) { return false; }
+                JObject backend = (JObject)backends[0];
+                return backend.Value&lt;string&gt;(&quot;auth&quot;) == &quot;CLAUDE_FEDERATED&quot;
+                    &amp;&amp; backend.Value&lt;string&gt;(&quot;url&quot;) == endpoint + &quot;/anthropic&quot;
+                    &amp;&amp; backend.Value&lt;string&gt;(&quot;path&quot;) == &quot;anthropic&quot;
+                    &amp;&amp; backend.Value&lt;string&gt;(&quot;deployment&quot;) == model;
+            }" />
+            <choose>
+                <when condition="@(!context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;claudeBindingValid&quot;, false))">
+                    <return-response>
+                        <set-status code="503" reason="Claude binding unavailable" />
+                        <set-body>{"error":{"code":"claude_binding_unavailable"}}</set-body>
+                    </return-response>
+                </when>
+            </choose>
+            <!-- The existing throttle path owns APIM's one inbound cache lookup.
+                 Only APIM's built-in MI client/resource cache is used here;
+                 target tokens never survive this request or configuration. -->
+            <authentication-managed-identity resource="api://AzureADTokenExchange" client-id="{{claude-uami-client}}" output-token-variable-name="claudeAssertion" ignore-error="false" />
+            <set-header name="Authorization" exists-action="delete" />
+            <send-request mode="new" response-variable-name="claudeTokenResponse" timeout="10" ignore-error="true">
+                <set-url>https://login.microsoftonline.com/{{claude-target-tenant}}/oauth2/v2.0/token</set-url>
+                <set-method>POST</set-method>
+                <set-header name="Content-Type" exists-action="override">
+                    <value>application/x-www-form-urlencoded</value>
+                </set-header>
+                <set-body>@("client_id=" + Uri.EscapeDataString("{{claude-app-client}}") + "&amp;scope=https%3A%2F%2Fai.azure.com%2F.default&amp;grant_type=client_credentials&amp;client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer&amp;client_assertion=" + Uri.EscapeDataString((string)context.Variables["claudeAssertion"]))</set-body>
+            </send-request>
+            <set-variable name="claudeAssertion" value="" />
+            <set-variable name="managed-id-access-token" value="@{
+                IResponse response = context.Variables.GetValueOrDefault&lt;IResponse&gt;(&quot;claudeTokenResponse&quot;, null);
+                if (response == null || response.StatusCode != 200
+                    || response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).Split(';')[0].Trim() != &quot;application/json&quot;) { return &quot;&quot;; }
+                string body = response.Body.As&lt;string&gt;();
+                if (body.Length > 20000) { return &quot;&quot;; }
+                JObject token = JObject.Parse(body);
+                if (token[&quot;error&quot;] != null || token[&quot;access_token&quot;]?.Type != JTokenType.String
+                    || token[&quot;token_type&quot;]?.Type != JTokenType.String || token.Value&lt;string&gt;(&quot;token_type&quot;) != &quot;Bearer&quot;
+                    || token[&quot;expires_in&quot;]?.Type != JTokenType.Integer
+                    || (token[&quot;scope&quot;] != null &amp;&amp; (token[&quot;scope&quot;].Type != JTokenType.String || token.Value&lt;string&gt;(&quot;scope&quot;) != &quot;https:&quot; + &quot;/&quot; + &quot;/ai.azure.com/.default&quot;))) { return &quot;&quot;; }
+                long lifetime;
+                string access = token.Value&lt;string&gt;(&quot;access_token&quot;);
+                if (!long.TryParse(token[&quot;expires_in&quot;].ToString(), out lifetime)
+                    || lifetime &lt; 120 || lifetime > 7200
+                    || !System.Text.RegularExpressions.Regex.IsMatch(access, @&quot;\A[A-Za-z0-9._~+/-]{32,16384}={0,2}\z&quot;)) { return &quot;&quot;; }
+                return access;
+            }" />
+            <set-variable name="claudeTokenResponse" value="" />
+            <choose>
+                <when condition="@(string.IsNullOrEmpty(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;managed-id-access-token&quot;, &quot;&quot;)))">
+                    <return-response>
+                        <set-status code="502" reason="Claude authentication unavailable" />
+                        <set-body>{"error":{"code":"claude_authentication_unavailable"}}</set-body>
+                    </return-response>
+                </when>
+            </choose>
+        </when>
+        <otherwise>
+            <authentication-managed-identity resource="@((string)context.Variables[&quot;authResource&quot;])" output-token-variable-name="managed-id-access-token" ignore-error="false" />
+        </otherwise>
+    </choose>
+</fragment>

@@ -17,6 +17,12 @@
     "claudeEnabled": {
       "value": "${AI4IA_CLAUDE_ENABLED=false}"
     },
+    "claudeExternalEnabled": {
+      "value": "${AI4IA_CLAUDE_EXTERNAL_ENABLED=false}"
+    },
+    "claudeBindingJson": {
+      "value": "${AI4IA_CLAUDE_BINDING_JSON=}"
+    },
     "claudeOrganizationName": {
       "value": "${AI4IA_CLAUDE_ORGANIZATION_NAME=}"
     },

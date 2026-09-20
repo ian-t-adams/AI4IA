@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
 using Newtonsoft.Json.Linq;
@@ -24,12 +25,26 @@ internal sealed class ApimPolicyHarness
         System.IO.Path.Combine(PolicyDirectory, "attempts-v1-policy.xml"));
     private static readonly XElement LegacyPolicy = LoadPolicy(
         System.IO.Path.Combine(PolicyDirectory, "simplel7proxy-priority-policy.xml"));
+    internal static readonly XElement ClaudeAuth = LoadPolicy(System.IO.Path.Combine(PolicyDirectory, "claude-federated-auth.xml"));
+    private static readonly XElement ClaudeDisabled = LoadPolicy(System.IO.Path.Combine(PolicyDirectory, "claude-disabled.xml"));
+    private static readonly Dictionary<string, XElement> CatalogPolicies = Enumerable.Range(0, 12).ToDictionary(
+        i => $"endpoint_selection_catalog_{i}_32",
+        i => LoadPolicy(System.IO.Path.Combine(PolicyDirectory, $"simplel7proxy-endpoints-catalog-{i}.xml")));
+    private static readonly XElement Setup = LoadPolicy(System.IO.Path.Combine(PolicyDirectory, "simplel7proxy-endpoints.xml"));
     private static readonly Lazy<Func<string, ApimContext, object>> Evaluator = new(Compile);
     internal static void CompileBeforeTimedRequests() => _ = Evaluator.Value;
     internal readonly ApimContext Context = new();
     internal int Sends;
     internal int Limit = 0;
     internal XElement? InheritedInbound;
+    internal bool UseCatalog;
+    internal bool ClaudeEnabled;
+    internal bool FailIdentity;
+    internal string? ProviderLoopback;
+    internal ApimResponse? TokenResponse;
+    internal readonly List<(string Resource, string? Client)> Identities = [];
+    internal readonly List<(string Url, string Body)> Exchanges = [];
+    internal Dictionary<string, object> Cache = new();
     private string _phase = "";
     private string _backend = "";
     private string _path = "";
@@ -81,7 +96,7 @@ internal sealed class ApimPolicyHarness
             }
         }
         catch (PolicyReturn) { }
-        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or PolicyFault)
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or PolicyFault or Newtonsoft.Json.JsonException)
         {
             Context.LastError.Reason = "FixtureTransportFailure";
             _phase = "on_error";
@@ -94,7 +109,8 @@ internal sealed class ApimPolicyHarness
     }
 
     internal object Eval(string expression) => Evaluator.Value(expression, Context);
-    private string Text(string expression) => expression.StartsWith('@') ? Eval(expression).ToString()! : expression;
+    private string Text(string expression) => expression.StartsWith('@') ? Eval(expression).ToString()! :
+        Regex.Replace(expression, @"\{\{([\w-]+)\}\}", match => Context.NamedValues[match.Groups[1].Value]);
     private bool Condition(XElement node) => (bool)Eval(node.Attribute("condition")!.Value);
 
     private async Task Children(XElement node)
@@ -116,6 +132,9 @@ internal sealed class ApimPolicyHarness
                 string fragment = node.Attribute("fragment-id")!.Value;
                 string? section = Sections.FirstOrDefault(s => fragment == $"simplel7proxy_{s}_32");
                 if (section is not null) await Execute(Policies[section]);
+                else if (fragment == "claude_auth_v1") await Execute(ClaudeEnabled ? ClaudeAuth : ClaudeDisabled);
+                else if (UseCatalog && fragment == "endpoint_selection_setup_32") await Execute(Setup);
+                else if (UseCatalog && CatalogPolicies.TryGetValue(fragment, out var catalog)) await Execute(catalog);
                 else if (fragment != "endpoint_selection_setup_32" &&
                     !Enumerable.Range(0, 12).Any(i => fragment == $"endpoint_selection_catalog_{i}_32"))
                     throw new AssertFailedException($"Unprojected policy fragment: {fragment}");
@@ -128,7 +147,7 @@ internal sealed class ApimPolicyHarness
                 break;
             case "set-variable":
                 string value = node.Attribute("value")!.Value;
-                Context.Variables[node.Attribute("name")!.Value] = value.StartsWith('@') ? Eval(value) : value;
+                Context.Variables[node.Attribute("name")!.Value] = value.StartsWith('@') ? Eval(value) : Text(value);
                 break;
             case "retry":
                 int count = int.Parse(node.Attribute("count")!.Value);
@@ -155,7 +174,14 @@ internal sealed class ApimPolicyHarness
                 using (var client = new HttpClient(handler))
                 {
                     Assert.AreEqual("1", node.Attribute("http-version")!.Value);
-                    var url = _backend + "/" + _path.TrimStart('/');
+                    string address = _backend;
+                    if (ProviderLoopback is not null)
+                    {
+                        Assert.AreEqual(Context.NamedValues["claude-target-endpoint"] + "/anthropic", address);
+                        address = ProviderLoopback + "/anthropic";
+                    }
+                    Assert.IsTrue(new Uri(address).IsLoopback, "The offline harness may only contact its loopback provider.");
+                    var url = address + "/" + _path.TrimStart('/');
                     using var request = new HttpRequestMessage(HttpMethod.Post, url);
                     request.Content = new ByteArrayContent(Context.Request.Body.Bytes);
                     foreach (var pair in Context.Request.Headers)
@@ -197,10 +223,32 @@ internal sealed class ApimPolicyHarness
                 _phase = previous;
                 throw new PolicyReturn();
             case "authentication-managed-identity":
-                Context.Variables[node.Attribute("output-token-variable-name")!.Value] = "offline-identity";
+                string resource = Text(node.Attribute("resource")!.Value);
+                string? identity = node.Attribute("client-id")?.Value;
+                Identities.Add((resource, identity is null ? null : Text(identity)));
+                if (FailIdentity) throw new PolicyFault();
+                Context.Variables[node.Attribute("output-token-variable-name")!.Value] =
+                    identity is null ? "offline-identity" : "offline-source-assertion-never-forward";
+                break;
+            case "send-request":
+                Assert.AreEqual("new", node.Attribute("mode")!.Value);
+                Assert.AreEqual("10", node.Attribute("timeout")!.Value);
+                Assert.AreEqual("true", node.Attribute("ignore-error")!.Value);
+                Assert.AreEqual("POST", node.Element("set-method")!.Value);
+                CollectionAssert.AreEqual(new[] { "Content-Type" },
+                    node.Elements("set-header").Select(n => n.Attribute("name")!.Value).ToArray());
+                Exchanges.Add((Text(node.Element("set-url")!.Value), Text(node.Element("set-body")!.Value)));
+                Context.Variables[node.Attribute("response-variable-name")!.Value] = TokenResponse!;
                 break;
             case "cache-lookup-value":
+                string lookup = Text(node.Attribute("key")!.Value);
+                if (Cache.TryGetValue(lookup, out var cached))
+                    Context.Variables[node.Attribute("variable-name")!.Value] = cached;
+                break;
             case "cache-store-value":
+                if (node.Attribute("caching-type")?.Value == "internal")
+                    Cache[Text(node.Attribute("key")!.Value)] = Eval(node.Attribute("value")!.Value);
+                break;
             case "set-query-parameter":
                 // No inherited policy, remote cache or credential query in the fixture.
                 break;
@@ -215,7 +263,8 @@ internal sealed class ApimPolicyHarness
 
     private static Func<string, ApimContext, object> Compile()
     {
-        var expressions = Policies.Values.Append(VersionedPolicy).SelectMany(p => p.DescendantsAndSelf())
+        var expressions = Policies.Values.Concat(CatalogPolicies.Values)
+            .Concat([VersionedPolicy, Setup, ClaudeAuth, ClaudeDisabled]).SelectMany(p => p.DescendantsAndSelf())
             .SelectMany(n => n.Attributes().Select(a => a.Value).Concat(n.HasElements ? [] : new[] { n.Value }))
             .Where(v => v.StartsWith("@(") || v.StartsWith("@{")).Distinct().ToArray();
         string scratch = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ai4ia-policy-" + Guid.NewGuid().ToString("N"));
@@ -240,6 +289,8 @@ internal sealed class ApimPolicyHarness
             {
                 string expression = expressions[i];
                 string code = expression.StartsWith("@{") ? expression[1..] : "{ return " + expression[2..^1] + "; }";
+                code = Regex.Replace(code, @"\{\{([\w-]+)\}\}",
+                    match => "\" + context.NamedValues[\"" + match.Groups[1].Value + "\"] + \"");
                 source.AppendLine($"private static object E{i}(ApimContext context) {code}");
             }
             source.AppendLine("}");
@@ -302,6 +353,7 @@ internal sealed class ApimPolicyHarness
 
 public sealed class ApimContext
 {
+    public Dictionary<string, string> NamedValues { get; } = new();
     public Dictionary<string, object> Variables { get; } = new();
     public ApimRequest Request { get; } = new();
     public ApimResponse Response { get; } = new();
@@ -348,7 +400,13 @@ public sealed class ApimRequest
     public ApimUrl OriginalUrl { get; set; } = new("/");
     public ApimBody Body { get; set; } = new([]);
 }
-public sealed class ApimResponse
+public interface IResponse
+{
+    int StatusCode { get; }
+    Dictionary<string, string[]> Headers { get; }
+    ApimBody Body { get; }
+}
+public sealed class ApimResponse : IResponse
 {
     public int StatusCode { get; set; } = 500;
     public Dictionary<string, string[]> Headers { get; set; } = new(StringComparer.OrdinalIgnoreCase);

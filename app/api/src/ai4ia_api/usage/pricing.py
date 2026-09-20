@@ -19,6 +19,7 @@ _PACKAGED = Path(__file__).resolve().parents[1] / "data" / "pricing.json"
 class PriceRate:
     input_per_1m: float
     output_per_1m: float
+    cache_read_per_1m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -55,12 +56,14 @@ class PricingBook:
         version: str | None,
         image_rates: dict[str, dict[str, Any]] | None = None,
         document_rates: dict[str, dict[str, Any]] | None = None,
+        scoped_rates: dict[str, dict[str, PriceRate]] | None = None,
     ) -> None:
         self._rates = rates
         self._image_rates = image_rates or {}
         self._document_rates = document_rates or {}
         self._currency = currency
         self._version = version
+        self._scoped_rates = scoped_rates or {}
 
     @property
     def currency(self) -> str:
@@ -70,12 +73,16 @@ class PricingBook:
     def version(self) -> str | None:
         return self._version
 
-    def rate(self, model_id: str) -> PriceRate | None:
+    def rate(self, model_id: str, *, deployment: str | None = None) -> PriceRate | None:
+        if model_id in self._scoped_rates:
+            return self._scoped_rates[model_id].get(deployment or "")
         return self._rates.get(model_id)
 
-    def snapshot_token_prices(self, model_id: str | None) -> PricingBook:
+    def snapshot_token_prices(
+        self, model_id: str | None, *, deployment: str | None = None,
+    ) -> PricingBook:
         """Freeze one call's token rates/version without a second cost calculator."""
-        rate = self._rates.get(model_id) if model_id is not None else None
+        rate = self.rate(model_id, deployment=deployment) if model_id is not None else None
         return PricingBook(
             {model_id: rate} if model_id is not None and rate is not None else {},
             currency=self._currency, version=self._version,
@@ -104,10 +111,16 @@ class PricingBook:
         )
 
     def estimate(
-        self, model_id: str, *, prompt_tokens: int | None, completion_tokens: int | None
+        self, model_id: str, *, prompt_tokens: int | None, completion_tokens: int | None,
+        deployment: str | None = None, cache_read_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
     ) -> CostEstimate:
-        rate = self._rates.get(model_id)
-        if rate is None or prompt_tokens is None or completion_tokens is None:
+        rate = self.rate(model_id, deployment=deployment)
+        cache_unknown = rate is not None and rate.cache_read_per_1m is not None and (
+            cache_read_tokens is None or cache_write_tokens != 0
+            or prompt_tokens is None or not 0 <= cache_read_tokens <= prompt_tokens
+        )
+        if rate is None or prompt_tokens is None or completion_tokens is None or cache_unknown:
             return CostEstimate(
                 micro_usd=None,
                 known=False,
@@ -116,7 +129,12 @@ class PricingBook:
                 currency=self._currency,
                 version=self._version,
             )
-        micro = round(prompt_tokens * rate.input_per_1m + completion_tokens * rate.output_per_1m)
+        cached = cache_read_tokens if rate.cache_read_per_1m is not None else 0
+        micro = round(
+            (prompt_tokens - (cached or 0)) * rate.input_per_1m
+            + (cached or 0) * (rate.cache_read_per_1m or 0)
+            + completion_tokens * rate.output_per_1m
+        )
         return CostEstimate(
             micro_usd=int(micro),
             known=True,
@@ -227,12 +245,28 @@ def _parse(raw: dict[str, Any]) -> PricingBook:
             input_per_1m=float(in_rate or 0.0),
             output_per_1m=float(out_rate or 0.0),
         )
+    scoped_rates: dict[str, dict[str, PriceRate]] = {}
+    if raw.get("tokenRatesBySku"):
+        from ..catalog import load_catalog
+
+        catalog = load_catalog()
+        for model_id, sku_rates in raw["tokenRatesBySku"].items():
+            scoped_rates[model_id] = {}
+            model = catalog.get(model_id)
+            for option in model.options if model is not None else []:
+                entry = sku_rates.get(option.sku)
+                if isinstance(entry, dict):
+                    scoped_rates[model_id][option.deploymentName] = PriceRate(
+                        float(entry["inputPer1M"]), float(entry["outputPer1M"]),
+                        float(entry["cacheReadPer1M"]),
+                    )
     return PricingBook(
         rates,
         currency=currency,
         version=version,
         image_rates=_operation_rates(raw.get("imageModels")),
         document_rates=_operation_rates(raw.get("documentModels")),
+        scoped_rates=scoped_rates,
     )
 
 

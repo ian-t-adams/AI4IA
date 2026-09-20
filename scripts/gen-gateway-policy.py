@@ -14,6 +14,7 @@ from xml.parsers import expat
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _generator import build_parser
+from _model_targets import model_target
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_PATH = ROOT / "infra" / "models.json"
@@ -45,6 +46,7 @@ CATALOG_FRAGMENT_IDS = tuple(
     for index in range(CATALOG_FRAGMENT_COUNT)
 )
 SETUP_FRAGMENT_ID = "endpoint_selection_setup_32"
+CLAUDE_AUTH_FRAGMENT_ID = "claude_auth_v1"
 PRIORITY_POLICY_PATH = (
     ROOT / "infra" / "policies" / "simplel7proxy-priority-retry.xml"
 )
@@ -152,9 +154,14 @@ def backend_row(
     operation_path: str | None,
     priority: int,
     timeout: int,
+    target: str = "source",
 ) -> str:
     endpoint_kind = "services-endpoint" if provider_path == "mai" else "endpoint"
     named_value = f"{{{{foundry-{region}-{endpoint_kind}}}}}"
+    auth = "MI"
+    if target == "external-claude":
+        named_value = "{{claude-target-endpoint}}"
+        auth = "CLAUDE_FEDERATED"
     operation_row = (
         f'                    new JProperty("operation", "/{operation_path}"),\n'
         if operation_path
@@ -170,7 +177,7 @@ def backend_row(
         '                    new JProperty("acceptablePriorities", "1, 2, 3"),\n'
         f'                    new JProperty("timeout", {timeout}),\n'
         '                    new JProperty("bufferResponse", false),\n'
-        '                    new JProperty("auth", "MI")\n'
+        f'                    new JProperty("auth", "{auth}")\n'
         "                ))"
     )
 
@@ -184,6 +191,7 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
     max_attempts = 1
 
     for model in models["catalog"]:
+        target = model_target(model)
         deployments = model["deployments"]
         category = model["category"]
         if category not in ROUTABLE_CATEGORIES:
@@ -284,6 +292,7 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                     operation_path=operation_path,
                     priority=1 if candidate["region"] == requested["region"] else 2,
                     timeout=timeout,
+                    target=target,
                 )
                 for candidate in ordered
             ]
@@ -750,6 +759,10 @@ def generate_priority_policies() -> tuple[str, tuple[str, ...]]:
         raise ValueError("priority policy endpoint fragment chain must be contiguous")
     inbound_pre = inbound_children[base_index + 1 : endpoint_indices[0]]
     inbound_post = inbound_children[endpoint_indices[-1] + 1 :]
+    auth_node = f'<include-fragment fragment-id="{CLAUDE_AUTH_FRAGMENT_ID}" />'
+    if not inbound_post or inbound_post[-1].strip() != auth_node:
+        raise ValueError("model authentication must finish the inbound phase")
+    inbound_post = inbound_post[:-1]
 
     def without_base(section_name: str) -> tuple[str, list[str]]:
         children = _section_nodes(source, section_name)
@@ -806,6 +819,7 @@ def generate_priority_policies() -> tuple[str, tuple[str, ...]]:
             for fragment_id in endpoint_ids
         )
         + f'    <include-fragment fragment-id="{PRIORITY_FRAGMENT_IDS[1]}" />\n'
+        + f'    <include-fragment fragment-id="{CLAUDE_AUTH_FRAGMENT_ID}" />\n'
         + "  </inbound>\n"
         + "  <backend>\n"
         + section_fragment(PRIORITY_FRAGMENT_IDS[2], backend_base)
@@ -1313,6 +1327,9 @@ def main() -> int:
         (REALTIME_GA_OUTPUT_PATH, realtime_ga_generated),
     )
     try:
+        for filename in ("claude-disabled.xml", "claude-federated-auth.xml"):
+            path = ROOT / "infra" / "policies" / filename
+            validate_policy_fragment(path.read_text(encoding="utf-8"), filename)
         for path, policy in fragments:
             validate_policy_fragment(policy, str(path.relative_to(ROOT)))
         for path, policy in policies[len(fragments) :]:

@@ -80,6 +80,11 @@ __AI4IA_BACKEND_CATALOG_MERGE__
         return backends;
     }" />
 
+    <set-variable name="claudeFederated" value="@{
+        JObject selected = (JObject)context.Variables[&quot;selectedBackends&quot;];
+        return selected.Properties().Any(p => ((JObject)p.Value).Value&lt;string&gt;(&quot;auth&quot;) == &quot;CLAUDE_FEDERATED&quot;);
+    }" />
+
     <!-- Picks the token audience from the selected provider path. All failover
         backends for one model use the same protocol (enforced by generation).
         Microsoft documents https://ai.azure.com/.default for Claude Messages;

@@ -108,6 +108,9 @@ param adminApiSecret string = ''
 @description('Enable Anthropic Claude in the server-authoritative model catalog (AI4IA_CLAUDE_ENABLED).')
 param claudeEnabled bool = false
 
+@description('Cross-tenant Claude gateway staging gate. Must accompany claudeEnabled; not an identity or deployment proof.')
+param claudeExternalEnabled bool = false
+
 @description('Emit the server-derived SimpleL7Proxy priority band header on outbound gateway calls (AI4IA_PROXY_PRIORITIES_ENABLED). Must match the proxy-side switch.')
 param proxyPrioritiesEnabled bool = false
 
@@ -902,6 +905,10 @@ var claudeEnv = claudeEnabled ? [
   {
     name: 'AI4IA_CLAUDE_ENABLED'
     value: 'true'
+  }
+  {
+    name: 'AI4IA_CLAUDE_EXTERNAL_ENABLED'
+    value: string(claudeExternalEnabled)
   }
 ] : []
 

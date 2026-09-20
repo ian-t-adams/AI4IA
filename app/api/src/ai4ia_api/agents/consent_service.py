@@ -74,6 +74,9 @@ def environment_hash(state: Any) -> str:
         name: value for name, value in values.items()
         if not _CREDENTIAL_FIELD.search(name)
     }
+    if configuration.get("claude_external_enabled") is False:
+        # A default-absent external provider must not invalidate ordinary consent.
+        configuration.pop("claude_external_enabled")
     catalog = getattr(state, "catalog", None)
     return contract_hash({
         "settings": configuration,

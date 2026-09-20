@@ -23,6 +23,8 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from uuid import UUID
 
+from _model_targets import model_target
+
 ROOT = Path(__file__).resolve().parents[1]
 ARM = "https://management.azure.com"
 COGNITIVE_API = "2024-10-01"
@@ -188,6 +190,7 @@ class Deployment:
     baseline: int
     maximum: int | None
     declared_pool: str | None
+    target: str = "source"
 
     def public(self) -> dict:
         return {
@@ -196,6 +199,7 @@ class Deployment:
             "declaredPool": self.declared_pool,
             "poolAuthority": "unverified_catalog_declaration",
             "declaredAt": None,
+            **({"deploymentTarget": self.target} if self.target != "source" else {}),
         }
 
 
@@ -236,6 +240,10 @@ def load_catalog(path: Path) -> Catalog:
     identities = set()
     for entry in array(document.get("catalog"), MAX_MODELS):
         entry = object_value(entry)
+        try:
+            target = model_target(entry)
+        except ValueError:
+            raise EvidenceError("unsupported_catalog_target") from None
         model_name, model_format = token(entry.get("name")), provider_format(entry.get("format"))
         for item in array(entry.get("deployments"), MAX_DEPLOYMENTS):
             item = object_value(item)
@@ -258,7 +266,7 @@ def load_catalog(path: Path) -> Catalog:
             maximum = number(item["maxCapacity"]) if "maxCapacity" in item else None
             deployments.append(Deployment(
                 name, region, Model(model_format, model_name, version, sku),
-                number(item.get("capacity")), maximum, pool,
+                number(item.get("capacity")), maximum, pool, target,
             ))
     if not deployments or len(deployments) > MAX_DEPLOYMENTS:
         raise EvidenceError("deployment_limit_exceeded")
@@ -348,10 +356,12 @@ class ProcessResult:
     warning: bool
 
 
-def run_bounded(command: list[str], timeout: float, limit: int) -> ProcessResult:
+def run_bounded(
+    command: list[str], timeout: float, limit: int, *, extra_env: dict[str, str] | None = None,
+) -> ProcessResult:
     """Drain both pipes within byte and wall-clock budgets; never publish stderr."""
     environment = {
-        **os.environ, "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no",
+        **os.environ, **(extra_env or {}), "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no",
         "AZURE_CORE_COLLECT_TELEMETRY": "no", "AZURE_LOGGING_ENABLE_LOG_FILE": "no",
     }
     deadline = time.monotonic() + timeout
@@ -1080,6 +1090,8 @@ def pool_rollups(
             and (d.model.format, d.model.name, d.model.sku) == (identity["format"], identity["name"], identity["sku"])
         ]
         codes = set()
+        if any(d.target != "source" for d in expected):
+            codes.add("external_target_scope_unavailable")
         observations = []
         catalog_allocation = 0
         known_allocation = 0
@@ -1260,6 +1272,12 @@ def collect(
     model_queries = {}
     for deployment in catalog.deployments:
         model = deployment.model
+        if deployment.target != "source":
+            skip(
+                "availability", availability_source_id((model.format, model.name, model.version)),
+                "external_target_scope_unavailable", {"deploymentTarget": deployment.target},
+            )
+            continue
         model_queries[(model.format, model.name, model.version)] = model
     for key, model in sorted(model_queries.items()):
         source_id = availability_source_id(key)
@@ -1278,7 +1296,7 @@ def collect(
         account = account_names.get(region)
         definition_id, metric_id = f"definitions:{region}", f"metrics:{region}"
         target = {"region": region}
-        expected = {d.name for d in catalog.deployments if d.region == region}
+        expected = {d.name for d in catalog.deployments if d.region == region and d.target == "source"}
         live = {row["name"]: row for row in inventories.get(region, []) if row["name"] in expected}
         if account is None or sources[f"deployments:{region}"]["status"] != "available":
             skip("definitions", definition_id, "deployment_inventory_not_verified", target)
@@ -1327,8 +1345,14 @@ def collect(
     unexpected = []
     for deployment in catalog.deployments:
         source_id = f"deployments:{deployment.region}"
+        if deployment.target != "source":
+            source_id = f"external:{deployment.name}"
+            skip("deployments", source_id, "external_target_scope_unavailable", {"deploymentTarget": deployment.target})
         source = sources[source_id]
-        matches = [row for row in inventories.get(deployment.region, []) if row["name"] == deployment.name]
+        matches = [
+            row for row in inventories.get(deployment.region, [])
+            if row["name"] == deployment.name and deployment.target == "source"
+        ]
         row = matches[0] if len(matches) == 1 else None
         state = (
             "unknown" if source["status"] != "available"
@@ -1338,7 +1362,8 @@ def collect(
             else "matched"
         )
         declaration = {
-            "catalog": deployment.public(), "account": account_names.get(deployment.region),
+            "catalog": deployment.public(),
+            "account": account_names.get(deployment.region) if deployment.target == "source" else None,
             "inventoryStatus": state, "allocationSource": source_id,
             "live": {
                 "model": row["model"].public(), "capacity": row["capacity"], "unit": "raw_capacity_units",
@@ -1351,7 +1376,7 @@ def collect(
         }
         declarations.append(declaration)
     for region, inventory in sorted(inventories.items()):
-        expected = {d.name for d in catalog.deployments if d.region == region}
+        expected = {d.name for d in catalog.deployments if d.region == region and d.target == "source"}
         for row in inventory:
             if row["name"] not in expected:
                 unexpected.append({

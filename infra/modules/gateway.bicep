@@ -47,6 +47,12 @@ param proxyImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 @description('Catalog-driven Foundry backends: region, endpoint, and accountName.')
 param foundryBackends array
 
+param claudeEnabled bool = false
+param claudeExternalEnabled bool = false
+
+@description('Validated operator binding. Never merged into source-region Foundry backends or source RBAC loops.')
+param claudeBinding object = {}
+
 @minLength(1)
 @description('Foundry endpoint in the deployment primary region, used only as the non-looping APIM service URL fallback.')
 param primaryFoundryEndpoint string
@@ -284,7 +290,14 @@ var priorityPolicyFragmentDefinitions = [
 
 var modelPolicyFragmentDefinitions = concat(
   endpointSelectionFragmentDefinitions,
-  priorityPolicyFragmentDefinitions
+  priorityPolicyFragmentDefinitions,
+  [
+    {
+      baseName: 'claude_auth_v1'
+      description: 'Default-off external Claude authentication; ordinary routes retain system identity.'
+      value: claudeEnabled && claudeExternalEnabled ? loadTextContent('../policies/claude-federated-auth.xml') : loadTextContent('../policies/claude-disabled.xml')
+    }
+  ]
 )
 
 // Normalize checkout-specific CRLF before content-addressing and deployment.
@@ -367,6 +380,25 @@ resource sharedFoundryServicesEndpointValues 'Microsoft.ApiManagement/service/na
   }
 }]
 
+// Disabled routes fail before authentication. These inert endpoint values satisfy
+// the catalog fragment references without introducing a reachable fallback.
+var claudeNamedValues = {
+  'claude-target-endpoint': claudeExternalEnabled ? 'https://${claudeBinding.targetAccountName}.services.ai.azure.com' : 'https://disabled.invalid'
+  'claude-target-tenant': claudeExternalEnabled ? claudeBinding.targetTenantId : 'disabled'
+  'claude-app-client': claudeExternalEnabled ? claudeBinding.applicationClientId : 'disabled'
+  'claude-uami-client': claudeExternalEnabled ? claudeBinding.sourceIdentityClientId : 'disabled'
+  'claude-proxy-subscription': proxyModelSubscriptionName
+}
+resource claudeBindingValues 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = [for item in items(claudeNamedValues): {
+  parent: sharedApim
+  name: item.key
+  properties: {
+    displayName: item.key
+    secret: false
+    value: item.value
+  }
+}]
+
 // WebSocket APIs require a WSS backend. The catalog policy references only these
 // named values, so account endpoints stay catalog-derived and never hard-coded.
 resource sharedRealtimeWssEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = [for backend in foundryBackends: {
@@ -390,6 +422,7 @@ resource sharedModelPolicyFragments 'Microsoft.ApiManagement/service/policyFragm
   dependsOn: [
     sharedFoundryEndpointValues
     sharedFoundryServicesEndpointValues
+    claudeBindingValues
   ]
 }]
 

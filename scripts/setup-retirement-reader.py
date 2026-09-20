@@ -315,6 +315,9 @@ def source_contract(cli: Cli, target: Target) -> tuple[dict, dict, dict]:
     sources["scripts/_capacity_evidence.py"] = hashlib.sha256(
         (ROOT / "scripts" / "_capacity_evidence.py").read_bytes()
     ).hexdigest()
+    sources["scripts/_model_targets.py"] = hashlib.sha256(
+        (ROOT / "scripts" / "_model_targets.py").read_bytes()
+    ).hexdigest()
     workflow = bodies[WORKFLOW]
     matches = re.findall(r"(?m)^          (\w+): \$\{\{ vars\.(\w+) \}\}$", workflow)
     variables = dict(matches)
@@ -410,6 +413,14 @@ def validate_step(name: str, row: dict, intent: dict) -> None:
 
 
 def account_context(cli: Cli, target: Target, catalog: dict) -> list[dict]:
+    from _model_targets import model_target
+
+    require(
+        target.claude_enabled != "true" or all(
+            model_target(model) == "source" for model in catalog.get("catalog", [])
+        ),
+        "External Claude requires a separate target reader; source-only reader setup cannot cover it.",
+    )
     naming = object_value(catalog.get("naming"))
     foundry_token = naming.get("foundryToken")
     require(isinstance(foundry_token, str) and re.fullmatch(r"[a-z0-9-]{1,30}", foundry_token) is not None,

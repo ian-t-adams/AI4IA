@@ -107,6 +107,8 @@ REFACTOR:
 		<set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
 		<set-query-parameter name="subscription-key" exists-action="delete" />
 		<set-header name="Authorization" exists-action="delete" />
+		<set-header name="api-key" exists-action="delete" />
+		<set-header name="x-api-key" exists-action="delete" />
 		<set-header name="anthropic-version" exists-action="delete" />
 		<!-- set the request ID in case we need to debug -->
 		<set-header name="x-ms-client-request-id" exists-action="override">
@@ -232,9 +234,6 @@ REFACTOR:
 				.GetValue(context.Variables.GetValueOrDefault&lt;int>(&quot;RequestPriority&quot;, 3).ToString())?
 				.Value&lt;bool>(&quot;requeue&quot;) ?? true;
 		}" />
-		<!-- Fetch the Managed Identity token once for the whole request. The token
-		     audience (authResource) is resolved per model in the endpoint catalog. -->
-		<authentication-managed-identity resource="@((string)context.Variables[&quot;authResource&quot;])" output-token-variable-name="managed-id-access-token" ignore-error="false" />
 		<set-variable name="backendCallCounter" value="@(0)" />
 		<set-variable name="PolicyCycleCounter" value="@{
 			string policyCycleCounterHeaderName = (string)context.Variables[&quot;PolicyCycleCounterHeaderName&quot;];
@@ -285,6 +284,7 @@ REFACTOR:
 			return string.Join(&quot; | &quot;, dbgObj.Properties().Select(p => p.Name + &quot;: &quot; + p.Value));
 		}" />
 
+		<include-fragment fragment-id="claude_auth_v1" />
 	</inbound>
 	<!-- Control if and how the requests are forwarded to services  -->
 	<backend>
@@ -520,6 +520,12 @@ REFACTOR:
 					<set-variable name="backendProtocolPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;path&quot;))" />
 					<set-variable name="backendOperationPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;operation&quot;))" />
 					<choose>
+						<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;claudeFederated&quot;, false) &amp;&amp; (context.Variables.GetValueOrDefault&lt;string>(&quot;auth&quot;, &quot;&quot;) != &quot;CLAUDE_FEDERATED&quot; || context.Variables.GetValueOrDefault&lt;string>(&quot;backendUrl&quot;, &quot;&quot;) != &quot;{{claude-target-endpoint}}/anthropic&quot; || context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;) != &quot;anthropic&quot;))">
+							<return-response>
+								<set-status code="502" reason="Claude binding unavailable" />
+								<set-body>{"error":{"code":"claude_binding_unavailable"}}</set-body>
+							</return-response>
+						</when>
 						<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; (context.Variables.GetValueOrDefault&lt;bool>(&quot;attemptClaimed&quot;, false) || context.Variables.GetValueOrDefault&lt;int>(&quot;backendCallCounter&quot;, 0) != 0 || context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;) != &quot;openai&quot; || !string.IsNullOrEmpty(context.Variables.GetValueOrDefault&lt;string>(&quot;backendOperationPath&quot;, &quot;&quot;))))">
 							<return-response>
 								<set-status code="400" reason="Unsupported gateway attempt" />
@@ -668,7 +674,7 @@ REFACTOR:
 					</choose>
 					<!-- use Managed Identity, API-Key, or no auth header based on auth value -->
 					<choose>
-						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;auth&quot;, &quot;&quot;), &quot;MI&quot;, StringComparison.OrdinalIgnoreCase))">
+						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;auth&quot;, &quot;&quot;), &quot;MI&quot;, StringComparison.OrdinalIgnoreCase) || context.Variables.GetValueOrDefault&lt;string>(&quot;auth&quot;, &quot;&quot;) == &quot;CLAUDE_FEDERATED&quot;)">
 							<set-header name="Authorization" exists-action="override">
 								<value>@("Bearer " + (string)context.Variables["managed-id-access-token"])</value>
 							</set-header>
@@ -1231,6 +1237,14 @@ REFACTOR:
 	</outbound>
 	<!-- Handle exceptions and customize error responses  -->
 	<on-error>
+		<choose>
+			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;claudeFederated&quot;, false))">
+				<return-response>
+					<set-status code="502" reason="Claude gateway unavailable" />
+					<set-body>{"error":{"code":"claude_gateway_unavailable"}}</set-body>
+				</return-response>
+			</when>
+		</choose>
 		<choose>
 			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))">
 				<return-response>

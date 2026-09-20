@@ -377,6 +377,11 @@ def _effective_params(params: dict, entry: ModelEntry | None) -> dict:
     if effort is not None:
         allowed = entry.reasoningEffortOptions if entry is not None else []
         if effort not in allowed:
+            if entry is not None and entry.deploymentTarget == "external-claude":
+                raise HTTPException(
+                    status_code=422,
+                    detail="Claude's thinking-disabled profile supports only low, medium, or high effort.",
+                )
             logger.info(
                 "chat.reasoning_effort_dropped",
                 extra={

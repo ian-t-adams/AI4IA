@@ -19,8 +19,10 @@ feature posture.
 
 ## Flag inventory
 
+
 | Feature | API flag / setting | Web flag | IaC parameter | Deployed prerequisites |
 |---|---|---|---|---|
+| Cross-tenant Claude | `AI4IA_CLAUDE_ENABLED` + `AI4IA_CLAUDE_EXTERNAL_ENABLED` | safe server catalog only | `claudeEnabled`, `claudeExternalEnabled`, `claudeBindingJson` | Defaults off/unconfigured. Separate target account/models, explicit legal/network decision, source UAMI + multitenant app/FIC, target SP + exact-account MaaS inference role, distinct target reader and fresh both-tenant readbacks. Not Private Link or live approval. |
 | Atomic application admission (source only) | `AI4IA_HARD_QUOTA_ENABLED` | none | `hardQuotaEnabled` | Default `false`; deployed activation and local Cosmos are refused. Explicit local test seed only; reviewed durable bootstrap, reconciliation, replay recovery and fleet cutover remain unimplemented |
 | Versioned one-attempt gateway staging | `AI4IA_GATEWAY_ATTEMPTS_V1_STAGED` | none | `gatewayAttemptsV1Staged` | Default `false`; stages only the isolated API/operations/policy/scoped proxy key on the existing APIM. Governed HTTPS native proxy ingress and S7P-KEY auth required; no shipping runtime verifier or cap activation. See [construction prerequisites](../hard-quota-admission.md#versioned-route-staging-and-construction-contract) |
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | `voiceLiveEnabled` | Browser Origin allowlist outside local |
@@ -202,6 +204,213 @@ Run authenticated direct-FastAPI protocol canaries for both voice providers
 after any change. Read the
 deployed Container App env when you need the current answer; do not infer it from
 the profile default.
+
+## Cross-tenant Claude source contract
+
+**Source-only and default-off.** This contract does not approve provider terms,
+directory objects/consent, roles, capacity provisioning, network changes or live
+traffic. An unresolved requirement for private networking blocks activation.
+The supported source network mode is explicitly **`public-keyless`**, not Private
+Link. The existing Basic v2 APIM does not provide outbound VNet integration;
+private endpoints, reachable DNS and an appropriate gateway/network design need
+separate approval. Do not choose public HTTPS merely to pass this gate.
+
+`infra/models.json` is the only model/version/region/SKU/capacity inventory.
+Its `deploymentTarget: external-claude` rows describe one isolated eastus2
+account: Opus 5 version 2 at GlobalStandard 40 and DataZoneStandard 13, and Sonnet 5
+version 2 at GlobalStandard 20. These are raw model-specific standard-capacity
+units, not fixed PTUs, TPM conversions, a dollar reservation or current headroom.
+They must be checked again before provisioning. Do not add Swedish replicas,
+duplicate versions or a zero-quota Sonnet DataZone deployment to multiply them.
+Main-stack Bicep always excludes these rows from source accounts. Existing source
+allocations, Sora 2, TTS/realtime, memory and document residency floors are unchanged.
+
+The model path remains **API -> existing SimpleL7Proxy -> existing shared APIM
+-> exact target Foundry account**. Source system-MI authentication remains
+unchanged for ordinary models. The Claude branch obtains a **user-assigned**
+managed identity assertion for `api://AzureADTokenExchange`, exchanges it at the
+fixed target-tenant OAuth endpoint for `https://ai.azure.com/.default`, and sends
+only the target token to the bound `/anthropic/v1/messages` endpoint. Client,
+tenant, destination and auth mode are never selected from request headers.
+OAuth exchanges have a 10-second timeout, require a bounded Bearer response with
+a positive bounded lifetime, and fail with content-free errors. Every Claude
+request exchanges against its exact configured tenant/application/audience;
+target tokens are **request-local, not cached**. APIM's built-in MI cache retains
+only the source UAMI assertion by client/resource. The existing throttle path
+already owns the inbound custom-cache lookup; adding a second lookup violates
+the [documented policy limit](https://learn.microsoft.com/en-us/azure/api-management/cache-lookup-value-policy).
+No target token survives a tenant/client/endpoint configuration change.
+This deliberately adds one authentication round trip and a token-endpoint
+availability dependency per Claude request. Allocated model capacity is not
+evidence of achieved end-to-end throughput or latency.
+Source assertions and OAuth responses are not logged, returned or saved in
+application receipts. Claude still cannot obtain attempts-v1 or finite/hard-dollar
+admission through a generic chat path.
+
+### Separate approved operator units
+
+The following are distinct approvals and execution steps, not actions performed
+by the normal application runtime or by this source change:
+
+1. Confirm network intent and the actual legal entity, country and industry for
+   **this target subscription**. Existing application settings are not permission
+   to reuse an attestation. Version 2 still requires Anthropic Marketplace terms
+   through `modelProviderData`; identity-only authentication does not remove them.
+2. In the **source tenant**, approve a dedicated UAMI (`infra/claude-identity.bicep`,
+   `createIdentity=false` by default) and a dedicated multitenant application in
+   that same tenant. Create its single FIC with issuer
+   `https://login.microsoftonline.com/<source-tenant>/v2.0`, subject equal to the
+   UAMI **principal/object ID**, and audience `api://AzureADTokenExchange`.
+   No password/certificate credential or system-MI substitution is accepted.
+   Graph creation/consent is an operator step, never a deployment script fallback.
+3. Provision that application's service principal in the target tenant after
+   the required consent is approved. Separately approve a **distinct target-reader
+   identity and main-ref GitHub OIDC trust**. It must not be the runtime application,
+   UAMI or existing source deployment identity. The readers need the exact app,
+   FIC and SP metadata reads plus scoped ARM reads used below. Missing Graph
+   access is an explicit blocker; do not automatically add broad directory
+   permissions to work around it.
+4. Prepare an empty dedicated target resource group and the planned binding.
+   Run the target preflight below under its isolated reader profile. It reads
+   exact version/SKU offerings, their **offered `usageName`** counter, raw remaining
+   quota and modelCapacities for the single requested region; it does not normalize
+   version-1 counters or sum replicas. Missing/contradictory dates or retirement
+   within seven days refuse new provisioning. This read is not a reservation.
+5. After separate capacity/terms approval, use `infra/claude-target.bicep` with
+   `provisionClaude=true`, explicit `networkMode=public-keyless` and confirmed legal
+   parameters. It creates only the dedicated identity-only account and catalog
+   deployments; no full application stack, project, key or learning-account
+   mutation. The account name is Bicep-derived. Observe its actual outputs/IDs.
+6. After separate access approval, `infra/claude-access.bicep`
+   (`grantInferenceAccess=false` by default) creates the documented custom
+   inference role with **only** `Microsoft.CognitiveServices/accounts/MaaS/*`
+   data actions and an exact-account assignment to the **target SP principal ID**.
+   It has no key/secret/control-plane actions. Built-in Foundry User is broader
+   and is not an inference-only substitute. Metadata alone does not prove that
+   Claude will authorize this role; a separately approved governed canary is
+   still required.
+
+### Exact binding and continuously fresh readback
+
+`AI4IA_CLAUDE_BINDING_JSON` contains exactly these noncredential strings. Keep
+real values in operator configuration, never source or a public report.
+
+| Binding fields | Required observation |
+| --- | --- |
+| `sourceTenantId`, `sourceSubscriptionId`, `environment`, `workload` | Exact current source deployment context; no subscription switching |
+| `sourceApimResourceId`, `sourceApimPrincipalId` | Existing shared APIM and its unchanged system principal |
+| `sourceIdentityResourceId`, `sourceIdentityClientId`, `sourceIdentityPrincipalId` | Dedicated source UAMI; distinguish resource, client and principal IDs |
+| `applicationObjectId`, `applicationClientId`, `federatedCredentialName` | Same-source-tenant multitenant app and exact sole UAMI FIC, without secrets |
+| `targetTenantId`, `targetSubscriptionId`, `targetResourceGroup`, `targetAccountName` | Dedicated observed target account, never a regional source account or a learning resource |
+| `targetPrincipalId`, `targetInferenceRoleDefinitionId` | Target SP bound to the source app; exact custom role definition and account assignment |
+| `targetReaderClientId` | Distinct approved read-only identity, not a runtime/deploy credential |
+| `networkMode` | Explicit `public-keyless`; absent, private or unknown modes refuse |
+
+The planned binding can identify intended resources for the **pre-creation**
+capacity check; it is not evidence they exist. Activation requires actual
+observations of every identity/resource/model and policy, not the planned values.
+Use an authenticated source CLI profile and an independently authenticated target
+reader directory named by `AI4IA_CLAUDE_TARGET_AZURE_CONFIG_DIR`. The helper never
+logs in, selects an account, copies a credential cache, follows continuation URLs,
+replays a failed read, creates grants, or accepts a saved JSON proof.
+
+```powershell
+# Offline configuration shape/scope only; not activation proof.
+python scripts/check-claude-binding.py --check
+# Before the separately approved target provision (dedicated account group empty).
+python scripts/check-claude-binding.py --target-preflight
+# After target account/models, app/FIC/SP and role setup; before source provision.
+python scripts/check-claude-binding.py
+# After source staging or activation; verify real attached identity and APIM routes.
+python scripts/check-claude-binding.py --routed
+```
+
+The bounded reader allows at most 40 calls, 180 seconds, 1 MiB per response and
+8 MiB total. Each process has at most 20 seconds; every CLI request carries the
+explicit subscription and fixed profile directory. It verifies exact model,
+version, SKU, integer capacity, `Succeeded`, `NoAutoUpgrade`, local-auth disabled,
+dedicated ownership, SP/app/FIC and custom-role permissions. The routed check
+also reads every referenced current policy fragment, fixed named values and the
+non-traceable API-only proxy subscription between stable policy reads. Unknown,
+partial, warnings and mismatches are failures; a correct-looking Boolean or
+manifest never substitutes for these reads.
+
+APIM's `format=rawxml` readback can change indentation and terminal newlines.
+Policy-content comparison therefore ignores only XML comments and whitespace
+between elements. Ordered elements, every parsed attribute (including C#
+expressions and string literals), and all meaningful body/value text remain
+exact. Whitespace inside expressions or payloads is never collapsed. Malformed,
+oversized, deeply nested XML, DTDs/entities and processing instructions refuse.
+The before/after observations must still be unchanged; semantic comparison does
+not excuse a policy update during collection.
+
+Stage source infrastructure with `AI4IA_CLAUDE_EXTERNAL_ENABLED=true` while
+`AI4IA_CLAUDE_ENABLED=false`. Main Bicep attaches the preapproved UAMI **alongside**
+the system identity, and APIM continues to refuse Claude. `check-model-availability.py`
+verifies the external target separately before evaluating source-subscription
+models. `postprovision.ps1` requires the routed readback. The deployment workflow
+uses an opt-in, isolated target-reader OIDC login with its existing job-scoped
+OIDC permission; it performs fresh identity/target reads and repeats route
+verification before image rollout, including `provision=false`. Activated CI must
+have usable Graph metadata and ARM read authority in both tenants; a successful
+operator check from yesterday cannot satisfy it.
+
+Only after target-specific approvals and staged readbacks may the parent/operator
+approve setting `AI4IA_CLAUDE_ENABLED=true`, source reconciliation and a bounded
+application-path canary. **No live activation or canary is part of this source
+contract's completion evidence.** To change a live binding, first disable using
+the **old** binding and verify APIM's actual disabled fragment, then change the
+binding while disabled. The preflight refuses a changed binding under a live or
+unknown auth policy. Roll back advertisement/dispatch, not identity grants or
+target data; removing resources/grants requires separate approval.
+
+Single-subscription retirement and capacity reports retain external rows as
+unknown and never borrow source inventory/metrics/quota. Production-capacity
+selection with enabled external rows refuses unsupported scope. The maximum
+planner cannot apply an externally enabled catalog; its source-only plan labels
+external coverage unknown. Reader setup cannot claim foreign coverage from a
+source-only identity.
+
+### Supported application profile and pricing evidence
+
+Both new models have documented 1M context and 128K synchronous output. This
+application deliberately supports **text plus its governed function-tool loop,
+thinking disabled, and native `output_config.effort` low/medium/high**. It does
+not advertise native vision, adaptive signed-thinking continuation or xhigh/max.
+The latter can require thinking and cannot safely round-trip through the current
+unified durable history. Missing/contradictory profile metadata refuses; no
+provider-default adaptive fallback is used. Historical 4.8 adapter fixtures and
+prices remain, without rewriting saved selections or old receipts.
+
+Safe catalog metadata, HTTP parameter validation, adapted payloads, tool
+continuations and effective receipt parameters agree on this profile. Publication
+and consent bind the full model metadata through their existing environment
+digests; ordinary models omit the new default fields to preserve legacy digests.
+
+USD/MTok directional rates are Opus 5 **5 input / 25 output** globally, **5.5 /
+27.5** for US DataZoneStandard, and Sonnet 5 **2 / 10** globally. Exact catalog
+deployment/SKU, not region alone, selects the rate. Cache reads use the documented
+0.1x input rate; cache writes without evidenced duration remain cost-unknown.
+The adapter does not request caching. Missing deployment, usage or a lost cache
+breakdown is unknown, never free. Cache breakdown is in-process only; no Cosmos
+schema or historical repricing is introduced. Shared receipt pricing snapshots
+the applicable rates/version before the provider await; monetary/replay activation
+gates remain unchanged. These are estimates, not Azure bill guarantees.
+
+Official evidence checked **2026-09-20**:
+[Opus 5](https://platform.claude.com/docs/en/models/opus-5/overview),
+[Sonnet 5](https://platform.claude.com/docs/en/models/sonnet-5/overview),
+[effort](https://platform.claude.com/docs/en/build-with-claude/effort),
+[Opus migration/tool-history requirements](https://platform.claude.com/docs/en/models/opus-5/migration-guide),
+[Foundry deployment/version hosting](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry),
+[pricing and US DataZone multiplier](https://platform.claude.com/docs/en/about-claude/pricing),
+[UAMI/application federation](https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation-config-app-trust-managed-identity),
+[APIM managed-identity policy](https://learn.microsoft.com/en-us/azure/api-management/authentication-managed-identity-policy),
+[documented MaaS custom role](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/configure-entra-id),
+[APIM networking tiers](https://learn.microsoft.com/en-us/azure/api-management/virtual-network-concepts).
+ARM target observations, not public lifecycle prose, remain authoritative for
+provisioning admission. Offline .NET expression controls are not an Azure policy
+compiler, live authorization proof or private-network test.
 
 ## Enablement notes
 

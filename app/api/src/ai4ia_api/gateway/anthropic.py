@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from ..catalog import ModelEntry
     from ..genai_telemetry import ModelSpan
 
 
@@ -184,6 +185,7 @@ def build_anthropic_payload(
     messages: Sequence[dict[str, Any]],
     params: dict[str, Any] | None,
     stream: bool,
+    profile: ModelEntry | None = None,
 ) -> dict[str, Any]:
     """Build a strict Claude Messages body from trusted internal chat inputs."""
     source = dict(params or {})
@@ -211,10 +213,16 @@ def build_anthropic_payload(
                 choice["disable_parallel_tool_use"] = True
             body["tool_choice"] = choice
 
-    # Claude Opus 4.8 v2 rejects temperature and requires top_p=0.99. Omitting
-    # both selects that provider default and avoids pretending the generic chat
-    # sliders are portable. Provider-specific adaptive-thinking controls remain
-    # on the model default until they have been probed through the live gateway.
+    if profile is not None and profile.deploymentTarget == "external-claude":
+        profile.require_external_profile()
+        effort = source.get("reasoning_effort", "high")
+        if effort not in (profile.reasoningEffort or []):
+            raise ValueError("Unsupported effort for the Claude thinking-disabled profile.")
+        body["thinking"] = {"type": "disabled"}
+        body["output_config"] = {"effort": effort}
+
+    # Sampling stays absent. Legacy Anthropic models keep their existing payload;
+    # only an explicit catalog profile changes thinking/effort.
     return body
 
 
@@ -234,6 +242,10 @@ def anthropic_usage_to_chat(usage: Any) -> dict[str, Any] | None:
         "prompt_tokens": prompt,
         "completion_tokens": completion,
         "total_tokens": prompt + completion,
+        "anthropic_cache": {
+            "read": counts["cache_read_input_tokens"],
+            "write": counts["cache_creation_input_tokens"],
+        },
     }
 
 

@@ -466,13 +466,20 @@ class ProductionProfileTests(unittest.TestCase):
     def test_disabled_anthropic_does_not_become_an_enabled_missing_deployment(self):
         models = production_document()
         extra = copy.deepcopy(models["catalog"][0])
-        extra.update(name="partner-model", format="Anthropic", api="anthropic")
+        extra.update(
+            name="partner-model", format="Anthropic", api="anthropic",
+            deploymentTarget="external-claude", anthropicThinking="disabled",
+            samplingSupported=False, reasoningEffort=["low", "medium", "high"],
+        )
+        extra["deployments"] = [d for d in extra["deployments"] if d["region"] == "eastus2"]
         for deployment in extra["deployments"]:
             del deployment["production"]
+            deployment.pop("maxCapacity", None)
+            deployment.pop("maxCapacityPool", None)
         models["catalog"].append(extra)
         selected = preflight.catalog_requirements(models, capacity_profile="production", include_anthropic=False)
         self.assertEqual(sum(map(len, selected.values())), 2)
-        with self.assertRaisesRegex(evidence.EvidenceError, "production_deployment_not_configured"):
+        with self.assertRaisesRegex(evidence.EvidenceError, "external_target_production_policy_unsupported"):
             preflight.catalog_requirements(models, capacity_profile="production", include_anthropic=True)
 
     def test_runtime_catalog_is_allocation_independent(self):

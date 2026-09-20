@@ -70,7 +70,9 @@ assignment is created.
 | Permit dev auth outside local | `AI4IA_ALLOW_DEV_AUTH` | `apiAllowDevAuth` | **Defaults to `false`, and leave it there.** Setting it `true` lets a *deployed* environment accept `X-Dev-User` client-asserted identity — any caller can name itself, so admin checks and per-user isolation stop meaning anything. It exists only for a throwaway demo with no Entra tenant. `AI4IA_APP_ENVIRONMENT=prod` ignores it outright. With both this and `AI4IA_AUTH_PROVIDER` left at their defaults, a fresh deploy **fails at startup** rather than serving insecurely; that is deliberate. |
 | Cost center tag | `AI4IA_COST_CENTER` | `costCenter` | Defaults to `genai-demo`; override for real chargeback. |
 | Identity-only auth on Foundry | `AI4IA_FOUNDRY_DISABLE_LOCAL_AUTH` | `foundryDisableLocalAuth` | **Defaults to `true`, and leave it there.** It is what makes gateway-only model routing an IAM boundary instead of a convention: with account keys live, anything holding one can call a Foundry deployment directly and skip APIM's rate limiting, residency policy, usage metering and priority routing. Nothing in this repo needs a Foundry account key — APIM authenticates with managed identity, Content Understanding uses its narrow managed-identity role, and Voice Live/Code Interpreter reach dedicated APIM APIs. Set `false` only to recover from a proven key dependency a live deploy uncovered, and record why. |
-| Claude entitlement | `AI4IA_CLAUDE_ENABLED` | `claudeEnabled` | **Defaults to `false`.** When false, Bicep omits every Anthropic deployment and FastAPI removes Claude from `/api/models`, chat, and agent pickers. Set true only after Marketplace fulfillment is confirmed for the subscription. |
+| Claude entitlement | `AI4IA_CLAUDE_ENABLED` | `claudeEnabled` | **Defaults to `false`.** FastAPI and APIM refuse Claude while off. Main-stack Bicep never provisions external Claude rows, even when enabled. Requires the separately provisioned target account, explicit target-specific terms, both-tenant identity/deployment readback and approved rollout. |
+| External Claude staging | `AI4IA_CLAUDE_EXTERNAL_ENABLED` | `claudeExternalEnabled` | **Defaults to `false`.** Attaches the separately approved source UAMI alongside APIM's existing system identity and configures the exact target binding. Does not create an account, application, FIC, role or target-reader identity. Staging alone does not admit model calls. |
+| Exact Claude binding | `AI4IA_CLAUDE_BINDING_JSON` | `claudeBindingJson` | Empty by default. Strict noncredential operator JSON described in the [Claude source contract](runbooks/feature-enablement.md#cross-tenant-claude-source-contract). Configuration, a hash or an operator Boolean is not proof; enabled deployments read both tenants and actual APIM state. Network mode must be explicitly `public-keyless`; this does not provide Private Link. |
 | Claude legal entity | `AI4IA_CLAUDE_ORGANIZATION_NAME` | `claudeOrganizationName` | Required when `AI4IA_CLAUDE_ENABLED=true`. Legal entity sent in Anthropic `modelProviderData`; provisioning accepts the Marketplace terms on that entity's behalf. Never derive it from `AI4IA_OWNER` or use a placeholder. |
 | Claude country | `AI4IA_CLAUDE_COUNTRY_CODE` | `claudeCountryCode` | Required when Claude is enabled. Uppercase ISO-2 country code that accurately describes the organization accepting the Anthropic terms. |
 | Claude industry | `AI4IA_CLAUDE_INDUSTRY` | `claudeIndustry` | Required when Claude is enabled. Lowercase Foundry Marketplace industry value that accurately describes the organization. |
@@ -229,14 +231,16 @@ the normal Host1 key. A trusted, verified bounded selection constructs the fixed
 versioned path before owner admission; it cannot fall back on an error. Staging
 alone leaves availability `None` because no shipping verifier exists.
 
-Claude models use the same proxy ingress and model APIM subscription, not a
-direct provider call. The API translates the internal chat/tool contract to
-Anthropic Messages. APIM selects the `anthropic` backend path, requests the
-`https://ai.azure.com` managed-identity audience, rewrites to `/v1/messages`,
-and owns the `anthropic-version: 2023-06-01` header. The catalog's `api` field is
-therefore a routing contract, not UI metadata. The generated route may exist
-while `AI4IA_CLAUDE_ENABLED=false`, but no Claude deployment exists and FastAPI
-does not advertise or resolve it; callers cannot widen that server-side gate.
+Claude uses the same proxy ingress and API-scoped model APIM subscription, never
+direct FastAPI/provider egress. The API adapts text and governed function tools to
+Anthropic Messages. For the catalog's `external-claude` rows only, APIM gets a
+source UAMI assertion for `api://AzureADTokenExchange`, exchanges it at the fixed
+configured target-tenant token endpoint for `https://ai.azure.com/.default`, and
+forwards only that target token to the bound account's `/anthropic/v1/messages`.
+APIM owns `anthropic-version: 2023-06-01`. Ordinary routes keep their system
+identity, audiences and retry behavior. Disabled or invalid Claude authentication
+cannot select an ordinary backend. Catalog presence is not deployed availability;
+FastAPI advertisement and APIM dispatch remain independently default-off.
 
 In production, `AI4IA_MODEL_GATEWAY_ALLOWED_HOSTS` is the server-owned,
 comma-separated allowlist of exact SimpleL7Proxy ingress hostnames. IaC derives

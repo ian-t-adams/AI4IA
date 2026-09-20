@@ -19,6 +19,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _capacity_evidence import EvidenceError
+from _claude_binding import configured_binding
 from _production_capacity import PROFILES, bind_scope, effective_capacity, parse_policy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -136,12 +137,22 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     country = text(parameter_value(parameters, "claudeCountryCode"))
     industry = text(parameter_value(parameters, "claudeIndustry"))
     claude_enabled = truthy(parameter_value(parameters, "claudeEnabled", False))
+    claude_external = truthy(parameter_value(parameters, "claudeExternalEnabled", False))
+    try:
+        configured_binding({
+            **os.environ,
+            "AI4IA_CLAUDE_ENABLED": str(claude_enabled).lower(),
+            "AI4IA_CLAUDE_EXTERNAL_ENABLED": str(claude_external).lower(),
+            "AI4IA_CLAUDE_BINDING_JSON": text(parameter_value(parameters, "claudeBindingJson")),
+        })
+    except EvidenceError as exc:
+        errors.append(f"Cross-tenant Claude configuration: {exc.code}.")
     if claude_enabled and not has_anthropic:
         errors.append(
             "claudeEnabled=true but infra/models.json contains no Anthropic deployment."
         )
     if has_anthropic and (
-        claude_enabled or any((organization, country, industry))
+        claude_enabled or claude_external or any((organization, country, industry))
     ):
         if not organization or organization.casefold() in {
             "your organization",

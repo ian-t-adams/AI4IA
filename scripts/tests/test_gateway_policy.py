@@ -282,12 +282,15 @@ class GatewayPolicyTests(unittest.TestCase):
         claude = [
             block
             for block in blocks
-            if 'new JProperty("claude-opus-4-8-' in block
+            if 'new JProperty("claude-' in block
         ]
-        self.assertEqual(len(claude), 2)
+        self.assertEqual(len(claude), 3)
         for block in claude:
             self.assertIn('new JProperty("path", "anthropic")', block)
             self.assertNotIn('new JProperty("path", "openai")', block)
+            self.assertIn('new JProperty("url", "{{claude-target-endpoint}}")', block)
+            self.assertIn('new JProperty("auth", "CLAUDE_FEDERATED")', block)
+            self.assertNotIn("{{foundry-", block)
 
         non_claude = next(
             block for block in blocks if 'new JProperty("gpt-5.4-' in block
@@ -1846,7 +1849,10 @@ class GatewayPolicyTests(unittest.TestCase):
             json.dumps([resource.get("sku") for resource in service_resources]),
         )
         self.assertEqual({"name": "BasicV2", "capacity": 1}, shared["sku"])
-        self.assertEqual("SystemAssigned", shared["identity"]["type"])
+        self.assertEqual(
+            "[if(empty(parameters('claudeIdentityResourceId')), 'SystemAssigned', 'SystemAssigned, UserAssigned')]",
+            shared["identity"]["type"],
+        )
         self.assertIn("apim-mcp-", json.dumps(shared["name"]))
 
         gateway_template = template["resources"]["gateway"]["properties"]["template"]
@@ -2316,6 +2322,18 @@ class SubscriptionCredentialPolicyTests(unittest.TestCase):
             generated_inbound.extend(ElementTree.fromstring(fragment))
         inbound, backend = source.find("inbound"), source.find("backend")
         assert inbound is not None and backend is not None
+        # Resolve the actual default-off auth fragment's ordinary branch. Its
+        # system-MI boundary is still unconditional after provider selection.
+        auth = ElementTree.parse(ROOT / "infra/policies/claude-disabled.xml").getroot()
+        ordinary = auth.find("./choose/otherwise/authentication-managed-identity")
+        assert ordinary is not None
+        auth_reference = inbound.find("./include-fragment[@fragment-id='claude_auth_v1']")
+        self.assertIsNotNone(auth_reference)
+        self.assertIs(list(inbound)[-1], auth_reference)
+        inbound.remove(auth_reference)
+        inbound.append(ElementTree.fromstring(ElementTree.tostring(ordinary)))
+        self.assertIn('fragment-id="claude_auth_v1"', wrapper)
+        generated_inbound.append(ElementTree.fromstring(ElementTree.tostring(ordinary)))
         return (
             ("source", inbound, backend),
             ("generated", generated_inbound, ElementTree.fromstring(fragments[2])),

@@ -135,6 +135,11 @@ $fragmentDefinitions = @(
         TemporaryId = "ai4ia-compiler-on-error-$suffix"
         Path = 'infra/policies/simplel7proxy_on_error_32.xml'
     }
+    @{
+        ProductionId = 'claude_auth_v1'
+        TemporaryId = "ai4ia-compiler-claude-disabled-$suffix"
+        Path = 'infra/policies/claude-disabled.xml'
+    }
 )
 
 function Assert-DiagnosticName {

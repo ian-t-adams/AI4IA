@@ -109,6 +109,14 @@ separate. User MCP credentials live in Key Vault, with opaque references in Cosm
 Chat Completions is the agent loop's internal shape. Adapters translate it to
 Responses or Anthropic Messages where the catalog requires those protocols.
 Provider-native image/video paths stay catalog-bound through the same gateway.
+The default-off `external-claude` target is a separate account/tenant, not a
+second application stack. It still uses the existing proxy and APIM. Only those
+routes use a source UAMI assertion and fixed target-tenant token exchange;
+ordinary routes retain APIM's system identity. External target rows are excluded
+from main-stack provisioning, not from coverage accounting. See the
+[cross-tenant source contract](runbooks/feature-enablement.md#cross-tenant-claude-source-contract).
+Keyless public HTTPS is not private networking; Private Link/tier/DNS changes
+require a separate approved design.
 Responses chat uses `store=false` and resends Cosmos history rather than chaining
 provider-stored conversations. Opaque encrypted reasoning items needed within a
 tool loop remain transient and are not persisted as messages or receipts.

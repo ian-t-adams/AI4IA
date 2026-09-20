@@ -178,7 +178,7 @@ def reservation_bounds(
     prompt_bound *= attempts.max_attempts
     output_bound *= attempts.max_attempts
     tokens = prompt_bound + output_bound
-    snapshot = pricing.snapshot_token_prices(model.id)
+    snapshot = pricing.snapshot_token_prices(model.id, deployment=deployment)
     rate = snapshot.rate(model.id)
     version = snapshot.version
     if (

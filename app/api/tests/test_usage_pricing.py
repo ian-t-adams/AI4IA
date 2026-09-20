@@ -193,14 +193,20 @@ def test_every_token_billed_catalog_model_has_a_price() -> None:
     )
     book = load_pricing()
     missing = sorted(
-        model["name"]
+        f"{model['name']}/{deployment['sku']}"
         for model in catalog["catalog"]
-        if model["category"] in _TOKEN_BILLED_CATEGORIES and book.rate(model["name"]) is None
+        for deployment in model["deployments"]
+        if model["category"] in _TOKEN_BILLED_CATEGORIES and book.rate(
+            model["name"], deployment=(
+                f"{model['name']}-{catalog['naming']['subscriptionToken']}-{deployment['region']}"
+                f"-{catalog['naming']['skuShort'][deployment['sku']]}"
+            ),
+        ) is None
     )
     assert not missing, (
         "token-billed catalog models with no entry in pricing.json: "
         f"{missing}. Add per-1M USD rates from the Azure Retail Prices API "
-        "(serviceName eq 'Foundry Models'), using the GlobalStandard meter."
+        "(serviceName eq 'Foundry Models') or official provider documentation, for the exact SKU."
     )
 
 

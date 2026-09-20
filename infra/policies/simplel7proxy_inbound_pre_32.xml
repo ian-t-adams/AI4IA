@@ -68,6 +68,8 @@
 <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
 <set-query-parameter name="subscription-key" exists-action="delete" />
 <set-header name="Authorization" exists-action="delete" />
+<set-header name="api-key" exists-action="delete" />
+<set-header name="x-api-key" exists-action="delete" />
 <set-header name="anthropic-version" exists-action="delete" />
 <!-- set the request ID in case we need to debug -->
 <set-header name="x-ms-client-request-id" exists-action="override">
