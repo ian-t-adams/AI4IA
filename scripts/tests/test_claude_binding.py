@@ -6,8 +6,10 @@ import sys
 import tempfile
 import unittest
 from copy import deepcopy
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
+from xml.etree import ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import _claude_binding as claude
@@ -19,6 +21,22 @@ from scripts.tests._loader import load_script
 ROOT = Path(__file__).resolve().parents[2]
 AVAILABILITY = load_script("claude_availability", ROOT / "scripts" / "check-model-availability.py")
 GENERATOR = load_script("claude_catalog", ROOT / "scripts" / "gen-model-catalog.py")
+
+
+@contextmanager
+def binding_environment(values):
+    # Restore only these fixture keys. Clearing all process variables can drop
+    # empty Git config values from Windows' native child-process environment.
+    before = {key: os.environ.get(key) for key in values}
+    try:
+        os.environ.update(values)
+        yield
+    finally:
+        for key, value in before.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 class ClaudeBindingTests(unittest.TestCase):
@@ -38,10 +56,12 @@ class ClaudeBindingTests(unittest.TestCase):
         self.assertTrue(any(not call[0] for call in self.reader.calls))
 
     def test_default_configuration_constructs_no_reader(self):
-        with patch.dict(os.environ, {}, clear=True), patch.object(claude, "Reader") as reader:
+        with binding_environment({
+            "AI4IA_CLAUDE_ENABLED": "false", "AI4IA_CLAUDE_EXTERNAL_ENABLED": "false",
+        }), patch.object(claude, "Reader") as reader:
             self.assertEqual(claude.verify_configured(models(), routed=True), 0)
             reader.assert_not_called()
-        with patch.dict(os.environ, environment(self.binding), clear=True), patch.object(
+        with binding_environment(environment(self.binding)), patch.object(
             claude, "Reader", return_value=self.reader,
         ) as reader:
             self.assertEqual(claude.verify_configured(models(), routed=True), 3)
@@ -148,11 +168,110 @@ class ClaudeBindingTests(unittest.TestCase):
         claude.verify_binding_transition(b, self.reader)
         values = self.reader.responses[(False, b["sourceApimResourceId"] + "/namedValues")]["value"]
         values[0]["properties"]["value"] = "https://mf-claude-prior.services.ai.azure.com"
-        with patch.dict(os.environ, {"AI4IA_CLAUDE_ENABLED": "false"}):
+        with binding_environment({"AI4IA_CLAUDE_ENABLED": "false"}):
                 with self.assertRaisesRegex(EvidenceError, "disable_old_binding"):
                     claude.verify_binding_transition(b, self.reader)
         disabled = FixtureReader(b, enabled=False)
         disabled.responses[(False, b["sourceApimResourceId"] + "/namedValues")]["value"] = values
+        claude.verify_binding_transition(b, disabled)
+
+    def test_policy_readbacks_accept_only_xml_serializer_formatting(self):
+        for enabled in (True, False):
+            reader = FixtureReader(self.binding, enabled=enabled)
+            changed = 0
+            for (_, path), response in reader.responses.items():
+                if path.endswith("/policies/policy") or "/policyFragments/" in path:
+                    original = response["properties"]["value"]
+                    root = ET.fromstring(original)
+                    ET.indent(root, space=" ")
+                    formatted = ET.tostring(root, encoding="unicode").replace("\n", "\r\n").rstrip()
+                    self.assertNotEqual(formatted, original)
+                    response["properties"]["value"] = formatted
+                    changed += 1
+            self.assertGreater(changed, 15)
+            claude.verify_routes(self.binding, reader, enabled=enabled)
+            values = reader.responses[(False, self.binding["sourceApimResourceId"] + "/namedValues")]["value"]
+            values[0]["properties"]["value"] = "https://mf-claude-prior.services.ai.azure.com"
+            if enabled:
+                with self.assertRaisesRegex(EvidenceError, "disable_old_binding"):
+                    claude.verify_binding_transition(self.binding, reader)
+            else:
+                claude.verify_binding_transition(self.binding, reader)
+
+    def test_policy_comparison_preserves_expressions_literals_body_and_child_order(self):
+        source = (
+            '<fragment><!-- ignored formatting comment -->\n'
+            '<choose><when condition=\'@(context.Subscription.Id == "scope with space")\'>\n'
+            '<set-header name="Authorization" exists-action="override"><value>'
+            '@("Bearer " + (string)context.Variables["target-token"])'
+            '</value></set-header><set-body> {"code": "denied"} </set-body>\n'
+            '<set-variable name="bound" value=\'@{ return "two  spaces"; }\' />'
+            '</when></choose></fragment>\n'
+        )
+        root = ET.fromstring(source)
+        ET.indent(root, space="\t")
+        formatted = ET.tostring(root, encoding="unicode")
+        self.assertTrue(claude.same_policy(formatted, source))
+        for before, after in (
+            ('name="Authorization"', 'name="api-key"'),
+            ('== "scope with space"', '!= "scope with space"'),
+            ('"scope with space"', '"scope  with space"'),
+            ('"two  spaces"', '"two spaces"'),
+            ('Bearer ', 'Bearer  '),
+            (' {"code": "denied"} ', '{"code": "denied"}'),
+        ):
+            with self.subTest(change=(before, after)):
+                self.assertIn(before, source)
+                self.assertFalse(claude.same_policy(source.replace(before, after), source))
+                self.assertTrue(claude.same_policy(formatted, source))
+        reordered = ET.fromstring(source)
+        when = reordered.find("./choose/when")
+        when.append(when[0])
+        del when[0]
+        self.assertFalse(claude.same_policy(ET.tostring(reordered, encoding="unicode"), source))
+        self.assertFalse(claude.same_policy("<set-body> </set-body>", "<set-body/>"))
+        self.assertFalse(claude.same_policy(
+            '<include-fragment fragment-id="a-fixture000000"/>',
+            '<include-fragment fragment-id="b-fixture000000"/>',
+        ))
+        for unsafe in (
+            "<!DOCTYPE fragment [<!ENTITY x 'text'>]><fragment>&x;</fragment>",
+            "<fragment><?unreviewed processing?></fragment>",
+            "<?unreviewed processing?><fragment/>", "<fragment>", 1,
+        ):
+            with self.subTest(unsafe=unsafe), self.assertRaises(EvidenceError):
+                claude.same_policy(unsafe, "<fragment/>")
+
+    def test_actual_route_and_disabled_transition_refuse_meaningful_policy_changes(self):
+        b = self.binding
+        auth_path = (False, b["sourceApimResourceId"] + "/policyFragments/claude_auth_v1-fixture000000")
+        policy_path = (False, b["sourceApimResourceId"] + "/apis/openai/policies/policy")
+        self.verify()
+        original = self.reader.responses[auth_path]["properties"]["value"]
+        for before, after in (
+            ('timeout="10"', 'timeout="11"'),
+            ('client-id="{{claude-uami-client}}"', 'client-id="other-client"'),
+            ("lifetime &lt; 120", "lifetime &lt; 0"),
+            ("claude_authentication_unavailable", "claude_authentication_allowed"),
+            ("api://AzureADTokenExchange", "api://AzureADTokenExchangeChanged"),
+        ):
+            self.assertIn(before, original)
+            self.reader.responses[auth_path]["properties"]["value"] = original.replace(before, after)
+            with self.subTest(change=before), self.assertRaisesRegex(EvidenceError, "claude_route_fragment_changed"):
+                claude.verify_routes(b, self.reader, enabled=True)
+            self.reader.responses[auth_path]["properties"]["value"] = original
+            claude.verify_routes(b, self.reader, enabled=True)
+        original_policy = self.reader.responses[policy_path]["properties"]["value"]
+        self.reader.responses[policy_path]["properties"]["value"] = original_policy.replace("claude_auth_v1-", "other_auth_v1-")
+        with self.assertRaisesRegex(EvidenceError, "claude_route_fragment_id"):
+            claude.verify_routes(b, self.reader, enabled=True)
+        disabled = FixtureReader(b, enabled=False)
+        disabled.responses[(False, b["sourceApimResourceId"] + "/namedValues")]["value"][0]["properties"]["value"] = "changed"
+        old = disabled.responses[auth_path]["properties"]["value"]
+        disabled.responses[auth_path]["properties"]["value"] = old.replace('code="503"', 'code="200"')
+        with self.assertRaisesRegex(EvidenceError, "disable_old_binding"):
+            claude.verify_binding_transition(b, disabled)
+        disabled.responses[auth_path]["properties"]["value"] = old
         claude.verify_binding_transition(b, disabled)
 
     def test_isolated_transport_pins_every_request_and_never_retries_failed_evidence(self):

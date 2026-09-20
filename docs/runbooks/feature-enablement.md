@@ -335,6 +335,15 @@ non-traceable API-only proxy subscription between stable policy reads. Unknown,
 partial, warnings and mismatches are failures; a correct-looking Boolean or
 manifest never substitutes for these reads.
 
+APIM's `format=rawxml` readback can change indentation and terminal newlines.
+Policy-content comparison therefore ignores only XML comments and whitespace
+between elements. Ordered elements, every parsed attribute (including C#
+expressions and string literals), and all meaningful body/value text remain
+exact. Whitespace inside expressions or payloads is never collapsed. Malformed,
+oversized, deeply nested XML, DTDs/entities and processing instructions refuse.
+The before/after observations must still be unchanged; semantic comparison does
+not excuse a policy update during collection.
+
 Stage source infrastructure with `AI4IA_CLAUDE_EXTERNAL_ENABLED=true` while
 `AI4IA_CLAUDE_ENABLED=false`. Main Bicep attaches the preapproved UAMI **alongside**
 the system identity, and APIM continues to refuse Claude. `check-model-availability.py`

@@ -428,15 +428,57 @@ def target_preflight(binding: Binding, models: dict[str, Any], reader: Reader) -
     return len(expected)
 
 
+def policy_tree(raw: object) -> ET.Element:
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > 1024 * 1024:
+        raise EvidenceError("claude_policy_size_or_type")
+    require(
+        re.search(r"<!\s*(?:DOCTYPE|ENTITY)\b", raw, re.IGNORECASE) is None,
+        "claude_policy_declaration_not_allowed",
+    )
+    require(re.search(r"<\?(?!xml\s)", raw) is None, "claude_policy_processing_instruction")
+    try:
+        # XML comments have no policy effect. Processing instructions are not
+        # ignored: unlike comments, they are outside the evidenced normalization.
+        root = ET.fromstring(raw, parser=ET.XMLParser(target=ET.TreeBuilder(insert_pis=True)))
+    except ET.ParseError:
+        raise EvidenceError("claude_policy_invalid_xml") from None
+    pending = [(root, 0)]
+    count = 0
+    while pending:
+        node, depth = pending.pop()
+        count += 1
+        require(isinstance(node.tag, str) and depth <= 64 and count <= 8192, "claude_policy_structure")
+        pending.extend((child, depth + 1) for child in node)
+    return root
+
+
+def same_policy(actual: object, expected: str) -> bool:
+    """Ignore only XML formatting between elements, never expression/body text."""
+    def shape(node: ET.Element) -> tuple:
+        children = list(node)
+        text = node.text or ""
+        if children and not text.strip():
+            text = ""
+        return (
+            node.tag, tuple(sorted(node.attrib.items())), text,
+            tuple(
+                (shape(child), child.tail if child.tail and child.tail.strip() else "")
+                for child in children
+            ),
+        )
+
+    return shape(policy_tree(actual)) == shape(policy_tree(expected))
+
+
 def verify_routes(binding: Binding, reader: Reader, *, enabled: bool) -> None:
     apim = binding["sourceApimResourceId"]
     api_path = apim + "/apis/openai"
     before = reader.get(False, api_path + "/policies/policy", "2024-05-01")
     actual = before.get("properties", {}).get("value", "")
     expected = (ROOT / "infra" / "policies" / "simplel7proxy-priority-policy.xml").read_text(encoding="utf-8")
-    root = ET.fromstring(actual)
+    root = policy_tree(actual)
     references = [node.attrib["fragment-id"] for node in root.iter("include-fragment")]
-    expected_refs = [node.attrib["fragment-id"] for node in ET.fromstring(expected).iter("include-fragment")]
+    expected_refs = [node.attrib["fragment-id"] for node in policy_tree(expected).iter("include-fragment")]
     require(len(references) == len(expected_refs), "claude_route_fragment_inventory")
     for reference, base in zip(references, expected_refs, strict=True):
         require(re.fullmatch(re.escape(base) + r"-[a-z0-9]{13}", reference) is not None, "claude_route_fragment_id")
@@ -450,8 +492,8 @@ def verify_routes(binding: Binding, reader: Reader, *, enabled: bool) -> None:
         elif base.startswith("endpoint_selection_catalog_"):
             filename = "simplel7proxy-endpoints-catalog-" + base.split("_")[3] + ".xml"
         wanted = (ROOT / "infra" / "policies" / filename).read_text(encoding="utf-8")
-        require(fragment.get("properties", {}).get("value", "").replace("\r\n", "\n") == wanted, "claude_route_fragment_changed")
-    require(actual.replace("\r\n", "\n") == expected, "claude_route_policy_changed")
+        require(same_policy(fragment.get("properties", {}).get("value"), wanted), "claude_route_fragment_changed")
+    require(same_policy(actual, expected), "claude_route_policy_changed")
     named = reader.get(False, apim + "/namedValues", "2024-05-01")
     rows = object_rows(named.get("value"), 256, "claude_named_value_inventory")
     for name, value in binding.named_values.items():
@@ -486,7 +528,7 @@ def verify_binding_transition(binding: Binding, reader: Reader) -> None:
     if observed == wanted:
         return
     policy = reader.get(False, apim + "/apis/openai/policies/policy", "2024-05-01")
-    root = ET.fromstring(policy.get("properties", {}).get("value", ""))
+    root = policy_tree(policy.get("properties", {}).get("value"))
     refs = [
         node.attrib.get("fragment-id", "") for node in root.iter("include-fragment")
         if node.attrib.get("fragment-id", "").startswith("claude_auth_v1-")
@@ -501,7 +543,7 @@ def verify_binding_transition(binding: Binding, reader: Reader) -> None:
     fragment = reader.get(False, apim + "/policyFragments/" + refs[0], "2024-05-01")
     disabled = (ROOT / "infra" / "policies" / "claude-disabled.xml").read_text(encoding="utf-8")
     require(
-        fragment.get("properties", {}).get("value", "").replace("\r\n", "\n") == disabled,
+        same_policy(fragment.get("properties", {}).get("value"), disabled),
         "claude_disable_old_binding_before_change",
     )
 

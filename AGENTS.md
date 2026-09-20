@@ -1083,6 +1083,10 @@ Four rules follow:
    retain external unknowns, not borrowed source evidence. A live binding must be
    observed disabled before replacement. Network mode is explicitly public-keyless;
    unresolved Private Link requirements still block activation.
+   APIM raw XML readback may normalize inter-element indentation/comments only:
+   compare ordered policy structure and exact parsed expression/body/value text,
+   never collapse whitespace inside code or payloads. Keep stable raw observations
+   around that comparison and keep the postprovision check at script scope.
    New Claude profiles require thinking disabled, text/tools and low/medium/high
    native effort throughout catalog, consent/publication and adapter/receipts.
    Exact deployment/SKU selects frozen pricing, including the US DataZone premium;
