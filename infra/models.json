@@ -1017,6 +1017,7 @@
       "name": "gpt-realtime-2",
       "format": "OpenAI",
       "category": "realtime",
+      "runtimeEnabled": false,
       "deployments": [
         {
           "region": "eastus2",
@@ -1025,6 +1026,20 @@
           "version": "2026-05-06",
           "maxCapacity": 10,
           "maxCapacityPool": "global"
+        }
+      ]
+    },
+    {
+      "name": "gpt-realtime-1.5",
+      "format": "OpenAI",
+      "category": "realtime",
+      "requiredRealtimeProtocol": "ga",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "2026-02-23"
         }
       ]
     },

@@ -81,3 +81,61 @@ def test_checked_in_models_json_declares_both_tokens():
     naming = json.loads(_MODELS.read_text(encoding="utf-8"))["naming"]
     assert naming["subscriptionToken"] == "slurmfactory"
     assert naming["foundryToken"] == "aiforia"
+
+
+def test_required_realtime_protocol_survives_generator_and_dev_fallback():
+    from ai4ia_api.catalog import ModelCatalog, _transform_infra_models
+
+    source = _synthetic_models("tenant")
+    source["catalog"][0].update(category="realtime", requiredRealtimeProtocol="ga")
+    for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
+        entry = ModelCatalog.model_validate(raw).models[0]
+        assert entry.requiredRealtimeProtocol == "ga"
+        assert not entry.supports_realtime_protocol("preview")
+        assert entry.supports_realtime_protocol("ga")
+
+    del source["catalog"][0]["requiredRealtimeProtocol"]
+    for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
+        entry = ModelCatalog.model_validate(raw).models[0]
+        assert entry.supports_realtime_protocol("preview")
+        assert entry.supports_realtime_protocol("ga")
+
+
+def test_runtime_disable_survives_generator_and_dev_fallback():
+    from ai4ia_api.catalog import ModelCatalog, _transform_infra_models
+
+    source = _synthetic_models("tenant")
+    source["catalog"][0]["runtimeEnabled"] = False
+    for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
+        catalog = ModelCatalog.model_validate(raw)
+        assert catalog.models[0].runtimeEnabled is False
+        assert catalog.get("gpt-x") is None
+        assert catalog.resolve_deployment("gpt-x") is None
+    del source["catalog"][0]["runtimeEnabled"]
+    for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
+        catalog = ModelCatalog.model_validate(raw)
+        assert catalog.get("gpt-x").runtimeEnabled is True
+        assert catalog.resolve_deployment("gpt-x") is not None
+
+
+def test_realtime_and_external_profiles_survive_the_same_catalog_roundtrip():
+    from ai4ia_api.catalog import ModelCatalog, _transform_infra_models
+
+    source = json.loads(_MODELS.read_text(encoding="utf-8"))
+    models = source["catalog"]
+    assert any(m.get("deploymentTarget") == "external-claude" for m in models)
+    assert any(m.get("requiredRealtimeProtocol") == "ga" for m in models)
+    assert any(m.get("runtimeEnabled") is False for m in models)
+    for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
+        catalog = ModelCatalog.model_validate(raw)
+        restored = ModelCatalog.model_validate(catalog.model_dump())
+        for declared, entry in zip(models, restored.models, strict=True):
+            assert entry.id == declared["name"]
+            assert entry.runtimeEnabled is declared.get("runtimeEnabled", True)
+            assert entry.requiredRealtimeProtocol == declared.get("requiredRealtimeProtocol")
+            assert entry.deploymentTarget == declared.get("deploymentTarget", "source")
+            assert entry.anthropicThinking == declared.get("anthropicThinking")
+            assert entry.samplingSupported is declared.get("samplingSupported")
+            if entry.deploymentTarget == "external-claude":
+                entry.require_external_profile()
+            assert (restored.get(entry.id) is not None) is entry.runtimeEnabled

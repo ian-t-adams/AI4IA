@@ -41,6 +41,11 @@
           "displayName": { "type": "string" },
           "format": { "type": "string" },
           "category": { "type": "string" },
+          "runtimeEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "False keeps this model in the desired infrastructure/quota inventory but disables all runtime selection and serving routes. Resource deletion is a separate operator-approved phase."
+          },
           "api": {
             "type": "string",
             "enum": ["chat", "responses", "anthropic", "mai", "bfl", "mistral_ocr"],
@@ -56,6 +61,10 @@
             "const": "disabled",
             "description": "Explicit unified-history profile. Signed adaptive-thinking continuation is not supported."
           },
+          "requiredRealtimeProtocol": {
+            "const": "ga",
+            "description": "Only advertise and route this realtime model on the server-selected GA protocol. Omitted on existing models whose legacy compatibility is retained; never selects or enables a protocol."
+          },
           "contextWindow": { "type": "integer", "minimum": 1 },
           "maxOutputTokens": { "type": "integer", "minimum": 1 },
           "toolCalling": { "type": "boolean" },
@@ -66,7 +75,13 @@
             "items": {
               "type": "string",
               "enum": ["text", "image", "audio", "video", "document"]
-            }
+            },
+            "allOf": [
+              {
+                "if": { "required": ["requiredRealtimeProtocol"] },
+                "then": { "properties": { "category": { "const": "realtime" } } }
+              }
+            ]
           },
           "imageSizes": {
             "type": "array",

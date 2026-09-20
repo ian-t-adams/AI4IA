@@ -369,8 +369,15 @@ export function isVadType(value: string): value is VadType {
 // (and its model picker) only ever deals with realtime models; chat/capability
 // models are reached through their own surfaces. Pure + structural so it is unit
 // testable without the full ModelEntry type.
-export function realtimeModels<T extends { category: string }>(models: T[]): T[] {
-  return models.filter((m) => m.category === "realtime");
+export function realtimeModels<
+  T extends { category: string; runtimeEnabled?: boolean; requiredRealtimeProtocol?: "ga" | null },
+>(models: T[], protocol: "preview" | "ga" = "preview"): T[] {
+  return models.filter(
+    (m) =>
+      m.category === "realtime" &&
+      m.runtimeEnabled !== false &&
+      (m.requiredRealtimeProtocol == null || m.requiredRealtimeProtocol === protocol),
+  );
 }
 
 // Builds the session.update frame the browser sends on connect. With the default

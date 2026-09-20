@@ -14,10 +14,10 @@
           <value>gpt-realtime-slurmfactory-swedencentral-glbl</value>
         </set-query-parameter>
       </when>
-      <when condition="@(&quot;gpt-realtime-2-slurmfactory-eastus2-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;model&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
+      <when condition="@(&quot;gpt-realtime-1.5-slurmfactory-eastus2-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;model&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
         <set-backend-service base-url="{{foundry-eastus2-realtime-wss-endpoint}}/openai/v1/realtime" />
         <set-query-parameter name="model" exists-action="override">
-          <value>gpt-realtime-2-slurmfactory-eastus2-glbl</value>
+          <value>gpt-realtime-1.5-slurmfactory-eastus2-glbl</value>
         </set-query-parameter>
       </when>
       <when condition="@(&quot;gpt-realtime-mini-slurmfactory-eastus2-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;model&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
