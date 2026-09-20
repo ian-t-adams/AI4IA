@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ai4ia_api.model_evidence import ModelCallRecorder
 from ai4ia_api.usage.pricing import PriceRate, PricingBook, load_pricing
 
 
@@ -60,6 +61,24 @@ def test_packaged_pricing_loads_and_has_token_models():
     est = book.estimate("gpt-5.2", prompt_tokens=1_000_000, completion_tokens=0)
     assert est.known is True
     assert est.micro_usd is not None and est.micro_usd > 0
+
+
+def test_packaged_price_version_survives_receipts_without_weakening_redaction():
+    packaged = load_pricing()
+    assert packaged.version
+    for book in (
+        packaged,
+        PricingBook({"gpt-5.2": packaged.rate("gpt-5.2")}, currency="USD", version="a" * 40),
+    ):
+        recorder = ModelCallRecorder(
+            model_id="gpt-5.2", deployment="synthetic-deployment", pricing=book,
+        )
+        call = recorder.start("synthetic-deployment", "chat")
+        call.request({"messages": [{"role": "user", "content": "synthetic"}]})
+        call.report_usage({"prompt_tokens": 10, "completion_tokens": 5}, completed=True)
+        evidence = json.loads(call.snapshot().model_dump_json())
+        assert evidence["cost"]["coverage"] == "known"
+        assert evidence["cost"]["priceVersion"] == (packaged.version if book is packaged else None)
 
 
 def test_packaged_flux_image_rates_preserve_each_meter_basis():

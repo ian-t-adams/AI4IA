@@ -110,6 +110,9 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    before the provider await through the shared pricing helper. Missing usage or
    prices remain unknown, and receipt reads never reprice history. New evidence
    must still fit the 32 KiB receipt budget under escaped durable serialization.
+   Price-document versions must survive the actual receipt identifier/redaction
+   path unchanged. Keep them compact and public; never weaken credential
+   redaction to preserve an overlong, token-shaped version identifier.
 8. **Hard admission is a separate, default-off source contract.** Do not turn
    soft ledger checks into a distributed quota or bootstrap an empty hard
    balance for an existing owner. Metered egress goes through the shared owner
