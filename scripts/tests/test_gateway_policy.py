@@ -154,16 +154,23 @@ class GatewayPolicyTests(unittest.TestCase):
             for block in blocks
             if re.search(r'new JProperty\("flux[.-]', block, re.IGNORECASE)
         ]
-        self.assertEqual(len(flux), 8)
-        rendered = "\n".join(flux)
-        for model, operation in gateway_generator.BFL_MODEL_PATHS.items():
+        self.assertEqual(len(flux), 4)
+        for model, operation in {
+            "FLUX.2-pro": "flux-2-pro",
+            "FLUX.2-flex": "flux-2-flex",
+        }.items():
             with self.subTest(model=model):
-                self.assertIn(model.lower(), rendered)
-                self.assertIn(
-                    'new JProperty("path", "providers/blackforestlabs/v1")',
-                    rendered,
-                )
-                self.assertIn(f'new JProperty("operation", "/{operation}")', rendered)
+                model_blocks = [
+                    block for block in flux
+                    if f'new JProperty("{model.lower()}-' in block
+                ]
+                self.assertEqual(len(model_blocks), 2)
+                for block in model_blocks:
+                    self.assertIn(
+                        'new JProperty("path", "providers/blackforestlabs/v1")',
+                        block,
+                    )
+                    self.assertIn(f'new JProperty("operation", "/{operation}")', block)
 
         priority = gateway_generator.PRIORITY_POLICY_PATH.read_text(encoding="utf-8")
         self.assertIn('name="backendOperationPath"', priority)
@@ -178,7 +185,7 @@ class GatewayPolicyTests(unittest.TestCase):
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
         blocks, _ = gateway_generator.render_catalog(models)
         images = [block for block in blocks if 'new JProperty("mai-image-' in block]
-        self.assertEqual(len(images), 5)
+        self.assertEqual(len(images), 2)
         for block in images:
             self.assertIn('new JProperty("path", "mai")', block)
             self.assertIn('new JProperty("operation", "/v1/images/generations")', block)

@@ -1,6 +1,8 @@
 """End-to-end tests for @agent routing through POST /api/chat."""
 from __future__ import annotations
 
+import pytest
+
 from ai4ia_api.agents.agent_catalog import AgentCatalog, AgentSpec, load_agent_catalog
 from ai4ia_api.gateway.client import ChatChunk
 
@@ -96,11 +98,11 @@ def test_known_agent_with_command_runs_command(client):
     sid = _create_session(client, model="gpt-5.2")["id"]
     resp = client.post(
         "/api/chat",
-        json={"sessionId": sid, "content": "@coder /model gpt-5.1", "stream": False},
+        json={"sessionId": sid, "content": "@coder /model gpt-5.4", "stream": False},
     )
     assert resp.status_code == 200
-    assert "gpt-5.1" in resp.json()["message"]["content"]
-    assert client.get(f"/api/sessions/{sid}").json()["model"] == "gpt-5.1"
+    assert "gpt-5.4" in resp.json()["message"]["content"]
+    assert client.get(f"/api/sessions/{sid}").json()["model"] == "gpt-5.4"
 
 
 def test_mention_without_message_prompts_for_input(client):
@@ -137,7 +139,7 @@ def test_agent_default_model_is_not_persisted_to_session(client):
                 displayName="Speedy",
                 description="prefers a fast model",
                 systemPrompt="Be fast.",
-                defaultModel="gpt-5.1",
+                defaultModel="gpt-5.4",
             )
         ]
     )
@@ -148,6 +150,44 @@ def test_agent_default_model_is_not_persisted_to_session(client):
     assert resp.status_code == 200, resp.text
     # The per-turn agent default must NOT rebind the session's model.
     assert client.get(f"/api/sessions/{sid}").json()["model"] is None
+
+
+@pytest.mark.parametrize(
+    "retired",
+    ["gpt-5.1", "gpt-5", "gpt-5-nano", "o3", "gpt-5-pro", "gpt-5-codex"],
+)
+@pytest.mark.parametrize("selection_source", ["session", "agent"])
+def test_retired_saved_model_refuses_without_remapping(client, retired, selection_source):
+    gateway = _CapturingGateway()
+    client.app.state.gateway = gateway
+    saved_model = retired if selection_source == "session" else None
+    sid = _create_session(client, model=saved_model)["id"]
+    client.app.state.agents = AgentCatalog(agents=[AgentSpec(
+        name="legacy",
+        displayName="Legacy",
+        description="Stored model selection from before catalog retirement.",
+        systemPrompt="Answer briefly.",
+        defaultModel=retired,
+    )])
+    body = {
+        "sessionId": sid,
+        "content": "@legacy hi" if selection_source == "agent" else "hi",
+        "stream": False,
+    }
+
+    rejected = client.post("/api/chat", json=body)
+    assert rejected.status_code == 400, rejected.text
+    assert rejected.json()["detail"] == f"Unknown or unavailable model: {retired}"
+    assert gateway.last_messages is None
+    assert client.get(f"/api/sessions/{sid}/messages").json() == []
+    assert client.get(f"/api/sessions/{sid}").json()["model"] == saved_model
+    assert client.app.state.agents.get("legacy").defaultModel == retired
+
+    allowed = client.post("/api/chat", json={**body, "model": "gpt-5.4"})
+    assert allowed.status_code == 200, allowed.text
+    assert gateway.last_messages is not None
+    assert client.get(f"/api/sessions/{sid}").json()["model"] == "gpt-5.4"
+    assert client.app.state.agents.get("legacy").defaultModel == retired
 
 
 def test_agent_streaming_records_attribution(client):

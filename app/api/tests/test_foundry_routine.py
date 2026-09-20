@@ -47,7 +47,7 @@ def _valid() -> dict:
         },
         "name": "research-brief",
         "description": "Two-step brief.",
-        "model": "gpt-5",
+        "model": "gpt-5.4",
         "toolbox": "ai4ia-toolbox",
         "steps": [
             {"name": "gather", "instructions": "collect", "tools": ["web-search", "code-interpreter"]},

@@ -237,7 +237,12 @@ def test_zone_policies_are_usable_with_datazone_deployments(policy):
 
     chat = catalog.conversational_models()
     assert chat, f"{policy} left no conversational model"
-    assert {m.category for m in chat} >= {"chat", "chat-fast", "reasoning"}
+    assert {m.category for m in chat} >= {"chat", "chat-fast"}
+    # Retained GPT models expose reasoning under "chat", not only "reasoning".
+    assert any(
+        not model.supportsSampling and model.reasoningEffortOptions
+        for model in chat
+    ), f"{policy} left no model with catalog-backed reasoning controls"
 
     embedding = catalog.resolve_deployment("text-embedding-3-large")
     assert embedding is not None, "memory + library RAG would silently switch off"

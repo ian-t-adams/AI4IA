@@ -445,7 +445,7 @@ def test_responses_model_can_use_grounding_tools():
         gw = ScriptedWebGateway(call_tool=True)
         client.app.state.gateway = gw
 
-        sid = _session_with_model(client, "gpt-5-pro")
+        sid = _session_with_model(client, "gpt-5.4-pro")
         resp = client.post(
             "/api/chat",
             json={"sessionId": sid, "content": "What happened in the news today?", "stream": False},
@@ -498,7 +498,7 @@ def test_responses_model_gets_no_notice_when_no_capabilities_were_possible():
         client.app.state.gateway = gw
         assert client.app.state.web_search is None
 
-        sid = _session_with_model(client, "gpt-5-pro")
+        sid = _session_with_model(client, "gpt-5.4-pro")
         resp = client.post(
             "/api/chat",
             json={"sessionId": sid, "content": "Say hello.", "stream": False},

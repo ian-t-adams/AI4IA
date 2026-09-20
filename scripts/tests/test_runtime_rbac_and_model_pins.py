@@ -1,6 +1,7 @@
 """Least-privilege runtime RBAC and explicit model-version posture."""
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -30,6 +31,18 @@ class RuntimeRbacTests(unittest.TestCase):
 
 
 class ModelVersionPinTests(unittest.TestCase):
+    def test_tts_ga_repin_preserves_region_sku_and_capacities(self) -> None:
+        models = json.loads((REPO / "infra" / "models.json").read_text(encoding="utf-8"))
+        tts = next(model for model in models["catalog"] if model["name"] == "gpt-4o-mini-tts")
+        self.assertEqual(tts["deployments"], [{
+            "region": "eastus2",
+            "sku": "GlobalStandard",
+            "capacity": 10,
+            "version": "2025-12-15",
+            "maxCapacity": 600,
+            "maxCapacityPool": "global",
+        }])
+
     def test_deployments_never_auto_upgrade_away_from_the_catalog(self) -> None:
         module = (REPO / "infra" / "modules" / "models.bicep").read_text(encoding="utf-8")
         self.assertIn("version: d.version", module)

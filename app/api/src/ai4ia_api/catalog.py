@@ -111,7 +111,7 @@ class ModelEntry(BaseModel):
     category: str
     format: str
     # Which provider surface serves this model: "chat" (Chat Completions, the
-    # default), "responses" (required by gpt-5-pro/gpt-5-codex/o3-pro),
+    # default), "responses" (gpt-6-astra/gpt-5.4-pro/gpt-5.3-codex),
     # "anthropic" (Claude Messages), "mai" (MAI chat/image surfaces on /mai/v1),
     # or "bfl" (Black Forest Labs image generation).
     # The gateway routes by this flag; the field is informational to the UI.
@@ -180,7 +180,7 @@ class ModelEntry(BaseModel):
         The one knob reasoning models *do* honour, and the UI offered no way to
         set it. The values must come from the server: they vary per model in ways
         no naming convention predicts (``gpt-5.6`` rejects ``minimal`` that
-        ``gpt-5.4`` accepts; ``gpt-5-pro`` accepts only ``high``), so a hardcoded
+        ``gpt-5.4`` accepts; ``gpt-5.4-pro`` rejects ``low``), so a hardcoded
         list in the web app would offer values that 400.
 
         Precedence is catalog first, heuristic second. ``infra/models.json``
