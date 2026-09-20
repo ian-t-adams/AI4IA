@@ -12,7 +12,7 @@
   },
   "name": "research-brief",
   "description": "Proposed two-step research brief: gather grounded sources, then synthesize a cited summary. Future implementation must prove how named tools are routed and governed.",
-  "model": "gpt-5",
+  "model": "gpt-5.4",
   "toolbox": "ai4ia-toolbox",
   "steps": [
     {

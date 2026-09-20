@@ -590,7 +590,7 @@ def test_tool_agent_on_responses_model_runs_and_persists(client):
         json={
             "sessionId": sid,
             "content": "@analyst what is 6*7?",
-            "model": "gpt-5-pro",
+            "model": "gpt-5.4-pro",
             "stream": False,
         },
     )
@@ -600,7 +600,7 @@ def test_tool_agent_on_responses_model_runs_and_persists(client):
     messages = client.get(f"/api/sessions/{sid}/messages").json()
     assert [message["role"] for message in messages] == ["user", "assistant"]
     session = client.get(f"/api/sessions/{sid}").json()
-    assert session["model"] == "gpt-5-pro"
+    assert session["model"] == "gpt-5.4-pro"
 
 
 def test_nonstreaming_agent_failure_persists_partial_error_and_usage():

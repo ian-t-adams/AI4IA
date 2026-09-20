@@ -327,188 +327,6 @@
       ]
     },
     {
-      "id": "gpt-5.1",
-      "displayName": "gpt-5.1",
-      "category": "chat",
-      "format": "OpenAI",
-      "api": "chat",
-      "contextWindow": 400000,
-      "maxOutputTokens": 128000,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": null,
-      "imageQualities": null,
-      "reasoningEffort": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-11-13",
-          "deploymentName": "gpt-5.1-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-11-13",
-          "deploymentName": "gpt-5.1-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
-      "id": "gpt-5",
-      "displayName": "gpt-5",
-      "category": "chat",
-      "format": "OpenAI",
-      "api": "chat",
-      "contextWindow": 400000,
-      "maxOutputTokens": 128000,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": null,
-      "imageQualities": null,
-      "reasoningEffort": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-08-07",
-          "deploymentName": "gpt-5-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-08-07",
-          "deploymentName": "gpt-5-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
-      "id": "gpt-5-nano",
-      "displayName": "gpt-5-nano",
-      "category": "chat-fast",
-      "format": "OpenAI",
-      "api": "chat",
-      "contextWindow": 400000,
-      "maxOutputTokens": 128000,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": null,
-      "imageQualities": null,
-      "reasoningEffort": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-08-07",
-          "deploymentName": "gpt-5-nano-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "DataZoneStandard",
-          "modelVersion": "2025-08-07",
-          "deploymentName": "gpt-5-nano-slurmfactory-eastus2-dz"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-08-07",
-          "deploymentName": "gpt-5-nano-slurmfactory-swedencentral-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "DataZoneStandard",
-          "modelVersion": "2025-08-07",
-          "deploymentName": "gpt-5-nano-slurmfactory-swedencentral-dz"
-        }
-      ]
-    },
-    {
-      "id": "o3",
-      "displayName": "o3",
-      "category": "reasoning",
-      "format": "OpenAI",
-      "api": "chat",
-      "contextWindow": 200000,
-      "maxOutputTokens": 100000,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": null,
-      "imageQualities": null,
-      "reasoningEffort": [
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-04-16",
-          "deploymentName": "o3-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "DataZoneStandard",
-          "modelVersion": "2025-04-16",
-          "deploymentName": "o3-slurmfactory-eastus2-dz"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-04-16",
-          "deploymentName": "o3-slurmfactory-swedencentral-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "DataZoneStandard",
-          "modelVersion": "2025-04-16",
-          "deploymentName": "o3-slurmfactory-swedencentral-dz"
-        }
-      ]
-    },
-    {
       "id": "grok-4-1-fast-reasoning",
       "displayName": "grok-4-1-fast-reasoning",
       "category": "reasoning",
@@ -548,40 +366,6 @@
       ]
     },
     {
-      "id": "gpt-5-pro",
-      "displayName": "gpt-5-pro",
-      "category": "reasoning",
-      "format": "OpenAI",
-      "api": "responses",
-      "contextWindow": 400000,
-      "maxOutputTokens": 128000,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": null,
-      "imageQualities": null,
-      "reasoningEffort": [
-        "high"
-      ],
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-10-06",
-          "deploymentName": "gpt-5-pro-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-10-06",
-          "deploymentName": "gpt-5-pro-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
       "id": "gpt-5.4-pro",
       "displayName": "gpt-5.4-pro",
       "category": "reasoning",
@@ -614,42 +398,6 @@
           "sku": "GlobalStandard",
           "modelVersion": "2026-03-05",
           "deploymentName": "gpt-5.4-pro-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
-      "id": "gpt-5-codex",
-      "displayName": "gpt-5-codex",
-      "category": "reasoning",
-      "format": "OpenAI",
-      "api": "responses",
-      "contextWindow": 400000,
-      "maxOutputTokens": 128000,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": null,
-      "imageQualities": null,
-      "reasoningEffort": [
-        "low",
-        "medium",
-        "high"
-      ],
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-09-15",
-          "deploymentName": "gpt-5-codex-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-09-15",
-          "deploymentName": "gpt-5-codex-slurmfactory-swedencentral-glbl"
         }
       ]
     },
@@ -1086,93 +834,6 @@
       ]
     },
     {
-      "id": "MAI-Image-2.5",
-      "displayName": "MAI-Image-2.5",
-      "category": "image",
-      "format": "Microsoft",
-      "api": "mai",
-      "contextWindow": null,
-      "maxOutputTokens": null,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": [
-        "1024x1024"
-      ],
-      "imageQualities": [
-        "auto"
-      ],
-      "reasoningEffort": null,
-      "options": [
-        {
-          "region": "westus",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2026-06-02",
-          "deploymentName": "MAI-Image-2.5-slurmfactory-westus-glbl"
-        }
-      ]
-    },
-    {
-      "id": "MAI-Image-2.5-Pro",
-      "displayName": "MAI-Image-2.5-Pro",
-      "category": "image",
-      "format": "Microsoft",
-      "api": "mai",
-      "contextWindow": null,
-      "maxOutputTokens": null,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": [
-        "1024x1024"
-      ],
-      "imageQualities": [
-        "auto"
-      ],
-      "reasoningEffort": null,
-      "options": [
-        {
-          "region": "westus",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2026-06-19",
-          "deploymentName": "MAI-Image-2.5-Pro-slurmfactory-westus-glbl"
-        }
-      ]
-    },
-    {
-      "id": "MAI-Image-2.5-Flash",
-      "displayName": "MAI-Image-2.5-Flash",
-      "category": "image",
-      "format": "Microsoft",
-      "api": "mai",
-      "contextWindow": null,
-      "maxOutputTokens": null,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": [
-        "1024x1024"
-      ],
-      "imageQualities": [
-        "auto"
-      ],
-      "reasoningEffort": null,
-      "options": [
-        {
-          "region": "westus",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2026-06-02",
-          "deploymentName": "MAI-Image-2.5-Flash-slurmfactory-westus-glbl"
-        }
-      ]
-    },
-    {
       "id": "MAI-Image-2.6",
       "displayName": "MAI-Image-2.6",
       "category": "image",
@@ -1305,82 +966,6 @@
           "sku": "GlobalStandard",
           "modelVersion": "1",
           "deploymentName": "FLUX.2-flex-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
-      "id": "FLUX.1-Kontext-pro",
-      "displayName": "FLUX.1-Kontext-pro",
-      "category": "image",
-      "format": "Black Forest Labs",
-      "api": "bfl",
-      "contextWindow": null,
-      "maxOutputTokens": null,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": [
-        "1024x1024",
-        "auto"
-      ],
-      "imageQualities": [
-        "auto"
-      ],
-      "reasoningEffort": null,
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "1",
-          "deploymentName": "FLUX.1-Kontext-pro-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "modelVersion": "1",
-          "deploymentName": "FLUX.1-Kontext-pro-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
-      "id": "FLUX-1.1-pro",
-      "displayName": "FLUX-1.1-pro",
-      "category": "image",
-      "format": "Black Forest Labs",
-      "api": "bfl",
-      "contextWindow": null,
-      "maxOutputTokens": null,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": [
-        "1024x1024",
-        "1024x1440",
-        "1440x1024",
-        "auto"
-      ],
-      "imageQualities": [
-        "auto"
-      ],
-      "reasoningEffort": null,
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "1",
-          "deploymentName": "FLUX-1.1-pro-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "modelVersion": "1",
-          "deploymentName": "FLUX-1.1-pro-slurmfactory-swedencentral-glbl"
         }
       ]
     },
@@ -1618,38 +1203,6 @@
       ]
     },
     {
-      "id": "gpt-audio",
-      "displayName": "gpt-audio",
-      "category": "audio",
-      "format": "OpenAI",
-      "api": "chat",
-      "contextWindow": null,
-      "maxOutputTokens": null,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": null,
-      "imageQualities": null,
-      "reasoningEffort": null,
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-08-28",
-          "deploymentName": "gpt-audio-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-08-28",
-          "deploymentName": "gpt-audio-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
       "id": "gpt-audio-1.5",
       "displayName": "gpt-audio-1.5",
       "category": "audio",
@@ -1733,7 +1286,7 @@
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
-          "modelVersion": "2025-03-20",
+          "modelVersion": "2025-12-15",
           "deploymentName": "gpt-4o-mini-tts-slurmfactory-eastus2-glbl"
         }
       ]

@@ -108,29 +108,29 @@ def test_image_options_expose_compatible_controls_and_honest_prices(client):
     body = response.json()
     assert body["maxSelectedModels"] == 3
     by_id = {model["id"]: model for model in body["models"]}
-    flux = by_id["FLUX-1.1-pro"]
+    flux = by_id["FLUX.2-pro"]
     flux_price = next(
         price
         for price in flux["prices"]
         if price["size"] == "1024x1024" and price["quality"] == "auto"
     )
     assert flux_price["costKnown"] is True
-    assert flux_price["estimatedCostUsd"] == 0.04
-    mai_price = by_id["MAI-Image-2.5"]["prices"][0]
+    assert flux_price["estimatedCostUsd"] == 0.030729
+    mai_price = by_id["MAI-Image-2.6"]["prices"][0]
     assert mai_price["costKnown"] is False
     assert mai_price["estimatedCostUsd"] is None
 
 
-def test_image_options_hide_models_excluded_by_residency_policy():
-    client = _client(data_residency="us")
+@pytest.mark.parametrize("policy", ["us", "eu", "zonal"])
+def test_image_options_hide_models_excluded_by_residency_policy(policy):
+    client = _client(data_residency=policy)
     try:
         response = client.get(
             "/api/images/options", headers={"X-Dev-User": "ian"}
         )
         assert response.status_code == 200, response.text
         advertised = {model["id"] for model in response.json()["models"]}
-        assert "FLUX.2-pro" not in advertised
-        assert advertised
+        assert advertised == {"gpt-image-1.5"}
         assert all(
             client.app.state.catalog.resolve_deployment(model_id) is not None
             for model_id in advertised
@@ -147,7 +147,11 @@ def test_default_model_used_when_omitted(client):
     )
     assert r.status_code == 200, r.text
     # The default is the first image-category model in the catalog.
-    assert r.json()["model"] in {"gpt-image-1.5", "gpt-image-2", "MAI-Image-2.5"}
+    first_image = next(
+        model for model in client.app.state.catalog.models
+        if model.category == "image" and client.app.state.catalog.available(model)
+    )
+    assert r.json()["model"] == first_image.id
 
 
 def test_size_passthrough(client):
@@ -216,43 +220,62 @@ def test_mai_26_generation_and_controls(client, model):
         assert len(client.app.state.gateway.calls) == calls
 
 
-def test_flux_kontext_rejects_over_one_megapixel_size(client):
-    r = client.post(
+@pytest.mark.parametrize(
+    ("retired", "retained"),
+    [
+        ("MAI-Image-2.5", "MAI-Image-2.6"),
+        ("MAI-Image-2.5-Pro", "MAI-Image-2.6"),
+        ("MAI-Image-2.5-Flash", "MAI-Image-2.6-Flash"),
+        ("FLUX.1-Kontext-pro", "FLUX.2-pro"),
+        ("FLUX-1.1-pro", "FLUX.2-flex"),
+    ],
+)
+def test_retired_image_model_is_rejected_without_substitution(client, retired, retained):
+    headers = {"X-Dev-User": "ian"}
+    body = {"prompt": "a red fox", "model": retired, "size": "1024x1024"}
+    rejected = client.post(
         "/api/images/generations",
-        json={
-            "prompt": "a red fox",
-            "model": "FLUX.1-Kontext-pro",
-            "size": "1536x1024",
-        },
-        headers={"X-Dev-User": "ian"},
+        json=body,
+        headers=headers,
     )
-    assert r.status_code == 422
-    assert "1024x1024" in r.json()["detail"]
+    assert rejected.status_code == 400, rejected.text
+    assert retired in rejected.json()["detail"]
+    assert client.app.state.gateway.calls == []
+
+    allowed = client.post(
+        "/api/images/generations",
+        json={**body, "model": retained},
+        headers=headers,
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["model"] == retained
+    assert len(client.app.state.gateway.calls) == 1
 
 
-def test_flux_1_1_enforces_1440_dimension_cap_with_valid_control(client):
+def test_flux_2_enforces_catalog_sizes_with_valid_control(client):
     rejected = client.post(
         "/api/images/generations",
         json={
             "prompt": "a red fox",
-            "model": "FLUX-1.1-pro",
-            "size": "1024x1536",
-        },
-        headers={"X-Dev-User": "ian"},
-    )
-    allowed = client.post(
-        "/api/images/generations",
-        json={
-            "prompt": "a red fox",
-            "model": "FLUX-1.1-pro",
+            "model": "FLUX.2-pro",
             "size": "1024x1440",
         },
         headers={"X-Dev-User": "ian"},
     )
-
     assert rejected.status_code == 422
+    assert client.app.state.gateway.calls == []
+    allowed = client.post(
+        "/api/images/generations",
+        json={
+            "prompt": "a red fox",
+            "model": "FLUX.2-pro",
+            "size": "1024x1536",
+        },
+        headers={"X-Dev-User": "ian"},
+    )
+
     assert allowed.status_code == 200, allowed.text
-    assert client.app.state.gateway.calls[-1]["size"] == "1024x1440"
+    assert client.app.state.gateway.calls[-1]["size"] == "1024x1536"
 
 
 def test_flux_rejects_unsupported_quality_instead_of_ignoring_it(client):

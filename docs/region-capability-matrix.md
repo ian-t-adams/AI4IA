@@ -154,7 +154,10 @@ Removing a catalog entry does not delete its Azure deployment: ARM incremental
 mode retains it. The postprovision topology gate rejects unexpected stale
 deployments. Model retirement therefore requires an explicit, reviewed
 live-resource cleanup as well as regenerated catalogs; it is not an automatic
-side effect of editing JSON.
+side effect of editing JSON. Follow the
+[coordinated retirement procedure](runbooks/deployment.md#coordinated-catalog-retirement):
+saved selections are not remapped, historical pricing is retained, and an
+application-image rollback cannot restore a deleted model deployment.
 
 ## Retirement evidence and reporting
 

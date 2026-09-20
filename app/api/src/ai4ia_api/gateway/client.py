@@ -118,7 +118,7 @@ def _normalize_params_for_deployment(body: dict[str, Any], deployment: str) -> N
                 body.setdefault("max_completion_tokens", value)
 
 
-# --- Responses API (gpt-5-pro / gpt-5-codex / o3-pro) -----------------------
+# --- Responses API -------------------------------------------------------
 #
 # Azure exposes a *separate* surface, the Responses API, for a handful of
 # flagship reasoning models that 400 on chat/completions. It is reached at

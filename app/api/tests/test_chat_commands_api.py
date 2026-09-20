@@ -50,12 +50,12 @@ def test_model_command_switches_session_model(client):
     sid = _create_session(client, model="gpt-5.2")["id"]
     resp = client.post(
         "/api/chat",
-        json={"sessionId": sid, "content": "/model gpt-5.1", "stream": False},
+        json={"sessionId": sid, "content": "/model gpt-5.4", "stream": False},
     )
     assert resp.status_code == 200
-    assert "gpt-5.1" in resp.json()["message"]["content"]
+    assert "gpt-5.4" in resp.json()["message"]["content"]
     session = client.get(f"/api/sessions/{sid}").json()
-    assert session["model"] == "gpt-5.1"
+    assert session["model"] == "gpt-5.4"
 
 
 def test_chat_rejects_capability_model(client):
