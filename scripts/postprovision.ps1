@@ -389,17 +389,6 @@ function Test-GatewayTopology {
       return
     }
 
-    function Test-ClaudeBinding {
-      $enabled = Get-EnvValue 'AI4IA_CLAUDE_EXTERNAL_ENABLED'
-      if ($enabled -ne 'true') { return }
-      & python (Join-Path $PSScriptRoot 'check-claude-binding.py') --routed
-      if ($LASTEXITCODE -ne 0) {
-        Add-Result -Name 'claude-binding' -Status 'FAIL' -Detail 'exact target/identity/route readback unavailable'
-        return
-      }
-      Add-Result -Name 'claude-binding' -Status 'PASS' -Detail 'exact target/identity/route metadata verified; not a live inference proof'
-    }
-
     $expectedModel = "$($proxyUrl.TrimEnd('/'))/openai"
     $expectedRealtime = "$($apimUrl.TrimEnd('/'))/openai"
     $modelMatches = [string]::Equals($modelUrl.TrimEnd('/'), $expectedModel, [System.StringComparison]::OrdinalIgnoreCase)
@@ -412,6 +401,17 @@ function Test-GatewayTopology {
     }
 
     Add-Result -Name 'gateway-topology' -Status 'FAIL' -Detail "expected model=$expectedModel realtime=$expectedRealtime; got model=$modelUrl realtime=$realtimeUrl"
+}
+
+function Test-ClaudeBinding {
+  $enabled = Get-EnvValue 'AI4IA_CLAUDE_EXTERNAL_ENABLED'
+  if ($enabled -ne 'true') { return }
+  & python (Join-Path $PSScriptRoot 'check-claude-binding.py') --routed
+  if ($LASTEXITCODE -ne 0) {
+    Add-Result -Name 'claude-binding' -Status 'FAIL' -Detail 'exact target/identity/route readback unavailable'
+    return
+  }
+  Add-Result -Name 'claude-binding' -Status 'PASS' -Detail 'exact target/identity/route metadata verified; not a live inference proof'
 }
 
 function Test-CustomDomainDns {

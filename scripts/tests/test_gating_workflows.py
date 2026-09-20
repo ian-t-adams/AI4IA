@@ -381,7 +381,7 @@ class ClaudeWorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(source["with"]["client-id"], "${{ env.AZURE_CLIENT_ID }}")
         reader = next(step for step in steps if step.get("name") == "Log in isolated Claude target reader (OIDC)")
         self.assertEqual(reader["if"], "${{ env.AI4IA_CLAUDE_EXTERNAL_ENABLED == 'true' }}")
-        self.assertEqual(reader["env"]["AZURE_CONFIG_DIR"], "${{ env.AI4IA_CLAUDE_TARGET_AZURE_CONFIG_DIR }}")
+        self.assertEqual(reader["env"]["AZURE_CONFIG_DIR"], "${{ runner.temp }}/claude-target-reader")
         for input_name, field in (
             ("client-id", "targetReaderClientId"), ("tenant-id", "targetTenantId"),
             ("subscription-id", "targetSubscriptionId"),
@@ -391,6 +391,11 @@ class ClaudeWorkflowBoundaryTests(unittest.TestCase):
         for name in ("AI4IA_CLAUDE_ENABLED", "AI4IA_CLAUDE_EXTERNAL_ENABLED", "AI4IA_CLAUDE_BINDING_JSON"):
             self.assertEqual(job["env"][name], "${{ vars." + name + " }}")
         check = next(step for step in steps if step.get("name") == "Validate cross-tenant Claude binding configuration")
+        self.assertNotIn("AI4IA_CLAUDE_TARGET_AZURE_CONFIG_DIR", job["env"])
+        self.assertIn('${RUNNER_TEMP}/claude-target-reader', check["run"])
+        self.assertIn('"$GITHUB_ENV"', check["run"])
+        self.assertIn('claude_external="${AI4IA_CLAUDE_EXTERNAL_ENABLED:-}"', check["run"])
+        self.assertIn('"${claude_external,,}" = "true"', check["run"])
         routed = next(step for step in steps if step.get("name") == "Verify current Claude routes before image rollout")
         deploy = next(step for step in steps if step.get("id") == "deploy")
         self.assertLess(steps.index(check), steps.index(reader))

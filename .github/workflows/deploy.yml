@@ -253,7 +253,6 @@ jobs:
       AI4IA_CLAUDE_ENABLED: ${{ vars.AI4IA_CLAUDE_ENABLED }}
       AI4IA_CLAUDE_EXTERNAL_ENABLED: ${{ vars.AI4IA_CLAUDE_EXTERNAL_ENABLED }}
       AI4IA_CLAUDE_BINDING_JSON: ${{ vars.AI4IA_CLAUDE_BINDING_JSON }}
-      AI4IA_CLAUDE_TARGET_AZURE_CONFIG_DIR: ${{ runner.temp }}/claude-target-reader
       # Anthropic Marketplace attestation. These values auto-accept the offer
       # through modelProviderData and must describe the real legal entity.
       AI4IA_CLAUDE_ORGANIZATION_NAME: ${{ vars.AI4IA_CLAUDE_ORGANIZATION_NAME }}
@@ -507,7 +506,13 @@ jobs:
           echo "$tools" >> "$GITHUB_PATH"
 
       - name: Validate cross-tenant Claude binding configuration
-        run: python scripts/check-claude-binding.py --check
+        run: |
+          set -euo pipefail
+          python scripts/check-claude-binding.py --check
+          claude_external="${AI4IA_CLAUDE_EXTERNAL_ENABLED:-}"
+          if [ "${claude_external,,}" = "true" ]; then
+            echo "AI4IA_CLAUDE_TARGET_AZURE_CONFIG_DIR=${RUNNER_TEMP}/claude-target-reader" >> "$GITHUB_ENV"
+          fi
 
       - name: Log in to Azure (OIDC federated credentials)
         run: |
@@ -539,7 +544,7 @@ jobs:
         if: ${{ env.AI4IA_CLAUDE_EXTERNAL_ENABLED == 'true' }}
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         env:
-          AZURE_CONFIG_DIR: ${{ env.AI4IA_CLAUDE_TARGET_AZURE_CONFIG_DIR }}
+          AZURE_CONFIG_DIR: ${{ runner.temp }}/claude-target-reader
         with:
           client-id: ${{ fromJSON(env.AI4IA_CLAUDE_BINDING_JSON || '{}').targetReaderClientId }}
           tenant-id: ${{ fromJSON(env.AI4IA_CLAUDE_BINDING_JSON || '{}').targetTenantId }}

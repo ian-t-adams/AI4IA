@@ -58,6 +58,16 @@ class ClaudeBindingTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(EvidenceError):
                 claude.configured_binding({**good, **change})
 
+    def test_authenticated_empty_graph_result_is_not_an_exact_principal_binding(self):
+        key = (True, "/servicePrincipals/" + self.binding["targetPrincipalId"])
+        original = self.reader.responses[key]
+        for empty in ({}, {"value": []}, {"id": self.binding["targetPrincipalId"]}):
+            self.reader.responses[key] = empty
+            with self.assertRaisesRegex(EvidenceError, "claude_target_principal_mismatch"):
+                claude.verify_identity(self.binding, self.reader, attached=True)
+            self.reader.responses[key] = original
+            claude.verify_identity(self.binding, self.reader, attached=True)
+
     def test_each_identity_and_resource_defect_refuses_with_identical_positive_control(self):
         b = self.binding
         source_app = (False, "/applications/" + b["applicationObjectId"])
@@ -161,6 +171,7 @@ class ClaudeBindingTests(unittest.TestCase):
             for target, call in zip((True, False), calls, strict=True):
                 command, timeout, limit, _ = call
                 self.assertEqual(command[command.index("--subscription") + 1], self.binding["targetSubscriptionId" if target else "sourceSubscriptionId"])
+                self.assertNotIn("--tenant", command)
                 self.assertIn("GET", command)
                 self.assertLessEqual(timeout, 20)
                 self.assertLessEqual(limit, 1024 * 1024)
