@@ -9,6 +9,7 @@ from typing import Any
 
 import _capacity_evidence as evidence
 from _model_naming import PATTERN, deployment_name
+from _model_targets import model_target
 
 VERSION = "production-capacity-v1"
 PROFILES = ("baseline", "production", "maximum")
@@ -138,6 +139,10 @@ def parse_policy(
     catalog_digest: str = "",
 ) -> Policy | None:
     raw_policy = models.get("productionCapacityPolicy")
+    if raw_policy is not None and include_anthropic and any(
+        model_target(model) != "source" for model in models["catalog"]
+    ):
+        raise evidence.EvidenceError("external_target_production_policy_unsupported")
     has_metadata = any("production" in d for m in models.get("catalog", []) for d in m.get("deployments", []))
     if raw_policy is None:
         if required or has_metadata or "productionCapacityPolicy" in models:

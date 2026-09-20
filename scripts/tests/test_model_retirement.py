@@ -1015,13 +1015,18 @@ class RetirementCliTests(unittest.TestCase):
 
     def test_real_catalog_publisher_formats_admit_and_block_with_the_same_evidence(self):
         catalog = json.loads((ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
-        for publisher in sorted({model["format"] for model in catalog["catalog"]}):
+        # Source-tenant lifecycle admission cannot borrow source offerings for
+        # external Claude; its retained unknown rows are exercised separately.
+        for publisher in sorted({
+            model["format"] for model in catalog["catalog"]
+            if model.get("deploymentTarget", "source") == "source"
+        }):
             with self.subTest(publisher=publisher):
                 models = copy.deepcopy(CATALOG)
                 models["catalog"][0]["format"] = publisher
                 rows = [offered(instant(-1), format=publisher)]
                 fake = FakeAzure(rows, actual={}, allow_quota=True)
-                environment = {**READ_ENV, "AI4IA_CLAUDE_ENABLED": "true"}
+                environment = {**READ_ENV, "AI4IA_CLAUDE_ENABLED": "false"}
                 self.assertEqual(self.run_main(
                     fake, models=models, environment=environment, report_mode=False
                 )[0], 1)

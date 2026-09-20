@@ -27,6 +27,8 @@ export interface ModelEntry {
   category: string;
   format: string;
   api?: string;
+  deploymentTarget?: "source" | "external-claude";
+  anthropicThinking?: "disabled" | null;
   // True for text-chat models offered in the chat/agent pickers; false for
   // capability models (image, video, tts, transcription, embedding, rerank) and
   // voice models (realtime, audio), reached through their own surfaces/tools.

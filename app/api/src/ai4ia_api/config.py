@@ -736,6 +736,9 @@ class Settings(BaseSettings):
     # may contain Claude, but the server removes it before any route, agent, or UI
     # can select it. IaC uses the same switch to omit the paid deployment.
     claude_enabled: bool = False
+    # Staging/selection, not proof of target identity or entitlement. The operator
+    # preflight reads both tenants; APIM enforces the fixed binding on every call.
+    claude_external_enabled: bool = False
 
     # Data-residency policy for model routing: "global" | "zonal" | "us" | "eu".
     #
@@ -1145,6 +1148,11 @@ class Settings(BaseSettings):
 
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
+        if self.claude_enabled and not self.claude_external_enabled:
+            raise RuntimeError(
+                "AI4IA_CLAUDE_ENABLED requires AI4IA_CLAUDE_EXTERNAL_ENABLED and "
+                "the separately verified cross-tenant gateway binding."
+            )
         self._validate_data_residency()
         if self.group_policy_enabled or self.asset_publishing_enabled or self.group_policy_json:
             from .policy.models import parse_policy_config

@@ -3,6 +3,7 @@
 targetScope = 'subscription'
 
 import { selectedCapacity } from './capacity.bicep'
+import { deploymentTarget } from './model-targets.bicep'
 
 @minLength(3)
 @maxLength(20)
@@ -31,6 +32,12 @@ param modelCapacityProfile string = 'baseline'
 
 @description('Enable Anthropic model deployment and API advertisement. Default OFF until Marketplace fulfillment is approved and working for the subscription.')
 param claudeEnabled bool = false
+
+@description('Attach the separately approved source UAMI and stage the external Claude binding. Default OFF; never creates target resources or directory objects.')
+param claudeExternalEnabled bool = false
+
+@description('Operator-owned exact cross-tenant binding JSON, checked by check-claude-binding.py using two isolated authenticated readers. No credentials. Empty by default; configuration is not readback proof.')
+param claudeBindingJson string = ''
 
 @description('Legal entity name sent to Anthropic in modelProviderData. Required when claudeEnabled; supplying it accepts the applicable Marketplace terms. Never use an inferred owner tag or placeholder.')
 param claudeOrganizationName string = ''
@@ -393,7 +400,8 @@ var effectiveSearchLocation = empty(searchLocation) ? location : searchLocation
 var models = loadJsonContent('models.json')
 var skuShort = models.naming.skuShort
 var catalog = models.catalog
-var deployableCatalog = filter(catalog, model => claudeEnabled || model.format != 'Anthropic')
+var deployableCatalog = filter(catalog, model => deploymentTarget(model) == 'source' && model.format != 'Anthropic')
+var claudeBinding = claudeExternalEnabled ? json(claudeBindingJson) : {}
 
 // Naming tokens come from models.json `naming` (the single source of truth also read by
 // scripts/gen-model-catalog.py, scripts/validate-catalog.py, and the app runtime). Changing
@@ -777,6 +785,7 @@ module apimcore 'modules/apimcore.bicep' = {
     uniqueSuffix: uniqueSuffix
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     apimPublisherEmail: apimPublisherEmail
+    claudeIdentityResourceId: claudeExternalEnabled ? claudeBinding.sourceIdentityResourceId : ''
   }
 }
 
@@ -799,6 +808,9 @@ module gateway 'modules/gateway.bicep' = {
     sharedApimResourceId: apimcore.outputs.apimId
     sharedApimGatewayUrl: apimcore.outputs.gatewayUrl
     sharedApimPrincipalId: apimcore.outputs.principalId
+    claudeEnabled: claudeEnabled
+    claudeExternalEnabled: claudeExternalEnabled
+    claudeBinding: claudeBinding
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     proxyIdentityResourceId: proxyIdentity.resourceId
     proxyIdentityClientId: proxyIdentity.clientId
@@ -993,6 +1005,7 @@ module api 'modules/api.bicep' = {
     hardQuotaEnabled: hardQuotaEnabled
     adminApiSecret: adminApiSecret
     claudeEnabled: claudeEnabled
+    claudeExternalEnabled: claudeExternalEnabled
     // The API stamps the priority band; the proxy reserves workers for it. Both
     // sides read the same switch so they can never be half-enabled: a band with
     // no reservation is inert, and a reservation with no band starves.

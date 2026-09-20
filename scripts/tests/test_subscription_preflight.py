@@ -140,6 +140,11 @@ class CatalogRequirementTests(unittest.TestCase):
                 {
                     "name": "claude-opus-4-8",
                     "format": "Anthropic",
+                    "api": "anthropic",
+                    "deploymentTarget": "external-claude",
+                    "anthropicThinking": "disabled",
+                    "samplingSupported": False,
+                    "reasoningEffort": ["low", "medium", "high"],
                     "deployments": [
                         {
                             "region": "eastus2",

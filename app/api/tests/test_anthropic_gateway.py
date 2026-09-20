@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
 from ai4ia_api.agents.runtime import run_agent_turn
 from ai4ia_api.agents.tool_exec import ToolContext, build_tools
@@ -13,11 +14,14 @@ from tests.conftest import make_settings
 DEPLOYMENT = "claude-opus-4-8-slurmfactory-eastus2-glbl"
 
 
-def _client(handler=None) -> ModelGatewayClient:
+def _client(handler=None, *, enabled=False) -> ModelGatewayClient:
     transport = httpx.MockTransport(handler) if handler is not None else None
     http = httpx.AsyncClient(transport=transport) if transport is not None else None
     return ModelGatewayClient(
-        make_settings(model_gateway_url="https://proxy.test/openai"),
+        make_settings(
+            model_gateway_url="https://proxy.test/openai",
+            claude_enabled=enabled, claude_external_enabled=enabled,
+        ),
         http_client=http,
     )
 
@@ -206,11 +210,18 @@ async def test_nonstream_response_translates_text_tools_and_usage():
         "prompt_tokens": 12,
         "completion_tokens": 4,
         "total_tokens": 16,
+        "anthropic_cache": {"read": 2, "write": 0},
     }
     await client._http.aclose()  # type: ignore[union-attr]
 
 
-async def test_claude_stream_runs_a_governed_agent_tool_loop_end_to_end():
+@pytest.mark.parametrize("deployment", [
+    DEPLOYMENT,
+    "claude-opus-5-slurmfactory-eastus2-glbl",
+    "claude-opus-5-slurmfactory-eastus2-dz",
+    "claude-sonnet-5-slurmfactory-eastus2-glbl",
+])
+async def test_claude_stream_runs_a_governed_agent_tool_loop_end_to_end(deployment):
     requests: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -267,7 +278,7 @@ async def test_claude_stream_runs_a_governed_agent_tool_loop_end_to_end():
             200, text=stream, headers={"content-type": "text/event-stream"}
         )
 
-    client = _client(handler)
+    client = _client(handler, enabled=deployment != DEPLOYMENT)
     registry, executor = build_tools()
     deltas: list[str] = []
 
@@ -275,7 +286,7 @@ async def test_claude_stream_runs_a_governed_agent_tool_loop_end_to_end():
         deltas.append(text)
 
     result = await run_agent_turn(
-        deployment=DEPLOYMENT,
+        deployment=deployment,
         messages=[
             {"role": "system", "content": "Use the calculator."},
             {"role": "user", "content": "What is 6*7?"},
@@ -306,4 +317,11 @@ async def test_claude_stream_runs_a_governed_agent_tool_loop_end_to_end():
     )
     assert result.usage.prompt == 20
     assert result.usage.completion == 9
+    for request in requests:
+        if deployment != DEPLOYMENT:
+            assert request["thinking"] == {"type": "disabled"}
+            assert request["output_config"] == {"effort": "high"}
+        else:
+            assert "thinking" not in request
+            assert "output_config" not in request
     await client._http.aclose()  # type: ignore[union-attr]

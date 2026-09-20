@@ -389,6 +389,17 @@ function Test-GatewayTopology {
       return
     }
 
+    function Test-ClaudeBinding {
+      $enabled = Get-EnvValue 'AI4IA_CLAUDE_EXTERNAL_ENABLED'
+      if ($enabled -ne 'true') { return }
+      & python (Join-Path $PSScriptRoot 'check-claude-binding.py') --routed
+      if ($LASTEXITCODE -ne 0) {
+        Add-Result -Name 'claude-binding' -Status 'FAIL' -Detail 'exact target/identity/route readback unavailable'
+        return
+      }
+      Add-Result -Name 'claude-binding' -Status 'PASS' -Detail 'exact target/identity/route metadata verified; not a live inference proof'
+    }
+
     $expectedModel = "$($proxyUrl.TrimEnd('/'))/openai"
     $expectedRealtime = "$($apimUrl.TrimEnd('/'))/openai"
     $modelMatches = [string]::Equals($modelUrl.TrimEnd('/'), $expectedModel, [System.StringComparison]::OrdinalIgnoreCase)
@@ -667,6 +678,7 @@ $checks = @(
   @{ Label = 'API health'; Fn = { Test-ApiHealth } }
   @{ Label = 'Custom-domain DNS'; Fn = { Test-CustomDomainDns } }
   @{ Label = 'Gateway topology outputs (hard gate)'; Fn = { Test-GatewayTopology } }
+  @{ Label = 'Cross-tenant Claude binding (hard gate when staged)'; Fn = { Test-ClaudeBinding } }
   @{ Label = 'App Configuration sentinel'; Fn = { Register-AppConfigurationSentinel } }
   @{ Label = 'Content Understanding defaults'; Fn = { Register-ContentUnderstandingDefault } }
 )

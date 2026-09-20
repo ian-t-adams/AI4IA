@@ -1858,34 +1858,73 @@
       ]
     },
     {
-      "id": "claude-opus-4-8",
-      "displayName": "Claude Opus 4.8",
+      "id": "claude-opus-5",
+      "displayName": "Claude Opus 5",
       "category": "reasoning",
       "format": "Anthropic",
       "api": "anthropic",
       "contextWindow": 1000000,
       "maxOutputTokens": 128000,
-      "toolCalling": null,
+      "toolCalling": true,
       "inputModalities": [
         "text"
       ],
       "imageSizes": null,
       "imageQualities": null,
-      "reasoningEffort": [],
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "deploymentTarget": "external-claude",
+      "samplingSupported": false,
+      "anthropicThinking": "disabled",
       "options": [
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "GlobalStandard",
           "modelVersion": "2",
-          "deploymentName": "claude-opus-4-8-slurmfactory-eastus2-glbl"
+          "deploymentName": "claude-opus-5-slurmfactory-eastus2-glbl"
         },
         {
           "region": "eastus2",
           "dataZone": "US",
           "sku": "DataZoneStandard",
           "modelVersion": "2",
-          "deploymentName": "claude-opus-4-8-slurmfactory-eastus2-dz"
+          "deploymentName": "claude-opus-5-slurmfactory-eastus2-dz"
+        }
+      ]
+    },
+    {
+      "id": "claude-sonnet-5",
+      "displayName": "Claude Sonnet 5",
+      "category": "reasoning",
+      "format": "Anthropic",
+      "api": "anthropic",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "deploymentTarget": "external-claude",
+      "samplingSupported": false,
+      "anthropicThinking": "disabled",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2",
+          "deploymentName": "claude-sonnet-5-slurmfactory-eastus2-glbl"
         }
       ]
     }

@@ -229,6 +229,12 @@
 					<set-variable name="backendProtocolPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;path&quot;))" />
 					<set-variable name="backendOperationPath" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string>(&quot;operation&quot;))" />
 					<choose>
+						<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;claudeFederated&quot;, false) &amp;&amp; (context.Variables.GetValueOrDefault&lt;string>(&quot;auth&quot;, &quot;&quot;) != &quot;CLAUDE_FEDERATED&quot; || context.Variables.GetValueOrDefault&lt;string>(&quot;backendUrl&quot;, &quot;&quot;) != &quot;{{claude-target-endpoint}}/anthropic&quot; || context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;) != &quot;anthropic&quot;))">
+							<return-response>
+								<set-status code="502" reason="Claude binding unavailable" />
+								<set-body>{"error":{"code":"claude_binding_unavailable"}}</set-body>
+							</return-response>
+						</when>
 						<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; (context.Variables.GetValueOrDefault&lt;bool>(&quot;attemptClaimed&quot;, false) || context.Variables.GetValueOrDefault&lt;int>(&quot;backendCallCounter&quot;, 0) != 0 || context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;) != &quot;openai&quot; || !string.IsNullOrEmpty(context.Variables.GetValueOrDefault&lt;string>(&quot;backendOperationPath&quot;, &quot;&quot;))))">
 							<return-response>
 								<set-status code="400" reason="Unsupported gateway attempt" />
@@ -364,7 +370,7 @@
 					</choose>
 
 					<choose>
-						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;auth&quot;, &quot;&quot;), &quot;MI&quot;, StringComparison.OrdinalIgnoreCase))">
+						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;auth&quot;, &quot;&quot;), &quot;MI&quot;, StringComparison.OrdinalIgnoreCase) || context.Variables.GetValueOrDefault&lt;string>(&quot;auth&quot;, &quot;&quot;) == &quot;CLAUDE_FEDERATED&quot;)">
 							<set-header name="Authorization" exists-action="override">
 								<value>@("Bearer " + (string)context.Variables["managed-id-access-token"])</value>
 							</set-header>

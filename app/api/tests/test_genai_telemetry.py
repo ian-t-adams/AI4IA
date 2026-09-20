@@ -108,7 +108,7 @@ def _frames(api, model, *, done=True):
 def _gateway(http, *, enabled=True, include_usage=True):
     return ModelGatewayClient(make_settings(
         model_gateway_url=f"https://gateway.invalid/{POISON}",
-        model_gateway_api_key=POISON, claude_enabled=True,
+        model_gateway_api_key=POISON, claude_enabled=True, claude_external_enabled=True,
         applicationinsights_connection_string="InstrumentationKey=synthetic" if enabled else None,
         gateway_stream_include_usage=include_usage,
     ), http_client=http)

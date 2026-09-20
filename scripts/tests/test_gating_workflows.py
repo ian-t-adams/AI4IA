@@ -371,6 +371,35 @@ class GeneratorDependencyTriggerTests(unittest.TestCase):
                         f"{filename} does not run when its generator dependency {source} changes",
                     )
 
+class ClaudeWorkflowBoundaryTests(unittest.TestCase):
+    def test_disabled_jobs_keep_source_identity_and_enabled_reader_is_isolated(self):
+        document = yaml.safe_load(DEPLOY_WORKFLOW.read_text(encoding="utf-8"))
+        job = document["jobs"]["deploy"]
+        steps = job["steps"]
+        source = next(step for step in steps if step.get("name") == "Log in to Azure CLI (OIDC)")
+        self.assertNotIn("if", source)
+        self.assertEqual(source["with"]["client-id"], "${{ env.AZURE_CLIENT_ID }}")
+        reader = next(step for step in steps if step.get("name") == "Log in isolated Claude target reader (OIDC)")
+        self.assertEqual(reader["if"], "${{ env.AI4IA_CLAUDE_EXTERNAL_ENABLED == 'true' }}")
+        self.assertEqual(reader["env"]["AZURE_CONFIG_DIR"], "${{ env.AI4IA_CLAUDE_TARGET_AZURE_CONFIG_DIR }}")
+        for input_name, field in (
+            ("client-id", "targetReaderClientId"), ("tenant-id", "targetTenantId"),
+            ("subscription-id", "targetSubscriptionId"),
+        ):
+            self.assertIn(field, reader["with"][input_name])
+            self.assertNotIn("AZURE_CLIENT_ID", reader["with"][input_name])
+        for name in ("AI4IA_CLAUDE_ENABLED", "AI4IA_CLAUDE_EXTERNAL_ENABLED", "AI4IA_CLAUDE_BINDING_JSON"):
+            self.assertEqual(job["env"][name], "${{ vars." + name + " }}")
+        check = next(step for step in steps if step.get("name") == "Validate cross-tenant Claude binding configuration")
+        routed = next(step for step in steps if step.get("name") == "Verify current Claude routes before image rollout")
+        deploy = next(step for step in steps if step.get("id") == "deploy")
+        self.assertLess(steps.index(check), steps.index(reader))
+        self.assertLess(steps.index(reader), steps.index(routed))
+        self.assertLess(steps.index(routed), steps.index(deploy))
+        self.assertEqual(routed["if"], reader["if"])
+        self.assertEqual(routed["run"], "python scripts/check-claude-binding.py --routed")
+        self.assertNotIn("provision", routed["if"])
+
 class WorkflowCheckoutCredentialTests(unittest.TestCase):
     def test_checkouts_do_not_retain_tokens_for_later_steps(self) -> None:
         checked = 0
@@ -580,6 +609,8 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         "AI4IA_BUDGET_START_DATE": "2026-08-01",
         "AI4IA_ALERT_EMAIL": "ai4ia-alerts@example.org",
         "AI4IA_CLAUDE_ENABLED": "true",
+        "AI4IA_CLAUDE_EXTERNAL_ENABLED": "true",
+        "AI4IA_CLAUDE_BINDING_JSON": "{}",
         "AI4IA_CLAUDE_ORGANIZATION_NAME": "Example Legal Entity",
         "AI4IA_CLAUDE_COUNTRY_CODE": "US",
         "AI4IA_CLAUDE_INDUSTRY": "technology",

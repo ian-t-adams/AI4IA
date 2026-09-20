@@ -24,6 +24,9 @@ param apimPublisherName string = 'AI4IA'
 @description('Per-subscription uniqueness suffix. APIM service names are globally unique across Azure (they back <name>.azure-api.net), so this must be part of the name or a redeploy into a *different* subscription fails with ServiceAlreadyExists against the environment that already holds the unsuffixed name.')
 param uniqueSuffix string
 
+@description('Existing, separately approved source-tenant UAMI resource ID. Empty keeps the original system-only identity.')
+param claudeIdentityResourceId string = ''
+
 // APIM child entities live in one flat namespace per service. This plane is shared
 // across workloads, so every child name must carry the workload token or a second
 // workload silently collides with (and overwrites) this one's product/subscription.
@@ -40,7 +43,10 @@ resource apim 'Microsoft.ApiManagement/service@2024-05-01' = {
     capacity: 1
   }
   identity: {
-    type: 'SystemAssigned'
+    type: empty(claudeIdentityResourceId) ? 'SystemAssigned' : 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: empty(claudeIdentityResourceId) ? null : {
+      '${claudeIdentityResourceId}': {}
+    }
   }
   properties: {
     publisherEmail: apimPublisherEmail

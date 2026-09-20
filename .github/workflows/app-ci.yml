@@ -26,6 +26,11 @@ on:
       - "infra/voice-providers.schema.json"
       - "foundry/**"
       - "scripts/_generator.py"
+      - "scripts/_model_targets.py"
+      - "scripts/_claude_binding.py"
+      - "scripts/check-claude-binding.py"
+      - "scripts/tests/test_claude_binding.py"
+      - "scripts/tests/_claude_fixture.py"
       - "scripts/gen-model-catalog.py"
       - "scripts/gen-mcp-catalog.py"
       - "scripts/gen-voice-provider-catalog.py"
@@ -162,3 +167,10 @@ jobs:
         run: |
           ruff check --config app/api/pyproject.toml scripts/canaries scripts/_canary_contract.py scripts/tests/test_application_canary.py
           pyright --project scripts/canaries
+
+      - name: External Claude source contracts
+        working-directory: .
+        run: |
+          ruff check --config app/api/pyproject.toml scripts/_claude_binding.py scripts/_model_targets.py scripts/check-claude-binding.py scripts/tests/test_claude_binding.py scripts/tests/_claude_fixture.py
+          pyright --pythonversion 3.12 --level error scripts/_claude_binding.py scripts/_model_targets.py scripts/check-claude-binding.py
+          python -m unittest scripts.tests.test_claude_binding

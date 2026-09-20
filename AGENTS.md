@@ -1069,6 +1069,32 @@ Four rules follow:
    default-off `AI4IA_CLAUDE_ENABLED` gate. Never infer the legal entity, country,
    or industry from tags; `validate-feature-prereqs.py` must fail before provision
    when Claude is enabled and the attestation is missing or placeholder-shaped.
+   Shipping Claude rows have `deploymentTarget: external-claude`. Main-stack
+   provisioning must never place them in source regional accounts. The separate
+   default-off target/identity/access Bicep units are operator approvals, not azd
+   hooks. `AI4IA_CLAUDE_EXTERNAL_ENABLED` stages a preapproved source UAMI alongside
+   APIM's unchanged system identity; `AI4IA_CLAUDE_ENABLED` independently admits
+   advertisement/traffic. Exact configured target tokens flow only through the
+   existing proxy/APIM path. Never use an app key, runtime Graph calls, a shared
+   deployment credential or built-in Foundry User as a narrow inference grant.
+   The documented MaaS-only custom role is exact-account assigned and read back.
+   Separate source/target readers must prove app/FIC/SP/role/model/route metadata
+   freshly; saved JSON and flags do not prove it. Single-subscription reports
+   retain external unknowns, not borrowed source evidence. A live binding must be
+   observed disabled before replacement. Network mode is explicitly public-keyless;
+   unresolved Private Link requirements still block activation.
+   New Claude profiles require thinking disabled, text/tools and low/medium/high
+   native effort throughout catalog, consent/publication and adapter/receipts.
+   Exact deployment/SKU selects frozen pricing, including the US DataZone premium;
+   missing cache-write duration or lost cache coverage stays unknown. No hidden
+   reasoning, historical repricing or Cosmos schema change is introduced. See
+   [the source/activation contract](docs/runbooks/feature-enablement.md#cross-tenant-claude-source-contract).
+
+The existing infra/API jobs run `scripts.tests.test_claude_binding`, and API CI
+checks `_claude_binding.py`, `_model_targets.py` and `check-claude-binding.py` with
+Ruff/Pyright. `ClaudeFederationTests` compiles and exercises the actual generated
+catalog and authored auth expressions in the existing .NET offline runner.
+These controls are not live cross-tenant authorization or network evidence.
 
 Model deployment `capacity` is the portable baseline. Optional `maxCapacity` values
 are subscription-specific output from `scripts/sync-model-capacity.py`; never

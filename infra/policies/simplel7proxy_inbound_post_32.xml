@@ -99,9 +99,6 @@
 				.GetValue(context.Variables.GetValueOrDefault&lt;int>(&quot;RequestPriority&quot;, 3).ToString())?
 				.Value&lt;bool>(&quot;requeue&quot;) ?? true;
 		}" />
-<!-- Fetch the Managed Identity token once for the whole request. The token
-		     audience (authResource) is resolved per model in the endpoint catalog. -->
-<authentication-managed-identity resource="@((string)context.Variables[&quot;authResource&quot;])" output-token-variable-name="managed-id-access-token" ignore-error="false" />
 <set-variable name="backendCallCounter" value="@(0)" />
 <set-variable name="PolicyCycleCounter" value="@{
 			string policyCycleCounterHeaderName = (string)context.Variables[&quot;PolicyCycleCounterHeaderName&quot;];

@@ -1,0 +1,13 @@
+<fragment>
+    <choose>
+        <when condition="@(context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;claudeFederated&quot;, false))">
+            <return-response>
+                <set-status code="503" reason="Claude is disabled" />
+                <set-body>{"error":{"code":"claude_disabled"}}</set-body>
+            </return-response>
+        </when>
+        <otherwise>
+            <authentication-managed-identity resource="@((string)context.Variables[&quot;authResource&quot;])" output-token-variable-name="managed-id-access-token" ignore-error="false" />
+        </otherwise>
+    </choose>
+</fragment>

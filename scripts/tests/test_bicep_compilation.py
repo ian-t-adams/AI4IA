@@ -125,11 +125,47 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
 
     def test_claude_entitlement_defaults_off(self) -> None:
         self.assertFalse(self.template["parameters"]["claudeEnabled"]["defaultValue"])
+        self.assertFalse(self.template["parameters"]["claudeExternalEnabled"]["defaultValue"])
+        self.assertEqual(self.template["parameters"]["claudeBindingJson"]["defaultValue"], "")
         self.assertIn("deployableCatalog", self.template["variables"])
         self.assertIn(
-            "claudeEnabled",
+            "__bicep.deploymentTarget",
             json.dumps(self.template["variables"]["deployableCatalog"]),
         )
+        self.assertIn("not(equals(lambdaVariables('model').format, 'Anthropic'))", self.template["variables"]["deployableCatalog"])
+
+    def test_claude_operator_units_compile_default_off_without_application_or_key_resources(self) -> None:
+        for filename, gate, allowed in (
+            ("claude-target.bicep", "provisionClaude", {
+                "Microsoft.CognitiveServices/accounts", "Microsoft.Resources/deployments",
+            }),
+            ("claude-identity.bicep", "createIdentity", {"Microsoft.ManagedIdentity/userAssignedIdentities"}),
+            ("claude-access.bicep", "grantInferenceAccess", {
+                "Microsoft.Authorization/roleDefinitions", "Microsoft.Authorization/roleAssignments",
+            }),
+        ):
+            with self.subTest(filename=filename):
+                result = _compile(ROOT / "infra" / filename)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotRegex(result.stderr, r"\(\d+,\d+\)\s*:\s*(?:Warning|Error)")
+                template = json.loads(result.stdout)
+                self.assertIs(template["parameters"][gate]["defaultValue"], False)
+                resources = template["resources"]
+                rows = list(resources.values()) if isinstance(resources, dict) else resources
+                self.assertEqual({row["type"] for row in rows}, allowed)
+                self.assertTrue(all(row["condition"] == f"[parameters('{gate}')]" for row in rows))
+                if filename == "claude-target.bicep":
+                    network = template["parameters"]["networkMode"]
+                    self.assertNotIn("defaultValue", network)
+                    self.assertEqual(network["allowedValues"], ["public-keyless"])
+                    account = next(row for row in rows if row["type"] == "Microsoft.CognitiveServices/accounts")
+                    self.assertIs(account["properties"]["disableLocalAuth"], True)
+                if filename == "claude-access.bicep":
+                    role = next(row for row in rows if row["type"] == "Microsoft.Authorization/roleDefinitions")
+                    self.assertEqual(role["properties"]["permissions"], [{
+                        "actions": [], "notActions": [],
+                        "dataActions": ["Microsoft.CognitiveServices/accounts/MaaS/*"], "notDataActions": [],
+                    }])
 
     def test_versioned_gateway_has_only_conditional_exact_operations_and_api_only_key(self) -> None:
         flag = "gatewayAttemptsV1Staged"

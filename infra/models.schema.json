@@ -46,6 +46,16 @@
             "enum": ["chat", "responses", "anthropic", "mai", "bfl", "mistral_ocr"],
             "description": "Provider protocol used by the runtime and gateway. Defaults to chat when omitted."
           },
+          "deploymentTarget": {
+            "type": "string",
+            "enum": ["source", "external-claude"],
+            "description": "Defaults to source. external-claude belongs only to the separately approved target account, never the main-stack subscription."
+          },
+          "samplingSupported": { "type": "boolean" },
+          "anthropicThinking": {
+            "const": "disabled",
+            "description": "Explicit unified-history profile. Signed adaptive-thinking continuation is not supported."
+          },
           "contextWindow": { "type": "integer", "minimum": 1 },
           "maxOutputTokens": { "type": "integer", "minimum": 1 },
           "toolCalling": { "type": "boolean" },
@@ -77,7 +87,7 @@
             }
           },
           "reasoningEffort": {
-            "description": "reasoning_effort values this model accepts, established by probing the live deployment rather than from documentation. Omit for non-reasoning models. An empty array means the model is a reasoning model that takes no reasoning_effort at all.",
+            "description": "Application-supported effort values. Existing OpenAI values are live-probed; source-only Claude values are the documented thinking-disabled subset, not a live compatibility claim. An empty array disables the control.",
             "type": "array",
             "uniqueItems": true,
             "items": {

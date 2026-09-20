@@ -167,6 +167,9 @@ class UsageService:
                 model_id,
                 prompt_tokens=usage.prompt,
                 completion_tokens=usage.completion,
+                deployment=descriptor.deployment,
+                cache_read_tokens=usage.cacheRead,
+                cache_write_tokens=usage.cacheWrite,
             )
             rec.currency = est.currency
             rec.priceVersion = est.version

@@ -524,7 +524,9 @@ class ClaudeMarketplaceAttestationTests(unittest.TestCase):
         self.assertIn("lowercase claudeIndustry", err)
 
     def test_explicit_attestation_values_pass(self) -> None:
-        with _environment(**PROD_ENV, AI4IA_CLAUDE_ENABLED="true", **CLAUDE_ENV):
+        from scripts.tests._claude_fixture import binding, environment
+
+        with _environment(**{**PROD_ENV, **environment(binding()), **CLAUDE_ENV}):
             code, _, err = _run(
                 REAL_PARAMETERS, require_deployment_attestation=True
             )

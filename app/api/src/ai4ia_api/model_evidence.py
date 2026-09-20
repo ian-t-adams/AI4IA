@@ -119,6 +119,9 @@ def _parameters(body: dict[str, Any]) -> tuple[EffectiveModelParameters, bool]:
     reasoning = body.get("reasoning")
     if isinstance(reasoning, dict) and "effort" in reasoning:
         values["reasoningEffort"] = reasoning["effort"]
+    output_config = body.get("output_config")
+    if isinstance(output_config, dict) and "effort" in output_config:
+        values["reasoningEffort"] = output_config["effort"]
     choice = body.get("tool_choice")
     if isinstance(choice, dict):
         kind = choice.get("type")
@@ -232,6 +235,8 @@ class CapturedModelCall:
             self.model_id or "",
             prompt_tokens=self.usage.prompt if usable_usage else None,
             completion_tokens=self.usage.completion if usable_usage else None,
+            cache_read_tokens=self.usage.cacheRead,
+            cache_write_tokens=self.usage.cacheWrite,
         )
         known = (
             estimate.known and rates_valid and estimate.currency == "USD"
@@ -317,7 +322,7 @@ class ModelCallRecorder:
             iteration=self.count, model_id=model_id, api=api,
             model_source=self.model_source, parameter_source=self.parameter_source,
             overrides=self.overrides,
-            pricing=self.pricing.snapshot_token_prices(model_id),
+            pricing=self.pricing.snapshot_token_prices(model_id, deployment=deployment),
         )
         if len(self._calls) < MAX_RECORDED_MODEL_CALLS:
             self._calls.append(call)

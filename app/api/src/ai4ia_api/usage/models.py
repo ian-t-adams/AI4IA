@@ -77,6 +77,10 @@ class TokenUsage(BaseModel):
     complete: bool = True
     # Number of model calls that contributed (1 for a plain turn, N for agents).
     calls: int = 0
+    # In-process pricing evidence only. Missing after a durable continuation is
+    # unknown, not an assertion that earlier Claude input was uncached.
+    cacheRead: int | None = Field(default=None, exclude=True)
+    cacheWrite: int | None = Field(default=None, exclude=True)
 
     @classmethod
     def empty(cls) -> "TokenUsage":
@@ -105,7 +109,17 @@ class TokenUsage(BaseModel):
         except (TypeError, ValueError, OverflowError):
             # Provider returned non-numeric usage: treat as unknown, never zero.
             return cls(known=False, complete=False, calls=1)
-        return cls(prompt=p, completion=c, total=t, known=True, complete=True, calls=1)
+        cache = usage.get("anthropic_cache")
+        read = cache.get("read") if isinstance(cache, dict) else None
+        write = cache.get("write") if isinstance(cache, dict) else None
+        valid_cache = (
+            type(read) is int and type(write) is int
+            and read >= 0 and write >= 0 and read + write <= p
+        )
+        return cls(
+            prompt=p, completion=c, total=t, known=True, complete=True, calls=1,
+            cacheRead=read if valid_cache else None, cacheWrite=write if valid_cache else None,
+        )
 
     def add(self, other: "TokenUsage") -> "TokenUsage":
         """Fold another call's usage in (used to aggregate an agent turn).
@@ -120,6 +134,16 @@ class TokenUsage(BaseModel):
             known=self.known or other.known,
             complete=self.complete and other.complete and (other.calls == 0 or other.known),
             calls=self.calls + other.calls,
+            cacheRead=(
+                other.cacheRead if self.calls == 0 else self.cacheRead if other.calls == 0
+                else self.cacheRead + other.cacheRead
+                if self.cacheRead is not None and other.cacheRead is not None else None
+            ),
+            cacheWrite=(
+                other.cacheWrite if self.calls == 0 else self.cacheWrite if other.calls == 0
+                else self.cacheWrite + other.cacheWrite
+                if self.cacheWrite is not None and other.cacheWrite is not None else None
+            ),
         )
 
 

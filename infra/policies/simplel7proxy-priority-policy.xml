@@ -16,6 +16,7 @@
     <include-fragment fragment-id="endpoint_selection_catalog_11_32" />
     <include-fragment fragment-id="endpoint_selection_setup_32" />
     <include-fragment fragment-id="simplel7proxy_inbound_post_32" />
+    <include-fragment fragment-id="claude_auth_v1" />
   </inbound>
   <backend>
     <include-fragment fragment-id="simplel7proxy_backend_32" />

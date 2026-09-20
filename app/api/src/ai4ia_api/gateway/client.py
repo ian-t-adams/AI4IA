@@ -516,6 +516,8 @@ class ModelGatewayClient:
         self._attempt_verifier = attempt_verifier
         settings.validate_gateway_attempts_v1()
         self._attempt_staged = settings.gateway_attempts_v1_staged
+        self._catalog_path = settings.model_catalog_path
+        self._claude_enabled = settings.claude_enabled and settings.claude_external_enabled
 
     @property
     def attempt_capability(self) -> AttemptEnvelope | None:
@@ -718,6 +720,11 @@ class ModelGatewayClient:
         then rewrites it to the provider's fixed ``/anthropic/v1/messages`` path,
         changes the Entra audience, and overrides ``anthropic-version``.
         """
+        from ..catalog import load_catalog
+
+        profile = load_catalog(self._catalog_path).for_deployment(deployment)
+        if profile is not None and profile.deploymentTarget == "external-claude" and not self._claude_enabled:
+            raise ValueError("External Claude is disabled.")
         path = self._chat_path.format(deployment=deployment)
         url = f"{self._base}{path if path.startswith('/') else '/' + path}"
         return GatewayRequest(
@@ -728,6 +735,7 @@ class ModelGatewayClient:
                 messages=messages,
                 params=constrain_tool_parameters(params),
                 stream=stream,
+                profile=profile,
             ),
         )
 

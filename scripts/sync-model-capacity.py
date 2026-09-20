@@ -27,11 +27,13 @@ import re
 import subprocess
 import sys
 from collections import defaultdict
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _model_naming import deployment_name
+from _model_targets import model_target, source_catalog
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_FILE = ROOT / "infra" / "models.json"
@@ -68,7 +70,7 @@ def _normal(value: Any) -> str:
 
 def _quota_keys(sku: str, model: str) -> list[str]:
     sku_key = _normal(sku)
-    candidates = [model, model.replace(".0", ""), re.sub(r"\.azure$", "", model, flags=re.I)]
+    candidates = [model, model.replace(".0", ""), re.sub(r"\.azure$", "", model, flags=re.IGNORECASE)]
     return list(dict.fromkeys(f"{sku_key}|{_normal(candidate)}" for candidate in candidates))
 
 
@@ -154,6 +156,9 @@ def build_capacity_plan(
     missing_non_anthropic: list[str] = []
 
     for model in models["catalog"]:
+        if model_target(model) != "source":
+            diagnostics.append(f"{model['name']}: external target is unavailable to the source capacity planner.")
+            continue
         for deployment in model["deployments"]:
             region = deployment["region"]
             name = deployment_name(models, model["name"], deployment)
@@ -377,6 +382,12 @@ def main() -> int:
     args = parser.parse_args()
 
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
+    external = [model for model in models["catalog"] if model_target(model) != "source"]
+    if external and args.apply and os.environ.get("AI4IA_CLAUDE_ENABLED", "").lower() == "true":
+        raise SystemExit(
+            "External Claude capacity cannot be approved by this single-subscription planner; "
+            "--apply is refused. Use the explicit target provisioning/readback contract."
+        )
     account = _az_json("account", "show")
     subscription_id = str(account.get("id") or "")
     if args.subscription and subscription_id.casefold() != args.subscription.casefold():
@@ -384,13 +395,14 @@ def main() -> int:
             f"Active subscription is {subscription_id}, expected {args.subscription}."
         )
 
-    live = _collect_live(models, args.resource_group, args.environment_name)
+    source = source_catalog(models)
+    live = _collect_live(source, args.resource_group, args.environment_name)
     active_names = {name for deployments in live.values() for name in deployments}
     quota = {
         region: _az_json("cognitiveservices", "usage", "list", "--location", region)
         for region in models["regions"]
     }
-    platform = _collect_platform(subscription_id, models, active_names)
+    platform = _collect_platform(subscription_id, source, active_names)
     plan, pools, diagnostics = build_capacity_plan(models, live, quota, platform)
 
     baseline_total = 0
@@ -463,6 +475,17 @@ def main() -> int:
                     },
                     "deployments": plan_rows,
                     "pools": diagnostics,
+                    "externalCoverage": {
+                        "status": "unknown" if external else "not_applicable",
+                        "deployments": [
+                            {
+                                "name": deployment_name(models, model["name"], deployment),
+                                "target": model["deploymentTarget"],
+                                "capacity": deployment["capacity"], "maximumCapacity": None,
+                            }
+                            for model in external for deployment in model["deployments"]
+                        ],
+                    },
                 },
                 indent=2,
             )
@@ -476,6 +499,8 @@ def main() -> int:
         print(f"Updated {MODELS_FILE.relative_to(ROOT)}.")
     else:
         print("Plan only; re-run with --apply to record maxCapacity values.")
+    if external:
+        print("External Claude coverage is unknown; no external maximum or headroom was inferred.")
     return 0
 
 

@@ -8,9 +8,9 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, computed_field, model_serializer, model_validator
 
 from .model_traits import reasoning_effort_options, supports_sampling
 
@@ -116,6 +116,9 @@ class ModelEntry(BaseModel):
     # or "bfl" (Black Forest Labs image generation).
     # The gateway routes by this flag; the field is informational to the UI.
     api: str = "chat"
+    deploymentTarget: Literal["source", "external-claude"] = "source"
+    samplingSupported: bool | None = None
+    anthropicThinking: Literal["disabled"] | None = None
     # Per-model context window (total prompt+completion tokens the deployment
     # accepts) and the maximum tokens it will emit in one completion. Both are
     # OPTIONAL: when absent (``None``) the backend falls back to its fixed
@@ -137,6 +140,35 @@ class ModelEntry(BaseModel):
     # still get the safe low/medium/high floor rather than losing the control.
     reasoningEffort: list[str] | None = None
     options: list[DeploymentOption]
+
+    @model_serializer(mode="wrap")
+    def compatible_profile(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        result = handler(self)
+        for key, default in (
+            ("deploymentTarget", "source"), ("samplingSupported", None), ("anthropicThinking", None),
+        ):
+            if result.get(key) == default:
+                result.pop(key, None)
+        return result
+
+    @model_validator(mode="after")
+    def external_profile(self) -> ModelEntry:
+        self.require_external_profile()
+        return self
+
+    def require_external_profile(self) -> None:
+        if self.deploymentTarget == "external-claude" and (
+            self.api != "anthropic" or self.format != "Anthropic"
+            or self.anthropicThinking != "disabled" or self.samplingSupported is not False
+            or not self.reasoningEffort or set(self.reasoningEffort) - {"low", "medium", "high"}
+            or self.toolCalling is not True or self.inputModalities != ["text"]
+            or not self.contextWindow or not self.maxOutputTokens
+            or not self.options or any(
+                o.region != "eastus2" or o.sku not in {"GlobalStandard", "DataZoneStandard"}
+                or not o.modelVersion for o in self.options
+            )
+        ):
+            raise ValueError("External Claude requires the complete thinking-disabled text/tool profile.")
 
     @computed_field
     @property
@@ -163,7 +195,7 @@ class ModelEntry(BaseModel):
         discarded -- which is what it did for 11 of the 15 conversational models,
         including the whole GPT-5.6 family.
         """
-        return supports_sampling(self.id)
+        return self.samplingSupported if self.samplingSupported is not None else supports_sampling(self.id)
 
     @computed_field
     @property
@@ -206,6 +238,12 @@ class ModelCatalog(BaseModel):
 
     def get(self, model_id: str) -> ModelEntry | None:
         return next((m for m in self.models if m.id == model_id), None)
+
+    def for_deployment(self, deployment: str) -> ModelEntry | None:
+        return next(
+            (m for m in self.models if any(o.deploymentName == deployment for o in m.options)),
+            None,
+        )
 
     def eligible_options(
         self, entry: ModelEntry, *, policy_filter: bool = True,
@@ -304,6 +342,11 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                 "contextWindow": model.get("contextWindow"),
                 "maxOutputTokens": model.get("maxOutputTokens"),
                 "reasoningEffort": model.get("reasoningEffort"),
+                "deploymentTarget": model.get("deploymentTarget", "source"),
+                "samplingSupported": model.get("samplingSupported"),
+                "anthropicThinking": model.get("anthropicThinking"),
+                "toolCalling": model.get("toolCalling"),
+                "inputModalities": model.get("inputModalities", ["text"]),
                 "options": options,
             }
         )
@@ -340,6 +383,11 @@ def load_catalog(
     pickers before its Marketplace fulfillment is ready.
     """
     raw = _load_raw(explicit_path)
+    if any(
+        model.get("api") == "anthropic" and model.get("deploymentTarget") != "external-claude"
+        for model in raw["models"]
+    ):
+        raise ValueError("Anthropic catalog rows require an explicit external deployment target.")
     policy = residency if residency in RESIDENCY_POLICIES else GLOBAL_RESIDENCY
     models = [
         model
