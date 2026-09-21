@@ -183,7 +183,7 @@ dev = [
 # jsonschema backs scripts/provision-foundry-toolbox.py's strict manifest-schema validation,
 # which --create requires before constructing any SDK model.
 foundry = [
-    "azure-ai-projects==2.6.0",
+    "azure-ai-projects==2.6.1",
     "azure-identity>=1.17",
     "jsonschema>=4.18",
 ]
