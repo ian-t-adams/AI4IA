@@ -48,7 +48,10 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    Azure Monitor, Key Vault, Blob, Cosmos, and Azure AI Search.
 2. **Catalog-driven models.** Do not hardcode deployment names or model lists.
    `infra/models.json` is the source of truth; generated runtime catalog data must
-   match it.
+   match it. `runtimeEnabled` is a strict optional Boolean, default true: false
+   retains desired infrastructure/allocation/retirement inventory but forbids new
+   runtime lookups, selection and HTTP/realtime serving routes. Never interpret
+   runtime disablement as physical deletion or free quota.
 3. **Server-authoritative feature gates.** The web app may hide UI, but the API
    and startup validation must enforce feature posture. Never gate only in React.
 4. **Cosmos is canonical.** Sessions, messages, usage, user agents/workflows, MCP
@@ -107,6 +110,9 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    before the provider await through the shared pricing helper. Missing usage or
    prices remain unknown, and receipt reads never reprice history. New evidence
    must still fit the 32 KiB receipt budget under escaped durable serialization.
+   Price-document versions must survive the actual receipt identifier/redaction
+   path unchanged. Keep them compact and public; never weaken credential
+   redaction to preserve an overlong, token-shaped version identifier.
 8. **Hard admission is a separate, default-off source contract.** Do not turn
    soft ledger checks into a distributed quota or bootstrap an empty hard
    balance for an existing owner. Metered egress goes through the shared owner
@@ -539,7 +545,9 @@ four requests/60 seconds and 8 KiB per response. No accepted request, 404, unkno
 upload or exhausted budget can pass cleanup. Public responses hide protocol and
 generation: keep server fencing and actual API/shared-fixture parity tests, not
 invented fields. Creation stays single-attempt and existing chat retries stay
-unchanged; cleanup never adds model calls, enrollment, a sweep or rollout authority.
+unchanged. Runtime-disabled desired models remain excluded from both post-deploy
+and scheduled canary selection; cleanup never adds model calls, enrollment, a sweep
+or rollout authority.
 Retain actual stdlib framing controls, not only transport-interface fakes:
 `HTTPResponse.read1` can close the last socket reference on a complete body.
 Content-Length, chunked and EOF completion must still reject truncation/overflow
@@ -640,6 +648,8 @@ keeps endpoint and authentication configuration in the Foundry project connectio
 
 ```powershell
 python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/redaction rules
+python3 -m unittest scripts.tests.test_speech_canary scripts.tests.test_voice_migration_docs
+python3 scripts/gen-voice-migration-docs.py --check              # public dates, never live proof
 python3 -m unittest scripts.tests.test_application_canary       # offline continuous monitor/state/identity controls
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
 python3 -m unittest scripts.tests.test_model_retirement         # dates, read-only reports and activation contracts
@@ -794,9 +804,13 @@ pair a passing test with an intentional failing test and zero discovery.
 No-replay tests drive public proxy sends and compile the actual APIM fragment
 expressions with the installed SDK compiler against offline context projections
 and loopback providers. They are not an Azure policy compiler or live capability
-proof. Generated backend fragments omit only parser-identified XML comment nodes
-to fit the unchanged 48 KiB compiler ceiling; authored comments and C# bytes stay
-intact.
+proof. The generated-catalog routing controls also invoke the stdlib Python
+generator with synthetic model variants, execute its catalog fragments through
+both HTTP policy chains, and evaluate its preview/GA handshake conditions.
+Retain their disabled/enabled and protocol controls: a preselected fake backend
+does not prove the generated runtime gate. Generated backend fragments omit only
+parser-identified XML comment nodes to fit the unchanged 48 KiB compiler ceiling;
+authored comments and C# bytes stay intact.
 
 When a proxy project dependency changes, refresh from the top-level test project
 with `dotnet restore ... --force-evaluate`. NuGet does not recalculate
@@ -1327,10 +1341,37 @@ covers both generated Realtime policies; `test_realtime_protocol.py`,
 Keep shared browser fixtures inside the web Docker build context.
 Run the targeted browser lifecycle/settings tests when changing that boundary.
 
-This is source staging only: no model/version/capacity or TTS change, live success
-claim, default cutover or legacy removal. Follow the approved
+The phase-1 voice migration retains `gpt-realtime-2` in desired inventory with
+`runtimeEnabled=false`, adds GA `gpt-realtime-1.5` only in eastus2 at portable
+baseline 10 without a guessed maximum/pool, and pins the existing mini-TTS
+deployment to the already shipped `2025-12-15` without changing its name or
+capacities. The GA TTS upgrade and structural app speech acceptance were delivered
+by #492; do not repeat them as unfinished realtime migration work.
+`requiredRealtimeProtocol=ga` survives generated/dev catalogs and excludes the
+replacement from preview advertisement and execution. Keep this and
+`runtimeEnabled` in publication/source comparisons; an older saved model choice
+must fail explicitly, not alias another model. Speech's curated managed subset
+does not inherit the replacement.
+Actor category reductions intersect these runtime/protocol gates, including on
+fresh and cached bindings. An entirely unrunnable catalog must not turn a failed
+policy binding into healthy empty inventory or prevent canonical owner cleanup.
+External Claude profiles retain their required metadata alongside these gates.
+Deployment-profile lookup keeps disabled metadata for fail-closed adaptation;
+both Claude HTTP and SSE construction refuse a runtime-disabled profile before
+egress, rather than dropping it and restoring provider defaults.
+
+This is source preparation only: no live success claim, flag/default cutover,
+allocation approval or physical legacy removal. Full provision applies the
+desired model changes, so keep the migration on HOLD until explicitly approved.
+The strict desired-inventory check stays intact through coexistence; phase 2
+requires separately approved exact-resource and desired-row removal after live
+acceptance. The separate opt-in `scripts/speech-canary.py` checks bounded PCM/WAV
+through the app API, never directly through the model gateway, and its metadata
+cannot prove a deployed version or intelligibility. Reference-only OpenAI
+modality rates do not make mixed realtime/TTS usage priced or safely dollar-capped.
+Follow the approved
 [activation/rollback procedure](docs/runbooks/feature-enablement.md#staged-ga-realtime).
-Issue #413 stays open for its remaining live/model/TTS acceptance criteria.
+Issue #413 stays open for its realtime/model/cutover and approved cleanup criteria.
 
 ## Group policy and publication source contract
 

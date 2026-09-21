@@ -229,11 +229,18 @@ describe("resolveEffectiveModel", () => {
     );
   });
 
-  it("falls back when null or stale", () => {
+  it("defaults only an unset pick and retains unavailable explicit models", () => {
     expect(resolveEffectiveModel(null, models, "gpt-realtime")).toBe("gpt-realtime");
     expect(resolveEffectiveModel("retired-model", models, "gpt-realtime")).toBe(
-      "gpt-realtime",
+      "retired-model",
     );
+    expect(resolveEffectiveModel("gpt-realtime-2", models, "gpt-realtime")).toBe(
+      "gpt-realtime-2",
+    );
+    expect(resolveEffectiveModel("gpt-realtime-1.5", models, "gpt-realtime")).toBe(
+      "gpt-realtime-1.5",
+    );
+    expect(resolveEffectiveModel(null, models, "unavailable-default")).toBeNull();
   });
 });
 

@@ -10,7 +10,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, computed_field, model_serializer, model_validator
+from pydantic import (
+    BaseModel, Field, SerializerFunctionWrapHandler, StrictBool, computed_field,
+    model_serializer, model_validator,
+)
 
 from .model_traits import reasoning_effort_options, supports_sampling
 
@@ -110,6 +113,7 @@ class ModelEntry(BaseModel):
     displayName: str
     category: str
     format: str
+    runtimeEnabled: StrictBool = True
     # Which provider surface serves this model: "chat" (Chat Completions, the
     # default), "responses" (gpt-6-astra/gpt-5.4-pro/gpt-5.3-codex),
     # "anthropic" (Claude Messages), "mai" (MAI chat/image surfaces on /mai/v1),
@@ -119,6 +123,7 @@ class ModelEntry(BaseModel):
     deploymentTarget: Literal["source", "external-claude"] = "source"
     samplingSupported: bool | None = None
     anthropicThinking: Literal["disabled"] | None = None
+    requiredRealtimeProtocol: Literal["ga"] | None = None
     # Per-model context window (total prompt+completion tokens the deployment
     # accepts) and the maximum tokens it will emit in one completion. Both are
     # OPTIONAL: when absent (``None``) the backend falls back to its fixed
@@ -170,6 +175,17 @@ class ModelEntry(BaseModel):
         ):
             raise ValueError("External Claude requires the complete thinking-disabled text/tool profile.")
 
+    @model_validator(mode="after")
+    def validate_realtime_protocol(self) -> ModelEntry:
+        if self.requiredRealtimeProtocol is not None and self.category != "realtime":
+            raise ValueError("Only realtime models may require a realtime protocol.")
+        return self
+
+    def supports_realtime_protocol(self, protocol: str) -> bool:
+        return self.runtimeEnabled and (
+            self.requiredRealtimeProtocol is None or self.requiredRealtimeProtocol == protocol
+        )
+
     @computed_field
     @property
     def conversational(self) -> bool:
@@ -181,7 +197,7 @@ class ModelEntry(BaseModel):
         surfaces/tools rather than selected as a raw chat target. Serialized so
         the web app can filter the dropdowns from the same source of truth.
         """
-        return self.category in CONVERSATIONAL_CATEGORIES
+        return self.runtimeEnabled and self.category in CONVERSATIONAL_CATEGORIES
 
 
     @computed_field
@@ -237,9 +253,10 @@ class ModelCatalog(BaseModel):
     residencyPolicy: str = GLOBAL_RESIDENCY
 
     def get(self, model_id: str) -> ModelEntry | None:
-        return next((m for m in self.models if m.id == model_id), None)
+        return next((m for m in self.models if m.id == model_id and m.runtimeEnabled), None)
 
     def for_deployment(self, deployment: str) -> ModelEntry | None:
+        """Retain disabled profiles so adaptation cannot fall back to provider defaults."""
         return next(
             (m for m in self.models if any(o.deploymentName == deployment for o in m.options)),
             None,
@@ -248,12 +265,12 @@ class ModelCatalog(BaseModel):
     def eligible_options(
         self, entry: ModelEntry, *, policy_filter: bool = True,
     ) -> list[DeploymentOption]:
-        """This model's deployments that are usable under the active policy."""
+        """Runtime-enabled, residency-compliant options, optionally filtered by actor."""
         from .policy.context import model_allowed
 
         return [
             o for o in entry.options
-            if o.satisfies(self.residencyPolicy)
+            if entry.runtimeEnabled and o.satisfies(self.residencyPolicy)
             and (not policy_filter or model_allowed(entry.category, o))
         ]
 
@@ -337,8 +354,10 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                 "id": model["name"],
                 "displayName": model.get("displayName", model["name"]),
                 "category": model.get("category", "chat"),
+                "runtimeEnabled": model.get("runtimeEnabled", True),
                 "format": model["format"],
                 "api": model.get("api", "chat"),
+                "requiredRealtimeProtocol": model.get("requiredRealtimeProtocol"),
                 "contextWindow": model.get("contextWindow"),
                 "maxOutputTokens": model.get("maxOutputTokens"),
                 "reasoningEffort": model.get("reasoningEffort"),

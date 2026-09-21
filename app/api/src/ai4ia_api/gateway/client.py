@@ -723,6 +723,8 @@ class ModelGatewayClient:
         from ..catalog import load_catalog
 
         profile = load_catalog(self._catalog_path).for_deployment(deployment)
+        if profile is not None and not profile.runtimeEnabled:
+            raise ValueError("The selected model is runtime-disabled.")
         if profile is not None and profile.deploymentTarget == "external-claude" and not self._claude_enabled:
             raise ValueError("External Claude is disabled.")
         path = self._chat_path.format(deployment=deployment)

@@ -117,6 +117,61 @@ async def test_gateway_gate_precedes_network_and_enabled_control_uses_proxy():
     assert all(json.loads(request.content)["thinking"] == {"type": "disabled"} for request in requests)
 
 
+@pytest.mark.parametrize("stream", [False, True])
+async def test_runtime_disabled_profile_refuses_before_gateway_dispatch(tmp_path, stream):
+    model = entries()[0]
+    deployment = model.options[0].deploymentName
+    path = tmp_path / "catalog.json"
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if stream:
+            return httpx.Response(200, content=(
+                'data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n'
+                'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"synthetic"}}\n\n'
+                'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n'
+                'data: {"type":"message_stop"}\n\n'
+            ), headers={"Content-Type": "text/event-stream"})
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": "synthetic"}], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        for enabled in (False, True):
+            raw = model.model_dump()
+            raw["runtimeEnabled"] = enabled
+            path.write_text(json.dumps({"models": [raw]}), encoding="utf-8")
+            load_catalog.cache_clear()
+            catalog = load_catalog(str(path))
+            assert catalog.for_deployment(deployment).anthropicThinking == "disabled"
+            assert (catalog.get(model.id) is not None) is enabled
+            gateway = ModelGatewayClient(make_settings(
+                claude_enabled=True, claude_external_enabled=True,
+                model_catalog_path=str(path), model_gateway_url="https://proxy.test/openai",
+            ), http_client=http)
+
+            async def invoke():
+                kwargs = {
+                    "deployment": deployment, "api": "anthropic",
+                    "messages": [{"role": "user", "content": "synthetic"}],
+                }
+                if stream:
+                    return [chunk async for chunk in gateway.stream(**kwargs)]
+                return await gateway.complete(**kwargs)
+
+            if enabled:
+                assert await invoke()
+            else:
+                with pytest.raises(ValueError, match="runtime-disabled"):
+                    await invoke()
+                assert requests == []
+    assert len(requests) == 1
+    assert requests[0].url.host == "proxy.test"
+    assert json.loads(requests[0].content)["thinking"] == {"type": "disabled"}
+
+
 def test_startup_and_public_catalog_do_not_accept_claude_flag_alone():
     with pytest.raises(RuntimeError, match="CLAUDE_EXTERNAL_ENABLED"):
         make_settings(claude_enabled=True).validate_runtime()

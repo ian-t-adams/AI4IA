@@ -142,7 +142,9 @@ def _resolve_model(
     catalog: ModelCatalog, model_id: str | None, *, categories: set[str], kind: str
 ):
     if not model_id:
-        first = next((m for m in catalog.models if m.category in categories), None)
+        first = next((
+            m for m in catalog.models if m.category in categories and catalog.available(m)
+        ), None)
         if first is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

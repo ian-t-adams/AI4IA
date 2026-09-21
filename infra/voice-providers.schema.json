@@ -89,11 +89,15 @@
               "type": "object",
               "additionalProperties": false,
               "required": [
-                "category"
+                "category",
+                "runtimeEnabled"
               ],
               "properties": {
                 "category": {
                   "const": "realtime"
+                },
+                "runtimeEnabled": {
+                  "const": true
                 }
               }
             },

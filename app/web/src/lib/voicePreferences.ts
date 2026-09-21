@@ -179,17 +179,16 @@ export function resolveEffectiveAgent(
     : fallback;
 }
 
-// Resolves the realtime model to actually use: the explicit pick when it is
-// still present in the realtime-model catalog; otherwise the caller's fallback
-// (typically the catalog default).
+// Preserve an unavailable explicit pick so settings can explain it and the
+// relay can refuse it. Removing a catalog model must not silently switch a
+// saved conversation to another model or protocol.
 export function resolveEffectiveModel(
   explicitModel: string | null,
   realtimeModelIds: ReadonlySet<string>,
   fallback: string | null,
 ): string | null {
-  return explicitModel !== null && realtimeModelIds.has(explicitModel)
-    ? explicitModel
-    : fallback;
+  if (explicitModel !== null) return explicitModel;
+  return fallback !== null && realtimeModelIds.has(fallback) ? fallback : null;
 }
 
 export function resolveEffectiveVoiceProvider(
@@ -295,7 +294,7 @@ export function sanitizeVoicePreferencesForProviders(
     defaultProviderId,
     hasStoredPreferences,
   );
-  if (provider === "azure_openai" && realtimeModelIds.size === 0) {
+  if (provider === "azure_openai" && realtimeModelIds.size === 0 && prefs.model === null) {
     provider =
       (providers.find((entry) => entry.id === "speech_voice_live")?.id ??
         provider) as VoicePreferences["provider"];
