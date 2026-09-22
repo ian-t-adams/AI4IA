@@ -885,8 +885,12 @@ pair in `api-framework`; `azure-ai-projects` stays ungrouped so its exact SDK,
 manifest, and adapter contract is reviewed independently. Do not weaken a parity
 test to make an SDK upgrade green. New SDK toolbox types require complete support
 or named exclusions with rationale and exact reflected field inventories; exclusions
-must remain rejected by both the manifest and adapter. The gate installers are
-pinned by `UV_VERSION`
+must remain rejected by both the manifest and adapter.
+The exact-pin and reflected parity gates require the installed SDK, not a skip.
+Compare its imported source version as well as distribution metadata, lockfile,
+and every shipped manifest/schema; keep the two missing-SDK install hints aligned.
+Review patch-release wheel/source changes even when reflected fields are unchanged.
+The gate installers are pinned by `UV_VERSION`
 in `app-ci.yml` (also the API Dockerfile's build-only installer) and
 `CHECK_JSONSCHEMA_VERSION` in `infra-validate.yml`; update both uv declarations
 and any documented local command when a pin changes.

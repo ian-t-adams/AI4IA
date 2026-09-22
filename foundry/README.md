@@ -29,11 +29,12 @@ APIM injects the managed-identity bearer, the static
 | `routines/routine.schema.json` + `routines/example.routine.json` | Design/preview routine contract. It is validated against canonical toolbox names but is not created or served. |
 | `a2a/a2a.schema.json` + `a2a/example.a2a.json` | Design/preview A2A contract with an explicit blocker inventory. It does not create a callable integration. |
 
-The audited provisioning SDK is `azure-ai-projects==2.6.0`. Its new `shell` and
-`web_iq_preview` toolbox types remain deliberately unsupported pending capability
+The audited provisioning SDK is `azure-ai-projects==2.6.1`. The `shell` and
+`web_iq_preview` toolbox types introduced in 2.6.0 remain unsupported pending capability
 and governance review. All 16 SDK classes are accounted for, but the manifest
 allowlist remains 14 types and the canonical three tools plus `evidence-review`
-skill are unchanged. See the full runbook for the exact exclusion contracts.
+skill are unchanged. The 2.6.1 patch fixes Agent Insights polling, not toolbox or
+Skills contracts. See the full runbook for the SDK review and exact exclusions.
 
 ## Reconciliation
 
