@@ -170,7 +170,11 @@ before any refresh:
 Also merged since the pin: the `feature/async` branch (several times, #205–#218) and a large
 volume of documentation/UI work.
 
-Regenerate the manifest whenever the pin or explicit patch list changes.
+Regenerate the manifest whenever the pin, explicit patch list, or vendored file
+contents change. For runtime dependency updates, first refresh the complete graph
+with `dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --force-evaluate`
+from the repository root and commit every changed lockfile. A referenced project's
+updated lock does not automatically refresh the top-level test project's lock.
 
 To refresh the vendored copy, check out the audited upstream commit and mirror the three project
 directories from upstream `src/` (excluding `bin/`/`obj/`). Keep this README and the root
