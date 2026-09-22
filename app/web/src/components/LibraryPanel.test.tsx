@@ -117,15 +117,18 @@ describe("LibraryPanel delete", () => {
     ).toBeInTheDocument();
   });
 
-  it("does not let an older poll reinsert a successfully deleted document", async () => {
-    let poll!: () => Promise<void>;
+  it.each([
+    {
+      name: "does not let an older poll reinsert a successfully deleted document",
+      confirmed: true,
+    },
+    {
+      name: "applies an older poll when deletion is canceled",
+      confirmed: false,
+    },
+  ])("$name", async ({ confirmed }) => {
+    vi.useFakeTimers();
     let resolvePoll!: (documents: LibraryDocument[]) => void;
-    const intervalSpy = vi
-      .spyOn(globalThis, "setInterval")
-      .mockImplementation((handler) => {
-        poll = handler as () => Promise<void>;
-        return 1 as unknown as ReturnType<typeof setInterval>;
-      });
     const analyzing = { ...DOC, status: "analyzing" as const };
     mocks.listLibraryDocuments
       .mockResolvedValueOnce([analyzing])
@@ -135,44 +138,53 @@ describe("LibraryPanel delete", () => {
             resolvePoll = resolve;
           }),
       );
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(confirmed);
     render(<LibraryPanel onClose={vi.fn()} />);
-    const remove = await screen.findByRole("button", {
-      name: "Permanently delete report.pdf",
-    });
-    await waitFor(() =>
-      expect(intervalSpy.mock.calls.some((call) => call[1] === 3000)).toBe(true),
-    );
-    poll = intervalSpy.mock.calls.find(
-      (call) => call[1] === 3000,
-    )?.[0] as () => Promise<void>;
     await act(async () => {
-      void poll();
       await Promise.resolve();
     });
-    await waitFor(() =>
-      expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(2),
-    );
+    const remove = screen.getByRole("button", {
+      name: "Permanently delete report.pdf",
+    });
+    expect(screen.getByText("Analyzing…")).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_999);
+    });
+    expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(mocks.listLibraryDocuments).toHaveBeenCalledTimes(2);
 
-    await user.click(remove);
-    await waitFor(() =>
+    await act(async () => {
+      fireEvent.click(remove);
+    });
+    if (confirmed) {
+      expect(mocks.deleteLibraryDocument).toHaveBeenCalledExactlyOnceWith("doc1");
       expect(
         screen.queryByRole("button", {
           name: "Permanently delete report.pdf",
         }),
-      ).not.toBeInTheDocument(),
-    );
+      ).not.toBeInTheDocument();
+    } else {
+      expect(mocks.deleteLibraryDocument).not.toHaveBeenCalled();
+      expect(remove).toBeInTheDocument();
+    }
     await act(async () => {
-      resolvePoll([{ ...DOC, status: "ready" }]);
+      resolvePoll([{ ...DOC, updatedAt: "2024-01-01T00:00:01Z" }]);
       await Promise.resolve();
     });
 
-    expect(
-      screen.queryByRole("button", {
-        name: "Permanently delete report.pdf",
-      }),
-    ).not.toBeInTheDocument();
+    if (confirmed) {
+      expect(
+        screen.queryByRole("button", {
+          name: "Permanently delete report.pdf",
+        }),
+      ).not.toBeInTheDocument();
+    } else {
+      expect(remove).toBeInTheDocument();
+      expect(screen.getByText("Ready")).toBeInTheDocument();
+    }
   });
 });
 
