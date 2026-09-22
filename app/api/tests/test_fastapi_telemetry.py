@@ -34,6 +34,7 @@ def exercise(case: str) -> dict:
 
 @pytest.mark.parametrize("case", [
     "gate", "auto_gate", "requests", "errors", "auth", "genai", "sampling", "drop",
+    "httpx", "httpx_control",
 ])
 def test_real_factory_instrumentation(case):
     assert exercise(case)["passed"] is True
@@ -41,8 +42,10 @@ def test_real_factory_instrumentation(case):
 
 def _exercise(case: str) -> None:
     import asyncio
+    import base64
     from contextlib import ExitStack, redirect_stdout
-    from importlib.metadata import distribution, version
+    import hashlib
+    from importlib.metadata import EntryPoint, distribution, version
     import inspect
     import io
     import logging
@@ -50,10 +53,12 @@ def _exercise(case: str) -> None:
     from unittest.mock import patch
 
     import httpx
+    import requests
     from pydantic_settings.sources import DotEnvSettingsSource
     from opentelemetry import trace
     from opentelemetry.context import Context
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
     from opentelemetry import metrics
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import InMemoryMetricReader
@@ -71,10 +76,23 @@ def _exercise(case: str) -> None:
     )
     from azure.monitor.opentelemetry.exporter.export.trace._utils import _get_DJB2_sample_score
     assert exporter_version == version("azure-monitor-opentelemetry-exporter")
-    exporter_source = Path(inspect.getfile(_convert_span_to_envelope)).resolve()
-    assert exporter_source == Path(distribution("azure-monitor-opentelemetry-exporter").locate_file(
-        "azure/monitor/opentelemetry/exporter/export/trace/_exporter.py",
-    )).resolve()
+    for package, symbol in (
+        ("azure-monitor-opentelemetry", monitor.configure_azure_monitor),
+        ("azure-monitor-opentelemetry-exporter", _convert_span_to_envelope),
+        ("azure-monitor-opentelemetry-exporter", RateLimitedSampler),
+        ("opentelemetry-sdk", setup.TracerProvider),
+        ("opentelemetry-instrumentation-fastapi", FastAPIInstrumentor),
+        ("opentelemetry-instrumentation-httpx", HTTPXClientInstrumentor),
+    ):
+        installed = distribution(package)
+        source = Path(inspect.getfile(symbol)).resolve()
+        record, = (
+            item for item in installed.files
+            if Path(installed.locate_file(item)).resolve() == source
+        )
+        assert record.hash is not None and record.hash.mode == "sha256"
+        actual = base64.urlsafe_b64encode(hashlib.sha256(source.read_bytes()).digest())
+        assert actual.decode().rstrip("=") == record.hash.value, (package, source)
 
     secret = "PRIVATE-prompt-session-user-key-credential"
     connection = "InstrumentationKey=00000000-0000-0000-0000-000000000001"
@@ -86,6 +104,12 @@ def _exercise(case: str) -> None:
     network = []
     configured = []
     providers = []
+    loaded_httpx = []
+    httpx_calls = []
+    distro_httpx = []
+    provider_reply = None
+    control_requests = []
+    control_url = "https://outbound.invalid/control"
 
     class LowScoreIds(IdGenerator):
         def __init__(self):
@@ -118,8 +142,28 @@ def _exercise(case: str) -> None:
         network.append(True)
         raise AssertionError("unexpected real transport")
 
-    async def deny_async(*args, **kwargs):
-        return deny(*args, **kwargs)
+    def synthetic_http(_transport, request):
+        if str(request.url) == control_url:
+            control_requests.append(request)
+            return httpx.Response(200, text="synthetic")
+        if request.url.host == "gateway.invalid" and provider_reply is not None:
+            return provider_reply(request)
+        return deny()
+
+    async def synthetic_async_http(transport, request):
+        return synthetic_http(transport, request)
+
+    original_load = EntryPoint.load
+    original_httpx_instrument = HTTPXClientInstrumentor.instrument
+
+    def load(entry_point):
+        if entry_point.group == "opentelemetry_instrumentor" and entry_point.name in ("httpx", "httpx2"):
+            loaded_httpx.append(entry_point.name)
+        return original_load(entry_point)
+
+    def instrument_httpx(instrumentor, **kwargs):
+        httpx_calls.append(kwargs.copy())
+        return original_httpx_instrument(instrumentor, **kwargs)
 
     original_configure = monitor.configure_azure_monitor
 
@@ -130,25 +174,37 @@ def _exercise(case: str) -> None:
             for name in ("azure_sdk", "django", "flask", "psycopg2", "requests", "urllib", "urllib3")
         }
         options.update(kwargs.pop("instrumentation_options", {}))
+        if case == "httpx_control":
+            # Identical real SDK/app fixture with only the ownership fix removed.
+            options.pop("httpx", None)
+            options.pop("httpx2", None)
         original_configure(
             **kwargs, instrumentation_options=options,
             enable_live_metrics=False, enable_performance_counters=False,
             resource=Resource({"service.name": "ai4ia-api"}),
         )
+        distro_httpx.append(HTTPXClientInstrumentor().is_instrumented_by_opentelemetry)
 
     diagnostics = io.StringIO()
     with ExitStack() as stack, redirect_stdout(diagnostics):
         stack.enter_context(patch.dict(os.environ, {
             "OTEL_METRICS_EXPORTER": "none", "OTEL_LOGS_EXPORTER": "none",
             "OTEL_EXPERIMENTAL_RESOURCE_DETECTORS": "",
+            # b57 starts this worker directly, even with an in-memory exporter.
+            "APPLICATIONINSIGHTS_CONTROLPLANE_DISABLED": "true",
             "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST": ".*",
             "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE": ".*",
+            "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST": ".*",
+            "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE": ".*",
             "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "true",
             "AZURE_EXPERIMENTAL_ENABLE_GENAI_TRACING": "true",
         }))
         stack.enter_context(patch.object(DotEnvSettingsSource, "_read_env_files", return_value={}))
-        stack.enter_context(patch.object(httpx.HTTPTransport, "handle_request", deny))
-        stack.enter_context(patch.object(httpx.AsyncHTTPTransport, "handle_async_request", deny_async))
+        stack.enter_context(patch.object(httpx.HTTPTransport, "handle_request", synthetic_http))
+        stack.enter_context(patch.object(httpx.AsyncHTTPTransport, "handle_async_request", synthetic_async_http))
+        stack.enter_context(patch.object(requests.sessions.Session, "request", deny))
+        stack.enter_context(patch.object(EntryPoint, "load", load))
+        stack.enter_context(patch.object(HTTPXClientInstrumentor, "instrument", instrument_httpx))
         stack.enter_context(patch.object(setup, "TracerProvider", provider))
         stack.enter_context(patch.object(setup, "AzureMonitorTraceExporter", lambda **_: captured))
         stack.enter_context(patch.object(monitor, "configure_azure_monitor", configure))
@@ -185,6 +241,16 @@ def _exercise(case: str) -> None:
             assert client.get("/background").status_code == 204
         assert background_calls == [True]
         assert providers == [] and captured.get_finished_spans() == ()
+        assert httpx_calls == loaded_httpx == distro_httpx == []
+        assert not HTTPXClientInstrumentor().is_instrumented_by_opentelemetry
+        if case in ("httpx", "httpx_control"):
+            with httpx.Client(trust_env=False) as http:
+                assert http.get(control_url).status_code == 200
+            assert len(control_requests) == 1 and captured.get_finished_spans() == ()
+            with pytest.raises(AssertionError, match="unexpected real transport"):
+                requests.get("https://exporter.invalid")
+            assert network == [True]
+            network.clear()
         if case in ("gate", "auto_gate"):
             settings = make_settings(applicationinsights_connection_string=connection)
             apps = [main.create_app(settings), main.create_app(settings)]
@@ -212,7 +278,10 @@ def _exercise(case: str) -> None:
                 overrides = {"auth_provider": "entra", "entra_tenant_id": TENANT, "entra_audience": API_URI}
             app = main.create_app(make_settings(
                 applicationinsights_connection_string=connection,
-                model_gateway_url="https://gateway.invalid",
+                model_gateway_url=(
+                    f"https://gateway.invalid/{secret}"
+                    if case in ("httpx", "httpx_control") else "https://gateway.invalid"
+                ),
                 **overrides,
             ))
             assert len(configured) == len(providers) == 1, diagnostics.getvalue()
@@ -228,7 +297,13 @@ def _exercise(case: str) -> None:
 
             @app.middleware("http")
             async def observe_parent(request, call_next):
-                request_contexts.append(trace.get_current_span().get_span_context())
+                current = trace.get_current_span()
+                request_contexts.append(current.get_span_context())
+                current.set_attributes({
+                    "gen_ai.agent.id": secret, "gen_ai.agent.name": secret,
+                    "microsoft.gen_ai.main_agent.id": secret, "user.id": secret,
+                    "url.full": secret,
+                })
                 return await call_next(request)
 
             @app.get("/test-error")
@@ -253,20 +328,26 @@ def _exercise(case: str) -> None:
             time.sleep(0.25)
             with TestClient(app, raise_server_exceptions=False) as client:
                 shared_http = app.state.gateway._http
-                if case in ("genai", "drop"):
+                if case in ("genai", "drop", "httpx", "httpx_control"):
                     from ai4ia_api.gateway.client import ModelGatewayClient
                     model = next(item for item in app.state.catalog.models if item.api == "chat" and item.conversational)
 
                     def reply(request):
                         received.append(json.loads(request.content))
                         gateway_contexts.append(trace.get_current_span().get_span_context())
-                        return httpx.Response(200, json={
+                        return httpx.Response(200, headers={"x-private": secret}, json={
                             "model": model.id,
                             "choices": [{"message": {"role": "assistant", "content": secret}, "finish_reason": "stop"}],
                             "usage": {"prompt_tokens": 4, "completion_tokens": 2},
                         })
 
-                    gateway_http = httpx.AsyncClient(transport=httpx.MockTransport(reply), trust_env=False)
+                    if case in ("httpx", "httpx_control"):
+                        provider_reply = reply
+                        # Exercise the globally wrapped real transport, not MockTransport
+                        # (which bypasses the automatic HTTPX instrumentation).
+                        gateway_http = httpx.AsyncClient(trust_env=False)
+                    else:
+                        gateway_http = httpx.AsyncClient(transport=httpx.MockTransport(reply), trust_env=False)
                     app.state.gateway = ModelGatewayClient(app.state.settings, http_client=gateway_http)
                     session = client.post("/api/sessions", json={
                         "model": model.id, "libraryDocumentIds": [],
@@ -323,9 +404,10 @@ def _exercise(case: str) -> None:
                 assert request_contexts and all(context.is_valid for context in request_contexts)
             else:
                 assert server and len(server) == len(request_contexts)
-            if case == "genai":
+            if case in ("genai", "httpx", "httpx_control"):
                 children = [span for span in spans if span.instrumentation_scope.name == INSTRUMENTATION_NAME]
                 assert len(children) == 1
+                assert len(spans) == len(server) + 1
                 child = children[0]
                 parent = next(span for span in server if span.name == "POST /api/chat")
                 assert child.parent.span_id == parent.context.span_id
@@ -336,7 +418,7 @@ def _exercise(case: str) -> None:
                 parent_rate = parent.attributes.get("_MS.sampleRate")
                 if parent_rate is not None:
                     assert child.attributes.get("_MS.sampleRate") == parent_rate
-                # b55 resamples a recorded 100%-rate parent lacking an explicit
+                # b57 resamples a recorded 100%-rate parent lacking an explicit
                 # rate attribute; preserving the SDK is not forcing inheritance.
                 assert not child.events and not child.links
                 assert secret not in child.to_json()
@@ -352,7 +434,7 @@ def _exercise(case: str) -> None:
             if case == "errors":
                 assert any(span.status.status_code == StatusCode.ERROR for span in server)
             if case == "sampling":
-                # Same exact b55 sampler, both local parent conditions. No
+                # Same exact b57 sampler, both local parent conditions. No
                 # application sampling configuration is changed for this proof.
                 from opentelemetry.sdk.trace.sampling import Decision
                 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
@@ -369,9 +451,10 @@ def _exercise(case: str) -> None:
                     def is_recording(self):
                         return True
                 from ai4ia_api.request_telemetry import _RequestSpan
-                recorded = _RequestSpan(RecordedParent(SpanContext(
-                        123, 456, is_remote=False, trace_flags=TraceFlags.SAMPLED,
-                    )), frozenset(), SpanKind.SERVER)
+                source_parent = RecordedParent(SpanContext(
+                    123, 456, is_remote=False, trace_flags=TraceFlags.SAMPLED,
+                ))
+                recorded = _RequestSpan(source_parent, frozenset(), SpanKind.SERVER)
                 inheritance_control = RateLimitedSampler(0)
                 admitted = inheritance_control.should_sample(
                     trace.set_span_in_context(recorded, Context()), 123, "chat",
@@ -382,9 +465,49 @@ def _exercise(case: str) -> None:
                 assert inheritance_control.should_sample(
                     dropped_parent, 123, "chat", kind=SpanKind.CLIENT, attributes={},
                 ).decision == Decision.DROP
+                source_parent.attributes = {}
+                assert inheritance_control.should_sample(
+                    trace.set_span_in_context(recorded, Context()), 123, "chat",
+                    kind=SpanKind.CLIENT, attributes={},
+                ).decision == Decision.DROP
         assert network == []
         assert secret not in json.dumps(starts)
         assert metric_reader.get_metrics_data() is None
+        assert HTTPXClientInstrumentor().is_instrumented_by_opentelemetry
+        if case == "httpx_control":
+            assert distro_httpx == [True]
+            assert set(loaded_httpx) == {"httpx", "httpx2"} and len(loaded_httpx) == 2
+            assert httpx_calls == [{"skip_dep_check": True}, {}]
+        else:
+            assert distro_httpx == [False]
+            assert loaded_httpx == []
+            assert httpx_calls == [{}]
+        if case in ("httpx", "httpx_control"):
+            captured.clear()
+            with httpx.Client(trust_env=False) as http:
+                assert http.get(control_url).status_code == 200
+
+            async def outgoing():
+                async with httpx.AsyncClient(trust_env=False) as http:
+                    assert (await http.get(control_url)).status_code == 200
+
+            asyncio.run(outgoing())
+            providers[0].force_flush()
+            dependencies = captured.get_finished_spans()
+            assert len(control_requests) == 3 and len(dependencies) == 2
+            assert all(span.kind == SpanKind.CLIENT for span in dependencies)
+            assert all(
+                span.instrumentation_scope.name == "opentelemetry.instrumentation.httpx"
+                for span in dependencies
+            )
+            metric_data = metric_reader.get_metrics_data()
+            assert metric_data is not None
+            client_metrics = [
+                metric for resource in metric_data.resource_metrics
+                for scope in resource.scope_metrics for metric in scope.metrics
+            ]
+            assert [metric.name for metric in client_metrics] == ["http.client.duration"]
+            assert sum(point.count for point in client_metrics[0].data.data_points) == 2
         control_counter = metrics.get_meter("synthetic-control").create_counter("control")
         control_counter.add(1)
         assert metric_reader.get_metrics_data() is not None
@@ -393,11 +516,13 @@ def _exercise(case: str) -> None:
             item.shutdown()
         metric_provider.shutdown()
         FastAPIInstrumentor().uninstrument()
+        HTTPXClientInstrumentor().uninstrument()
         logging.disable(logging.CRITICAL)
     print(json.dumps({
         "passed": True,
         "versions": {name: version(name) for name in (
             "azure-monitor-opentelemetry", "azure-monitor-opentelemetry-exporter",
             "opentelemetry-sdk", "opentelemetry-instrumentation-fastapi",
+            "opentelemetry-instrumentation-httpx",
         )},
     }))

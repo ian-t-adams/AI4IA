@@ -222,7 +222,11 @@ def test_configure_telemetry_initializes_once(monkeypatch):
         calls["configure"] += 1
         assert kwargs["connection_string"] == "InstrumentationKey=abc"
         assert kwargs["logger_name"] == logging_setup.TELEMETRY_LOGGER_NAME
-        assert kwargs["instrumentation_options"] == {"fastapi": {"enabled": False}}
+        assert kwargs["instrumentation_options"] == {
+            "fastapi": {"enabled": False},
+            "httpx": {"enabled": False},
+            "httpx2": {"enabled": False},
+        }
         assert not any("sampl" in key for key in kwargs)
 
     class _FakeInstrumentor:
