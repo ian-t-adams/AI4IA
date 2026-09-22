@@ -1,7 +1,7 @@
 """Guard the Foundry toolbox provisioning seam (docs/foundry-toolbox.md).
 
-These pin the *pure* projection/validation logic of the provisioning scripts without any
-Azure SDK, network, or new runtime dependency. The load-bearing guarantee: the toolbox
+These exercise offline projection/validation and the installed SDK's real models and
+reflected contract, without Azure access or a new runtime dependency. The guarantee: the toolbox
 script projects the toolbox to a catalog entry that is a VALID infra/mcp-servers.json entry
 carrying exactly the managed-identity bearer + Foundry-Features header + api-version query the
 bridge needs -- so the app consumes it with zero new runtime code.
@@ -47,7 +47,7 @@ def _valid_manifest() -> dict:
         "owner": "repository-owner",
         "sdkContract": {
             "package": "azure-ai-projects",
-            "version": "2.6.0",
+            "version": "2.6.1",
             "status": "validated",
             "surface": "project.toolboxes",
         },
@@ -146,8 +146,9 @@ def test_every_allowed_type_maps_to_a_model_class():
     assert _tb._TYPE_TO_MODEL["a2a"] == "A2AToolboxTool"
 
 
-def test_sdk_contract_metadata_matches_the_installed_exact_pin():
-    pytest.importorskip("azure.ai.projects")
+def _assert_sdk_contract_metadata():
+    from azure.ai import projects
+
     project = tomllib.loads(
         (_REPO_ROOT / "app" / "api" / "pyproject.toml").read_text(encoding="utf-8")
     )
@@ -157,6 +158,7 @@ def test_sdk_contract_metadata_matches_the_installed_exact_pin():
         if dependency.startswith("azure-ai-projects==")
     ]
     assert pins == [version("azure-ai-projects")]
+    assert projects.__version__ == pins[0], "Imported SDK source differs from the exact pin"
     lock = tomllib.loads((_REPO_ROOT / "app" / "api" / "uv.lock").read_text(encoding="utf-8"))
     assert [
         package["version"]
@@ -174,6 +176,43 @@ def test_sdk_contract_metadata_matches_the_installed_exact_pin():
         schema = json.loads((path.parent / manifest["$schema"]).read_text(encoding="utf-8"))
         assert manifest["sdkContract"]["version"] == pins[0], path
         assert schema["properties"]["sdkContract"]["properties"]["version"]["const"] == pins[0]
+
+
+def test_sdk_contract_metadata_matches_the_installed_exact_pin():
+    _assert_sdk_contract_metadata()
+
+
+def test_sdk_contract_metadata_rejects_mismatched_imported_source(monkeypatch):
+    from azure.ai import projects
+
+    _assert_sdk_contract_metadata()
+    monkeypatch.setattr(projects, "__version__", "2.6.0")
+    with pytest.raises(AssertionError, match="Imported SDK source"):
+        _assert_sdk_contract_metadata()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        _MANIFEST,
+        _EXAMPLE_MANIFEST,
+        _REPO_ROOT / "foundry" / "routines" / "example.routine.json",
+        _REPO_ROOT / "foundry" / "a2a" / "example.a2a.json",
+    ],
+    ids=["active-toolbox", "reference-toolbox", "routine", "a2a"],
+)
+def test_sdk_contract_schema_rejects_the_previous_version(path):
+    import jsonschema
+
+    manifest = _tb.load_manifest(path)
+    schema = json.loads((path.parent / manifest["$schema"]).read_text(encoding="utf-8"))
+    jsonschema.validate(manifest, schema)
+    manifest["sdkContract"]["version"] = "2.6.0"
+    errors = list(jsonschema.Draft7Validator(schema).iter_errors(manifest))
+    assert any(
+        error.validator == "const" and list(error.path) == ["sdkContract", "version"]
+        for error in errors
+    )
 
 
 # ----------------------------- tool projection ----------------------------------------
@@ -2513,7 +2552,8 @@ _COMMON_TOOLBOX_FIELDS = {"type", "name", "description", "tool_configs"}
 
 
 def _schema_fields_for_tool(tool_schema, tool_type):
-    jsonschema = pytest.importorskip("jsonschema")
+    import jsonschema
+
     assert tool_schema["additionalProperties"] is False
     fields = set(tool_schema["properties"])
     for rule in tool_schema["allOf"]:
@@ -2588,7 +2628,9 @@ def _assert_sdk_toolbox_parity(m):
 
 
 def test_reflection_driven_parity_covers_every_sdk_toolbox_type_and_field():
-    _assert_sdk_toolbox_parity(pytest.importorskip("azure.ai.projects.models"))
+    from azure.ai.projects import models
+
+    _assert_sdk_toolbox_parity(models)
 
 
 def test_unknown_future_sdk_toolbox_type_still_fails_parity(monkeypatch):
@@ -2846,18 +2888,17 @@ def _simulate_azure_ai_projects_missing(monkeypatch):
     monkeypatch.setitem(sys.modules, "azure.ai.projects", None)
 
 
-def test_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch):
-    # `azure-ai-projects==2.6.0` is pinned exactly in pyproject.toml/uv.lock so every
-    # install path lands on the one version this whole audit reflection-verified field-by-field
-    # -- but both create_toolbox()'s and _project_client()'s ImportError fallback still told an
-    # operator without `uv` to run a bare, unpinned `pip install azure-ai-projects
-    # azure-identity`, silently reopening exactly the drift the pin was meant to close. Simulate
-    # the SDK genuinely being absent and assert the real, user-facing SystemExit message now
-    # carries the exact pin (not just the source string, so a future refactor that changes how
-    # the message is built still has to keep the guarantee).
+@pytest.mark.parametrize(
+    ("helper", "args"),
+    [(_tb._project_client, (_ENDPOINT,)), (_tb._sdk_models, ())],
+    ids=["project-client", "models"],
+)
+def test_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch, helper, args):
+    # Both lazy import paths must recommend the same exact pin the metadata gate checks.
+    expected = f"pip install azure-ai-projects=={version('azure-ai-projects')} azure-identity"
     _simulate_azure_ai_projects_missing(monkeypatch)
     with pytest.raises(SystemExit) as exc_info:
-        _tb.create_toolbox({"tools": []}, _ENDPOINT)
+        helper(*args)
     message = str(exc_info.value)
-    assert "pip install azure-ai-projects==2.6.0 azure-identity" in message
+    assert expected in message
     assert "pip install azure-ai-projects azure-identity" not in message
