@@ -99,8 +99,9 @@ AI4IA_PATCH_REASONS = {
         "or versioned paths even when all attempt fields are absent."
     ),
     "SimpleL7Proxy/SimpleL7Proxy.csproj": (
-        "Keep runtime dependencies current, remove unsupported Application Insights "
-        "2.x packages, and declare the OpenTelemetry processor API."
+        "Keep runtime dependencies current, including IdentityModel 8.23.0 and "
+        "OpenTelemetry 1.19.1; remove unsupported Application Insights 2.x packages "
+        "and declare the OpenTelemetry processor API."
     ),
 }
 

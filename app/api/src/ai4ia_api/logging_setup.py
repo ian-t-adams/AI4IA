@@ -121,8 +121,13 @@ def configure_telemetry(connection_string: str | None) -> bool:
         configure_azure_monitor(
             connection_string=connection_string,
             logger_name=TELEMETRY_LOGGER_NAME,
-            # Instance instrumentation owns request privacy and the per-app gate.
-            instrumentation_options={"fastapi": {"enabled": False}},
+            # Preserve application-owned instrumentation; the distro also enables
+            # both HTTPX variants by default starting with 1.8.10.
+            instrumentation_options={
+                "fastapi": {"enabled": False},
+                "httpx": {"enabled": False},
+                "httpx2": {"enabled": False},
+            },
         )
     except Exception:  # pragma: no cover - defensive: telemetry never breaks boot
         logging.getLogger(__name__).warning(
@@ -137,8 +142,8 @@ def configure_telemetry(connection_string: str | None) -> bool:
     # path emits its own structured stdout usage line for Log Analytics.
     _telemetry_logger.propagate = False
 
-    # FastAPI is instrumented per instance by the application factory. The distro
-    # instruments Azure SDKs but not httpx, so wire outbound dependencies here.
+    # FastAPI is instrumented per instance by the application factory. Keep the
+    # existing manual HTTPX owner; do not opt additional client families in.
     try:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 

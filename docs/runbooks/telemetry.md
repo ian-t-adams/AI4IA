@@ -101,6 +101,13 @@ calling the distro before constructing that prebound class is not sufficient.
 The factory uses the canonical `fastapi.applications.FastAPI` class so an ambient
 class replacement cannot silently double-instrument or bypass the per-app gate.
 
+Azure Monitor 1.8.10 also enables both `httpx` and `httpx2` instrumentor
+entrypoints by default. Both are explicitly disabled in the distro options:
+`logging_setup` retains the existing manual HTTPX owner, and HTTPX2 is not
+opted in. Otherwise the distro takes ownership first and the application's
+second attempt is rejected as already instrumented. Keeping a single owner
+does not disable the existing outbound dependency spans or their metrics.
+
 Request instrumentation requires both this app's nonempty Application Insights
 connection setting and successful existing exporter configuration. Repeated
 factory calls reuse that exporter; each enabled app is instrumented once.
@@ -132,12 +139,12 @@ no-op meter rather than start an additional request-metrics feed whose raw
 host/path dimensions bypass the span projection. Other existing metric and event
 producers keep their previous configuration and allowlists.
 
-**Sampling is unchanged.** Azure Monitor 1.8.9 selects its rate-limited sampler
+**Sampling is unchanged.** Azure Monitor 1.8.10 selects its rate-limited sampler
 by default when no explicit sampling setting is supplied. The request facade
 retains the actual SDK parent context and sampling attributes used by
-exporter 1.0.0b55 / SDK 1.43.0. Its local-parent rules include dropping children
+exporter 1.0.0b57 / SDK 1.44.0. Its local-parent rules include dropping children
 of a dropped parent and inheriting an explicitly recorded sample rate; a recorded
-100%-rate parent with no explicit rate attribute may be sampled again by b55.
+100%-rate parent with no explicit rate attribute may be sampled again by b57.
 No always-on override, sample-rate increase or ingestion-limit change is made.
 Missing request spans can affect parentage, but a bounded observation with zero
 GenAI records does not establish an all-time exporter failure or prove sampling
@@ -149,9 +156,25 @@ only the network exporter with an in-memory exporter and provider HTTP with
 synthetic transports. It checks whole request/GenAI spans and the installed Azure
 envelope conversion, one-time configuration, per-app gates, preserved auth/errors/
 cleanup, real gateway child-parent links, poisoned fields and actual sampler
-controls. The shipping b55 check verifies imported source location as well as
-package metadata; a mixed namespace can report b55 metadata while importing b56
-code. These are offline controls, not production request/GenAI export evidence.
+controls. Imported distro, exporter, sampler, SDK and instrumentor source files
+must match their installed wheel RECORD hashes, not just package metadata or
+paths. The 1.8.10 / b57 / 1.44.0 / 0.65b0 train was installed with the public
+lock's artifact hashes enforced. Wheel requirements and the official 1.8.10
+tag's `setup.py` require b57, despite the changelog's b56 statement.
+
+Paired controls remove only the HTTPX ownership opt-outs and prove that the
+real distro then loads both entrypoints and attempts HTTPX instrumentation
+before the application. With the fix, it loads neither and the application
+instruments once. Sync and async HTTPX transports still emit their ordinary
+dependency spans and metrics, while actual gateway calls through that same
+global wrapper emit only the content-free GenAI span, with no raw HTTP metrics.
+The HTTPX2 control proves entrypoint selection, not execution of an uninstalled
+HTTPX2 client.
+
+Offline SDK tests explicitly disable its control-plane worker and deny the
+`requests` transport as well as substituting provider HTTP: b57's distro can
+start a background configuration worker even with an in-memory exporter.
+These are offline controls, not production request/GenAI export evidence.
 
 After an approved deployment, verify the exact serving API image first. The
 parent/operator can then compare bounded, content-free request/dependency and
@@ -168,8 +191,9 @@ is introduced. The current official GenAI conventions have moved to the
 [OpenTelemetry GenAI repository](https://github.com/open-telemetry/semantic-conventions-genai/blob/0c87594975195608dc91b3f702e250a7b240c151/docs/gen-ai/gen-ai-spans.md).
 The exact development revision
 `0c87594975195608dc91b3f702e250a7b240c151` is pinned in the span contract. It is
-not a stable release or a published schema URL. Do not upgrade the compatible
-Azure Monitor 1.8.9 / HTTPX 0.64b0 dependency train merely to acquire new constants.
+not a stable release or a published schema URL. The compatible Azure Monitor
+1.8.10 / HTTPX 0.65b0 dependency upgrade preserves this semantic contract;
+dependency updates do not authorize new constants, capture or payload fields.
 
 Each logical text-model call emits one CLIENT span. Its timestamps measure the
 operation through response completion, stream end, failure or cancellation.

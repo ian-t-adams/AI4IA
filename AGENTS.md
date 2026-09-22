@@ -300,7 +300,7 @@ trace input, judge, grants, resource changes or activation is implied.
 Content-free GenAI model spans reuse `logging_setup`'s exporter gate and observe
 post-admission adapted requests/native responses, including streamed Responses
 and Claude. Keep the pinned development-semantic contract and its fixed
-`gen_ai.system` exporter-compatibility alias; do not upgrade the telemetry pair.
+`gen_ai.system` exporter-compatibility alias across telemetry dependency upgrades.
 No payload, URL, identity, event, exception message or provider-internal reasoning
 belongs on these spans. Cumulative usage is recorded once per logical model call,
 not added across chunks or copied onto parent spans. The SDK/exporter capture
@@ -314,9 +314,14 @@ projecting route-template/status metadata before recording; no raw path/query,
 credentials, identities, exception payloads or caller-written metadata may reach
 it or GenAI children. Do not register a second provider, increase sampling or
 enable raw request metrics to make coverage appear healthy. The shipping
-1.8.9/b55/1.43.0/0.64b0 integration controls use the actual app and SDK, not only a
-constructor-order mock; metadata-only package checks do not prove imported SDK
-source. See `docs/runbooks/telemetry.md` for the bounded post-deployment observation
+1.8.10/b57/1.44.0/0.65b0 integration controls use the actual app and SDK, not only a
+constructor-order mock; imported SDK source must match its wheel RECORD hashes.
+Disable distro HTTPX and HTTPX2 auto-instrumentation as well as FastAPI: the app
+retains its manual HTTPX owner without adding another client family. Real
+entrypoint and transport controls prove ownership and model-call suppression.
+Offline SDK controls also disable its control-plane worker and deny requests
+transport; an in-memory exporter alone does not prevent that worker's egress.
+See `docs/runbooks/telemetry.md` for the bounded post-deployment observation
 and the distinction between missing coverage and proven exporter failure.
 
 **Any edit to `app/api/pyproject.toml` must be followed by `uv lock` in the same
@@ -899,8 +904,12 @@ pair in `api-framework`; `azure-ai-projects` stays ungrouped so its exact SDK,
 manifest, and adapter contract is reviewed independently. Do not weaken a parity
 test to make an SDK upgrade green. New SDK toolbox types require complete support
 or named exclusions with rationale and exact reflected field inventories; exclusions
-must remain rejected by both the manifest and adapter. The gate installers are
-pinned by `UV_VERSION`
+must remain rejected by both the manifest and adapter.
+The exact-pin and reflected parity gates require the installed SDK, not a skip.
+Compare its imported source version as well as distribution metadata, lockfile,
+and every shipped manifest/schema; keep the two missing-SDK install hints aligned.
+Review patch-release wheel/source changes even when reflected fields are unchanged.
+The gate installers are pinned by `UV_VERSION`
 in `app-ci.yml` (also the API Dockerfile's build-only installer) and
 `CHECK_JSONSCHEMA_VERSION` in `infra-validate.yml`; update both uv declarations
 and any documented local command when a pin changes.
@@ -912,12 +921,15 @@ pair in `api-telemetry`. On 2026-09-08, public-PyPI resolution proved that
 1.44. The `0.64b0` control resolves on Python 3.12; the conflict is not fixed by
 removing Python 3.14 from the supported range.
 
-Dependabot defers only that exact incompatible `0.65b0` candidate. This is update
-selection, not an alert dismissal or a runtime dependency override; later
-versions remain eligible. Revisit the deferral when the Azure Monitor
-distribution supports the new train or a security advisory makes that candidate
-necessary. Resolve and validate the pair before removing the exception; never
-disable telemetry or force incompatible packages to make an updater green.
+The 2026-09-22 upgrade resolves that historical conflict: the verified
+`azure-monitor-opentelemetry==1.8.10` wheel requires exporter `~=1.0.0b57`,
+SDK `~=1.44.0` and HTTPX instrumentation `>=0.65b0,<0.66b0`. Its exact official
+tag's `setup.py` agrees with the wheel, although its changelog says b56.
+The public-PyPI lock hashes and isolated Python 3.12 install validate the new
+train, so the exact `0.65b0` Dependabot deferral is removed. Keep the compatibility
+group and real SDK ownership/privacy/sampling controls; never disable telemetry,
+change its semantic contract, or force incompatible packages to make an updater
+green. This dependency update is not deployment or live export evidence.
 
 Before closing work, reconcile each linked issue's original acceptance criteria
 with shipped evidence. Use `Closes #...` only when the PR completes the full
