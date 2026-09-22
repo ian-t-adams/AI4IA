@@ -204,19 +204,13 @@ class ReservationService:
                 "requests": record.bounds.amounts.requests,
                 "compute": record.bounds.amounts.compute,
             })
-            exceeded = any(
-                getattr(charged, dimension) is not None
-                and getattr(record.bounds.amounts, dimension) is not None
-                and getattr(charged, dimension) > getattr(record.bounds.amounts, dimension)
-                for dimension in ("tokens", "microUsd")
-            )
             record = record.model_copy(update={
                 "phase": "settled" if complete else "unknown", "outcome": outcome,
                 "settledAt": now, "settlementDigest": settlement, "charged": charged,
             })
             return state.model_copy(update={
                 "entries": {**state.entries, record.operationId: record},
-                "blocked": state.blocked or exceeded,
+                "blocked": state.blocked or record.exceeds_bound,
             }), record
 
         return await self._change(owner, change)

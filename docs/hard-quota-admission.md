@@ -383,6 +383,18 @@ Dispatch timestamps must fall within the original inclusive reservation lease;
 settlement cannot precede dispatch, but accepted work may settle after lease
 expiry or the replay horizon. No malformed row is repaired, repriced or refunded.
 
+A retained known settlement above its corresponding non-null frozen token or
+microUSD bound requires `blocked=true`. Settlement and state validation share
+the same record classifier. Fresh construction, persisted reads and shared
+snapshot/write validation reject a contradictory explicit `blocked=false`
+before reconciliation or pruning, including copies made with `model_copy`.
+Equality is allowed, a zero bound is enforced, and an unsupported axis is not an
+implicit zero bound. Request-only measurements do not invent token/dollar bounds.
+The historical block survives terminal pruning; valid settlement of already
+dispatched work remains available on a blocked owner. This rejects contradictory
+retained evidence, not unrecorded corruption: it cannot detect a past violation
+whose evidence and block have both already been removed.
+
 The settlement digest is an idempotency identity, not recoverable raw usage.
 It hashes the original settlement input before request/compute attempt counts
 are normalized. Validation therefore does not reconstruct it from the retained
