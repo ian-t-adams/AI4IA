@@ -330,7 +330,7 @@ replace that entry; settlement does not add a second charge alongside it.
 | Reserved | The full envelope consumes capacity. A 120-second lease limits the interval in which dispatch can be claimed. |
 | Dispatch claim | An ETag CAS changes reserved to dispatched **before** egress. Only its winner may send. An already-claimed identity returns a conflict, never a second provider request. |
 | Complete, fully known usage | Settle once to the proven quantity under the original price snapshot. Requests and compute attempts are never refunded by a zero token count. Known terminal charges age through rolling windows from settlement time. |
-| Cancellation, timeout, missing/partial usage or ambiguous error after claim | Keep the full reservation as unknown. Unknown/dispatched entries remain charged in every applicable window and never expire automatically. Exception: under the approved [request-count scope](#request-count-scope), a request-only record has no bounded token/USD axis, so any terminal outcome settles its exact attempt counts as known history (below). |
+| Cancellation, timeout, missing/partial usage or ambiguous error after claim | Keep the full reservation as unknown. `dispatched` and `unknown`-phase entries remain charged in every applicable window and are never pruned and never expire. Only the approved [request-count scope](#request-count-scope) settles a terminal request-only record instead: at its full frozen bound, preserving its outcome, after which that known record ages with its window. |
 | Lost coordination acknowledgement | Do not send on uncertainty. A committed dispatch claim remains non-replayable even if no application response was delivered. |
 | Explicit release or abandoned reserved lease | Release only work whose state is still reserved. The same CAS fences a late dispatcher; an expired/released ticket cannot send. |
 | Observed usage exceeds its envelope | Retain the actual quantity and block further admission pending reviewed reconciliation; do not hide the underestimate. |
@@ -518,24 +518,36 @@ Under the approved scope, and only there:
 - Any configured `tokensPerDay`, `tokensPerMonth`, `costPerDayMicroUsd` or
   `costPerMonthMicroUsd` refuses (503) before any history is read, and any bound
   with a token or microUSD axis is refused. Owners with such caps are fully
-  refused; remove the caps or keep those owners in soft mode.
+  refused; remove the caps or keep those owners in soft mode. Because every owner
+  without an override inherits the global defaults, API startup refuses hard mode
+  outside the local fake while any of `AI4IA_DEFAULT_TOKENS_PER_DAY`,
+  `AI4IA_DEFAULT_COST_PER_DAY_MICRO_USD`, `AI4IA_DEFAULT_TOKENS_PER_MONTH` or
+  `AI4IA_DEFAULT_COST_PER_MONTH_MICRO_USD` is set.
+- Group-policy `spend` limits and execution-actor `restrictions.spend` limits are
+  composed by the policy layer, not by hard admission. Under this scope they remain
+  **soft** restrictions exactly as today: they are not hard-enforced and must not
+  be presented as hard caps. Preflight warns when both are configured.
 - A request-only record's enforced quantities are its attempt counts. The one-shot
   dispatch CAS fixes them, and every send of the operation precedes its terminal
   settlement. Downstream proxy/APIM retries are not application dispatches. Any
   terminal outcome (`complete`, `cancelled`, `timeout`, `error`, `unknown`)
-  therefore settles `requests=1` (and `compute=1` for a sandbox) as known history
-  that ages from settlement. A `dispatched` record whose settlement never landed
-  stays held forever.
+  therefore settles at the full frozen bound, `requests=1` (and `compute=1` for a
+  sandbox), preserving the outcome, as known history that ages with its window. A
+  `dispatched` record whose settlement never landed stays held and is never pruned.
 - Identities are issued at each claim's own store time, and the replay horizon is
   300 seconds. Terminal entries are pruned once their key has expired and the
   longest window that can count them has passed: 60 seconds after settlement, or
-  24 hours for a settled compute attempt.
+  24 hours for a settled compute attempt. A settlement retried after its entry was
+  pruned is refused; it never re-creates the entry or charges twice.
 - Capacity is still the 512 KiB document. At about 873 bytes per settled
   request-only entry, an owner can hold roughly 600 recent operations. Holds,
   in-flight work and a day of compute attempts count toward that. RU cost grows
-  with document size: Cosmos charges about 5.5 RU per KiB for an unindexed insert
-  and twice that for a replace. Each dispatch replaces the document three times.
-  Measure latency and RU at representative sizes before activation.
+  with document size and indexed properties: Cosmos charges about 5.5 RU per KiB
+  for an unindexed insert and twice that for a replace, and the `usage` container
+  indexes every path today. Each dispatch replaces the document three times.
+  Activation evidence must include measured RU and latency at representative
+  sizes, plus an owner decision on excluding `/entries/*` from the container's
+  indexing policy or compacting state. Neither is changed by this source.
 
 A future token/USD scope needs its own rollout record and a new `coverageStart`.
 Request-count retention does not preserve longer-window history, and the fence
@@ -560,9 +572,12 @@ python -m ai4ia_api.hard_quota.operator bootstrap `
 
 The cohort is explicit: at most 256 canonical UUID internal owner ids, via
 repeated `--owner` or a private `{"schemaVersion": 1, "owners": [...]}` file. It
-has no duplicates and no control partitions. Include the deploy-canary identity:
-an owner without a document is refused, and post-deployment verification would
-fail and roll back. The default run is read-only. It validates the same layout as
+has no duplicates and no control partitions. **New sign-ups, and every other owner
+without a document, are refused until an operator bootstraps them**; there is no
+automatic enrollment. Include the deploy-canary identity, with no
+`requestsPerMinute` cap or already past its fence (`H + 60` seconds). Otherwise
+its chat is refused, post-deployment verification fails, and the automatic
+rollback ends the rollout. The default run is read-only. It validates the same layout as
 startup, then point-reads each owner: absent documents plan `create`, valid
 documents `keep` (never touched), and invalid documents `blocked` (exit 2, never
 repaired). The plan digest binds the tool/contract source hash, cohort, endpoint
@@ -645,8 +660,14 @@ turning the flag off, a rollback to an older or soft revision (including a faile
 activation's automatic rollback), and a restore or failover of the account.
 Re-enabling requires a new rollout id whose `coverageStart` follows a new drain.
 Existing owner documents may be reused; the fence covers the gap. Never delete an
-owner document to reset it. Continuous canary endpoints remain unavailable in hard
-mode.
+owner document to reset it.
+
+The continuous authenticated canaries of
+[#412](https://github.com/ian-t-adams/AI4IA/issues/412) are refused under hard
+mode. `/api/canary/capabilities` reports `lifecycle_unavailable`, the realtime
+capability reports not ready, and the policy canary probes return
+`policy_surface_unsupported`. Only the post-deployment canary of the bootstrapped
+deploy identity exercises the enforcing path.
 
 ## What must happen before activation
 
@@ -657,10 +678,12 @@ record, they need concrete evidence of:
 - a rehearsed drain and an observed `T_drain`
 - the exact signed release that will be activated
 - an approved bootstrap plan and apply readback for the cohort, including the
-  deploy canary
-- measured RU and latency for representative document sizes
+  deploy-canary identity (uncapped or past its fence)
+- measured RU and latency for representative document sizes, and a decision on
+  excluding `/entries/*` from the `usage` indexing policy or compacting state
 - a reviewed recovery/retention policy and hold-resolution owner
 - the operator identity that will run the tool
+- the absence of global default token/USD caps, which startup also enforces
 
 Token/USD enforcement additionally needs the proven gateway-attempt/meter envelope
 and its own rollout. Durable per-operation replay identity/outcome recovery,

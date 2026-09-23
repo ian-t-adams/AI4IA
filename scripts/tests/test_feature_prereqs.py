@@ -271,6 +271,28 @@ class CommittedParametersTests(unittest.TestCase):
             self.assertEqual("requires hardQuotaRolloutId" in err, not valid)
             self.assertIn("does not prove writer drain or owner bootstrap", out + err)
 
+    def test_hard_mode_warns_that_policy_spend_limits_stay_soft(self) -> None:
+        soft_spend = {"version": 1, "domains": {}, "spend": {"mappings": []}}
+        actor_spend = {"version": 1, "domains": {}, "canaryActor": {
+            "tenantId": "synthetic-tenant", "subject": "synthetic-monitor",
+            "restrictions": {"models": ["chat"], "spend": {"requestsPerMinute": 2}},
+        }}
+        no_spend = {"version": 1, "domains": {}}
+        warning = "Group policy spend limits, including execution-actor restrictions, remain soft"
+        for hard, config, expected in (
+            ("true", soft_spend, True), ("true", actor_spend, True),
+            # Controls: identical parameters without spend limits, or without hard mode.
+            ("true", no_spend, False), ("false", soft_spend, False),
+        ):
+            with self.subTest(hard=hard, config=config), _environment(
+                **PROD_ENV, AI4IA_HARD_QUOTA_ENABLED=hard,
+                AI4IA_HARD_QUOTA_ROLLOUT_ID="reviewed-request-count-1",
+                AI4IA_GROUP_POLICY_ENABLED="true", AI4IA_GROUP_POLICY_JSON=json.dumps(config),
+            ):
+                code, out, err = _run(REAL_PARAMETERS)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(warning in out + err, expected)
+
     def test_committed_parameters_validate_as_shipped(self) -> None:
         with _environment():
             code, _, err = _run(REAL_PARAMETERS)

@@ -60,10 +60,11 @@ class Adapter:
 
             self.store = CosmosReservationStore(self.container, read_account=read_account)
 
-    def seed(self, owner: str, at: int) -> QuotaState:
+    def seed(self, owner: str, at: int, *, blocked: bool = False, epoch: str | None = None) -> QuotaState:
         # The bootstrap shape: no entries, every fence at the store-clock creation time.
         state = QuotaState(
-            userId=owner, epoch=uuid.uuid4().hex, validAfter=at, replayFloor=at, observedAt=at,
+            userId=owner, epoch=epoch or uuid.uuid4().hex, validAfter=at, replayFloor=at,
+            observedAt=at, blocked=blocked,
         )
         if self.container is None:
             self.store._rows[owner] = (state, 1)
@@ -316,6 +317,95 @@ async def test_pruning_never_turns_an_unexpired_identity_into_new_work(adapter):
     with pytest.raises(QuotaError, match="expired") as caught:
         await admit(service, state, adapter.clock, key=key)
     assert caught.value.code == 409
+
+
+@pytest.mark.parametrize("request_count_scope", [True, False], ids=["scope", "historical"])
+async def test_lost_ack_settlement_retry_never_recreates_pruned_work(adapter, request_count_scope):
+    state = adapter.seed("alice", PAST)
+    service = scoped(adapter, PAST) if request_count_scope else historical(adapter)
+    limits = EntitlementLimits(requestsPerMinute=1)
+    record = await admit(service, state, adapter.clock, limits=limits)
+    dispatched = await service.dispatch("alice", record)
+    settled = await service.settle("alice", dispatched, outcome="complete", actual=Amounts())
+    retained = (await adapter.store.read("alice")).state.entries
+    # Control: a retry after a lost acknowledgement, while the entry is retained,
+    # returns the identical settlement and never adds a second charge.
+    assert await service.settle("alice", dispatched, outcome="complete", actual=Amounts()) == settled
+    entries = (await adapter.store.read("alice")).state.entries
+    assert entries == retained and sum(entry.charged.requests for entry in entries.values()) == 1
+    with pytest.raises(QuotaError, match="would be exceeded"):
+        await admit(service, state, adapter.clock, limits=limits)
+    adapter.clock[0] = NOW + (
+        REQUEST_COUNT_REPLAY_SECONDS + MINUTE_SECONDS if request_count_scope else 2 * MONTH_SECONDS
+    )
+    assert record.operationId not in (await service.reconcile("alice")).entries
+    before = await adapter.store.read("alice")
+    with pytest.raises(QuotaError, match="does not belong") as caught:
+        await service.settle("alice", dispatched, outcome="complete", actual=Amounts())
+    assert caught.value.code == 403
+    # Nothing was written: no entry re-created, no second charge, same window usage.
+    after = await adapter.store.read("alice")
+    assert (after.state, after.etag) == (before.state, before.etag)
+    assert record.operationId not in after.state.entries
+    assert (await admit(service, state, adapter.clock, limits=limits)).phase == "reserved"
+
+
+async def test_blocked_owner_is_refused_under_the_scope(adapter):
+    epoch = uuid.uuid4().hex
+    blocked = adapter.seed("alice", PAST, blocked=True, epoch=epoch)
+    service = scoped(adapter, PAST)
+    key = operation_id(epoch, NOW, "same-call")
+    with pytest.raises(QuotaError, match="requires reviewed reconciliation") as caught:
+        await admit(service, blocked, adapter.clock, key=key)
+    assert caught.value.code == 503
+    assert not (await adapter.store.read("alice")).state.entries
+    # Control: the same owner and identical call with blocked=false is admitted.
+    unblocked = adapter.seed("alice", PAST, epoch=epoch)
+    assert (await admit(service, unblocked, adapter.clock, key=key)).phase == "reserved"
+
+
+async def test_blocked_owner_cannot_dispatch_reserved_work_under_the_scope(adapter):
+    state = adapter.seed("alice", PAST)
+    service = scoped(adapter, PAST)
+    record = await admit(service, state, adapter.clock)
+    snapshot = await adapter.store.read("alice")
+    blocked = snapshot.state.model_copy(update={"blocked": True})
+    inject_accounting(adapter.contract(), snapshot, blocked)
+    with pytest.raises(QuotaError, match="requires reviewed reconciliation"):
+        await service.dispatch("alice", record)
+    assert (await adapter.store.read("alice")).state.entries[record.operationId].phase == "reserved"
+    # Control: the identical dispatch on the unblocked document claims egress.
+    inject_accounting(adapter.contract(), snapshot, snapshot.state)
+    assert (await service.dispatch("alice", record)).phase == "dispatched"
+
+
+async def test_retained_known_overrun_stays_refused_under_the_scope(adapter):
+    owners = {"alice": (adapter.seed("alice", PAST), 11), "bob": (adapter.seed("bob", PAST), 10)}
+    legacy = historical(adapter)
+    for owner, (state, actual) in owners.items():
+        # Pre-scope token-bounded history: alice's known charge exceeds its bound.
+        record = await legacy.reserve(
+            owner, key=operation_id(state.epoch, NOW, "overrun"), payload={}, surface="chat",
+            bounds=accounting_bounds(Amounts(tokens=10)), limits=EntitlementLimits(),
+        )
+        await legacy.dispatch(owner, record)
+        settled = await legacy.settle(owner, record, outcome="complete", actual=Amounts(tokens=actual))
+        assert settled.exceeds_bound is (actual > 10)
+    assert (await adapter.store.read("alice")).state.blocked is True
+    assert (await adapter.store.read("bob")).state.blocked is False
+    service = scoped(adapter, PAST)
+    alice, bob = owners["alice"][0], owners["bob"][0]
+    with pytest.raises(QuotaError, match="requires reviewed reconciliation"):
+        await admit(service, alice, adapter.clock)
+    # Control: known history at its bound does not block the identical call.
+    assert (await admit(service, bob, adapter.clock, owner="bob")).phase == "reserved"
+    # The block outlives the scope's short retention of the overrun itself.
+    adapter.clock[0] = NOW + REQUEST_COUNT_REPLAY_SECONDS + MINUTE_SECONDS + 1
+    retained = await service.reconcile("alice")
+    assert retained.blocked is True and not retained.entries
+    with pytest.raises(QuotaError, match="requires reviewed reconciliation"):
+        await admit(service, alice, adapter.clock)
+    assert (await admit(service, bob, adapter.clock, owner="bob")).phase == "reserved"
 
 
 class NoNumericReads:

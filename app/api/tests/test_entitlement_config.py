@@ -73,3 +73,25 @@ def test_hard_mode_configuration_selects_one_exact_rollout_record(environment, e
     settings.validate_runtime()
     assert settings.hard_quota_rollout_id == "reviewed-request-count-1"
     assert make_settings().hard_quota_rollout_id == ""
+
+
+TOKEN_USD_DEFAULTS = (
+    "default_tokens_per_day", "default_cost_per_day_micro_usd",
+    "default_tokens_per_month", "default_cost_per_month_micro_usd",
+)
+
+
+@pytest.mark.parametrize("default", TOKEN_USD_DEFAULTS)
+def test_hard_mode_refuses_global_default_token_or_usd_caps(default):
+    enabled = dict(
+        env="dev", session_store="cosmos", **DEPLOYED, **ENTRA, **ROLLOUT, hard_quota_enabled=True,
+    )
+    # Every owner without an override would inherit this unenforceable cap.
+    with pytest.raises(RuntimeError, match="admits request counts only"):
+        make_settings(**enabled, **{default: 1000}).validate_runtime()
+    # Control: the identical configuration with all four defaults unset passes,
+    # as does a request-count default.
+    make_settings(**enabled, **{name: None for name in TOKEN_USD_DEFAULTS}).validate_runtime()
+    make_settings(**enabled, default_requests_per_minute=30).validate_runtime()
+    # Soft mode keeps accepting the same default caps.
+    make_settings(**{**enabled, "hard_quota_enabled": False}, **{default: 1000}).validate_runtime()

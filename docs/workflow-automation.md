@@ -223,8 +223,9 @@ recorded decisions, covering a crash between decision commit and event delivery.
 A crash after remote acceptance but before a durable result is genuinely
 unknown. The application cannot promise atomic exactly-once execution at a
 remote provider. It retains that uncertainty and does not resend the model/tool
-request to reconstruct an answer. Dispatched/unknown work does not expire into
-free overlap or request capacity.
+request to reconstruct an answer. Dispatched/unknown automation work does not
+expire into free overlap or request capacity; this is the automation ledger's own
+contract, independent of the hard-quota request-count settlement rules.
 
 Cancellation can race already in-flight work. The stop prevents future dispatch;
 late results may still add execution/usage evidence without reviving authority.

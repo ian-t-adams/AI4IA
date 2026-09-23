@@ -65,15 +65,19 @@ feature posture.
 **Atomic application admission is not a routine enablement switch.** The source
 implements bounded owner-scoped reservations and an existing-usage-partition
 Cosmos CAS adapter without a create/upsert path. No state is initialized merely
-because an owner authenticates. Activation is gated on an operator-authored
+because an owner authenticates; new sign-ups are refused until an operator
+bootstraps them. Activation is gated on an operator-authored
 `hard_quota_rollout_v1` record whose evidence the owner has approved. That covers
 a rehearsed drain of every non-enforcing replica, the create-only operator
 bootstrap of the cohort (including the deploy-canary identity), and the recovery
 and retention review. The scope is request-count only. Token/dollar caps refuse
-because final usage does not prove all proxy/APIM retry attempts, and hard durable
-workers refuse rather than replay ambiguously. A rollback to a non-enforcing
-revision ends the rollout. The local fake is not a distributed quota. See [the
-activation contract](../hard-quota-admission.md#request-count-activation-contract).
+because final usage does not prove all proxy/APIM retry attempts; global default
+token/USD caps refuse startup. Group-policy `spend` and execution-actor
+`restrictions.spend` limits stay **soft** policy restrictions: they are not
+hard-enforced and must not be presented as hard caps. Hard durable workers refuse
+rather than replay ambiguously, and the continuous canaries are unavailable. A
+rollback to a non-enforcing revision ends the rollout. The local fake is not a
+distributed quota. See [the activation contract](../hard-quota-admission.md#request-count-activation-contract).
 
 Numeric soft enforcement remains unchanged. The deliberate exception is that
 `AI4IA_ENTITLEMENTS_ENABLED=false` no longer enables an explicitly disabled user:

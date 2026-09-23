@@ -64,6 +64,11 @@ _DIRECT_MODEL_GATEWAY_HOST_SUFFIXES = (
     "azure-api.net",
 )
 _DIRECT_FOUNDRY_HOST_SUFFIXES = _DIRECT_MODEL_GATEWAY_HOST_SUFFIXES[:3]
+# Global default caps the request-count hard-admission scope cannot enforce.
+_DEFAULT_TOKEN_USD_CAPS = (
+    "default_tokens_per_day", "default_cost_per_day_micro_usd",
+    "default_tokens_per_month", "default_cost_per_month_micro_usd",
+)
 
 
 def _csv_items(
@@ -1264,6 +1269,15 @@ class Settings(BaseSettings):
                     raise RuntimeError(
                         "AI4IA_HARD_QUOTA_ROLLOUT_ID must identify an approved request-count "
                         "rollout record; runtime also checks its evidence and storage layout."
+                    )
+                if any(getattr(self, name) is not None for name in _DEFAULT_TOKEN_USD_CAPS):
+                    # Every owner without an override inherits these defaults, and the
+                    # request-count scope refuses all dispatch under a token/USD cap.
+                    raise RuntimeError(
+                        "AI4IA_HARD_QUOTA_ENABLED admits request counts only; unset "
+                        "AI4IA_DEFAULT_TOKENS_PER_DAY, AI4IA_DEFAULT_COST_PER_DAY_MICRO_USD, "
+                        "AI4IA_DEFAULT_TOKENS_PER_MONTH and AI4IA_DEFAULT_COST_PER_MONTH_MICRO_USD "
+                        "or every owner without an override is refused."
                     )
         if self.realtime_enabled:
             if not self.realtime_base_url or not self.realtime_gateway_api_key:
