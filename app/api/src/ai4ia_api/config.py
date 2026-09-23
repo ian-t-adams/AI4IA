@@ -64,6 +64,11 @@ _DIRECT_MODEL_GATEWAY_HOST_SUFFIXES = (
     "azure-api.net",
 )
 _DIRECT_FOUNDRY_HOST_SUFFIXES = _DIRECT_MODEL_GATEWAY_HOST_SUFFIXES[:3]
+# Global default caps the request-count hard-admission scope cannot enforce.
+_DEFAULT_TOKEN_USD_CAPS = (
+    "default_tokens_per_day", "default_cost_per_day_micro_usd",
+    "default_tokens_per_month", "default_cost_per_month_micro_usd",
+)
 
 
 def _csv_items(
@@ -254,9 +259,11 @@ class Settings(BaseSettings):
     group_policy_enabled: bool = False
     group_policy_json: str | None = None
     asset_publishing_enabled: bool = False
-    # Source-only hard admission. Durable cutover/bootstrap is not implemented:
-    # only explicitly seeded local/test coordination may be used.
+    # Default-off application admission. Outside the explicitly seeded local fake
+    # it requires the operator-authored ``hard_quota_rollout_v1`` record selected
+    # by ``hard_quota_rollout_id``; startup validates it and nothing creates it.
     hard_quota_enabled: bool = False
+    hard_quota_rollout_id: str = ""
     # TTL for the in-process effective-entitlement cache (keeps the unlimited hot
     # path off Cosmos; an admin change propagates within this window).
     entitlement_cache_ttl_seconds: int = 30
@@ -1271,12 +1278,31 @@ class Settings(BaseSettings):
         if self.hard_quota_enabled:
             if not self.usage_metering_enabled:
                 raise RuntimeError("Hard quota admission requires usage metering.")
-            if self.env != Environment.local or self.session_store != SessionStoreKind.memory:
-                raise RuntimeError(
-                    "AI4IA_HARD_QUOTA_ENABLED has no approved durable activation path. "
-                    "Reviewed bootstrap, retention and fleet cutover are still required; "
-                    "only explicitly seeded local/test coordination is supported."
-                )
+            local_fake = (
+                self.env == Environment.local and self.session_store == SessionStoreKind.memory
+            )
+            if not local_fake:
+                if self.session_store != SessionStoreKind.cosmos:
+                    raise RuntimeError(
+                        "AI4IA_HARD_QUOTA_ENABLED requires the Cosmos store; only explicitly "
+                        "seeded local test coordination may use memory."
+                    )
+                if self.env != Environment.local and self.auth_provider != AuthProviderKind.entra:
+                    raise RuntimeError("AI4IA_HARD_QUOTA_ENABLED requires Entra outside local.")
+                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", self.hard_quota_rollout_id):
+                    raise RuntimeError(
+                        "AI4IA_HARD_QUOTA_ROLLOUT_ID must identify an approved request-count "
+                        "rollout record; runtime also checks its evidence and storage layout."
+                    )
+                if any(getattr(self, name) is not None for name in _DEFAULT_TOKEN_USD_CAPS):
+                    # Every owner without an override inherits these defaults, and the
+                    # request-count scope refuses all dispatch under a token/USD cap.
+                    raise RuntimeError(
+                        "AI4IA_HARD_QUOTA_ENABLED admits request counts only; unset "
+                        "AI4IA_DEFAULT_TOKENS_PER_DAY, AI4IA_DEFAULT_COST_PER_DAY_MICRO_USD, "
+                        "AI4IA_DEFAULT_TOKENS_PER_MONTH and AI4IA_DEFAULT_COST_PER_MONTH_MICRO_USD "
+                        "or every owner without an override is refused."
+                    )
         if self.realtime_enabled:
             if not self.realtime_base_url or not self.realtime_gateway_api_key:
                 raise RuntimeError(

@@ -7,6 +7,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from email.utils import format_datetime
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from azure.core import MatchConditions
@@ -111,7 +112,10 @@ def contract(request):
         container = StatefulContainer(lambda: clock[0])
         container.seed(alice)
         container.seed(bob)
-        account = {"enableMultipleWriteLocations": False, "writableLocations": [{}]}
+        account = {
+            "enableMultipleWriteLocations": False, "writableLocations": [{}],
+            "consistencyPolicy": {"defaultConsistencyLevel": "Session"},
+        }
 
         async def read_account():
             return copy.deepcopy(account)
@@ -327,16 +331,170 @@ async def test_rolling_window_and_replay_retention_both_protect_terminal_record(
     assert await reserve(contract)
 
 
-async def test_bound_violation_is_accounted_and_blocks_future_admissions(contract):
-    record = await reserve(contract)
-    await contract["service"].dispatch("alice", record)
-    settled = await contract["service"].settle(
-        "alice", record, outcome="complete", actual=Amounts(tokens=11),
+@pytest.mark.parametrize("axis", ["tokens", "microUsd"])
+@pytest.mark.parametrize("bound,actual", [(0, 0), (0, 1), (10, 3), (10, 10), (10, 11)])
+async def test_bound_violation_is_accounted_and_blocks_future_admissions(
+    contract, axis, bound, actual,
+):
+    service, store = contract["service"], contract["store"]
+    candidate = dict(
+        payload={}, surface="chat", bounds=accounting_bounds(Amounts(**{axis: bound})),
+        limits=EntitlementLimits(**{
+            "tokensPerDay" if axis == "tokens" else "costPerDayMicroUsd": 1000,
+        }),
     )
-    assert settled.charged.tokens == 11
-    with pytest.raises(QuotaError, match="reconciliation"):
-        await reserve(contract)
-    assert await reserve(contract, owner="bob")
+    record = await service.reserve("alice", key=key(contract), **candidate)
+    await service.dispatch("alice", record)
+    settled = await service.settle(
+        "alice", record, outcome="complete", actual=Amounts(**{axis: actual}),
+    )
+    assert settled.phase == "settled" and getattr(settled.charged, axis) == actual
+    state = (await store.read("alice")).state
+    assert state.blocked is (actual > bound)
+    assert QuotaState.model_validate(
+        state_document(state), context={"persisted_quota": True},
+    ) == state
+    if actual > bound:
+        with pytest.raises(QuotaError, match="requires reviewed reconciliation"):
+            await service.reserve("alice", key=key(contract), **candidate)
+    else:
+        assert (await service.reserve("alice", key=key(contract), **candidate)).phase == "reserved"
+    assert (await service.reserve("bob", key=key(contract, "bob"), **candidate)).phase == "reserved"
+
+
+@pytest.mark.parametrize("axis", ["tokens", "microUsd"])
+@pytest.mark.parametrize("bound", [0, 10])
+async def test_known_bound_violation_cannot_serialize_an_unblocked_copy(contract, axis, bound):
+    service, store = contract["service"], contract["store"]
+    record = await service.reserve(
+        "alice", key=key(contract), payload={}, surface="chat",
+        bounds=accounting_bounds(Amounts(**{axis: bound})), limits=EntitlementLimits(),
+    )
+    await service.dispatch("alice", record)
+    await service.settle("alice", record, outcome="complete", actual=Amounts(**{axis: bound + 1}))
+    snapshot = await store.read("alice")
+    assert snapshot.state.blocked is True
+    assert QuotaState.model_validate(
+        state_document(snapshot.state), context={"persisted_quota": True},
+    ) == snapshot.state
+
+    malformed = snapshot.state.model_copy(update={"blocked": False})
+    document = malformed.model_dump(mode="json")
+    assert document == {**state_document(snapshot.state), "blocked": False}
+    with pytest.raises(ValidationError, match="bound violation"):
+        QuotaState(**document)
+    inject_accounting(contract, snapshot, malformed)
+    await assert_invalid_accounting(contract, snapshot, malformed)
+
+
+@pytest.mark.parametrize("axis", ["tokens", "microUsd"])
+@pytest.mark.parametrize("exceeded", [False, True], ids=["at-bound-control", "over-bound"])
+@pytest.mark.parametrize("transition,age", [
+    pytest.param("reserve", 0, id="reserve"),
+    pytest.param("dispatch", 0, id="dispatch"),
+    pytest.param("reconcile", 0, id="reconcile"),
+    pytest.param("reserve", MONTH_SECONDS * 2, id="reserve-after-retention"),
+    pytest.param("reconcile", MONTH_SECONDS * 2, id="reconcile-after-retention"),
+])
+async def test_unblocked_bound_violation_refuses_before_reconciliation(
+    contract, monkeypatch, axis, exceeded, transition, age,
+):
+    service, store = contract["service"], contract["store"]
+    candidate = dict(
+        payload={}, surface="chat", bounds=accounting_bounds(Amounts(**{axis: 10})),
+        limits=EntitlementLimits(**{
+            "tokensPerDay" if axis == "tokens" else "costPerDayMicroUsd": 1000,
+        }),
+    )
+    record = await service.reserve("alice", key=key(contract), **candidate)
+    pending = await service.reserve("alice", key=key(contract), **candidate)
+    await service.dispatch("alice", record)
+    await service.settle(
+        "alice", record, outcome="complete", actual=Amounts(**{axis: 11 if exceeded else 10}),
+    )
+    snapshot = await store.read("alice")
+    assert snapshot.state.blocked is exceeded
+    state = snapshot.state.model_copy(update={"blocked": False})
+    inject_accounting(contract, snapshot, state)
+    contract["clock"][0] += age
+    reconcile = Mock(wraps=service._reconcile)
+    replace = AsyncMock(wraps=store.replace)
+    monkeypatch.setattr(service, "_reconcile", reconcile)
+    monkeypatch.setattr(store, "replace", replace)
+
+    async def change():
+        if transition == "reserve":
+            return await service.reserve("alice", key=key(contract), **candidate)
+        if transition == "dispatch":
+            return await service.dispatch("alice", pending)
+        return await service.reconcile("alice")
+
+    if exceeded:
+        error = QuotaError if contract["container"] is not None else ValidationError
+        with pytest.raises(error) as caught:
+            await change()
+        if isinstance(caught.value, QuotaError):
+            assert caught.value.code == 503
+        reconcile.assert_not_called()
+        replace.assert_not_awaited()
+        await assert_invalid_accounting(contract, snapshot, state)
+    else:
+        result = await change()
+        reconcile.assert_called_once()
+        replace.assert_awaited_once()
+        retained = (await store.read("alice")).state
+        assert retained.blocked is False
+        if transition != "reconcile":
+            assert result.phase == ("reserved" if transition == "reserve" else "dispatched")
+            assert retained.entries[result.operationId] == result
+        if age:
+            assert record.operationId not in retained.entries
+        else:
+            assert retained.entries[record.operationId].charged == Amounts(**{axis: 10})
+        assert QuotaState.model_validate(
+            state_document(retained), context={"persisted_quota": True},
+        ) == retained
+
+
+@pytest.mark.parametrize("axis", ["tokens", "microUsd"])
+@pytest.mark.parametrize("actual", [None, 0, 10, 11])
+async def test_bound_violation_block_survives_late_accounting_and_pruning(contract, axis, actual):
+    service, store = contract["service"], contract["store"]
+    candidate = dict(
+        payload={}, surface="chat", bounds=accounting_bounds(Amounts(**{axis: 10})),
+        limits=EntitlementLimits(),
+    )
+    first = await service.reserve("alice", key=key(contract), **candidate)
+    late = await service.reserve("alice", key=key(contract), **candidate)
+    pending = await service.reserve("alice", key=key(contract), **candidate)
+    await service.dispatch("alice", first)
+    await service.dispatch("alice", late)
+    await service.settle("alice", first, outcome="complete", actual=Amounts(**{axis: 11}))
+    with pytest.raises(QuotaError, match="requires reviewed reconciliation"):
+        await service.dispatch("alice", pending)
+
+    contract["clock"][0] += MONTH_SECONDS * 2
+    usage = None if actual is None else Amounts(**{axis: actual})
+    settled = await service.settle("alice", late, outcome="complete", actual=usage)
+    assert settled.phase == ("unknown" if actual is None else "settled")
+    assert getattr(settled.charged, axis) == (10 if actual is None else actual)
+    assert await service.settle("alice", late, outcome="complete", actual=usage) == settled
+    state = (await store.read("alice")).state
+    assert first.operationId not in state.entries and state.blocked is True
+    assert state.entries[pending.operationId].phase == "released"
+
+    contract["clock"][0] += MONTH_SECONDS * 2
+    retained = await service.reconcile("alice")
+    assert retained.entries == ({late.operationId: settled} if actual is None else {})
+    assert retained.blocked is True
+    assert QuotaState.model_validate(
+        state_document(retained), context={"persisted_quota": True},
+    ) == retained
+    with pytest.raises(QuotaError, match="requires reviewed reconciliation"):
+        await service.reserve("alice", key=key(contract), **candidate)
+    other = await service.reserve("bob", key=key(contract, "bob"), **candidate)
+    assert (await service.dispatch("bob", other)).phase == "dispatched"
+    assert (await store.read("bob")).state.blocked is False
 
 
 async def test_unknown_meter_is_refused_only_under_corresponding_cap(contract):
@@ -377,25 +535,39 @@ async def test_cosmos_layout_and_etag_fail_closed_with_same_store_control(contra
     container = contract["container"]
     if container is None:
         return
+    account = contract["account"]
     for mutate, restore in (
-        (lambda: contract["account"].update(enableMultipleWriteLocations=True),
-         lambda: contract["account"].update(enableMultipleWriteLocations=False)),
+        (lambda: account.update(enableMultipleWriteLocations=True),
+         lambda: account.update(enableMultipleWriteLocations=False)),
+        (lambda: account["writableLocations"].append({}),
+         lambda: account["writableLocations"].pop()),
+        (lambda: account["consistencyPolicy"].update(defaultConsistencyLevel="Eventual"),
+         lambda: account["consistencyPolicy"].update(defaultConsistencyLevel="Session")),
         (lambda: container.layout.update(defaultTtl=60),
          lambda: container.layout.pop("defaultTtl")),
+        (lambda: container.layout.update(analyticalStorageTtl=-1),
+         lambda: container.layout.pop("analyticalStorageTtl")),
+        # A Boolean equals 0 in Python; it is not the disabled analytical sentinel.
+        (lambda: container.layout.update(analyticalStorageTtl=False),
+         lambda: container.layout.pop("analyticalStorageTtl")),
         (lambda: container.layout["partitionKey"].update(paths=["/sessionId"]),
          lambda: container.layout["partitionKey"].update(paths=["/userId"])),
     ):
         mutate()
-        with pytest.raises(QuotaError):
-            await reserve(contract)
+        # Unlimited policy: a refusal here can only come from the layout guard.
+        with pytest.raises(QuotaError, match="Session-consistency|partition or retention"):
+            await reserve(contract, limits=EntitlementLimits())
         restore()
-        assert await reserve(contract)
+        assert await reserve(contract, limits=EntitlementLimits())
+    # The explicit non-expiring and disabled-analytical sentinels are compatible.
+    container.layout.update(defaultTtl=-1, analyticalStorageTtl=0)
+    assert await reserve(contract, limits=EntitlementLimits())
     raw = container.rows[("alice", STATE_ID)]
     etag = raw.pop("_etag")
     with pytest.raises(QuotaError, match="ETag"):
-        await reserve(contract)
+        await reserve(contract, limits=EntitlementLimits())
     raw["_etag"] = etag
-    assert await reserve(contract)
+    assert await reserve(contract, limits=EntitlementLimits())
 
 
 async def test_lost_dispatch_ack_cannot_allow_a_retry_to_dispatch_twice(contract):
@@ -658,6 +830,14 @@ async def test_known_usage_ages_but_true_unknown_retains_each_meter(
     pytest.param(Amounts(), Amounts(), "settled", id="request-only"),
     pytest.param(Amounts(), Amounts(tokens=3, microUsd=3), "settled", id="unbounded-measurements"),
     pytest.param(
+        Amounts(tokens=10), Amounts(tokens=3, microUsd=11), "settled",
+        id="unbounded-dollar-measurement",
+    ),
+    pytest.param(
+        Amounts(microUsd=10), Amounts(tokens=11, microUsd=3), "settled",
+        id="unbounded-token-measurement",
+    ),
+    pytest.param(
         Amounts(tokens=0, microUsd=0), Amounts.zero(), "settled", id="measured-zero",
     ),
     pytest.param(
@@ -672,6 +852,12 @@ async def test_known_usage_ages_but_true_unknown_retains_each_meter(
     ),
     pytest.param(
         Amounts(tokens=10, microUsd=10), Amounts(microUsd=3), "unknown", id="partial-dollars",
+    ),
+    pytest.param(
+        Amounts(tokens=10, microUsd=10), Amounts(tokens=11), "unknown", id="partial-over-tokens",
+    ),
+    pytest.param(
+        Amounts(tokens=10, microUsd=10), Amounts(microUsd=11), "unknown", id="partial-over-dollars",
     ),
 ])
 @pytest.mark.parametrize("surface", ["chat", "compute"])
@@ -703,6 +889,7 @@ async def test_settlement_completeness_preserves_valid_axes_and_attempt_counts(
         contract["clock"][0] += MONTH_SECONDS * 2
     assert await service.settle("alice", record, outcome="complete", actual=actual) == settled
     state = (await store.read("alice")).state
+    assert state.blocked is False
     assert QuotaState.model_validate(
         state_document(state), context={"persisted_quota": True},
     ) == state

@@ -265,7 +265,12 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn('body.Remove("auto_aspect_ratio")', body)
 
     def test_sora_uses_catalog_owned_v1_video_operation(self) -> None:
+        # The shipped row is runtime-disabled, so the positive control flips only
+        # that flag on the same document: route shape is still catalog-owned.
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        row = next(model for model in models["catalog"] if model["name"] == "sora-2")
+        self.assertIs(row["runtimeEnabled"], False)
+        row["runtimeEnabled"] = True
         blocks, _ = gateway_generator.render_catalog(models)
         sora = [
             block
@@ -283,6 +288,39 @@ class GatewayPolicyTests(unittest.TestCase):
             priority,
         )
         self.assertIn('&quot;/videos&quot;', priority)
+
+    def test_runtime_disabled_rows_keep_inventory_but_get_no_http_route(self) -> None:
+        source = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        row = next(model for model in source["catalog"] if model["name"] == "sora-2")
+        self.assertIs(row["runtimeEnabled"], False)
+        # Runtime disablement is not deletion: the desired deployments remain.
+        self.assertEqual(
+            [(d["region"], d["sku"]) for d in row["deployments"]],
+            [("eastus2", "GlobalStandard"), ("swedencentral", "GlobalStandard")],
+        )
+        for enabled in (False, True):
+            with self.subTest(runtimeEnabled=enabled):
+                models = json.loads(json.dumps(source))
+                target = next(m for m in models["catalog"] if m["name"] == "sora-2")
+                if enabled:
+                    del target["runtimeEnabled"]
+                blocks, _ = gateway_generator.render_catalog(models)
+                routes = [block for block in blocks if 'new JProperty("sora-2-' in block]
+                self.assertEqual(len(routes), 2 if enabled else 0)
+                self.assertTrue(any('new JProperty("gpt-5.4-' in block for block in blocks))
+        shards = "".join(
+            path.read_text(encoding="utf-8")
+            for path in gateway_generator.CATALOG_OUTPUT_PATHS
+        )
+        self.assertNotIn("sora-2-", shards)
+
+    def test_runtime_enabled_must_be_a_boolean(self) -> None:
+        for value in ("false", 0, 1, None, "true"):
+            with self.subTest(value=value):
+                models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+                next(m for m in models["catalog"] if m["name"] == "sora-2")["runtimeEnabled"] = value
+                with self.assertRaisesRegex(ValueError, "runtimeEnabled must be a Boolean"):
+                    gateway_generator.render_catalog(models)
 
     def test_retry_loop_preserves_request_local_throttle_state(self) -> None:
         root = ElementTree.parse(gateway_generator.PRIORITY_POLICY_PATH).getroot()
@@ -474,6 +512,64 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertGreater(
             multi, 0, "no GlobalStandard deployment has a cross-region failover left"
         )
+
+    def test_new_ga_rows_route_through_residency_preserving_openai_backends(self) -> None:
+        """The 2026-09 GA rows reach their own regional deployment first.
+
+        From the same generated catalog, GlobalStandard keeps its cross-region
+        failover while DataZoneStandard stays on its single in-zone deployment.
+        """
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        naming = models["naming"]
+        blocks, _ = gateway_generator.render_catalog(models)
+        by_key = {}
+        for block in blocks:
+            key = re.search(r'new JProperty\("([^"]+)", new JObject', block)
+            assert key is not None
+            by_key[key.group(1)] = block
+        timeouts = {
+            "gpt-6-sol": "120", "gpt-6-luna": "120", "gpt-5.5": "120",
+            "gpt-image-2.5-flare": "240", "gpt-image-2.5-sunburst": "240",
+        }
+        checked = {"GlobalStandard": 0, "DataZoneStandard": 0}
+        for model in models["catalog"]:
+            if model["name"] not in timeouts:
+                continue
+            global_regions = {
+                row["region"] for row in model["deployments"] if row["sku"] == "GlobalStandard"
+            }
+            for deployment in model["deployments"]:
+                region = deployment["region"]
+                name = gateway_generator.deployment_name(
+                    model=model["name"], subscription_token=naming["subscriptionToken"],
+                    region=region, sku=deployment["sku"], sku_short=naming["skuShort"],
+                )
+                block = by_key[name.lower()]
+                backends = re.findall(r'new JProperty\("deployment", "([^"]+)"\)', block)
+                urls = re.findall(r'new JProperty\("url", "([^"]+)"\)', block)
+                priorities = re.findall(r'new JProperty\("priority", (\d+)\)', block)
+                self.assertEqual((backends[0], urls[0], priorities[0]), (
+                    name, f"{{{{foundry-{region}-endpoint}}}}", "1",
+                ))
+                paths = re.findall(r'new JProperty\("path", "([^"]+)"\)', block)
+                self.assertEqual(paths, ["openai"] * len(backends))
+                self.assertNotIn('new JProperty("operation"', block)
+                self.assertEqual(
+                    set(re.findall(r'new JProperty\("timeout", (\d+)\)', block)),
+                    {timeouts[model["name"]]},
+                )
+                if deployment["sku"] == "GlobalStandard" and len(global_regions) > 1:
+                    # Multi-region GlobalStandard rows fail over to the other region.
+                    self.assertEqual(len(backends), 2, name)
+                    self.assertEqual(priorities, ["1", "2"])
+                    self.assertNotEqual(urls[1], urls[0])
+                else:
+                    # Data Zone rows, and GlobalStandard models deployed in one region
+                    # (gpt-image-2.5 fits only one replica in its shared global quota),
+                    # route to their own deployment only; no route is invented.
+                    self.assertEqual(backends, [name])
+                checked[deployment["sku"]] += 1
+        self.assertEqual(checked, {"GlobalStandard": 8, "DataZoneStandard": 6})
 
     def test_policy_fragments_normalize_crlf_before_hashing_and_storage(
         self,
@@ -824,7 +920,10 @@ class GatewayPolicyTests(unittest.TestCase):
             for path in gateway_generator.CATALOG_OUTPUT_PATHS
         )
         naming = models["naming"]
+        disabled = 0
         for model in models["catalog"]:
+            enabled = gateway_generator.runtime_enabled(model)
+            disabled += not enabled
             for deployment in model["deployments"]:
                 name = gateway_generator.deployment_name(
                     model=model["name"],
@@ -833,13 +932,15 @@ class GatewayPolicyTests(unittest.TestCase):
                     sku=deployment["sku"],
                     sku_short=naming["skuShort"],
                 )
-                if not model.get("runtimeEnabled", True):
-                    self.assertNotIn(name, fragment)
+                if not enabled:
+                    # Runtime-disabled inventory keeps its deployments but no route.
+                    self.assertNotIn(name.lower(), fragment.lower())
                     continue
                 self.assertIn(name, fragment)
                 self.assertIn(
                     f"{{{{foundry-{deployment['region']}-endpoint}}}}", fragment
                 )
+        self.assertGreater(disabled, 0)
 
     def test_retry_contract_and_regional_rewrite_are_present(self) -> None:
         policy = (

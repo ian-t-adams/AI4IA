@@ -113,6 +113,9 @@ class ModelEntry(BaseModel):
     displayName: str
     category: str
     format: str
+    # ``infra/models.json`` ``runtimeEnabled``: false keeps the row in desired
+    # inventory (its deployments still exist) but leaves it with no eligible
+    # options, so nothing selects, advertises or routes to it at runtime.
     runtimeEnabled: StrictBool = True
     # Which provider surface serves this model: "chat" (Chat Completions, the
     # default), "responses" (gpt-6-astra/gpt-5.4-pro/gpt-5.3-codex),
@@ -151,6 +154,7 @@ class ModelEntry(BaseModel):
         result = handler(self)
         for key, default in (
             ("deploymentTarget", "source"), ("samplingSupported", None), ("anthropicThinking", None),
+            ("runtimeEnabled", True),
         ):
             if result.get(key) == default:
                 result.pop(key, None)
@@ -182,22 +186,21 @@ class ModelEntry(BaseModel):
         return self
 
     def supports_realtime_protocol(self, protocol: str) -> bool:
-        return self.runtimeEnabled and (
-            self.requiredRealtimeProtocol is None or self.requiredRealtimeProtocol == protocol
-        )
+        return self.requiredRealtimeProtocol is None or self.requiredRealtimeProtocol == protocol
 
     @computed_field
     @property
     def conversational(self) -> bool:
-        """Whether this model is offered in the chat/agent model pickers.
+        """Whether this model belongs in the chat/agent category.
 
         True for text-chat categories (chat, reasoning, router, …); False for
         capability models (image, video, tts, transcription, embedding, rerank)
         and voice models (realtime, audio), which are reached through their own
         surfaces/tools rather than selected as a raw chat target. Serialized so
         the web app can filter the dropdowns from the same source of truth.
+        Runtime availability is separate, so disabled metadata retains its traits.
         """
-        return self.runtimeEnabled and self.category in CONVERSATIONAL_CATEGORIES
+        return self.category in CONVERSATIONAL_CATEGORIES
 
 
     @computed_field
@@ -253,7 +256,8 @@ class ModelCatalog(BaseModel):
     residencyPolicy: str = GLOBAL_RESIDENCY
 
     def get(self, model_id: str) -> ModelEntry | None:
-        return next((m for m in self.models if m.id == model_id and m.runtimeEnabled), None)
+        """Look up metadata, including disabled rows; eligibility governs serving."""
+        return next((m for m in self.models if m.id == model_id), None)
 
     def for_deployment(self, deployment: str) -> ModelEntry | None:
         """Retain disabled profiles so adaptation cannot fall back to provider defaults."""
@@ -265,17 +269,24 @@ class ModelCatalog(BaseModel):
     def eligible_options(
         self, entry: ModelEntry, *, policy_filter: bool = True,
     ) -> list[DeploymentOption]:
-        """Runtime-enabled, residency-compliant options, optionally filtered by actor."""
+        """This model's deployments that are usable under the active policy.
+
+        A runtime-disabled model has none, whatever the policy: that single
+        answer is what keeps ``available``, ``resolve_deployment``, the model
+        listing and every capability predicate in agreement.
+        """
         from .policy.context import model_allowed
 
+        if not entry.runtimeEnabled:
+            return []
         return [
             o for o in entry.options
-            if entry.runtimeEnabled and o.satisfies(self.residencyPolicy)
+            if o.satisfies(self.residencyPolicy)
             and (not policy_filter or model_allowed(entry.category, o))
         ]
 
     def available(self, entry: ModelEntry) -> bool:
-        """Whether the policy leaves this model reachable at all."""
+        """Whether runtime enablement and policy leave this model reachable at all."""
         return bool(self.eligible_options(entry))
 
     def conversational_models(self) -> list[ModelEntry]:

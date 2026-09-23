@@ -213,7 +213,7 @@ def test_runtime_rejects_malformed_protocol_requirements(patch):
         ModelEntry.model_validate({**entry.model_dump(), **patch})
 
 
-def test_disabled_inventory_has_no_runtime_lookup_routing_or_tools():
+def test_disabled_inventory_retains_metadata_without_runtime_routing_or_tools():
     source = load_catalog().get("gpt-5.2")
     assert source is not None
     entry = source.model_copy(deep=True)
@@ -223,13 +223,14 @@ def test_disabled_inventory_has_no_runtime_lookup_routing_or_tools():
     assert entry in catalog.conversational_models()
     assert entry.supportsTools
     entry.runtimeEnabled = False
-    assert catalog.get(entry.id) is None
+    assert catalog.get(entry.id) is entry
     assert catalog.resolve_deployment(entry.id) is None
     assert catalog.eligible_options(entry) == []
     assert not catalog.available(entry)
     assert catalog.conversational_models() == []
-    assert not entry.conversational and not entry.supportsTools
-    assert not entry.supports_realtime_protocol("ga")
+    # Metadata keeps its intrinsic traits; eligibility alone withdraws serving.
+    assert entry.conversational and entry.supportsTools
+    assert entry.supports_realtime_protocol("ga")
     assert entry in catalog.models  # Retained desired metadata is not deleted.
 
 

@@ -17,6 +17,7 @@ from tests.test_video_tool import (
     _client as video_client,
     _service as video_service,
 )
+from tests.video_catalog import video_catalog_path
 
 
 def _catalog(category: str) -> ModelCatalog:
@@ -47,8 +48,10 @@ def test_implicit_voice_default_skips_disabled_inventory_without_replacing_expli
 
 
 @pytest.mark.parametrize("category", ["image", "video"])
-def test_media_service_defaults_and_tool_advertisements_share_runtime_availability(category):
-    client = image_client() if category == "image" else video_client()
+def test_media_service_defaults_and_tool_advertisements_share_runtime_availability(category, tmp_path):
+    client = image_client() if category == "image" else video_client(
+        video_catalog_path(tmp_path, runtime_enabled=True)
+    )
     try:
         catalog = _catalog(category)
         first, second = catalog.models

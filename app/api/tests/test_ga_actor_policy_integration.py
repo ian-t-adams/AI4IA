@@ -257,7 +257,7 @@ def test_actor_category_reduction_cannot_erase_published_ga_source_requirements(
     offered = client.get("/api/models", headers=auth)
     assert offered.status_code == 200, offered.text
     row = next(row for row in offered.json()["models"] if row["id"] == model_id)
-    assert row["runtimeEnabled"] is True and row["requiredRealtimeProtocol"] == "ga"
+    assert row.get("runtimeEnabled", True) is True and row["requiredRealtimeProtocol"] == "ga"
     assert {row["category"] for row in offered.json()["models"]} == {"realtime"}
     setup_exchange(client, bearer, model_id, session=session, allowed=False)
     _, version = asyncio.run(state.publications._version(reference))

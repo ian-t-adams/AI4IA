@@ -49,9 +49,18 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
 2. **Catalog-driven models.** Do not hardcode deployment names or model lists.
    `infra/models.json` is the source of truth; generated runtime catalog data must
    match it. `runtimeEnabled` is a strict optional Boolean, default true: false
-   retains desired infrastructure/allocation/retirement inventory but forbids new
-   runtime lookups, selection and HTTP/realtime serving routes. Never interpret
-   runtime disablement as physical deletion or free quota.
+   retains the row's desired deployments, capacity and retirement inventory but
+   leaves it with no eligible options, so listings, deployment resolution and
+   capability availability exclude it. `get()` and `for_deployment()` retain
+   historical metadata; a lookup is not runtime admission. New selections must
+   use `available`, `eligible_options` or `resolve_deployment`, whose shared
+   eligibility gate refuses disabled rows even without actor filtering.
+   Generated HTTP, preview/GA realtime routes, default realtime selection and
+   voice-provider projections all honor disablement.
+   Never interpret runtime disablement as physical deletion or free quota. Every
+   seam offering a capability backed by such a model shares one availability
+   predicate and still re-checks at execution (video:
+   `app/api/src/ai4ia_api/videos/availability.py`).
 3. **Server-authoritative feature gates.** The web app may hide UI, but the API
    and startup validation must enforce feature posture. Never gate only in React.
 4. **Cosmos is canonical.** Sessions, messages, usage, user agents/workflows, MCP
@@ -114,15 +123,32 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    path unchanged. Keep them compact and public; never weaken credential
    redaction to preserve an overlong, token-shaped version identifier.
 8. **Hard admission is a separate, default-off source contract.** Do not turn
-   soft ledger checks into a distributed quota or bootstrap an empty hard
-   balance for an existing owner. Metered egress goes through the shared owner
-   admission seam; unknown/unpriced capped paths refuse. Dispatched/unknown
-   reservations never expire into free capacity. Reject incomplete persisted
-   accounting before construction defaults and
+   soft ledger checks into a distributed quota or bootstrap an admissible empty
+   hard balance for an existing owner. Metered egress goes through the shared owner
+   admission seam; unknown/unpriced capped paths refuse. `dispatched` and
+   `unknown`-phase reservations are never pruned and never expire. Reject incomplete persisted
+   accounting before construction defaults and require a blocked owner when
+   retained known charges exceed their frozen token/dollar bounds. Preserve that
+   block through pruning without preventing accepted-work accounting, and
    reserve serialization space for all outstanding dispatch/settlement transitions.
-   Deployed activation remains
-   blocked pending the boundaries in `docs/hard-quota-admission.md`; neither an
-   acknowledgement flag nor a local fake proves a Cosmos cutover or bill cap.
+   Outside the explicitly seeded local fake, the Cosmos store exists only after
+   the exactly selected `hard_quota_rollout_v1` record (usage container control
+   partition, id `AI4IA_HARD_QUOTA_ROLLOUT_ID`) and the single-write Session/no-TTL
+   layout validate at startup; failures refuse startup, never fall back. That
+   request-count scope refuses token/USD caps and bounds (global default token/USD
+   caps refuse startup), and treats any capped window reaching before
+   `max(document validAfter, coverageStart)` as consumed, which is why a bootstrapped
+   document is not an admissible empty balance. Soft rows are never imported as
+   counts. Only that scope settles a terminal request-only record at its full frozen
+   bound, preserving its outcome; that record then ages with its window. The
+   digest-approved operator `resolve` path charges a `dispatched` hold's full bound
+   from the resolution time. Owner documents come only from the create-only,
+   digest-approved operator `bootstrap`; absent documents refuse. Group-policy
+   `spend` and execution-actor `restrictions.spend` limits stay soft policy
+   restrictions under the scope; never present them as hard caps. The app never
+   authors the rollout record, and a non-enforcing writer after `coverageStart`
+   ends the rollout. Neither an acknowledgement flag nor a local fake proves a Cosmos
+   cutover or bill cap; see `docs/hard-quota-admission.md` before changing activation.
    `gateway.attempts` is a default-absent, reduction-only one-attempt source
    contract, not activation authority. Only an exact, fresh server-verified
    gateway capability may prepare a request-bound envelope before admission.
@@ -712,7 +738,10 @@ call. Its behavioral tests must record stub calls even while preview mode is on.
 
 Runtime media gates must be explicit Booleans, not inferred from artifact-store
 construction or Blob URLs. Enabled image/video generation outside local requires
-durable storage. Regional batch metrics must follow each resource's location;
+durable storage. `generate_video` additionally needs a runtime-enabled video
+model. Retire video through `runtimeEnabled`, not the flag: `api.bicep` emits the
+video Blob settings only while the flag is on, and those settings serve existing
+clips. Regional batch metrics must follow each resource's location;
 Search may differ from the API/Cosmos region. Preprovision naming validation
 preserves the full uniqueness suffix without renaming existing resources.
 
@@ -816,6 +845,19 @@ Retain their disabled/enabled and protocol controls: a preselected fake backend
 does not prove the generated runtime gate. Generated backend fragments omit only
 parser-identified XML comment nodes to fit the unchanged 48 KiB compiler ceiling;
 authored comments and C# bytes stay intact.
+
+Throttle-failover controls drive the generated two-region GlobalStandard row. A
+429/5xx must mark the failed backend's `throttleId` (endpoint + region label +
+deployment) in the `throttleState` its expression returns and caches, so the retry
+reaches the other region and later requests skip only that deployment in that
+region. `affinity` stays the endpoint + label id for request affinity; isolation
+controls keep a same-region neighbor routable, and single-region and attempts-v1
+controls keep one attempt. Marks are best effort: one cache entry per API, last
+writer wins across concurrent requests, expiring 60 s after its last write.
+Newtonsoft clones a parented `JToken` inserted into another container, so write to
+the returned object. The harness projects the default `prefer-external` cache as
+the built-in cache, copying values on store and lookup; APIM's shared cache never
+aliases a request variable.
 
 When a proxy project dependency changes, refresh from the top-level test project
 with `dotnet restore ... --force-evaluate`. NuGet does not recalculate
@@ -1130,6 +1172,12 @@ Model deployment `capacity` is the portable baseline. Optional `maxCapacity` val
 are subscription-specific output from `scripts/sync-model-capacity.py`; never
 hand-copy portal bars or set every regional deployment to the same global limit.
 Bicep uses them only when `AI4IA_MODEL_CAPACITY_PROFILE=maximum`.
+A GlobalStandard usage counter reported with the same limit in every region is
+often one subscription-wide pool, not per-region headroom: `gpt-image-2.5-*`
+has a single 2-unit pool, so its eastus2 replica consumed it and the swedencentral
+replica failed provisioning with `InsufficientQuota`. Size new GlobalStandard
+baselines so their sum across regions fits the smallest proven pool, or deploy one
+region; a region-by-region "0 of N free" read does not prove the sum fits.
 
 The optional `productionCapacityPolicy` and per-deployment `production` fields
 are owner decisions, not generated defaults. `production-capacity-v1` requires

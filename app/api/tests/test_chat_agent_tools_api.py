@@ -72,6 +72,7 @@ class ParamCaptureGateway:
         self.params: list[dict] = []
         self.apis: list[str] = []
         self.messages: list[list[dict]] = []
+        self.deployments: list[str] = []
 
     async def complete(
         self, *, deployment, messages, params=None, correlation_id=None, api="chat"
@@ -79,6 +80,7 @@ class ParamCaptureGateway:
         self.params.append(dict(params or {}))
         self.apis.append(api)
         self.messages.append([dict(message) for message in messages])
+        self.deployments.append(deployment)
         return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
 
 
@@ -293,7 +295,9 @@ def test_tool_enabled_agent_runs_tool_and_persists_answer(client):
     assert messages[1]["agent"] == "analyst"
 
 
-@pytest.mark.parametrize("model_id", ["gpt-5.6-sol", "gpt-6-astra"])
+@pytest.mark.parametrize(
+    "model_id", ["gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.5"],
+)
 def test_new_gpt_tool_turn_uses_responses_and_keeps_reasoning_effort(client, model_id):
     gateway = ParamCaptureGateway()
     client.app.state.gateway = gateway
@@ -321,6 +325,10 @@ def test_new_gpt_tool_turn_uses_responses_and_keeps_reasoning_effort(client, mod
     assert gateway.params[0]["tools"]
     assert gateway.params[0]["reasoning_effort"] == "xhigh"
     assert gateway.apis == ["responses"]
+    expected = client.app.state.catalog.resolve_deployment(model_id)
+    assert expected is not None
+    assert gateway.deployments == [expected.deploymentName]
+    assert expected.deploymentName.startswith(f"{model_id}-")
 
 
 def test_tool_compatible_reasoning_effort_is_preserved(client):

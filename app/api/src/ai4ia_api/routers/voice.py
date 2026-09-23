@@ -152,10 +152,10 @@ def _resolve_model(
             )
         model_id = first.id
     entry = catalog.get(model_id)
-    if entry is None:
+    if entry is None or not catalog.available(entry):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unknown model: {model_id}",
+            detail=f"Unknown or unavailable model: {model_id}",
         )
     if entry.category not in categories:
         raise HTTPException(

@@ -201,7 +201,7 @@ retiring a fully settled, delivered, inactive run; it never retires unresolved
 money. Selection and validation use the same invocation-key timestamp, not a
 later run creation time. A valid unrelated admission is not blocked by an
 ineligible historical row. New per-run accounting does not enroll old histories, bootstrap an owner
-hard balance, or relax the separate hard-quota durable/nonlocal refusals.
+hard balance, or relax the separate hard-quota durable-execution and token/USD refusals.
 
 This ledger and quote engine do not by themselves complete all monetary
 coverage. A verified shipping attempt integration is still required, and
@@ -223,8 +223,9 @@ recorded decisions, covering a crash between decision commit and event delivery.
 A crash after remote acceptance but before a durable result is genuinely
 unknown. The application cannot promise atomic exactly-once execution at a
 remote provider. It retains that uncertainty and does not resend the model/tool
-request to reconstruct an answer. Dispatched/unknown work does not expire into
-free overlap or request capacity.
+request to reconstruct an answer. Dispatched/unknown automation work does not
+expire into free overlap or request capacity; this is the automation ledger's own
+contract, independent of the hard-quota request-count settlement rules.
 
 Cancellation can race already in-flight work. The stop prevents future dispatch;
 late results may still add execution/usage evidence without reviving authority.

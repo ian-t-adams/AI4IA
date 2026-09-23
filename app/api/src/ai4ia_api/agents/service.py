@@ -289,8 +289,12 @@ class AgentService:
                 f"System prompt must be at most {MAX_SYSTEM_PROMPT_LEN} characters."
             )
         model = (default_model or "").strip() or None
-        if model is not None and self._catalog.get(model) is None:
-            raise AgentValidationError(f"Unknown model: {model}.")
+        if model is not None:
+            entry = self._catalog.get(model)
+            if entry is None:
+                raise AgentValidationError(f"Unknown model: {model}.")
+            if not self._catalog.available(entry):
+                raise AgentValidationError(f"Model '{model}' is unavailable.")
         clean_tools = self._validate_tools(tools, mcp_tool_names)
         clean_links = self._validate_links(name, links)
 

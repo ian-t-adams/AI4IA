@@ -2,22 +2,33 @@
 =============================================================================
 Azure API Policy Template
 =============================================================================
-Version:	 3.0.1
+Version:	 3.0.2
 Mode:	 Standard
-Updated:	 2026-09-06
+Updated:	 2026-09-23
  
 KEY CHANGES:
 
 IMPROVEMENTS:
 - Return 429 "No Backends Available" instead of a bare 500 when all backends are throttled
 - on-error logs entry diagnostics (callCompleted, backendIndex, LastError)
-- Backend id now hashes url + label, giving each label independent throttle state.
+- Backend affinity hashes url + label; throttle marks use a separate throttleId
+  that also hashes the deployment, so each deployment in each region has
+  independent throttle state.
 - Managed Identity token audience is resolved per model
 
 BUG FIXES:
 - Fixed cross-model backend mix-up caused by caching the whole backend list per API.
 - Immediate retries retain request-local throttle state instead of replacing it
   with an eventually-consistent cache read and selecting the failed region again.
+- A temporary-error reply (429, 408, 5xx or context-length 400) now marks the
+  backend in the throttle state the expression returns and caches. It previously
+  wrote to a parented map that Newtonsoft had cloned, so retries reused the
+  failed region and no later request remembered the throttle.
+- Throttle marks are keyed by throttleId instead of the regional affinity id.
+  Quotas and rate limits are per deployment, so one deployment's 429, 5xx or
+  timeout no longer parks every model on that regional endpoint. Marks stay
+  best effort: one cache entry per API, last writer wins across concurrent
+  requests, and the entry expires 60 s after its last write.
 - Debug output now uses the configured priority header name.
 - limit-concurrency is now keyed per backend instead of a shared key.
 - Outbound affinity header no longer throws when no backend was selected.
@@ -160,7 +171,9 @@ REFACTOR:
 				</return-response>
 			</when>
 		</choose>
-		<!-- Load the shared throttle state (backend id -> wakeAt) and overlay it onto the list -->
+		<!-- Load the shared throttle state (throttleId -> wakeAt) and overlay it onto the list.
+		     throttleId names one deployment in one region; affinity stays the regional
+		     request-affinity id, so one deployment's throttle never parks its neighbors. -->
 		<cache-lookup-value key="@(&quot;throttle-&quot; + context.Api.Id)" variable-name="throttleState" />
 		<set-variable name="throttleState" value="@{
 			JObject loaded = context.Variables.GetValueOrDefault&lt;JObject>(&quot;throttleState&quot;, null);
@@ -175,7 +188,7 @@ REFACTOR:
 			JObject state = (JObject)((JObject)context.Variables[&quot;throttleState&quot;])[&quot;backends&quot;];
 			DateTime now = DateTime.UtcNow;
 			foreach (JObject b in backends) {
-				DateTime wakeAt = state.Value&lt;DateTime?>(b.Value&lt;string>(&quot;affinity&quot;)) ?? DateTime.MinValue;
+				DateTime wakeAt = state.Value&lt;DateTime?>(b.Value&lt;string>(&quot;throttleId&quot;)) ?? DateTime.MinValue;
 				bool isThrottling = wakeAt > now;
 				b[&quot;isThrottling&quot;] = isThrottling;
 				b[&quot;retryAfter&quot;] = isThrottling ? wakeAt : DateTime.MinValue;
@@ -298,7 +311,7 @@ REFACTOR:
 				JObject state = (JObject)((JObject)context.Variables[&quot;throttleState&quot;])[&quot;backends&quot;];
 				DateTime now = DateTime.UtcNow;
 				foreach (JObject b in backends) {
-					DateTime wakeAt = state.Value&lt;DateTime?>(b.Value&lt;string>(&quot;affinity&quot;)) ?? DateTime.MinValue;
+					DateTime wakeAt = state.Value&lt;DateTime?>(b.Value&lt;string>(&quot;throttleId&quot;)) ?? DateTime.MinValue;
 					bool isThrottling = wakeAt > now;
 					b[&quot;isThrottling&quot;] = isThrottling;
 					b[&quot;retryAfter&quot;] = isThrottling ? wakeAt : DateTime.MinValue;
@@ -355,7 +368,7 @@ REFACTOR:
 				var requestTimeout = backend.Value&lt;int>(&quot;timeout&quot;);
 				bool likelyTimeout = deltaSeconds >= (requestTimeout * 0.9);
 				string label = backend.Value&lt;string>(&quot;label&quot;);
-				string id = backend.Value&lt;string>(&quot;affinity&quot;);
+				string id = backend.Value&lt;string>(&quot;throttleId&quot;);
 
 				if ( callCompleted ) {
 					return lastStatusCode == 200 ? 0 : 1;
@@ -881,7 +894,7 @@ REFACTOR:
 
 			<!-- Throttle the backend only for signals that say the BACKEND is unhealthy.
 			     A malformed 400 says the REQUEST is wrong, so it must not park a healthy
-			     backend for 10s and degrade every other caller in the region. -->
+			     deployment for 10s and degrade every other caller of it. -->
 			<choose>
 				<when condition="@(context.Variables.GetValueOrDefault&lt;int>(&quot;backendIndex&quot;, -1) > -1 &amp;&amp;
 					(context.Variables.GetValueOrDefault&lt;bool>(&quot;isTempError&quot;, true) || 
@@ -889,9 +902,15 @@ REFACTOR:
 						(new[] { 429, 408 }.Contains(context.Response?.StatusCode ?? 0) || 
 						((context.Response?.StatusCode ?? 0) == 400 &amp;&amp; context.Variables.GetValueOrDefault&lt;bool>(&quot;isRetryableBadRequest&quot;, false)) ||
 						(context.Response?.StatusCode ?? 0) >= 500))))">
+					<!-- Write the wake time to the object this expression returns and the
+					     cache stores. current["backends"] already has a parent, and
+					     Newtonsoft clones a parented token inserted into a new JProperty,
+					     so marking the original map would lose the throttle: the next retry
+					     would reselect the failed region and no request would remember it.
+					     A parentless deep clone is inserted as-is. -->
 					<set-variable name="throttleState" value="@{
 						JObject current = context.Variables.GetValueOrDefault&lt;JObject>(&quot;throttleState&quot;, null);
-						JObject map = (current != null &amp;&amp; current[&quot;backends&quot;] != null &amp;&amp; current[&quot;backends&quot;].Type == JTokenType.Object) ? (JObject)current[&quot;backends&quot;] : new JObject();
+						JObject map = (current != null &amp;&amp; current[&quot;backends&quot;] != null &amp;&amp; current[&quot;backends&quot;].Type == JTokenType.Object) ? (JObject)current[&quot;backends&quot;].DeepClone() : new JObject();
 						JObject wrapper = new JObject(
 							new JProperty(&quot;dirty&quot;, false),
 							new JProperty(&quot;backends&quot;, map)
@@ -900,7 +919,7 @@ REFACTOR:
 						int idx = (int)context.Variables[&quot;backendIndex&quot;];
 						if (idx &lt; 0 || idx >= backends.Count) { return wrapper; }
 						JObject backend = (JObject)backends[idx];
-						string id = backend.Value&lt;string>(&quot;affinity&quot;);
+						string id = backend.Value&lt;string>(&quot;throttleId&quot;);
 
 						// Retry-after from the response header, else the backend default
 						int retryAfterSeconds = backend[&quot;defaultRetryAfter&quot;].Value&lt;int>();
@@ -911,7 +930,7 @@ REFACTOR:
 							}
 						}
 
-						// Multi-process safe: keep the max wake time for this backend id
+						// Best effort across requests: keep the later wake time for this throttle id
 						DateTime newWake = DateTime.UtcNow.AddSeconds(retryAfterSeconds);
 						DateTime existing = (map[id] != null &amp;&amp; map[id].Type != JTokenType.Null) ? map[id].Value&lt;DateTime>() : DateTime.MinValue;
 						if (newWake > existing) { map[id] = newWake; wrapper[&quot;dirty&quot;] = true; }

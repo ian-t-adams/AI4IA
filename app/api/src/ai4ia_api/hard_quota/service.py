@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TypeVar
 
 from ..entitlements.models import DAY_SECONDS, MINUTE_SECONDS, MONTH_SECONDS, EntitlementLimits
 from .models import (
     MAX_ENTRIES,
+    MAX_QUANTITY,
     REPLAY_SECONDS,
+    REQUEST_COUNT_REPLAY_SECONDS,
     RESERVATION_SECONDS,
     Amounts,
     Bounds,
@@ -36,9 +39,27 @@ _WINDOWS = (
 )
 
 
+@dataclass(frozen=True)
+class RequestCountScope:
+    """Contract of an approved request-count rollout, never a configuration flag.
+
+    Only the production factory constructs it, from a validated operator record.
+    ``coverage_start`` is the store-clock instant after which every writer was
+    proven to enforce admission; dispatch history before it is unknown.
+    """
+
+    coverage_start: int
+
+    def __post_init__(self) -> None:
+        if type(self.coverage_start) is not int or not 0 <= self.coverage_start <= MAX_QUANTITY:
+            raise ValueError("Invalid hard quota rollout coverage.")
+
+
 class ReservationService:
-    def __init__(self, store: ReservationStore) -> None:
+    def __init__(self, store: ReservationStore, *, scope: RequestCountScope | None = None) -> None:
         self.store = store
+        # None is the historical contract used by tests and the local fake.
+        self.scope = scope
 
     async def _change(
         self, owner: str, change: Callable[[QuotaState, int], tuple[QuotaState, T]]
@@ -62,9 +83,18 @@ class ReservationService:
         if not snapshot.etag or snapshot.now < snapshot.state.observedAt:
             raise QuotaError("Hard quota coordination state is incompatible.")
 
-    @staticmethod
-    def _reconcile(state: QuotaState, now: int) -> QuotaState:
-        floor = max(state.replayFloor, now - REPLAY_SECONDS)
+    def _retention(self, record: Reservation) -> int:
+        if self.scope is None:
+            return MONTH_SECONDS
+        # Only request and compute windows can admit in this scope: a compute
+        # attempt counts for 24h, every other dispatch only in the 60s window.
+        if record.surface == "compute" and record.phase == "settled":
+            return DAY_SECONDS
+        return MINUTE_SECONDS
+
+    def _reconcile(self, state: QuotaState, now: int) -> QuotaState:
+        replay = REPLAY_SECONDS if self.scope is None else REQUEST_COUNT_REPLAY_SECONDS
+        floor = max(state.replayFloor, now - replay)
         entries: dict[str, Reservation] = {}
         for key, record in state.entries.items():
             if record.phase == "reserved" and record.expiresAt < now:
@@ -73,10 +103,11 @@ class ReservationService:
                 })
             _, issued = parse_operation_id(key)
             # A record must have expired from BOTH replay retention and the
-            # longest meter window. Unknown/dispatched work is never pruned.
+            # longest window that can count it. Unknown/dispatched work is never pruned.
             if (
                 not record.protected and issued < floor
-                and record.settledAt is not None and record.settledAt < now - MONTH_SECONDS
+                and record.settledAt is not None
+                and record.settledAt < now - self._retention(record)
             ):
                 continue
             entries[key] = record
@@ -105,6 +136,12 @@ class ReservationService:
                 raise QuotaError("Hard quota compute units do not match the dispatch surface.")
             if limits.disabled:
                 raise QuotaError("This account is disabled.", code=403)
+            if self.scope is not None and (
+                bounds.amounts.tokens is not None or bounds.amounts.microUsd is not None
+            ):
+                raise QuotaError(
+                    "Hard quota token or dollar bounds are outside the approved request-count rollout.",
+                )
             if state.blocked:
                 raise QuotaError("Hard quota state requires reviewed reconciliation.")
             prior = state.entries.get(key)
@@ -130,11 +167,22 @@ class ReservationService:
 
         return await self._change(owner, change)
 
-    @staticmethod
     def _check_limits(
-        state: QuotaState, amounts: Amounts, limits: EntitlementLimits, now: int,
+        self, state: QuotaState, amounts: Amounts, limits: EntitlementLimits, now: int,
         *, excluding: str | None = None,
     ) -> None:
+        # Seeding fence: this document is authoritative only from its creation
+        # and from the approved all-writer cutover, whichever is later.
+        fence = None
+        if self.scope is not None:
+            fence = max(state.validAfter, self.scope.coverage_start)
+            for limit_name, dimension, _seconds in _WINDOWS:
+                # Refused before any history is read: this rollout never
+                # evaluates, retains or claims token/dollar windows.
+                if dimension in {"tokens", "microUsd"} and getattr(limits, limit_name) is not None:
+                    raise QuotaError(
+                        f"Hard quota {limit_name} is outside the approved request-count rollout.",
+                    )
         for limit_name, dimension, seconds in _WINDOWS:
             cap = getattr(limits, limit_name)
             if cap is None or (dimension == "compute" and amounts.compute == 0):
@@ -142,6 +190,13 @@ class ReservationService:
             requested = getattr(amounts, dimension)
             if requested is None:
                 raise QuotaError(f"Hard quota does not support this operation under {limit_name}.")
+            if fence is not None and now - seconds < fence:
+                # Unrecorded pre-cutover dispatches may fill the uncovered part
+                # of this window, so it counts as already consumed.
+                raise QuotaError(
+                    f"Hard quota {limit_name} history before cutover counts as consumed.",
+                    code=429,
+                )
             used = 0
             for record in state.entries.values():
                 if record.operationId == excluding:
@@ -196,6 +251,10 @@ class ReservationService:
             if record.phase != "dispatched":
                 raise QuotaError("Hard quota operation was not dispatched.", code=409)
             complete = record.has_complete_usage(outcome, actual)
+            # In the approved request-count scope a request-only operation's
+            # enforced quantities are its attempt counts, already fixed at
+            # dispatch; any terminal outcome settles them as known history.
+            attempt_only = self.scope is not None and record.request_only
             charged = actual if complete else record.bounds.amounts
             assert charged is not None
             # Requests/compute count dispatch, not successful output. Never
@@ -204,19 +263,13 @@ class ReservationService:
                 "requests": record.bounds.amounts.requests,
                 "compute": record.bounds.amounts.compute,
             })
-            exceeded = any(
-                getattr(charged, dimension) is not None
-                and getattr(record.bounds.amounts, dimension) is not None
-                and getattr(charged, dimension) > getattr(record.bounds.amounts, dimension)
-                for dimension in ("tokens", "microUsd")
-            )
             record = record.model_copy(update={
-                "phase": "settled" if complete else "unknown", "outcome": outcome,
+                "phase": "settled" if complete or attempt_only else "unknown", "outcome": outcome,
                 "settledAt": now, "settlementDigest": settlement, "charged": charged,
             })
             return state.model_copy(update={
                 "entries": {**state.entries, record.operationId: record},
-                "blocked": state.blocked or exceeded,
+                "blocked": state.blocked or record.exceeds_bound,
             }), record
 
         return await self._change(owner, change)

@@ -36,7 +36,6 @@
       "id": "gpt-6-astra",
       "displayName": "GPT-6 Astra",
       "category": "chat",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "responses",
       "requiredRealtimeProtocol": null,
@@ -74,10 +73,117 @@
       ]
     },
     {
+      "id": "gpt-6-sol",
+      "displayName": "GPT-6 Sol",
+      "category": "chat",
+      "format": "OpenAI",
+      "api": "responses",
+      "requiredRealtimeProtocol": null,
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-sol-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-sol-slurmfactory-eastus2-dz"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-sol-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-sol-slurmfactory-swedencentral-dz"
+        }
+      ]
+    },
+    {
+      "id": "gpt-6-luna",
+      "displayName": "GPT-6 Luna",
+      "category": "chat",
+      "format": "OpenAI",
+      "api": "responses",
+      "requiredRealtimeProtocol": null,
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-luna-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-luna-slurmfactory-eastus2-dz"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-luna-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-luna-slurmfactory-swedencentral-dz"
+        }
+      ]
+    },
+    {
       "id": "gpt-5.6-sol",
       "displayName": "gpt-5.6-sol",
       "category": "chat",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "responses",
       "requiredRealtimeProtocol": null,
@@ -131,7 +237,6 @@
       "id": "gpt-5.6-terra",
       "displayName": "gpt-5.6-terra",
       "category": "chat",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "responses",
       "requiredRealtimeProtocol": null,
@@ -185,7 +290,6 @@
       "id": "gpt-5.6-luna",
       "displayName": "gpt-5.6-luna",
       "category": "chat",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "responses",
       "requiredRealtimeProtocol": null,
@@ -236,10 +340,63 @@
       ]
     },
     {
+      "id": "gpt-5.5",
+      "displayName": "gpt-5.5",
+      "category": "chat",
+      "format": "OpenAI",
+      "api": "responses",
+      "requiredRealtimeProtocol": null,
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-04-24",
+          "deploymentName": "gpt-5.5-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-04-24",
+          "deploymentName": "gpt-5.5-slurmfactory-eastus2-dz"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-04-24",
+          "deploymentName": "gpt-5.5-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-04-24",
+          "deploymentName": "gpt-5.5-slurmfactory-swedencentral-dz"
+        }
+      ]
+    },
+    {
       "id": "gpt-5.4",
       "displayName": "gpt-5.4",
       "category": "chat",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -294,7 +451,6 @@
       "id": "gpt-5.2",
       "displayName": "gpt-5.2",
       "category": "chat",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -342,7 +498,6 @@
       "id": "grok-4-1-fast-reasoning",
       "displayName": "grok-4-1-fast-reasoning",
       "category": "reasoning",
-      "runtimeEnabled": true,
       "format": "xAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -383,7 +538,6 @@
       "id": "gpt-5.4-pro",
       "displayName": "gpt-5.4-pro",
       "category": "reasoning",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "responses",
       "requiredRealtimeProtocol": null,
@@ -421,7 +575,6 @@
       "id": "gpt-5.3-codex",
       "displayName": "gpt-5.3-codex",
       "category": "reasoning",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "responses",
       "requiredRealtimeProtocol": null,
@@ -468,7 +621,6 @@
       "id": "Mistral-Large-3",
       "displayName": "Mistral-Large-3",
       "category": "chat",
-      "runtimeEnabled": true,
       "format": "Mistral AI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -517,7 +669,6 @@
       "id": "gpt-5.4-mini",
       "displayName": "gpt-5.4-mini",
       "category": "chat-fast",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -572,7 +723,6 @@
       "id": "gpt-5.4-nano",
       "displayName": "gpt-5.4-nano",
       "category": "chat-fast",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -620,7 +770,6 @@
       "id": "gpt-5-mini",
       "displayName": "gpt-5-mini",
       "category": "chat-fast",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -675,7 +824,6 @@
       "id": "model-router",
       "displayName": "model-router",
       "category": "router",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -723,7 +871,6 @@
       "id": "DeepSeek-V3.2",
       "displayName": "DeepSeek-V3.2",
       "category": "reasoning-oss",
-      "runtimeEnabled": true,
       "format": "DeepSeek",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -757,7 +904,6 @@
       "id": "gpt-image-1.5",
       "displayName": "gpt-image-1.5",
       "category": "image",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -805,7 +951,6 @@
       "id": "gpt-image-2",
       "displayName": "gpt-image-2",
       "category": "image",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -836,10 +981,61 @@
       ]
     },
     {
+      "id": "gpt-image-2.5-flare",
+      "displayName": "gpt-image-2.5-flare",
+      "category": "image",
+      "format": "OpenAI",
+      "api": "chat",
+      "requiredRealtimeProtocol": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-08",
+          "deploymentName": "gpt-image-2.5-flare-slurmfactory-eastus2-glbl"
+        }
+      ]
+    },
+    {
+      "id": "gpt-image-2.5-sunburst",
+      "displayName": "gpt-image-2.5-sunburst",
+      "category": "image",
+      "format": "OpenAI",
+      "api": "chat",
+      "requiredRealtimeProtocol": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-08",
+          "deploymentName": "gpt-image-2.5-sunburst-slurmfactory-eastus2-glbl"
+        }
+      ]
+    },
+    {
       "id": "gpt-image-1-mini",
       "displayName": "gpt-image-1-mini",
       "category": "image",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -873,7 +1069,6 @@
       "id": "MAI-Image-2.6",
       "displayName": "MAI-Image-2.6",
       "category": "image",
-      "runtimeEnabled": true,
       "format": "Microsoft",
       "api": "mai",
       "requiredRealtimeProtocol": null,
@@ -904,7 +1099,6 @@
       "id": "MAI-Image-2.6-Flash",
       "displayName": "MAI-Image-2.6-Flash",
       "category": "image",
-      "runtimeEnabled": true,
       "format": "Microsoft",
       "api": "mai",
       "requiredRealtimeProtocol": null,
@@ -935,7 +1129,6 @@
       "id": "FLUX.2-pro",
       "displayName": "FLUX.2-pro",
       "category": "image",
-      "runtimeEnabled": true,
       "format": "Black Forest Labs",
       "api": "bfl",
       "requiredRealtimeProtocol": null,
@@ -976,7 +1169,6 @@
       "id": "FLUX.2-flex",
       "displayName": "FLUX.2-flex",
       "category": "image",
-      "runtimeEnabled": true,
       "format": "Black Forest Labs",
       "api": "bfl",
       "requiredRealtimeProtocol": null,
@@ -1017,7 +1209,6 @@
       "id": "mistral-document-ai-2512",
       "displayName": "Mistral Document AI 25.12",
       "category": "document-ocr",
-      "runtimeEnabled": true,
       "format": "Mistral AI",
       "api": "mistral_ocr",
       "requiredRealtimeProtocol": null,
@@ -1052,7 +1243,6 @@
       "id": "mistral-ocr-4-0",
       "displayName": "Mistral OCR 4",
       "category": "document-ocr",
-      "runtimeEnabled": true,
       "format": "Mistral AI",
       "api": "mistral_ocr",
       "requiredRealtimeProtocol": null,
@@ -1087,7 +1277,6 @@
       "id": "text-embedding-3-large",
       "displayName": "text-embedding-3-large",
       "category": "embedding",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -1135,7 +1324,6 @@
       "id": "embed-v-4-0",
       "displayName": "embed-v-4-0",
       "category": "embedding",
-      "runtimeEnabled": true,
       "format": "Cohere",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -1169,7 +1357,6 @@
       "id": "gpt-realtime",
       "displayName": "gpt-realtime",
       "category": "realtime",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -1203,7 +1390,6 @@
       "id": "gpt-realtime-2",
       "displayName": "gpt-realtime-2",
       "category": "realtime",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -1230,7 +1416,6 @@
       "id": "gpt-realtime-1.5",
       "displayName": "gpt-realtime-1.5",
       "category": "realtime",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": "ga",
@@ -1257,7 +1442,6 @@
       "id": "gpt-realtime-2.1",
       "displayName": "gpt-realtime-2.1",
       "category": "realtime",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": "ga",
@@ -1284,7 +1468,6 @@
       "id": "gpt-realtime-2.1-mini",
       "displayName": "gpt-realtime-2.1-mini",
       "category": "realtime",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": "ga",
@@ -1311,7 +1494,6 @@
       "id": "gpt-realtime-mini",
       "displayName": "gpt-realtime-mini",
       "category": "realtime",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -1345,7 +1527,6 @@
       "id": "gpt-audio-1.5",
       "displayName": "gpt-audio-1.5",
       "category": "audio",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -1379,7 +1560,6 @@
       "id": "whisper",
       "displayName": "whisper",
       "category": "transcription",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -1413,7 +1593,6 @@
       "id": "gpt-4o-mini-tts",
       "displayName": "gpt-4o-mini-tts",
       "category": "tts",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -1440,7 +1619,6 @@
       "id": "tts-hd",
       "displayName": "tts-hd",
       "category": "tts",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -1467,7 +1645,7 @@
       "id": "sora-2",
       "displayName": "sora-2",
       "category": "video",
-      "runtimeEnabled": true,
+      "runtimeEnabled": false,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -1501,7 +1679,6 @@
       "id": "o3-deep-research",
       "displayName": "o3-deep-research",
       "category": "research",
-      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,
@@ -1533,7 +1710,6 @@
       "id": "MAI-Thinking-1",
       "displayName": "MAI Thinking 1",
       "category": "reasoning",
-      "runtimeEnabled": true,
       "format": "Microsoft",
       "api": "mai",
       "requiredRealtimeProtocol": null,
@@ -1567,7 +1743,6 @@
       "id": "claude-opus-5",
       "displayName": "Claude Opus 5",
       "category": "reasoning",
-      "runtimeEnabled": true,
       "format": "Anthropic",
       "api": "anthropic",
       "requiredRealtimeProtocol": null,
@@ -1608,7 +1783,6 @@
       "id": "claude-sonnet-5",
       "displayName": "Claude Sonnet 5",
       "category": "reasoning",
-      "runtimeEnabled": true,
       "format": "Anthropic",
       "api": "anthropic",
       "requiredRealtimeProtocol": null,

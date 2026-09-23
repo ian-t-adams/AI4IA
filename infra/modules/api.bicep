@@ -98,8 +98,11 @@ param entraAudience string = ''
 @description('Comma-separated admin subjects for the entitlement-management API (AI4IA_ADMIN_SUBJECTS).')
 param adminSubjects string = ''
 
-@description('Source-only atomic application admission (AI4IA_HARD_QUOTA_ENABLED). Default OFF; deployed activation is not supported.')
+@description('Default-off atomic request-count application admission (AI4IA_HARD_QUOTA_ENABLED). Startup requires the approved rollout record; nothing here creates it.')
 param hardQuotaEnabled bool = false
+
+@description('Separately approved hard quota rollout record ID (AI4IA_HARD_QUOTA_ROLLOUT_ID); startup validates evidence and storage layout, never initializes it.')
+param hardQuotaRolloutId string = ''
 
 @description('Shared secret required for the entitlement-management API under spoofable dev auth (AI4IA_ADMIN_API_SECRET). Stored as a Container App secret.')
 @secure()
@@ -949,6 +952,10 @@ var hardQuotaEnv = [
   {
     name: 'AI4IA_HARD_QUOTA_ENABLED'
     value: string(hardQuotaEnabled)
+  }
+  {
+    name: 'AI4IA_HARD_QUOTA_ROLLOUT_ID'
+    value: hardQuotaRolloutId
   }
 ]
 

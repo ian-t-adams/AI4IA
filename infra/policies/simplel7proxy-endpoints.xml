@@ -115,8 +115,9 @@
     }" />
 
     <!-- Convert the editable catalog rows into the runtime backend list:
-        join url+path, apply defaults, compute the affinity id (hash of url+label),
-        and initialize throttle state. No need to edit. -->
+        join url+path, apply defaults, compute the affinity id (hash of url+label)
+        and the throttle id (url+label+deployment), and initialize throttle
+        state. No need to edit. -->
     <set-variable name="listBackends" value="@{
         JObject selected = (JObject)context.Variables[&quot;selectedBackends&quot;];
         JArray backends = new JArray();
@@ -165,10 +166,18 @@
             string joinedUrl = string.IsNullOrEmpty(rawPath) ? rawUrl : (rawUrl + &quot;/&quot; + rawPath);
             backend[&quot;url&quot;] = joinedUrl;
 
-            // Unique per-backend id: hash of url + label.
+            // Request affinity id: hash of url + label, shared by every deployment
+            // on that regional endpoint.
             string saltedUrl = salt + joinedUrl + prop.Name;
             backend[&quot;affinity&quot;] = string.Concat(
                 sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(saltedUrl))
+                .Take(10)
+                .Select(x => x.ToString(&quot;x2&quot;))
+            );
+            // Throttle id: also hashes the deployment. Quotas and rate limits are
+            // per deployment, so one deployment's 429 must not park the region.
+            backend[&quot;throttleId&quot;] = string.Concat(
+                sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(saltedUrl + &quot;|&quot; + backend.Value&lt;string>(&quot;deployment&quot;)))
                 .Take(10)
                 .Select(x => x.ToString(&quot;x2&quot;))
             );

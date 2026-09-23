@@ -6,6 +6,7 @@ Checks that the data-driven catalog cannot silently drop deployments:
   * every deployment.sku has a short token under `naming.skuShort`
   * generated deployment names (model + region + skuShort) are unique
   * no duplicate (model, region) pairs
+  * ``runtimeEnabled``, when present, is a strict Boolean
 
 Exit non-zero on any violation. Safe to run locally or in CI.
 """
@@ -18,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _capacity_evidence import EvidenceError
 from _production_capacity import parse_policy
-from _model_targets import model_target
+from _model_targets import model_target, runtime_enabled
 
 HERE = Path(__file__).resolve().parent
 MODELS = HERE.parent / "infra" / "models.json"
@@ -49,6 +50,10 @@ def main() -> int:
             model_target(model)
         except ValueError as exc:
             errors.append(f"{name}: {exc}")
+        try:
+            runtime_enabled(model)
+        except ValueError as exc:
+            errors.append(f"{name}: {exc}")
         if model.get("anthropicThinking") is not None and (
             model.get("api") != "anthropic"
             or model["anthropicThinking"] != "disabled"
@@ -57,8 +62,6 @@ def main() -> int:
             or model.get("samplingSupported") is not False
         ):
             errors.append(f"{name}: unsupported Anthropic unified-history profile")
-        if type(model.get("runtimeEnabled", True)) is not bool:
-            errors.append(f"{name}: runtimeEnabled must be a Boolean")
         if model.get("requiredRealtimeProtocol") not in (None, "ga") or (
             "requiredRealtimeProtocol" in model and model["category"] != "realtime"
         ):

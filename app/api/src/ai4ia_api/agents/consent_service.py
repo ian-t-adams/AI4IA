@@ -34,6 +34,7 @@ from .tools import ToolRegistry
 from ..policy.context import current_binding
 from ..policy.models import PolicyDecision, PolicyError
 from ..request_constraints import tools_allowed
+from ..videos.availability import video_generation_available_for_state
 
 _CREDENTIAL_FIELD = re.compile(
     r"(?:^|_)(?:key|secret|password|credential|credentials|connection_string|authorization|token)$",
@@ -266,7 +267,9 @@ async def _chat_schemas(
             session_id=session.id, sink=[], preferences=session.imagePreferences,
         )
         schemas.extend(extra)
-    if "generate_video" in tool_names and getattr(state, "video_artifacts", None) is not None:
+    if "generate_video" in tool_names and video_generation_available_for_state(
+        state, policy_filter=not publication_metadata,
+    ):
         from ..videos.capability import build_video_capability
         from ..videos.service import VideoGenerationService
 
@@ -278,7 +281,7 @@ async def _chat_schemas(
             ),
             artifact_store=state.video_artifacts, entitlements=state.entitlements,
             metering=state.usage, catalog=state.catalog, user_id=user_id,
-            session_id=session.id, sink=[],
+            session_id=session.id, sink=[], policy_filter=not publication_metadata,
         )
         schemas.extend(extra)
     if (

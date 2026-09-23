@@ -208,9 +208,9 @@ def resolve_realtime_deployment(
             raise RealtimeResolutionError("No realtime models are available.")
         model_id = first.id
     entry = catalog.get(model_id)
-    if entry is None:
+    if entry is None or not catalog.available(entry):
         raise RealtimeResolutionError(
-            "Unknown or runtime-disabled realtime model. Choose an available model in Voice settings."
+            "Unknown or unavailable realtime model. Choose an available model in Voice settings."
         )
     if entry.category not in REALTIME_CATEGORIES:
         raise RealtimeResolutionError(

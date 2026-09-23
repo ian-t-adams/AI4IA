@@ -23,6 +23,7 @@ from ..catalog import DeploymentOption, ModelCatalog
 from ..config import Settings
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..usage.models import ProviderCompletion, TokenUsage
+from .availability import NO_VIDEO_MODEL_DETAIL, available_video_model_ids
 
 logger = logging.getLogger(__name__)
 
@@ -179,13 +180,12 @@ class VideoGenerationService:
 
         model_id = model
         if not model_id:
-            first = next((
-                m for m in self._catalog.models
-                if m.category == "video" and self._catalog.available(m)
-            ), None)
-            if first is None:
-                raise VideoGenerationError(400, "No video models are available.")
-            model_id = first.id
+            # Default to a model the catalog can route now; the first ``video``
+            # row may be runtime-disabled inventory kept for a retiring model.
+            routable = available_video_model_ids(self._catalog)
+            if not routable:
+                raise VideoGenerationError(400, NO_VIDEO_MODEL_DETAIL)
+            model_id = routable[0]
 
         entry = self._catalog.get(model_id)
         if entry is None:
@@ -193,6 +193,9 @@ class VideoGenerationService:
         if entry.category != "video":
             raise VideoGenerationError(400, f"Model '{model_id}' is not a video model.")
 
+        # Resolution goes through eligible options, so an explicitly named
+        # runtime-disabled or policy-denied model is refused here, before any
+        # provider call.
         deployment = self._catalog.resolve_deployment(
             model_id, region=region, data_zone=data_zone
         )

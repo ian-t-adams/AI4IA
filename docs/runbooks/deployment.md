@@ -760,6 +760,9 @@ policy-owned capability reader. The server selects the cheapest compatible
 **currently policy-allowed** option, and the client verifies that choice against
 both catalogs and its pre-dispatch price snapshot. It never
 hardcodes a deployment or switches to a more expensive model after dispatch.
+A catalog or price-book change can therefore move the probe to another model and
+protocol (Chat Completions or Responses) without a monitor change; review that
+selection whenever a cheaper compatible model is added.
 One new, exact-owner, empty-scope session sends the shared non-sensitive
 sentinel through **web -> API -> SimpleL7Proxy -> APIM -> Foundry**, with tools
 and automatic memory denied and a one-winner fresh v1 claim. At most one
@@ -1174,7 +1177,9 @@ Retained choices are alternatives to evaluate, **not aliases or equivalent outpu
 | `gpt-audio` | `gpt-audio-1.5` |
 
 Keep `sora-2` by explicit owner choice and `gpt-image-1.5` for its distinct
-DataZoneStandard image capability. Content Understanding's `gpt-5.2`,
+DataZoneStandard image capability. (`sora-2` is later runtime-disabled ahead of
+its own retirement; see [Sora 2 runtime retirement](#sora-2-runtime-retirement).)
+Content Understanding's `gpt-5.2`,
 memory/Code Interpreter's `gpt-5.4-mini`, `text-embedding-3-large` and its
 3072-dimensional vectors, the `gpt-5-mini` canary, preview `gpt-realtime`,
 explicit Mistral analyzer names and `o3-deep-research` remain unchanged.
@@ -1207,6 +1212,53 @@ Deletion may be irreversible: a deprecating model can be impossible to recreate.
 Application-image rollback does not restore deleted deployments, and repinning
 TTS back to a preview version is not guaranteed. Source review and green CI do
 not authorize cleanup, tenant/Claude changes, capacity-profile changes or release.
+
+### Sora 2 runtime retirement
+
+`sora-2` `2025-12-08` is the only video model the subscription offers in East US 2,
+Sweden Central or West US. Its inference retirement is `2026-10-15T00:00:00Z`
+(Preview); `2025-10-06` has already retired and Foundry offers no successor.
+OpenAI's own Sora 2 API shuts down on 2026-09-24. The source change sets
+`runtimeEnabled: false` on the `sora-2` row and keeps both deployments in the
+desired catalog. It must be merged **and deployed** before the retirement date.
+
+| Surface | Before | After |
+| --- | --- | --- |
+| `/api/tools` | `generate_video` available whenever the flag and store are on | Unavailable, with the detail "No runtime-enabled video generation model is available." |
+| Conversation, agent and inspector tool sets | Include an attached `generate_video` | Exclude it; saved agents and overrides are not rewritten |
+| `/generate_video` | Runs, then fails at the provider after retirement | Local reply that no video model is enabled; no model call |
+| Consent and publication snapshots | Include the tool contract | Omit it; publishing an agent that requires it is refused |
+| Direct execution | Could reach the gateway | Refused before any provider call |
+| APIM model catalog | Routes both `sora-2` deployments | No `sora-2` route |
+| Previously generated clips | Served by `/api/videos/artifacts/{id}` | Unchanged |
+| Desired inventory | Two `sora-2` deployments | Unchanged; physical removal is separate |
+
+Keep `AI4IA_VIDEO_GENERATION_ENABLED=true`. `api.bicep` emits
+`AI4IA_VIDEO_BLOB_ACCOUNT_URL` only while the flag is on. Turning it off would
+leave the API with an empty in-memory video store, so existing clips would return
+404. The model gate hides the tool without that side effect. The execution-time
+checks also remain in place: the handler asks again, and the service refuses a
+model it cannot resolve.
+
+Changing the catalog changes the consent environment digest, like any catalog
+edit. Users renew session/run tool consent. Published versions whose recorded
+environment differs must be reviewed and republished before they run again.
+
+Deployment order is safe either way. `deploy.yml` provisions before it deploys
+the application. Between those steps the old revision still offers
+`generate_video`, and a call gets a sanitized gateway error instead of a paid
+generation. An application-image rollback likewise leaves the old revision
+offering a tool the gateway no longer routes; that fails the same way.
+`provision=false` defers the APIM route removal to the next provision. The new
+application still hides the tool.
+
+After deployment, check the change without generating video: `/api/tools` reports
+`generate_video` unavailable, and a known existing clip still returns 200 to its
+owner. Deleting the two deployments and the desired row is a later, separately
+approved cleanup under
+[Coordinated catalog retirement](#coordinated-catalog-retirement). If a successor
+appears, add it as a reviewed catalog row. Re-enabling `sora-2` after its
+retirement date would advertise a model that cannot serve.
 
 ### Read-only model retirement reporting
 
@@ -1805,8 +1857,9 @@ Three harms compound from the one misclassification:
 
 1. The request is retried twice upstream even though it is deterministic.
 2. `isTempError` also gates the throttle block, so a malformed request **parks a
-   healthy backend for 10 seconds for every other caller in that region**. One
-   client looping on a bad parameter degrades the whole deployment.
+   healthy backend for 10 seconds for every other caller in that region** (marks
+   were regional then; see *Throttle scope* below). One client looping on a bad
+   parameter degrades the whole deployment.
 3. `Return429` replaces the response with `429 Requeue Message` and an empty body,
    destroying the provider's own diagnostic. The proxy then correctly honours the
    requeue headers and retries across backends, multiplying the cost.
@@ -1851,6 +1904,17 @@ throttle gate is still admitting plain 400s.
 probed for which parameter values a model accepts, because each rejection threw the
 backend into a throttle that made the *next* probe report a false `429`. Any such
 probe needed 11+ seconds of spacing between attempts.
+
+**Throttle scope.** A throttle mark parks one deployment in one region, not every
+caller of that regional endpoint. Foundry quotas and rate limits are per
+deployment, so marks are keyed by `throttleId` (a hash of endpoint, region label
+and deployment) rather than by the regional `affinity` id. `affinity` still serves
+request affinity (`x-backend-affinity`). A 429, 5xx, timeout or context-length 400
+parks only the deployment that returned it: the request fails over to another of
+that model's regions when one exists, and other models in the same region stay
+routable. Marks are best effort. All marks for the API share one APIM cache entry:
+across concurrent requests the last writer wins, and the entry expires 60 seconds
+after its last write, so a longer `Retry-After` is not remembered past that.
 
 ### 7.15 A terminal 4xx returns the right status with `Content-Length: 0`
 

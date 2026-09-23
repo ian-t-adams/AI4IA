@@ -220,6 +220,40 @@ def test_mai_26_generation_and_controls(client, model):
         assert len(client.app.state.gateway.calls) == calls
 
 
+@pytest.mark.parametrize("model", ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"])
+def test_gpt_image_25_uses_the_governed_openai_image_contract(client, model):
+    headers = {"X-Dev-User": "ian"}
+    options = client.get("/api/images/options", headers=headers).json()
+    option = next(item for item in options["models"] if item["id"] == model)
+    assert option["provider"] == "openai"
+    assert option["residencies"] == ["global"]
+    assert option["prices"] and all(
+        price["costKnown"] is False and price["estimatedCostUsd"] is None
+        for price in option["prices"]
+    )
+
+    body = {"prompt": "an orange square", "model": model, "size": "1536x1024", "quality": "high"}
+    response = client.post("/api/images/generations", json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["provider"] == "openai"
+    assert response.json()["costKnown"] is False
+    call = client.app.state.gateway.calls[-1]
+    assert call["api"] == "chat"
+    assert call["deployment"] == response.json()["deployment"]
+    assert call["deployment"].startswith(f"{model}-") and call["deployment"].endswith("-glbl")
+    assert (call["size"], call["extra"], call["n"]) == ("1536x1024", {"quality": "high"}, 1)
+
+    # Paired control: Learn's additional xhigh/max qualities are not a governed
+    # application control, so the same request is refused before any provider call.
+    calls = len(client.app.state.gateway.calls)
+    for quality in ("xhigh", "max"):
+        rejected = client.post(
+            "/api/images/generations", json={**body, "quality": quality}, headers=headers,
+        )
+        assert rejected.status_code == 422, rejected.text
+    assert len(client.app.state.gateway.calls) == calls
+
+
 @pytest.mark.parametrize(
     ("retired", "retained"),
     [

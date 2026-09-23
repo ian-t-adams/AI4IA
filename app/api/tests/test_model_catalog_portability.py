@@ -109,7 +109,8 @@ def test_runtime_disable_survives_generator_and_dev_fallback():
     for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
         catalog = ModelCatalog.model_validate(raw)
         assert catalog.models[0].runtimeEnabled is False
-        assert catalog.get("gpt-x") is None
+        assert catalog.get("gpt-x") is catalog.models[0]
+        assert not catalog.available(catalog.models[0])
         assert catalog.resolve_deployment("gpt-x") is None
     del source["catalog"][0]["runtimeEnabled"]
     for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
@@ -142,5 +143,61 @@ def test_realtime_and_external_profiles_survive_the_same_catalog_roundtrip():
                 assert entry.samplingSupported is declared.get("samplingSupported")
                 if entry.deploymentTarget == "external-claude":
                     entry.require_external_profile()
-                assert (restored.get(entry.id) is not None) is entry.runtimeEnabled
-            assert (restored.get(retained["name"]) is not None) is enabled
+                assert restored.get(entry.id) is entry
+                assert bool(restored.eligible_options(entry, policy_filter=False)) is entry.runtimeEnabled
+            assert restored.get(retained["name"]).runtimeEnabled is enabled
+
+
+def test_runtime_disable_survives_generator_and_dev_fallback_without_routing():
+    from ai4ia_api.catalog import ModelCatalog, _transform_infra_models
+
+    gen = _load_gen()
+    source = _synthetic_models("tenant")
+    row = source["catalog"][0]
+    for enabled in (True, False):
+        if enabled:
+            row.pop("runtimeEnabled", None)
+        else:
+            row["runtimeEnabled"] = False
+        generated = gen.build_catalog(source)
+        # Sparse like deploymentTarget: only the non-default state is packaged.
+        assert ("runtimeEnabled" in generated["models"][0]) is (not enabled)
+        for raw in (generated, _transform_infra_models(source)):
+            catalog = ModelCatalog.model_validate(raw)
+            entry = catalog.get("gpt-x")
+            assert entry is not None and entry.runtimeEnabled is enabled
+            assert catalog.available(entry) is enabled
+            assert (catalog.resolve_deployment("gpt-x") is not None) is enabled
+            assert [m.id for m in catalog.conversational_models()] == (["gpt-x"] if enabled else [])
+            # Past calls keep their deployment metadata for receipts and usage.
+            assert catalog.for_deployment("gpt-x-tenant-eastus2-glbl") is entry
+            # Enabled rows serialize exactly as before, keeping their digests stable.
+            assert ("runtimeEnabled" in entry.model_dump()) is (not enabled)
+            restored = ModelCatalog.model_validate(catalog.model_dump())
+            assert restored.models[0].runtimeEnabled is enabled
+
+
+def test_runtime_enabled_is_a_strict_boolean_in_generator_runtime_and_schema():
+    import jsonschema
+    import pytest
+    from pydantic import ValidationError
+
+    from ai4ia_api.catalog import ModelCatalog, _transform_infra_models
+
+    gen = _load_gen()
+    schema = json.loads((_REPO_ROOT / "infra" / "models.schema.json").read_text(encoding="utf-8"))
+    for value in (False, True):
+        source = _synthetic_models("tenant")
+        source["catalog"][0]["runtimeEnabled"] = value
+        jsonschema.Draft7Validator(schema).validate(source)
+        gen.build_catalog(source)
+        ModelCatalog.model_validate(_transform_infra_models(source))
+    for value in ("false", 0, None):
+        source = _synthetic_models("tenant")
+        source["catalog"][0]["runtimeEnabled"] = value
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.Draft7Validator(schema).validate(source)
+        with pytest.raises(ValueError, match="runtimeEnabled must be a Boolean"):
+            gen.build_catalog(source)
+        with pytest.raises(ValidationError):
+            ModelCatalog.model_validate(_transform_infra_models(source))

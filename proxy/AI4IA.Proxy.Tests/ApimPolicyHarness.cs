@@ -79,7 +79,7 @@ internal sealed class ApimPolicyHarness
         for (int i = 0; i < servers.Length; i++)
             backends.Add(new JObject
             {
-                ["label"] = $"fixture-{i}", ["affinity"] = $"fixture-{i}",
+                ["label"] = $"fixture-{i}", ["affinity"] = $"fixture-{i}", ["throttleId"] = $"fixture-{i}-throttle",
                 ["url"] = servers[i].Url + "/openai", ["path"] = "openai", ["deployment"] = "fixture-text",
                 ["priorityGroup"] = i, ["acceptablePriorities"] = new JArray(1, 2, 3),
                 ["timeout"] = 1, ["bufferResponse"] = false, ["auth"] = "MI", ["limitConcurrency"] = "off",
@@ -260,11 +260,18 @@ internal sealed class ApimPolicyHarness
             case "cache-lookup-value":
                 string lookup = Text(node.Attribute("key")!.Value);
                 if (Cache.TryGetValue(lookup, out var cached))
-                    Context.Variables[node.Attribute("variable-name")!.Value] = cached;
+                    Context.Variables[node.Attribute("variable-name")!.Value] =
+                        cached is JToken cachedToken ? cachedToken.DeepClone() : cached;
                 break;
             case "cache-store-value":
-                if (node.Attribute("caching-type")?.Value == "internal")
-                    Cache[Text(node.Attribute("key")!.Value)] = Eval(node.Attribute("value")!.Value);
+                // APIM's default prefer-external uses the built-in cache when no
+                // external cache is configured; the deployment configures none.
+                // An entry is a snapshot, never a live alias of a request variable.
+                string cachingType = node.Attribute("caching-type")?.Value ?? "prefer-external";
+                if (cachingType is not ("internal" or "prefer-external"))
+                    throw new AssertFailedException($"Unprojected cache type: {cachingType}");
+                object stored = Eval(node.Attribute("value")!.Value);
+                Cache[Text(node.Attribute("key")!.Value)] = stored is JToken storedToken ? storedToken.DeepClone() : stored;
                 break;
             case "set-query-parameter":
                 // No inherited policy, remote cache or credential query in the fixture.

@@ -1,6 +1,6 @@
 {
   "$schema": "./models.schema.json",
-  "_comment": "Every deployment pins an explicit version. Existing OpenAI effort values reflect governed live probes, not exhaustive provider capabilities. External Claude is DEFAULT-OFF SOURCE INTENT: target offerings/version/SKU raw capacity were observed separately; its low/medium/high effort is the documented thinking-disabled text/tool subset, NOT a live integration claim. No tenant, account or credential binding is stored here. See docs/runbooks/feature-enablement.md#cross-tenant-claude-source-contract for evidence, prerequisites and activation holds. New probes must stay SimpleL7Proxy -> APIM -> Foundry.",
+  "_comment": "Every deployment pins an explicit version. Existing OpenAI effort values reflect governed live probes, not exhaustive provider capabilities. The 2026-09 gpt-6-sol, gpt-6-luna and gpt-5.5 rows carry Microsoft Learn documented values that mirror their probed gpt-6-astra/GPT-5.6 siblings; governed live probes remain a candidate-rollout step. External Claude is DEFAULT-OFF SOURCE INTENT: target offerings/version/SKU raw capacity were observed separately; its low/medium/high effort is the documented thinking-disabled text/tool subset, NOT a live integration claim. No tenant, account or credential binding is stored here. See docs/runbooks/feature-enablement.md#cross-tenant-claude-source-contract for evidence, prerequisites and activation holds. New probes must stay SimpleL7Proxy -> APIM -> Foundry.",
   "naming": {
     "_comment": "Naming tokens for the whole stack (single source of truth). `subscriptionToken` is stamped into every model deployment name; `foundryToken` names the Foundry accounts/projects (mf-<foundryToken>-<env>-<region>). main.bicep, scripts/gen-model-catalog.py, scripts/validate-catalog.py, and app/api catalog.py all read these, so changing them here (plus AZURE_ENV_NAME) is what makes a subscription/tenant move 1:1. After changing, run scripts/gen-model-catalog.py to regenerate the runtime catalog. See docs/runbooks/greenfield-standup.md#5-select-environment-posture-and-names.",
     "subscriptionToken": "slurmfactory",
@@ -79,6 +79,100 @@
           "version": "2026-09-03",
           "maxCapacity": 500,
           "maxCapacityPool": "global"
+        }
+      ]
+    },
+    {
+      "name": "gpt-6-sol",
+      "displayName": "GPT-6 Sol",
+      "format": "OpenAI",
+      "category": "chat",
+      "api": "responses",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-09-22"
+        },
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 50,
+          "version": "2026-09-22"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-09-22"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "DataZoneStandard",
+          "capacity": 50,
+          "version": "2026-09-22"
+        }
+      ]
+    },
+    {
+      "name": "gpt-6-luna",
+      "displayName": "GPT-6 Luna",
+      "format": "OpenAI",
+      "category": "chat",
+      "api": "responses",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-09-22"
+        },
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 50,
+          "version": "2026-09-22"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-09-22"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "DataZoneStandard",
+          "capacity": 50,
+          "version": "2026-09-22"
         }
       ]
     },
@@ -226,6 +320,52 @@
           "version": "2026-07-09",
           "maxCapacity": 333,
           "maxCapacityPool": "data-zone:EU"
+        }
+      ]
+    },
+    {
+      "name": "gpt-5.5",
+      "format": "OpenAI",
+      "category": "chat",
+      "api": "responses",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-04-24"
+        },
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 50,
+          "version": "2026-04-24"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-04-24"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "DataZoneStandard",
+          "capacity": 50,
+          "version": "2026-04-24"
         }
       ]
     },
@@ -740,6 +880,32 @@
       ]
     },
     {
+      "name": "gpt-image-2.5-flare",
+      "format": "OpenAI",
+      "category": "image",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-09-08"
+        }
+      ]
+    },
+    {
+      "name": "gpt-image-2.5-sunburst",
+      "format": "OpenAI",
+      "category": "image",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-09-08"
+        }
+      ]
+    },
+    {
       "name": "gpt-image-1-mini",
       "format": "OpenAI",
       "category": "image",
@@ -1173,6 +1339,7 @@
       "name": "sora-2",
       "format": "OpenAI",
       "category": "video",
+      "runtimeEnabled": false,
       "deployments": [
         {
           "region": "eastus2",

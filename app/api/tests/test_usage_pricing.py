@@ -9,6 +9,8 @@ import pytest
 from ai4ia_api.model_evidence import ModelCallRecorder
 from ai4ia_api.usage.pricing import PriceRate, PricingBook, load_pricing
 
+_CATALOG_PATH = Path(__file__).resolve().parents[3] / "infra" / "models.json"
+
 
 def _book() -> PricingBook:
     return PricingBook(
@@ -81,6 +83,31 @@ def test_packaged_price_version_survives_receipts_without_weakening_redaction():
         evidence = json.loads(call.snapshot().model_dump_json())
         assert evidence["cost"]["coverage"] == "known"
         assert evidence["cost"]["priceVersion"] == (packaged.version if book is packaged else None)
+
+
+def test_disabled_model_retains_exact_sku_prices_for_accepted_work(tmp_path, monkeypatch):
+    from ai4ia_api import catalog as catalog_module
+
+    catalog = catalog_module.load_catalog().model_copy(deep=True)
+    entry = catalog.get("claude-opus-5")
+    assert entry is not None
+    option = next(option for option in entry.options if option.sku == "DataZoneStandard")
+    monkeypatch.setattr(catalog_module, "load_catalog", lambda: catalog)
+    packaged = Path(__file__).parents[1] / "src" / "ai4ia_api" / "data" / "pricing.json"
+    for enabled in (True, False):
+        entry.runtimeEnabled = enabled
+        path = tmp_path / f"pricing-{enabled}.json"
+        path.write_bytes(packaged.read_bytes())
+        book = load_pricing(str(path))
+        estimate = book.estimate(
+            entry.id, deployment=option.deploymentName,
+            prompt_tokens=100, completion_tokens=10, cache_read_tokens=0, cache_write_tokens=0,
+        )
+        assert estimate.known and estimate.micro_usd == 825
+        assert (estimate.input_per_1m, estimate.output_per_1m) == (5.5, 27.5)
+        assert catalog.get(entry.id) is entry
+        assert catalog.for_deployment(option.deploymentName) is entry
+        assert (catalog.resolve_deployment(entry.id) is not None) is enabled
 
 
 def test_packaged_flux_image_rates_preserve_each_meter_basis():
@@ -226,6 +253,67 @@ def test_realtime_successor_retail_references_keep_exact_modality_meters(model_i
     for modality, expected in zip(("text", "audio", "image"), rates, strict=True):
         keys = ("inputPer1M", "cachedInputPer1M", "outputPer1M")[:len(expected)]
         assert reference[modality] == dict(zip(keys, expected, strict=True))
+
+
+@pytest.mark.parametrize(("model_id", "input_rate", "output_rate", "micro_usd"), [
+    # Microsoft's 2026-09-22 GPT-6 Sol/Luna launch post, Global Standard short context.
+    ("gpt-6-sol", 2.0, 10.0, 12_000_000),
+    ("gpt-6-luna", 0.1, 0.5, 600_000),
+    # Azure Retail Prices API '5.5 ShortCo inp Gl' / '5.5 ShortCo opt Gl'.
+    ("gpt-5.5", 5.0, 30.0, 35_000_000),
+])
+def test_new_gpt_deployments_use_sourced_short_context_estimates(
+    model_id, input_rate, output_rate, micro_usd,
+):
+    catalog = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
+    naming = catalog["naming"]
+    entry = next(model for model in catalog["catalog"] if model["name"] == model_id)
+    book = load_pricing()
+    assert len(entry["deployments"]) == 4
+    for deployment in entry["deployments"]:
+        name = (
+            f"{model_id}-{naming['subscriptionToken']}-{deployment['region']}"
+            f"-{naming['skuShort'][deployment['sku']]}"
+        )
+        estimate = book.estimate(
+            model_id, prompt_tokens=1_000_000, completion_tokens=1_000_000, deployment=name,
+        )
+        assert estimate.known is True, name
+        assert (estimate.input_per_1m, estimate.output_per_1m) == (input_rate, output_rate), name
+        assert estimate.micro_usd == micro_usd, name
+
+
+@pytest.mark.parametrize("model_id", ["gpt-6-sol", "gpt-6-luna", "gpt-5.5"])
+def test_new_model_receipts_keep_known_cost_and_the_packaged_price_version(model_id):
+    packaged = load_pricing()
+    assert packaged.version
+    for book, expected in (
+        (packaged, packaged.version),
+        # Control: the unchanged receipt identifier/redaction path drops a
+        # token-shaped version, so the packaged assertion is not vacuous.
+        (PricingBook({model_id: packaged.rate(model_id)}, currency="USD", version="a" * 40), None),
+    ):
+        recorder = ModelCallRecorder(model_id=model_id, deployment="synthetic-deployment", pricing=book)
+        call = recorder.start("synthetic-deployment", "responses")
+        call.request({"input": [{"role": "user", "content": "synthetic"}], "max_output_tokens": 16})
+        call.report_usage({"prompt_tokens": 10, "completion_tokens": 5}, completed=True)
+        evidence = json.loads(call.snapshot().model_dump_json())
+        assert evidence["api"] == "responses"
+        assert evidence["cost"]["coverage"] == "known"
+        assert evidence["cost"]["priceVersion"] == expected
+
+
+def test_gpt_image_25_token_meters_stay_cost_unknown_beside_a_mapped_image_meter():
+    book = load_pricing()
+    for model_id in ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst"):
+        for quality in ("auto", "high"):
+            estimate = book.estimate_image(model_id, size="1024x1024", quality=quality)
+            assert estimate.known is False and estimate.micro_usd is None, (model_id, quality)
+        # Their per-token retail meters are not flattened into the token book.
+        assert book.rate(model_id) is None
+    # Control: the same call shape is priced for an image model with a mapped meter.
+    control = book.estimate_image("FLUX.2-pro", size="1024x1024", quality="auto")
+    assert control.known is True and control.micro_usd == 30_729
 
 
 def test_quality_size_basis_is_supported_without_inventing_packaged_rates():

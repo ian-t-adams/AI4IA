@@ -44,7 +44,7 @@
           "runtimeEnabled": {
             "type": "boolean",
             "default": true,
-            "description": "False keeps this model in the desired infrastructure/quota inventory but disables all runtime selection and serving routes. Resource deletion is a separate operator-approved phase."
+            "description": "False keeps this row's deployments and historical metadata in desired infrastructure, quota and retirement inventory, but leaves it with no eligible runtime options or generated HTTP/realtime routes. It is not physical deletion or free quota; deployment removal is a separate operator-approved cleanup."
           },
           "api": {
             "type": "string",

@@ -146,7 +146,9 @@ async def test_runtime_disabled_profile_refuses_before_gateway_dispatch(tmp_path
             load_catalog.cache_clear()
             catalog = load_catalog(str(path))
             assert catalog.for_deployment(deployment).anthropicThinking == "disabled"
-            assert (catalog.get(model.id) is not None) is enabled
+            assert catalog.get(model.id) is catalog.for_deployment(deployment)
+            assert catalog.get(model.id).runtimeEnabled is enabled
+            assert (catalog.resolve_deployment(model.id) is not None) is enabled
             gateway = ModelGatewayClient(make_settings(
                 claude_enabled=True, claude_external_enabled=True,
                 model_catalog_path=str(path), model_gateway_url="https://proxy.test/openai",
