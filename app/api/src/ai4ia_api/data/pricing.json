@@ -3,7 +3,7 @@
   "_source": "Azure Retail Prices API (https://prices.azure.com/api/retail/prices, 2023-01-01-preview) for Azure BFL Flux Models, Azure Mistral Models Global Standard meters, and Azure Content Understanding document/contextualization meters. GPT-6 Astra uses Microsoft's official Global Standard short-context launch pricing (https://azure.microsoft.com/en-us/blog/gpt-6-astra-frontier-intelligence-for-work-now-generally-available-in-microsoft-foundry/), verified 2026-09-06 while its retail meters await publication. MAI-Thinking-1 comes from the official Azure MAI registry asset. Claude comes from Anthropic's official Microsoft Foundry pricing documentation.",
   "_caveats": "Flat rates cannot express every meter dimension. Long-context, cache, priority, Data Zone, regional, batch, reference-image, annotation, and provisioned variants may differ. Astra's Global Standard long-context rates are $20 input/$75 output per million tokens rather than the short-context $10/$50 estimate recorded here. FLUX.2 estimates use output megapixels; FLUX.1 uses one image. MAI-Image-2.5/Pro/Flash, MAI-Image-2.6/Flash, gpt-image-2, and gpt-image-1-mini remain cost-unknown because no unambiguous Azure retail meter is published. Mistral OCR 4 annotation pricing is excluded because this app requests OCR only. Content Understanding page meters are recorded separately by minimal/basic/standard usage; standard versus advanced contextualization is taken from the service's own contextualizationTokens and advancedContextualizationTokens usage properties, never from a locally authored analyzer label.",
   "_claudeSource": "Verified 2026-09-20: https://platform.claude.com/docs/en/about-claude/pricing#claude-in-microsoft-foundry-pricing and #model-pricing. Opus 5 $5/$25, Sonnet 5 $2/$10 standard USD/MTok; US DataZoneStandard applies 1.1x, including cache reads. Rates are estimates, not a bill cap. Cache writes remain cost-unknown when their duration is not evidenced; no caching is requested by the adapter.",
-  "version": "2026-09-20-claude-voice",
+  "version": "2026-09-23-voice",
   "currency": "USD",
   "models": {
     "gpt-6-astra": { "inputPer1M": 10.0, "outputPer1M": 50.0 },
@@ -64,6 +64,78 @@
       "text": { "inputPer1M": 4.0, "cachedInputPer1M": 0.4, "outputPer1M": 16.0 },
       "audio": { "inputPer1M": 32.0, "cachedInputPer1M": 0.4, "outputPer1M": 64.0 },
       "image": { "inputPer1M": 5.0, "cachedInputPer1M": 0.5 }
+    },
+    "gpt-realtime-2.1": {
+      "provider": "OpenAI",
+      "sourceUrl": "https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview",
+      "observedAt": "2026-09-23",
+      "catalogVersion": "2026-07-07",
+      "currency": "USD",
+      "basis": "per_1m_modality_tokens",
+      "retailPricesVerified": true,
+      "azureBillingVerified": false,
+      "runtimeEstimate": "unknown",
+      "retailSource": {
+        "serviceName": "Foundry Models",
+        "productName": "Azure OpenAI Media",
+        "armRegionName": "eastus2",
+        "deploymentSku": "GlobalStandard",
+        "type": "Consumption",
+        "unitOfMeasure": "1M",
+        "tierMinimumUnits": 0,
+        "isPrimaryMeterRegion": true,
+        "effectiveStartDate": "2026-07-01T00:00:00Z",
+        "meterIds": {
+          "textInput": "9f9064f0-859d-581c-bd0b-f7d23e2e7b2c",
+          "textCachedInput": "b573bf6c-f8e6-541f-8b4b-da854e7bcbc3",
+          "textOutput": "a419ed11-a11c-527b-8957-9afb58b77e6e",
+          "audioInput": "34344c3d-465f-56e2-b406-d0ebd58f91d1",
+          "audioCachedInput": "568b8b5a-1a0f-576b-b563-4d3473d68e35",
+          "audioOutput": "b75a1221-f3ec-5f84-9c09-8da9d28f88e8",
+          "imageInput": "3a6187e4-2485-571a-b9fa-28c264222c8e",
+          "imageCachedInput": "2a1b9107-c0ff-5610-b467-584e6b29616c"
+        }
+      },
+      "notes": "Verified public Azure retail Gl meters for this model and eastus2 only, not a subscription price quote or actual billing validation. Modality/cache usage and a bounded session envelope remain incomplete, so runtime cost and hard admission stay unknown. Do not flatten these references into models. Image meters do not enable a new image-input surface.",
+      "text": { "inputPer1M": 4.0, "cachedInputPer1M": 0.4, "outputPer1M": 24.0 },
+      "audio": { "inputPer1M": 32.0, "cachedInputPer1M": 0.4, "outputPer1M": 64.0 },
+      "image": { "inputPer1M": 5.0, "cachedInputPer1M": 0.5 }
+    },
+    "gpt-realtime-2.1-mini": {
+      "provider": "OpenAI",
+      "sourceUrl": "https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview",
+      "observedAt": "2026-09-23",
+      "catalogVersion": "2026-07-07",
+      "currency": "USD",
+      "basis": "per_1m_modality_tokens",
+      "retailPricesVerified": true,
+      "azureBillingVerified": false,
+      "runtimeEstimate": "unknown",
+      "retailSource": {
+        "serviceName": "Foundry Models",
+        "productName": "Azure OpenAI Media",
+        "armRegionName": "eastus2",
+        "deploymentSku": "GlobalStandard",
+        "type": "Consumption",
+        "unitOfMeasure": "1M",
+        "tierMinimumUnits": 0,
+        "isPrimaryMeterRegion": true,
+        "effectiveStartDate": "2026-07-01T00:00:00Z",
+        "meterIds": {
+          "textInput": "28fd376c-06fd-55db-88f8-4e6202e0dfcd",
+          "textCachedInput": "e0f0c184-582e-50df-8b78-a78dd108b79b",
+          "textOutput": "a433c97d-a133-56ff-b822-3e8b341da41f",
+          "audioInput": "e4abdb4e-4667-5834-b124-f232bf081887",
+          "audioCachedInput": "57ce43f3-a7ac-5bbd-a0ef-b121eb813caf",
+          "audioOutput": "9e679ddd-f3f6-5e37-94ce-52db891b35d9",
+          "imageInput": "cfee3566-a2b7-5cab-9693-b082202e3b9b",
+          "imageCachedInput": "54eea545-94db-5418-9242-102cd4753cff"
+        }
+      },
+      "notes": "Verified public Azure retail Gl meters specific to 2.1-mini; no rate is copied from full 2.1 or an older mini. Retail DZ meters do not prove a subscription DataZoneStandard offering. These references do not establish actual billed usage, a flat runtime price, a session bound, or an image-input capability.",
+      "text": { "inputPer1M": 0.6, "cachedInputPer1M": 0.06, "outputPer1M": 2.4 },
+      "audio": { "inputPer1M": 10.0, "cachedInputPer1M": 0.3, "outputPer1M": 20.0 },
+      "image": { "inputPer1M": 0.8, "cachedInputPer1M": 0.08 }
     }
   },
   "imageModels": {

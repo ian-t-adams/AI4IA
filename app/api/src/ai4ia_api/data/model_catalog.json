@@ -1254,6 +1254,60 @@
       ]
     },
     {
+      "id": "gpt-realtime-2.1",
+      "displayName": "gpt-realtime-2.1",
+      "category": "realtime",
+      "runtimeEnabled": true,
+      "format": "OpenAI",
+      "api": "chat",
+      "requiredRealtimeProtocol": "ga",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-07-07",
+          "deploymentName": "gpt-realtime-2.1-slurmfactory-eastus2-glbl"
+        }
+      ]
+    },
+    {
+      "id": "gpt-realtime-2.1-mini",
+      "displayName": "gpt-realtime-2.1-mini",
+      "category": "realtime",
+      "runtimeEnabled": true,
+      "format": "OpenAI",
+      "api": "chat",
+      "requiredRealtimeProtocol": "ga",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-07-07",
+          "deploymentName": "gpt-realtime-2.1-mini-slurmfactory-eastus2-glbl"
+        }
+      ]
+    },
+    {
       "id": "gpt-realtime-mini",
       "displayName": "gpt-realtime-mini",
       "category": "realtime",

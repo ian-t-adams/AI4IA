@@ -29,6 +29,11 @@ from tests.conftest import make_settings
 
 HEADERS = {"X-Dev-User": "alice"}
 GA_MODEL = "gpt-realtime-1.5"
+GA_MODELS = {
+    GA_MODEL: "2026-02-23",
+    "gpt-realtime-2.1": "2026-07-07",
+    "gpt-realtime-2.1-mini": "2026-07-07",
+}
 ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -51,10 +56,15 @@ def test_catalog_delta_keeps_footprint_default_and_existing_tts_capacity():
             "version": "2026-05-06", "maxCapacity": 10, "maxCapacityPool": "global",
         }],
     }
-    assert models[GA_MODEL]["requiredRealtimeProtocol"] == "ga"
-    assert models[GA_MODEL]["deployments"] == [{
-        "region": "eastus2", "sku": "GlobalStandard", "capacity": 10, "version": "2026-02-23",
-    }]
+    assert {m["name"] for m in models.values() if m.get("requiredRealtimeProtocol") == "ga"} == set(GA_MODELS)
+    for name, version in GA_MODELS.items():
+        assert models[name] == {
+            "name": name, "format": "OpenAI", "category": "realtime",
+            "requiredRealtimeProtocol": "ga",
+            "deployments": [{
+                "region": "eastus2", "sku": "GlobalStandard", "capacity": 10, "version": version,
+            }],
+        }
     assert models["gpt-4o-mini-tts"]["deployments"] == [{
         "region": "eastus2", "sku": "GlobalStandard", "capacity": 10,
         "version": "2025-12-15", "maxCapacity": 600, "maxCapacityPool": "global",
@@ -63,7 +73,9 @@ def test_catalog_delta_keeps_footprint_default_and_existing_tts_capacity():
     retained = catalog.get("gpt-realtime-2")
     assert retained.runtimeEnabled is True
     assert retained.requiredRealtimeProtocol is None
-    assert catalog.get(GA_MODEL).requiredRealtimeProtocol == "ga"
+    for name, version in GA_MODELS.items():
+        assert catalog.get(name).requiredRealtimeProtocol == "ga"
+        assert catalog.resolve_deployment(name).modelVersion == version
     for protocol in RealtimeProtocol:
         selected, _ = resolve_realtime_deployment(catalog, None, None, protocol=protocol)
         assert selected == "gpt-realtime"
@@ -77,13 +89,16 @@ def test_catalog_delta_keeps_footprint_default_and_existing_tts_capacity():
     )
 
 
-def test_ga_requirement_is_not_a_client_protocol_selector(client):
+@pytest.mark.parametrize("model_id", GA_MODELS)
+def test_ga_requirement_is_not_a_client_protocol_selector(client, model_id):
+    state = client.app.state
+    state.catalog = state.policy.catalog = state.catalog.model_copy(deep=True)
     settings = client.app.state.settings
     connector = client.app.state.realtime_connector
-    query = f"?model={GA_MODEL}&protocol=ga"
+    query = f"?model={model_id}&protocol=ga"
     assert settings.realtime_protocol == RealtimeProtocol.preview
     published = client.get("/api/models?protocol=ga", headers=HEADERS).json()["models"]
-    assert GA_MODEL not in {m["id"] for m in published}
+    assert model_id not in {m["id"] for m in published}
     assert "gpt-realtime" in {m["id"] for m in published}
     with pytest.raises(WebSocketDisconnect) as denied:
         with client.websocket_connect(
@@ -97,11 +112,11 @@ def test_ga_requirement_is_not_a_client_protocol_selector(client):
 
     settings.realtime_protocol = RealtimeProtocol.ga
     published = client.get("/api/models", headers=HEADERS).json()["models"]
-    assert next(m for m in published if m["id"] == GA_MODEL)["requiredRealtimeProtocol"] == "ga"
+    assert next(m for m in published if m["id"] == model_id)["requiredRealtimeProtocol"] == "ga"
     _echo(client, query=query, user="alice")
     assert len(connector.connects) == 1
     opened = connector.connects[0]
-    target = client.app.state.catalog.resolve_deployment(GA_MODEL).deploymentName
+    target = client.app.state.catalog.resolve_deployment(model_id).deploymentName
     url = urlsplit(opened["url"])
     assert url.path == "/openai/v1/realtime"
     assert parse_qs(url.query) == {"model": [target]}
@@ -118,6 +133,18 @@ def test_ga_requirement_is_not_a_client_protocol_selector(client):
     settings.realtime_ga_enabled = True
     _echo(client, query=query, user="alice")
     assert len(connector.connects) == 2
+
+    entry = state.catalog.get(model_id)
+    entry.runtimeEnabled = False
+    assert model_id not in {
+        m["id"] for m in client.get("/api/models", headers=HEADERS).json()["models"]
+    }
+    with pytest.raises(WebSocketDisconnect):
+        _echo(client, query=query, user="alice")
+    assert len(connector.connects) == 2
+    entry.runtimeEnabled = True
+    _echo(client, query=query, user="alice")
+    assert len(connector.connects) == 3
 
 
 @pytest.mark.parametrize("protocol", list(RealtimeProtocol))
@@ -138,7 +165,8 @@ def test_retained_rt2_is_advertised_and_served_until_explicitly_disabled(client,
     query = f"?session={session_id}&model={retained.id}&region=eastus2"
     offered = client.get("/api/models", headers=HEADERS).json()["models"]
     assert retained.id in {row["id"] for row in offered}
-    assert (GA_MODEL in {row["id"] for row in offered}) is (protocol == RealtimeProtocol.ga)
+    for name in GA_MODELS:
+        assert (name in {row["id"] for row in offered}) is (protocol == RealtimeProtocol.ga)
     _echo(client, query=query, user="alice")
     opened = state.realtime_connector.connects[0]
     url = urlsplit(opened["url"])
@@ -164,14 +192,15 @@ def test_retained_rt2_is_advertised_and_served_until_explicitly_disabled(client,
     assert len(state.realtime_connector.connects) == 2
 
 
-def test_default_resolver_cannot_fall_back_to_a_ga_only_catalog():
-    entry = load_catalog().get(GA_MODEL)
+@pytest.mark.parametrize("model_id", GA_MODELS)
+def test_default_resolver_cannot_fall_back_to_a_ga_only_catalog(model_id):
+    entry = load_catalog().get(model_id)
     catalog = ModelCatalog(models=[entry])
     with pytest.raises(RealtimeResolutionError, match="No realtime models"):
         resolve_realtime_deployment(catalog, None, None)
     assert resolve_realtime_deployment(
         catalog, None, None, protocol=RealtimeProtocol.ga,
-    )[0] == GA_MODEL
+    )[0] == model_id
 
 
 @pytest.mark.parametrize("patch", [
@@ -300,15 +329,16 @@ def test_ga_tts_uses_the_existing_proxy_speech_path_and_admission(cap):
         asyncio.run(http.aclose())
 
 
-def test_ga_replacement_does_not_expand_speech_managed_models():
+@pytest.mark.parametrize("model_id", GA_MODELS)
+def test_ga_replacement_does_not_expand_speech_managed_models(model_id):
     provider = load_voice_provider_catalog().get("speech_voice_live")
     assert provider.defaultManagedModelId == "gpt-realtime"
-    assert provider.get_managed_model(GA_MODEL) is None
+    assert provider.get_managed_model(model_id) is None
     c = _speech_client(realtime_protocol="ga", **GA_SETTINGS)
     try:
         with pytest.raises(WebSocketDisconnect):
             with c.websocket_connect(
-                f"/api/voice/live?provider=speech_voice_live&model={GA_MODEL}",
+                f"/api/voice/live?provider=speech_voice_live&model={model_id}",
                 headers=_origin(), subprotocols=[DEV_SUBPROTOCOL, "alice"],
             ):
                 pass
@@ -326,7 +356,8 @@ def test_ga_replacement_does_not_expand_speech_managed_models():
 
 
 @pytest.mark.parametrize("cap", ["tokensPerDay", "costPerDayMicroUsd"])
-def test_ga_reference_pricing_cannot_authorize_capped_realtime(cap):
+@pytest.mark.parametrize("model_id", GA_MODELS)
+def test_ga_reference_pricing_cannot_authorize_capped_realtime(cap, model_id):
     c = _client(
         realtime_enabled=True, realtime_protocol="ga", hard_quota_enabled=True,
         entitlements_enabled=False, **GA_SETTINGS,
@@ -338,7 +369,7 @@ def test_ga_reference_pricing_cannot_authorize_capped_realtime(cap):
         c.app.state.realtime_connector = connector
         def connect():
             with c.websocket_connect(
-                f"/api/voice/live?model={GA_MODEL}", headers=_origin(),
+                f"/api/voice/live?model={model_id}", headers=_origin(),
                 subprotocols=[DEV_SUBPROTOCOL, "alice"],
             ) as ws:
                 for _ in range(10):

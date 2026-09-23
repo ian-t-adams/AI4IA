@@ -56,13 +56,22 @@ describe("realtimeModels", () => {
     const models = [
       { id: "gpt-realtime-2", category: "realtime" },
       { id: "gpt-realtime-1.5", category: "realtime", requiredRealtimeProtocol: "ga" as const },
+      { id: "gpt-realtime-2.1", category: "realtime", requiredRealtimeProtocol: "ga" as const },
+      { id: "gpt-realtime-2.1-mini", category: "realtime", requiredRealtimeProtocol: "ga" as const },
       { id: "disabled", category: "realtime", runtimeEnabled: false },
     ];
     expect(realtimeModels(models).map((m) => m.id)).toEqual(["gpt-realtime-2"]);
     expect(realtimeModels(models, "preview").map((m) => m.id)).toEqual(["gpt-realtime-2"]);
-    expect(realtimeModels(models, "ga").map((m) => m.id)).toEqual(["gpt-realtime-2", "gpt-realtime-1.5"]);
-    models[2].runtimeEnabled = true;
-    expect(realtimeModels(models, "ga").map((m) => m.id)).toEqual(["gpt-realtime-2", "gpt-realtime-1.5", "disabled"]);
+    const gaModels = ["gpt-realtime-2", "gpt-realtime-1.5", "gpt-realtime-2.1", "gpt-realtime-2.1-mini"];
+    expect(realtimeModels(models, "ga").map((m) => m.id)).toEqual(gaModels);
+    models[4].runtimeEnabled = true;
+    expect(realtimeModels(models, "ga").map((m) => m.id)).toEqual([...gaModels, "disabled"]);
+    for (const model of models.slice(1, 4)) {
+      model.runtimeEnabled = false;
+      expect(realtimeModels(models, "ga").map((m) => m.id)).not.toContain(model.id);
+      model.runtimeEnabled = true;
+      expect(realtimeModels(models, "ga").map((m) => m.id)).toContain(model.id);
+    }
   });
 
   it("keeps only realtime-category models", () => {

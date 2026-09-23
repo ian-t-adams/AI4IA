@@ -21,6 +21,7 @@ from ai4ia_api.realtime_canary import SETUP_INPUT
 from ai4ia_api.realtime_protocol import RealtimeProtocol
 from ai4ia_api.routers.realtime import BEARER_SUBPROTOCOL, RealtimeResolutionError, resolve_realtime_deployment
 from ai4ia_api.usage.pricing import load_pricing
+from tests.test_ga_voice_migration import GA_MODELS
 from tests.test_genai_telemetry import _gateway, _model, _native, capture as capture
 from tests.test_group_policy import service, user
 from tests.test_model_catalog_portability import _load_gen
@@ -66,11 +67,13 @@ def test_declared_versions_and_runtime_flags_agree_in_all_merged_catalogs():
         assert retained.runtimeEnabled is True and retained.requiredRealtimeProtocol is None
         assert catalog.resolve_deployment(retained.id).modelVersion == "2026-05-06"
         assert catalog.resolve_deployment(TTS_MODEL).modelVersion == "2025-12-15"
-        assert catalog.resolve_deployment(GA_MODEL).modelVersion == "2026-02-23"
+        for name, version in GA_MODELS.items():
+            assert catalog.resolve_deployment(name).modelVersion == version
 
 
-def test_actor_policy_bypass_never_bypasses_runtime_or_residency_filters():
-    entry = load_catalog().get(GA_MODEL).model_copy(deep=True)
+@pytest.mark.parametrize("model_id", GA_MODELS)
+def test_actor_policy_bypass_never_bypasses_runtime_or_residency_filters(model_id):
+    entry = load_catalog().get(model_id).model_copy(deep=True)
     catalog = ModelCatalog(models=[entry])
     policy, _ = service({"domains": {"models": {
         "default": {"allow": []},
@@ -85,14 +88,14 @@ def test_actor_policy_bypass_never_bypasses_runtime_or_residency_filters():
         bind_authenticated(policy, user(roles=["Voice"]))
         assert catalog.eligible_options(entry) == entry.options
         with pytest.raises(RealtimeResolutionError, match="requires the GA protocol"):
-            resolve_realtime_deployment(catalog, GA_MODEL, None)
+            resolve_realtime_deployment(catalog, model_id, None)
         assert resolve_realtime_deployment(
-            catalog, GA_MODEL, None, protocol=RealtimeProtocol.ga,
-        )[0] == GA_MODEL
+            catalog, model_id, None, protocol=RealtimeProtocol.ga,
+        )[0] == model_id
         entry.runtimeEnabled = False
         for policy_filter in (False, True):
             assert catalog.eligible_options(entry, policy_filter=policy_filter) == []
-            assert catalog.resolve_deployment(GA_MODEL, policy_filter=policy_filter) is None
+            assert catalog.resolve_deployment(model_id, policy_filter=policy_filter) is None
         entry.runtimeEnabled = True
         catalog.residencyPolicy = "us"
         assert catalog.eligible_options(entry, policy_filter=False) == []
@@ -103,7 +106,8 @@ def test_actor_policy_bypass_never_bypasses_runtime_or_residency_filters():
 
 
 @pytest.mark.parametrize("change", ["runtime_disabled", "declared_version", "required_protocol"])
-def test_published_ga_voice_rechecks_catalog_binding_before_the_next_frame(published_api, change):
+@pytest.mark.parametrize("model_id", GA_MODELS)
+def test_published_ga_voice_rechecks_catalog_binding_before_the_next_frame(published_api, change, model_id):
     client, _, headers, _ = published_api
     state = client.app.state
     state.settings.realtime_enabled = True
@@ -113,21 +117,21 @@ def test_published_ga_voice_rechecks_catalog_binding_before_the_next_frame(publi
     for key, value in GA_SETTINGS.items():
         setattr(state.settings, key, value)
     head, source = publish(
-        client, GA_MODEL, headers, "agent", "published-ga", tools=False, modes=["voice"],
+        client, model_id, headers, "agent", "published-ga", tools=False, modes=["voice"],
     )
     _, version = asyncio.run(state.publications._version(AssetVersionRef.model_validate(source)))
-    binding = next(item for item in version.modelBindings if item.modelId == GA_MODEL)
+    binding = next(item for item in version.modelBindings if item.modelId == model_id)
     assert binding.runtimeEnabled is True
     assert binding.requiredRealtimeProtocol == "ga"
-    assert binding.option.modelVersion == "2026-02-23"
+    assert binding.option.modelVersion == GA_MODELS[model_id]
     auth = headers("Consumer")
     created = client.post("/api/sessions", headers=auth, json={
-        "model": GA_MODEL, "agentName": head["handle"], "libraryDocumentIds": [],
+        "model": model_id, "agentName": head["handle"], "libraryDocumentIds": [],
     })
     assert created.status_code == 201, created.text
-    query = f"/api/voice/live?session={created.json()['id']}&model={GA_MODEL}"
+    query = f"/api/voice/live?session={created.json()['id']}&model={model_id}"
     protocols = [BEARER_SUBPROTOCOL, auth["Authorization"].split(" ", 1)[1]]
-    original = state.catalog.get(GA_MODEL)
+    original = state.catalog.get(model_id)
     connector = FakeRealtimeConnector()
     state.realtime_connector = connector
     frame = '{"type":"session.update","session":{"voice":"alloy"}}'
@@ -146,13 +150,13 @@ def test_published_ga_voice_rechecks_catalog_binding_before_the_next_frame(publi
             })
         else:
             updated = original.model_copy(update={"requiredRealtimeProtocol": None})
-        state.catalog.models = [updated if m.id == GA_MODEL else m for m in state.catalog.models]
+        state.catalog.models = [updated if m.id == model_id else m for m in state.catalog.models]
         ws.send_text(frame)
         with pytest.raises(WebSocketDisconnect):
             ws.receive_text()
     assert len(connector.connects) == 1
     assert len(connector.upstream.sent_text) == 1
-    state.catalog.models = [original if m.id == GA_MODEL else m for m in state.catalog.models]
+    state.catalog.models = [original if m.id == model_id else m for m in state.catalog.models]
     restored = FakeRealtimeConnector()
     state.realtime_connector = restored
     with client.websocket_connect(
@@ -242,7 +246,7 @@ async def test_rest_audio_never_inherits_text_genai_usage_or_reference_prices(ca
         ) == audio
         assert len(calls) == 1
         assert exporter.get_finished_spans() == ()
-        for model in (GA_MODEL, TTS_MODEL):
+        for model in (*GA_MODELS, TTS_MODEL):
             estimate = load_pricing().estimate(model, prompt_tokens=100, completion_tokens=20)
             assert not estimate.known and estimate.micro_usd is None
         await gateway.complete(deployment=text_deployment, messages=[])

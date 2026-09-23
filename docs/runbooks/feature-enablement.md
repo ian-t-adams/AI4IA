@@ -732,8 +732,9 @@ Claude integration from current main.
 | --- | --- |
 | `gpt-realtime-2` / `2026-05-06` | Remains selectable on preview and GA with `runtimeEnabled` (default true) and `requiredRealtimeProtocol` omitted. Preserve eastus2 / GlobalStandard / baseline 10, maximum 10 and existing pool metadata until the authoritative subscription inference deprecation `2026-10-31T00:00:00Z`; the separately approved follow-up below is mandatory. |
 | `gpt-realtime-1.5` / `2026-02-23` | Added only in the old model's eastus2 footprint, GlobalStandard baseline 10. `requiredRealtimeProtocol=ga`; no unverified maximum, pool, additional region or production-profile values. The maximum profile uses the existing portable-baseline fallback, not a new quota assertion. |
+| `gpt-realtime-2.1` and `gpt-realtime-2.1-mini` / `2026-07-07` | Two additional GA-only choices, each eastus2 GlobalStandard baseline 10 with no maximum, pool, extra region or production-profile values. Full 2.1 is the subscription-verified successor to RT2, not an in-place version upgrade. |
 | `gpt-4o-mini-tts` / `2025-12-15` | Already deployed and structurally validated by #492. Preserve the same eastus2 name, SKU, baseline 10, maximum 600 and pool metadata; no additional upgrade, overlap deployment or capacity change. |
-| Existing `gpt-realtime`, `gpt-realtime-mini`, `tts-hd` | Unchanged models, versions, footprints and defaults. Speech Voice Live keeps its independent supported managed-model subset; it does not acquire Realtime 1.5. |
+| Existing `gpt-realtime`, `gpt-realtime-mini`, `tts-hd` | Unchanged models, versions, footprints and defaults. Speech Voice Live keeps its independent supported managed-model subset; it does not acquire Realtime 1.5, 2.1 or 2.1-mini. |
 
 **RT2 owner decision, 2026-09-23:** preserve user choice rather than runtime-disable
 the existing deployment from a public reference date. The authoritative
@@ -749,10 +750,35 @@ The public August 31 reference file/table remains unchanged and separately label
 **Required retirement follow-up:** RT2 remains selectable until that authoritative
 inference deadline. From `2026-10-24T00:00:00Z`, the existing seven-day retirement
 policy treats new/changed targets as unsafe; exact Succeeded reconciles only warn.
-A separately approved change must either set `runtimeEnabled=false` or move to
-a subscription-verified later version, and must be **merged and deployed before
+A separately approved change must set RT2 `runtimeEnabled=false`, and must be
+**merged and deployed before
 `2026-10-31T00:00:00Z`**. This source change introduces no automatic runtime date
 cutoff. Phase 2 resource/desired-row removal still needs its own approval.
+
+**Successor evidence, 2026-09-23 approximately 12:55 UTC:** the owner supplied
+read-only subscription model lists for eastus2 and swedencentral. Both
+`gpt-realtime-2.1` and `gpt-realtime-2.1-mini` `2026-07-07` are
+GenerallyAvailable with inference through `2027-07-31T00:00:00Z`. Full 2.1 offers
+GlobalStandard and DataZoneStandard; mini offers GlobalStandard only. Each
+GlobalStandard counter reads 0/10 in both regions. Equal counters do not prove
+independent quota pools or permit duplicate regional allocations; this source
+chooses only the approved eastus2 portable baseline, not a maximum or Data Zone.
+Fresh offering/allocation checks remain required before any provisioning.
+
+Those lists offer RT2 only as `2026-05-06`, with the October 31 inference date:
+there is **no in-place newer RT2 version**. `gpt-realtime-2.1` is the verified
+successor. They also offer `gpt-realtime-mini` `2025-10-06` with inference through
+`2027-04-06T00:00:00Z`, later than the catalog's `2025-12-15` version
+(`2026-12-15T00:00:00Z`). Record that discrepancy without changing the existing
+mini pin or treating it as an approved downgrade.
+
+The [Learn audio-model table](https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#audio-models)
+identifies both 2.1 models as minor RT2 updates with improved silence/noise
+handling. Its public preview label differs from the subscription GA observation;
+keep those evidence scopes distinct. Its 32,000-input/4,096-output limits also
+differ from the broader 2.x overview's 256,000-token context. The new catalog
+entries therefore mirror the existing realtime metadata rather than asserting
+an uncertain context cap or adding a new reasoning-effort/image-input surface.
 
 The [public GA supported-model list](https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets#supported-models)
 names RT2 `2026-05-07`, not this subscription's `2026-05-06`; do not upgrade or
@@ -768,8 +794,8 @@ These source controls do not prove live GA/2.x acceptance or enable a new effort
 **operator-disabled for runtime**, not a claim that the provider has retired it.
 The row still participates in Bicep desired inventory, allocation/quota and
 retirement reporting. `Test-ModelDeployments` keeps its exact inventory check:
-there is no stale-name exemption. Phase 1 temporarily includes both realtime
-deployments; phase 2 removes the old resource and desired row together through a
+there is no stale-name exemption. Phase 1 retains RT2 alongside the three
+GA-only additions; phase 2 removes the old resource and desired row together through a
 separate reviewed change. Omitting a desired row while retaining its resource
 would fail that postprovision check, not constitute completed migration.
 
@@ -789,7 +815,8 @@ egress. Already accepted connections are not replayed or migrated.
    Regenerate any capacity evidence against this exact catalog hash; do not reuse
    an earlier hash or change the operator's profile. Historical September 10
    capacity observations are not current allocation approval, cross-region pool
-   identity, TPM or overlap headroom. Do not reuse them to provision Realtime 1.5.
+   identity, TPM or overlap headroom. The September 23 observations are also dated,
+   not reusable provisioning authority for Realtime 1.5, 2.1 or 2.1-mini.
 2. Read back the staged GA APIM API, policy, scoped subscription and API-secret
    wiring on the **pre-migration desired catalog**, leaving production
    `realtimeProtocol=preview`. Use the existing `gpt-realtime` on an approved
@@ -799,13 +826,13 @@ egress. Already accepted connections are not replayed or migrated.
    its new realtime allocation. RT2 remains selectable; the TTS row is unchanged
    from the accepted #492 release and needs no second migration.
 3. After that evidence and explicit owner approval, reconcile the phase-1 desired
-   inventory, retaining Realtime 2 while provisioning Realtime 1.5 and preserving
+   inventory, retaining Realtime 2 while provisioning the approved GA-only additions and preserving
    the accepted TTS deployment. Read back exact resource IDs, names, versions, SKU/capacity,
    provisioning state and active image references. Confirm Realtime 2 retains its
    exact desired version/allocation and both preview/GA serving routes, without
    enabling the server's GA selector.
    None of these management-plane observations prove inference.
-4. On the approved isolated GA revision, run an authenticated Realtime 1.5 canary
+4. On the approved isolated GA revision, exercise each newly approved model
    through the app relay and GA APIM route. Exercise audio/transcripts, tools and
    denial, session ownership, interruption/truncation and cleanup, alongside
    unchanged preview and Speech controls. The separate
@@ -816,7 +843,7 @@ egress. Already accepted connections are not replayed or migrated.
    alone.
 5. Only after accepted results and a separate cutover decision, select `ga` on the
    intended production API revision. Keep the existing `gpt-realtime` default;
-   Realtime 1.5 becomes an available explicit choice, not a bulk preference
+   Realtime 1.5, 2.1 and 2.1-mini become available explicit choices, not a bulk preference
    migration. Retain the preview route/key and known-good application image for
    the recorded rollback window.
 6. **Phase 2 requires another approval.** Inventory the exact retained Realtime 2
@@ -828,7 +855,7 @@ egress. Already accepted connections are not replayed or migrated.
    catalog absence, or issue closure before evidenced cleanup.
 
 **Rollback boundaries:** preview selection can use the retained compatible
-`gpt-realtime`/mini models and currently selectable RT2, not GA-only Realtime 1.5.
+`gpt-realtime`/mini models and currently selectable RT2, not the GA-only additions.
 The same RT2 retirement deadline applies during rollback; after the required
 follow-up, do not restore a disabled or expired target. End affected connections
 and establish a new one, without replaying a possibly accepted frame.
@@ -848,12 +875,34 @@ deployment-qualified native `/audio/speech` request through
 JSON `model`, `input`, `voice`, `response_format` fields. Its delivered change was
 a model-version upgrade, not a rewrite to a different speech protocol.
 
-`pricing.json` records the [OpenAI modality schedule](https://developers.openai.com/api/docs/models/gpt-realtime-1.5)
-as dated USD **reference-only** data, not verified Azure billing prices.
-Text, cached text, audio, cached audio and image rates are not interchangeable.
-The current ledger lacks complete modality/cache accounting, so mixed realtime
-cost remains unknown; TTS usage is also unknown. Token/dollar-capped paths still
-refuse unsupported bounds. Do not weaken admission to obtain a canary result.
+`pricing.json` keeps the [Realtime 1.5 OpenAI modality schedule](https://developers.openai.com/api/docs/models/gpt-realtime-1.5)
+unchanged as reference-only data. The two 2.1 rows use verified public
+[Azure Retail Prices API](https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview)
+meters observed September 23, effective July 1, 2026. Filter `serviceName`
+`Foundry Models`, `productName` `Azure OpenAI Media`, `armRegionName` `eastus2`,
+and `priceType` `Consumption`; select each exact model's `Gl 1M Tokens` meter,
+not its `DZ` counterpart. The recorded primary, tier-zero meters use `1M` units
+and USD, with exact meter IDs retained alongside the following rates:
+
+| Model | Text input / cached / output | Audio input / cached / output | Image input / cached |
+| --- | --- | --- | --- |
+| `gpt-realtime-2.1` | 4 / 0.4 / 24 | 32 / 0.4 / 64 | 5 / 0.5 |
+| `gpt-realtime-2.1-mini` | 0.6 / 0.06 / 2.4 | 10 / 0.3 / 20 | 0.8 / 0.08 |
+
+All values are USD per million tokens of the named modality. Mini meters were
+verified independently; no full-model rate was copied or guessed. Published
+mini `DZ` prices do not prove a subscription DataZoneStandard offering.
+`retailPricesVerified=true` records public price evidence, while
+`azureBillingVerified=false` and `runtimeEstimate=unknown` retain the distinction
+from actual billed usage. The compact price version is `2026-09-23-voice`.
+Existing numeric rates, the old 1.5 reference and historical receipts are unchanged.
+
+These remain `referenceModalityModels`, never flat `models` estimates. Text,
+cached text, audio, cached audio and image rates are not interchangeable. The
+current ledger lacks complete modality/cache accounting and a bounded session
+envelope, so mixed realtime cost remains unknown; TTS usage is also unknown.
+Image prices do not enable an image-input surface. Token/dollar-capped paths
+still refuse unsupported bounds; do not weaken admission to obtain a canary result.
 
 ### Speech output canary
 

@@ -1043,6 +1043,34 @@
       ]
     },
     {
+      "name": "gpt-realtime-2.1",
+      "format": "OpenAI",
+      "category": "realtime",
+      "requiredRealtimeProtocol": "ga",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "2026-07-07"
+        }
+      ]
+    },
+    {
+      "name": "gpt-realtime-2.1-mini",
+      "format": "OpenAI",
+      "category": "realtime",
+      "requiredRealtimeProtocol": "ga",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "2026-07-07"
+        }
+      ]
+    },
+    {
       "name": "gpt-realtime-mini",
       "format": "OpenAI",
       "category": "realtime",

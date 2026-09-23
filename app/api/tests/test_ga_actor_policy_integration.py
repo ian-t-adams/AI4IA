@@ -16,7 +16,7 @@ from ai4ia_api.publishing.refs import AssetVersionRef
 from ai4ia_api.realtime_canary import SETUP_INPUT
 from ai4ia_api.realtime_protocol import RealtimeProtocol
 from tests.test_auth_entra import TENANT
-from tests.test_ga_voice_integration import GA_MODEL
+from tests.test_ga_voice_migration import GA_MODELS
 from tests.test_policy_actor_restrictions import (
     MONITOR, ORDINARY, REALTIME, ORIGIN, actor_app as actor_app, authorization, fresh_request,
 )
@@ -64,8 +64,9 @@ def setup_exchange(client, bearer, model=None, *, allowed=True, session=None):
 
 
 @pytest.mark.parametrize("cached_actor", [False, True])
+@pytest.mark.parametrize("model_id", GA_MODELS)
 def test_signed_actor_categories_preserve_runtime_protocol_and_default_routing(
-    actor_app, monkeypatch, cached_actor,
+    actor_app, monkeypatch, cached_actor, model_id,
 ):
     client, model, token, calls, _connector, config = actor_app
     state = client.app.state
@@ -97,16 +98,16 @@ def test_signed_actor_categories_preserve_runtime_protocol_and_default_routing(
         rows = offered.json()["models"]
         assert {row["category"] for row in rows} == {"realtime"}
         assert RETAINED_MODEL in {row["id"] for row in rows}
-        assert (GA_MODEL in {row["id"] for row in rows}) is (protocol == RealtimeProtocol.ga)
+        assert (model_id in {row["id"] for row in rows}) is (protocol == RealtimeProtocol.ga)
         ordinary_rows = client.get("/api/models", headers=authorization(ordinary)).json()["models"]
         assert model.id in {row["id"] for row in ordinary_rows}
         assert RETAINED_MODEL in {row["id"] for row in ordinary_rows}
-        assert (GA_MODEL in {row["id"] for row in ordinary_rows}) is (protocol == RealtimeProtocol.ga)
+        assert (model_id in {row["id"] for row in ordinary_rows}) is (protocol == RealtimeProtocol.ga)
         setup_exchange(client, ordinary)
         setup_exchange(client, actor, RETAINED_MODEL, allowed=protocol == RealtimeProtocol.ga)
         setup_exchange(client, ordinary, RETAINED_MODEL)
-        setup_exchange(client, actor, GA_MODEL, allowed=protocol == RealtimeProtocol.ga)
-        setup_exchange(client, ordinary, GA_MODEL, allowed=protocol == RealtimeProtocol.ga)
+        setup_exchange(client, actor, model_id, allowed=protocol == RealtimeProtocol.ga)
+        setup_exchange(client, ordinary, model_id, allowed=protocol == RealtimeProtocol.ga)
         retained.runtimeEnabled = False
         for bearer in (actor, ordinary):
             assert RETAINED_MODEL not in {
@@ -121,17 +122,17 @@ def test_signed_actor_categories_preserve_runtime_protocol_and_default_routing(
     assert any(row["name"] == "calculator" and row["available"] for row in ordinary_tools)
     config["realtimeCanaryActor"]["restrictions"]["models"] = [model.category]
     state.settings.group_policy_json = json.dumps(config)
-    assert GA_MODEL not in {
+    assert model_id not in {
         row["id"] for row in client.get("/api/models", headers=authorization(actor)).json()["models"]
     }
-    setup_exchange(client, actor, GA_MODEL, allowed=False)
-    setup_exchange(client, ordinary, GA_MODEL)
+    setup_exchange(client, actor, model_id, allowed=False)
+    setup_exchange(client, ordinary, model_id)
     config["realtimeCanaryActor"]["restrictions"]["models"] = ["realtime"]
     state.settings.group_policy_json = json.dumps(config)
     with monkeypatch.context() as patch:
         patch.setattr(state, "realtime_canary_dispatch_guard", None)
-        setup_exchange(client, actor, GA_MODEL, allowed=False)
-    setup_exchange(client, actor, GA_MODEL)
+        setup_exchange(client, actor, model_id, allowed=False)
+    setup_exchange(client, actor, model_id)
     assert not calls
 
 
@@ -219,7 +220,8 @@ def test_unrunnable_catalog_keeps_failed_binding_unavailable_and_owner_cleanup_a
     assert control.status_code == 200 and len(calls) == 2, control.text
 
 
-def test_actor_category_reduction_cannot_erase_published_ga_source_requirements(published_api):
+@pytest.mark.parametrize("model_id", GA_MODELS)
+def test_actor_category_reduction_cannot_erase_published_ga_source_requirements(published_api, model_id):
     client, _model, headers, calls = published_api
     state = client.app.state
     state.settings.realtime_enabled = True
@@ -229,22 +231,22 @@ def test_actor_category_reduction_cannot_erase_published_ga_source_requirements(
     for key, value in GA_SETTINGS.items():
         setattr(state.settings, key, value)
     published, source = publish(
-        client, GA_MODEL, headers, "agent", "actor-policy-ga", tools=False, modes=["voice"],
+        client, model_id, headers, "agent", "actor-policy-ga", tools=False, modes=["voice"],
     )
     reference = AssetVersionRef.model_validate(source)
     _, version = asyncio.run(state.publications._version(reference))
-    binding = next(row for row in version.modelBindings if row.modelId == GA_MODEL)
+    binding = next(row for row in version.modelBindings if row.modelId == model_id)
     assert binding.runtimeEnabled is True and binding.requiredRealtimeProtocol == "ga"
-    assert binding.option.modelVersion == "2026-02-23"
+    assert binding.option.modelVersion == GA_MODELS[model_id]
     original_version = version.model_dump(mode="json")
     auth = headers("Consumer")
     bearer = auth["Authorization"].split(" ", 1)[1]
     created = client.post("/api/sessions", headers=auth, json={
-        "model": GA_MODEL, "agentName": published["handle"], "libraryDocumentIds": [],
+        "model": model_id, "agentName": published["handle"], "libraryDocumentIds": [],
     })
     assert created.status_code == 201, created.text
     session = created.json()["id"]
-    setup_exchange(client, bearer, GA_MODEL, session=session)
+    setup_exchange(client, bearer, model_id, session=session)
     original_policy = state.settings.group_policy_json
     config = json.loads(original_policy)
     config["realtimeCanaryActor"] = {
@@ -254,12 +256,12 @@ def test_actor_category_reduction_cannot_erase_published_ga_source_requirements(
     state.settings.group_policy_json = json.dumps(config)
     offered = client.get("/api/models", headers=auth)
     assert offered.status_code == 200, offered.text
-    row = next(row for row in offered.json()["models"] if row["id"] == GA_MODEL)
+    row = next(row for row in offered.json()["models"] if row["id"] == model_id)
     assert row["runtimeEnabled"] is True and row["requiredRealtimeProtocol"] == "ga"
     assert {row["category"] for row in offered.json()["models"]} == {"realtime"}
-    setup_exchange(client, bearer, GA_MODEL, session=session, allowed=False)
+    setup_exchange(client, bearer, model_id, session=session, allowed=False)
     _, version = asyncio.run(state.publications._version(reference))
     assert version.model_dump(mode="json") == original_version
     state.settings.group_policy_json = original_policy
-    setup_exchange(client, bearer, GA_MODEL, session=session)
+    setup_exchange(client, bearer, model_id, session=session)
     assert not calls

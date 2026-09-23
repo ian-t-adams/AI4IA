@@ -1361,19 +1361,28 @@ version `2026-05-06`, eastus2 and its existing capacity/pool metadata. The owner
 `2026-09-22T11:42:21Z`, not the separately labeled public August reference.
 From `2026-10-24T00:00:00Z`, the existing seven-day policy treats new/changed
 targets as unsafe; exact Succeeded reconciles only warn. A separately approved
-follow-up must runtime-disable RT2 or select a subscription-verified later version,
-and must merge and deploy before October 31. This is not an automatic runtime
-date cutoff or permission to alias the public `2026-05-07` version.
+follow-up must runtime-disable RT2 and must merge and deploy before
+`2026-10-31T00:00:00Z`. The supplied September 23 subscription model-list evidence
+offers no later RT2 version: `gpt-realtime-2.1` is the verified successor, a
+different model ID, not an alias for the unoffered public `2026-05-07`.
+No automatic runtime date cutoff is introduced.
 
-Phase 1 adds GA `gpt-realtime-1.5` only in eastus2 at portable baseline 10 without
-a guessed maximum/pool, and retains the already shipped mini-TTS `2025-12-15`
-without changing its name or capacities. The GA TTS upgrade and structural app
-speech acceptance were delivered by #492; do not repeat them as unfinished work.
+Phase 1 adds GA-only `gpt-realtime-1.5` (`2026-02-23`), `gpt-realtime-2.1` and
+`gpt-realtime-2.1-mini` (both `2026-07-07`), each only in eastus2 GlobalStandard at
+portable baseline 10 without a guessed maximum/pool. The supplied September 23
+observations report both successors GenerallyAvailable through July 31, 2027;
+equal 0/10 regional quota counters are not independent-pool or allocation proof.
+Keep the existing realtime metadata shape: conflicting public context limits do
+not authorize an invented cap or a new effort/image-input surface.
+Retain the already shipped mini-TTS `2025-12-15` without changing its name or
+capacities. The GA TTS upgrade and structural app speech acceptance were delivered
+by #492; do not repeat them as unfinished work.
 `requiredRealtimeProtocol=ga` survives generated/dev catalogs and excludes the
-replacement from preview advertisement and execution. Keep this and
+additions from preview advertisement and execution. Keep this and
 `runtimeEnabled` in publication/source comparisons; a saved unavailable model
 choice must fail explicitly, not alias another model. Speech's curated managed
-subset does not inherit the replacement.
+subset does not inherit these additions. The older `gpt-realtime-mini` version
+observation is report-only; do not change its `2025-12-15` catalog pin.
 Actor category reductions intersect these runtime/protocol gates, including on
 fresh and cached bindings. An entirely unrunnable catalog must not turn a failed
 policy binding into healthy empty inventory or prevent canonical owner cleanup.
@@ -1389,8 +1398,11 @@ The strict desired-inventory check stays intact through coexistence; phase 2
 requires separately approved exact-resource and desired-row removal after live
 acceptance. The separate opt-in `scripts/speech-canary.py` checks bounded PCM/WAV
 through the app API, never directly through the model gateway, and its metadata
-cannot prove a deployed version or intelligibility. Reference-only OpenAI
-modality rates do not make mixed realtime/TTS usage priced or safely dollar-capped.
+cannot prove a deployed version or intelligibility. OpenAI references and sourced
+Azure retail modality meters stay in `referenceModalityModels`: verified public
+rates do not establish complete mixed usage, actual billed cost or a dollar cap.
+Preserve per-model/region/SKU/meter evidence and unknown runtime estimates. New
+price versions must remain compact and pass the actual receipt redaction path.
 Follow the approved
 [activation/rollback procedure](docs/runbooks/feature-enablement.md#staged-ga-realtime).
 Issue #413 stays open for its realtime/model/cutover and approved cleanup criteria.

@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from ai4ia_api.model_evidence import ModelCallRecorder
 from ai4ia_api.usage.pricing import PriceRate, PricingBook, load_pricing
 
@@ -152,23 +154,78 @@ def test_realtime_modality_reference_is_not_a_flat_azure_price():
     assert reference["audio"] == {"inputPer1M": 32.0, "cachedInputPer1M": 0.4, "outputPer1M": 64.0}
     assert reference["image"] == {"inputPer1M": 5.0, "cachedInputPer1M": 0.5}
 
-    # A known text-only fixture uses the real shared estimator. The same totals
-    # from an unspecified realtime modality mix may not inherit those rates.
-    text = reference["text"]
-    fixture = PricingBook(
-        {"text-only-fixture": PriceRate(text["inputPer1M"], text["outputPer1M"])},
-        currency="USD", version=raw["version"],
-    )
-    known = fixture.estimate(
-        "text-only-fixture", prompt_tokens=1_000_000, completion_tokens=1_000_000,
-    )
-    assert known.known and known.micro_usd == 20_000_000
-    for prompt, completion in ((1_000_000, 1_000_000), (None, None)):
-        unknown = load_pricing().estimate(
-            "gpt-realtime-1.5", prompt_tokens=prompt, completion_tokens=completion,
+    for model in required:
+        # Known text-only control; identical mixed-modality totals stay unknown.
+        text = references[model["name"]]["text"]
+        fixture = PricingBook(
+            {"text-only-fixture": PriceRate(text["inputPer1M"], text["outputPer1M"])},
+            currency="USD", version=raw["version"],
         )
-        assert not unknown.known and unknown.micro_usd is None
-        assert unknown.input_per_1m is None and unknown.output_per_1m is None
+        known = fixture.estimate(
+            "text-only-fixture", prompt_tokens=1_000_000, completion_tokens=1_000_000,
+        )
+        assert known.known
+        assert known.micro_usd == round((text["inputPer1M"] + text["outputPer1M"]) * 1_000_000)
+        for prompt, completion in ((1_000_000, 1_000_000), (None, None)):
+            unknown = load_pricing().estimate(
+                model["name"], prompt_tokens=prompt, completion_tokens=completion,
+            )
+            assert not unknown.known and unknown.micro_usd is None
+            assert unknown.input_per_1m is None and unknown.output_per_1m is None
+        bound = load_pricing().snapshot_token_prices(model["name"]).estimate_token_bound(
+            model["name"], prompt_tokens=1_000_000, completion_tokens=1_000_000,
+        )
+        assert not bound.known and bound.micro_usd is None
+
+
+@pytest.mark.parametrize("model_id,rates,meter_ids", [
+    (
+        "gpt-realtime-2.1",
+        ((4.0, 0.4, 24.0), (32.0, 0.4, 64.0), (5.0, 0.5)),
+        {
+            "textInput": "9f9064f0-859d-581c-bd0b-f7d23e2e7b2c",
+            "textCachedInput": "b573bf6c-f8e6-541f-8b4b-da854e7bcbc3",
+            "textOutput": "a419ed11-a11c-527b-8957-9afb58b77e6e",
+            "audioInput": "34344c3d-465f-56e2-b406-d0ebd58f91d1",
+            "audioCachedInput": "568b8b5a-1a0f-576b-b563-4d3473d68e35",
+            "audioOutput": "b75a1221-f3ec-5f84-9c09-8da9d28f88e8",
+            "imageInput": "3a6187e4-2485-571a-b9fa-28c264222c8e",
+            "imageCachedInput": "2a1b9107-c0ff-5610-b467-584e6b29616c",
+        },
+    ),
+    (
+        "gpt-realtime-2.1-mini",
+        ((0.6, 0.06, 2.4), (10.0, 0.3, 20.0), (0.8, 0.08)),
+        {
+            "textInput": "28fd376c-06fd-55db-88f8-4e6202e0dfcd",
+            "textCachedInput": "e0f0c184-582e-50df-8b78-a78dd108b79b",
+            "textOutput": "a433c97d-a133-56ff-b822-3e8b341da41f",
+            "audioInput": "e4abdb4e-4667-5834-b124-f232bf081887",
+            "audioCachedInput": "57ce43f3-a7ac-5bbd-a0ef-b121eb813caf",
+            "audioOutput": "9e679ddd-f3f6-5e37-94ce-52db891b35d9",
+            "imageInput": "cfee3566-a2b7-5cab-9693-b082202e3b9b",
+            "imageCachedInput": "54eea545-94db-5418-9242-102cd4753cff",
+        },
+    ),
+])
+def test_realtime_successor_retail_references_keep_exact_modality_meters(model_id, rates, meter_ids):
+    path = Path(__file__).parents[1] / "src" / "ai4ia_api" / "data" / "pricing.json"
+    reference = json.loads(path.read_text(encoding="utf-8"))["referenceModalityModels"][model_id]
+    assert reference["sourceUrl"] == "https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview"
+    assert reference["observedAt"] == "2026-09-23"
+    assert reference["retailPricesVerified"] is True
+    assert reference["azureBillingVerified"] is False
+    assert reference["runtimeEstimate"] == "unknown"
+    assert reference["retailSource"] == {
+        "serviceName": "Foundry Models", "productName": "Azure OpenAI Media",
+        "armRegionName": "eastus2", "deploymentSku": "GlobalStandard",
+        "type": "Consumption", "unitOfMeasure": "1M", "tierMinimumUnits": 0,
+        "isPrimaryMeterRegion": True, "effectiveStartDate": "2026-07-01T00:00:00Z",
+        "meterIds": meter_ids,
+    }
+    for modality, expected in zip(("text", "audio", "image"), rates, strict=True):
+        keys = ("inputPer1M", "cachedInputPer1M", "outputPer1M")[:len(expected)]
+        assert reference[modality] == dict(zip(keys, expected, strict=True))
 
 
 def test_quality_size_basis_is_supported_without_inventing_packaged_rates():

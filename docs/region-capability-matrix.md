@@ -173,12 +173,26 @@ not be aliased to this deployment.
 RT2 remains selectable until that authoritative inference deadline. From
 `2026-10-24T00:00:00Z`, the existing retirement policy treats new/changed targets
 as unsafe; exact reconciles only warn. A separately approved follow-up must
-runtime-disable it (`runtimeEnabled=false`) or select a subscription-verified
-later version, and must merge and deploy before October 31. No automatic runtime
-date cutoff is introduced.
-`gpt-realtime-1.5` is a separate eastus2-only, baseline-10 desired deployment that
-requires the server's GA protocol. Neither the maximum nor production profile
-receives a guessed allocation. Phase 2 removes the exact old resource and desired
+runtime-disable it (`runtimeEnabled=false`) and must merge and deploy before
+`2026-10-31T00:00:00Z`. The supplied September 23, approximately 12:55 UTC
+subscription observation offers only RT2 `2026-05-06`; there is no in-place newer
+version. `gpt-realtime-2.1` is its verified successor, not a version alias.
+No automatic runtime date cutoff is introduced.
+
+Phase 1 includes `gpt-realtime-1.5`, `gpt-realtime-2.1` and `gpt-realtime-2.1-mini`
+as separate eastus2 GlobalStandard baseline-10 desired deployments requiring the
+server's GA protocol. The two 2.1 entries pin `2026-07-07`; the supplied subscription
+evidence reports both GenerallyAvailable with inference deprecation
+`2027-07-31T00:00:00Z`. It offers full 2.1 in GlobalStandard/DataZoneStandard and
+mini in GlobalStandard only, with GlobalStandard usage 0/10 for each in eastus2
+and swedencentral. These are dated observations, not quota-pool identity,
+provisioning approval or a reason to add Swedish/Data Zone allocations.
+Neither the maximum nor production profile receives a guessed allocation.
+
+The same observation offers `gpt-realtime-mini` `2025-10-06` through
+`2027-04-06T00:00:00Z`, later than the catalog's `2025-12-15` inference date
+`2026-12-15T00:00:00Z`. This is report-only: keep its catalog version unchanged.
+Phase 2 removes the exact old resource and desired
 entry only after separately approved live acceptance. Source state is not a claim
 that either phase has occurred in Azure or that GA/2.x inference is accepted.
 
