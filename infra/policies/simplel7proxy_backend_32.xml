@@ -563,9 +563,10 @@
 						(new[] { 429, 408 }.Contains(context.Response?.StatusCode ?? 0) ||
 						((context.Response?.StatusCode ?? 0) == 400 &amp;&amp; context.Variables.GetValueOrDefault&lt;bool>(&quot;isRetryableBadRequest&quot;, false)) ||
 						(context.Response?.StatusCode ?? 0) >= 500))))">
+
 					<set-variable name="throttleState" value="@{
 						JObject current = context.Variables.GetValueOrDefault&lt;JObject>(&quot;throttleState&quot;, null);
-						JObject map = (current != null &amp;&amp; current[&quot;backends&quot;] != null &amp;&amp; current[&quot;backends&quot;].Type == JTokenType.Object) ? (JObject)current[&quot;backends&quot;] : new JObject();
+						JObject map = (current != null &amp;&amp; current[&quot;backends&quot;] != null &amp;&amp; current[&quot;backends&quot;].Type == JTokenType.Object) ? (JObject)current[&quot;backends&quot;].DeepClone() : new JObject();
 						JObject wrapper = new JObject(
 							new JProperty(&quot;dirty&quot;, false),
 							new JProperty(&quot;backends&quot;, map)

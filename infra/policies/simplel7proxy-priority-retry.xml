@@ -2,9 +2,9 @@
 =============================================================================
 Azure API Policy Template
 =============================================================================
-Version:	 3.0.1
+Version:	 3.0.2
 Mode:	 Standard
-Updated:	 2026-09-06
+Updated:	 2026-09-23
  
 KEY CHANGES:
 
@@ -18,6 +18,10 @@ BUG FIXES:
 - Fixed cross-model backend mix-up caused by caching the whole backend list per API.
 - Immediate retries retain request-local throttle state instead of replacing it
   with an eventually-consistent cache read and selecting the failed region again.
+- A temporary-error reply (429, 408, 5xx or context-length 400) now marks the
+  backend in the throttle state the expression returns and caches. It previously
+  wrote to a parented map that Newtonsoft had cloned, so retries reused the
+  failed region and no later request remembered the throttle.
 - Debug output now uses the configured priority header name.
 - limit-concurrency is now keyed per backend instead of a shared key.
 - Outbound affinity header no longer throws when no backend was selected.
@@ -889,9 +893,15 @@ REFACTOR:
 						(new[] { 429, 408 }.Contains(context.Response?.StatusCode ?? 0) || 
 						((context.Response?.StatusCode ?? 0) == 400 &amp;&amp; context.Variables.GetValueOrDefault&lt;bool>(&quot;isRetryableBadRequest&quot;, false)) ||
 						(context.Response?.StatusCode ?? 0) >= 500))))">
+					<!-- Write the wake time to the object this expression returns and the
+					     cache stores. current["backends"] already has a parent, and
+					     Newtonsoft clones a parented token inserted into a new JProperty,
+					     so marking the original map would lose the throttle: the next retry
+					     would reselect the failed region and no request would remember it.
+					     A parentless deep clone is inserted as-is. -->
 					<set-variable name="throttleState" value="@{
 						JObject current = context.Variables.GetValueOrDefault&lt;JObject>(&quot;throttleState&quot;, null);
-						JObject map = (current != null &amp;&amp; current[&quot;backends&quot;] != null &amp;&amp; current[&quot;backends&quot;].Type == JTokenType.Object) ? (JObject)current[&quot;backends&quot;] : new JObject();
+						JObject map = (current != null &amp;&amp; current[&quot;backends&quot;] != null &amp;&amp; current[&quot;backends&quot;].Type == JTokenType.Object) ? (JObject)current[&quot;backends&quot;].DeepClone() : new JObject();
 						JObject wrapper = new JObject(
 							new JProperty(&quot;dirty&quot;, false),
 							new JProperty(&quot;backends&quot;, map)
