@@ -112,7 +112,9 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    balance for an existing owner. Metered egress goes through the shared owner
    admission seam; unknown/unpriced capped paths refuse. Dispatched/unknown
    reservations never expire into free capacity. Reject incomplete persisted
-   accounting before construction defaults and
+   accounting before construction defaults and require a blocked owner when
+   retained known charges exceed their frozen token/dollar bounds. Preserve that
+   block through pruning without preventing accepted-work accounting, and
    reserve serialization space for all outstanding dispatch/settlement transitions.
    Deployed activation remains
    blocked pending the boundaries in `docs/hard-quota-admission.md`; neither an

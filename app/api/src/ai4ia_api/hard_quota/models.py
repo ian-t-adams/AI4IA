@@ -111,6 +111,16 @@ class Reservation(ContractModel):
         )
 
     @property
+    def exceeds_bound(self) -> bool:
+        return self.phase == "settled" and any(
+            bound is not None and charge is not None and charge > bound
+            for bound, charge in (
+                (self.bounds.amounts.tokens, self.charged.tokens),
+                (self.bounds.amounts.microUsd, self.charged.microUsd),
+            )
+        )
+
+    @property
     def protected(self) -> bool:
         # Unknown/ambiguous dispatches never age out or get refunded by a lease.
         return self.phase in {"reserved", "dispatched", "unknown"}
@@ -187,6 +197,8 @@ class QuotaState(ContractModel):
                     raise ValueError("incomplete known quota settlement")
             elif entry.outcome is not None or entry.settlementDigest is not None:
                 raise ValueError("unsettled operation has settlement identity")
+            if entry.exceeds_bound and not self.blocked:
+                raise ValueError("known quota bound violation requires blocked state")
             if entry.phase == "released" and entry.charged != Amounts.zero():
                 raise ValueError("released operation retains a charge")
             if entry.protected and entry.charged != entry.bounds.amounts:
