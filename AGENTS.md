@@ -1158,6 +1158,12 @@ Model deployment `capacity` is the portable baseline. Optional `maxCapacity` val
 are subscription-specific output from `scripts/sync-model-capacity.py`; never
 hand-copy portal bars or set every regional deployment to the same global limit.
 Bicep uses them only when `AI4IA_MODEL_CAPACITY_PROFILE=maximum`.
+A GlobalStandard usage counter reported with the same limit in every region is
+often one subscription-wide pool, not per-region headroom: `gpt-image-2.5-*`
+has a single 2-unit pool, so its eastus2 replica consumed it and the swedencentral
+replica failed provisioning with `InsufficientQuota`. Size new GlobalStandard
+baselines so their sum across regions fits the smallest proven pool, or deploy one
+region; a region-by-region "0 of N free" read does not prove the sum fits.
 
 The optional `productionCapacityPolicy` and per-deployment `production` fields
 are owner decisions, not generated defaults. `production-capacity-v1` requires
