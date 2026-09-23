@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from ai4ia_api.hard_quota.models import STATE_ID, STATE_KIND
+from ai4ia_api.hard_quota.models import CONTROL_PARTITION, ROLLOUT_KIND, STATE_ID, STATE_KIND
 from ai4ia_api.hard_quota.store import LocalReservationStore
 from ai4ia_api.usage.cosmos_repo import CosmosUsageRepository
 from ai4ia_api.usage.models import UsageRecord
@@ -32,14 +32,27 @@ class MixedOwnerPartition:
             # Damaged/future records must still be excluded by either marker.
             self.rows.append({**state, "kind": "damaged"} if damaged_kind else state)
             self.rows.append({**state, "id": "quota-future-id"})
+        rollout = {
+            "id": "reviewed-rollout", "userId": CONTROL_PARTITION, "kind": ROLLOUT_KIND,
+            "createdAt": NOW.isoformat(), "sessionId": "session", "model": "rollout-not-usage",
+        }
+        self.rows.append(rollout)
+        # A damaged discriminator is still caught by the control partition, and a
+        # misfiled record in an owner partition is still caught by its kind.
+        self.rows.append({**rollout, "id": "damaged-rollout", "kind": "damaged"})
+        self.rows.append({**rollout, "id": "misfiled-rollout", "userId": "alice"})
 
     async def query_items(self, *, query, parameters):
         values = {entry["name"]: entry["value"] for entry in parameters}
         rows = copy.deepcopy(self.rows)
         if f"c.id != '{STATE_ID}'" in query:
             rows = [row for row in rows if row["id"] != STATE_ID]
+        if f"c.userId != '{CONTROL_PARTITION}'" in query:
+            rows = [row for row in rows if row["userId"] != CONTROL_PARTITION]
         if f"c.kind != '{STATE_KIND}'" in query:
             rows = [row for row in rows if row.get("kind") != STATE_KIND]
+        if f"c.kind != '{ROLLOUT_KIND}'" in query:
+            rows = [row for row in rows if row.get("kind") != ROLLOUT_KIND]
         if "@uid" in query:
             rows = [row for row in rows if row["userId"] == values["@uid"]]
         if "@sid" in query:
@@ -81,5 +94,20 @@ async def test_every_usage_reader_discriminates_same_partition_coordination_rows
             parameters=[{"name": "@uid", "value": "alice"}],
         )
     ]
-    assert len(unfiltered) == 3
+    assert len(unfiltered) == 4
     assert any(row["id"] == STATE_ID for row in unfiltered)
+    assert any(row.get("kind") == ROLLOUT_KIND for row in unfiltered)
+    control = [
+        row async for row in fake.query_items(
+            query="SELECT * FROM c WHERE c.userId = @uid",
+            parameters=[{"name": "@uid", "value": CONTROL_PARTITION}],
+        )
+    ]
+    assert {row["id"] for row in control} == {"reviewed-rollout", "damaged-rollout"}
+    window = [
+        row async for row in fake.query_items(
+            query="SELECT * FROM c WHERE c.createdAt >= @since AND c.createdAt <= @now",
+            parameters=[{"name": "@since", "value": SINCE.isoformat()}, {"name": "@now", "value": NOW.isoformat()}],
+        )
+    ]
+    assert {"reviewed-rollout", "damaged-rollout", "misfiled-rollout"} <= {row["id"] for row in window}

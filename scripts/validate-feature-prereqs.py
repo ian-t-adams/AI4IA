@@ -259,6 +259,8 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     group_policy = truthy(parameter_value(parameters, "groupPolicyEnabled", False))
     publishing = truthy(parameter_value(parameters, "assetPublishingEnabled", False))
     policy_json = text(parameter_value(parameters, "groupPolicyJson"))
+    # Whether the policy composes soft spend limits (group or execution-actor).
+    policy_spend = False
     if group_policy or publishing:
         if auth_provider != "entra":
             errors.append("Group policy and asset publishing require apiAuthProvider=entra.")
@@ -283,6 +285,13 @@ def main(*, require_deployment_attestation: bool = False) -> int:
                     "realtimeCanaryActor",
                 }:
                     errors.append("groupPolicyJson contains unsupported top-level policy fields.")
+                else:
+                    policy_spend = policy_config.get("spend") is not None or any(
+                        isinstance(policy_config.get(name), dict)
+                        and isinstance(policy_config[name].get("restrictions"), dict)
+                        and policy_config[name]["restrictions"].get("spend") is not None
+                        for name in ("canaryActor", "evaluationActor", "realtimeCanaryActor")
+                    )
 
     if auth_provider == "entra":
         for name in ("entraTenantId", "entraAudience", "entraWebClientId"):
@@ -467,10 +476,27 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             )
 
     if truthy(parameter_value(parameters, "hardQuotaEnabled", False)):
-        errors.append(
-            "hardQuotaEnabled=true has no approved durable activation path. "
-            "Reviewed bootstrap, retention and fleet cutover are still required."
+        if auth_provider != "entra":
+            errors.append("hardQuotaEnabled=true requires apiAuthProvider=entra.")
+        rollout_id = text(parameter_value(parameters, "hardQuotaRolloutId"))
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", rollout_id):
+            errors.append(
+                "hardQuotaEnabled=true requires hardQuotaRolloutId identifying a separately "
+                "approved request-count rollout record."
+            )
+        warnings.append(
+            "Hard admission is request-count only. Offline preflight does not prove writer "
+            "drain or owner bootstrap: API startup requires the approved hard_quota_rollout_v1 "
+            "record, single-write-region Session Cosmos and a no-TTL usage container. Owners "
+            "without a bootstrapped document are refused; token/USD caps, durable execution "
+            "and workflow automation stay refused."
         )
+        if group_policy and policy_spend:
+            warnings.append(
+                "Group policy spend limits, including execution-actor restrictions, remain soft "
+                "policy restrictions under hard request-count admission; they are not "
+                "hard-enforced caps."
+            )
 
     profiles_enabled = truthy(parameter_value(parameters, "proxyProfilesEnabled", False))
     profile_projection = text(parameter_value(parameters, "proxyProfileProjectionJson"))

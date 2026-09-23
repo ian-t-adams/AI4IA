@@ -23,7 +23,7 @@ feature posture.
 | Feature | API flag / setting | Web flag | IaC parameter | Deployed prerequisites |
 |---|---|---|---|---|
 | Cross-tenant Claude | `AI4IA_CLAUDE_ENABLED` + `AI4IA_CLAUDE_EXTERNAL_ENABLED` | safe server catalog only | `claudeEnabled`, `claudeExternalEnabled`, `claudeBindingJson` | Defaults off/unconfigured. Separate target account/models, explicit legal/network decision, source UAMI + multitenant app/FIC, target SP + exact-account MaaS inference role, distinct target reader and fresh both-tenant readbacks. Not Private Link or live approval. |
-| Atomic application admission (source only) | `AI4IA_HARD_QUOTA_ENABLED` | none | `hardQuotaEnabled` | Default `false`; deployed activation and local Cosmos are refused. Explicit local test seed only; reviewed durable bootstrap, reconciliation, replay recovery and fleet cutover remain unimplemented |
+| Atomic request-count admission | `AI4IA_HARD_QUOTA_ENABLED` | none | `hardQuotaEnabled`, `hardQuotaRolloutId` (`AI4IA_HARD_QUOTA_ROLLOUT_ID`) | Default `false`; outside the local test fake needs Entra, Cosmos and the approved rollout record selected by `AI4IA_HARD_QUOTA_ROLLOUT_ID` (startup validates evidence shape and layout). Request-count only; owners need an operator bootstrap; drain before activation. See the note below |
 | Versioned one-attempt gateway staging | `AI4IA_GATEWAY_ATTEMPTS_V1_STAGED` | none | `gatewayAttemptsV1Staged` | Default `false`; stages only the isolated API/operations/policy/scoped proxy key on the existing APIM. Governed HTTPS native proxy ingress and S7P-KEY auth required; no shipping runtime verifier or cap activation. See [construction prerequisites](../hard-quota-admission.md#versioned-route-staging-and-construction-contract) |
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | `voiceLiveEnabled` | Browser Origin allowlist outside local |
 | Voice Live tools | `AI4IA_REALTIME_TOOLS_ENABLED` | advertised by web env | `voiceLiveToolsEnabled` | Voice Live enabled |
@@ -62,13 +62,22 @@ feature posture.
 | Streamed tool loop | `AI4IA_GATEWAY_STREAM_TOOL_LOOP` | none (read server-side only) | none — API-only setting | None. **Default `true`, i.e. ON**, because OFF is the defect it fixes: a turn that calls a tool would again run every model round trip to completion before emitting anything. It is a kill switch, not a feature gate — it exists so a streaming regression in the one path every chat request takes can be rolled back by an env var instead of a deploy. Off restores the previous wire bytes exactly: the runtime takes the non-streaming `gateway.complete` path and the router emits a single terminal content delta |
 | Per-invocation tool approval | `AI4IA_TOOL_APPROVAL_MODE` (`always` \| `tainted` \| `off`) | none (prompt renders from the stream) | none — API-only setting | None. **Default `always`, i.e. ON**; this is the one row in this table that is a security control rather than a feature, so its safe default is *enabled*. See the note below |
 
-**Atomic application admission is not an enablement-ready switch.** The source
+**Atomic application admission is not a routine enablement switch.** The source
 implements bounded owner-scoped reservations and an existing-usage-partition
 Cosmos CAS adapter without a create/upsert path. No state is initialized merely
-because an owner authenticates. Token/dollar caps refuse the shipping gateway
-because final usage does not prove all proxy/APIM retry attempts; hard durable
-workers refuse rather than replay ambiguously. The local fake is not a distributed
-quota. See [the source contract and coverage matrix](../hard-quota-admission.md).
+because an owner authenticates; new sign-ups are refused until an operator
+bootstraps them. Activation is gated on an operator-authored
+`hard_quota_rollout_v1` record whose evidence the owner has approved. That covers
+a rehearsed drain of every non-enforcing replica, the create-only operator
+bootstrap of the cohort (including the deploy-canary identity), and the recovery
+and retention review. The scope is request-count only. Token/dollar caps refuse
+because final usage does not prove all proxy/APIM retry attempts; global default
+token/USD caps refuse startup. Group-policy `spend` and execution-actor
+`restrictions.spend` limits stay **soft** policy restrictions: they are not
+hard-enforced and must not be presented as hard caps. Hard durable workers refuse
+rather than replay ambiguously, and the continuous canaries are unavailable. A
+rollback to a non-enforcing revision ends the rollout. The local fake is not a
+distributed quota. See [the activation contract](../hard-quota-admission.md#request-count-activation-contract).
 
 Numeric soft enforcement remains unchanged. The deliberate exception is that
 `AI4IA_ENTITLEMENTS_ENABLED=false` no longer enables an explicitly disabled user:

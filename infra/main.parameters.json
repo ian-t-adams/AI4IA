@@ -53,6 +53,9 @@
     "hardQuotaEnabled": {
       "value": "${AI4IA_HARD_QUOTA_ENABLED=false}"
     },
+    "hardQuotaRolloutId": {
+      "value": "${AI4IA_HARD_QUOTA_ROLLOUT_ID=}"
+    },
     "adminApiSecret": {
       "value": "${AI4IA_ADMIN_API_SECRET=}"
     },

@@ -31,8 +31,8 @@ from .directory.factory import build_user_directory_repository
 from .directory.service import UserDirectoryService
 from .gateway.client import ModelGatewayClient
 from .hard_quota.dispatch import AdmissionController
+from .hard_quota.factory import build_admission_binding
 from .hard_quota.models import QuotaError
-from .hard_quota.store import LocalReservationStore
 from .policy.models import PolicyError
 from .policy.service import PolicyService
 from .publishing.models import PublicationError
@@ -284,12 +284,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.agent_service.publications = app.state.publications
         app.state.workflow_service.publications = app.state.publications
-        # No automatic seed, including locally. Durable activation has a separate
-        # startup refusal; constructing the app never creates a quota balance.
+        # No automatic seed, including locally. Outside the explicitly seeded local
+        # fake the store exists only after the selected approved rollout validates;
+        # a failed check refuses startup rather than falling back to soft admission.
+        hard_quota_binding = await build_admission_binding(settings)
+        app.state.hard_quota_binding = hard_quota_binding
         app.state.hard_quota = AdmissionController(
             entitlements=app.state.entitlements, catalog=app.state.catalog,
             pricing=app.state.usage.pricing, enabled=settings.hard_quota_enabled,
-            store=LocalReservationStore() if settings.hard_quota_enabled else None,
+            store=hard_quota_binding.store if hard_quota_binding is not None else None,
+            scope=hard_quota_binding.scope if hard_quota_binding is not None else None,
             policy=app.state.policy,
         )
         # Admin user directory. Captures the display name + email already on the
@@ -463,6 +467,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ("resource_metrics", "close", "resource metrics"),
                 ("operations_metrics", "close", "operations metrics"),
                 ("usage", "close", "usage service"),
+                ("hard_quota_binding", "close", "hard quota coordination"),
                 ("session_repo", "close", "session repo"),
                 ("document_library", "close", "document library"),
                 ("image_artifacts", "close", "image artifact store"),

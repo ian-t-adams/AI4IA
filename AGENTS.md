@@ -108,17 +108,32 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    prices remain unknown, and receipt reads never reprice history. New evidence
    must still fit the 32 KiB receipt budget under escaped durable serialization.
 8. **Hard admission is a separate, default-off source contract.** Do not turn
-   soft ledger checks into a distributed quota or bootstrap an empty hard
-   balance for an existing owner. Metered egress goes through the shared owner
-   admission seam; unknown/unpriced capped paths refuse. Dispatched/unknown
-   reservations never expire into free capacity. Reject incomplete persisted
+   soft ledger checks into a distributed quota or bootstrap an admissible empty
+   hard balance for an existing owner. Metered egress goes through the shared owner
+   admission seam; unknown/unpriced capped paths refuse. `dispatched` and
+   `unknown`-phase reservations are never pruned and never expire. Reject incomplete persisted
    accounting before construction defaults and require a blocked owner when
    retained known charges exceed their frozen token/dollar bounds. Preserve that
    block through pruning without preventing accepted-work accounting, and
    reserve serialization space for all outstanding dispatch/settlement transitions.
-   Deployed activation remains
-   blocked pending the boundaries in `docs/hard-quota-admission.md`; neither an
-   acknowledgement flag nor a local fake proves a Cosmos cutover or bill cap.
+   Outside the explicitly seeded local fake, the Cosmos store exists only after
+   the exactly selected `hard_quota_rollout_v1` record (usage container control
+   partition, id `AI4IA_HARD_QUOTA_ROLLOUT_ID`) and the single-write Session/no-TTL
+   layout validate at startup; failures refuse startup, never fall back. That
+   request-count scope refuses token/USD caps and bounds (global default token/USD
+   caps refuse startup), and treats any capped window reaching before
+   `max(document validAfter, coverageStart)` as consumed, which is why a bootstrapped
+   document is not an admissible empty balance. Soft rows are never imported as
+   counts. Only that scope settles a terminal request-only record at its full frozen
+   bound, preserving its outcome; that record then ages with its window. The
+   digest-approved operator `resolve` path charges a `dispatched` hold's full bound
+   from the resolution time. Owner documents come only from the create-only,
+   digest-approved operator `bootstrap`; absent documents refuse. Group-policy
+   `spend` and execution-actor `restrictions.spend` limits stay soft policy
+   restrictions under the scope; never present them as hard caps. The app never
+   authors the rollout record, and a non-enforcing writer after `coverageStart`
+   ends the rollout. Neither an acknowledgement flag nor a local fake proves a Cosmos
+   cutover or bill cap; see `docs/hard-quota-admission.md` before changing activation.
    `gateway.attempts` is a default-absent, reduction-only one-attempt source
    contract, not activation authority. Only an exact, fresh server-verified
    gateway capability may prepare a request-bound envelope before admission.

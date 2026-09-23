@@ -19,7 +19,7 @@ from .coverage import AttemptEnvelope, actual_amounts, reservation_bounds
 from .models import (
     MAX_ADMISSION_EVIDENCE, AdmissionEvidence, Outcome, QuotaError, Reservation, Surface, operation_id,
 )
-from .service import ReservationService
+from .service import RequestCountScope, ReservationService
 from .store import ReservationStore
 
 if TYPE_CHECKING:
@@ -101,6 +101,7 @@ class AdmissionController:
         pricing: PricingBook, store: ReservationStore | None = None, enabled: bool = False,
         attempts: AttemptEnvelope | None = None,
         policy: PolicyService | None = None,
+        scope: RequestCountScope | None = None,
     ) -> None:
         self.enabled = enabled
         self.entitlements = entitlements
@@ -108,7 +109,9 @@ class AdmissionController:
         self.pricing = pricing
         self.attempts = attempts
         self.policy = policy
-        self.reservations = ReservationService(store) if store is not None else None
+        self.reservations = (
+            ReservationService(store, scope=scope) if store is not None else None
+        )
 
     async def claim(
         self, context: AdmissionContext, surface: Surface, payload: dict[str, Any],
@@ -125,11 +128,17 @@ class AdmissionController:
         if self.reservations is None:
             raise QuotaError("Hard quota coordination is unavailable.")
         snapshot = await self.reservations.store.read(context.owner)
-        if context.issued_at is None:
-            context.issued_at = snapshot.now
+        issued = context.issued_at
+        if issued is None:
+            issued = snapshot.now
+            if self.reservations.scope is None:
+                # Historical per-context identity time under the 30-day horizon.
+                context.issued_at = issued
+            # The request-count scope issues every operation at its own claim,
+            # so a long-lived context never outlives the short replay horizon.
         # Increment before the next await: sibling tasks never share an identity.
         context.sequence += 1
-        key = operation_id(snapshot.state.epoch, context.issued_at, f"{context.root}:{context.sequence}")
+        key = operation_id(snapshot.state.epoch, issued, f"{context.root}:{context.sequence}")
         bounds = reservation_bounds(
             surface, payload, deployment=deployment, catalog=self.catalog, pricing=self.pricing,
             attempts=self._attempts(context.owner, surface, payload, deployment, target),

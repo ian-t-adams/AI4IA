@@ -112,7 +112,10 @@ def contract(request):
         container = StatefulContainer(lambda: clock[0])
         container.seed(alice)
         container.seed(bob)
-        account = {"enableMultipleWriteLocations": False, "writableLocations": [{}]}
+        account = {
+            "enableMultipleWriteLocations": False, "writableLocations": [{}],
+            "consistencyPolicy": {"defaultConsistencyLevel": "Session"},
+        }
 
         async def read_account():
             return copy.deepcopy(account)
@@ -532,25 +535,39 @@ async def test_cosmos_layout_and_etag_fail_closed_with_same_store_control(contra
     container = contract["container"]
     if container is None:
         return
+    account = contract["account"]
     for mutate, restore in (
-        (lambda: contract["account"].update(enableMultipleWriteLocations=True),
-         lambda: contract["account"].update(enableMultipleWriteLocations=False)),
+        (lambda: account.update(enableMultipleWriteLocations=True),
+         lambda: account.update(enableMultipleWriteLocations=False)),
+        (lambda: account["writableLocations"].append({}),
+         lambda: account["writableLocations"].pop()),
+        (lambda: account["consistencyPolicy"].update(defaultConsistencyLevel="Eventual"),
+         lambda: account["consistencyPolicy"].update(defaultConsistencyLevel="Session")),
         (lambda: container.layout.update(defaultTtl=60),
          lambda: container.layout.pop("defaultTtl")),
+        (lambda: container.layout.update(analyticalStorageTtl=-1),
+         lambda: container.layout.pop("analyticalStorageTtl")),
+        # A Boolean equals 0 in Python; it is not the disabled analytical sentinel.
+        (lambda: container.layout.update(analyticalStorageTtl=False),
+         lambda: container.layout.pop("analyticalStorageTtl")),
         (lambda: container.layout["partitionKey"].update(paths=["/sessionId"]),
          lambda: container.layout["partitionKey"].update(paths=["/userId"])),
     ):
         mutate()
-        with pytest.raises(QuotaError):
-            await reserve(contract)
+        # Unlimited policy: a refusal here can only come from the layout guard.
+        with pytest.raises(QuotaError, match="Session-consistency|partition or retention"):
+            await reserve(contract, limits=EntitlementLimits())
         restore()
-        assert await reserve(contract)
+        assert await reserve(contract, limits=EntitlementLimits())
+    # The explicit non-expiring and disabled-analytical sentinels are compatible.
+    container.layout.update(defaultTtl=-1, analyticalStorageTtl=0)
+    assert await reserve(contract, limits=EntitlementLimits())
     raw = container.rows[("alice", STATE_ID)]
     etag = raw.pop("_etag")
     with pytest.raises(QuotaError, match="ETag"):
-        await reserve(contract)
+        await reserve(contract, limits=EntitlementLimits())
     raw["_etag"] = etag
-    assert await reserve(contract)
+    assert await reserve(contract, limits=EntitlementLimits())
 
 
 async def test_lost_dispatch_ack_cannot_allow_a_retry_to_dispatch_twice(contract):

@@ -273,8 +273,11 @@ param webSearchMaxContentChars int = 6000
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
 
-@description('Source-only atomic application admission. Default OFF. Preprovision and API startup refuse deployed activation until a reviewed durable bootstrap and fleet cutover exist.')
+@description('Default-off atomic request-count application admission. Enabling it requires hardQuotaRolloutId; API startup validates the operator-approved rollout record and storage layout.')
 param hardQuotaEnabled bool = false
+
+@description('ID of the separately approved hard_quota_rollout_v1 record in the existing usage container control partition. Empty by default. This template never creates or approves the record.')
+param hardQuotaRolloutId string = ''
 
 @description('Shared secret for the entitlement-management API under spoofable dev auth. Empty => identity-only admin (fail-closed under dev auth in a deployed env).')
 @secure()
@@ -1003,6 +1006,7 @@ module api 'modules/api.bicep' = {
     entraAudience: entraAudience
     adminSubjects: adminSubjects
     hardQuotaEnabled: hardQuotaEnabled
+    hardQuotaRolloutId: hardQuotaRolloutId
     adminApiSecret: adminApiSecret
     claudeEnabled: claudeEnabled
     claudeExternalEnabled: claudeExternalEnabled
