@@ -1,16 +1,21 @@
 # Hard admission: source contract and activation boundary
 
-**Source-only, default off. Not a deployed quota or an Azure bill cap.**
+**Default off. Not a deployed quota or an Azure bill cap.**
 `AI4IA_HARD_QUOTA_ENABLED=false` preserves the numeric soft-ledger policy.
-The API and preprovision validator refuse deployed hard-mode activation. Even
-local Cosmos activation is refused. There is no bootstrap command, migration,
-balance-creation endpoint, acknowledgement override, or automatic empty balance
-for an existing owner.
+Enabling it outside the explicitly seeded local test fake requires Cosmos, Entra
+outside local and `AI4IA_HARD_QUOTA_ROLLOUT_ID`, which selects exactly one
+operator-authored [`hard_quota_rollout_v1` record](#control-record). API startup
+refuses unless that record and the storage layout validate. The approved scope is
+**request-count only**: token and USD caps stay refused. There is no migration,
+balance-creation endpoint, acknowledgement override, automatic enrollment or
+automatic empty balance for an existing owner.
 
 The executable local adapter is an explicitly seeded **test fake**. It is neither
 restart-durable nor safe across processes. The Cosmos adapter operates only on an
-existing compatible coordination document and has no create/upsert path or
-credential/activation factory. This is partial implementation of
+existing compatible coordination document and has no create/upsert path. Owner
+documents come only from the [operator bootstrap](#operator-bootstrap), which is
+dry-run by default and create-only. Merging this source bootstraps, approves,
+activates or deploys nothing. This is partial implementation of
 [issue #433](https://github.com/ian-t-adams/AI4IA/issues/433), not issue closeout.
 
 ## Units and coverage
@@ -77,7 +82,7 @@ unaccounted-for retry attempts.
 The separate [workflow monetary contract](workflow-automation.md#per-run-monetary-source-contract)
 uses those same versioned bounds for an immutable per-run USD application-meter
 limit. It is not this rolling owner quota and cannot bootstrap an owner balance
-or weaken the hard-quota durable/nonlocal activation refusal. Its source ledger,
+or weaken the hard-quota durable-execution and token/USD refusals. Its source ledger,
 approval quote or successful fixture does not establish the missing shipping
 attempt proof. Unknown remote service meters are still refused under a cap.
 
@@ -88,7 +93,8 @@ capability or permission to activate monetary enforcement. The app factory still
 supplies no `GatewayCapabilityVerifier`; `ModelGatewayClient.attempt_capability`
 is `None`. A settings Boolean, administrator acknowledgement, apparent version
 header, final response counter, or the presence of the new files cannot change
-that. Nonlocal hard-mode activation and local Cosmos activation remain refused.
+that. The approved request-count rollout scope refuses token/USD caps and bounds
+regardless, so no rollout record can activate monetary hard admission.
 
 The trusted server integration surface is `ai4ia_api.gateway.attempts`:
 
@@ -324,15 +330,17 @@ replace that entry; settlement does not add a second charge alongside it.
 | Reserved | The full envelope consumes capacity. A 120-second lease limits the interval in which dispatch can be claimed. |
 | Dispatch claim | An ETag CAS changes reserved to dispatched **before** egress. Only its winner may send. An already-claimed identity returns a conflict, never a second provider request. |
 | Complete, fully known usage | Settle once to the proven quantity under the original price snapshot. Requests and compute attempts are never refunded by a zero token count. Known terminal charges age through rolling windows from settlement time. |
-| Cancellation, timeout, missing/partial usage or ambiguous error after claim | Keep the full reservation as unknown. Unknown/dispatched entries remain charged in every applicable window and never expire automatically. |
+| Cancellation, timeout, missing/partial usage or ambiguous error after claim | Keep the full reservation as unknown. Unknown/dispatched entries remain charged in every applicable window and never expire automatically. Exception: under the approved [request-count scope](#request-count-scope), a request-only record has no bounded token/USD axis, so any terminal outcome settles its exact attempt counts as known history (below). |
 | Lost coordination acknowledgement | Do not send on uncertainty. A committed dispatch claim remains non-replayable even if no application response was delivered. |
 | Explicit release or abandoned reserved lease | Release only work whose state is still reserved. The same CAS fences a late dispatcher; an expired/released ticket cannot send. |
 | Observed usage exceeds its envelope | Retain the actual quantity and block further admission pending reviewed reconciliation; do not hide the underestimate. |
 
 Unknown holds can exhaust an owner's allowance indefinitely. There is deliberately
-no automatic refund, force-clear API, or success-shaped fallback. Resolving them
-requires a separately reviewed reconciliation protocol with trustworthy evidence.
-Storage errors also prevent unlimited hard-mode owners from dispatching.
+no automatic refund, force-clear API, or success-shaped fallback. The only
+resolution path is the evidence-bound, digest-approved
+[operator hold resolution](#unknown-hold-resolution), and only for request-only
+`dispatched` holds. Storage errors also prevent unlimited hard-mode owners from
+dispatching.
 
 An operation identity contains a state epoch, store-issued timestamp and a hashed
 server operation key. Its digest binds the owner, surface, frozen canonical
@@ -345,9 +353,10 @@ resend it to recreate missing output.
 Identities have a 30-day validity/replay horizon and a monotonic persisted floor.
 Terminal pruning requires **both** that replay horizon and the longest meter
 window to have expired. A pruned old key is rejected, not treated as new work.
-Active and unknown entries are never pruned. The state has at most 1,024 entries
-and a 512 KiB escaped JSON budget, whichever is reached first. Exhaustion refuses
-new admission; it does not evict protected entries.
+Active and unknown entries are never pruned. The approved request-count scope
+shortens both bounds, as described [below](#request-count-scope). The state has
+at most 1,024 entries and a 512 KiB escaped JSON budget, whichever is reached
+first. Exhaustion refuses new admission; it does not evict protected entries.
 Admission also reserves worst-case timestamp, outcome, digest and charge growth
 for **every** retained reserved/dispatched operation. Existing tickets recheck
 this transition space before dispatch. A currently fitting reservation must not
@@ -359,8 +368,10 @@ The source adapter borrows the existing `usage` container, partition `/userId`.
 Its fixed document id is `hard-quota-state-v1`, kind `hard_quota_state`, with an
 explicit policy version and epoch. Every usage summary, record query, projected
 admin rollup and session query excludes **both** the reserved id and kind while
-retaining legacy usage rows. A coordination document cannot become an apparently
-free usage row or poison an otherwise healthy usage query.
+retaining legacy usage rows. They also exclude the `__ai4ia_hard_quota_control__`
+partition and kind `hard_quota_rollout_v1`, each independently, so a damaged or
+misfiled rollout record is still not usage. A coordination document cannot become
+an apparently free usage row or poison an otherwise healthy usage query.
 
 Persisted quota keys are required recursively before Pydantic construction
 defaults can run, including explicit null unsupported axes/timestamps and
@@ -374,6 +385,9 @@ snapshot/write validation reject phase-inconsistent evidence before reconciliati
 or rolling-window aging. A known settled record requires `outcome=complete`, a
 settlement identity, and known charges for every originally bounded token/dollar
 axis; measured zero is valid and an originally unsupported axis may remain null.
+The one other known shape is a request-only attempt settlement: no bounded
+token/dollar axis, any terminal outcome, and a charge exactly equal to the frozen
+attempt bound. Only the request-count scope and the operator resolution write it.
 Unknown records require an outcome and settlement identity but retain the full
 bound, including when `outcome=complete` arrived without complete usage. They
 never become known history merely because their held amounts are finite.
@@ -400,11 +414,16 @@ It hashes the original settlement input before request/compute attempt counts
 are normalized. Validation therefore does not reconstruct it from the retained
 charge or infer the missing actual usage of an unknown record.
 
-The adapter requires observed single-region writes, the exact owner partition,
-non-expiring container retention, a compatible existing document, and an ETag.
-It uses the Cosmos response `Date` for coordination time, with no replica-clock
-fallback. Replacements use `IfNotModified`; 412 causes a bounded reread/retry.
-Missing state or other storage failures never create a balance. Azure's
+The adapter requires observed single-region writes, Session consistency, the exact
+owner partition, non-expiring container retention with analytical storage off, a
+compatible existing document, and an ETag. Account and container metadata have
+separate service limits and no SLA, so the production factory validates them at
+startup and then at most every 60 seconds; a failed observation is never cached.
+The adapter's default of zero keeps per-operation validation for the conformance
+fakes. It uses the Cosmos response `Date` for coordination time, with no
+replica-clock fallback. Replacements use `IfNotModified`; 412 causes a bounded
+reread/retry. Missing state or other storage failures never create a balance: an
+absent owner document is refused as requiring the reviewed bootstrap. Azure's
 [OCC contract](https://learn.microsoft.com/azure/cosmos-db/database-transactions-optimistic-concurrency)
 does not provide this guarantee across independently accepting multi-write regions.
 
@@ -417,18 +436,232 @@ admission estimates, not another usage/cost total to add to existing telemetry.
 Initial dispatched evidence survives a settlement failure, and the ordinary
 32 KiB escaped receipt budget still applies. Historical reads never reprice.
 
+## Request-count activation contract
+
+This is the complete source path from default-off to an approved deployment. It
+is **deployable only behind owner-approved evidence**; the application checks the
+shape and ordering of that evidence, not its truth. Production runs the API as a
+single-revision Container App (one to three replicas) with the durable worker
+inside it, and all metered egress leaves through the API process.
+
+### Control record
+
+Outside the explicitly seeded local fake, `AI4IA_HARD_QUOTA_ENABLED=true` also
+requires the Cosmos store, Entra outside local and an
+`AI4IA_HARD_QUOTA_ROLLOUT_ID` matching `[A-Za-z0-9][A-Za-z0-9_-]{0,127}`.
+Startup reads exactly one item, in the existing `usage` container, partition
+`__ai4ia_hard_quota_control__`, with `id` equal to that setting. No UUID owner id
+can equal that partition. The strict schema forbids extra fields (Cosmos `_*`
+system properties are ignored):
+
+```json
+{
+  "id": "<approved-rollout-id>",
+  "userId": "__ai4ia_hard_quota_control__",
+  "kind": "hard_quota_rollout_v1",
+  "protocol": 1,
+  "state": "approved",
+  "policyVersion": "rolling-dispatch-v1",
+  "scope": "request_count_only",
+  "singleWriteRegion": true,
+  "noCoordinationExpiry": true,
+  "coverageStart": 1790000000,
+  "writerCutoverEvidence": "https://<review>/writer-drain",
+  "bootstrapEvidence": "https://<review>/bootstrap",
+  "recoveryRetentionEvidence": "https://<review>/recovery-retention"
+}
+```
+
+This is a schema illustration, **not** an approval to create it. There is no API,
+Bicep data write, startup repair or tool that authors this record. Markers must be
+the exact JSON values (`true` is not `1`). `coverageStart` is a strict integer of
+coordination-store seconds and must not be later than the `Date` of the startup
+read: an approval cannot precede the cutover it attests. Each evidence value is a
+printable-ASCII `https` URL of at most 1,000 characters with a host and no
+userinfo, query, fragment or non-443 port. References are never fetched.
+
+Startup then requires the account to have exactly one writable location, no
+multi-write and `Session` consistency (the IaC setting), and the `usage`
+container to be `/userId` Hash, with no default TTL and analytical storage off. Only
+after the record and layout validate does the factory construct the Cosmos store
+and its request-count scope. Any defect, missing `Date` or a 30-second startup
+timeout refuses API startup with a fixed message. There is no fallback to soft
+admission, a local store or an empty balance.
+
+### Seeding rule
+
+Let `H = max(document validAfter, rollout coverageStart)`, in coordination-store
+seconds. An owner document is authoritative only for dispatches admitted at or
+after `H`. For each configured request-count cap with rolling duration `W`:
+`requestsPerMinute` covers every surface with `W` = 60 seconds, and
+`computeExecutionsPerDay` covers compute operations with `W` = 24 hours. An
+admission at store time `t` is refused (429) while `t - W < H`. The uncovered part
+of the window counts as already consumed. From `t >= H + W`, the ordinary sum over
+retained entries applies. Uncapped dimensions are unaffected: an unlimited owner
+dispatches immediately and every dispatch is still recorded.
+
+Soft usage rows are **not** imported as counts. They can prove "at least", never
+"at most". A soft row is one top-level turn that may contain many application
+dispatches: agent loops, MCP/WebIQ/tool calls, embeddings, memory and summaries.
+Several dispatch surfaces write no soft row, and soft writes are best-effort:
+failed writes, crashed replicas and cancelled streams leave nothing. The fence
+already treats the whole uncovered window as consumed, so no soft count could make
+the seed safer. Using one to admit earlier would be unsound. `coverageStart`
+covers non-enforcing writers that ran after an early bootstrap. `validAfter`
+covers late enrollment and recreation of a deleted document: deleting a document
+is never a reset.
+
+### Request-count scope
+
+Under the approved scope, and only there:
+
+- Any configured `tokensPerDay`, `tokensPerMonth`, `costPerDayMicroUsd` or
+  `costPerMonthMicroUsd` refuses (503) before any history is read, and any bound
+  with a token or microUSD axis is refused. Owners with such caps are fully
+  refused; remove the caps or keep those owners in soft mode.
+- A request-only record's enforced quantities are its attempt counts. The one-shot
+  dispatch CAS fixes them, and every send of the operation precedes its terminal
+  settlement. Downstream proxy/APIM retries are not application dispatches. Any
+  terminal outcome (`complete`, `cancelled`, `timeout`, `error`, `unknown`)
+  therefore settles `requests=1` (and `compute=1` for a sandbox) as known history
+  that ages from settlement. A `dispatched` record whose settlement never landed
+  stays held forever.
+- Identities are issued at each claim's own store time, and the replay horizon is
+  300 seconds. Terminal entries are pruned once their key has expired and the
+  longest window that can count them has passed: 60 seconds after settlement, or
+  24 hours for a settled compute attempt.
+- Capacity is still the 512 KiB document. At about 873 bytes per settled
+  request-only entry, an owner can hold roughly 600 recent operations. Holds,
+  in-flight work and a day of compute attempts count toward that. RU cost grows
+  with document size: Cosmos charges about 5.5 RU per KiB for an unindexed insert
+  and twice that for a replace. Each dispatch replaces the document three times.
+  Measure latency and RU at representative sizes before activation.
+
+A future token/USD scope needs its own rollout record and a new `coverageStart`.
+Request-count retention does not preserve longer-window history, and the fence
+makes that safe.
+
+### Operator bootstrap
+
+`python -m ai4ia_api.hard_quota.operator bootstrap` runs from the API development
+environment or inside the API image with its existing managed identity. The
+module lives at `app/api/src/ai4ia_api/hard_quota/operator.py`. The tool needs an
+identity with Cosmos data-plane access. Choosing it is an activation decision;
+this source grants no role.
+
+```powershell
+python -m ai4ia_api.hard_quota.operator bootstrap `
+  --endpoint https://<account>.documents.azure.com/ --database ai4ia `
+  --cohort .\private-cohort.json --output .\bootstrap-plan.json
+python -m ai4ia_api.hard_quota.operator bootstrap `
+  --endpoint https://<account>.documents.azure.com/ --database ai4ia `
+  --cohort .\private-cohort.json --apply --approve-plan <plan_sha256> --output .\bootstrap-apply.json
+```
+
+The cohort is explicit: at most 256 canonical UUID internal owner ids, via
+repeated `--owner` or a private `{"schemaVersion": 1, "owners": [...]}` file. It
+has no duplicates and no control partitions. Include the deploy-canary identity:
+an owner without a document is refused, and post-deployment verification would
+fail and roll back. The default run is read-only. It validates the same layout as
+startup, then point-reads each owner: absent documents plan `create`, valid
+documents `keep` (never touched), and invalid documents `blocked` (exit 2, never
+repaired). The plan digest binds the tool/contract source hash, cohort, endpoint
+host, database, layout and each owner's observation, which is absence or the
+immutable epoch and `validAfter`.
+
+`--apply` and `--approve-plan` are valid only together. A fresh observation must
+reproduce the approved digest exactly, or nothing is written. Each absent owner then
+gets `create_item` only, with no write retry. The document has no entries,
+`blocked=false`, a new epoch, and `validAfter = replayFloor = observedAt` set to
+the store `Date`. A concurrent document, timeout or ambiguous acknowledgement
+stops the run as partial or unknown (exit 2). There is no upsert, replace,
+delete, backdating or retry. Created documents are read back through the
+runtime's strict decoder. Output files must be new. Reports contain owner hashes,
+never raw ids. Owners added later are bootstrapped by the same approved procedure;
+their creation time fences them.
+
+### Unknown-hold resolution
+
+Under the scope, the only holds are `dispatched` request-only records whose
+settlement never landed. Causes are a crash, a scale-in or deployment kill, a lost
+settlement acknowledgement or a store outage. They count in every window and are
+never pruned.
+
+```powershell
+python -m ai4ia_api.hard_quota.operator resolve `
+  --endpoint https://<account>.documents.azure.com/ --database ai4ia --cohort .\private-cohort.json `
+  --dispatched-before <epoch-seconds> --evidence-reference https://<review>/replicas-terminated
+```
+
+- **Who:** an operator with Cosmos data-plane write authority. The owner first
+  approves the exact plan digest, and the operator reruns with `--apply
+  --approve-plan`. There is no API route, admin UI, automatic sweep or runtime
+  expiry.
+- **Evidence:** the https reference must show that every API replica alive at
+  `--dispatched-before` has terminated. The reference is hashed into the plan and
+  into each resolved record's settlement digest. The cutoff must also be at least
+  24 hours before the store clock, as a mechanical margin.
+- **Scope:** only `dispatched`, request-only records dispatched before the cutoff,
+  on an unblocked owner. Younger holds, `unknown` records, token/USD-bounded holds
+  and blocked owners are listed but not resolvable.
+- **Transition:** each planned record is re-verified byte-for-byte on a fresh read.
+  It becomes `settled` with `outcome="unknown"`, `settledAt` = the store time and
+  the full frozen bound as the charge. The charge therefore stays in every window
+  for `W` after resolution, strictly after the proven dispatch, never below proven
+  usage. Other entries are untouched. A 412 rereads and re-verifies, at most eight
+  times. A planned record that changed meanwhile stops the run. A late genuine
+  settlement then fails as `settlement changed` (409), never a double count.
+
+Durable per-operation replay identity remains unimplemented, so hard durable
+execution and workflow automation stay refused.
+
+### All-writer cutover and rollback
+
+Non-enforcing writers are any API revision without hard mode and its in-process
+durable worker. They record no reservations, so the runtime cannot detect them.
+The protocol makes their period uncoverable instead:
+
+1. Deploy this source with hard mode off. Bootstrap the cohort, before or during
+   the change window.
+2. Drain: reach a fresh observation, at `T_drain`, where no replica of any
+   non-enforcing API revision is running. This is a maintenance window: the app
+   serves nothing from the drain until the enforcing revision is ready.
+3. Author the control record with `coverageStart >= T_drain` and the three
+   evidence references, after owner approval.
+4. Deploy the exact signed release with `AI4IA_HARD_QUOTA_ENABLED=true` and the
+   rollout id through the approved release path.
+
+`writerCutoverEvidence` must show the drain observation, `coverageStart >=
+T_drain` and the exact release digest to be activated. `bootstrapEvidence`
+references the approved plan and apply reports, including the deploy-canary
+identity. `recoveryRetentionEvidence` covers the no-TTL container, continuous
+backup and point-in-time restore, the hold-resolution owner and the rollback rule
+below. A Boolean, elapsed wait or passing test is not evidence. The drain
+mechanics under the deployment workflow's capture/rollback path need rehearsal
+before approval. Zero-downtime cutover would need a separate record-only design.
+
+**Any non-enforcing writer after `coverageStart` ends the rollout.** That includes
+turning the flag off, a rollback to an older or soft revision (including a failed
+activation's automatic rollback), and a restore or failover of the account.
+Re-enabling requires a new rollout id whose `coverageStart` follows a new drain.
+Existing owner documents may be reused; the fence covers the gap. Never delete an
+owner document to reset it. Continuous canary endpoints remain unavailable in hard
+mode.
+
 ## What must happen before activation
 
-Owner approval is still required for the exact bootstrap, retention and rollout
-protocol. Existing soft history may contain unknown or missing usage, so it
-cannot be silently imported as a zero balance. A state marker or Boolean
-acknowledgement alone is not evidence of that work.
+Merging this source performs no bootstrap, record authoring, drain, activation,
+production write, deployment or issue closure. Before the owner authors a control
+record, they need concrete evidence of:
 
-The remaining boundary includes a proven gateway-attempt/meter envelope where
-token/dollar enforcement is desired, durable per-operation identity/outcome
-recovery, explicit reconciliation of unknown holds, validated account/clock
-observations, appropriate bounded-state capacity, and a cutover of **all**
-replicas/workers without older writers escaping admission. Only then can an
-owner-reviewed change remove the unconditional deployed-activation refusal and
-provide a real store factory. No such activation, migration, production write,
-deployment or issue closure is performed by merging this source.
+- a rehearsed drain and an observed `T_drain`
+- the exact signed release that will be activated
+- an approved bootstrap plan and apply readback for the cohort, including the
+  deploy canary
+- measured RU and latency for representative document sizes
+- a reviewed recovery/retention policy and hold-resolution owner
+- the operator identity that will run the tool
+
+Token/USD enforcement additionally needs the proven gateway-attempt/meter envelope
+and its own rollout. Durable per-operation replay identity/outcome recovery,
+zero-downtime cutover and state compaction also remain outstanding.

@@ -201,7 +201,7 @@ retiring a fully settled, delivered, inactive run; it never retires unresolved
 money. Selection and validation use the same invocation-key timestamp, not a
 later run creation time. A valid unrelated admission is not blocked by an
 ineligible historical row. New per-run accounting does not enroll old histories, bootstrap an owner
-hard balance, or relax the separate hard-quota durable/nonlocal refusals.
+hard balance, or relax the separate hard-quota durable-execution and token/USD refusals.
 
 This ledger and quote engine do not by themselves complete all monetary
 coverage. A verified shipping attempt integration is still required, and

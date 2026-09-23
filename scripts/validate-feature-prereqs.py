@@ -467,9 +467,20 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             )
 
     if truthy(parameter_value(parameters, "hardQuotaEnabled", False)):
-        errors.append(
-            "hardQuotaEnabled=true has no approved durable activation path. "
-            "Reviewed bootstrap, retention and fleet cutover are still required."
+        if auth_provider != "entra":
+            errors.append("hardQuotaEnabled=true requires apiAuthProvider=entra.")
+        rollout_id = text(parameter_value(parameters, "hardQuotaRolloutId"))
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", rollout_id):
+            errors.append(
+                "hardQuotaEnabled=true requires hardQuotaRolloutId identifying a separately "
+                "approved request-count rollout record."
+            )
+        warnings.append(
+            "Hard admission is request-count only. Offline preflight does not prove writer "
+            "drain or owner bootstrap: API startup requires the approved hard_quota_rollout_v1 "
+            "record, single-write-region Session Cosmos and a no-TTL usage container. Owners "
+            "without a bootstrapped document are refused; token/USD caps, durable execution "
+            "and workflow automation stay refused."
         )
 
     profiles_enabled = truthy(parameter_value(parameters, "proxyProfilesEnabled", False))

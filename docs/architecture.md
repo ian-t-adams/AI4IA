@@ -220,9 +220,10 @@ disabled override or use the configured default policy. These are soft checks,
 not a hard quota or spending guarantee.
 
 The separate [hard admission source contract](hard-quota-admission.md) is
-default-off and refuses deployed activation pending a reviewed bootstrap and
-fleet cutover. Its guarded dispatches never use the soft ledger as an atomic
-balance, and unsupported token/dollar meters refuse rather than count as free.
+default-off and activates only for an owner-approved, request-count rollout
+record after a drained cutover and create-only operator bootstrap. Its guarded
+dispatches never use the soft ledger as an atomic balance, and unsupported
+token/dollar meters refuse rather than count as free.
 The disabled-user guard remains authoritative even with numeric enforcement off.
 
 ## Agent and tool execution

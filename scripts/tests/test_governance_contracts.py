@@ -68,6 +68,23 @@ class ConversationDeletionContractTests(unittest.TestCase):
         self.assertNotIn("defaultTtl", shared_containers)
 
 
+class HardQuotaActivationContractTests(unittest.TestCase):
+    def test_opt_in_is_reachable_without_new_resources_or_usage_retention(self) -> None:
+        parameters = json.loads(read("infra/main.parameters.json"))["parameters"]
+        for name, env, default in (
+            ("hardQuotaEnabled", "AI4IA_HARD_QUOTA_ENABLED", "false"),
+            ("hardQuotaRolloutId", "AI4IA_HARD_QUOTA_ROLLOUT_ID", ""),
+        ):
+            self.assertEqual(parameters[name]["value"], "${" + env + "=" + default + "}")
+            self.assertIn(env + ": ${{ vars." + env + " }}", read(".github/workflows/deploy.yml"))
+        data = read("infra/modules/data.bicep")
+        # The rollout record and owner documents share the existing usage
+        # container; activation requires it to keep /userId and no default TTL.
+        self.assertRegex(data, r"name: 'usage'\s+partitionKey: '/userId'")
+        self.assertNotIn("hard_quota", data)
+        self.assertNotIn("hardQuota", data)
+
+
 class FoundryManifestContractTests(unittest.TestCase):
     """The Foundry manifests are a machine contract, not documentation."""
 

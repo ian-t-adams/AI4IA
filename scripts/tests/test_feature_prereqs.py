@@ -247,17 +247,29 @@ class CommittedParametersTests(unittest.TestCase):
             with _environment(AI4IA_GATEWAY_ATTEMPTS_V1_STAGED=staged, AI4IA_HARD_QUOTA_ENABLED="true"):
                 code, _, err = _run(REAL_PARAMETERS)
                 self.assertEqual(code, 1)
-                self.assertIn("hardQuotaEnabled=true has no approved durable activation", err)
+                self.assertIn("hardQuotaEnabled=true requires hardQuotaRolloutId", err)
 
-    def test_hard_quota_default_off_and_deployed_activation_refused(self) -> None:
+    def test_hard_quota_default_off_and_activation_requires_a_selected_rollout(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        self.assertEqual(parameters["hardQuotaEnabled"]["value"], "${AI4IA_HARD_QUOTA_ENABLED=false}")
+        self.assertEqual(parameters["hardQuotaRolloutId"]["value"], "${AI4IA_HARD_QUOTA_ROLLOUT_ID=}")
         for enabled in ("true", "false"):
             with _environment(AI4IA_HARD_QUOTA_ENABLED=enabled):
                 code, _, err = _run(REAL_PARAMETERS)
             if enabled == "true":
                 self.assertEqual(code, 1)
-                self.assertIn("hardQuotaEnabled=true has no approved durable activation", err)
+                self.assertIn("hardQuotaEnabled=true requires apiAuthProvider=entra", err)
+                self.assertIn("hardQuotaEnabled=true requires hardQuotaRolloutId", err)
             else:
                 self.assertEqual(code, 0, err)
+        for rollout, valid in (("reviewed-request-count-1", True), ("-leading", False), ("a b", False)):
+            with _environment(
+                **PROD_ENV, AI4IA_HARD_QUOTA_ENABLED="true", AI4IA_HARD_QUOTA_ROLLOUT_ID=rollout,
+            ):
+                code, out, err = _run(REAL_PARAMETERS)
+            self.assertEqual(code, 0 if valid else 1, err)
+            self.assertEqual("requires hardQuotaRolloutId" in err, not valid)
+            self.assertIn("does not prove writer drain or owner bootstrap", out + err)
 
     def test_committed_parameters_validate_as_shipped(self) -> None:
         with _environment():

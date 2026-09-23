@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from ..hard_quota.models import STATE_ID, STATE_KIND
+from ..hard_quota.models import CONTROL_PARTITION, ROLLOUT_KIND, STATE_ID, STATE_KIND
 from .models import ROLLUP_FIELDS, UsageRecord, UsageRollupRow, UsageSummary, summarize_records
 from .repository import UsageRecordConflict
 
@@ -28,10 +28,11 @@ from .repository import UsageRecordConflict
 _ROLLUP_SELECT = ", ".join(f"c.{field}" for field in ROLLUP_FIELDS)
 
 # Legacy usage rows have no kind. Exclude both the reserved identity and kind,
-# including a damaged coordination document whose discriminator was lost.
+# including a damaged coordination document whose discriminator was lost, and
+# the operator rollout records in their control partition (by partition or kind).
 _USAGE_ONLY = (
-    f"c.id != '{STATE_ID}' AND "
-    f"(NOT IS_DEFINED(c.kind) OR c.kind != '{STATE_KIND}')"
+    f"c.id != '{STATE_ID}' AND c.userId != '{CONTROL_PARTITION}' AND "
+    f"(NOT IS_DEFINED(c.kind) OR (c.kind != '{STATE_KIND}' AND c.kind != '{ROLLOUT_KIND}'))"
 )
 
 

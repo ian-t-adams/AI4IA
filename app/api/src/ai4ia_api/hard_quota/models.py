@@ -13,9 +13,16 @@ from ..entitlements.models import MONTH_SECONDS
 STATE_ID = "hard-quota-state-v1"
 STATE_KIND = "hard_quota_state"
 POLICY_VERSION = "rolling-dispatch-v1"
+# Operator-authored activation records share the existing usage container in a
+# partition no internal (UUID) owner id can equal. Nothing in the app writes it.
+CONTROL_PARTITION = "__ai4ia_hard_quota_control__"
+ROLLOUT_KIND = "hard_quota_rollout_v1"
 MAX_ENTRIES = 1024
 MAX_STATE_BYTES = 512 * 1024
 REPLAY_SECONDS = MONTH_SECONDS
+# The approved request-count scope never evaluates token/dollar windows, so its
+# identities only need to outlive one claim's store round trips.
+REQUEST_COUNT_REPLAY_SECONDS = 300
 RESERVATION_SECONDS = 120
 MAX_ADMISSION_EVIDENCE = 8
 MAX_QUANTITY = 2**53 - 1
@@ -111,6 +118,19 @@ class Reservation(ContractModel):
         )
 
     @property
+    def request_only(self) -> bool:
+        """No bounded token/dollar axis: only the attempt counters are metered."""
+        return self.bounds.amounts.tokens is None and self.bounds.amounts.microUsd is None
+
+    def is_attempt_settlement(self, outcome: Outcome | None, charged: Amounts) -> bool:
+        # The one-shot dispatch claim fixes the request/compute attempt counts, and
+        # every send of the operation precedes its terminal settlement. With no
+        # bounded token/dollar axis nothing unknown remains, provided the charge is
+        # exactly the frozen attempt bound. Only the approved request-count scope
+        # writes this shape for non-complete outcomes.
+        return self.request_only and outcome is not None and charged == self.bounds.amounts
+
+    @property
     def exceeds_bound(self) -> bool:
         return self.phase == "settled" and any(
             bound is not None and charge is not None and charge > bound
@@ -191,8 +211,9 @@ class QuotaState(ContractModel):
             if entry.phase in {"settled", "unknown"}:
                 if entry.outcome is None or entry.settlementDigest is None:
                     raise ValueError("missing quota settlement identity")
-                if entry.phase == "settled" and not entry.has_complete_usage(
-                    entry.outcome, entry.charged,
+                if entry.phase == "settled" and not (
+                    entry.has_complete_usage(entry.outcome, entry.charged)
+                    or entry.is_attempt_settlement(entry.outcome, entry.charged)
                 ):
                     raise ValueError("incomplete known quota settlement")
             elif entry.outcome is not None or entry.settlementDigest is not None:

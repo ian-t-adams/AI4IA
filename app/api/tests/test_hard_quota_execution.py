@@ -232,7 +232,10 @@ async def test_cosmos_adapter_storage_outage_prevents_actual_gateway_dispatch():
     container = StatefulContainer(lambda: h.clock[0])
     container.seed((await h.store.read("alice")).state)
     async def account():
-        return {"enableMultipleWriteLocations": False, "writableLocations": [{}]}
+        return {
+            "enableMultipleWriteLocations": False, "writableLocations": [{}],
+            "consistencyPolicy": {"defaultConsistencyLevel": "Session"},
+        }
     h.controller.reservations = ReservationService(CosmosReservationStore(
         container, read_account=account,
     ))

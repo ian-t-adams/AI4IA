@@ -305,6 +305,25 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         ])
         self.assertIn("variables('sessionDeletionEnv')", json.dumps(api["variables"]["apiEnv"]))
 
+    def test_hard_quota_rollout_defaults_off_and_reaches_api(self) -> None:
+        module = self.template["resources"]["api"]["properties"]
+        api = module["template"]
+        for name, default in (("hardQuotaEnabled", False), ("hardQuotaRolloutId", "")):
+            self.assertEqual(self.template["parameters"][name]["defaultValue"], default)
+            self.assertEqual(api["parameters"][name]["defaultValue"], default)
+            self.assertEqual(module["parameters"][name]["value"], f"[parameters('{name}')]")
+        self.assertEqual(api["variables"]["hardQuotaEnv"], [
+            {
+                "name": "AI4IA_HARD_QUOTA_ENABLED",
+                "value": "[string(parameters('hardQuotaEnabled'))]",
+            },
+            {
+                "name": "AI4IA_HARD_QUOTA_ROLLOUT_ID",
+                "value": "[parameters('hardQuotaRolloutId')]",
+            },
+        ])
+        self.assertIn("variables('hardQuotaEnv')", json.dumps(api["variables"]["apiEnv"]))
+
     def test_webiq_limits_and_endpoint_reach_the_api_without_exposing_credentials(self) -> None:
         module = self.template["resources"]["api"]["properties"]
         api = module["template"]
