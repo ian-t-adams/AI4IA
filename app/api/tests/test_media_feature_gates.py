@@ -18,6 +18,16 @@ from ai4ia_api.videos.service import VideoGenerationService
 from tests.conftest import make_settings
 from tests.test_image_api import TINY_PNG_B64
 from tests.test_video_tool import FAKE_MP4
+from tests.video_catalog import video_catalog_path
+
+
+def _media_settings(kind: str, enabled: bool, tmp_path, **extra):
+    """Flag-gate settings. Video runs on a catalog whose video model is
+    runtime-available, so these cases isolate the flag; the model gate has its
+    own paired controls in test_video_model_availability.py."""
+    if kind == "video":
+        extra.setdefault("model_catalog_path", video_catalog_path(tmp_path, runtime_enabled=True))
+    return make_settings(**{f"{kind}_generation_enabled": enabled}, **extra)
 
 
 class MediaGateway:
@@ -107,9 +117,9 @@ def test_direct_image_creation_and_options_follow_generation_flag(enabled):
 
 @pytest.mark.parametrize("kind", ["image", "video"])
 @pytest.mark.parametrize("enabled", [False, True])
-def test_tool_catalog_inspector_and_consent_follow_media_flag(kind, enabled):
+def test_tool_catalog_inspector_and_consent_follow_media_flag(kind, enabled, tmp_path):
     tool = f"generate_{kind}"
-    app = create_app(make_settings(**{f"{kind}_generation_enabled": enabled}))
+    app = create_app(_media_settings(kind, enabled, tmp_path))
     with TestClient(app) as client:
         assert getattr(app.state, f"{kind}_artifacts") is not None
         catalog = client.get("/api/tools").json()
@@ -134,9 +144,9 @@ def test_tool_catalog_inspector_and_consent_follow_media_flag(kind, enabled):
 @pytest.mark.parametrize("kind", ["image", "video"])
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("invocation", ["command", "agent"])
-def test_chat_only_advertises_and_executes_enabled_media(kind, enabled, invocation):
+def test_chat_only_advertises_and_executes_enabled_media(kind, enabled, invocation, tmp_path):
     tool = f"generate_{kind}"
-    settings = make_settings(**{f"{kind}_generation_enabled": enabled})
+    settings = _media_settings(kind, enabled, tmp_path)
     app = create_app(settings)
     gateway = MediaGateway(kind)
     with TestClient(app) as client:
@@ -170,8 +180,8 @@ def test_chat_only_advertises_and_executes_enabled_media(kind, enabled, invocati
 
 @pytest.mark.parametrize("kind", ["image", "video"])
 @pytest.mark.parametrize("disable_at", [None, "before_handler", "during_entitlement"])
-def test_stale_media_handler_rechecks_enabled_flag(kind, disable_at):
-    settings = make_settings(**{f"{kind}_generation_enabled": True})
+def test_stale_media_handler_rechecks_enabled_flag(kind, disable_at, tmp_path):
+    settings = _media_settings(kind, True, tmp_path)
     app = create_app(settings)
     gateway = MediaGateway(kind)
     with TestClient(app):

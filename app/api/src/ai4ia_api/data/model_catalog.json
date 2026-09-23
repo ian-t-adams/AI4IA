@@ -1320,6 +1320,7 @@
       "id": "sora-2",
       "displayName": "sora-2",
       "category": "video",
+      "runtimeEnabled": false,
       "format": "OpenAI",
       "api": "chat",
       "contextWindow": null,

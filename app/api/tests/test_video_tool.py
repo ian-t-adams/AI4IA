@@ -25,6 +25,7 @@ from ai4ia_api.videos.capability import (
 )
 from ai4ia_api.videos.service import VideoGenerationError, VideoGenerationService
 from tests.conftest import make_settings
+from tests.video_catalog import video_catalog_path
 
 # Tiny stand-in for MP4 bytes — the gateway is faked, so the content is opaque.
 FAKE_MP4 = b"\x00\x00\x00\x18ftypmp42fake-video-bytes"
@@ -79,8 +80,12 @@ async def _noop_sleep(_seconds: float) -> None:
     return None
 
 
-def _client() -> TestClient:
-    app = create_app(make_settings(admin_subjects="alice", video_generation_enabled=True))
+def _client(catalog_path: str) -> TestClient:
+    # The shipped catalog runtime-disables its only video model; this contract
+    # suite runs against the same catalog with only that flag switched back on.
+    app = create_app(make_settings(
+        admin_subjects="alice", video_generation_enabled=True, model_catalog_path=catalog_path,
+    ))
     c = TestClient(app)
     c.__enter__()
     c.app.state.gateway = FakeVideoGateway()
@@ -88,8 +93,8 @@ def _client() -> TestClient:
 
 
 @pytest.fixture
-def client():
-    c = _client()
+def client(tmp_path):
+    c = _client(video_catalog_path(tmp_path, runtime_enabled=True))
     try:
         yield c
     finally:
