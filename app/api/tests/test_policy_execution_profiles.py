@@ -19,6 +19,28 @@ MONITOR = "00000000-0000-0000-0000-000000000001"
 EVALUATOR = "00000000-0000-0000-0000-000000000002"
 
 
+def provider_reply(request: httpx.Request) -> httpx.Response:
+    """Answer in the native shape of the provider operation actually called.
+
+    The least-estimated-cost canary may select either a Chat Completions or a
+    Responses model from the catalog, so a fixed Chat Completions body would
+    fail the Responses translator instead of exercising it.
+    """
+    if request.url.path.endswith("/responses"):
+        return httpx.Response(200, json={
+            "status": "completed",
+            "output": [{
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "ready"}],
+            }],
+            "usage": {"input_tokens": 8, "output_tokens": 1, "total_tokens": 9},
+        })
+    return httpx.Response(200, json={
+        "choices": [{"message": {"role": "assistant", "content": "ready"}}],
+        "usage": {"prompt_tokens": 8, "completion_tokens": 1, "total_tokens": 9},
+    })
+
+
 @pytest.fixture
 def profiles():
     from ai4ia_api.catalog import load_catalog
@@ -48,10 +70,7 @@ def profiles():
     def respond(request):
         body = json.loads(request.content)
         calls.append(body)
-        return httpx.Response(200, json={
-            "choices": [{"message": {"role": "assistant", "content": "ready"}}],
-            "usage": {"prompt_tokens": 8, "completion_tokens": 1, "total_tokens": 9},
-        })
+        return provider_reply(request)
 
     def headers(subject):
         now = int(time.time())

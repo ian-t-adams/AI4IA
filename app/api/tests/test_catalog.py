@@ -1,6 +1,14 @@
 import pytest
+from fastapi.testclient import TestClient
 
 from ai4ia_api.catalog import load_catalog
+from ai4ia_api.main import create_app
+from tests.conftest import make_settings
+
+# Rows added from the 2026-09-23 subscription evidence. Versions are the exact
+# GA versions observed in both primary regions.
+_NEW_TEXT_VERSIONS = {"gpt-6-sol": "2026-09-22", "gpt-6-luna": "2026-09-22", "gpt-5.5": "2026-04-24"}
+_NEW_IMAGE_VERSIONS = {"gpt-image-2.5-flare": "2026-09-08", "gpt-image-2.5-sunburst": "2026-09-08"}
 
 
 def test_packaged_catalog_loads():
@@ -201,7 +209,10 @@ def test_reasoning_models_do_not_advertise_sampling():
     catalog = load_catalog()
     for model_id in (
         "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
         "gpt-5.6-sol",
+        "gpt-5.5",
         "gpt-5.4",
         "gpt-5.2",
         "o3-deep-research",
@@ -235,7 +246,10 @@ def test_new_gpt_models_use_responses_and_reject_minimal():
     and no naming convention that predicts it.
     """
     catalog = load_catalog()
-    for model_id in ("gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+    for model_id in (
+        "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
+    ):
         entry = catalog.get(model_id)
         assert entry is not None, model_id
         assert "minimal" not in entry.reasoningEffortOptions, model_id
@@ -266,6 +280,80 @@ def test_astra_metadata_and_residency():
         ("swedencentral", "GlobalStandard"),
     }
     assert all(option.residency == "global" for option in entry.options)
+
+
+_TEXT_PROFILE = (
+    "format", "category", "api", "contextWindow", "maxOutputTokens", "toolCalling",
+    "inputModalities", "reasoningEffortOptions", "supportsSampling", "supportsTools", "conversational",
+)
+
+
+@pytest.mark.parametrize(("model_id", "version"), sorted(_NEW_TEXT_VERSIONS.items()))
+def test_new_ga_text_models_carry_the_learn_verified_gpt6_profile(model_id, version):
+    """Microsoft Learn documents the same 1,050,000/128,000-token, text+image,
+    tool-calling Responses profile for these rows as for gpt-6-astra."""
+    catalog = load_catalog()
+    entry, astra = catalog.get(model_id), catalog.get("gpt-6-astra")
+    assert entry is not None and astra is not None
+    assert {key: getattr(entry, key) for key in _TEXT_PROFILE} == {
+        key: getattr(astra, key) for key in _TEXT_PROFILE
+    }
+    assert (entry.api, entry.contextWindow, entry.maxOutputTokens) == ("responses", 1_050_000, 128_000)
+    assert entry.inputModalities == ["text", "image"] and entry.supportsTools is True
+    assert [
+        (option.region, option.sku, option.residency, option.modelVersion) for option in entry.options
+    ] == [
+        ("eastus2", "GlobalStandard", "global", version),
+        ("eastus2", "DataZoneStandard", "us", version),
+        ("swedencentral", "GlobalStandard", "global", version),
+        ("swedencentral", "DataZoneStandard", "eu", version),
+    ]
+
+
+@pytest.mark.parametrize(("model_id", "version"), sorted(_NEW_IMAGE_VERSIONS.items()))
+def test_new_ga_image_models_mirror_gpt_image_2(model_id, version):
+    catalog = load_catalog()
+    entry, sibling = catalog.get(model_id), catalog.get("gpt-image-2")
+    assert entry is not None and sibling is not None
+    profile = ("format", "category", "api", "imageSizes", "imageQualities", "conversational", "supportsTools")
+    assert {key: getattr(entry, key) for key in profile} == {key: getattr(sibling, key) for key in profile}
+    assert (entry.category, entry.api, entry.conversational) == ("image", "chat", False)
+    assert [
+        (option.region, option.sku, option.residency, option.modelVersion) for option in entry.options
+    ] == [
+        ("eastus2", "GlobalStandard", "global", version),
+        ("swedencentral", "GlobalStandard", "global", version),
+    ]
+
+
+@pytest.mark.parametrize(("policy", "region"), [("us", "eastus2"), ("eu", "swedencentral")])
+def test_zone_policies_route_new_text_rows_but_not_global_only_image_rows(policy, region):
+    zoned, unrestricted = load_catalog(None, policy), load_catalog()
+    for model_id in _NEW_TEXT_VERSIONS:
+        chosen = zoned.resolve_deployment(model_id)
+        assert chosen is not None, model_id
+        assert (chosen.region, chosen.sku, chosen.residency) == (region, "DataZoneStandard", policy)
+    for model_id in _NEW_IMAGE_VERSIONS:
+        # Control: the same GlobalStandard-only rows route when no zone is required.
+        assert unrestricted.resolve_deployment(model_id) is not None, model_id
+        assert zoned.resolve_deployment(model_id) is None, model_id
+
+
+@pytest.mark.parametrize("policy", ["global", "eu"])
+def test_models_api_advertises_new_rows_exactly_where_policy_routes_them(policy):
+    with TestClient(create_app(make_settings(data_residency=policy))) as client:
+        response = client.get("/api/models")
+    assert response.status_code == 200, response.text
+    advertised = {model["id"]: model for model in response.json()["models"]}
+    for model_id, version in _NEW_TEXT_VERSIONS.items():
+        options = advertised[model_id]["options"]
+        assert {option["modelVersion"] for option in options} == {version}, model_id
+        assert {option["residency"] for option in options} == (
+            {"global", "us", "eu"} if policy == "global" else {"eu"}
+        ), model_id
+        assert advertised[model_id]["supportsTools"] is True
+    for model_id in _NEW_IMAGE_VERSIONS:
+        assert (model_id in advertised) is (policy == "global"), model_id
 
 
 def test_mai_images_use_native_api_and_single_region():

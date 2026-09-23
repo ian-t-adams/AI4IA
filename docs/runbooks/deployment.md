@@ -760,6 +760,9 @@ policy-owned capability reader. The server selects the cheapest compatible
 **currently policy-allowed** option, and the client verifies that choice against
 both catalogs and its pre-dispatch price snapshot. It never
 hardcodes a deployment or switches to a more expensive model after dispatch.
+A catalog or price-book change can therefore move the probe to another model and
+protocol (Chat Completions or Responses) without a monitor change; review that
+selection whenever a cheaper compatible model is added.
 One new, exact-owner, empty-scope session sends the shared non-sensitive
 sentinel through **web -> API -> SimpleL7Proxy -> APIM -> Foundry**, with tools
 and automatic memory denied and a one-winner fresh v1 claim. At most one

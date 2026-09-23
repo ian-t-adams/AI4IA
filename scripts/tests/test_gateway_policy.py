@@ -428,6 +428,57 @@ class GatewayPolicyTests(unittest.TestCase):
             multi, 0, "no GlobalStandard deployment has a cross-region failover left"
         )
 
+    def test_new_ga_rows_route_through_residency_preserving_openai_backends(self) -> None:
+        """The 2026-09 GA rows reach their own regional deployment first.
+
+        From the same generated catalog, GlobalStandard keeps its cross-region
+        failover while DataZoneStandard stays on its single in-zone deployment.
+        """
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        naming = models["naming"]
+        blocks, _ = gateway_generator.render_catalog(models)
+        by_key = {}
+        for block in blocks:
+            key = re.search(r'new JProperty\("([^"]+)", new JObject', block)
+            assert key is not None
+            by_key[key.group(1)] = block
+        timeouts = {
+            "gpt-6-sol": "120", "gpt-6-luna": "120", "gpt-5.5": "120",
+            "gpt-image-2.5-flare": "240", "gpt-image-2.5-sunburst": "240",
+        }
+        checked = {"GlobalStandard": 0, "DataZoneStandard": 0}
+        for model in models["catalog"]:
+            if model["name"] not in timeouts:
+                continue
+            for deployment in model["deployments"]:
+                region = deployment["region"]
+                name = gateway_generator.deployment_name(
+                    model=model["name"], subscription_token=naming["subscriptionToken"],
+                    region=region, sku=deployment["sku"], sku_short=naming["skuShort"],
+                )
+                block = by_key[name.lower()]
+                backends = re.findall(r'new JProperty\("deployment", "([^"]+)"\)', block)
+                urls = re.findall(r'new JProperty\("url", "([^"]+)"\)', block)
+                priorities = re.findall(r'new JProperty\("priority", (\d+)\)', block)
+                self.assertEqual((backends[0], urls[0], priorities[0]), (
+                    name, f"{{{{foundry-{region}-endpoint}}}}", "1",
+                ))
+                paths = re.findall(r'new JProperty\("path", "([^"]+)"\)', block)
+                self.assertEqual(paths, ["openai"] * len(backends))
+                self.assertNotIn('new JProperty("operation"', block)
+                self.assertEqual(
+                    set(re.findall(r'new JProperty\("timeout", (\d+)\)', block)),
+                    {timeouts[model["name"]]},
+                )
+                if deployment["sku"] == "GlobalStandard":
+                    self.assertEqual(len(backends), 2, name)
+                    self.assertEqual(priorities, ["1", "2"])
+                    self.assertNotEqual(urls[1], urls[0])
+                else:
+                    self.assertEqual(backends, [name])
+                checked[deployment["sku"]] += 1
+        self.assertEqual(checked, {"GlobalStandard": 10, "DataZoneStandard": 6})
+
     def test_policy_fragments_normalize_crlf_before_hashing_and_storage(
         self,
     ) -> None:
