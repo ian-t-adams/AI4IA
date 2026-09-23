@@ -982,13 +982,6 @@
           "sku": "GlobalStandard",
           "modelVersion": "2026-09-08",
           "deploymentName": "gpt-image-2.5-flare-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "modelVersion": "2026-09-08",
-          "deploymentName": "gpt-image-2.5-flare-slurmfactory-swedencentral-glbl"
         }
       ]
     },
@@ -1014,13 +1007,6 @@
           "sku": "GlobalStandard",
           "modelVersion": "2026-09-08",
           "deploymentName": "gpt-image-2.5-sunburst-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "modelVersion": "2026-09-08",
-          "deploymentName": "gpt-image-2.5-sunburst-slurmfactory-swedencentral-glbl"
         }
       ]
     },

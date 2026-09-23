@@ -488,6 +488,9 @@ class GatewayPolicyTests(unittest.TestCase):
         for model in models["catalog"]:
             if model["name"] not in timeouts:
                 continue
+            global_regions = {
+                row["region"] for row in model["deployments"] if row["sku"] == "GlobalStandard"
+            }
             for deployment in model["deployments"]:
                 region = deployment["region"]
                 name = gateway_generator.deployment_name(
@@ -508,14 +511,18 @@ class GatewayPolicyTests(unittest.TestCase):
                     set(re.findall(r'new JProperty\("timeout", (\d+)\)', block)),
                     {timeouts[model["name"]]},
                 )
-                if deployment["sku"] == "GlobalStandard":
+                if deployment["sku"] == "GlobalStandard" and len(global_regions) > 1:
+                    # Multi-region GlobalStandard rows fail over to the other region.
                     self.assertEqual(len(backends), 2, name)
                     self.assertEqual(priorities, ["1", "2"])
                     self.assertNotEqual(urls[1], urls[0])
                 else:
+                    # Data Zone rows, and GlobalStandard models deployed in one region
+                    # (gpt-image-2.5 fits only one replica in its shared global quota),
+                    # route to their own deployment only; no route is invented.
                     self.assertEqual(backends, [name])
                 checked[deployment["sku"]] += 1
-        self.assertEqual(checked, {"GlobalStandard": 10, "DataZoneStandard": 6})
+        self.assertEqual(checked, {"GlobalStandard": 8, "DataZoneStandard": 6})
 
     def test_policy_fragments_normalize_crlf_before_hashing_and_storage(
         self,

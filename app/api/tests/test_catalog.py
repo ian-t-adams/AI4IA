@@ -338,8 +338,10 @@ def test_new_ga_image_models_mirror_gpt_image_2(model_id, version):
     assert [
         (option.region, option.sku, option.residency, option.modelVersion) for option in entry.options
     ] == [
+        # One eastus2 GlobalStandard deployment only: the subscription's gpt-image-2.5
+        # GlobalStandard quota is a single 2-unit pool shared by every region, so a
+        # second regional replica can never be provisioned (InsufficientQuota, 2/2).
         ("eastus2", "GlobalStandard", "global", version),
-        ("swedencentral", "GlobalStandard", "global", version),
     ]
 
 
