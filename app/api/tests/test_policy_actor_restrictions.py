@@ -25,7 +25,7 @@ from ai4ia_api.realtime_canary import SETUP_INPUT
 from ai4ia_api.request_constraints import CANARY_SENTINEL
 from tests.conftest import make_settings
 from tests.test_auth_entra import BARE_GUID, ISSUER, KID, TENANT, _new_keypair, _provider
-from tests.test_policy_execution_profiles import EVALUATOR, MONITOR
+from tests.test_policy_execution_profiles import EVALUATOR, MONITOR, provider_reply
 from tests.test_realtime_canary_integration import ACTOR as REALTIME, ORIGIN, SetupConnector, setup_target
 from tests.test_realtime_staged_api import GA_SETTINGS
 
@@ -91,10 +91,7 @@ def actor_app(request, monkeypatch):
     def respond(request):
         body = json.loads(request.content)
         calls.append(body)
-        return httpx.Response(200, json={
-            "choices": [{"message": {"role": "assistant", "content": "ready"}}],
-            "usage": {"prompt_tokens": 8, "completion_tokens": 1, "total_tokens": 9},
-        })
+        return provider_reply(request)
 
     app = create_app(settings)
     with TestClient(app) as client:
@@ -240,9 +237,19 @@ async def test_explicit_restrictions_admit_both_actors_without_restricting_ordin
     assert report.cleanup_safe and report.usage_known
     assert report.estimated_micro_usd is not None
     assert len(calls) == 1
-    assert calls[0]["messages"] == [{"role": "user", "content": CANARY_SENTINEL}]
-    assert "tools" not in calls[0]
-    assert calls[0].get("max_tokens", calls[0].get("max_completion_tokens")) == 64
+    sent = calls[0]
+    sentinel = [{"role": "user", "content": CANARY_SENTINEL}]
+    # Least-cost selection may choose either governed text protocol; the body
+    # must be the sentinel-only envelope in the native shape the monitor reported.
+    assert report.protocol in ("chat", "responses")
+    assert ("input" in sent) is (report.protocol == "responses")
+    if report.protocol == "responses":
+        assert sent["input"] == sentinel and "messages" not in sent
+        assert sent["max_output_tokens"] == 64 and sent["store"] is False
+    else:
+        assert sent["messages"] == sentinel
+        assert sent.get("max_tokens", sent.get("max_completion_tokens")) == 64
+    assert "tools" not in sent
     assert sum(method == "POST" and path == "/api/chat" for method, path in requests) == 1
     assert client.get("/api/sessions", headers=authorization(token())).json() == []
     assert len(client.get("/api/sessions/deletions", headers=authorization(token())).json()["items"]) == 1

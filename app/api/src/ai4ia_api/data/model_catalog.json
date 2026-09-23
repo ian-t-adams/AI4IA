@@ -72,6 +72,112 @@
       ]
     },
     {
+      "id": "gpt-6-sol",
+      "displayName": "GPT-6 Sol",
+      "category": "chat",
+      "format": "OpenAI",
+      "api": "responses",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-sol-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-sol-slurmfactory-eastus2-dz"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-sol-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-sol-slurmfactory-swedencentral-dz"
+        }
+      ]
+    },
+    {
+      "id": "gpt-6-luna",
+      "displayName": "GPT-6 Luna",
+      "category": "chat",
+      "format": "OpenAI",
+      "api": "responses",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-luna-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-luna-slurmfactory-eastus2-dz"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-luna-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-09-22",
+          "deploymentName": "gpt-6-luna-slurmfactory-swedencentral-dz"
+        }
+      ]
+    },
+    {
       "id": "gpt-5.6-sol",
       "displayName": "gpt-5.6-sol",
       "category": "chat",
@@ -224,6 +330,59 @@
           "sku": "DataZoneStandard",
           "modelVersion": "2026-07-09",
           "deploymentName": "gpt-5.6-luna-slurmfactory-swedencentral-dz"
+        }
+      ]
+    },
+    {
+      "id": "gpt-5.5",
+      "displayName": "gpt-5.5",
+      "category": "chat",
+      "format": "OpenAI",
+      "api": "responses",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-04-24",
+          "deploymentName": "gpt-5.5-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-04-24",
+          "deploymentName": "gpt-5.5-slurmfactory-eastus2-dz"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-04-24",
+          "deploymentName": "gpt-5.5-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-04-24",
+          "deploymentName": "gpt-5.5-slurmfactory-swedencentral-dz"
         }
       ]
     },
@@ -798,6 +957,70 @@
           "sku": "GlobalStandard",
           "modelVersion": "2026-04-21",
           "deploymentName": "gpt-image-2-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "gpt-image-2.5-flare",
+      "displayName": "gpt-image-2.5-flare",
+      "category": "image",
+      "format": "OpenAI",
+      "api": "chat",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-08",
+          "deploymentName": "gpt-image-2.5-flare-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-08",
+          "deploymentName": "gpt-image-2.5-flare-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "gpt-image-2.5-sunburst",
+      "displayName": "gpt-image-2.5-sunburst",
+      "category": "image",
+      "format": "OpenAI",
+      "api": "chat",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "toolCalling": null,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-08",
+          "deploymentName": "gpt-image-2.5-sunburst-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-08",
+          "deploymentName": "gpt-image-2.5-sunburst-slurmfactory-swedencentral-glbl"
         }
       ]
     },
