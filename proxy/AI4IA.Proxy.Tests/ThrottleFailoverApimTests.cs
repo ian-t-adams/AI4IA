@@ -62,13 +62,13 @@ public sealed class ThrottleFailoverApimTests
         await policy.Run();
         DateTime after = DateTime.UtcNow;
         var backends = Backends(policy, preferred, alternate);
-        string failed = Affinity(backends, preferred);
+        string failed = ThrottleId(backends, preferred);
         var returned = (JObject)policy.Context.Variables["throttleState"];
         AssertWake(returned, failed, before, after, wakeSeconds, "Returned throttleState");
         Assert.IsTrue(policy.Cache.TryGetValue("throttle-" + policy.Context.Api.Id, out var persisted),
             "The throttle state was never persisted. " + Log(policy));
         AssertWake((JObject)persisted, failed, before, after, wakeSeconds, "Persisted throttleState");
-        Assert.IsNull(returned["backends"]![Affinity(backends, alternate)], "The healthy region was throttled.");
+        Assert.IsNull(returned["backends"]![ThrottleId(backends, alternate)], "The healthy region was throttled.");
 
         var next = Policy(preferred, first, second);
         next.Cache = policy.Cache;
@@ -94,8 +94,81 @@ public sealed class ThrottleFailoverApimTests
         Assert.AreEqual(1, second.Requests.Count, Log(policy));
         AssertRequeue(policy, attempts: 2, wakeSeconds: 10);
         var state = (JObject)policy.Context.Variables["throttleState"];
-        AssertWake(state, Affinity(backends, preferred), before, after, 10, "Preferred region");
-        AssertWake(state, Affinity(backends, alternate), before, after, 10, "Alternate region");
+        AssertWake(state, ThrottleId(backends, preferred), before, after, 10, "Preferred region");
+        AssertWake(state, ThrottleId(backends, alternate), before, after, 10, "Alternate region");
+    }
+
+    // Deployment B shares A's regional endpoint, label and affinity but has its
+    // own quota, so A's 429 or 5xx must park A there without parking B.
+    [DataTestMethod]
+    [DataRow(429, 30)]
+    [DataRow(500, 0)]
+    public async Task ThrottledDeploymentDoesNotParkAnotherDeploymentInItsRegion(int status, int retryAfter)
+    {
+        var (preferred, alternate, single) = Rows.Value;
+        await using var first = new WireServer(request => Task.FromResult(
+            request.Path == preferred.ProviderPath ? Reply(status, retryAfter) : Reply(200)));
+        await using var second = new WireServer(_ => Task.FromResult(Reply(200)));
+        var a = Policy(preferred, first, second);
+        await a.Run();
+        var aBackends = Backends(a, preferred, alternate);
+        Assert.AreEqual(200, a.Context.Response.StatusCode, Log(a));
+        Assert.AreEqual(1, second.Requests.Count, Log(a));
+
+        var b = Policy(single, first, second);
+        b.Cache = a.Cache;
+        await b.Run();
+        var bBackends = Backends(b, single);
+        Assert.AreEqual(Affinity(aBackends, preferred), Affinity(bBackends, single));
+        Assert.AreEqual(200, b.Context.Response.StatusCode, "A's throttle parked deployment B. " + Log(b));
+        Assert.AreEqual(1, b.Sends, Log(b));
+        Assert.AreEqual(single.ProviderPath, first.Requests.Last().Path);
+
+        var again = Policy(preferred, first, second);
+        again.Cache = a.Cache;
+        await again.Run();
+        Assert.AreEqual(200, again.Context.Response.StatusCode, Log(again));
+        Assert.AreEqual(1, again.Sends, Log(again));
+        Assert.AreEqual(2, second.Requests.Count, "A's next request did not start on the other region.");
+        Assert.AreEqual(2, first.Requests.Count);
+        AssertOnlyMark(a, ThrottleId(aBackends, preferred));
+        Assert.AreNotEqual(ThrottleId(aBackends, preferred), ThrottleId(bBackends, single));
+    }
+
+    // ErrorScenario records a timed-out call; its mark has the same deployment scope.
+    [TestMethod]
+    public async Task TimedOutDeploymentDoesNotParkAnotherDeploymentInItsRegion()
+    {
+        var (preferred, alternate, single) = Rows.Value;
+        await using var first = new WireServer(async request =>
+        {
+            if (request.Path != preferred.ProviderPath) return Reply(200);
+            await Task.Delay(1200);
+            return new WireReply(200, AllowDisconnect: true);
+        });
+        await using var second = new WireServer(_ => Task.FromResult(Reply(200)));
+        var a = Policy(preferred, first, second);
+        DateTime before = DateTime.UtcNow;
+        await a.Run(context =>
+        {
+            foreach (JObject backend in (JArray)context.Variables["listBackends"]) backend["timeout"] = 1;
+        });
+        DateTime after = DateTime.UtcNow;
+        var aBackends = Backends(a, preferred, alternate);
+        Assert.AreEqual(200, a.Context.Response.StatusCode, Log(a));
+        Assert.AreEqual(1, first.Requests.Count, Log(a));
+        Assert.AreEqual(1, second.Requests.Count, Log(a));
+        AssertWake((JObject)a.Cache["throttle-" + a.Context.Api.Id], ThrottleId(aBackends, preferred),
+            before, after, 10, "Timed-out deployment");
+        AssertOnlyMark(a, ThrottleId(aBackends, preferred));
+
+        var b = Policy(single, first, second);
+        b.Cache = a.Cache;
+        await b.Run();
+        Backends(b, single);
+        Assert.AreEqual(200, b.Context.Response.StatusCode, "A's timeout parked deployment B. " + Log(b));
+        Assert.AreEqual(1, b.Sends, Log(b));
+        Assert.AreEqual(single.ProviderPath, first.Requests.Last().Path);
     }
 
     // Paired control: the identical failing provider, but a deployment whose
@@ -279,14 +352,25 @@ public sealed class ThrottleFailoverApimTests
     private static string Affinity(JArray backends, Row row) =>
         backends.OfType<JObject>().Single(b => b.Value<string>("label") == row.Label).Value<string>("affinity")!;
 
-    // S7PREQUEUE comes from a backend-section set-header, which this projection
-    // applies to the request, so the policy's requeue decision is asserted.
+    private static string ThrottleId(JArray backends, Row row) =>
+        backends.OfType<JObject>().Single(b => b.Value<string>("label") == row.Label).Value<string>("throttleId")!;
+
+    private static void AssertOnlyMark(ApimPolicyHarness policy, string throttleId)
+    {
+        var state = (JObject)policy.Cache["throttle-" + policy.Context.Api.Id];
+        CollectionAssert.AreEqual(new[] { throttleId },
+            ((JObject)state["backends"]!).Properties().Select(p => p.Name).ToArray(), state.ToString());
+    }
+
+    // The backend-section S7PREQUEUE set-header is projected onto the request
+    // here, so this checks it ran with the requeue decision, not client delivery.
     private static void AssertRequeue(ApimPolicyHarness policy, int attempts, int wakeSeconds)
     {
         var headers = policy.Context.Response.Headers;
         Assert.AreEqual(429, policy.Context.Response.StatusCode, Log(policy));
         Assert.IsTrue((bool)policy.Context.Variables["Return429"], Log(policy));
         Assert.IsTrue((bool)policy.Context.Variables["RequeueAllowed"]);
+        Assert.AreEqual("true", policy.Context.Request.Headers["S7PREQUEUE"].Single());
         Assert.AreEqual(attempts.ToString(), headers["x-Backend-Attempts"].Single());
         int delay = int.Parse(headers["retry-after-ms"].Single());
         Assert.IsTrue(delay > (wakeSeconds - 5) * 1000 && delay <= wakeSeconds * 1000, $"retry-after-ms: {delay}");

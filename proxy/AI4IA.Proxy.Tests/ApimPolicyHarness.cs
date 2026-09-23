@@ -75,7 +75,7 @@ internal sealed class ApimPolicyHarness
         for (int i = 0; i < servers.Length; i++)
             backends.Add(new JObject
             {
-                ["label"] = $"fixture-{i}", ["affinity"] = $"fixture-{i}",
+                ["label"] = $"fixture-{i}", ["affinity"] = $"fixture-{i}", ["throttleId"] = $"fixture-{i}-throttle",
                 ["url"] = servers[i].Url + "/openai", ["path"] = "openai", ["deployment"] = "fixture-text",
                 ["priorityGroup"] = i, ["acceptablePriorities"] = new JArray(1, 2, 3),
                 ["timeout"] = 1, ["bufferResponse"] = false, ["auth"] = "MI", ["limitConcurrency"] = "off",

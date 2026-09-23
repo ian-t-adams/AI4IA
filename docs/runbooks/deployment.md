@@ -1805,8 +1805,9 @@ Three harms compound from the one misclassification:
 
 1. The request is retried twice upstream even though it is deterministic.
 2. `isTempError` also gates the throttle block, so a malformed request **parks a
-   healthy backend for 10 seconds for every other caller in that region**. One
-   client looping on a bad parameter degrades the whole deployment.
+   healthy backend for 10 seconds for every other caller in that region** (marks
+   were regional then; see *Throttle scope* below). One client looping on a bad
+   parameter degrades the whole deployment.
 3. `Return429` replaces the response with `429 Requeue Message` and an empty body,
    destroying the provider's own diagnostic. The proxy then correctly honours the
    requeue headers and retries across backends, multiplying the cost.
@@ -1851,6 +1852,17 @@ throttle gate is still admitting plain 400s.
 probed for which parameter values a model accepts, because each rejection threw the
 backend into a throttle that made the *next* probe report a false `429`. Any such
 probe needed 11+ seconds of spacing between attempts.
+
+**Throttle scope.** A throttle mark parks one deployment in one region, not every
+caller of that regional endpoint. Foundry quotas and rate limits are per
+deployment, so marks are keyed by `throttleId` (a hash of endpoint, region label
+and deployment) rather than by the regional `affinity` id. `affinity` still serves
+request affinity (`x-backend-affinity`). A 429, 5xx, timeout or context-length 400
+parks only the deployment that returned it: the request fails over to another of
+that model's regions when one exists, and other models in the same region stay
+routable. Marks are best effort. All marks for the API share one APIM cache entry:
+across concurrent requests the last writer wins, and the entry expires 60 seconds
+after its last write, so a longer `Retry-After` is not remembered past that.
 
 ### 7.15 A terminal 4xx returns the right status with `Content-Length: 0`
 

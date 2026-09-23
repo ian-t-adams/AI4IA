@@ -7,7 +7,7 @@
 				JObject state = (JObject)((JObject)context.Variables[&quot;throttleState&quot;])[&quot;backends&quot;];
 				DateTime now = DateTime.UtcNow;
 				foreach (JObject b in backends) {
-					DateTime wakeAt = state.Value&lt;DateTime?>(b.Value&lt;string>(&quot;affinity&quot;)) ?? DateTime.MinValue;
+					DateTime wakeAt = state.Value&lt;DateTime?>(b.Value&lt;string>(&quot;throttleId&quot;)) ?? DateTime.MinValue;
 					bool isThrottling = wakeAt > now;
 					b[&quot;isThrottling&quot;] = isThrottling;
 					b[&quot;retryAfter&quot;] = isThrottling ? wakeAt : DateTime.MinValue;
@@ -64,7 +64,7 @@
 				var requestTimeout = backend.Value&lt;int>(&quot;timeout&quot;);
 				bool likelyTimeout = deltaSeconds >= (requestTimeout * 0.9);
 				string label = backend.Value&lt;string>(&quot;label&quot;);
-				string id = backend.Value&lt;string>(&quot;affinity&quot;);
+				string id = backend.Value&lt;string>(&quot;throttleId&quot;);
 
 				if ( callCompleted ) {
 					return lastStatusCode == 200 ? 0 : 1;
@@ -575,7 +575,7 @@
 						int idx = (int)context.Variables[&quot;backendIndex&quot;];
 						if (idx &lt; 0 || idx >= backends.Count) { return wrapper; }
 						JObject backend = (JObject)backends[idx];
-						string id = backend.Value&lt;string>(&quot;affinity&quot;);
+						string id = backend.Value&lt;string>(&quot;throttleId&quot;);
 
 						// Retry-after from the response header, else the backend default
 						int retryAfterSeconds = backend[&quot;defaultRetryAfter&quot;].Value&lt;int>();
@@ -586,7 +586,7 @@
 							}
 						}
 
-						// Multi-process safe: keep the max wake time for this backend id
+						// Best effort across requests: keep the later wake time for this throttle id
 						DateTime newWake = DateTime.UtcNow.AddSeconds(retryAfterSeconds);
 						DateTime existing = (map[id] != null &amp;&amp; map[id].Type != JTokenType.Null) ? map[id].Value&lt;DateTime>() : DateTime.MinValue;
 						if (newWake > existing) { map[id] = newWake; wrapper[&quot;dirty&quot;] = true; }

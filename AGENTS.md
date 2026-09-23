@@ -821,13 +821,17 @@ to fit the unchanged 48 KiB compiler ceiling; authored comments and C# bytes sta
 intact.
 
 Throttle-failover controls drive the generated two-region GlobalStandard row. A
-429/5xx must mark the failed backend in the `throttleState` its expression returns
-and caches, so the retry reaches the other region and later requests skip it;
-single-region and attempts-v1 controls keep one attempt. Newtonsoft clones a
-parented `JToken` inserted into another container, so write to the returned
-object. The harness projects the default `prefer-external` cache as the built-in
-cache, copying values on store and lookup; APIM's shared cache never aliases a
-request variable.
+429/5xx must mark the failed backend's `throttleId` (endpoint + region label +
+deployment) in the `throttleState` its expression returns and caches, so the retry
+reaches the other region and later requests skip only that deployment in that
+region. `affinity` stays the endpoint + label id for request affinity; isolation
+controls keep a same-region neighbor routable, and single-region and attempts-v1
+controls keep one attempt. Marks are best effort: one cache entry per API, last
+writer wins across concurrent requests, expiring 60 s after its last write.
+Newtonsoft clones a parented `JToken` inserted into another container, so write to
+the returned object. The harness projects the default `prefer-external` cache as
+the built-in cache, copying values on store and lookup; APIM's shared cache never
+aliases a request variable.
 
 When a proxy project dependency changes, refresh from the top-level test project
 with `dotnet restore ... --force-evaluate`. NuGet does not recalculate
