@@ -1174,7 +1174,9 @@ Retained choices are alternatives to evaluate, **not aliases or equivalent outpu
 | `gpt-audio` | `gpt-audio-1.5` |
 
 Keep `sora-2` by explicit owner choice and `gpt-image-1.5` for its distinct
-DataZoneStandard image capability. Content Understanding's `gpt-5.2`,
+DataZoneStandard image capability. (`sora-2` is later runtime-disabled ahead of
+its own retirement; see [Sora 2 runtime retirement](#sora-2-runtime-retirement).)
+Content Understanding's `gpt-5.2`,
 memory/Code Interpreter's `gpt-5.4-mini`, `text-embedding-3-large` and its
 3072-dimensional vectors, the `gpt-5-mini` canary, preview `gpt-realtime`,
 explicit Mistral analyzer names and `o3-deep-research` remain unchanged.
@@ -1207,6 +1209,53 @@ Deletion may be irreversible: a deprecating model can be impossible to recreate.
 Application-image rollback does not restore deleted deployments, and repinning
 TTS back to a preview version is not guaranteed. Source review and green CI do
 not authorize cleanup, tenant/Claude changes, capacity-profile changes or release.
+
+### Sora 2 runtime retirement
+
+`sora-2` `2025-12-08` is the only video model the subscription offers in East US 2,
+Sweden Central or West US. Its inference retirement is `2026-10-15T00:00:00Z`
+(Preview); `2025-10-06` has already retired and Foundry offers no successor.
+OpenAI's own Sora 2 API shuts down on 2026-09-24. The source change sets
+`runtimeEnabled: false` on the `sora-2` row and keeps both deployments in the
+desired catalog. It must be merged **and deployed** before the retirement date.
+
+| Surface | Before | After |
+| --- | --- | --- |
+| `/api/tools` | `generate_video` available whenever the flag and store are on | Unavailable, with the detail "No runtime-enabled video generation model is available." |
+| Conversation, agent and inspector tool sets | Include an attached `generate_video` | Exclude it; saved agents and overrides are not rewritten |
+| `/generate_video` | Runs, then fails at the provider after retirement | Local reply that no video model is enabled; no model call |
+| Consent and publication snapshots | Include the tool contract | Omit it; publishing an agent that requires it is refused |
+| Direct execution | Could reach the gateway | Refused before any provider call |
+| APIM model catalog | Routes both `sora-2` deployments | No `sora-2` route |
+| Previously generated clips | Served by `/api/videos/artifacts/{id}` | Unchanged |
+| Desired inventory | Two `sora-2` deployments | Unchanged; physical removal is separate |
+
+Keep `AI4IA_VIDEO_GENERATION_ENABLED=true`. `api.bicep` emits
+`AI4IA_VIDEO_BLOB_ACCOUNT_URL` only while the flag is on. Turning it off would
+leave the API with an empty in-memory video store, so existing clips would return
+404. The model gate hides the tool without that side effect. The execution-time
+checks also remain in place: the handler asks again, and the service refuses a
+model it cannot resolve.
+
+Changing the catalog changes the consent environment digest, like any catalog
+edit. Users renew session/run tool consent. Published versions whose recorded
+environment differs must be reviewed and republished before they run again.
+
+Deployment order is safe either way. `deploy.yml` provisions before it deploys
+the application. Between those steps the old revision still offers
+`generate_video`, and a call gets a sanitized gateway error instead of a paid
+generation. An application-image rollback likewise leaves the old revision
+offering a tool the gateway no longer routes; that fails the same way.
+`provision=false` defers the APIM route removal to the next provision. The new
+application still hides the tool.
+
+After deployment, check the change without generating video: `/api/tools` reports
+`generate_video` unavailable, and a known existing clip still returns 200 to its
+owner. Deleting the two deployments and the desired row is a later, separately
+approved cleanup under
+[Coordinated catalog retirement](#coordinated-catalog-retirement). If a successor
+appears, add it as a reviewed catalog row. Re-enabling `sora-2` after its
+retirement date would advertise a model that cannot serve.
 
 ### Read-only model retirement reporting
 

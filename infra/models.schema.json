@@ -41,6 +41,11 @@
           "displayName": { "type": "string" },
           "format": { "type": "string" },
           "category": { "type": "string" },
+          "runtimeEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "False keeps this row's deployments in desired infrastructure, quota and retirement inventory, but removes the model from runtime availability, selection and generated HTTP gateway routes. It is not physical deletion or free quota; deployment removal is a separate operator-approved cleanup."
+          },
           "api": {
             "type": "string",
             "enum": ["chat", "responses", "anthropic", "mai", "bfl", "mistral_ocr"],

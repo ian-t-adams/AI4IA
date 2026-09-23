@@ -36,6 +36,12 @@ from ..sessions.models import MessageAttachment
 from ..usage.models import UsageStatus
 from ..usage.service import UsageService
 from .artifacts import VideoArtifactStore
+from .availability import (
+    NO_VIDEO_MODEL_DETAIL,
+    VideoAvailability,
+    available_video_model_ids,
+    video_generation_availability,
+)
 from .service import (
     VideoGenerationError,
     VideoGenerationService,
@@ -61,10 +67,6 @@ def _one_line(text: str, limit: int = _FIELD_LIMIT) -> str:
     return (text or "").replace("\n", " ").replace("\r", " ").strip()[:limit]
 
 
-def _video_model_ids(catalog: ModelCatalog) -> list[str]:
-    return [m.id for m in catalog.models if m.category == "video"]
-
-
 def build_video_capability(
     *,
     video_service: VideoGenerationService,
@@ -75,6 +77,7 @@ def build_video_capability(
     user_id: str,
     session_id: str,
     sink: list[MessageAttachment],
+    policy_filter: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Handler]]:
     """Build the ``generate_video`` tool bound to ``user_id``.
 
@@ -84,11 +87,28 @@ def build_video_capability(
     ``session_id``. Governance — entitlement gate, video-category-only model,
     size/duration allowlists, payload cap — is shared with any HTTP caller via
     :class:`VideoGenerationService` and the per-turn entitlement check here.
+
+    Nothing is built unless :mod:`~ai4ia_api.videos.availability` reports the
+    tool available (flag, store and a routable video model), and the handler asks
+    again when it runs. ``policy_filter=False`` is only for publication metadata,
+    which describes the reviewed contract rather than one caller's policy.
     """
-    if not video_service.enabled:
+
+    def _availability() -> VideoAvailability:
+        return video_generation_availability(
+            enabled=video_service.enabled,
+            artifact_store=artifact_store,
+            catalog=catalog,
+            policy_filter=policy_filter,
+        )
+
+    if _availability() != "available":
         return [], {}
     budget = {"used": 0}
-    video_ids = _video_model_ids(catalog)
+    # The hint names every runtime-routable video model, independent of the
+    # caller's policy, so consent and publication contract digests do not vary
+    # per caller; execution still resolves the chosen model under that policy.
+    video_ids = available_video_model_ids(catalog, policy_filter=False)
     models_hint = (
         f" Available video models: {', '.join(video_ids)}." if video_ids else ""
     )
@@ -155,8 +175,15 @@ def build_video_capability(
     }
 
     async def _handler(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        if not video_service.enabled:
+        # Re-check at execution time: the flag, store or model may have gone away
+        # since this schema was offered, and a paid call must not follow a stale offer.
+        availability = _availability()
+        if availability == "disabled":
             return {"error": "Video generation is disabled."}
+        if availability == "no_model":
+            return {"error": NO_VIDEO_MODEL_DETAIL}
+        if availability != "available":
+            return {"error": "Video generation is unavailable."}
         if budget["used"] >= MAX_VIDEOS_PER_TURN:
             return {"error": "video generation budget exhausted for this turn."}
         prompt = str(args.get("prompt") or "").strip()

@@ -33,6 +33,19 @@ def model_target(model: dict[str, Any]) -> ModelTarget:
     return "source"
 
 
+def runtime_enabled(model: dict[str, Any]) -> bool:
+    """Read the strict optional ``runtimeEnabled`` Boolean (default true).
+
+    False keeps the row's deployments in desired infrastructure, quota and
+    retirement inventory; it only withdraws runtime availability and generated
+    HTTP routes. It is never physical deletion or free quota.
+    """
+    value = model.get("runtimeEnabled", True)
+    if type(value) is not bool:
+        raise ValueError("runtimeEnabled must be a Boolean")
+    return value
+
+
 def source_catalog(models: dict[str, Any]) -> dict[str, Any]:
     return {
         **models,

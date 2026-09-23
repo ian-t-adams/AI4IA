@@ -10,7 +10,7 @@ than maintaining a second model/version list.
 
 | Region | Role | Consequence |
 | --- | --- | --- |
-| East US 2 | Primary US model set, realtime/audio, images/video, and native Content Understanding/Speech integration | Broadest shared capability set; several native service dependencies remain here |
+| East US 2 | Primary US model set, realtime/audio, images, runtime-disabled video inventory, and native Content Understanding/Speech integration | Broadest shared capability set; several native service dependencies remain here |
 | Sweden Central | Second primary model region, with EU data-zone options where the catalog offers them | Useful backend diversity, but not every model or SKU has parity |
 | West US | Targeted MAI image and deep-research deployments | Availability/quota specialization rather than a complete third copy |
 
@@ -90,7 +90,7 @@ Models are not interchangeable simply because they accept text.
 | Plain chat | Input modalities, context/output limits, supported sampling and reasoning values |
 | Agents and workflows | The model must support the tool contract; plain-chat-only models are rejected for tool-dependent execution |
 | Images | Provider API, supported sizes/quality, output bounds, safety behavior, and cost coverage |
-| Video | Asynchronous create/status/content contract, supported clip lengths, and durable delivery |
+| Video | Asynchronous create/status/content contract, supported clip lengths, durable delivery, and at least one runtime-enabled video model |
 | Document parsing | Explicit analyzer selection, page/byte limits, canonical extraction format, and page-based metering |
 | Realtime | Provider/model allowlist, audio contract, separate APIM WebSocket API, and voice-capable tools |
 
@@ -158,6 +158,40 @@ side effect of editing JSON. Follow the
 [coordinated retirement procedure](runbooks/deployment.md#coordinated-catalog-retirement):
 saved selections are not remapped, historical pricing is retained, and an
 application-image rollback cannot restore a deleted model deployment.
+
+### Runtime disablement
+
+A catalog row may set `runtimeEnabled: false` (a strict Boolean, default
+`true`). The row stays in the desired catalog: Bicep still reconciles its
+deployments, capacity and quota observations still count it, and retirement
+reporting still warns about it. The model simply stops being usable at runtime:
+it has no eligible deployment options, so the model list, pickers and deployment
+resolution exclude it, and the generated SimpleL7Proxy -> APIM catalog gives it no
+HTTP route. Runtime disablement is not deletion and does not free quota; removing
+the deployment is a separate, approved live cleanup. Seams that advertise a
+capability backed by the disabled model must ask the same availability question.
+Video does this through one shared predicate.
+
+### Sora 2 retirement (2026-10-15)
+
+`sora-2` version `2025-12-08` is the only video model this subscription offers
+in East US 2, Sweden Central or West US. Its inference retirement is
+`2026-10-15T00:00:00Z` (Preview lifecycle); the older `2025-10-06` version has
+already retired, and Foundry offers no successor. OpenAI's own Sora 2 API shuts
+down on 2026-09-24. These are dated subscription and public observations, not a
+live serving check.
+
+The catalog therefore runtime-disables `sora-2` while keeping both of its
+deployments. With no runtime-enabled video model, `generate_video` disappears
+from every surface: the tool catalog, conversation and agent tool sets,
+`/generate_video`, consent and publication snapshots. A direct attempt is
+refused before any provider call. `AI4IA_VIDEO_GENERATION_ENABLED` stays on
+deliberately. The deployed API only receives its durable video Blob settings
+while that flag is on, and previously generated clips remain viewable through
+the authenticated `/api/videos/artifacts/{id}` endpoint. Deleting the two
+`sora-2` deployments and their desired rows is separate cleanup that needs its
+own approval; see the
+[deployment runbook](runbooks/deployment.md#sora-2-runtime-retirement).
 
 ## Retirement evidence and reporting
 

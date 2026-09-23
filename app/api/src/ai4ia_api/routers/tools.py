@@ -16,6 +16,7 @@ from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..conversations.policy import resolve_conversation_policy
 from ..memory.context import MemoryContextGuard
+from ..videos.availability import NO_VIDEO_MODEL_DETAIL, state_video_availability
 from ..websearch.contracts import MAX_CONTENT_CHARS, MAX_RESULTS, WEBIQ_TOOL_NAMES, tool_schema
 from ..policy.context import current_binding, tool_allowed
 
@@ -104,10 +105,10 @@ async def list_tools(
         elif name == "process_document":
             available = getattr(request.app.state, "document_retrieval", None) is not None
         elif name == "generate_video":
-            available = (
-                settings.video_generation_enabled
-                and getattr(request.app.state, "video_artifacts", None) is not None
-            )
+            video = state_video_availability(request.app.state)
+            available = video == "available"
+            if video == "no_model":
+                detail = NO_VIDEO_MODEL_DETAIL
         elif name == "generate_image":
             available = (
                 settings.image_generation_enabled
