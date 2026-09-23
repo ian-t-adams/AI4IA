@@ -27,7 +27,7 @@ from tests.test_publication_execution_api import (
 from tests.test_realtime_canary_integration import SetupConnector
 from tests.test_realtime_staged_api import GA_SETTINGS
 
-DISABLED_MODEL = "gpt-realtime-2"
+RETAINED_MODEL = "gpt-realtime-2"
 DEFAULT_MODEL = "gpt-realtime"
 
 
@@ -86,8 +86,8 @@ def test_signed_actor_categories_preserve_runtime_protocol_and_default_routing(
         bindings.append(current_binding())
 
     monkeypatch.setattr(auth_dependencies, "bind_authenticated", observed_binding)
-    disabled = next(row for row in state.catalog.models if row.id == DISABLED_MODEL)
-    assert disabled.runtimeEnabled is False
+    retained = state.catalog.get(RETAINED_MODEL)
+    assert retained.runtimeEnabled is True and retained.requiredRealtimeProtocol is None
     for protocol in RealtimeProtocol:
         state.settings.realtime_protocol = protocol
         offered = client.get("/api/models?protocol=ga", headers=authorization(actor))
@@ -96,25 +96,29 @@ def test_signed_actor_categories_preserve_runtime_protocol_and_default_routing(
         assert bindings[-1].actor_policy_digest == policy_digest(parse_policy_config(json.dumps(config)))
         rows = offered.json()["models"]
         assert {row["category"] for row in rows} == {"realtime"}
-        assert DISABLED_MODEL not in {row["id"] for row in rows}
+        assert RETAINED_MODEL in {row["id"] for row in rows}
         assert (GA_MODEL in {row["id"] for row in rows}) is (protocol == RealtimeProtocol.ga)
         ordinary_rows = client.get("/api/models", headers=authorization(ordinary)).json()["models"]
         assert model.id in {row["id"] for row in ordinary_rows}
+        assert RETAINED_MODEL in {row["id"] for row in ordinary_rows}
         assert (GA_MODEL in {row["id"] for row in ordinary_rows}) is (protocol == RealtimeProtocol.ga)
         setup_exchange(client, ordinary)
-        setup_exchange(client, actor, DISABLED_MODEL, allowed=False)
+        setup_exchange(client, actor, RETAINED_MODEL, allowed=protocol == RealtimeProtocol.ga)
+        setup_exchange(client, ordinary, RETAINED_MODEL)
         setup_exchange(client, actor, GA_MODEL, allowed=protocol == RealtimeProtocol.ga)
         setup_exchange(client, ordinary, GA_MODEL, allowed=protocol == RealtimeProtocol.ga)
+        retained.runtimeEnabled = False
+        for bearer in (actor, ordinary):
+            assert RETAINED_MODEL not in {
+                row["id"] for row in client.get("/api/models", headers=authorization(bearer)).json()["models"]
+            }
+            setup_exchange(client, bearer, RETAINED_MODEL, allowed=False)
+        retained.runtimeEnabled = True
+        setup_exchange(client, actor, RETAINED_MODEL, allowed=protocol == RealtimeProtocol.ga)
     actor_tools = client.get("/api/tools", headers=authorization(actor)).json()["tools"]
     ordinary_tools = client.get("/api/tools", headers=authorization(ordinary)).json()["tools"]
     assert actor_tools and not any(row["available"] or row["selectable"] for row in actor_tools)
     assert any(row["name"] == "calculator" and row["available"] for row in ordinary_tools)
-    disabled.runtimeEnabled = True
-    assert DISABLED_MODEL in {
-        row["id"] for row in client.get("/api/models", headers=authorization(actor)).json()["models"]
-    }
-    setup_exchange(client, actor, DISABLED_MODEL)
-    disabled.runtimeEnabled = False
     config["realtimeCanaryActor"]["restrictions"]["models"] = [model.category]
     state.settings.group_policy_json = json.dumps(config)
     assert GA_MODEL not in {

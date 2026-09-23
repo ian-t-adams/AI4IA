@@ -1203,7 +1203,7 @@
       "id": "gpt-realtime-2",
       "displayName": "gpt-realtime-2",
       "category": "realtime",
-      "runtimeEnabled": false,
+      "runtimeEnabled": true,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,

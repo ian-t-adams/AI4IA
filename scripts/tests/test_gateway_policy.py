@@ -25,26 +25,30 @@ docs_generator = load_script(
 
 
 class GatewayPolicyTests(unittest.TestCase):
-    def test_runtime_disabled_inventory_is_retained_but_never_served(self) -> None:
+    def test_rt2_is_routable_and_explicitly_disabled_inventory_is_never_served(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
-        retained = [m for m in models["catalog"] if m.get("runtimeEnabled") is False]
-        self.assertEqual([m["name"] for m in retained], ["gpt-realtime-2"])
+        retained = next(m for m in models["catalog"] if m["name"] == "gpt-realtime-2")
+        self.assertNotIn("runtimeEnabled", retained)
+        self.assertNotIn("requiredRealtimeProtocol", retained)
         inventory = load_script("voice_migration_inventory", ROOT / "scripts/check-model-availability.py")
         before = inventory.catalog_requirements(models)
-        for model in retained:
-            name = next(
-                row["deploymentName"] for row in before["eastus2"] if row["name"] == model["name"]
+        name = next(
+            row["deploymentName"] for row in before["eastus2"] if row["name"] == retained["name"]
+        )
+        for enabled in (True, False, True):
+            if not enabled:
+                retained["runtimeEnabled"] = False
+            else:
+                retained.pop("runtimeEnabled", None)
+            self.assertEqual(
+                name in "\n".join(gateway_generator.render_catalog(models)[0]), enabled,
             )
-            self.assertNotIn(name, "\n".join(gateway_generator.render_catalog(models)[0]))
             for ga in (False, True):
-                self.assertNotIn(name, gateway_generator.generate_realtime_policy(models, ga=ga))
-            model["runtimeEnabled"] = True
-            self.assertIn(name, "\n".join(gateway_generator.render_catalog(models)[0]))
-            for ga in (False, True):
-                self.assertIn(name, gateway_generator.generate_realtime_policy(models, ga=ga))
+                self.assertEqual(
+                    name in gateway_generator.generate_realtime_policy(models, ga=ga), enabled,
+                )
             # The runtime marker cannot drop desired inventory or free allocation.
             self.assertEqual(inventory.catalog_requirements(models), before)
-            model["runtimeEnabled"] = False
 
     def test_required_ga_protocol_excludes_only_the_preview_route(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
@@ -65,7 +69,7 @@ class GatewayPolicyTests(unittest.TestCase):
             model["requiredRealtimeProtocol"] = "ga"
 
         for ga in (False, True):
-            self.assertNotIn("gpt-realtime-2-", gateway_generator.generate_realtime_policy(models, ga=ga))
+            self.assertIn("gpt-realtime-2-", gateway_generator.generate_realtime_policy(models, ga=ga))
 
     def test_fragment_compaction_preserves_code_and_string_bytes(self) -> None:
         source = (

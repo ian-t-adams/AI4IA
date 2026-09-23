@@ -62,7 +62,9 @@ def test_declared_versions_and_runtime_flags_agree_in_all_merged_catalogs():
             assert {(o.region, o.sku, o.modelVersion) for o in entry.options} == {
                 (d["region"], d["sku"], d["version"]) for d in declaration["deployments"]
             }
-        assert catalog.get("gpt-realtime-2") is None
+        retained = catalog.get("gpt-realtime-2")
+        assert retained.runtimeEnabled is True and retained.requiredRealtimeProtocol is None
+        assert catalog.resolve_deployment(retained.id).modelVersion == "2026-05-06"
         assert catalog.resolve_deployment(TTS_MODEL).modelVersion == "2025-12-15"
         assert catalog.resolve_deployment(GA_MODEL).modelVersion == "2026-02-23"
 
@@ -190,7 +192,7 @@ def test_rest_speech_cannot_reuse_a_restricted_monitor_actor(setup_client, actor
         asyncio.run(http.aclose())
 
 
-def test_ga_setup_candidate_skips_retained_disabled_models_and_keeps_the_default(setup_client):
+def test_ga_setup_candidate_keeps_rt2_selectable_and_skips_explicitly_disabled_models(setup_client):
     client, token, connector, _ = setup_client
     state = client.app.state
     catalog = state.catalog.model_copy(deep=True)
@@ -199,6 +201,9 @@ def test_ga_setup_candidate_skips_retained_disabled_models_and_keeps_the_default
     assert "model=gpt-realtime&" in setup_target(client, bearer)
     default = catalog.get("gpt-realtime")
     default.runtimeEnabled = False
+    retained = catalog.get("gpt-realtime-2")
+    assert f"model={retained.id}&" in setup_target(client, bearer)
+    retained.runtimeEnabled = False
     target = setup_target(client, bearer)
     assert f"model={GA_MODEL}&" in target
     with client.websocket_connect(
@@ -213,6 +218,8 @@ def test_ga_setup_candidate_skips_retained_disabled_models_and_keeps_the_default
     assert parse_qs(url.query) == {"model": [catalog.resolve_deployment(GA_MODEL).deploymentName]}
     assert connector.upstream.sent_bytes == []
     assert len(connector.upstream.sent_text) == 1
+    retained.runtimeEnabled = True
+    assert f"model={retained.id}&" in setup_target(client, bearer)
     default.runtimeEnabled = True
     assert "model=gpt-realtime&" in setup_target(client, bearer)
 

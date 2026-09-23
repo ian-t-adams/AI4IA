@@ -221,11 +221,14 @@ describe("resolveEffectiveAgent", () => {
 });
 
 describe("resolveEffectiveModel", () => {
-  const models = new Set(["gpt-realtime", "gpt-realtime-mini"]);
+  const models = new Set(["gpt-realtime", "gpt-realtime-mini", "gpt-realtime-2"]);
 
   it("prefers a valid explicit selection over the fallback", () => {
     expect(resolveEffectiveModel("gpt-realtime-mini", models, "gpt-realtime")).toBe(
       "gpt-realtime-mini",
+    );
+    expect(resolveEffectiveModel("gpt-realtime-2", models, "gpt-realtime")).toBe(
+      "gpt-realtime-2",
     );
   });
 
@@ -233,9 +236,6 @@ describe("resolveEffectiveModel", () => {
     expect(resolveEffectiveModel(null, models, "gpt-realtime")).toBe("gpt-realtime");
     expect(resolveEffectiveModel("retired-model", models, "gpt-realtime")).toBe(
       "retired-model",
-    );
-    expect(resolveEffectiveModel("gpt-realtime-2", models, "gpt-realtime")).toBe(
-      "gpt-realtime-2",
     );
     expect(resolveEffectiveModel("gpt-realtime-1.5", models, "gpt-realtime")).toBe(
       "gpt-realtime-1.5",

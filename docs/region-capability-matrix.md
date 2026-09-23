@@ -160,14 +160,27 @@ saved selections are not remapped, historical pricing is retained, and an
 application-image rollback cannot restore a deleted model deployment.
 
 For the [GA voice migration](runbooks/feature-enablement.md#ga-voice-model-migration),
-phase 1 retains `gpt-realtime-2` in desired inventory with `runtimeEnabled=false`.
-It still consumes its existing allocation and participates in quota, retirement
-and strict postprovision checks, but has no runtime selection or serving route.
+phase 1 keeps `gpt-realtime-2` selectable on preview and GA, with `runtimeEnabled`
+and `requiredRealtimeProtocol` omitted. Version `2026-05-06`, eastus2
+GlobalStandard and its allocation/pool metadata are unchanged.
+The owner decision follows [retirement report run 35722868193](https://github.com/ian-t-adams/AI4IA/actions/runs/35722868193),
+observed at `2026-09-22T11:42:21Z`: that exact subscription target is Preview,
+Succeeded without drift, with SKU and inference deprecation both
+`2026-10-31T00:00:00Z`. The public reference table below is not that subscription
+evidence and stays unchanged; the public GA model-list version `2026-05-07` must
+not be aliased to this deployment.
+
+RT2 remains selectable until that authoritative inference deadline. From
+`2026-10-24T00:00:00Z`, the existing retirement policy treats new/changed targets
+as unsafe; exact reconciles only warn. A separately approved follow-up must
+runtime-disable it (`runtimeEnabled=false`) or select a subscription-verified
+later version, and must merge and deploy before October 31. No automatic runtime
+date cutoff is introduced.
 `gpt-realtime-1.5` is a separate eastus2-only, baseline-10 desired deployment that
 requires the server's GA protocol. Neither the maximum nor production profile
 receives a guessed allocation. Phase 2 removes the exact old resource and desired
 entry only after separately approved live acceptance. Source state is not a claim
-that either phase has occurred in Azure.
+that either phase has occurred in Azure or that GA/2.x inference is accepted.
 
 ## Retirement evidence and reporting
 

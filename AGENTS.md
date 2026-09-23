@@ -1353,17 +1353,27 @@ covers both generated Realtime policies; `test_realtime_protocol.py`,
 Keep shared browser fixtures inside the web Docker build context.
 Run the targeted browser lifecycle/settings tests when changing that boundary.
 
-The phase-1 voice migration retains `gpt-realtime-2` in desired inventory with
-`runtimeEnabled=false`, adds GA `gpt-realtime-1.5` only in eastus2 at portable
-baseline 10 without a guessed maximum/pool, and pins the existing mini-TTS
-deployment to the already shipped `2025-12-15` without changing its name or
-capacities. The GA TTS upgrade and structural app speech acceptance were delivered
-by #492; do not repeat them as unfinished realtime migration work.
+The phase-1 voice migration keeps `gpt-realtime-2` selectable on preview and GA:
+omit `runtimeEnabled` (default true) and `requiredRealtimeProtocol`, preserving
+version `2026-05-06`, eastus2 and its existing capacity/pool metadata. The owner's
+2026-09-23 choice uses the subscription inference deprecation
+`2026-10-31T00:00:00Z`, observed in retirement report run `35722868193` at
+`2026-09-22T11:42:21Z`, not the separately labeled public August reference.
+From `2026-10-24T00:00:00Z`, the existing seven-day policy treats new/changed
+targets as unsafe; exact Succeeded reconciles only warn. A separately approved
+follow-up must runtime-disable RT2 or select a subscription-verified later version,
+and must merge and deploy before October 31. This is not an automatic runtime
+date cutoff or permission to alias the public `2026-05-07` version.
+
+Phase 1 adds GA `gpt-realtime-1.5` only in eastus2 at portable baseline 10 without
+a guessed maximum/pool, and retains the already shipped mini-TTS `2025-12-15`
+without changing its name or capacities. The GA TTS upgrade and structural app
+speech acceptance were delivered by #492; do not repeat them as unfinished work.
 `requiredRealtimeProtocol=ga` survives generated/dev catalogs and excludes the
 replacement from preview advertisement and execution. Keep this and
-`runtimeEnabled` in publication/source comparisons; an older saved model choice
-must fail explicitly, not alias another model. Speech's curated managed subset
-does not inherit the replacement.
+`runtimeEnabled` in publication/source comparisons; a saved unavailable model
+choice must fail explicitly, not alias another model. Speech's curated managed
+subset does not inherit the replacement.
 Actor category reductions intersect these runtime/protocol gates, including on
 fresh and cached bindings. An entirely unrunnable catalog must not turn a failed
 policy binding into healthy empty inventory or prevent canonical owner cleanup.

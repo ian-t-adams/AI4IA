@@ -46,13 +46,11 @@ def test_catalog_delta_keeps_footprint_default_and_existing_tts_capacity():
     models = {m["name"]: m for m in source["catalog"]}
     assert models["gpt-realtime-2"] == {
         "name": "gpt-realtime-2", "format": "OpenAI", "category": "realtime",
-        "runtimeEnabled": False,
         "deployments": [{
             "region": "eastus2", "sku": "GlobalStandard", "capacity": 10,
             "version": "2026-05-06", "maxCapacity": 10, "maxCapacityPool": "global",
         }],
     }
-    assert [m["name"] for m in models.values() if m.get("runtimeEnabled") is False] == ["gpt-realtime-2"]
     assert models[GA_MODEL]["requiredRealtimeProtocol"] == "ga"
     assert models[GA_MODEL]["deployments"] == [{
         "region": "eastus2", "sku": "GlobalStandard", "capacity": 10, "version": "2026-02-23",
@@ -62,11 +60,17 @@ def test_catalog_delta_keeps_footprint_default_and_existing_tts_capacity():
         "version": "2025-12-15", "maxCapacity": 600, "maxCapacityPool": "global",
     }]
     catalog = load_catalog()
-    assert catalog.get("gpt-realtime-2") is None
+    retained = catalog.get("gpt-realtime-2")
+    assert retained.runtimeEnabled is True
+    assert retained.requiredRealtimeProtocol is None
     assert catalog.get(GA_MODEL).requiredRealtimeProtocol == "ga"
     for protocol in RealtimeProtocol:
         selected, _ = resolve_realtime_deployment(catalog, None, None, protocol=protocol)
         assert selected == "gpt-realtime"
+        selected, option = resolve_realtime_deployment(
+            catalog, retained.id, "eastus2", protocol=protocol,
+        )
+        assert selected == retained.id and option.modelVersion == "2026-05-06"
     tts = catalog.resolve_deployment("gpt-4o-mini-tts")
     assert tts.deploymentName == (
         f"gpt-4o-mini-tts-{source['naming']['subscriptionToken']}-eastus2-glbl"
@@ -117,23 +121,47 @@ def test_ga_requirement_is_not_a_client_protocol_selector(client):
 
 
 @pytest.mark.parametrize("protocol", list(RealtimeProtocol))
-def test_removed_saved_model_is_rejected_without_changing_a_conversation(client, protocol):
-    client.app.state.settings.realtime_protocol = protocol
-    created = client.post("/api/sessions", headers=HEADERS, json={"title": "Existing voice"})
+def test_retained_rt2_is_advertised_and_served_until_explicitly_disabled(client, protocol):
+    state = client.app.state
+    state.settings.realtime_protocol = protocol
+    state.catalog = state.policy.catalog = state.catalog.model_copy(deep=True)
+    retained = state.catalog.get("gpt-realtime-2")
+    assert retained.runtimeEnabled is True and retained.requiredRealtimeProtocol is None
+    option = state.catalog.resolve_deployment(retained.id, region="eastus2")
+    assert option.modelVersion == "2026-05-06"
+    created = client.post("/api/sessions", headers=HEADERS, json={
+        "title": "Existing voice", "model": retained.id,
+    })
     assert created.status_code == 201
     session_id = created.json()["id"]
     before = client.get(f"/api/sessions/{session_id}", headers=HEADERS).json()
+    query = f"?session={session_id}&model={retained.id}&region=eastus2"
+    offered = client.get("/api/models", headers=HEADERS).json()["models"]
+    assert retained.id in {row["id"] for row in offered}
+    assert (GA_MODEL in {row["id"] for row in offered}) is (protocol == RealtimeProtocol.ga)
+    _echo(client, query=query, user="alice")
+    opened = state.realtime_connector.connects[0]
+    url = urlsplit(opened["url"])
+    ga = protocol == RealtimeProtocol.ga
+    assert url.path == ("/openai/v1/realtime" if ga else "/openai/realtime")
+    assert parse_qs(url.query)["model" if ga else "deployment"] == [option.deploymentName]
+
+    retained.runtimeEnabled = False
+    assert retained.id not in {
+        row["id"] for row in client.get("/api/models", headers=HEADERS).json()["models"]
+    }
     with pytest.raises(WebSocketDisconnect) as denied:
         with client.websocket_connect(
-            f"/api/voice/live?session={session_id}&model=gpt-realtime-2",
+            f"/api/voice/live{query}",
             headers=_origin(), subprotocols=[DEV_SUBPROTOCOL, "alice"],
         ):
             pass
     assert "Choose an available model" in denied.value.reason
-    assert client.app.state.realtime_connector.connects == []
+    assert len(state.realtime_connector.connects) == 1
     assert client.get(f"/api/sessions/{session_id}", headers=HEADERS).json() == before
-    _echo(client, query=f"?session={session_id}&model=gpt-realtime", user="alice")
-    assert len(client.app.state.realtime_connector.connects) == 1
+    retained.runtimeEnabled = True
+    _echo(client, query=query, user="alice")
+    assert len(state.realtime_connector.connects) == 2
 
 
 def test_default_resolver_cannot_fall_back_to_a_ga_only_catalog():

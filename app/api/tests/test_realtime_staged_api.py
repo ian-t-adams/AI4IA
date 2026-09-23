@@ -55,14 +55,14 @@ def _echo(c, *, query="", user="owner", headers=None):
         assert ws.receive_text() == f"echo:{frame}"
 
 
-def test_real_relay_translates_browser_frames_and_owns_the_handshake(protocol_client):
+@pytest.mark.parametrize("model_id", ["gpt-realtime", "gpt-realtime-2"])
+def test_real_relay_translates_browser_frames_and_owns_the_handshake(protocol_client, model_id):
     c = protocol_client
     connector = c.app.state.realtime_connector
     protocol = c.app.state.settings.realtime_protocol
-    default_model = next(model for model in c.app.state.catalog.models if model.category == "realtime")
-    deployment = c.app.state.catalog.resolve_deployment(default_model.id).deploymentName
+    deployment = c.app.state.catalog.resolve_deployment(model_id).deploymentName
     with c.websocket_connect(
-        "/api/voice/live?protocol=ga&deployment=untrusted&api-version=untrusted",
+        f"/api/voice/live?model={model_id}&protocol=ga&deployment=untrusted&api-version=untrusted",
         subprotocols=[DEV_SUBPROTOCOL, "owner"],
         headers={**_origin(), "OpenAI-Beta": "realtime=v1", "api-key": "browser-key"},
     ) as ws:
@@ -99,7 +99,8 @@ def test_real_relay_translates_browser_frames_and_owns_the_handshake(protocol_cl
     assert connector.upstream.closed
 
 
-def test_real_relay_normalizes_every_server_fixture_and_preserves_usage(protocol_client, caplog):
+@pytest.mark.parametrize("model_id", ["gpt-realtime", "gpt-realtime-2"])
+def test_real_relay_normalizes_every_server_fixture_and_preserves_usage(protocol_client, caplog, model_id):
     c = protocol_client
     protocol = c.app.state.settings.realtime_protocol
     side = "ga" if protocol == RealtimeProtocol.ga else "application"
@@ -113,7 +114,7 @@ def test_real_relay_normalizes_every_server_fixture_and_preserves_usage(protocol
     capture = _attach_completion_capture(caplog)
     try:
         with c.websocket_connect(
-            "/api/voice/live", subprotocols=[DEV_SUBPROTOCOL, "owner"], headers=_origin(),
+            f"/api/voice/live?model={model_id}", subprotocols=[DEV_SUBPROTOCOL, "owner"], headers=_origin(),
         ) as ws:
             for case, frame in zip(FIXTURES["server"], frames, strict=True):
                 received = ws.receive_text()

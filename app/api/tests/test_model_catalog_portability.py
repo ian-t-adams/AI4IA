@@ -125,17 +125,22 @@ def test_realtime_and_external_profiles_survive_the_same_catalog_roundtrip():
     models = source["catalog"]
     assert any(m.get("deploymentTarget") == "external-claude" for m in models)
     assert any(m.get("requiredRealtimeProtocol") == "ga" for m in models)
-    assert any(m.get("runtimeEnabled") is False for m in models)
-    for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
-        catalog = ModelCatalog.model_validate(raw)
-        restored = ModelCatalog.model_validate(catalog.model_dump())
-        for declared, entry in zip(models, restored.models, strict=True):
-            assert entry.id == declared["name"]
-            assert entry.runtimeEnabled is declared.get("runtimeEnabled", True)
-            assert entry.requiredRealtimeProtocol == declared.get("requiredRealtimeProtocol")
-            assert entry.deploymentTarget == declared.get("deploymentTarget", "source")
-            assert entry.anthropicThinking == declared.get("anthropicThinking")
-            assert entry.samplingSupported is declared.get("samplingSupported")
-            if entry.deploymentTarget == "external-claude":
-                entry.require_external_profile()
-            assert (restored.get(entry.id) is not None) is entry.runtimeEnabled
+    retained = next(m for m in models if m["name"] == "gpt-realtime-2")
+    assert retained.get("runtimeEnabled", True) is True
+    for enabled in (True, False):
+        if not enabled:
+            retained["runtimeEnabled"] = False
+        for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
+            catalog = ModelCatalog.model_validate(raw)
+            restored = ModelCatalog.model_validate(catalog.model_dump())
+            for declared, entry in zip(models, restored.models, strict=True):
+                assert entry.id == declared["name"]
+                assert entry.runtimeEnabled is declared.get("runtimeEnabled", True)
+                assert entry.requiredRealtimeProtocol == declared.get("requiredRealtimeProtocol")
+                assert entry.deploymentTarget == declared.get("deploymentTarget", "source")
+                assert entry.anthropicThinking == declared.get("anthropicThinking")
+                assert entry.samplingSupported is declared.get("samplingSupported")
+                if entry.deploymentTarget == "external-claude":
+                    entry.require_external_profile()
+                assert (restored.get(entry.id) is not None) is entry.runtimeEnabled
+            assert (restored.get(retained["name"]) is not None) is enabled

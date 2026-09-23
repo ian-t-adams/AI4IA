@@ -730,10 +730,39 @@ Claude integration from current main.
 
 | Desired entry | Phase-1 source posture |
 | --- | --- |
-| `gpt-realtime-2` / `2026-05-06` | Retained in desired infrastructure at its unchanged eastus2 / GlobalStandard / baseline 10, maximum 10 allocation; `runtimeEnabled=false` prevents new runtime selection and HTTP/preview/GA serving routes. Its existing pool metadata is retained, not inferred for another model. |
+| `gpt-realtime-2` / `2026-05-06` | Remains selectable on preview and GA with `runtimeEnabled` (default true) and `requiredRealtimeProtocol` omitted. Preserve eastus2 / GlobalStandard / baseline 10, maximum 10 and existing pool metadata until the authoritative subscription inference deprecation `2026-10-31T00:00:00Z`; the separately approved follow-up below is mandatory. |
 | `gpt-realtime-1.5` / `2026-02-23` | Added only in the old model's eastus2 footprint, GlobalStandard baseline 10. `requiredRealtimeProtocol=ga`; no unverified maximum, pool, additional region or production-profile values. The maximum profile uses the existing portable-baseline fallback, not a new quota assertion. |
 | `gpt-4o-mini-tts` / `2025-12-15` | Already deployed and structurally validated by #492. Preserve the same eastus2 name, SKU, baseline 10, maximum 600 and pool metadata; no additional upgrade, overlap deployment or capacity change. |
 | Existing `gpt-realtime`, `gpt-realtime-mini`, `tts-hd` | Unchanged models, versions, footprints and defaults. Speech Voice Live keeps its independent supported managed-model subset; it does not acquire Realtime 1.5. |
+
+**RT2 owner decision, 2026-09-23:** preserve user choice rather than runtime-disable
+the existing deployment from a public reference date. The authoritative
+subscription `models/list` observation in
+[retirement report run 35722868193](https://github.com/ian-t-adams/AI4IA/actions/runs/35722868193)
+is dated `2026-09-22T11:42:21Z`. Its inventory covered 90 deployments with zero
+unknown and zero omitted; for RT2 `2026-05-06`, eastus2 GlobalStandard, it records
+Preview, deployed Succeeded without drift, and both `skus[].deprecationDate` and
+`deprecation.inference` at `2026-10-31T00:00:00Z`. That is dated subscription
+evidence, not a fresh inference test or a claim about this candidate's inventory.
+The public August 31 reference file/table remains unchanged and separately labeled.
+
+**Required retirement follow-up:** RT2 remains selectable until that authoritative
+inference deadline. From `2026-10-24T00:00:00Z`, the existing seven-day retirement
+policy treats new/changed targets as unsafe; exact Succeeded reconciles only warn.
+A separately approved change must either set `runtimeEnabled=false` or move to
+a subscription-verified later version, and must be **merged and deployed before
+`2026-10-31T00:00:00Z`**. This source change introduces no automatic runtime date
+cutoff. Phase 2 resource/desired-row removal still needs its own approval.
+
+The [public GA supported-model list](https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets#supported-models)
+names RT2 `2026-05-07`, not this subscription's `2026-05-06`; do not upgrade or
+alias that version. The [2.x preview overview](https://learn.microsoft.com/azure/foundry/openai/concepts/realtime-2)
+describes reasoning effort, multiple output items and `phase`, stricter instruction
+following, and lack of `session.update.truncation` support. The application does
+not generate that property; the adapter preserves unrelated explicitly supplied
+fields rather than imposing a new model-specific configuration policy. Item phases,
+audio and tool events remain observable through the existing protocol boundary.
+These source controls do not prove live GA/2.x acceptance or enable a new effort UI.
 
 `runtimeEnabled` is an optional strict Boolean, default true. False means
 **operator-disabled for runtime**, not a claim that the provider has retired it.
@@ -745,12 +774,13 @@ separate reviewed change. Omitting a desired row while retaining its resource
 would fail that postprovision check, not constitute completed migration.
 
 The runtime catalog, dev fallback, model/tool lookups, `/api/models`, voice
-selector and generated gateway routes enforce these fields. A stale saved
-Realtime 2 selection, or a GA-only selection after preview rollback, remains
-visible as unavailable and requires the user to choose an available model or
-Default. No persisted conversation/model version is rewritten, and there is no
-automatic substitution or protocol downgrade. New connections are denied before
-provider egress. Already accepted connections are not replayed or migrated.
+selector and generated gateway routes enforce these fields. Saved Realtime 2
+choices remain valid under the current owner decision. An explicitly
+runtime-disabled choice, or a GA-only choice after preview rollback, stays visible
+as unavailable and requires an available model or Default. No persisted
+conversation/model version is rewritten, and there is no automatic substitution
+or protocol downgrade. Unavailable new connections are denied before provider
+egress. Already accepted connections are not replayed or migrated.
 
 **Required rollout order (separate approvals):**
 
@@ -766,13 +796,14 @@ provider egress. Already accepted connections are not replayed or migrated.
    isolated GA API revision to establish the protocol baseline described above.
    A deployment whose GA infrastructure is not yet staged needs separate staging
    approval first. Do not run this candidate's full provision before approving
-   its new realtime allocation and runtime disablement. The TTS row is unchanged
+   its new realtime allocation. RT2 remains selectable; the TTS row is unchanged
    from the accepted #492 release and needs no second migration.
 3. After that evidence and explicit owner approval, reconcile the phase-1 desired
    inventory, retaining Realtime 2 while provisioning Realtime 1.5 and preserving
    the accepted TTS deployment. Read back exact resource IDs, names, versions, SKU/capacity,
-   provisioning state and active image references. Confirm retained Realtime 2
-   is still in the strict desired inventory but absent from all serving policies.
+   provisioning state and active image references. Confirm Realtime 2 retains its
+   exact desired version/allocation and both preview/GA serving routes, without
+   enabling the server's GA selector.
    None of these management-plane observations prove inference.
 4. On the approved isolated GA revision, run an authenticated Realtime 1.5 canary
    through the app relay and GA APIM route. Exercise audio/transcripts, tools and
@@ -797,10 +828,11 @@ provider egress. Already accepted connections are not replayed or migrated.
    catalog absence, or issue closure before evidenced cleanup.
 
 **Rollback boundaries:** preview selection can use the retained compatible
-`gpt-realtime`/mini models, not GA-only Realtime 1.5. Keep disabled Realtime 2
-disabled; differing public/ARM dates are not permission to resume it. End affected
-connections and establish a new one, without replaying a possibly accepted
-frame. Do not roll back the already accepted TTS upgrade as part of realtime
+`gpt-realtime`/mini models and currently selectable RT2, not GA-only Realtime 1.5.
+The same RT2 retirement deadline applies during rollback; after the required
+follow-up, do not restore a disabled or expired target. End affected connections
+and establish a new one, without replaying a possibly accepted frame.
+Do not roll back the already accepted TTS upgrade as part of realtime
 rollback. Any later TTS version change is a separately approved operation:
 an advertised preview version does not prove an in-place downgrade, immediate
 availability or zero interruption. Do not assume spare capacity at a full counter.
