@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _generator import build_parser, check_or_write
-from _model_targets import model_target
+from _model_targets import model_target, runtime_enabled
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE = REPO_ROOT / "infra" / "models.json"
@@ -62,6 +62,9 @@ def build_catalog(models: dict) -> dict:
                 "id": model["name"],
                 "displayName": model.get("displayName", model["name"]),
                 "category": model.get("category", "chat"),
+                # Sparse like deploymentTarget: only the non-default state is
+                # recorded, so enabled rows stay byte-identical.
+                **({} if runtime_enabled(model) else {"runtimeEnabled": False}),
                 "format": model["format"],
                 "api": model.get("api", "chat"),
                 "contextWindow": model.get("contextWindow"),

@@ -48,7 +48,16 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    Azure Monitor, Key Vault, Blob, Cosmos, and Azure AI Search.
 2. **Catalog-driven models.** Do not hardcode deployment names or model lists.
    `infra/models.json` is the source of truth; generated runtime catalog data must
-   match it.
+   match it. `runtimeEnabled` is a strict optional Boolean, default true: false
+   retains the row's desired deployments, capacity and retirement inventory but
+   leaves it with no eligible options, so listings, deployment resolution and
+   capability availability exclude it and generated HTTP gateway routes omit it.
+   Never interpret runtime disablement as physical deletion or free quota. Every
+   seam offering a capability backed by such a model shares one availability
+   predicate and still re-checks at execution (video:
+   `app/api/src/ai4ia_api/videos/availability.py`). Realtime routes, default
+   realtime selection and voice-provider projections do not honor it yet; extend
+   them before runtime-disabling a realtime model.
 3. **Server-authoritative feature gates.** The web app may hide UI, but the API
    and startup validation must enforce feature posture. Never gate only in React.
 4. **Cosmos is canonical.** Sessions, messages, usage, user agents/workflows, MCP
@@ -719,7 +728,10 @@ call. Its behavioral tests must record stub calls even while preview mode is on.
 
 Runtime media gates must be explicit Booleans, not inferred from artifact-store
 construction or Blob URLs. Enabled image/video generation outside local requires
-durable storage. Regional batch metrics must follow each resource's location;
+durable storage. `generate_video` additionally needs a runtime-enabled video
+model. Retire video through `runtimeEnabled`, not the flag: `api.bicep` emits the
+video Blob settings only while the flag is on, and those settings serve existing
+clips. Regional batch metrics must follow each resource's location;
 Search may differ from the API/Cosmos region. Preprovision naming validation
 preserves the full uniqueness suffix without renaming existing resources.
 
@@ -819,6 +831,19 @@ and loopback providers. They are not an Azure policy compiler or live capability
 proof. Generated backend fragments omit only parser-identified XML comment nodes
 to fit the unchanged 48 KiB compiler ceiling; authored comments and C# bytes stay
 intact.
+
+Throttle-failover controls drive the generated two-region GlobalStandard row. A
+429/5xx must mark the failed backend's `throttleId` (endpoint + region label +
+deployment) in the `throttleState` its expression returns and caches, so the retry
+reaches the other region and later requests skip only that deployment in that
+region. `affinity` stays the endpoint + label id for request affinity; isolation
+controls keep a same-region neighbor routable, and single-region and attempts-v1
+controls keep one attempt. Marks are best effort: one cache entry per API, last
+writer wins across concurrent requests, expiring 60 s after its last write.
+Newtonsoft clones a parented `JToken` inserted into another container, so write to
+the returned object. The harness projects the default `prefer-external` cache as
+the built-in cache, copying values on store and lookup; APIM's shared cache never
+aliases a request variable.
 
 When a proxy project dependency changes, refresh from the top-level test project
 with `dotnet restore ... --force-evaluate`. NuGet does not recalculate

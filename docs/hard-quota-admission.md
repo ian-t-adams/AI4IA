@@ -267,9 +267,11 @@ must establish all of the following outside user-controlled request data:
 The offline .NET suite compiles the actual generated policy expressions with the
 installed SDK compiler and projects their control flow into loopback HTTP sends.
 It proves source behavior, not Azure's sandbox/compiler, inherited live policies,
-APIM implementation internals or serving-replica coverage. Ordinary controls
-prove a second actual request occurs, not that APIM necessarily chose another
-region. Direct proxy host-failover controls separately exercise multiple hosts.
+APIM implementation internals or serving-replica coverage. Ordinary no-replay
+controls prove a second actual request occurs; separate throttle-failover
+controls drive the generated two-region catalog row and prove that the retry
+reaches the other region. Direct proxy host-failover controls separately
+exercise multiple hosts.
 Unknown and cancelled calls retain their full original reservation; oversized or
 inconsistent total usage is unknown rather than an accounting-construction error.
 

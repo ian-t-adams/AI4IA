@@ -1309,6 +1309,7 @@
       "name": "sora-2",
       "format": "OpenAI",
       "category": "video",
+      "runtimeEnabled": false,
       "deployments": [
         {
           "region": "eastus2",

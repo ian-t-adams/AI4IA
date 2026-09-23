@@ -189,6 +189,23 @@ def test_conversational_models_helper_excludes_capability_models():
     assert "whisper" not in conv_ids
 
 
+def test_shipped_catalog_keeps_sora_2_inventory_but_routes_no_video_model():
+    """Sora 2 retires 2026-10-15 with no Foundry successor: runtime-disabled, not deleted."""
+    catalog = load_catalog()
+    entry = catalog.get("sora-2")
+    assert entry is not None
+    assert entry.runtimeEnabled is False
+    assert [(o.region, o.sku, o.modelVersion) for o in entry.options] == [
+        ("eastus2", "GlobalStandard", "2025-12-08"),
+        ("swedencentral", "GlobalStandard", "2025-12-08"),
+    ]
+    assert not catalog.available(entry)
+    assert catalog.resolve_deployment("sora-2") is None
+    assert [m.id for m in catalog.models if m.category == "video" and catalog.available(m)] == []
+    assert [m.id for m in catalog.models if not m.runtimeEnabled] == ["sora-2"]
+    assert catalog.resolve_deployment("gpt-5.4") is not None
+
+
 def test_conversational_is_serialized():
     catalog = load_catalog()
     entry = catalog.get("gpt-5.4")

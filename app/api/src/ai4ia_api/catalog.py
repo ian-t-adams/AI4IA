@@ -10,7 +10,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, computed_field, model_serializer, model_validator
+from pydantic import (
+    BaseModel, Field, SerializerFunctionWrapHandler, StrictBool, computed_field,
+    model_serializer, model_validator,
+)
 
 from .model_traits import reasoning_effort_options, supports_sampling
 
@@ -110,6 +113,10 @@ class ModelEntry(BaseModel):
     displayName: str
     category: str
     format: str
+    # ``infra/models.json`` ``runtimeEnabled``: false keeps the row in desired
+    # inventory (its deployments still exist) but leaves it with no eligible
+    # options, so nothing selects, advertises or routes to it at runtime.
+    runtimeEnabled: StrictBool = True
     # Which provider surface serves this model: "chat" (Chat Completions, the
     # default), "responses" (gpt-6-astra/gpt-5.4-pro/gpt-5.3-codex),
     # "anthropic" (Claude Messages), "mai" (MAI chat/image surfaces on /mai/v1),
@@ -146,6 +153,7 @@ class ModelEntry(BaseModel):
         result = handler(self)
         for key, default in (
             ("deploymentTarget", "source"), ("samplingSupported", None), ("anthropicThinking", None),
+            ("runtimeEnabled", True),
         ):
             if result.get(key) == default:
                 result.pop(key, None)
@@ -248,9 +256,16 @@ class ModelCatalog(BaseModel):
     def eligible_options(
         self, entry: ModelEntry, *, policy_filter: bool = True,
     ) -> list[DeploymentOption]:
-        """This model's deployments that are usable under the active policy."""
+        """This model's deployments that are usable under the active policy.
+
+        A runtime-disabled model has none, whatever the policy: that single
+        answer is what keeps ``available``, ``resolve_deployment``, the model
+        listing and every capability predicate in agreement.
+        """
         from .policy.context import model_allowed
 
+        if not entry.runtimeEnabled:
+            return []
         return [
             o for o in entry.options
             if o.satisfies(self.residencyPolicy)
@@ -258,7 +273,7 @@ class ModelCatalog(BaseModel):
         ]
 
     def available(self, entry: ModelEntry) -> bool:
-        """Whether the policy leaves this model reachable at all."""
+        """Whether runtime enablement and policy leave this model reachable at all."""
         return bool(self.eligible_options(entry))
 
     def conversational_models(self) -> list[ModelEntry]:
@@ -337,6 +352,7 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                 "id": model["name"],
                 "displayName": model.get("displayName", model["name"]),
                 "category": model.get("category", "chat"),
+                "runtimeEnabled": model.get("runtimeEnabled", True),
                 "format": model["format"],
                 "api": model.get("api", "chat"),
                 "contextWindow": model.get("contextWindow"),
