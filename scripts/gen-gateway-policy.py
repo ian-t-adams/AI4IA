@@ -14,7 +14,7 @@ from xml.parsers import expat
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _generator import build_parser
-from _model_targets import model_target
+from _model_targets import model_target, runtime_enabled
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_PATH = ROOT / "infra" / "models.json"
@@ -201,6 +201,11 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                 "real provider path and add the category to ROUTABLE_CATEGORIES, "
                 "or remove the model from infra/models.json."
             )
+        # A runtime-disabled row stays in desired inventory (Bicep still
+        # reconciles its deployments) but gets no HTTP route, so nothing on the
+        # governed path can reach it even if an application seam were missed.
+        if not runtime_enabled(model):
+            continue
         timeout = timeout_seconds(category)
         api = model.get("api", "chat")
         provider_path = {

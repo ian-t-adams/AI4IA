@@ -8,6 +8,7 @@ from ..sessions.models import Session
 from ..policy.context import current_binding
 from ..policy.models import PolicyDecision, PolicyError
 from ..publishing.models import PublicationError, PublicationExecutionMode
+from ..videos.availability import video_generation_available_for_state
 
 
 @dataclass(frozen=True)
@@ -63,9 +64,11 @@ async def resolve_conversation_policy(
     )
     removed_set = set(session.toolOverrides.removed)
     settings = getattr(state, "settings", None)
+    # Video asks the shared predicate (flag, store and a routable video model) so
+    # effective tools agree with every other seam that offers generate_video.
     media_enabled = {
         "generate_image": getattr(settings, "image_generation_enabled", False),
-        "generate_video": getattr(settings, "video_generation_enabled", False),
+        "generate_video": video_generation_available_for_state(state),
     }
     effective = tuple(
         name for name in (*inherited, *added)

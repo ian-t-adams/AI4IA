@@ -109,6 +109,7 @@ from ..images.artifacts import ImageArtifactStore
 from ..images.capability import GENERATE_IMAGE_TOOL_NAME, build_image_capability
 from ..images.service import ImageGenerationService
 from ..videos.artifacts import VideoArtifactStore
+from ..videos.availability import NO_VIDEO_MODEL_DETAIL, video_generation_availability
 from ..videos.capability import GENERATE_VIDEO_TOOL_NAME, build_video_capability
 from ..videos.service import VideoGenerationService
 from ..docprocessing.artifacts import DocumentArtifactStore
@@ -724,6 +725,7 @@ def _capability_tool_available(
     web_search: WebSearchService | None = None,
     memory: MemoryServiceProtocol | None = None,
     workflow_service: object | None = None,
+    catalog: ModelCatalog | None = None,
 ) -> bool:
     """Whether a capability tool's backing services are present this turn.
 
@@ -736,7 +738,11 @@ def _capability_tool_available(
     if name == GENERATE_IMAGE_TOOL_NAME:
         return settings.image_generation_enabled and image_artifacts is not None
     if name == GENERATE_VIDEO_TOOL_NAME:
-        return settings.video_generation_enabled and video_artifacts is not None
+        return video_generation_availability(
+            enabled=settings.video_generation_enabled,
+            artifact_store=video_artifacts,
+            catalog=catalog,
+        ) == "available"
     if name == PROCESS_DOCUMENT_TOOL_NAME:
         return document_artifacts is not None and retrieval is not None
     if name == RECALL_TOOL_NAME:
@@ -925,13 +931,23 @@ async def chat(
             web_search=web_search,
             memory=memory,
             workflow_service=getattr(request.app.state, "workflow_service", None),
+            catalog=catalog,
         ):
+            unavailable_reply = f"/{capability_tool} isn't enabled in this environment yet."
+            if capability_tool == GENERATE_VIDEO_TOOL_NAME and video_generation_availability(
+                enabled=request.app.state.settings.video_generation_enabled,
+                artifact_store=video_artifacts,
+                catalog=catalog,
+            ) == "no_model":
+                # Enabled but with nothing routable (e.g. a retired model with no
+                # successor): say so rather than implying it is coming "yet".
+                unavailable_reply = f"/{capability_tool} is unavailable. {NO_VIDEO_MODEL_DETAIL}"
             return await _local_reply(
                 repo=repo,
                 session=session,
                 user=user,
                 user_content=parsed.raw,
-                reply=f"/{capability_tool} isn't enabled in this environment yet.",
+                reply=unavailable_reply,
                 stream=body.stream,
             )
         if not parsed.text:
