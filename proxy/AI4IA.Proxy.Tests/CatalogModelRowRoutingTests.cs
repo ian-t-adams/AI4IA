@@ -76,7 +76,10 @@ public sealed class CatalogModelRowRoutingTests
     public async Task AddedRowsReachOnlyTheirRequestedRegionalDeployment()
     {
         var options = AddedOptions();
-        Assert.AreEqual(16, options.Length);
+        // 3 text models x 2 regions x (GlobalStandard + DataZoneStandard) = 12, plus
+        // one eastus2 GlobalStandard row per gpt-image-2.5 model: their shared global
+        // quota fits a single replica.
+        Assert.AreEqual(14, options.Length);
         foreach (var (model, option) in options)
         {
             string deployment = option.Value<string>("deploymentName")!;
