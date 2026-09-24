@@ -26,6 +26,7 @@ window.AI4IA_DOCS = {
         { path: "docs/naming-and-tagging.md", title: "Naming & tagging", desc: "Resource naming tokens and the tag scheme applied across the deployment." },
         { path: "docs/foundry-toolbox.md", title: "Foundry toolbox", desc: "The official MCP plane: toolbox tools, progressively disclosed Foundry skills, A2A, and the private tool catalog." },
         { path: "docs/aca-sandboxes-evaluation.md", title: "ACA Sandboxes evaluation", desc: "Decision record and PoC contract for evaluating customizable ACA Sandboxes without replacing the APIM-fronted production Code Interpreter." },
+        { path: "docs/foundry-platform-evaluation.md", title: "Foundry platform updates evaluation", desc: "Decision record for Microsoft Foundry announcements: what is already adopted, what is blocked by AI4IA's governance seams, and the smallest approved next step for each." },
         { path: "docs/document-multimodal-understanding.md", title: "Document & multimodal understanding", desc: "Content Understanding ingest, retrieval, compute and the library." },
         { path: "docs/memory.md", title: "Memory architecture", desc: "Canonical Cosmos memory, owner-scoped CRUD, vector recall, concurrency fences, deletion, privacy, and remaining gaps." },
         { path: "infra/README.md", title: "Infrastructure (Bicep) overview", desc: "How infra/main.bicep and the parameters, model catalog and azd hooks fit together." },

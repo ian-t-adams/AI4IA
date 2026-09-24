@@ -396,6 +396,17 @@ continuations and effective receipt parameters agree on this profile. Publicatio
 and consent bind the full model metadata through their existing environment
 digests; ordinary models omit the new default fields to preserve legacy digests.
 
+**Claude Opus 5.5 is deliberately absent (evaluated 2026-09-24).** It is GA in
+Foundry, but thinking cannot be disabled: `thinking: {"type": "disabled"}`
+returns HTTP 400, and so does forced `tool_choice` (`any` or a named tool). Its
+thinking blocks must also round-trip unmodified and are bound to the
+conversation prefix. The adapter sends disabled thinking for every
+external-Claude profile, so a catalog row would fail every request. Adding it
+requires an owner decision on an adaptive signed-thinking profile first; see the
+[Foundry platform updates evaluation](../foundry-platform-evaluation.md#claude-opus-55).
+Do not rely on the Learn thinking-table footnote that still marks `disabled` as
+allowed for this model.
+
 USD/MTok directional rates are Opus 5 **5 input / 25 output** globally, **5.5 /
 27.5** for US DataZoneStandard, and Sonnet 5 **2 / 10** globally. Exact catalog
 deployment/SKU, not region alone, selects the rate. Cache reads use the documented
@@ -1149,8 +1160,12 @@ after `azd up`:
 `enableFoundryToolbox` grants the MCP APIM managed identity the **"Foundry User"**
 role on the project (data-plane scope), so APIM's injected bearer for
 `https://ai.azure.com` can invoke the toolbox. `main.bicep` emits the project
-endpoint as `AZURE_FOUNDRY_PROJECT_ENDPOINT` for the provisioning scripts. All
-toolbox/tool-search features are **public preview**. The access check requires the
+endpoint as `AZURE_FOUNDRY_PROJECT_ENDPOINT` for the provisioning scripts. The
+bridge still uses the preview `Toolboxes=V1Preview,Skills=V1Preview` contract and
+the live toolbox keeps the preview tool-search spelling, although Foundry made
+toolboxes (for hosted agents) and tool search GA in September 2026; see the
+[Foundry platform updates evaluation](../foundry-platform-evaluation.md#tool-search)
+before switching either. The access check requires the
 workflow/deployment identity to hold project-scoped Foundry User; Azure OIDC login alone
 does not grant data-plane access.
 
