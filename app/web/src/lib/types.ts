@@ -791,6 +791,9 @@ export interface ImageModelOption {
   prices: ImagePriceOption[];
   // The catalog declares image editing for this model.
   editing?: boolean;
+  // What an edit on this model accepts; `sizes`/`qualities` describe generation.
+  editSizes?: string[] | null;
+  editQualities?: string[] | null;
 }
 
 export interface ImageOptionsResponse {

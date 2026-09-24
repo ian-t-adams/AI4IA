@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -35,7 +36,7 @@ from ..images.edit_capability import (
     record_provider_failure,
     store_edit_result,
 )
-from ..images.editing import ImageEditService
+from ..images.editing import ImageEditService, edit_qualities, edit_sizes
 from ..images.service import (
     MAX_IMAGES,
     MAX_PROMPT_CHARS,
@@ -119,6 +120,10 @@ class ImageModelOption(BaseModel):
     prices: list[ImagePriceOption]
     # The catalog declares images/edits for this model (``imageEditing``).
     editing: bool = False
+    # Exactly what an edit on this model accepts (null for non-editing models).
+    # Separate from ``sizes``/``qualities``, which describe generation.
+    editSizes: list[str] | None = None
+    editQualities: list[str] | None = None
 
 
 class ImageOptionsResponse(BaseModel):
@@ -220,6 +225,8 @@ async def image_options(
                 residencies=sorted({d.residency for d in entry.options}),
                 prices=prices,
                 editing=entry.imageEditing,
+                editSizes=edit_sizes(entry) if entry.imageEditing else None,
+                editQualities=edit_qualities(entry) if entry.imageEditing else None,
             )
         )
     editing_enabled = state_image_edit_availability(request.app.state) == "available"
@@ -483,12 +490,18 @@ async def edit_image(
         content=edit_request_text(body.prompt, source, masked=mask is not None),
         status=MessageStatus.complete,
     )
+    # Browsers order a transcript by millisecond timestamps, so the reply must
+    # land in a later millisecond than the request built just before it.
+    replied_at = max(
+        datetime.now(timezone.utc), user_message.createdAt + timedelta(milliseconds=1),
+    )
     assistant = Message(
         sessionId=session.id,
         userId=uid,
         role=MessageRole.assistant,
         content=f"Edited the image with {result.display_name}.",
         status=MessageStatus.complete,
+        createdAt=replied_at,
         model=result.model_id,
         attachments=[attachment],
         executionReceipt=build_edit_receipt(

@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import type { ImageOptionsResponse, Message } from "@/lib/types";
-import { ImageEditDialog } from "./ImageEditDialog";
+import type { ImageModelOption, ImageOptionsResponse, Message } from "@/lib/types";
+import { ImageEditDialog, regionFromDrag, toFractions } from "./ImageEditDialog";
 
 const mocks = vi.hoisted(() => ({
   fetchImageArtifact: vi.fn(),
@@ -21,6 +21,11 @@ vi.mock("@/lib/api", async (importOriginal) => {
   };
 });
 
+// The shape /api/images/options really sends for these rows: generation narrows an
+// unset catalog list to one square size, while editing advertises what it accepts.
+const EDIT_SIZES = ["auto", "1024x1024", "1024x1536", "1536x1024"];
+const EDIT_QUALITIES = ["auto", "low", "medium", "high"];
+
 const OPTIONS: ImageOptionsResponse = {
   enabled: true,
   maxSelectedModels: 3,
@@ -31,20 +36,30 @@ const OPTIONS: ImageOptionsResponse = {
   models: [
     {
       id: "gpt-image-2", displayName: "gpt-image-2", provider: "openai",
-      sizes: ["1024x1024", "1536x1024", "auto"], qualities: ["auto", "low", "high"],
+      sizes: ["1024x1024"], qualities: ["auto"],
       dataZones: [], residencies: ["global"], prices: [], editing: true,
+      editSizes: EDIT_SIZES, editQualities: EDIT_QUALITIES,
     },
     {
       id: "gpt-image-2.5-sunburst", displayName: "gpt-image-2.5-sunburst", provider: "openai",
-      sizes: ["1024x1024", "auto"], qualities: ["auto", "medium"],
+      sizes: ["1024x1024"], qualities: ["auto"],
       dataZones: [], residencies: ["global"], prices: [], editing: true,
+      editSizes: EDIT_SIZES, editQualities: EDIT_QUALITIES,
     },
     {
       id: "FLUX.2-pro", displayName: "FLUX.2-pro", provider: "black_forest_labs",
-      sizes: ["1024x1024"], qualities: ["auto"], dataZones: [], residencies: ["global"],
-      prices: [], editing: false,
+      sizes: ["1024x1024", "1024x1536", "1536x1024", "auto"], qualities: ["auto"],
+      dataZones: [], residencies: ["global"], prices: [], editing: false,
+      editSizes: null, editQualities: null,
     },
   ],
+};
+
+// An editing row whose catalog lists declare no "auto" size.
+const NARROW: ImageModelOption = {
+  id: "narrow-edit", displayName: "narrow-edit", provider: "openai",
+  sizes: ["1024x1024"], qualities: ["auto"], dataZones: [], residencies: ["global"],
+  prices: [], editing: true, editSizes: ["1536x1024"], editQualities: ["auto", "medium"],
 };
 
 const EDITED: Message[] = [
@@ -177,6 +192,33 @@ describe("ImageEditDialog", () => {
     expect(overlay.style.height).toBe("50%");
   });
 
+  it("keeps a drag past the far edges inside the image", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await settled();
+    await user.click(screen.getByRole("radio", { name: "Selected region" }));
+    const image = await screen.findByRole("img", { name: "Source image: A lighthouse" });
+    const stage = image.parentElement as HTMLDivElement;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200, x: 0, y: 0 }) as DOMRect;
+    // 49 px of 400 is 12.25%: rounding the width on its own would reach 100.1%.
+    fireEvent.pointerDown(stage, { clientX: 49, clientY: 20, pointerId: 1 });
+    fireEvent.pointerMove(stage, { clientX: 450, clientY: 250, pointerId: 1 });
+    fireEvent.pointerUp(stage, { clientX: 450, clientY: 250, pointerId: 1 });
+    const overlay = screen.getByTestId("image-edit-region");
+    expect(overlay.style.left).toBe("12.3%");
+    expect(overlay.style.width).toBe("87.7%");
+    // The sliders show the whole percent their labels read, keeping the form valid.
+    expect(screen.getByRole("slider", { name: /Left edge/ })).toHaveValue("12");
+    expect(screen.getByRole("slider", { name: /Width/ })).toHaveValue("88");
+    await user.type(screen.getByRole("textbox", { name: "Describe the change" }), "add a moon");
+    await user.click(screen.getByRole("button", { name: "Edit image" }));
+    await waitFor(() => expect(mocks.editImage).toHaveBeenCalledTimes(1));
+    expect(mocks.editImage.mock.calls[0][0].region).toEqual({
+      x: 0.123, y: 0.1, width: 0.877, height: 0.9,
+    });
+  });
+
   it("keeps the dialog open and announces a refusal", async () => {
     const user = userEvent.setup();
     mocks.editImage.mockRejectedValueOnce(new Error("The edit was blocked by the content safety system."));
@@ -209,15 +251,72 @@ describe("ImageEditDialog", () => {
     expect(mocks.fetchImageArtifact).not.toHaveBeenCalled();
   });
 
-  it("adapts size and quality to the chosen model", async () => {
-    const user = userEvent.setup();
+  it("offers the sizes the server accepts for edits, not the generation list", async () => {
     renderDialog();
     await settled();
-    await user.selectOptions(screen.getByRole("combobox", { name: "Output size" }), "1024x1024");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "gpt-image-2");
-    expect(screen.getByRole("combobox", { name: "Output size" })).toHaveValue("1024x1024");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Quality" }), "high");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "gpt-image-2.5-sunburst");
-    expect(screen.getByRole("combobox", { name: "Quality" })).toHaveValue("auto");
+    const size = screen.getByRole("combobox", { name: "Output size" });
+    const quality = screen.getByRole("combobox", { name: "Quality" });
+    const values = (select: HTMLElement) =>
+      Array.from((select as HTMLSelectElement).options).map((option) => option.value);
+    expect(values(size)).toEqual(EDIT_SIZES);
+    expect(values(quality)).toEqual(EDIT_QUALITIES);
+    expect(size).toHaveValue("auto");
+    expect(quality).toHaveValue("auto");
+  });
+
+  it("omits size and quality when the server advertises no edit lists", async () => {
+    const user = userEvent.setup();
+    const bare = OPTIONS.models.map((model) => ({ ...model, editSizes: null, editQualities: null }));
+    renderDialog({ options: { ...OPTIONS, models: bare } });
+    await settled();
+    expect(screen.queryByRole("combobox", { name: "Output size" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Quality" })).toBeNull();
+    await user.type(screen.getByRole("textbox", { name: "Describe the change" }), "add a moon");
+    await user.click(screen.getByRole("button", { name: "Edit image" }));
+    await waitFor(() => expect(mocks.editImage).toHaveBeenCalledTimes(1));
+    const request = mocks.editImage.mock.calls[0][0];
+    expect(request).not.toHaveProperty("size");
+    expect(request).not.toHaveProperty("quality");
+    expect(request.model).toBe("gpt-image-2.5-sunburst");
+  });
+
+  it("adapts size and quality to the chosen model's edit lists", async () => {
+    const user = userEvent.setup();
+    renderDialog({ options: { ...OPTIONS, models: [...OPTIONS.models, NARROW] } });
+    await settled();
+    const model = screen.getByRole("combobox", { name: "Model" });
+    const size = () => screen.getByRole("combobox", { name: "Output size" });
+    const quality = () => screen.getByRole("combobox", { name: "Quality" });
+    await user.selectOptions(size(), "1024x1536");
+    await user.selectOptions(quality(), "high");
+    await user.selectOptions(model, "narrow-edit");
+    // Neither choice exists there: size falls back to its first value (it has no
+    // "auto"), quality to "auto".
+    expect(size()).toHaveValue("1536x1024");
+    expect(quality()).toHaveValue("auto");
+    // Values the next model also accepts are kept.
+    await user.selectOptions(quality(), "medium");
+    await user.selectOptions(model, "gpt-image-2");
+    expect(size()).toHaveValue("1536x1024");
+    expect(quality()).toHaveValue("medium");
+  });
+});
+
+describe("regionFromDrag", () => {
+  // Every whole-pixel start at every rendered width, dragged past each far edge
+  // and back to the near one, must stay inside the image the server accepts.
+  it.each([320, 400, 480, 640])("stays inside a %i px preview", (rendered) => {
+    const tolerance = 1e-9;
+    for (let pixel = 0; pixel < rendered; pixel += 1) {
+      const start = { x: (pixel / rendered) * 100, y: (pixel / rendered) * 100 };
+      const far = toFractions(regionFromDrag(start, { x: 100, y: 100 }));
+      expect(far.x + far.width).toBeLessThanOrEqual(1 + tolerance);
+      expect(far.y + far.height).toBeLessThanOrEqual(1 + tolerance);
+      // Paired control: the region still reaches the edge the pointer passed.
+      expect(far.x + far.width).toBeGreaterThanOrEqual(1 - tolerance);
+      const near = toFractions(regionFromDrag(start, { x: 0, y: 0 }));
+      expect(near.x).toBe(0);
+      expect(near.x + near.width).toBeLessThanOrEqual(1 + tolerance);
+    }
   });
 });

@@ -1046,6 +1046,9 @@ What it does and does not change:
   `imageEditingDefault` marks Sunburst as the preferred default; when it is not
   routable the first routable editing model is used, and an explicitly chosen
   model is never substituted. A runtime-disabled row is not offered.
+  `/api/images/options` advertises each editing model's `editSizes` and
+  `editQualities`, the exact lists the endpoint and tool validate; an omitted
+  value defaults to `auto` where the model allows it.
 - **The gateway route is generated.** Every image row carries an APIM
   operation allowlist: `images/generations`, plus `images/edits` only for
   `imageEditing` rows. Any other operation returns `404 operation_not_allowed`
@@ -1071,8 +1074,9 @@ gh variable set AI4IA_IMAGE_EDITING_ENABLED --body true   # then run deploy.yml
 Verify after the deploy, with an authenticated user in a disposable
 conversation:
 
-1. `GET /api/images/options` returns `editingEnabled: true` and
-   `defaultEditModel: "gpt-image-2.5-sunburst"`.
+1. `GET /api/images/options` returns `editingEnabled: true`,
+   `defaultEditModel: "gpt-image-2.5-sunburst"`, and `editSizes` starting
+   with `auto` on each editing model.
 2. Generate an image, choose **Edit**, and submit a whole-image edit. A second
    image appears with "edited from an earlier image", and its receipt names the
    Sunburst deployment and `api: images/edits`.

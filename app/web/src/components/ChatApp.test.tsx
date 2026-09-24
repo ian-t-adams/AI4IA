@@ -401,8 +401,11 @@ describe("ChatApp image editing", () => {
     editingEnabled: true, defaultEditModel: "gpt-image-2.5-sunburst",
     models: [{
       id: "gpt-image-2.5-sunburst", displayName: "gpt-image-2.5-sunburst", provider: "openai",
-      sizes: ["auto"], qualities: ["auto"], dataZones: [], residencies: ["global"],
+      // The real API shape: generation's list is narrowed, editing's is not.
+      sizes: ["1024x1024"], qualities: ["auto"], dataZones: [], residencies: ["global"],
       prices: [], editing: true,
+      editSizes: ["auto", "1024x1024", "1024x1536", "1536x1024"],
+      editQualities: ["auto", "low", "medium", "high"],
     }],
   };
 
@@ -459,6 +462,7 @@ describe("ChatApp image editing", () => {
       source: { kind: "generated", id: "e".repeat(32) },
       prompt: "add a moon",
       model: "gpt-image-2.5-sunburst",
+      size: "auto",
     }));
     expect(
       await screen.findByText("Edited the image with gpt-image-2.5-sunburst."),

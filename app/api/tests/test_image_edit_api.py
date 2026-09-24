@@ -14,6 +14,7 @@ import hashlib
 import json
 import struct
 import zlib
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,6 +25,7 @@ from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
 from ai4ia_api.library.models import DocumentStatus, Modality, UserDocument, Visibility
 from ai4ia_api.library.retrieval import DocumentRetrievalService
 from ai4ia_api.main import create_app
+from ai4ia_api.sessions import models as session_models
 from tests.conftest import make_settings
 from tests.image_edit_fixtures import (
     EDITED_PNG,
@@ -42,10 +44,13 @@ OWNER = {"X-Dev-User": "owner"}
 INTRUDER = {"X-Dev-User": "intruder"}
 
 
-def _app(tmp_path, *, editing=True, disabled=(), **extra):
+def _app(tmp_path, *, editing=True, disabled=(), overrides=None, **extra):
     return create_app(make_settings(
         image_generation_enabled=True, image_editing_enabled=editing,
-        model_catalog_path=image_edit_catalog_path(tmp_path, disabled=disabled), **extra,
+        model_catalog_path=image_edit_catalog_path(
+            tmp_path, disabled=disabled, overrides=overrides,
+        ),
+        **extra,
     ))
 
 
@@ -178,6 +183,77 @@ def test_explicit_model_and_controls_are_forwarded(edit_client):
     call = edit_client.app.state.gateway.edit_calls[-1]
     assert call["deployment"].startswith("gpt-image-2-")
     assert (call["size"], call["quality"]) == ("1536x1024", "high")
+
+
+def test_options_advertise_exactly_the_edit_controls_the_endpoint_accepts(edit_client):
+    # The generation picker narrows these rows' unset lists to one square size; the
+    # edit dialog reads these separate fields, so a non-square source keeps "auto".
+    options = edit_client.get("/api/images/options", headers=OWNER).json()
+    models = {model["id"]: model for model in options["models"]}
+    _, session_id = _seeded(edit_client)
+    for model_id in editing_model_ids():
+        model = models[model_id]
+        assert model["editSizes"] == ["auto", "1024x1024", "1024x1536", "1536x1024"], model_id
+        assert model["editQualities"] == ["auto", "low", "medium", "high"], model_id
+        for size in model["editSizes"]:
+            accepted = _edit(edit_client, session_id, model=model_id, size=size)
+            assert accepted.status_code == 200, (model_id, size, accepted.text)
+        for quality in model["editQualities"]:
+            accepted = _edit(edit_client, session_id, model=model_id, quality=quality)
+            assert accepted.status_code == 200, (model_id, quality, accepted.text)
+        # Paired control: a size the list omits is refused in the same place.
+        assert _edit(edit_client, session_id, model=model_id, size="512x512").status_code == 422
+    for model in options["models"]:
+        if not model["editing"]:
+            assert model["editSizes"] is None and model["editQualities"] is None, model["id"]
+
+
+def test_omitted_controls_default_to_auto_or_the_first_declared_value(tmp_path):
+    narrow = {"gpt-image-2": {"imageSizes": ["1536x1024"], "imageQualities": ["high"]}}
+    with TestClient(_app(tmp_path, overrides=narrow)) as client:
+        client.app.state.gateway = FakeEditGateway()
+        models = {
+            m["id"]: m for m in client.get("/api/images/options", headers=OWNER).json()["models"]
+        }
+        assert (models["gpt-image-2"]["editSizes"], models["gpt-image-2"]["editQualities"]) == (
+            ["1536x1024"], ["high"],
+        )
+        _, session_id = _seeded(client)
+        # A row that declares no "auto" gets its first declared value, not a 422.
+        assert _edit(client, session_id, model="gpt-image-2").status_code == 200
+        call = client.app.state.gateway.edit_calls[-1]
+        assert (call["size"], call["quality"]) == ("1536x1024", "high")
+        # Paired control: a row with unset lists still sends "auto" (omitted upstream).
+        assert _edit(client, session_id, model=SUNBURST).status_code == 200
+        call = client.app.state.gateway.edit_calls[-1]
+        assert (call["size"], call["quality"]) == (None, None)
+
+
+def test_the_reply_is_stamped_in_a_later_millisecond_than_the_request(edit_client, monkeypatch):
+    # Browsers sort a transcript by millisecond timestamps. Freeze the message clock
+    # so both messages would otherwise share one instant, in a future millisecond.
+    frozen = datetime(2100, 1, 1, 0, 0, 0, 400, tzinfo=timezone.utc)
+
+    class _FrozenClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    _, session_id = _seeded(edit_client)
+    monkeypatch.setattr(session_models, "datetime", _FrozenClock)
+    response = _edit(edit_client, session_id)
+    monkeypatch.undo()
+    assert response.status_code == 200, response.text
+    user_message, assistant = response.json()["messages"]
+
+    def millisecond(value: str) -> datetime:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.replace(microsecond=parsed.microsecond // 1000 * 1000)
+
+    assert datetime.fromisoformat(user_message["createdAt"].replace("Z", "+00:00")) == frozen
+    assert millisecond(assistant["createdAt"]) > millisecond(user_message["createdAt"])
+    history = edit_client.get(f"/api/sessions/{session_id}/messages", headers=OWNER).json()
+    assert [m["id"] for m in history[-2:]] == [user_message["id"], assistant["id"]]
 
 
 # --- models: capability, runtime enablement and the default -----------------------

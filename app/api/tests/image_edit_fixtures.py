@@ -44,13 +44,18 @@ EDITED_B64 = base64.b64encode(EDITED_PNG).decode()
 
 def image_edit_catalog_path(
     directory: Path, *, disabled: Iterable[str] = (), name: str = "catalog",
+    overrides: dict[str, dict] | None = None,
 ) -> str:
-    """A copy of the packaged catalog with ``disabled`` rows runtime-disabled."""
+    """A copy of the packaged catalog with ``disabled`` rows runtime-disabled.
+
+    ``overrides`` maps a model id to fields replaced on that row.
+    """
     raw = json.loads(PACKAGED_CATALOG.read_text(encoding="utf-8"))
     targets = set(disabled)
     for model in raw["models"]:
         if model["id"] in targets:
             model["runtimeEnabled"] = False
+        model.update((overrides or {}).get(model["id"], {}))
     path = directory / f"{name}-{'-'.join(sorted(targets)) or 'shipped'}.json"
     path.write_text(json.dumps(raw), encoding="utf-8")
     return str(path)

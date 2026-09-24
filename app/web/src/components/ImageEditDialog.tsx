@@ -16,7 +16,7 @@ import { ModalShell } from "./ModalShell";
 
 // Edges in percent of the rendered image. Keyboard users set them with the
 // sliders; pointer users can also drag a rectangle over the preview.
-interface RegionPercent {
+export interface RegionPercent {
   left: number;
   top: number;
   width: number;
@@ -34,7 +34,26 @@ function roundTenth(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-function toFractions(region: RegionPercent): ImageEditRegion {
+/**
+ * The rectangle between two pointer positions, in percent. The edges are rounded
+ * and the size derived from them: rounding a size on its own can push the far
+ * edge past 100%, and the server refuses a region outside the image.
+ */
+export function regionFromDrag(
+  start: { x: number; y: number },
+  point: { x: number; y: number },
+): RegionPercent {
+  const left = roundTenth(Math.min(start.x, point.x));
+  const top = roundTenth(Math.min(start.y, point.y));
+  return {
+    left,
+    top,
+    width: roundTenth(roundTenth(Math.max(start.x, point.x)) - left),
+    height: roundTenth(roundTenth(Math.max(start.y, point.y)) - top),
+  };
+}
+
+export function toFractions(region: RegionPercent): ImageEditRegion {
   const fraction = (value: number) => Number((value / 100).toFixed(4));
   return {
     x: fraction(region.left),
@@ -46,6 +65,15 @@ function toFractions(region: RegionPercent): ImageEditRegion {
 
 function defaultControl(values: string[]): string {
   return values.includes("auto") ? "auto" : (values[0] ?? "");
+}
+
+// Edits accept their own lists; `sizes`/`qualities` describe generation only.
+function editSizes(model: ImageModelOption | null | undefined): string[] {
+  return model?.editSizes ?? [];
+}
+
+function editQualities(model: ImageModelOption | null | undefined): string[] {
+  return model?.editQualities ?? [];
 }
 
 export function editingModels(options: ImageOptionsResponse): ImageModelOption[] {
@@ -73,8 +101,8 @@ export function ImageEditDialog({
     models.find((model) => model.id === options.defaultEditModel) ?? models[0] ?? null;
   const [modelId, setModelId] = useState(initialModel?.id ?? "");
   const model = models.find((candidate) => candidate.id === modelId) ?? null;
-  const [size, setSize] = useState(defaultControl(initialModel?.sizes ?? []));
-  const [quality, setQuality] = useState(defaultControl(initialModel?.qualities ?? []));
+  const [size, setSize] = useState(defaultControl(editSizes(initialModel)));
+  const [quality, setQuality] = useState(defaultControl(editQualities(initialModel)));
   const [prompt, setPrompt] = useState("");
   const [useRegion, setUseRegion] = useState(false);
   const [region, setRegion] = useState<RegionPercent>(DEFAULT_REGION);
@@ -112,8 +140,10 @@ export function ImageEditDialog({
   const chooseModel = (id: string) => {
     const next = models.find((candidate) => candidate.id === id);
     setModelId(id);
-    if (next && !next.sizes.includes(size)) setSize(defaultControl(next.sizes));
-    if (next && !next.qualities.includes(quality)) setQuality(defaultControl(next.qualities));
+    if (next && !editSizes(next).includes(size)) setSize(defaultControl(editSizes(next)));
+    if (next && !editQualities(next).includes(quality)) {
+      setQuality(defaultControl(editQualities(next)));
+    }
   };
 
   const setEdge = (edge: keyof RegionPercent, raw: number) => {
@@ -155,12 +185,7 @@ export function ImageEditDialog({
     const start = dragStart.current;
     const point = start ? pointer(event) : null;
     if (!start || !point) return;
-    const next = {
-      left: roundTenth(Math.min(start.x, point.x)),
-      top: roundTenth(Math.min(start.y, point.y)),
-      width: roundTenth(Math.abs(point.x - start.x)),
-      height: roundTenth(Math.abs(point.y - start.y)),
-    };
+    const next = regionFromDrag(start, point);
     if (next.width >= 1 && next.height >= 1) setRegion(next);
   };
 
@@ -189,8 +214,9 @@ export function ImageEditDialog({
         source,
         prompt: trimmed,
         model: model.id,
-        size,
-        quality,
+        // Omitted when the server advertises no list, so its default applies.
+        ...(size ? { size } : {}),
+        ...(quality ? { quality } : {}),
         ...(useRegion ? { region: toFractions(region) } : {}),
       });
       onEdited(sessionId, response.messages);
@@ -285,32 +311,36 @@ export function ImageEditDialog({
           </select>
         </label>
 
-        {model ? (
+        {model && (editSizes(model).length > 0 || editQualities(model).length > 0) ? (
           <div className="image-output-options">
-            <label className="image-edit-field">
-              Output size
-              <select
-                value={size}
-                disabled={pending}
-                onChange={(event) => setSize(event.target.value)}
-              >
-                {model.sizes.map((value) => (
-                  <option key={value} value={value}>{value}</option>
-                ))}
-              </select>
-            </label>
-            <label className="image-edit-field">
-              Quality
-              <select
-                value={quality}
-                disabled={pending}
-                onChange={(event) => setQuality(event.target.value)}
-              >
-                {model.qualities.map((value) => (
-                  <option key={value} value={value}>{value}</option>
-                ))}
-              </select>
-            </label>
+            {editSizes(model).length > 0 ? (
+              <label className="image-edit-field">
+                Output size
+                <select
+                  value={size}
+                  disabled={pending}
+                  onChange={(event) => setSize(event.target.value)}
+                >
+                  {editSizes(model).map((value) => (
+                    <option key={value} value={value}>{value}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {editQualities(model).length > 0 ? (
+              <label className="image-edit-field">
+                Quality
+                <select
+                  value={quality}
+                  disabled={pending}
+                  onChange={(event) => setQuality(event.target.value)}
+                >
+                  {editQualities(model).map((value) => (
+                    <option key={value} value={value}>{value}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
           </div>
         ) : null}
 
@@ -357,7 +387,10 @@ export function ImageEditDialog({
                     min={edge === "width" || edge === "height" ? 1 : 0}
                     max={edge === "left" || edge === "top" ? 99 : 100}
                     step={1}
-                    value={region[edge]}
+                    // A drag keeps tenths; the slider shows the whole percent its
+                    // label reads, so its value always matches its step and the
+                    // form's constraint validation never blocks a submit.
+                    value={Math.round(region[edge])}
                     aria-valuetext={`${Math.round(region[edge])} percent`}
                     onChange={(event) => setEdge(edge, Number(event.target.value))}
                   />

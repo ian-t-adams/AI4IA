@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from ..catalog import DeploymentOption, ModelCatalog, ModelEntry
@@ -44,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EDIT_SIZE = "auto"
 DEFAULT_EDIT_QUALITY = "auto"
+_SIZE_ORDER = ("auto", "1024x1024", "1024x1536", "1536x1024")
+_QUALITY_ORDER = ("auto", "low", "medium", "high")
 CONTENT_FILTER_DETAIL = (
     "The edit was blocked by the content safety system. Try a different image or prompt."
 )
@@ -65,6 +68,29 @@ class ImageEditResult:
     quality: str
     image_b64: str
     usage: TokenUsage
+
+
+def _ordered(values: Iterable[str], order: tuple[str, ...]) -> list[str]:
+    rank = {value: index for index, value in enumerate(order)}
+    return sorted(set(values), key=lambda value: (rank.get(value, len(order)), value))
+
+
+def edit_sizes(entry: ModelEntry) -> list[str]:
+    """Every output size an edit on ``entry`` accepts, ``auto`` first.
+
+    The single source for both validation and the options endpoint. Unlike the
+    generation picker, an unset catalog list is never narrowed to one square size.
+    """
+    return _ordered(entry.imageSizes or ALLOWED_SIZES, _SIZE_ORDER)
+
+
+def edit_qualities(entry: ModelEntry) -> list[str]:
+    """Every quality an edit on ``entry`` accepts, ``auto`` first."""
+    return _ordered(entry.imageQualities or ALLOWED_QUALITIES, _QUALITY_ORDER)
+
+
+def _default_control(values: list[str], preferred: str) -> str:
+    return preferred if preferred in values else values[0]
 
 
 def _provider_error(detail: str | None) -> tuple[set[str], str | None]:
@@ -151,14 +177,14 @@ class ImageEditService:
     def resolve_controls(
         self, entry: ModelEntry, size: str | None, quality: str | None,
     ) -> tuple[str, str]:
-        sizes = set(entry.imageSizes or ALLOWED_SIZES)
-        resolved_size = size or DEFAULT_EDIT_SIZE
+        sizes = edit_sizes(entry)
+        resolved_size = size or _default_control(sizes, DEFAULT_EDIT_SIZE)
         if resolved_size not in sizes:
             raise ImageGenerationError(
                 422, f"Unsupported size for {entry.id}. Allowed: {', '.join(sorted(sizes))}.",
             )
-        qualities = set(entry.imageQualities or ALLOWED_QUALITIES)
-        resolved_quality = quality or DEFAULT_EDIT_QUALITY
+        qualities = edit_qualities(entry)
+        resolved_quality = quality or _default_control(qualities, DEFAULT_EDIT_QUALITY)
         if resolved_quality not in qualities:
             raise ImageGenerationError(
                 422,

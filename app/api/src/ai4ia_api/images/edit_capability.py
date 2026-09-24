@@ -50,7 +50,7 @@ from .availability import (
     available_image_edit_model_ids,
     default_image_edit_model_id,
 )
-from .editing import ImageEditResult, ImageEditService
+from .editing import ImageEditResult, ImageEditService, edit_qualities, edit_sizes
 from .service import ALLOWED_QUALITIES, ALLOWED_SIZES, ImageGenerationError
 from .source import ImageSourceError
 from .sources import EditSource, EditSourceRef, load_edit_source
@@ -238,7 +238,7 @@ def _edit_sizes(catalog: ModelCatalog, ids: list[str]) -> list[str]:
     for model_id in ids:
         entry = catalog.get(model_id)
         if entry is not None:
-            sizes.update(entry.imageSizes or ALLOWED_SIZES)
+            sizes.update(edit_sizes(entry))
     return sorted(sizes or ALLOWED_SIZES)
 
 
@@ -247,7 +247,7 @@ def _edit_qualities(catalog: ModelCatalog, ids: list[str]) -> list[str]:
     for model_id in ids:
         entry = catalog.get(model_id)
         if entry is not None:
-            qualities.update(entry.imageQualities or ALLOWED_QUALITIES)
+            qualities.update(edit_qualities(entry))
     return sorted(qualities or ALLOWED_QUALITIES)
 
 
