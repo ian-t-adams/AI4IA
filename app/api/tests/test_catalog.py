@@ -292,11 +292,42 @@ def test_astra_metadata_and_residency():
     assert entry.maxOutputTokens == 128_000
     assert entry.inputModalities == ["text", "image"]
     assert entry.toolCalling is True
-    assert {(option.region, option.sku) for option in entry.options} == {
-        ("eastus2", "GlobalStandard"),
-        ("swedencentral", "GlobalStandard"),
-    }
-    assert all(option.residency == "global" for option in entry.options)
+    # 2026-09-23 read-only offering/quota evidence: eastus2 offers
+    # DataZoneStandard (US zone, 0/333 used); swedencentral offers only
+    # GlobalStandard, so there is deliberately no EU zone row.
+    assert [(option.region, option.sku, option.residency) for option in entry.options] == [
+        ("eastus2", "GlobalStandard", "global"),
+        ("eastus2", "DataZoneStandard", "us"),
+        ("swedencentral", "GlobalStandard", "global"),
+    ]
+    assert {option.modelVersion for option in entry.options} == {"2026-09-03"}
+
+
+@pytest.mark.parametrize(("policy", "expected"), [
+    ("global", ("eastus2", "GlobalStandard", "global")),
+    ("us", ("eastus2", "DataZoneStandard", "us")),
+    ("zonal", ("eastus2", "DataZoneStandard", "us")),
+    ("eu", None),
+])
+def test_astra_zone_policies_route_only_to_the_us_data_zone_row(policy, expected):
+    chosen = load_catalog(None, policy).resolve_deployment("gpt-6-astra")
+    assert (None if chosen is None else (chosen.region, chosen.sku, chosen.residency)) == expected
+
+
+@pytest.mark.parametrize(("policy", "residencies"), [
+    ("global", {"global", "us"}),
+    ("us", {"us"}),
+    ("eu", None),
+])
+def test_models_api_advertises_the_astra_zone_row_exactly_where_policy_routes_it(policy, residencies):
+    with TestClient(create_app(make_settings(data_residency=policy))) as client:
+        response = client.get("/api/models")
+    assert response.status_code == 200, response.text
+    advertised = {model["id"]: model for model in response.json()["models"]}
+    if residencies is None:
+        assert "gpt-6-astra" not in advertised
+    else:
+        assert {option["residency"] for option in advertised["gpt-6-astra"]["options"]} == residencies
 
 
 _TEXT_PROFILE = (

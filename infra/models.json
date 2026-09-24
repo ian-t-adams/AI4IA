@@ -73,6 +73,12 @@
           "maxCapacityPool": "global"
         },
         {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 50,
+          "version": "2026-09-03"
+        },
+        {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,

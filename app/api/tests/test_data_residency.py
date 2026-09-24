@@ -164,6 +164,8 @@ def test_us_and_eu_are_deliberately_unequal_and_that_is_visible():
         "gpt-5.2",
         "gpt-5.3-codex",
         "gpt-5.4-nano",
+        # 2026-09-23 evidence: swedencentral offers Astra only as GlobalStandard.
+        "gpt-6-astra",
         "grok-4-1-fast-reasoning",
     }
 
