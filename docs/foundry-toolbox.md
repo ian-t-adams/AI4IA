@@ -176,6 +176,20 @@ valid.
 | `tools` | Built-in and MCP tools (see per-tool table below). At most one tool may be unnamed across the entire toolbox, regardless of `type`. |
 | `skills` | Foundry skill references. Unpinned active references must have a repository-owned `foundry/skills/<name>/SKILL.md`; reconciliation creates or reuses an immutable version and advances its default before reconciling the toolbox. |
 
+**Consent identity.** `scripts/gen-mcp-catalog.py` records a SHA-256 of the
+manifest's executable content as `toolboxManifestSha256` in the API's generated
+official catalog. The digest covers every key except `$schema`, `_comment`,
+`manifestVersion`, `lifecycle`, `owner` and `sdkContract`. It is part of the
+toolbox server's configuration revision. After a deploy, any reviewed change to
+tools, skills, connections or descriptions therefore invalidates existing tool
+consents and pending approvals for the toolbox, and the execution-time contract
+check refuses the old ones. This matters because tool search exposes a generic
+`call_tool` dispatcher whose own name and schema never change: a 2026-07-30 live
+`tools/list` returned exactly `tool_search` and `call_tool`. After editing the
+manifest, run `python scripts/gen-mcp-catalog.py`; the app-ci `--check` fails
+until you do. The digest binds the reviewed source, not out-of-band edits to the
+live toolbox; the next reconciliation replaces such edits with the manifest.
+
 `camelCase` keys in the manifest (e.g. `serverLabel`, `projectConnectionId`) are translated to
 the API's `snake_case` by `scripts/provision-foundry-toolbox.py`.
 

@@ -1070,6 +1070,10 @@ Four rules follow:
 - Author instruction-only skills at `foundry/skills/<name>/SKILL.md` using the
   Agent Skills front matter (`name`, `description`) and add an unpinned reference
   to `foundry/toolbox.manifest.json`.
+- Regenerate the official MCP catalog with `python scripts/gen-mcp-catalog.py`.
+  Any executable manifest change moves its `toolboxManifestSha256` and therefore
+  the toolbox's consent identity; tool search's generic `call_tool` would
+  otherwise let an existing consent cover new toolbox content.
 - Run `python scripts/provision-foundry-toolbox.py` for offline source/manifest
   validation. The approved `--create` path reconciles immutable skill versions
   before the toolbox and reuses matching versions after interrupted activation.

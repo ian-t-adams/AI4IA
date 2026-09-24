@@ -132,11 +132,15 @@ class _Secrets:
 
 @pytest.mark.parametrize("protocol", PROTOCOLS)
 @pytest.mark.parametrize("plane", ["byo", "official"])
-@pytest.mark.parametrize("gate", ["allowed", "scope", "approval", "arguments", "owner"])
+@pytest.mark.parametrize("gate", ["allowed", "scope", "approval", "arguments", "owner", "revision"])
 async def test_real_dispatch_keeps_owner_scopes_exact_approvals_and_routing_contract(protocol, plane, gate):
     seen = []
     server = _server(protocol, plane)
-    current = server.model_copy(update={"userId": "wrong-owner"}) if gate == "owner" else server
+    current = {
+        "owner": server.model_copy(update={"userId": "wrong-owner"}),
+        # A reviewed toolbox change after consent: same tool, new server revision.
+        "revision": server.model_copy(update={"configurationRevision": "revision-2"}),
+    }.get(gate, server)
     async def current_server(_name):
         return current
     async with httpx.AsyncClient(transport=httpx.MockTransport(_wire(protocol, seen))) as client:

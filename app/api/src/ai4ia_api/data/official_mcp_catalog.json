@@ -7,7 +7,8 @@
       "description": "AI4IA shared Foundry toolbox: grounding, code execution, tool search. Fronted through the official-MCP APIM.",
       "path": "ai4ia-toolbox/mcp",
       "resourcesEnabled": true,
-      "protocolVersion": "2025-11-25"
+      "protocolVersion": "2025-11-25",
+      "toolboxManifestSha256": "97408ae8dfe728da8703225b76dbc4284e268ecc0ee28eee3738b72c5b813c96"
     }
   ]
 }

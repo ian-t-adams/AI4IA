@@ -73,6 +73,8 @@ python scripts/provision-foundry-toolbox.py --check-access
 # 3. Populate toolbox.manifest.json, then inspect the reconciliation plan.
 #    Tip: copy toolbox.manifest.example.json, prune/review it, and change
 #    lifecycle from reference to active before any approved reconciliation.
+#    Then run python scripts/gen-mcp-catalog.py: the manifest digest is part
+#    of the toolbox's consent identity, and app-ci fails until it matches.
 python scripts/provision-foundry-toolbox.py            # dry run: prints plan + mcp-servers.json entry
 
 # 4. Paste the printed entry into infra/mcp-servers.json, set
