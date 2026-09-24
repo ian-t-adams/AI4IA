@@ -1,11 +1,13 @@
 # Microsoft Foundry platform updates evaluation
 
 > **Decision (2026-09-24): September 2026 Foundry announcements — record, do
-> not activate.** No model deployment, Azure resource, identity, role, APIM
-> policy, toolbox version or runtime capability is added. The GPT-6 family is
-> already in the catalog. Claude Opus 5.5 is incompatible with AI4IA's
-> thinking-disabled Claude profile. The Agent Service features target Foundry
-> prompt and hosted agents, which AI4IA deliberately does not use as its runtime.
+> not activate.** This record adds no model deployment, Azure resource,
+> identity, role, APIM policy, toolbox version or runtime capability. The GPT-6
+> family is already in the catalog, and #511 proposes Astra's US Data Zone
+> deployment. Claude Opus 5.5 is incompatible with AI4IA's thinking-disabled
+> Claude profile, and no Claude model is activated yet. The Agent Service
+> features target Foundry prompt and hosted agents, which AI4IA deliberately
+> does not use as its runtime.
 
 AI4IA's FastAPI runtime owns agents, tools, approvals, receipts, memory and
 scheduling. Foundry supplies model deployments behind SimpleL7Proxy → APIM,
@@ -20,15 +22,15 @@ owner approval before merge.
 
 | Announcement | Platform status | AI4IA position | Decision and next step |
 | --- | --- | --- | --- |
-| GPT-6 Astra, Sol and Luna | GA | Astra (Global Standard) and Sol/Luna (Global and Data Zone Standard) are catalog rows with sourced prices | No change. Astra Data Zone rows first need a read-only quota observation |
-| Claude Opus 5.5 | GA, Hosted on Azure | Not cataloged | Blocked: thinking cannot be disabled |
+| GPT-6 Astra, Sol and Luna | GA | Astra (Global Standard) and Sol/Luna (Global and Data Zone Standard) are catalog rows with sourced prices | #511 adds Astra's eastus2 US Data Zone row (merge provisions); swedencentral offers no Astra Data Zone yet |
+| Claude Opus 5.5 | GA, Hosted on Azure | Not cataloged; Opus 5 and Sonnet 5 are not activated either | Blocked on Claude activation, then on a live check of disabled thinking; adaptive design recorded below |
 | Voice agents in Agent Service | Public preview | Voice Live through the FastAPI relay → APIM, two providers | Not adopted; needs a new provider design |
 | Voice-agent observability | Public preview | Applies only to Foundry voice agents | Not applicable |
 | Long-running resilience | Public preview, hosted agents | Resumable workflows on the Durable Task Scheduler worker | Not applicable |
 | Agent Framework updates | Announced | No Agent Framework dependency | Not applicable |
 | Foundry dev pack | Public preview | Optional operator toolchain | No repository requirement changes |
 | Toolboxes for prompt agents | Public preview; GA for hosted agents | Toolbox consumed as MCP from AI4IA's runtime | No change |
-| Tool search in toolboxes | GA | Live toolbox uses `toolbox_search_preview` | Keep the preview spelling until dispatcher-aware consent exists |
+| Tool search in toolboxes | GA | Live toolbox uses `toolbox_search_preview`, which lists `tool_search` and `call_tool` | #512 binds toolbox consent to the reviewed manifest; keep the preview spelling |
 | Agent-to-Agent (A2A) tool | GA | Outgoing `a2a` type already modeled; unused by the canonical toolbox | No change; incoming design stays blocked |
 | Routines | GA | Validation-only design artifact | Stay design-only |
 | Insights in Foundry | Public preview | Content-free GenAI spans in AI4IA's Application Insights | Not adopted; needs infrastructure and cost decisions |
@@ -47,11 +49,17 @@ owner approval before merge.
 Zone Standard) already exist in `infra/models.json`, priced from Microsoft's
 launch posts. The launch post also lists Standard deployment for Astra in the
 US and EU Data Zones, at USD 11/55 (US) and 12/60 (EU) per million short-context
-input/output tokens against 10/50 Global. This evaluation did not observe
-subscription quota. Adding Astra `DataZoneStandard` rows in eastus2 and
-swedencentral first needs a read-only observation of that model/version/SKU,
-like the 2026-09-23 evidence behind the Sol/Luna rows, and then the
-[add-a-model procedure](../AGENTS.md#add-a-model).
+input/output tokens against 10/50 Global.
+
+The 2026-09-23 read-only subscription observation behind #505 narrows that:
+
+- eastus2 offers Astra 2026-09-03 as `DataZoneStandard`, with its quota counter
+  at 0 of 333 used;
+- swedencentral offers it only as Global Standard, with no Data Zone counter.
+
+PR #511, open on 2026-09-24, adds the eastus2 US Data Zone row at capacity 50.
+Merging it provisions that deployment, and the preprovision preflight re-checks
+the counter first. Re-check the swedencentral offering before adding an EU row.
 
 ### Claude Opus 5.5
 
@@ -78,32 +86,112 @@ governed function-tool loop):
    Anthropic's migration notes. Contradictory evidence refuses; it is not a
    reason to guess.
 2. **Forced tool use returns HTTP 400.** Only `tool_choice` `auto` and `none`
-   are accepted. The adapter maps `required` and named-function choices to the
-   rejected `any` and `tool` types.
+   are accepted. AI4IA's agent loop already sends `auto` and strips any
+   caller-supplied `tool_choice` (`agents/runtime.py`), but
+   `_tool_choice_to_anthropic` would still translate an explicit `required` or
+   named choice to the rejected `any` and `tool` types.
 3. **Thinking blocks bind to the conversation.** They must be passed back
    unmodified in tool loops. A replay after any system, tool or earlier-message
    change returns 400 by default for accounts created on or after 2026-08-31.
-   Progress text between tool calls also arrives in thinking blocks, which are
-   empty at the default display setting. The shipped profile deliberately
-   excludes adaptive signed-thinking continuation because it cannot safely
-   round-trip through the unified durable history, including approval pauses.
+   Both of the adapter's response parsers drop thinking blocks today, so the
+   first tool continuation would fail. Progress text between tool calls also
+   arrives in thinking blocks, which are empty at the default display setting.
 
 Do not add a row, including one with `runtimeEnabled: false`: runtime
-disablement still keeps the desired external deployment inventory. Adoption
-needs an owner decision to amend the thinking-disabled rule in `AGENTS.md`, then
-one reviewed design covering:
+disablement still keeps the desired external deployment inventory.
 
-- an adaptive profile that omits `thinking` (or sends `adaptive`), with its own
-  effort set (`medium` default; `xhigh` and `max` available);
-- opaque signed-block continuation bound to owner, run, model and prefix in
-  durable checkpoints, never displayed or labeled as chain-of-thought (see
-  [execution receipts](architecture.md#execution-receipts-not-hidden-reasoning));
-- refusal of forced tool choice in validation, consent and publication digests;
-- `tokenRatesBySku` rates including the 0.05x cache-read rate, with cache writes
-  cost-unknown unless their duration is evidenced;
-- the existing external target, binding and quota readbacks in the
-  [Claude source contract](runbooks/feature-enablement.md#cross-tenant-claude-source-contract),
-  plus non-streaming and SSE tool-loop controls.
+#### Current Claude status
+
+Neither Claude Opus 5 nor Sonnet 5 is deployed or available (checked
+2026-09-24). The integration shipped default-off in #493: the
+`AI4IA_CLAUDE_ENABLED` repository variable is `false`, the external staging flag
+and binding are unset, and APIM keeps its disabled Claude policy. The last
+read-only observation of the intended target account, on 2026-09-20, found no
+Claude deployments. No dedicated account, identity or grant has been created.
+Activation still waits on three owner decisions from the
+[separate approved operator units](runbooks/feature-enablement.md#separate-approved-operator-units):
+
+- the network mode;
+- the legal entity that accepts Anthropic's terms for the target subscription;
+- the dedicated account, identity and access grants.
+
+Opus 5.5 work follows that activation.
+
+#### Adaptive-thinking profile design
+
+Settle the contradiction first. Once Claude is active, a separately approved
+Opus 5.5 canary sends the existing thinking-disabled payload at effort `low`.
+HTTP 200 means the current profile applies, so Opus 5.5 needs only a catalog
+row, prices and the normal external readbacks. HTTP 400 confirms Anthropic's
+contract and selects the design below. It needs an owner decision to amend the
+thinking-disabled rule in `AGENTS.md`. It reuses the agent loop's existing
+turn-local continuation channel rather than adding storage:
+
+- **Catalog.** `anthropicThinking` gains `"adaptive"` in
+  `infra/models.schema.json` and `ModelEntry`.
+  - `require_external_profile` accepts, for adaptive rows only, effort `low`
+    to `xhigh` with default `medium`. Learn documents `xhigh` and `max` as
+    equivalent, and AI4IA's effort vocabulary stops at `xhigh`.
+  - Ordinary rows still omit the field, preserving legacy consent and
+    publication digests.
+- **Payload.**
+  - Omit `thinking` (equivalent to adaptive), send `output_config.effort`, and
+    keep the default `display: "omitted"`.
+  - Refuse a `required` or named `tool_choice` before dispatch.
+  - Size `max_tokens` from the profile rather than the adapter's generic 4,096
+    default, because thinking counts against it. A `max_tokens` stop keeps
+    mapping to the incomplete outcome.
+- **Capture.** `anthropic_json_to_chat` and `parse_anthropic_event` keep a
+  tool-use response's ordered content blocks as opaque provider continuation
+  items.
+  - Kept blocks: `thinking` and `redacted_thinking` with their `signature`,
+    plus `text` and `tool_use`.
+  - The stream parser assembles `thinking_delta` and `signature_delta`
+    fragments; no thinking delta reaches the browser.
+- **Replay.** `call_model` in `agents/runtime.py` already returns provider
+  continuation items. The loop stores them on the in-turn assistant message
+  under `RESPONSES_OUTPUT_ITEMS_KEY` and in `CheckpointResponse.outputItems`.
+  `TurnCheckpoint` restores them after approval pauses and durable workflow
+  resume. `messages_to_anthropic` replays those blocks byte-for-byte for the
+  assistant tool-call message instead of rebuilding it from `content` and
+  `tool_calls`.
+- **History and evidence.**
+  - Continuation items never enter session message history. Later turns omit
+    earlier thinking blocks, which the API allows, and model switches between
+    turns stay safe.
+  - Receipts, SSE events and logs strip them exactly as they strip Responses
+    `output_items`. At most a receipt records that opaque continuation state
+    existed, and nothing is labeled as reasoning (see
+    [execution receipts](architecture.md#execution-receipts-not-hidden-reasoning)).
+- **Prefix pinning.**
+  - `call_model` re-runs `bound_agent_context` before every round and can
+    evict older turns as a turn grows. For an adaptive turn, eviction is
+    decided at the first round and then frozen.
+  - A turn that would need further eviction fails closed with no retry. So
+    does a resume whose pinned prompt or tool schema no longer matches.
+  - Execution-time denials stay appended tool results, never schema edits.
+  - The beta `thinking-binding-controls-2026-08-01` header's `drop_block`
+    behavior stays unused.
+- **Pricing and refusals.**
+  - `tokenRatesBySku` gains Opus 5.5 rates: Global 4/20 with 0.20 cache reads,
+    and US Data Zone 4.4/22 with 0.22.
+  - Thinking tokens bill as output tokens and arrive in
+    `usage.output_tokens`. Cache writes stay cost-unknown, and the adapter
+    still requests no caching.
+  - `stop_reason: "refusal"` maps to an explicit refused outcome with no retry
+    instead of passing through as an unknown finish reason.
+- **Controls.**
+  - Payload shape and forced-choice refusal.
+  - Byte-identical capture and replay on both transports.
+  - Approval-pause resume.
+  - Receipt, event and log stripping, with a mutation that removes the strip.
+  - Fail-closed prefix changes.
+  - An end-to-end loop against a fake provider that enforces Opus 5.5's 400
+    rules. Its paired control removes the replay and observes the 400.
+- **Unchanged.** The existing
+  [Claude source contract](runbooks/feature-enablement.md#cross-tenant-claude-source-contract)
+  still governs the target, binding and quota readbacks. Claude still cannot
+  obtain attempts-v1 or finite-dollar admission.
 
 ## Voice
 
@@ -165,21 +253,35 @@ For AI4IA:
   dispatcher, so its digest need not change when the hidden tool set changes:
   consent could silently cover tools added to later toolbox versions, and
   re-checks would see `call_tool` rather than the target tool;
-- the official-MCP listing changes, including the standup acceptance check of
-  `toolCount: 3` in the [greenfield standup](runbooks/greenfield-standup.md);
 - with two real tools, tool search saves little context.
 
-The canonical manifest therefore keeps `toolbox_search_preview`. Adopting the GA
-spelling needs dispatcher-aware consent and re-checks bound to the dispatched
-tool (or explicit `toolConfigs` pins), a read-only listing probe against a
-candidate version, and updated acceptance checks. SDK 2.7.0 still ships
-`ToolboxSearchPreviewToolboxTool`; its removal would force this decision.
+The canonical manifest keeps `toolbox_search_preview`. The preview spelling
+already behaves this way: after the first reconciliation on 2026-07-30, the live
+`tools/list` returned exactly `tool_search` and `call_tool`. The consent gap was
+therefore live, not only a risk of switching spellings.
 
-This evaluation did not observe whether the live preview spelling also lists
-`call_tool`; the standup check expects three listed tools. Confirm the live
-names with the existing read-only official-MCP discovery, which the agent
-builder lists as attachable tools. If `call_tool` is listed, treat the consent
-gap as a live finding, not a future one.
+PR #512, open on 2026-09-24, closes the consent half. The MCP catalog generator
+records a digest of the reviewed toolbox manifest in the toolbox server's
+configuration revision, so any manifest change renews consents and pending
+approvals once it deploys. Two parts remain:
+
+- execution-time re-checks still see `call_tool` rather than the dispatched
+  tool, although per-invocation approval shows the target in the arguments;
+- the digest binds reviewed source, not out-of-band edits to the live toolbox,
+  which the next reconciliation replaces.
+
+Removing tool search from the two-tool toolbox would list its real tools
+directly, each with its own contract, but would change the tool names agents
+have attached; that is an owner choice. Switching to the GA spelling changes
+nothing AI4IA relies on, but should wait for a read-only listing probe against
+a candidate version. SDK 2.7.0 still ships `ToolboxSearchPreviewToolboxTool`;
+its removal would force the switch.
+
+The greenfield standup expected `toolCount: 3`, apparently from the manifest's
+three entries. The recorded listing and the GA documentation both give two
+listed tools, so the
+[standup acceptance check](runbooks/greenfield-standup.md) now expects
+`toolCount: 2`.
 
 ### Agent-to-Agent
 
