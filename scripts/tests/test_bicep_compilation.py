@@ -360,6 +360,7 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         expected = []
         for parameter, env_name in (
             ("imageGenerationEnabled", "AI4IA_IMAGE_GENERATION_ENABLED"),
+            ("imageEditingEnabled", "AI4IA_IMAGE_EDITING_ENABLED"),
             ("videoGenerationEnabled", "AI4IA_VIDEO_GENERATION_ENABLED"),
         ):
             self.assertFalse(self.template["parameters"][parameter]["defaultValue"])

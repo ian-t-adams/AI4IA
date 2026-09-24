@@ -821,6 +821,7 @@
       "name": "gpt-image-1.5",
       "format": "OpenAI",
       "category": "image",
+      "imageEditing": true,
       "deployments": [
         {
           "region": "eastus2",
@@ -860,6 +861,7 @@
       "name": "gpt-image-2",
       "format": "OpenAI",
       "category": "image",
+      "imageEditing": true,
       "deployments": [
         {
           "region": "eastus2",
@@ -883,6 +885,7 @@
       "name": "gpt-image-2.5-flare",
       "format": "OpenAI",
       "category": "image",
+      "imageEditing": true,
       "deployments": [
         {
           "region": "eastus2",
@@ -896,6 +899,8 @@
       "name": "gpt-image-2.5-sunburst",
       "format": "OpenAI",
       "category": "image",
+      "imageEditing": true,
+      "imageEditingDefault": true,
       "deployments": [
         {
           "region": "eastus2",
@@ -909,6 +914,7 @@
       "name": "gpt-image-1-mini",
       "format": "OpenAI",
       "category": "image",
+      "imageEditing": true,
       "deployments": [
         {
           "region": "eastus2",

@@ -7,6 +7,8 @@ import type {
   DeletionPage,
   DeletionStatus,
   DocumentSummary,
+  ImageEditRequest,
+  ImageEditResponse,
   ImageGenerationPreferences,
   ImageOptionsResponse,
   InitializationPage,
@@ -562,6 +564,29 @@ async function fetchBlob(url: string, errorMsg: string): Promise<Blob> {
 // fetch via apiFetch and hand back a Blob the caller wraps in an object URL.
 export async function fetchImageArtifact(artifactId: string): Promise<Blob> {
   return fetchBlob(`/api/images/artifacts/${artifactId}`, "failed to load image");
+}
+
+// Preview of an owned, editable library image for the edit dialog. The server
+// serves only the caller's own ready PNG/JPEG image documents, and only while
+// image editing is available.
+export async function fetchLibraryImageSource(documentId: string): Promise<Blob> {
+  return fetchBlob(
+    `/api/images/sources/library/${encodeURIComponent(documentId)}`,
+    "failed to load image",
+  );
+}
+
+// Edits an image the caller owns and returns the persisted user + assistant
+// messages. Exactly one request: a lost response is never retried automatically,
+// because the provider may already have produced (and billed) the edit.
+export async function editImage(request: ImageEditRequest): Promise<ImageEditResponse> {
+  return jsonOrThrow(
+    await apiFetch("/api/images/edits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    }),
+  );
 }
 
 // Fetches a tool-generated video's MP4 bytes from the authenticated serve

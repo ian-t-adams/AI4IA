@@ -14,7 +14,7 @@ from xml.parsers import expat
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _generator import build_parser
-from _model_targets import model_target, runtime_enabled
+from _model_targets import image_editing, model_target, runtime_enabled
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_PATH = ROOT / "infra" / "models.json"
@@ -96,6 +96,14 @@ BFL_MODEL_PATHS = {
     "FLUX.2-pro": "flux-2-pro",
     "FLUX.2-flex": "flux-2-flex",
 }
+# Operations an image row may reach below its deployment path. Every image row
+# carries this allowlist, and APIM refuses any other operation before a rewrite,
+# body parse or send. ``images/edits`` (the multipart inpainting operation) is
+# opened only for rows that declare ``imageEditing``; MAI and BFL rows rewrite to
+# a fixed generation endpoint, so an edit sent to them would otherwise become a
+# JSON-parsed generation.
+IMAGE_GENERATIONS_OPERATION = "images/generations"
+IMAGE_EDITS_OPERATION = "images/edits"
 
 # Model categories the gateway can actually route. Each one corresponds to a
 # surface the app calls: chat completions, embeddings, images, video, speech,
@@ -145,6 +153,16 @@ def timeout_seconds(category: str) -> int:
     return 120
 
 
+def image_operations(model: dict[str, Any]) -> tuple[str, ...] | None:
+    """The governed operation allowlist for an image row, else ``None``."""
+    editing = image_editing(model)
+    if model["category"] != "image":
+        return None
+    if editing:
+        return (IMAGE_GENERATIONS_OPERATION, IMAGE_EDITS_OPERATION)
+    return (IMAGE_GENERATIONS_OPERATION,)
+
+
 def backend_row(
     *,
     label: str,
@@ -155,6 +173,7 @@ def backend_row(
     priority: int,
     timeout: int,
     target: str = "source",
+    operations: tuple[str, ...] | None = None,
 ) -> str:
     endpoint_kind = "services-endpoint" if provider_path == "mai" else "endpoint"
     named_value = f"{{{{foundry-{region}-{endpoint_kind}}}}}"
@@ -167,11 +186,17 @@ def backend_row(
         if operation_path
         else ""
     )
+    operations_row = (
+        f'                    new JProperty("operations", "{" ".join(operations)}"),\n'
+        if operations
+        else ""
+    )
     return (
         f'                new JProperty("{label}", new JObject(\n'
         f'                    new JProperty("url", "{named_value}"),\n'
         f'                    new JProperty("path", "{provider_path}"),\n'
         f"{operation_row}"
+        f"{operations_row}"
         f'                    new JProperty("deployment", "{deployment}"),\n'
         f'                    new JProperty("priority", {priority}),\n'
         '                    new JProperty("acceptablePriorities", "1, 2, 3"),\n'
@@ -201,6 +226,8 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                 "real provider path and add the category to ROUTABLE_CATEGORIES, "
                 "or remove the model from infra/models.json."
             )
+        # Validated for every row, so a misplaced imageEditing fails generation.
+        operations = image_operations(model)
         # A runtime-disabled row stays in desired inventory (Bicep still
         # reconciles its deployments) but gets no HTTP route, so nothing on the
         # governed path can reach it even if an application seam were missed.
@@ -298,6 +325,7 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                     priority=1 if candidate["region"] == requested["region"] else 2,
                     timeout=timeout,
                     target=target,
+                    operations=operations,
                 )
                 for candidate in ordered
             ]

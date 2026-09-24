@@ -954,6 +954,42 @@ class FeaturePrerequisiteTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("priority:count format", output)
 
+    def test_image_editing_requires_image_generation(self) -> None:
+        parameters: dict[str, object] = {
+            "owner": "operator",
+            "apimPublisherEmail": "ops@contoso.test",
+            "imageGenerationEnabled": False,
+            "imageEditingEnabled": False,
+        }
+        code, output = self.run_validator(parameters)
+        self.assertEqual(code, 0, output)
+        parameters["imageEditingEnabled"] = True
+        code, output = self.run_validator(parameters)
+        self.assertEqual(code, 1, output)
+        self.assertIn("imageEditingEnabled=true requires imageGenerationEnabled=true", output)
+        parameters["imageGenerationEnabled"] = True
+        code, output = self.run_validator(parameters)
+        self.assertEqual(code, 0, output)
+
+    def test_committed_image_editing_default_is_off_and_reachable(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        self.assertEqual(
+            parameters["imageEditingEnabled"]["value"], "${AI4IA_IMAGE_EDITING_ENABLED=false}",
+        )
+        with patch.dict(
+            "os.environ",
+            {"AI4IA_IMAGE_EDITING_ENABLED": "true", "AI4IA_IMAGE_GENERATION_ENABLED": "false"},
+            clear=False,
+        ):
+            result, output = self.run_validator({
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "imageGenerationEnabled": "${AI4IA_IMAGE_GENERATION_ENABLED=false}",
+                "imageEditingEnabled": "${AI4IA_IMAGE_EDITING_ENABLED=false}",
+            })
+        self.assertEqual(result, 1, output)
+        self.assertIn("imageEditingEnabled=true requires imageGenerationEnabled=true", output)
+
     def test_environment_overrides_parameter_placeholder_defaults(self) -> None:
         with patch.dict(
             "os.environ",

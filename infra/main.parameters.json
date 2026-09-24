@@ -158,6 +158,9 @@
     "imageGenerationEnabled": {
       "value": "${AI4IA_IMAGE_GENERATION_ENABLED=true}"
     },
+    "imageEditingEnabled": {
+      "value": "${AI4IA_IMAGE_EDITING_ENABLED=false}"
+    },
     "videoGenerationEnabled": {
       "value": "${AI4IA_VIDEO_GENERATION_ENABLED=true}"
     },

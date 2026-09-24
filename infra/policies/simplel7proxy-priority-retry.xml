@@ -15,6 +15,9 @@ IMPROVEMENTS:
   that also hashes the deployment, so each deployment in each region has
   independent throttle state.
 - Managed Identity token audience is resolved per model
+- Catalog rows may carry an operation allowlist. An image row reaches only
+  images/generations, plus images/edits when its model declares imageEditing;
+  any other operation returns 404 before a rewrite, body parse or send.
 
 BUG FIXES:
 - Fixed cross-model backend mix-up caused by caching the whole backend list per API.
@@ -43,8 +46,8 @@ REFACTOR:
 <!--
   Vendored from microsoft/SimpleL7Proxy APIM Policy v3.0 at
   d9eb1d1fa42820792a9699bfc253562fba07d977 (MIT).
-  AI4IA adaptations: trusted proxy headers, health response, catalog allowlist,
-  and regional deployment path/body rewriting.
+  AI4IA adaptations: trusted proxy headers, health response, catalog model and
+  operation allowlists, and regional deployment path/body rewriting.
 -->
 <policies>
 	<inbound>
@@ -157,6 +160,27 @@ REFACTOR:
 			return !string.IsNullOrWhiteSpace(pathDeployment) &amp;&amp;
 				string.Equals(pathDeployment, detectedModel, StringComparison.OrdinalIgnoreCase);
 		}" />
+		<!-- Catalog-owned operation allowlist. Image rows list the operations their
+		     model serves: images/generations, plus images/edits only when the row
+		     declares imageEditing. Rows without a list keep path pass-through. -->
+		<set-variable name="operationAllowed" value="@{
+			JObject selected = (JObject)context.Variables[&quot;selectedBackends&quot;];
+			JProperty firstProperty = selected.Properties().FirstOrDefault();
+			JObject first = firstProperty?.Value as JObject;
+			string allowed = first?.Value&lt;string&gt;(&quot;operations&quot;);
+			if (string.IsNullOrEmpty(allowed)) { return true; }
+			string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);
+			string marker = &quot;deployments/&quot;;
+			int markerIndex = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+			if (markerIndex &lt; 0) { return false; }
+			int slash = path.IndexOf('/', markerIndex + marker.Length);
+			if (slash &lt; 0) { return false; }
+			string operation = path.Substring(slash + 1).TrimEnd('/');
+			foreach (string candidate in allowed.Split(' ')) {
+				if (string.Equals(candidate, operation, StringComparison.OrdinalIgnoreCase)) { return true; }
+			}
+			return false;
+		}" />
 		<choose>
 			<when condition="@(!context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;pathDeploymentMatchesModel&quot;, false))">
 				<return-response>
@@ -168,6 +192,12 @@ REFACTOR:
 				<return-response>
 					<set-status code="404" reason="Model deployment is not in the AI4IA catalog" />
 					<set-body>{"error":{"code":"model_not_allowed","message":"The requested deployment is not allowed by the gateway catalog."}}</set-body>
+				</return-response>
+			</when>
+			<when condition="@(!context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;operationAllowed&quot;, false))">
+				<return-response>
+					<set-status code="404" reason="Operation is not in the AI4IA catalog" />
+					<set-body>{"error":{"code":"operation_not_allowed","message":"The requested operation is not allowed for this catalog model."}}</set-body>
 				</return-response>
 			</when>
 		</choose>

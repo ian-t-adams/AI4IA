@@ -217,6 +217,126 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn('body.Remove("web_grounding")', body)
         self.assertIn('body.Remove("auto_aspect_ratio")', body)
 
+    @staticmethod
+    def _deployment_blocks(models: dict, blocks: list[str]) -> dict[str, list[str]]:
+        """Each runtime-enabled image model's lookup blocks, keyed by model name."""
+        naming = models["naming"]
+        out: dict[str, list[str]] = {}
+        for model in models["catalog"]:
+            if model["category"] != "image" or model.get("runtimeEnabled", True) is False:
+                continue
+            names = [
+                gateway_generator.deployment_name(
+                    model=model["name"], subscription_token=naming["subscriptionToken"],
+                    region=deployment["region"], sku=deployment["sku"],
+                    sku_short=naming["skuShort"],
+                )
+                for deployment in model["deployments"]
+            ]
+            out[model["name"]] = [
+                block for block in blocks
+                if any(
+                    block.lstrip().startswith(f'new JProperty("{name.lower()}", new JObject(')
+                    for name in names
+                )
+            ]
+            assert len(out[model["name"]]) == len(names), model["name"]
+        return out
+
+    def test_images_edits_route_is_generated_only_for_image_editing_rows(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        blocks, _ = gateway_generator.render_catalog(models)
+        both = 'new JProperty("operations", "images/generations images/edits")'
+        generation_only = 'new JProperty("operations", "images/generations")'
+        by_model = self._deployment_blocks(models, blocks)
+        editing = {m["name"] for m in models["catalog"] if m.get("imageEditing") is True}
+        self.assertEqual(editing, {
+            "gpt-image-1-mini", "gpt-image-1.5", "gpt-image-2",
+            "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+        })
+        self.assertTrue(set(by_model) - editing, "fixture needs non-editing image rows")
+        for name, model_blocks in by_model.items():
+            with self.subTest(model=name):
+                for block in model_blocks:
+                    rows = block.count('new JProperty("deployment", ')
+                    self.assertGreater(rows, 0)
+                    if name in editing:
+                        self.assertEqual(block.count(both), rows)
+                        self.assertNotIn(generation_only, block)
+                    else:
+                        self.assertEqual(block.count(generation_only), rows)
+                        self.assertNotIn("images/edits", block)
+        # Rows without a surface-specific allowlist keep path pass-through.
+        others = [block for block in blocks if block not in sum(by_model.values(), [])]
+        self.assertTrue(others)
+        self.assertFalse(any('new JProperty("operations", ' in block for block in others))
+
+        # Paired control on the same document: withdrawing the flag withdraws edits.
+        target = next(m for m in models["catalog"] if m["name"] == "gpt-image-2")
+        del target["imageEditing"]
+        withdrawn, _ = gateway_generator.render_catalog(models)
+        for block in self._deployment_blocks(models, withdrawn)["gpt-image-2"]:
+            self.assertNotIn("images/edits", block)
+            self.assertIn(generation_only, block)
+
+    def test_runtime_disabled_editing_row_gets_no_route_at_all(self) -> None:
+        source = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        for enabled in (True, False):
+            with self.subTest(runtimeEnabled=enabled):
+                models = json.loads(json.dumps(source))
+                target = next(m for m in models["catalog"] if m["name"] == "gpt-image-2.5-sunburst")
+                target["runtimeEnabled"] = enabled
+                blocks, _ = gateway_generator.render_catalog(models)
+                routes = [b for b in blocks if 'new JProperty("gpt-image-2.5-sunburst-' in b]
+                self.assertEqual(len(routes), 1 if enabled else 0)
+                self.assertEqual(
+                    any("images/edits" in b for b in blocks if "gpt-image-2.5-flare-" in b), True,
+                )
+
+    def test_misplaced_image_editing_fails_generation(self) -> None:
+        for name in ("gpt-5.4", "MAI-Image-2.6", "FLUX.2-pro"):
+            with self.subTest(model=name):
+                models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+                next(m for m in models["catalog"] if m["name"] == name)["imageEditing"] = True
+                with self.assertRaisesRegex(ValueError, "imageEditing requires an Azure OpenAI image row"):
+                    gateway_generator.render_catalog(models)
+        for value in ("true", 1, None):
+            with self.subTest(value=value):
+                models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+                next(m for m in models["catalog"] if m["name"] == "gpt-image-2")["imageEditing"] = value
+                with self.assertRaisesRegex(ValueError, "imageEditing must be a Boolean"):
+                    gateway_generator.render_catalog(models)
+
+    def test_operation_allowlist_is_enforced_before_any_rewrite_or_send(self) -> None:
+        root = ElementTree.parse(gateway_generator.PRIORITY_POLICY_PATH).getroot()
+        inbound = root.find("inbound")
+        self.assertIsNotNone(inbound)
+        assert inbound is not None
+        children = list(inbound)
+        allowed = next(
+            index for index, node in enumerate(children)
+            if node.tag == "set-variable" and node.get("name") == "operationAllowed"
+        )
+        expression = children[allowed].get("value") or ""
+        self.assertIn('first?.Value<string>("operations")', expression)
+        self.assertIn('MatchedParameters.GetValueOrDefault("path", "")', expression)
+        self.assertIn("StringComparison.OrdinalIgnoreCase", expression)
+        refusal = next(
+            node for node in inbound.iter("when")
+            if "operationAllowed" in node.get("condition", "")
+        )
+        self.assertEqual(refusal.find("./return-response/set-status").get("code"), "404")
+        self.assertIn("operation_not_allowed", refusal.findtext("./return-response/set-body") or "")
+        # The refusal sits in the inbound phase, before the backend retry loop
+        # performs any rewrite-uri, set-body or forward-request.
+        self.assertEqual(
+            [node.tag for node in inbound.iter() if node.tag in {"rewrite-uri", "forward-request"}],
+            [],
+        )
+        fragment = (ROOT / "infra/policies/simplel7proxy_inbound_post_32.xml").read_text(encoding="utf-8")
+        self.assertIn('name="operationAllowed"', fragment)
+        self.assertIn("operation_not_allowed", fragment)
+
     def test_sora_uses_catalog_owned_v1_video_operation(self) -> None:
         # The shipped row is runtime-disabled, so the positive control flips only
         # that flag on the same document: route shape is still catalog-owned.

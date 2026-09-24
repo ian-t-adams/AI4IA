@@ -1,10 +1,25 @@
 <fragment>
     <set-variable name="backendCatalogChunk3" value="@{
         return new JObject(
+            new JProperty(&quot;gpt-image-2.5-sunburst-slurmfactory-eastus2-glbl&quot;, new JObject(
+                new JProperty(&quot;EASTUS2&quot;, new JObject(
+                    new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
+                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations images/edits&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-image-2.5-sunburst-slurmfactory-eastus2-glbl&quot;),
+                    new JProperty(&quot;priority&quot;, 1),
+                    new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
+                    new JProperty(&quot;timeout&quot;, 240),
+                    new JProperty(&quot;bufferResponse&quot;, false),
+                    new JProperty(&quot;auth&quot;, &quot;MI&quot;)
+                ))
+            )),
+
             new JProperty(&quot;gpt-image-1-mini-slurmfactory-eastus2-glbl&quot;, new JObject(
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations images/edits&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;gpt-image-1-mini-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -15,6 +30,7 @@
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations images/edits&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;gpt-image-1-mini-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -28,6 +44,7 @@
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations images/edits&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;gpt-image-1-mini-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -38,6 +55,7 @@
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations images/edits&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;gpt-image-1-mini-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -52,6 +70,7 @@
                     new JProperty(&quot;url&quot;, &quot;{{foundry-westus-services-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;mai&quot;),
                     new JProperty(&quot;operation&quot;, &quot;/v1/images/generations&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;MAI-Image-2.6-slurmfactory-westus-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -66,6 +85,7 @@
                     new JProperty(&quot;url&quot;, &quot;{{foundry-westus-services-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;mai&quot;),
                     new JProperty(&quot;operation&quot;, &quot;/v1/images/generations&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;MAI-Image-2.6-Flash-slurmfactory-westus-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -80,6 +100,7 @@
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;providers/blackforestlabs/v1&quot;),
                     new JProperty(&quot;operation&quot;, &quot;/flux-2-pro&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;FLUX.2-pro-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -91,6 +112,7 @@
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;providers/blackforestlabs/v1&quot;),
                     new JProperty(&quot;operation&quot;, &quot;/flux-2-pro&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;FLUX.2-pro-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -105,6 +127,7 @@
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;providers/blackforestlabs/v1&quot;),
                     new JProperty(&quot;operation&quot;, &quot;/flux-2-pro&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;FLUX.2-pro-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -116,6 +139,7 @@
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;providers/blackforestlabs/v1&quot;),
                     new JProperty(&quot;operation&quot;, &quot;/flux-2-pro&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;FLUX.2-pro-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -130,6 +154,7 @@
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;providers/blackforestlabs/v1&quot;),
                     new JProperty(&quot;operation&quot;, &quot;/flux-2-flex&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;FLUX.2-flex-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -141,6 +166,7 @@
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;providers/blackforestlabs/v1&quot;),
                     new JProperty(&quot;operation&quot;, &quot;/flux-2-flex&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;FLUX.2-flex-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -155,6 +181,7 @@
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;providers/blackforestlabs/v1&quot;),
                     new JProperty(&quot;operation&quot;, &quot;/flux-2-flex&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;FLUX.2-flex-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -166,6 +193,7 @@
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;providers/blackforestlabs/v1&quot;),
                     new JProperty(&quot;operation&quot;, &quot;/flux-2-flex&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;images/generations&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;FLUX.2-flex-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
@@ -385,29 +413,6 @@
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
                     new JProperty(&quot;deployment&quot;, &quot;embed-v-4-0-slurmfactory-eastus2-glbl&quot;),
-                    new JProperty(&quot;priority&quot;, 2),
-                    new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
-                    new JProperty(&quot;timeout&quot;, 120),
-                    new JProperty(&quot;bufferResponse&quot;, false),
-                    new JProperty(&quot;auth&quot;, &quot;MI&quot;)
-                ))
-            )),
-
-            new JProperty(&quot;gpt-realtime-slurmfactory-eastus2-glbl&quot;, new JObject(
-                new JProperty(&quot;EASTUS2&quot;, new JObject(
-                    new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-realtime-slurmfactory-eastus2-glbl&quot;),
-                    new JProperty(&quot;priority&quot;, 1),
-                    new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
-                    new JProperty(&quot;timeout&quot;, 120),
-                    new JProperty(&quot;bufferResponse&quot;, false),
-                    new JProperty(&quot;auth&quot;, &quot;MI&quot;)
-                )),
-                new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
-                    new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-realtime-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),

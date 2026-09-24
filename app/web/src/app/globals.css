@@ -739,6 +739,161 @@ button:disabled {
   font-size: 0.72em;
 }
 
+.generated-image-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.generated-image-actions button {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--fg);
+  padding: 4px 12px;
+  font-size: 0.82rem;
+}
+
+.generated-image-actions button:hover:not(:disabled) {
+  border-color: var(--fg-muted);
+}
+
+/* Image edit dialog. The region overlay is positioned in percentages of the
+   rendered source, which is also the space the server builds the mask in. */
+.image-edit-form {
+  display: grid;
+  gap: 14px;
+}
+
+.image-edit-preview {
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--assistant-bubble);
+}
+
+.image-edit-stage {
+  position: relative;
+  max-width: 100%;
+  line-height: 0;
+  touch-action: none;
+  user-select: none;
+}
+
+.image-edit-stage[data-region="true"] {
+  cursor: crosshair;
+}
+
+.image-edit-stage img {
+  display: block;
+  max-width: 100%;
+  max-height: 44vh;
+  border-radius: 8px;
+}
+
+.image-edit-region {
+  position: absolute;
+  border: 2px dashed var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  pointer-events: none;
+}
+
+.image-edit-field {
+  display: grid;
+  gap: 4px;
+  font-size: 0.9rem;
+}
+
+.image-edit-field textarea,
+.image-edit-field select {
+  padding: 6px 8px;
+}
+
+.image-edit-field textarea {
+  resize: vertical;
+}
+
+.image-edit-area {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.image-edit-area legend {
+  padding: 0 4px;
+  font-size: 0.9rem;
+}
+
+.image-edit-area label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.9rem;
+}
+
+.image-edit-region-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+
+.image-edit-region-controls label {
+  display: grid;
+  gap: 2px;
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+}
+
+.image-edit-error {
+  margin: 0;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
+.image-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.image-edit-actions button {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  padding: 6px 16px;
+  font-size: 0.9rem;
+}
+
+.image-edit-actions button[data-primary="true"] {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.image-edit-actions button[data-primary="true"]:disabled {
+  background: var(--border);
+  color: var(--fg);
+}
+
+@media (max-width: 480px) {
+  .image-edit-region-controls,
+  .image-edit-form .image-output-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .analysis-details-dialog {
   position: fixed;
   inset: 0;

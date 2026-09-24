@@ -91,6 +91,16 @@
               "enum": ["auto", "low", "medium", "high"]
             }
           },
+          "imageEditing": {
+            "type": "boolean",
+            "default": false,
+            "description": "True when Microsoft Learn documents image edits (inpainting) for this Azure OpenAI image model. Allowed only on image rows served by the Azure OpenAI image surface (api chat, format OpenAI). Generated gateway routing opens images/edits only for rows that declare it."
+          },
+          "imageEditingDefault": {
+            "type": "boolean",
+            "default": false,
+            "description": "Marks the one preferred default editing model. Requires imageEditing; at most one row may declare it. When the row is unavailable at runtime, the first available editing row is used instead; an explicitly requested model is never substituted."
+          },
           "reasoningEffort": {
             "description": "Application-supported effort values. Existing OpenAI values are live-probed; source-only Claude values are the documented thinking-disabled subset, not a live compatibility claim. An empty array disables the control.",
             "type": "array",

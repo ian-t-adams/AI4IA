@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { MessageList, type DisplayMessage } from "./MessageList";
+import { fetchImageArtifact } from "@/lib/api";
 import type { ExecutionReceipt, RetrievedSource } from "@/lib/types";
 
 // Speech playback owns <audio> + object-URL plumbing and hits the TTS endpoint on
@@ -152,6 +153,76 @@ describe("MessageList", () => {
     expect(
       screen.queryByRole("button", { name: /Read message aloud/i }),
     ).toBeNull();
+  });
+
+  describe("image editing affordance", () => {
+    const IMAGE = {
+      id: "a".repeat(32),
+      kind: "image",
+      mimeType: "image/png",
+      prompt: "A lighthouse",
+      model: "gpt-image-2",
+      size: "1024x1024",
+    };
+
+    beforeEach(() => {
+      vi.mocked(fetchImageArtifact).mockResolvedValue(new Blob(["png"], { type: "image/png" }));
+      URL.createObjectURL = vi.fn(() => "blob:image");
+      URL.revokeObjectURL = vi.fn();
+    });
+
+    afterEach(() => {
+      vi.mocked(fetchImageArtifact).mockImplementation(() => new Promise<Blob>(() => {}));
+    });
+
+    it("offers Edit on a loaded image only when the server-gated handler is passed", async () => {
+      const onEditImage = vi.fn();
+      const messages = [msg({ id: "img", role: "assistant", attachments: [IMAGE] })];
+      const { rerender } = render(<MessageList messages={messages} />);
+      expect(await screen.findByRole("img", { name: "A lighthouse" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Edit image/ })).toBeNull();
+
+      rerender(<MessageList messages={messages} onEditImage={onEditImage} />);
+      const edit = screen.getByRole("button", { name: "Edit image: A lighthouse" });
+      await userEvent.click(edit);
+      expect(onEditImage).toHaveBeenCalledWith(expect.objectContaining({ id: IMAGE.id }));
+    });
+
+    it("never offers Edit on a failed image or a turn still in flight", async () => {
+      const onEditImage = vi.fn();
+      render(
+        <MessageList
+          onEditImage={onEditImage}
+          messages={[
+            msg({
+              id: "failed", role: "assistant",
+              attachments: [{ ...IMAGE, id: "b".repeat(32), kind: "image_error", status: "error" }],
+            }),
+            msg({ id: "pending", role: "assistant", pending: true, attachments: [IMAGE] }),
+          ]}
+        />,
+      );
+      expect(await screen.findByRole("img", { name: "A lighthouse" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Edit image/ })).toBeNull();
+    });
+
+    it("captions an edited image with its source and region provenance", async () => {
+      render(
+        <MessageList
+          messages={[
+            msg({
+              id: "edited", role: "assistant",
+              attachments: [{
+                ...IMAGE, sourceKind: "library", sourceId: "doc-1", filename: "photo.jpg",
+                masked: true,
+              }],
+            }),
+          ]}
+        />,
+      );
+      await screen.findByRole("img", { name: "A lighthouse" });
+      expect(screen.getByText(/edited from photo\.jpg · selected region · gpt-image-2/)).toBeInTheDocument();
+    });
   });
 
   it("shows a thinking indicator before any step or token arrives", () => {

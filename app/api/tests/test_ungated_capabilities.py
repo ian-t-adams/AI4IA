@@ -70,6 +70,9 @@ GATED_WHEN_TAINTED: dict[str, str] = {
     "web_autosuggest": "Partial query text reaches the fixed WebIQ provider.",
     "generate_image": "Bills a model deployment on a model-written prompt; the "
     "result is attached to the caller's own message, so nothing is exfiltrated.",
+    "edit_image": "As generate_image, over a source image closure-bound to the "
+    "caller's own conversation or owned library scope; the edited result is a new "
+    "artifact on the caller's own message.",
     "generate_video": "As generate_image, and materially more expensive.",
     "remember_memory": "Writes durable memory that is read back into later "
     "sessions -- a planted memory is a persistent foothold. The write is bound to "

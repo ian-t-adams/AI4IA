@@ -96,9 +96,12 @@ def harness(request):
 
 CASES = [
     "chat", "responses", "anthropic", "chat-stream", "responses-stream", "anthropic-stream",
-    "embedding", "image", "video", "speech", "transcription", "ocr",
+    "embedding", "image", "image-edit", "video", "speech", "transcription", "ocr",
     "cu-submit", "cu-inline", "compute", "compute-upload", "webiq", "mcp-tool", "mcp-resource",
 ]
+# A minimal PNG signature + IHDR is enough: the gateway sends the bytes, it never
+# decodes them. The admission descriptor carries only their digest and length.
+EDIT_SOURCE = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
 
 def response_for(case, request):
@@ -194,6 +197,11 @@ async def outbound(request, harness):
                 return await gateway.embed(deployment=DEPLOYMENT, inputs=["hello"])
             if case == "image":
                 return await gateway.generate_image(deployment=DEPLOYMENT, prompt="hello")
+            if case == "image-edit":
+                return await gateway.edit_image(
+                    deployment=DEPLOYMENT, prompt="hello", image=EDIT_SOURCE,
+                    image_content_type="image/png",
+                )
             if case == "video":
                 return await gateway.create_video_job(
                     deployment=DEPLOYMENT, prompt="hello", width=1024, height=1024, n_seconds=4,

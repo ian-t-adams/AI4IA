@@ -145,6 +145,18 @@ _GENERATE_VIDEO = ToolSpec(
     # clicks through on every legitimate request teaches them to click through.
 )
 
+_EDIT_IMAGE = ToolSpec(
+    name="edit_image",
+    description="Edit an image already in this conversation and attach the result to the reply.",
+    risk=ToolRisk.external,
+    injection_only_risk=True,
+    # As generate_image: the deployment is catalog-resolved and the result is a
+    # new artifact on the caller's own message. The source is closure-bound to
+    # the caller's own images in this conversation (or owned library images in
+    # its scope), so no argument can read another user's or conversation's data.
+    # The exposure is spend and content attributed to the user.
+)
+
 # --- Durable per-user writes ----------------------------------------------------
 
 _REMEMBER_MEMORY = ToolSpec(
@@ -244,6 +256,7 @@ SYNTHETIC_TOOL_SPECS: dict[str, ToolSpec] = {
         _RUN_CODE,
         _ANALYZE_ATTACHMENT,
         _GENERATE_IMAGE,
+        _EDIT_IMAGE,
         _GENERATE_VIDEO,
         _REMEMBER_MEMORY,
         _EXPORT_DOCUMENT,

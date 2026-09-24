@@ -46,6 +46,36 @@ def runtime_enabled(model: dict[str, Any]) -> bool:
     return value
 
 
+def image_editing(model: dict[str, Any]) -> bool:
+    """Read the strict optional ``imageEditing`` Boolean (default false).
+
+    Only an Azure OpenAI image row (category ``image``, api ``chat``, format
+    ``OpenAI``) may declare it: the edit contract is the deployment-scoped
+    ``images/edits`` multipart operation, which MAI and BFL do not serve. The
+    gateway generator opens ``images/edits`` only for rows that declare it.
+    """
+    value = model.get("imageEditing", False)
+    if type(value) is not bool:
+        raise ValueError("imageEditing must be a Boolean")
+    if value and (
+        model.get("category") != "image"
+        or model.get("api", "chat") != "chat"
+        or model.get("format") != "OpenAI"
+    ):
+        raise ValueError("imageEditing requires an Azure OpenAI image row")
+    return value
+
+
+def image_editing_default(model: dict[str, Any]) -> bool:
+    """Read the strict optional ``imageEditingDefault`` Boolean (default false)."""
+    value = model.get("imageEditingDefault", False)
+    if type(value) is not bool:
+        raise ValueError("imageEditingDefault must be a Boolean")
+    if value and not image_editing(model):
+        raise ValueError("imageEditingDefault requires imageEditing")
+    return value
+
+
 def source_catalog(models: dict[str, Any]) -> dict[str, Any]:
     return {
         **models,

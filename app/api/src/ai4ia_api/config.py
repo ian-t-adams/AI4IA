@@ -140,6 +140,10 @@ class Settings(BaseSettings):
     # against the deployed gpt-image-2 deployment.
     gateway_image_api_version: str = "2024-10-21"
     gateway_image_timeout_seconds: float = 180.0
+    # Image edits (``images/edits``, multipart) are documented only on the dated
+    # 2025-04-01-preview inference version; GA 2024-10-21 has no edits
+    # operation. Kept separate so the verified generation version is unchanged.
+    gateway_image_edit_api_version: str = "2025-04-01-preview"
     # Video generation (Sora 2) is an async job: create -> poll ->
     # download. The Sora v1 REST surface accepts the optional ``preview``
     # api-version. Each
@@ -481,6 +485,9 @@ class Settings(BaseSettings):
     # --- Media generation and retained artifacts ---
     image_generation_enabled: bool = False
     video_generation_enabled: bool = False
+    # Image editing reads and writes generated-image artifacts, so it requires
+    # image generation (and therefore its durable storage outside local).
+    image_editing_enabled: bool = False
 
     # --- Generated-image blob storage ---
     # Durable home for images produced by the ``generate_image`` agent tool. Each
@@ -1241,6 +1248,13 @@ class Settings(BaseSettings):
                     f"AI4IA_{media.upper()}_BLOB_ACCOUNT_URL outside local "
                     "so generated artifacts remain durable."
                 )
+        if self.image_editing_enabled and not self.image_generation_enabled:
+            # Edits read generated/library sources and store their output as
+            # image artifacts, whose durable storage is emitted with generation.
+            raise RuntimeError(
+                "AI4IA_IMAGE_EDITING_ENABLED requires AI4IA_IMAGE_GENERATION_ENABLED "
+                "so edited images use the durable image artifact store."
+            )
         if self.entitlements_enabled and not self.usage_metering_enabled:
             # Budgets/rate limits accrue from the usage ledger; with metering off
             # every positive limit silently never trips (only disabled and

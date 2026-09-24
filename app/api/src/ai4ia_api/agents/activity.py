@@ -45,6 +45,7 @@ _TOOL_VERBS: dict[str, tuple[str, str]] = {
     "process_document": ("Processing a document", "Processed a document"),
     "analyze_attachment": ("Analyzing an attachment", "Analyzed an attachment"),
     "generate_image": ("Generating an image", "Generated an image"),
+    "edit_image": ("Editing an image", "Edited an image"),
     "generate_video": ("Generating a video", "Generated a video"),
     "recall_memory": ("Recalling earlier context", "Recalled earlier context"),
     "delegate_to_agent": ("Delegating to an agent", "Delegated to an agent"),

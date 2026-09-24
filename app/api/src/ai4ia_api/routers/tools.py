@@ -15,6 +15,7 @@ from ..agents.tools import ToolRisk
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..conversations.policy import resolve_conversation_policy
+from ..images.availability import NO_IMAGE_EDIT_MODEL_DETAIL, state_image_edit_availability
 from ..memory.context import MemoryContextGuard
 from ..videos.availability import NO_VIDEO_MODEL_DETAIL, state_video_availability
 from ..websearch.contracts import MAX_CONTENT_CHARS, MAX_RESULTS, WEBIQ_TOOL_NAMES, tool_schema
@@ -26,6 +27,7 @@ router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 _SYNTHETIC_DESCRIPTIONS = {
     "generate_image": "Generate an image and attach the authenticated artifact to the chat.",
+    "edit_image": "Edit an image already in this conversation and attach the new artifact to the chat.",
     "generate_video": "Generate a video and attach the authenticated artifact to the chat.",
     "process_document": "Process a ready library document with governed document tools.",
     "recall_memory": "Recall relevant memories owned by the current user.",
@@ -114,6 +116,11 @@ async def list_tools(
                 settings.image_generation_enabled
                 and getattr(request.app.state, "image_artifacts", None) is not None
             )
+        elif name == "edit_image":
+            editing = state_image_edit_availability(request.app.state)
+            available = editing == "available"
+            if editing == "no_model":
+                detail = NO_IMAGE_EDIT_MODEL_DETAIL
         elif name == "run_workflow":
             available = getattr(request.app.state, "workflow_service", None) is not None
         if not available and detail is None:

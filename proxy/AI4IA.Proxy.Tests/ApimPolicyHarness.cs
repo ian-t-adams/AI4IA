@@ -184,6 +184,10 @@ internal sealed class ApimPolicyHarness
                     var url = address + "/" + _path.TrimStart('/');
                     using var request = new HttpRequestMessage(HttpMethod.Post, url);
                     request.Content = new ByteArrayContent(Context.Request.Body.Bytes);
+                    // APIM forwards the caller's Content-Type (a multipart boundary
+                    // included) with the unparsed body; project that, not a default.
+                    if (Context.Request.Headers.TryGetValue("Content-Type", out var contentType))
+                        request.Content.Headers.TryAddWithoutValidation("Content-Type", contentType);
                     foreach (var pair in Context.Request.Headers)
                         if (pair.Key is not ("Host" or "Content-Length" or "Content-Type" or "Connection"))
                             request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
