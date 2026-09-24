@@ -92,5 +92,8 @@ The toolbox script reads the project endpoint from `--project-endpoint` or
 For a first standup, the workflow is authoritative because it runs after deploy
 has created the OIDC identity's project role. Reserve a local `--create` for an
 explicitly approved repair after confirming the local operator has that same role.
-Routine and A2A scripts are offline design validators. Everything here is public
-preview; do not infer that a schema-valid routine or A2A design is callable.
+Routine and A2A scripts are offline design validators. The toolbox bridge uses
+preview toolbox/Skills contracts. Foundry routines and the A2A tool became GA in
+September 2026, but these routine and A2A files remain design-only (see
+[`docs/foundry-platform-evaluation.md`](../docs/foundry-platform-evaluation.md));
+do not infer that a schema-valid routine or A2A design is callable.
