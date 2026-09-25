@@ -25,6 +25,40 @@ docs_generator = load_script(
 
 
 class GatewayPolicyTests(unittest.TestCase):
+    # APIM's policy schema types these forward-request attributes as literal
+    # xs:boolean values. Deployment validation rejects expressions there, even
+    # though the offline harness can evaluate them.
+    _LITERAL_BOOLEAN_FORWARD_ATTRIBUTES = (
+        "buffer-request-body", "buffer-response", "fail-on-error-status-code",
+    )
+
+    @classmethod
+    def _non_literal_forward_booleans(cls, xml_text: str, source: str) -> list[str]:
+        problems = []
+        for element in ElementTree.fromstring(xml_text).iter("forward-request"):
+            for name in cls._LITERAL_BOOLEAN_FORWARD_ATTRIBUTES:
+                value = element.attrib.get(name)
+                if value is not None and value not in ("true", "false"):
+                    problems.append(f"{source}: {name}={value!r}")
+        return problems
+
+    def test_forward_request_boolean_attributes_are_schema_literals(self) -> None:
+        policies = sorted((ROOT / "infra/policies").glob("*.xml"))
+        checked = 0
+        problems = []
+        for path in policies:
+            text = path.read_text(encoding="utf-8")
+            checked += len(ElementTree.fromstring(text).findall(".//forward-request"))
+            problems += self._non_literal_forward_booleans(text, path.name)
+        self.assertEqual(problems, [])
+        self.assertGreaterEqual(checked, 16, "the scan must reach the generated backend forwards")
+        # Control: the rejected 2026-09-25 shape is detected by the same check.
+        rejected = (
+            '<fragment><forward-request buffer-request-body="@(!context.Variables'
+            '.GetValueOrDefault&lt;bool&gt;(&quot;noReplay&quot;, false))" /></fragment>'
+        )
+        self.assertEqual(len(self._non_literal_forward_booleans(rejected, "fixture")), 1)
+
     def test_fragment_compaction_preserves_code_and_string_bytes(self) -> None:
         source = (
             '<fragment><!-- remove this XML comment -->\n'
