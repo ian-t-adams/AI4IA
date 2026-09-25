@@ -135,11 +135,15 @@ def test_startup_and_public_catalog_do_not_accept_claude_flag_alone():
 @pytest.mark.parametrize("read", [0, 20])
 def test_exact_sku_rates_include_cached_read_and_output_without_region_guessing(read):
     book = load_pricing()
+    expected_rates = {
+        ("claude-opus-5", "GlobalStandard"): (5.0, 25.0, 0.5),
+        ("claude-opus-5", "DataZoneStandard"): (5.5, 27.5, 0.55),
+        ("claude-sonnet-5", "GlobalStandard"): (2.0, 10.0, 0.2),
+        ("claude-sonnet-5", "DataZoneStandard"): (2.2, 11.0, 0.22),
+    }
     for model in entries():
         for option in model.options:
-            expected = (5.0, 25.0, 0.5) if model.id == "claude-opus-5" else (2.0, 10.0, 0.2)
-            if option.sku == "DataZoneStandard":
-                expected = (5.5, 27.5, 0.55)
+            expected = expected_rates[(model.id, option.sku)]
             price = book.estimate(
                 model.id, deployment=option.deploymentName, prompt_tokens=100, completion_tokens=10,
                 cache_read_tokens=read, cache_write_tokens=0,

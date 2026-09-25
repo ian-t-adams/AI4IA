@@ -1653,13 +1653,6 @@
         {
           "region": "eastus2",
           "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2",
-          "deploymentName": "claude-opus-5-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "eastus2",
-          "dataZone": "US",
           "sku": "DataZoneStandard",
           "modelVersion": "2",
           "deploymentName": "claude-opus-5-slurmfactory-eastus2-dz"
@@ -1695,6 +1688,13 @@
           "sku": "GlobalStandard",
           "modelVersion": "2",
           "deploymentName": "claude-sonnet-5-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2",
+          "deploymentName": "claude-sonnet-5-slurmfactory-eastus2-dz"
         }
       ]
     }
