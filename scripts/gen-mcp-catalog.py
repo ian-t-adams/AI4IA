@@ -15,11 +15,16 @@ APIM route ``path`` (``<name>/mcp``), and whether the curated endpoint may
 expose MCP resources. Inbound auth to APIM is always the global APIM
 subscription key, so it is not encoded per entry.
 
+A ``foundryToolbox`` entry must name the canonical ``foundry/toolbox.manifest.json``
+toolbox. Its runtime entry also carries ``toolboxManifestSha256``, a digest of the
+manifest's executable content, which becomes part of the server's consent identity.
+
 Run from the repo root:  python scripts/gen-mcp-catalog.py
 Verify-only (CI drift):  python scripts/gen-mcp-catalog.py --check
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -31,12 +36,31 @@ from _generator import build_parser, check_or_write
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE = REPO_ROOT / "infra" / "mcp-servers.json"
 TARGET = REPO_ROOT / "app" / "api" / "src" / "ai4ia_api" / "data" / "official_mcp_catalog.json"
+TOOLBOX_MANIFEST = REPO_ROOT / "foundry" / "toolbox.manifest.json"
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,38}[a-z0-9]$")
 
+# Provenance and validated-SDK bookkeeping. Every other manifest key, including
+# any added later, describes what the live toolbox executes and is bound.
+_NON_EXECUTABLE_MANIFEST_KEYS = frozenset({
+    "$schema", "_comment", "manifestVersion", "lifecycle", "owner", "sdkContract",
+})
 
-def build_catalog(raw: dict) -> dict:
+
+def toolbox_manifest_sha256(manifest: dict) -> str:
+    """Digest of a toolbox manifest's executable content.
+
+    Keep in step with ``ai4ia_api.official_mcp_catalog.toolbox_manifest_sha256``.
+    """
+    executable = {key: value for key, value in manifest.items() if key not in _NON_EXECUTABLE_MANIFEST_KEYS}
+    canonical = json.dumps(executable, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_catalog(raw: dict, toolbox_manifest: dict | None = None) -> dict:
     servers = raw.get("servers", [])
+    if toolbox_manifest is None and any(entry.get("foundryToolbox") for entry in servers):
+        toolbox_manifest = json.loads(TOOLBOX_MANIFEST.read_text(encoding="utf-8"))
     errors: list[str] = []
     seen: set[str] = set()
     items = []
@@ -62,21 +86,27 @@ def build_catalog(raw: dict) -> dict:
         for header in entry.get("upstreamHeaders", {}):
             if header.lower().startswith("mcp-") or header.lower() == "last-event-id":
                 errors.append(f"{name}: upstreamHeaders must not override MCP protocol metadata")
-        items.append(
-            {
-                "id": name,
-                "displayName": entry.get("displayName", name),
-                "description": entry.get("description", ""),
-                # APIM exposes the server at https://<mcp-apim>/<name>/mcp; the
-                # backend composes the absolute URL from the gateway base + path.
-                "path": f"{name}/mcp",
-                # Phase one permits resource discovery only for the repository-
-                # curated Foundry Toolbox. BYO and generic official MCP servers do
-                # not become instruction sources merely by exposing resources.
-                "resourcesEnabled": bool(entry.get("foundryToolbox")),
-                "protocolVersion": protocol,
-            }
-        )
+        item = {
+            "id": name,
+            "displayName": entry.get("displayName", name),
+            "description": entry.get("description", ""),
+            # APIM exposes the server at https://<mcp-apim>/<name>/mcp; the
+            # backend composes the absolute URL from the gateway base + path.
+            "path": f"{name}/mcp",
+            # Phase one permits resource discovery only for the repository-
+            # curated Foundry Toolbox. BYO and generic official MCP servers do
+            # not become instruction sources merely by exposing resources.
+            "resourcesEnabled": bool(entry.get("foundryToolbox")),
+            "protocolVersion": protocol,
+        }
+        if entry.get("foundryToolbox"):
+            if not isinstance(toolbox_manifest, dict) or toolbox_manifest.get("name") != name:
+                errors.append(f"{name}: a foundryToolbox entry must name the toolbox in foundry/toolbox.manifest.json")
+            else:
+                # Tool search exposes a generic call_tool whose schema never
+                # changes, so consent binds the reviewed toolbox content instead.
+                item["toolboxManifestSha256"] = toolbox_manifest_sha256(toolbox_manifest)
+        items.append(item)
 
     if errors:
         raise SystemExit(
