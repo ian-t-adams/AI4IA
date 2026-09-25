@@ -102,18 +102,52 @@ disablement still keeps the desired external deployment inventory.
 
 #### Current Claude status
 
-Neither Claude Opus 5 nor Sonnet 5 is deployed or available (checked
-2026-09-24). The integration shipped default-off in #493: the
-`AI4IA_CLAUDE_ENABLED` repository variable is `false`, the external staging flag
-and binding are unset, and APIM keeps its disabled Claude policy. The last
-read-only observation of the intended target account, on 2026-09-20, found no
-Claude deployments. No dedicated account, identity or grant has been created.
-Activation still waits on three owner decisions from the
+AI4IA does not serve Claude (checked 2026-09-25). The integration shipped
+default-off in #493:
+
+- the `AI4IA_CLAUDE_ENABLED` repository variable is `false`;
+- the external staging flag and binding are unset;
+- APIM keeps its disabled Claude policy;
+- no dedicated account, identity or grant exists.
+
+Tenant access is not the blocker. Operators read both tenants through isolated
+per-tenant Azure CLI profiles, the pattern `AI4IA_CLAUDE_TARGET_AZURE_CONFIG_DIR`
+already expects. A read-only check of both tenants on 2026-09-25 found:
+
+- **Quota.** A separately owned learning deployment of `claude-opus-5`
+  version 2 in the target subscription uses its entire eastus2 GlobalStandard
+  quota. The catalog's Opus 5 GlobalStandard row therefore cannot be
+  provisioned in a dedicated account; the target preflight refuses it. Opus 5
+  DataZoneStandard (13) and Sonnet 5 GlobalStandard (20) remain fully free, as
+  does Opus 5.5 GlobalStandard.
+- **Directory permissions.** The binding readbacks read the Entra application,
+  its federated credential and the target service principal as app
+  identities. That needs admin-consented `Application.Read.All`:
+  - in the source tenant, for the existing deploy identity, which holds no
+    Graph application permissions;
+  - in the target tenant, for a target reader, which does not exist yet.
+
+  The operator account can create resources and role assignments in both
+  subscriptions but holds no Entra role that can grant that consent. The
+  runtime path itself needs none: APIM exchanges a managed-identity assertion
+  for a target token, and a MaaS-only role on the dedicated account authorizes
+  it.
+- **Terms.** Earlier Anthropic terms acceptances in the target subscription
+  already record an organization attestation. Confirm that value, not the
+  repository variables, for the dedicated account.
+
+Activation waits on owner decisions, in addition to the
 [separate approved operator units](runbooks/feature-enablement.md#separate-approved-operator-units):
 
-- the network mode;
-- the legal entity that accepts Anthropic's terms for the target subscription;
-- the dedicated account, identity and access grants.
+- **Readback approach:** obtain admin consent in both tenants, or approve a
+  reviewed contract change in which CI verifies the account, deployments,
+  role and APIM routes, and the operator verifies the Entra records at
+  activation and after any binding change.
+- **Opus 5 GlobalStandard capacity:** free the learning deployment's quota,
+  drop or resize the catalog row, or request more quota.
+- **Terms and grants:** the legal entity for the target subscription, the
+  network mode (`public-keyless` is the only implemented mode), and the
+  dedicated account, identity and access grants.
 
 Opus 5.5 work follows that activation.
 
