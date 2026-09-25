@@ -169,7 +169,10 @@ public sealed class NoReplayApimTests
         foreach (var forward in ApimPolicyHarness.Policies["backend"].Descendants("forward-request"))
         {
             Assert.AreEqual("false", forward.Attribute("follow-redirects")!.Value);
-            Assert.AreEqual(false, policy.Eval(forward.Attribute("buffer-request-body")!.Value));
+            // APIM types buffer-request-body as a literal xs:boolean and rejects
+            // expressions at deployment. One attempt comes from the retry
+            // exclusion and the claim check: exactly one provider request above.
+            Assert.AreEqual("true", forward.Attribute("buffer-request-body")!.Value);
         }
     }
 
