@@ -1142,7 +1142,10 @@ Four rules follow:
    advertisement/traffic. Exact configured target tokens flow only through the
    existing proxy/APIM path. Never use an app key, runtime Graph calls, a shared
    deployment credential or built-in Foundry User as a narrow inference grant.
-   The documented MaaS-only custom role is exact-account assigned and read back.
+   The custom inference role grants only
+   `Microsoft.CognitiveServices/accounts/AIServices/*` data actions; the
+   documented MaaS-only role did not authorize Claude Messages in a 2026-09-25
+   live check. It is exact-account assigned and read back.
    Separate source/target readers must prove app/FIC/SP/role/model/route metadata
    freshly; saved JSON and flags do not prove it. Single-subscription reports
    retain external unknowns, not borrowed source evidence. A live binding must be
