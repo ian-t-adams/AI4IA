@@ -165,6 +165,48 @@ def test_tool_choice_none_withholds_the_tool_schema_from_claude():
     assert "tool_choice" not in request.json
 
 
+def test_thinking_blocks_never_reach_translated_output_on_either_transport():
+    from ai4ia_api.gateway.anthropic import (
+        AnthropicStreamState, anthropic_json_to_chat, parse_anthropic_event,
+    )
+
+    hidden = ("PRIVATE-THINKING-a1", "PRIVATE-SIGNATURE-b2", "PRIVATE-REDACTED-c3")
+    translated = anthropic_json_to_chat({
+        "content": [
+            {"type": "thinking", "thinking": hidden[0], "signature": hidden[1]},
+            {"type": "redacted_thinking", "data": hidden[2]},
+            {"type": "text", "text": "Visible."},
+        ],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 3, "output_tokens": 9},
+    })
+    events = [
+        {"type": "message_start", "message": {"usage": {"input_tokens": 3, "output_tokens": 0}}},
+        {"type": "content_block_start", "index": 0, "content_block": {
+            "type": "thinking", "thinking": hidden[0], "signature": "",
+        }},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": hidden[0]}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": hidden[1]}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "redacted_thinking", "data": hidden[2]}},
+        {"type": "content_block_start", "index": 2, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 2, "delta": {"type": "text_delta", "text": "Visible."}},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 9}},
+        {"type": "message_stop"},
+    ]
+    state = AnthropicStreamState()
+    parsed = [parse_anthropic_event(json.dumps(event), state) for event in events]
+    emitted = [event for event in parsed if event is not None]
+
+    # Control: the visible block survives both translations.
+    assert translated["choices"][0]["message"] == {"role": "assistant", "content": "Visible."}
+    assert "".join(event.delta for event in emitted) == "Visible."
+    assert emitted[-1].done and emitted[-1].usage["completion_tokens"] == 9
+    serialized = json.dumps(translated) + json.dumps([event.__dict__ for event in emitted])
+    for marker in hidden:
+        assert marker not in serialized
+
+
 async def test_nonstream_response_translates_text_tools_and_usage():
     captured: dict = {}
 

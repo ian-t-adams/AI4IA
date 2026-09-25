@@ -179,6 +179,25 @@ def _tool_choice_to_anthropic(value: Any) -> dict[str, Any] | None:
     raise ValueError("unsupported tool_choice for Claude Messages")
 
 
+def _require_text_only(messages: Sequence[dict[str, Any]], source: dict[str, Any]) -> None:
+    """Refuse every tool surface for the adaptive profile before any dispatch.
+
+    Opus 5.5 thinking blocks are signed, prefix-bound continuation state that this
+    stage never captures or replays, so no tool loop may start or resume, and a
+    forced ``tool_choice`` is a provider 400 regardless.
+    """
+    if (
+        source.get("tools")
+        or source.get("tool_choice") not in (None, "auto", "none")
+        or any(
+            message.get("role") == "tool"
+            or (message.get("role") == "assistant" and message.get("tool_calls"))
+            for message in messages
+        )
+    ):
+        raise ValueError("The Claude adaptive text-only profile refuses tools and tool history.")
+
+
 def build_anthropic_payload(
     *,
     deployment: str,
@@ -189,6 +208,10 @@ def build_anthropic_payload(
 ) -> dict[str, Any]:
     """Build a strict Claude Messages body from trusted internal chat inputs."""
     source = dict(params or {})
+    external = profile if profile is not None and profile.deploymentTarget == "external-claude" else None
+    adaptive = external is not None and external.anthropicThinking == "adaptive"
+    if adaptive:
+        _require_text_only(messages, source)
     system, converted = messages_to_anthropic(messages)
     try:
         max_tokens = max(1, int(source.get("max_tokens", DEFAULT_MAX_TOKENS)))
@@ -213,16 +236,20 @@ def build_anthropic_payload(
                 choice["disable_parallel_tool_use"] = True
             body["tool_choice"] = choice
 
-    if profile is not None and profile.deploymentTarget == "external-claude":
-        profile.require_external_profile()
-        effort = source.get("reasoning_effort", "high")
-        if effort not in (profile.reasoningEffort or []):
-            raise ValueError("Unsupported effort for the Claude thinking-disabled profile.")
-        body["thinking"] = {"type": "disabled"}
+    if external is not None:
+        external.require_external_profile()
+        # Adaptive defaults to Opus 5.5's documented provider default so "model
+        # default" stays truthful; the value is still sent, so receipts record it.
+        effort = source.get("reasoning_effort", "medium" if adaptive else "high")
+        if effort not in (external.reasoningEffort or []):
+            raise ValueError("Unsupported effort for the external Claude profile.")
+        if not adaptive:
+            body["thinking"] = {"type": "disabled"}
         body["output_config"] = {"effort": effort}
 
     # Sampling stays absent. Legacy Anthropic models keep their existing payload;
-    # only an explicit catalog profile changes thinking/effort.
+    # only an explicit catalog profile changes thinking/effort. Adaptive omits
+    # ``thinking``, which the provider treats as adaptive thinking.
     return body
 
 

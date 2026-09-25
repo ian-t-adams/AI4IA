@@ -356,7 +356,7 @@ class GatewayPolicyTests(unittest.TestCase):
             for block in blocks
             if 'new JProperty("claude-' in block
         ]
-        self.assertEqual(len(claude), 3)
+        self.assertEqual(len(claude), 5)
         for block in claude:
             self.assertIn('new JProperty("path", "anthropic")', block)
             self.assertNotIn('new JProperty("path", "openai")', block)

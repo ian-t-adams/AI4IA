@@ -381,7 +381,7 @@ def _effective_params(params: dict, entry: ModelEntry | None) -> dict:
             if entry is not None and entry.deploymentTarget == "external-claude":
                 raise HTTPException(
                     status_code=422,
-                    detail="Claude's thinking-disabled profile supports only low, medium, or high effort.",
+                    detail="This Claude profile supports only low, medium, or high effort.",
                 )
             logger.info(
                 "chat.reasoning_effort_dropped",
@@ -1722,9 +1722,12 @@ async def chat(
         "official_mcp_service",
         None,
     )
+    # The injected skill loader is a tool: a model without tool calling never
+    # receives it, so a tool-less agent on that model takes the plain path.
     skills_eligible = (
         tools_allowed() and official_mcp_service is not None
         and tool_agent is None and not skill_loader_excluded()
+        and (entry is None or entry.supportsTools)
     )
     official_servers = []
     official_discovery_succeeded = False

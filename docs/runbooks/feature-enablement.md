@@ -226,12 +226,12 @@ separate approval. Do not choose public HTTPS merely to pass this gate.
 
 `infra/models.json` is the only model/version/region/SKU/capacity inventory.
 Its `deploymentTarget: external-claude` rows describe one isolated eastus2
-account: Opus 5 version 2 at DataZoneStandard 40, and Sonnet 5 version 2 at
-GlobalStandard 80 and DataZoneStandard 80. That account was provisioned on
-2026-09-25 through `infra/claude-target.bicep`; it also holds Opus 5.5 version 2
-at GlobalStandard 40 and DataZoneStandard 40, which stay out of the catalog
-until an adaptive-thinking profile exists (see the
-[platform evaluation](../foundry-platform-evaluation.md#claude-opus-55)). Opus 5
+account: Opus 5 version 2 at DataZoneStandard 40, Sonnet 5 version 2 at
+GlobalStandard 80 and DataZoneStandard 80, and Opus 5.5 version 2 at
+GlobalStandard 40 and DataZoneStandard 40 under the adaptive text-only profile
+(see the [platform evaluation](../foundry-platform-evaluation.md#claude-opus-55)).
+That account was provisioned on 2026-09-25 through `infra/claude-target.bicep`,
+and the catalog lists exactly its five deployments. Opus 5
 has no GlobalStandard row because a separately owned deployment in the same
 subscription holds that entire quota counter. These are raw model-specific
 standard-capacity units, not fixed PTUs, TPM conversions, a dollar reservation
@@ -388,46 +388,76 @@ source-only identity.
 
 ### Supported application profile and pricing evidence
 
-Both new models have documented 1M context and 128K synchronous output. This
-application deliberately supports **text plus its governed function-tool loop,
-thinking disabled, and native `output_config.effort` low/medium/high**. It does
-not advertise native vision, adaptive signed-thinking continuation or xhigh/max.
-The latter can require thinking and cannot safely round-trip through the current
-unified durable history. Missing/contradictory profile metadata refuses; no
-provider-default adaptive fallback is used. Historical 4.8 adapter fixtures and
-prices remain, without rewriting saved selections or old receipts.
+All three models have documented 1M context and 128K synchronous output. This
+application supports exactly two explicit profiles, both with text input and
+native `output_config.effort` low/medium/high:
+
+- **Thinking-disabled text/tools** (Opus 5, Sonnet 5): `thinking` is sent
+  disabled and the governed function-tool loop is available. An omitted effort
+  sends `high`.
+- **Adaptive text-only** (Opus 5.5): `thinking` is omitted, which the provider
+  treats as adaptive, and the catalog sets `toolCalling: false`.
+  - Before dispatch the adapter refuses any tools, any `tool_choice` other than
+    absent, `auto` or `none`, and tool calls or results in history.
+  - An omitted effort sends `medium`, Opus 5.5's documented default.
+  - Thinking and redacted-thinking blocks are dropped on both transports and
+    never reach SSE events, history, receipts or logs.
+
+Neither profile advertises native vision, xhigh/max or signed-thinking
+continuation. Signed continuation is the recorded tool-capable stage of the
+[adaptive-thinking profile design](../foundry-platform-evaluation.md#adaptive-thinking-profile-design).
+It cannot safely round-trip through the current unified durable history, which
+is why the adaptive profile is text-only. Missing/contradictory profile
+metadata refuses; no provider-default adaptive fallback is used for a
+thinking-disabled row. Historical 4.8 adapter fixtures and prices remain,
+without rewriting saved selections or old receipts.
 
 Safe catalog metadata, HTTP parameter validation, adapted payloads, tool
-continuations and effective receipt parameters agree on this profile. Publication
+continuations and effective receipt parameters agree on each profile. Publication
 and consent bind the full model metadata through their existing environment
 digests; ordinary models omit the new default fields to preserve legacy digests.
 
-**Claude Opus 5.5 is deliberately absent (evaluated 2026-09-24).** It is GA in
-Foundry, but thinking cannot be disabled: `thinking: {"type": "disabled"}`
-returns HTTP 400, and so does forced `tool_choice` (`any` or a named tool). Its
-thinking blocks must also round-trip unmodified and are bound to the
-conversation prefix. The adapter sends disabled thinking for every
-external-Claude profile, so a catalog row would fail every request. Do not rely
-on the Learn thinking-table footnote that still marks `disabled` as allowed for
-this model. After activation, one approved canary settles that contradiction.
-If Anthropic's contract holds, follow the recorded
-[adaptive-thinking profile design](../foundry-platform-evaluation.md#adaptive-thinking-profile-design),
-which needs an owner decision to amend the thinking-disabled rule.
+A model with `toolCalling: false` never receives a tool server-side:
 
-USD/MTok directional rates are Opus 5 **5 input / 25 output** globally, **5.5 /
-27.5** for US DataZoneStandard, and Sonnet 5 **2 / 10** globally and **2.2 / 11**
-for US DataZoneStandard. Exact catalog
-deployment/SKU, not region alone, selects the rate. Cache reads use the documented
-0.1x input rate; cache writes without evidenced duration remain cost-unknown.
+- chat refuses a tool-using or linked agent, including capability slash
+  commands such as `/research`, with 422;
+- workflow runs and automation refuse the model;
+- the injected `load_skill` tool is withheld;
+- a published chat profile that lists that loader refuses with
+  `publication_optional_contract_unavailable` rather than narrowing silently.
+
+**Claude Opus 5.5 (evaluated 2026-09-24, live check 2026-09-25).** It is GA in
+Foundry, but thinking cannot be disabled: `thinking: {"type": "disabled"}`
+returns HTTP 400 at effort `low` and `high`, and so does forced `tool_choice`
+(`any` or a named tool). With `thinking` omitted it returns HTTP 200. Do not rely
+on the Learn thinking-table footnote that still marks `disabled` as allowed for
+this model. Its thinking blocks must round-trip unmodified and are bound to the
+conversation prefix, which the text-only profile avoids by never continuing a
+tool loop.
+
+USD/MTok directional rates:
+
+| Model | Global Standard (input / output) | US DataZoneStandard (input / output) |
+| --- | --- | --- |
+| Opus 5 | **5 / 25** | **5.5 / 27.5** |
+| Sonnet 5 | **2 / 10** | **2.2 / 11** |
+| Opus 5.5 | **4 / 20** | **4.4 / 22** |
+
+Exact catalog deployment/SKU, not region alone, selects the rate. Cache reads use
+the documented 0.1x input rate, except Opus 5.5 at 0.05x (0.20, or 0.22 for US
+DataZoneStandard). Cache writes without evidenced duration remain cost-unknown.
+Adaptive thinking tokens bill as output tokens and arrive in `output_tokens`.
 The adapter does not request caching. Missing deployment, usage or a lost cache
 breakdown is unknown, never free. Cache breakdown is in-process only; no Cosmos
 schema or historical repricing is introduced. Shared receipt pricing snapshots
 the applicable rates/version before the provider await; monetary/replay activation
 gates remain unchanged. These are estimates, not Azure bill guarantees.
 
-Official evidence checked **2026-09-20**:
+Official evidence checked **2026-09-20** (Opus 5.5 and pricing rechecked
+**2026-09-25**):
 [Opus 5](https://platform.claude.com/docs/en/models/opus-5/overview),
 [Sonnet 5](https://platform.claude.com/docs/en/models/sonnet-5/overview),
+[What's new in Opus 5.5](https://platform.claude.com/docs/en/models/opus-5-5/whats-new-opus-5-5),
 [effort](https://platform.claude.com/docs/en/build-with-claude/effort),
 [Opus migration/tool-history requirements](https://platform.claude.com/docs/en/models/opus-5/migration-guide),
 [Foundry deployment/version hosting](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry),
