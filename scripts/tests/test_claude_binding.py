@@ -386,8 +386,8 @@ class ClaudeBindingTests(unittest.TestCase):
         self.assertTrue(all(row["format"] != "Anthropic" for rows in source.values() for row in rows))
         self.assertEqual(
             [(r["model"]["name"], r["model"]["version"], r["sku"], r["capacity"]) for r in claude.requirements(document)],
-            [("claude-opus-5", "2", "GlobalStandard", 40), ("claude-opus-5", "2", "DataZoneStandard", 13),
-             ("claude-sonnet-5", "2", "GlobalStandard", 20)],
+            [("claude-opus-5", "2", "DataZoneStandard", 40), ("claude-sonnet-5", "2", "GlobalStandard", 80),
+             ("claude-sonnet-5", "2", "DataZoneStandard", 80)],
         )
         self.assertIn("sora-2", {model["name"] for model in source_catalog(document)["catalog"]})
         for field in ("deploymentTarget", "anthropicThinking", "samplingSupported", "reasoningEffort"):

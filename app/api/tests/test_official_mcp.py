@@ -23,7 +23,7 @@ import pytest
 
 from ai4ia_api.agents.mcp_client import FakeMcpConnector, McpAuth, McpToolResult
 from ai4ia_api.agents.mcp_protocol import McpRequestContext
-from ai4ia_api.agents.mcp_execution import McpPlane, build_mcp_turn_tools_multi
+from ai4ia_api.agents.mcp_execution import McpPlane, build_mcp_turn_tools_multi, mcp_contract_metadata
 from ai4ia_api.agents.mcp_servers import (
     DiscoveredResource,
     DiscoveredTool,
@@ -252,6 +252,25 @@ def test_official_config_identity_is_stable_across_replicas_and_discovery():
     assert McpRequestContext.for_server(first) == McpRequestContext.for_server(replica)
     [changed] = build_official_servers(cat, gateway_url="https://other.example.net")
     assert changed.configurationRevision != first.configurationRevision
+
+
+def test_toolbox_manifest_digest_is_part_of_consent_identity():
+    """A reviewed toolbox change renews consent even for a dispatcher tool whose
+    own name, schema and description stay identical (tool search's call_tool)."""
+    def server(digest: str):
+        cat = _catalog({
+            "id": "ai4ia-toolbox", "displayName": "Toolbox", "path": "ai4ia-toolbox/mcp",
+            "resourcesEnabled": True, "toolboxManifestSha256": digest,
+        })
+        [projected] = build_official_servers(cat, gateway_url="https://g.example.net")
+        return projected
+
+    dispatcher = _tool("call_tool")
+    before, replica, after = server("a" * 64), server("a" * 64), server("b" * 64)
+    assert replica.configurationRevision == before.configurationRevision
+    assert mcp_contract_metadata(replica, dispatcher) == mcp_contract_metadata(before, dispatcher)
+    assert after.configurationRevision != before.configurationRevision
+    assert mcp_contract_metadata(after, dispatcher) != mcp_contract_metadata(before, dispatcher)
 
 
 # --- OfficialMcpService: discovery, caching, retry, key ----------------------

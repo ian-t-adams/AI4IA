@@ -761,27 +761,32 @@ REFACTOR:
 						</when>
 					</choose>
 					<set-variable name="attemptClaimed" value="@(true)" />
+					<!-- APIM types forward-request buffer-request-body as a literal xs:boolean and
+					     rejects policy expressions (deployment validation from 2026-09-25). Buffering
+					     is always on so ordinary retries can resend the body; a noReplay request still
+					     makes exactly one attempt because the retry condition excludes it and the
+					     claim check above returns 409 before any second forward. -->
 					<choose>
 						<when condition="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;bool>(&quot;bufferResponse&quot;))">
 							<choose>
 								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;low&quot;)">
 									<limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="10">
-										<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])"/>
+										<forward-request http-version="1" follow-redirects="false" buffer-request-body="true" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])"/>
 									</limit-concurrency>
 								</when>
 								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;medium&quot;)">
 									<limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="50">
-										<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+										<forward-request http-version="1" follow-redirects="false" buffer-request-body="true" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
 									</limit-concurrency>
 								</when>
 								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;high&quot;)">
 									<limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="100">
-										<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+										<forward-request http-version="1" follow-redirects="false" buffer-request-body="true" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
 									</limit-concurrency>
 								</when>
 								<otherwise>
 									<set-variable name="wasLimited" value="@(false)" />
-									<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+									<forward-request http-version="1" follow-redirects="false" buffer-request-body="true" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
 								</otherwise>
 							</choose>
 						</when>
@@ -789,22 +794,22 @@ REFACTOR:
 							<choose>
 								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;low&quot;)">
 									<limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="10">
-										<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])"/>
+										<forward-request http-version="1" follow-redirects="false" buffer-request-body="true" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])"/>
 									</limit-concurrency>
 								</when>
 								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;medium&quot;)">
 									<limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="50">
-										<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+										<forward-request http-version="1" follow-redirects="false" buffer-request-body="true" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
 									</limit-concurrency>
 								</when>
 								<when condition="@(context.Variables.GetValueOrDefault&lt;string>(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;high&quot;)">
 									<limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="100">
-										<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+										<forward-request http-version="1" follow-redirects="false" buffer-request-body="true" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
 									</limit-concurrency>
 								</when>
 								<otherwise>
 									<set-variable name="wasLimited" value="@(false)" />
-									<forward-request http-version="1" follow-redirects="false" buffer-request-body="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+									<forward-request http-version="1" follow-redirects="false" buffer-request-body="true" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
 								</otherwise>
 							</choose>
 						</otherwise>

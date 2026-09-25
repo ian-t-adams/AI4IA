@@ -63,6 +63,13 @@
           "deploymentName": "gpt-6-astra-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-09-03",
+          "deploymentName": "gpt-6-astra-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
@@ -1652,13 +1659,6 @@
         {
           "region": "eastus2",
           "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2",
-          "deploymentName": "claude-opus-5-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "eastus2",
-          "dataZone": "US",
           "sku": "DataZoneStandard",
           "modelVersion": "2",
           "deploymentName": "claude-opus-5-slurmfactory-eastus2-dz"
@@ -1694,6 +1694,13 @@
           "sku": "GlobalStandard",
           "modelVersion": "2",
           "deploymentName": "claude-sonnet-5-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2",
+          "deploymentName": "claude-sonnet-5-slurmfactory-eastus2-dz"
         }
       ]
     }

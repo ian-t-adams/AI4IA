@@ -227,11 +227,17 @@ separate approval. Do not choose public HTTPS merely to pass this gate.
 
 `infra/models.json` is the only model/version/region/SKU/capacity inventory.
 Its `deploymentTarget: external-claude` rows describe one isolated eastus2
-account: Opus 5 version 2 at GlobalStandard 40 and DataZoneStandard 13, and Sonnet 5
-version 2 at GlobalStandard 20. These are raw model-specific standard-capacity
-units, not fixed PTUs, TPM conversions, a dollar reservation or current headroom.
-They must be checked again before provisioning. Do not add Swedish replicas,
-duplicate versions or a zero-quota Sonnet DataZone deployment to multiply them.
+account: Opus 5 version 2 at DataZoneStandard 40, and Sonnet 5 version 2 at
+GlobalStandard 80 and DataZoneStandard 80. That account was provisioned on
+2026-09-25 through `infra/claude-target.bicep`; it also holds Opus 5.5 version 2
+at GlobalStandard 40 and DataZoneStandard 40, which stay out of the catalog
+until an adaptive-thinking profile exists (see the
+[platform evaluation](../foundry-platform-evaluation.md#claude-opus-55)). Opus 5
+has no GlobalStandard row because a separately owned deployment in the same
+subscription holds that entire quota counter. These are raw model-specific
+standard-capacity units, not fixed PTUs, TPM conversions, a dollar reservation
+or current headroom. They must be checked again before provisioning. Do not add
+Swedish replicas or duplicate versions to multiply them.
 Main-stack Bicep always excludes these rows from source accounts. Existing source
 allocations, Sora 2, TTS/realtime, memory and document residency floors are unchanged.
 
@@ -397,8 +403,21 @@ continuations and effective receipt parameters agree on this profile. Publicatio
 and consent bind the full model metadata through their existing environment
 digests; ordinary models omit the new default fields to preserve legacy digests.
 
+**Claude Opus 5.5 is deliberately absent (evaluated 2026-09-24).** It is GA in
+Foundry, but thinking cannot be disabled: `thinking: {"type": "disabled"}`
+returns HTTP 400, and so does forced `tool_choice` (`any` or a named tool). Its
+thinking blocks must also round-trip unmodified and are bound to the
+conversation prefix. The adapter sends disabled thinking for every
+external-Claude profile, so a catalog row would fail every request. Do not rely
+on the Learn thinking-table footnote that still marks `disabled` as allowed for
+this model. After activation, one approved canary settles that contradiction.
+If Anthropic's contract holds, follow the recorded
+[adaptive-thinking profile design](../foundry-platform-evaluation.md#adaptive-thinking-profile-design),
+which needs an owner decision to amend the thinking-disabled rule.
+
 USD/MTok directional rates are Opus 5 **5 input / 25 output** globally, **5.5 /
-27.5** for US DataZoneStandard, and Sonnet 5 **2 / 10** globally. Exact catalog
+27.5** for US DataZoneStandard, and Sonnet 5 **2 / 10** globally and **2.2 / 11**
+for US DataZoneStandard. Exact catalog
 deployment/SKU, not region alone, selects the rate. Cache reads use the documented
 0.1x input rate; cache writes without evidenced duration remain cost-unknown.
 The adapter does not request caching. Missing deployment, usage or a lost cache
@@ -1215,8 +1234,12 @@ after `azd up`:
 `enableFoundryToolbox` grants the MCP APIM managed identity the **"Foundry User"**
 role on the project (data-plane scope), so APIM's injected bearer for
 `https://ai.azure.com` can invoke the toolbox. `main.bicep` emits the project
-endpoint as `AZURE_FOUNDRY_PROJECT_ENDPOINT` for the provisioning scripts. All
-toolbox/tool-search features are **public preview**. The access check requires the
+endpoint as `AZURE_FOUNDRY_PROJECT_ENDPOINT` for the provisioning scripts. The
+bridge still uses the preview `Toolboxes=V1Preview,Skills=V1Preview` contract and
+the live toolbox keeps the preview tool-search spelling, although Foundry made
+toolboxes (for hosted agents) and tool search GA in September 2026; see the
+[Foundry platform updates evaluation](../foundry-platform-evaluation.md#tool-search)
+before switching either. The access check requires the
 workflow/deployment identity to hold project-scoped Foundry User; Azure OIDC login alone
 does not grant data-plane access.
 

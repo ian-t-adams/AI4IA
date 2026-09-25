@@ -217,9 +217,9 @@ async def test_nonstream_response_translates_text_tools_and_usage():
 
 @pytest.mark.parametrize("deployment", [
     DEPLOYMENT,
-    "claude-opus-5-slurmfactory-eastus2-glbl",
     "claude-opus-5-slurmfactory-eastus2-dz",
     "claude-sonnet-5-slurmfactory-eastus2-glbl",
+    "claude-sonnet-5-slurmfactory-eastus2-dz",
 ])
 async def test_claude_stream_runs_a_governed_agent_tool_loop_end_to_end(deployment):
     requests: list[dict] = []

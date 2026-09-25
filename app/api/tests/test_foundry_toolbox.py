@@ -2570,14 +2570,20 @@ def _schema_fields_for_tool(tool_schema, tool_type):
     return fields
 
 
-def _assert_sdk_toolbox_parity(m):
-    sdk_toolbox_classes: dict[str, type] = {}
+def _sdk_toolbox_classes(m) -> dict[str, type]:
+    # Membership follows the SDK's own ToolboxTool hierarchy, not the class name:
+    # SDK 2.7.0's VoiceAgentToolboxTool is a VoiceAgentTool that attaches a
+    # toolbox to a voice agent, not a toolbox tool type.
+    classes: dict[str, type] = {}
     for class_name in dir(m):
-        if not class_name.endswith("ToolboxTool") or class_name == "ToolboxTool":
-            continue
         obj = getattr(m, class_name)
-        if isinstance(obj, type):
-            sdk_toolbox_classes[class_name] = obj
+        if class_name != "ToolboxTool" and isinstance(obj, type) and issubclass(obj, m.ToolboxTool):
+            classes[class_name] = obj
+    return classes
+
+
+def _assert_sdk_toolbox_parity(m):
+    sdk_toolbox_classes = _sdk_toolbox_classes(m)
     assert len(sdk_toolbox_classes) >= 16, (
         f"expected at least the 16 known toolbox types via reflection, found: {sorted(sdk_toolbox_classes)}"
     )
@@ -2638,6 +2644,27 @@ def test_unknown_future_sdk_toolbox_type_still_fails_parity(monkeypatch):
     _assert_sdk_toolbox_parity(m)
     monkeypatch.setattr(m, "FutureToolboxTool", m.ToolboxTool, raising=False)
     with pytest.raises(AssertionError, match="SDK-only.*FutureToolboxTool"):
+        _assert_sdk_toolbox_parity(m)
+
+
+def test_unknown_toolbox_subclass_fails_parity_whatever_its_name(monkeypatch):
+    m = pytest.importorskip("azure.ai.projects.models")
+    _assert_sdk_toolbox_parity(m)
+    monkeypatch.setattr(m, "FutureTool", m.ToolboxTool, raising=False)
+    with pytest.raises(AssertionError, match="SDK-only.*FutureTool"):
+        _assert_sdk_toolbox_parity(m)
+
+
+def test_class_named_like_a_toolbox_tool_outside_the_hierarchy_is_not_a_toolbox_type(monkeypatch):
+    m = pytest.importorskip("azure.ai.projects.models")
+
+    class VoiceAgentToolboxTool:  # stands in for SDK 2.7.0's VoiceAgentTool subclass
+        pass
+
+    monkeypatch.setattr(m, "VoiceAgentToolboxTool", VoiceAgentToolboxTool, raising=False)
+    _assert_sdk_toolbox_parity(m)
+    monkeypatch.setattr(m, "VoiceAgentToolboxTool", m.ToolboxTool)
+    with pytest.raises(AssertionError, match="SDK-only.*VoiceAgentToolboxTool"):
         _assert_sdk_toolbox_parity(m)
 
 
