@@ -136,20 +136,22 @@ What still blocks activation:
   multitenant app only to an Application Administrator or Cloud Application
   Administrator in that tenant. A target-tenant admin can create it, or grant
   admin consent for the application.
-- **Inference role.** The documented MaaS-only custom role
-  (`Microsoft.CognitiveServices/accounts/MaaS/*`), which `infra/claude-access.bicep`
-  creates and the binding readback requires, did not authorize Claude Messages.
-  Calls still returned HTTP 401 `Principal does not have access to API/Operation`
-  after 15 minutes. The built-in Cognitive Services User role authorized the
-  same calls within 10 minutes. The provider's registered operations contain no
-  `MaaS` data action at all. The narrowest working data action is not yet
-  established; `Microsoft.CognitiveServices/accounts/AIServices/endpoints/invoke/action`
-  is the leading candidate. Fix the access unit and `INFERENCE_ACTIONS` before
-  activation. Data-plane authorization also outlived role removal by more than
-  55 minutes, even for a newly issued token, while ARM already reported no
-  assignment and no effective data action. Test any candidate with a principal
-  that never held the broader role, and roll back by disabling dispatch rather
-  than by revoking the grant.
+- **Inference role (fixed in the access unit).** The documented MaaS-only
+  custom role (`Microsoft.CognitiveServices/accounts/MaaS/*`), which
+  `infra/claude-access.bicep` originally created and the binding readback
+  required, did not authorize Claude Messages: calls still returned HTTP 401
+  `Principal does not have access to API/Operation` after 15 minutes. The
+  provider's registered operations contain no `MaaS` data action at all. A
+  throwaway service principal that never held a broader role then got 401 for
+  14 minutes with `AIServices/endpoints/invoke/action` alone. It got HTTP 200
+  within about five minutes once `Microsoft.CognitiveServices/accounts/AIServices/*`
+  was added. The access unit and `INFERENCE_ACTIONS` now require exactly
+  `AIServices/*`, which excludes OpenAI, Speech and every other Cognitive
+  Services surface; the test principal was deleted. Data-plane authorization
+  also outlived role removal by more than 55 minutes, even for a newly issued
+  token, while ARM already reported no assignment and no effective data action.
+  Test any narrower candidate with a principal that never held a broader role,
+  and roll back by disabling dispatch rather than by revoking the grant.
 - **CI readbacks.** The binding readbacks read the Entra application, its
   federated credential and the target service principal as app identities.
   That needs admin-consented `Application.Read.All` for the deploy identity in

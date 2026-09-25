@@ -22,7 +22,7 @@ feature posture.
 
 | Feature | API flag / setting | Web flag | IaC parameter | Deployed prerequisites |
 |---|---|---|---|---|
-| Cross-tenant Claude | `AI4IA_CLAUDE_ENABLED` + `AI4IA_CLAUDE_EXTERNAL_ENABLED` | safe server catalog only | `claudeEnabled`, `claudeExternalEnabled`, `claudeBindingJson` | Defaults off/unconfigured. Separate target account/models, explicit legal/network decision, source UAMI + multitenant app/FIC, target SP + exact-account MaaS inference role, distinct target reader and fresh both-tenant readbacks. Not Private Link or live approval. |
+| Cross-tenant Claude | `AI4IA_CLAUDE_ENABLED` + `AI4IA_CLAUDE_EXTERNAL_ENABLED` | safe server catalog only | `claudeEnabled`, `claudeExternalEnabled`, `claudeBindingJson` | Defaults off/unconfigured. Separate target account/models, explicit legal/network decision, source UAMI + multitenant app/FIC, target SP + exact-account AIServices inference role, distinct target reader and fresh both-tenant readbacks. Not Private Link or live approval. |
 | Atomic request-count admission | `AI4IA_HARD_QUOTA_ENABLED` | none | `hardQuotaEnabled`, `hardQuotaRolloutId` (`AI4IA_HARD_QUOTA_ROLLOUT_ID`) | Default `false`; outside the local test fake needs Entra, Cosmos and the approved rollout record selected by `AI4IA_HARD_QUOTA_ROLLOUT_ID` (startup validates evidence shape and layout). Request-count only; owners need an operator bootstrap; drain before activation. See the note below |
 | Versioned one-attempt gateway staging | `AI4IA_GATEWAY_ATTEMPTS_V1_STAGED` | none | `gatewayAttemptsV1Staged` | Default `false`; stages only the isolated API/operations/policy/scoped proxy key on the existing APIM. Governed HTTPS native proxy ingress and S7P-KEY auth required; no shipping runtime verifier or cap activation. See [construction prerequisites](../hard-quota-admission.md#versioned-route-staging-and-construction-contract) |
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | `voiceLiveEnabled` | Browser Origin allowlist outside local |
@@ -297,13 +297,17 @@ by the normal application runtime or by this source change:
    deployments; no full application stack, project, key or learning-account
    mutation. The account name is Bicep-derived. Observe its actual outputs/IDs.
 6. After separate access approval, `infra/claude-access.bicep`
-   (`grantInferenceAccess=false` by default) creates the documented custom
-   inference role with **only** `Microsoft.CognitiveServices/accounts/MaaS/*`
-   data actions and an exact-account assignment to the **target SP principal ID**.
-   It has no key/secret/control-plane actions. Built-in Foundry User is broader
-   and is not an inference-only substitute. Metadata alone does not prove that
-   Claude will authorize this role; a separately approved governed canary is
-   still required.
+   (`grantInferenceAccess=false` by default) creates a custom inference role
+   with **only** `Microsoft.CognitiveServices/accounts/AIServices/*` data
+   actions and an exact-account assignment to the **target SP principal ID**.
+   It has no key/secret/control-plane actions. In a 2026-09-25 live check on
+   the dedicated account, a principal that never held a broader role got HTTP
+   401 with the documented MaaS-only role (`accounts/MaaS/*`) and with
+   `AIServices/endpoints/invoke/action` alone; `AIServices/*` authorized Claude
+   Messages within about five minutes. Built-in Foundry User and Cognitive
+   Services User (`Microsoft.CognitiveServices/*`) are broader and are not
+   inference-only substitutes. A separately approved governed canary is still
+   required.
 
 ### Exact binding and continuously fresh readback
 
@@ -434,7 +438,8 @@ Official evidence checked **2026-09-20**:
 [pricing and US DataZone multiplier](https://platform.claude.com/docs/en/about-claude/pricing),
 [UAMI/application federation](https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation-config-app-trust-managed-identity),
 [APIM managed-identity policy](https://learn.microsoft.com/en-us/azure/api-management/authentication-managed-identity-policy),
-[documented MaaS custom role](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/configure-entra-id),
+[Entra keyless inference roles](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/configure-entra-id)
+(its MaaS-only custom role did not authorize Claude Messages live; see step 6),
 [APIM networking tiers](https://learn.microsoft.com/en-us/azure/api-management/virtual-network-concepts).
 ARM target observations, not public lifecycle prose, remain authoritative for
 provisioning admission. Offline .NET expression controls are not an Azure policy

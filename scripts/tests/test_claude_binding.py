@@ -141,6 +141,22 @@ class ClaudeBindingTests(unittest.TestCase):
                     claude.verify_target(self.binding, models(), self.reader)
                 self.reader.responses[key] = deepcopy(good)
                 self.assertEqual(claude.verify_target(self.binding, models(), self.reader), 3)
+        # The documented MaaS-only role, which did not authorize Claude Messages
+        # live, and the insufficient endpoints/invoke action alone are refused.
+        # Control: the exact AIServices role above still verifies.
+        for replacement in (
+            ["Microsoft.CognitiveServices/accounts/MaaS/*"],
+            ["Microsoft.CognitiveServices/accounts/AIServices/endpoints/invoke/action"],
+        ):
+            with self.subTest(dataActions=replacement):
+                self.reader.responses[key]["properties"]["permissions"][0]["dataActions"] = replacement
+                with self.assertRaisesRegex(EvidenceError, "claude_inference_role_permissions"):
+                    claude.verify_target(self.binding, models(), self.reader)
+                self.reader.responses[key] = deepcopy(good)
+        self.assertEqual(
+            good["properties"]["permissions"][0]["dataActions"],
+            ["Microsoft.CognitiveServices/accounts/AIServices/*"],
+        )
 
     def test_scope_and_route_changes_are_not_an_enablement_boolean(self):
         b = self.binding

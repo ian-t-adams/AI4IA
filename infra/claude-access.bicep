@@ -15,20 +15,24 @@ resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' exist
   name: accountName
 }
 
-// Documented Foundry inference role. Provider metadata alone does not prove
-// live Claude authorization; the approved governed canary remains a rollout gate.
+// Claude Messages inference on Hosted-on-Azure deployments is authorized by the
+// AIServices data-plane namespace. The documented MaaS-only role
+// (accounts/MaaS/*) did not authorize it in a 2026-09-25 live check, and
+// AIServices/endpoints/invoke/action alone was not enough. Provider metadata
+// alone does not prove live Claude authorization; the approved governed canary
+// remains a rollout gate.
 resource inferenceRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = if (grantInferenceAccess) {
   name: guid(resourceGroup().id, account.id, 'ai4ia-claude-maas')
   properties: {
     roleName: 'AI4IA Claude inference ${accountName}'
-    description: 'MaaS inference on the isolated Claude account; no keys, secrets or management actions.'
+    description: 'Claude inference through the AIServices data plane on the isolated Claude account; no keys, secrets or management actions.'
     type: 'CustomRole'
     assignableScopes: [resourceGroup().id]
     permissions: [
       {
         actions: []
         notActions: []
-        dataActions: ['Microsoft.CognitiveServices/accounts/MaaS/*']
+        dataActions: ['Microsoft.CognitiveServices/accounts/AIServices/*']
         notDataActions: []
       }
     ]
