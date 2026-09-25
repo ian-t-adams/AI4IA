@@ -831,6 +831,13 @@ and loopback providers. They are not an Azure policy compiler or live capability
 proof. Generated backend fragments omit only parser-identified XML comment nodes
 to fit the unchanged 48 KiB compiler ceiling; authored comments and C# bytes stay
 intact.
+APIM's policy schema types `forward-request` `buffer-request-body`,
+`buffer-response` and `fail-on-error-status-code` as literal booleans. Since
+2026-09-25, deployment validation has rejected expressions there, even though
+the offline harness evaluates them, and `test_gateway_policy.py` guards this.
+Every forward buffers the request body: a `noReplay` request still makes exactly
+one attempt because the retry condition excludes it and the claim check refuses
+a second forward, not because its body is unbuffered.
 
 Throttle-failover controls drive the generated two-region GlobalStandard row. A
 429/5xx must mark the failed backend's `throttleId` (endpoint + region label +
@@ -1137,7 +1144,10 @@ Four rules follow:
    advertisement/traffic. Exact configured target tokens flow only through the
    existing proxy/APIM path. Never use an app key, runtime Graph calls, a shared
    deployment credential or built-in Foundry User as a narrow inference grant.
-   The documented MaaS-only custom role is exact-account assigned and read back.
+   The custom inference role grants only
+   `Microsoft.CognitiveServices/accounts/AIServices/*` data actions; the
+   documented MaaS-only role did not authorize Claude Messages in a 2026-09-25
+   live check. It is exact-account assigned and read back.
    Separate source/target readers must prove app/FIC/SP/role/model/route metadata
    freshly; saved JSON and flags do not prove it. Single-subscription reports
    retain external unknowns, not borrowed source evidence. A live binding must be

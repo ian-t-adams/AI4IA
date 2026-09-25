@@ -164,7 +164,7 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
                     role = next(row for row in rows if row["type"] == "Microsoft.Authorization/roleDefinitions")
                     self.assertEqual(role["properties"]["permissions"], [{
                         "actions": [], "notActions": [],
-                        "dataActions": ["Microsoft.CognitiveServices/accounts/MaaS/*"], "notDataActions": [],
+                        "dataActions": ["Microsoft.CognitiveServices/accounts/AIServices/*"], "notDataActions": [],
                     }])
 
     def test_versioned_gateway_has_only_conditional_exact_operations_and_api_only_key(self) -> None:
