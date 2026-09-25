@@ -146,8 +146,10 @@ What still blocks activation:
   established; `Microsoft.CognitiveServices/accounts/AIServices/endpoints/invoke/action`
   is the leading candidate. Fix the access unit and `INFERENCE_ACTIONS` before
   activation. Data-plane authorization also outlived role removal by more than
-  8 minutes, so test any candidate with a principal that never held the broader
-  role.
+  55 minutes, even for a newly issued token, while ARM already reported no
+  assignment and no effective data action. Test any candidate with a principal
+  that never held the broader role, and roll back by disabling dispatch rather
+  than by revoking the grant.
 - **CI readbacks.** The binding readbacks read the Entra application, its
   federated credential and the target service principal as app identities.
   That needs admin-consented `Application.Read.All` for the deploy identity in
