@@ -118,4 +118,40 @@ public sealed class CatalogModelRowRoutingTests
             Assert.AreEqual(expected == 200 ? 1 : 0, eastus2.Requests.Count + westus.Requests.Count, deployment);
         }
     }
+
+    // gpt-6-astra's US Data Zone row (2026-09-23 evidence: offered in eastus2,
+    // not in swedencentral). It must stay on its one in-zone deployment, even
+    // when throttled, and the undeclared EU name must never reach a provider.
+    [DataTestMethod]
+    [DataRow(200)]
+    [DataRow(429)]
+    public async Task AstraUsDataZoneRowStaysOnItsEastus2Deployment(int status)
+    {
+        var catalog = JObject.Parse(File.ReadAllText(
+            Path.Combine(Root(), "app", "api", "src", "ai4ia_api", "data", "model_catalog.json")));
+        var astra = catalog["models"]!.OfType<JObject>().Single(model => model.Value<string>("id") == "gpt-6-astra");
+        var zoned = astra["options"]!.OfType<JObject>()
+            .Where(option => option.Value<string>("sku") == "DataZoneStandard").ToArray();
+        Assert.AreEqual(1, zoned.Length);
+        Assert.AreEqual("eastus2", zoned[0].Value<string>("region"));
+        string declared = zoned[0].Value<string>("deploymentName")!;
+        string undeclared = declared.Replace("-eastus2-", "-swedencentral-");
+        foreach (var (deployment, sends) in new[] { (declared, 1), (undeclared, 0) })
+        {
+            await using var eastus2 = new WireServer(_ => Task.FromResult(new WireReply(status)));
+            await using var swedencentral = new WireServer(_ => Task.FromResult(new WireReply(200)));
+            var providers = new Dictionary<string, WireServer> { ["eastus2"] = eastus2, ["swedencentral"] = swedencentral };
+            var policy = Policy(astra, deployment, providers);
+            await policy.Run();
+            Assert.AreEqual(sends, policy.Sends, deployment);
+            Assert.AreEqual(sends, eastus2.Requests.Count, deployment);
+            Assert.AreEqual(0, swedencentral.Requests.Count, deployment);
+            if (sends == 0) Assert.AreEqual(404, policy.Context.Response.StatusCode, deployment);
+            else
+            {
+                AssertSentTo(astra, eastus2.Requests.Single(), deployment);
+                if (status == 200) Assert.AreEqual(200, policy.Context.Response.StatusCode, deployment);
+            }
+        }
+    }
 }

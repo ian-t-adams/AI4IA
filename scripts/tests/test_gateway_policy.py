@@ -524,6 +524,44 @@ class GatewayPolicyTests(unittest.TestCase):
                 checked[deployment["sku"]] += 1
         self.assertEqual(checked, {"GlobalStandard": 8, "DataZoneStandard": 6})
 
+    def test_astra_us_zone_row_keeps_one_in_zone_backend(self) -> None:
+        """Astra's eastus2 DataZoneStandard row never fails over across regions.
+
+        Control: the same model's GlobalStandard rows, from the same generated
+        catalog, keep their two-region failover.
+        """
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        naming = models["naming"]
+        blocks, _ = gateway_generator.render_catalog(models)
+        by_key = {}
+        for block in blocks:
+            key = re.search(r'new JProperty\("([^"]+)", new JObject', block)
+            assert key is not None
+            by_key[key.group(1)] = block
+        astra = next(model for model in models["catalog"] if model["name"] == "gpt-6-astra")
+        seen = []
+        for deployment in astra["deployments"]:
+            region = deployment["region"]
+            name = gateway_generator.deployment_name(
+                model=astra["name"], subscription_token=naming["subscriptionToken"],
+                region=region, sku=deployment["sku"], sku_short=naming["skuShort"],
+            )
+            block = by_key[name.lower()]
+            backends = re.findall(r'new JProperty\("deployment", "([^"]+)"\)', block)
+            urls = re.findall(r'new JProperty\("url", "([^"]+)"\)', block)
+            self.assertEqual((backends[0], urls[0]), (name, f"{{{{foundry-{region}-endpoint}}}}"))
+            if deployment["sku"] == "DataZoneStandard":
+                self.assertEqual(backends, [name])
+            else:
+                self.assertEqual(len(backends), 2, name)
+                self.assertNotEqual(urls[1], urls[0])
+            seen.append((region, deployment["sku"]))
+        self.assertEqual(seen, [
+            ("eastus2", "GlobalStandard"),
+            ("eastus2", "DataZoneStandard"),
+            ("swedencentral", "GlobalStandard"),
+        ])
+
     def test_policy_fragments_normalize_crlf_before_hashing_and_storage(
         self,
     ) -> None:
