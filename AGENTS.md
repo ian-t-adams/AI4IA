@@ -831,6 +831,13 @@ and loopback providers. They are not an Azure policy compiler or live capability
 proof. Generated backend fragments omit only parser-identified XML comment nodes
 to fit the unchanged 48 KiB compiler ceiling; authored comments and C# bytes stay
 intact.
+APIM's policy schema types `forward-request` `buffer-request-body`,
+`buffer-response` and `fail-on-error-status-code` as literal booleans. Since
+2026-09-25, deployment validation has rejected expressions there, even though
+the offline harness evaluates them, and `test_gateway_policy.py` guards this.
+Every forward buffers the request body: a `noReplay` request still makes exactly
+one attempt because the retry condition excludes it and the claim check refuses
+a second forward, not because its body is unbuffered.
 
 Throttle-failover controls drive the generated two-region GlobalStandard row. A
 429/5xx must mark the failed backend's `throttleId` (endpoint + region label +
