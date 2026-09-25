@@ -656,8 +656,12 @@ Skipping this can leave APIM and the MCP `initialize` handshake healthy while
 `tools/list` returns `Toolbox '<name>' not found`. As an authenticated admin,
 request `/api/admin/metrics/official-mcp?refresh=true`; that endpoint performs
 the full `initialize` -> `tools/list` flow. Require the `ai4ia-toolbox` server to
-report `toolCount: 3` and `lastError: null`. A ping or `initialize` alone is not
-acceptance.
+report `toolCount: 2` and `lastError: null`. With tool search enabled and no
+pinned tools, the toolbox lists only its `tool_search` and `call_tool`
+meta-tools, which reach web search and code interpreter; the 2026-07-30 live
+listing matched. A different count means the toolbox composition or tool-search
+behavior changed; compare it with `foundry/toolbox.manifest.json` before
+accepting. A ping or `initialize` alone is not acceptance.
 
 In the workflow's **Provision infrastructure** log, require both postprovision
 results:
@@ -710,7 +714,7 @@ for every row; keep failures as failures rather than converting them to notes.
 | Chat/gateway | New session; prompt `Reply with exactly AI4IA-FIRST-RELEASE-OK.` once | One assistant reply with the sentinel; persisted session reloads; gateway correlation appears once | Delete the test session |
 | Document ingest/retrieval | Upload one UTF-8 text file under 1 KiB containing a unique UUID; ask for that UUID | Manifest reaches `ready`; retrieval returns the exact UUID from the owned document | Delete the library document and confirm it no longer retrieves |
 | Memory | Save `acceptance-color-<UUID> is blue`, query it once, then issue the supported forget action | Recall returns the exact UUID/value before forget and does not return it after | Confirm forget succeeded; delete the test session |
-| Official MCP | Admin request to `/api/admin/metrics/official-mcp?refresh=true` | Full `initialize` -> `tools/list`; `ai4ia-toolbox.toolCount == 3`; `lastError == null` | None; read-only |
+| Official MCP | Admin request to `/api/admin/metrics/official-mcp?refresh=true` | Full `initialize` -> `tools/list`; `ai4ia-toolbox.toolCount == 2` (`tool_search`, `call_tool`); `lastError == null` | None; read-only |
 | BYO MCP (when enabled) | Register a disposable HTTPS MCP test server exposing one no-op tool; invoke it once in interactive chat | Discovery exposes one namespaced tool; the invocation is held for exact-argument approval before dispatch | Delete the MCP registration and its Key Vault secret |
 | Web search (when enabled) | One query for a stable public fact with a source requirement | One bounded result set with source links; invocation approval follows current policy | Delete the test session |
 | Image (when enabled) | One lowest-supported-size image: `solid blue square, no text` | One completed artifact owned by the operator; usage entry records the attempt | Delete the generated artifact |
