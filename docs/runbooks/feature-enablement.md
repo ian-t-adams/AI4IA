@@ -226,11 +226,17 @@ separate approval. Do not choose public HTTPS merely to pass this gate.
 
 `infra/models.json` is the only model/version/region/SKU/capacity inventory.
 Its `deploymentTarget: external-claude` rows describe one isolated eastus2
-account: Opus 5 version 2 at GlobalStandard 40 and DataZoneStandard 13, and Sonnet 5
-version 2 at GlobalStandard 20. These are raw model-specific standard-capacity
-units, not fixed PTUs, TPM conversions, a dollar reservation or current headroom.
-They must be checked again before provisioning. Do not add Swedish replicas,
-duplicate versions or a zero-quota Sonnet DataZone deployment to multiply them.
+account: Opus 5 version 2 at DataZoneStandard 40, and Sonnet 5 version 2 at
+GlobalStandard 80 and DataZoneStandard 80. That account was provisioned on
+2026-09-25 through `infra/claude-target.bicep`; it also holds Opus 5.5 version 2
+at GlobalStandard 40 and DataZoneStandard 40, which stay out of the catalog
+until an adaptive-thinking profile exists (see the
+[platform evaluation](../foundry-platform-evaluation.md#claude-opus-55)). Opus 5
+has no GlobalStandard row because a separately owned deployment in the same
+subscription holds that entire quota counter. These are raw model-specific
+standard-capacity units, not fixed PTUs, TPM conversions, a dollar reservation
+or current headroom. They must be checked again before provisioning. Do not add
+Swedish replicas or duplicate versions to multiply them.
 Main-stack Bicep always excludes these rows from source accounts. Existing source
 allocations, Sora 2, TTS/realtime, memory and document residency floors are unchanged.
 
@@ -409,7 +415,8 @@ If Anthropic's contract holds, follow the recorded
 which needs an owner decision to amend the thinking-disabled rule.
 
 USD/MTok directional rates are Opus 5 **5 input / 25 output** globally, **5.5 /
-27.5** for US DataZoneStandard, and Sonnet 5 **2 / 10** globally. Exact catalog
+27.5** for US DataZoneStandard, and Sonnet 5 **2 / 10** globally and **2.2 / 11**
+for US DataZoneStandard. Exact catalog
 deployment/SKU, not region alone, selects the rate. Cache reads use the documented
 0.1x input rate; cache writes without evidenced duration remain cost-unknown.
 The adapter does not request caching. Missing deployment, usage or a lost cache

@@ -605,7 +605,15 @@ def test_claude_is_wired_for_chat_and_agents_through_messages():
     assert entry.anthropicThinking == "disabled"
     assert entry.deploymentTarget == "external-claude"
     assert entry.supportsSampling is False
+    # 2026-09-25: GlobalStandard quota for Opus 5 is held by a separately owned
+    # deployment in the target subscription, so the dedicated account serves it
+    # as US DataZoneStandard only.
     assert {(option.region, option.sku) for option in entry.options} == {
+        ("eastus2", "DataZoneStandard"),
+    }
+    sonnet = catalog.get("claude-sonnet-5")
+    assert sonnet is not None
+    assert {(option.region, option.sku) for option in sonnet.options} == {
         ("eastus2", "GlobalStandard"),
         ("eastus2", "DataZoneStandard"),
     }

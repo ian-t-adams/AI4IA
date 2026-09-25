@@ -23,7 +23,7 @@ owner approval before merge.
 | Announcement | Platform status | AI4IA position | Decision and next step |
 | --- | --- | --- | --- |
 | GPT-6 Astra, Sol and Luna | GA | Astra (Global Standard) and Sol/Luna (Global and Data Zone Standard) are catalog rows with sourced prices | #511 adds Astra's eastus2 US Data Zone row (merge provisions); swedencentral offers no Astra Data Zone yet |
-| Claude Opus 5.5 | GA, Hosted on Azure | Not cataloged; Opus 5 and Sonnet 5 are not activated either | Blocked on Claude activation, then on a live check of disabled thinking; adaptive design recorded below |
+| Claude Opus 5.5 | GA, Hosted on Azure | Capacity deployed in the dedicated Claude account; not cataloged. Opus 5 and Sonnet 5 are deployed but not activated | Live check confirmed disabled thinking returns 400; needs the adaptive profile, and activation waits on target-tenant admin actions |
 | Voice agents in Agent Service | Public preview | Voice Live through the FastAPI relay → APIM, two providers | Not adopted; needs a new provider design |
 | Voice-agent observability | Public preview | Applies only to Foundry voice agents | Not applicable |
 | Long-running resilience | Public preview, hosted agents | Resumable workflows on the Durable Task Scheduler worker | Not applicable |
@@ -82,9 +82,9 @@ governed function-tool loop):
    `app/api/src/ai4ia_api/gateway/anthropic.py` sends disabled thinking for every
    external-Claude profile, so every request would fail. Microsoft Learn's
    thinking/effort table still footnotes `disabled` as allowed at effort `high`
-   or below for this model, contradicting the same page's model table and
-   Anthropic's migration notes. Contradictory evidence refuses; it is not a
-   reason to guess.
+   or below for this model. Live calls on 2026-09-25 settled it: both Opus 5.5
+   deployments returned HTTP 400 `"thinking.type.disabled" is not supported for
+   this model` at effort `low` and `high`, and HTTP 200 with `thinking` omitted.
 2. **Forced tool use returns HTTP 400.** Only `tool_choice` `auto` and `none`
    are accepted. AI4IA's agent loop already sends `auto` and strips any
    caller-supplied `tool_choice` (`agents/runtime.py`), but
@@ -97,69 +97,86 @@ governed function-tool loop):
    first tool continuation would fail. Progress text between tool calls also
    arrives in thinking blocks, which are empty at the default display setting.
 
-Do not add a row, including one with `runtimeEnabled: false`: runtime
-disablement still keeps the desired external deployment inventory.
+The Opus 5.5 capacity is deployed in the dedicated account (below) but stays out
+of the catalog until the adaptive-thinking profile exists. A catalog row now
+would have to declare the thinking-disabled profile the model rejects.
 
 #### Current Claude status
 
-AI4IA does not serve Claude (checked 2026-09-25). The integration shipped
-default-off in #493:
+AI4IA does not serve Claude yet (2026-09-25). The integration shipped
+default-off in #493: `AI4IA_CLAUDE_ENABLED` is `false`, the external staging
+flag and binding are unset, and APIM keeps its disabled Claude policy. Tenant
+access is not the blocker: operators reach both tenants through isolated
+per-tenant Azure CLI profiles, the pattern
+`AI4IA_CLAUDE_TARGET_AZURE_CONFIG_DIR` already expects.
 
-- the `AI4IA_CLAUDE_ENABLED` repository variable is `false`;
-- the external staging flag and binding are unset;
-- APIM keeps its disabled Claude policy;
-- no dedicated account, identity or grant exists.
+Done on 2026-09-25, through the approved operator units:
 
-Tenant access is not the blocker. Operators read both tenants through isolated
-per-tenant Azure CLI profiles, the pattern `AI4IA_CLAUDE_TARGET_AZURE_CONFIG_DIR`
-already expects. A read-only check of both tenants on 2026-09-25 found:
+- **Dedicated target account.** `infra/claude-target.bicep` provisioned a
+  keyless (`disableLocalAuth`, `public-keyless`) account holding Opus 5
+  DataZoneStandard 40, Sonnet 5 GlobalStandard 80 and DataZoneStandard 80, and
+  Opus 5.5 GlobalStandard 40 and DataZoneStandard 40. Every deployment is
+  version 2, `NoAutoUpgrade`, and uses its full quota counter.
+  - A separately owned learning deployment holds the entire Opus 5
+    GlobalStandard counter, so the catalog serves Opus 5 as US DataZoneStandard
+    only.
+  - The terms attestation matches the one already on record for the target
+    subscription, not the repository variables.
+- **Live model check.** With temporary operator access, the adapter's exact
+  payload (thinking disabled, effort `low`) returned HTTP 200 from Opus 5 DZ and
+  from Sonnet 5 GS and DZ. Opus 5.5 behaved as recorded above.
+- **Source identity.** `infra/claude-identity.bicep` created the dedicated
+  UAMI. A multitenant application in the source tenant has no password or key
+  credential, and exactly one federated credential for that UAMI.
 
-- **Quota.** A separately owned learning deployment of `claude-opus-5`
-  version 2 in the target subscription uses its entire eastus2 GlobalStandard
-  quota. The catalog's Opus 5 GlobalStandard row therefore cannot be
-  provisioned in a dedicated account; the target preflight refuses it. Opus 5
-  DataZoneStandard (13) and Sonnet 5 GlobalStandard (20) remain fully free, as
-  does Opus 5.5 GlobalStandard.
-- **Directory permissions.** The binding readbacks read the Entra application,
-  its federated credential and the target service principal as app
-  identities. That needs admin-consented `Application.Read.All`:
-  - in the source tenant, for the existing deploy identity, which holds no
-    Graph application permissions;
-  - in the target tenant, for a target reader, which does not exist yet.
+What still blocks activation:
 
-  The operator account can create resources and role assignments in both
-  subscriptions but holds no Entra role that can grant that consent. The
-  runtime path itself needs none: APIM exchanges a managed-identity assertion
-  for a target token, and a MaaS-only role on the dedicated account authorizes
-  it.
-- **Terms.** Earlier Anthropic terms acceptances in the target subscription
-  already record an organization attestation. Confirm that value, not the
-  repository variables, for the dedicated account.
+- **Target service principal.** Creating the application's service principal
+  in the target tenant is refused for a non-admin: Graph allows it for a foreign
+  multitenant app only to an Application Administrator or Cloud Application
+  Administrator in that tenant. A target-tenant admin can create it, or grant
+  admin consent for the application.
+- **Inference role.** The documented MaaS-only custom role
+  (`Microsoft.CognitiveServices/accounts/MaaS/*`), which `infra/claude-access.bicep`
+  creates and the binding readback requires, did not authorize Claude Messages.
+  Calls still returned HTTP 401 `Principal does not have access to API/Operation`
+  after 15 minutes. The built-in Cognitive Services User role authorized the
+  same calls within 10 minutes. The provider's registered operations contain no
+  `MaaS` data action at all. The narrowest working data action is not yet
+  established; `Microsoft.CognitiveServices/accounts/AIServices/endpoints/invoke/action`
+  is the leading candidate. Fix the access unit and `INFERENCE_ACTIONS` before
+  activation. Data-plane authorization also outlived role removal by more than
+  8 minutes, so test any candidate with a principal that never held the broader
+  role.
+- **CI readbacks.** The binding readbacks read the Entra application, its
+  federated credential and the target service principal as app identities.
+  That needs admin-consented `Application.Read.All` for the deploy identity in
+  the source tenant and for a new target reader in the target tenant. Obtain
+  it, or approve a reviewed contract change in which CI verifies the account,
+  deployments, role and APIM routes, and an operator verifies the Entra records
+  at activation and after any binding change.
 
-Activation waits on owner decisions, in addition to the
-[separate approved operator units](runbooks/feature-enablement.md#separate-approved-operator-units):
+Alternatives that avoid target-tenant directory admin are recorded here but not
+adopted, since each changes the approved design:
 
-- **Readback approach:** obtain admin consent in both tenants, or approve a
-  reviewed contract change in which CI verifies the account, deployments,
-  role and APIM routes, and the operator verifies the Entra records at
-  activation and after any binding change.
-- **Opus 5 GlobalStandard capacity:** free the learning deployment's quota,
-  drop or resize the catalog row, or request more quota.
-- **Terms and grants:** the legal entity for the target subscription, the
-  network mode (`public-keyless` is the only implemented mode), and the
-  dedicated account, identity and access grants.
+- **Same-tenant Claude.** The source subscription also offers these models with
+  full quota. A dedicated account there would authenticate APIM with its managed
+  identity and need no application, federation or Graph readback.
+- **Target-side hop.** A proxy or APIM in the target subscription would use its
+  own managed identity for Claude. It would validate a source-issued
+  managed-identity token from AI4IA's APIM, so no secret crosses tenants.
 
-Opus 5.5 work follows that activation.
+The cross-tenant path must never use a client secret.
 
 #### Adaptive-thinking profile design
 
-Settle the contradiction first. Once Claude is active, a separately approved
-Opus 5.5 canary sends the existing thinking-disabled payload at effort `low`.
-HTTP 200 means the current profile applies, so Opus 5.5 needs only a catalog
-row, prices and the normal external readbacks. HTTP 400 confirms Anthropic's
-contract and selects the design below. It needs an owner decision to amend the
-thinking-disabled rule in `AGENTS.md`. It reuses the agent loop's existing
-turn-local continuation channel rather than adding storage:
+The live check on 2026-09-25 settled the contradiction: Opus 5.5 rejects
+disabled thinking. The design below therefore applies. It needs an owner
+decision to amend the thinking-disabled rule in `AGENTS.md`. A first,
+text-only stage is smaller: omitting `thinking` already returns HTTP 200, and a
+profile without tool calling never continues a tool loop, so it needs no block
+replay. The full design reuses the agent loop's existing turn-local
+continuation channel rather than adding storage:
 
 - **Catalog.** `anthropicThinking` gains `"adaptive"` in
   `infra/models.schema.json` and `ModelEntry`.

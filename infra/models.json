@@ -1392,14 +1392,8 @@
       "deployments": [
         {
           "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 40,
-          "version": "2"
-        },
-        {
-          "region": "eastus2",
           "sku": "DataZoneStandard",
-          "capacity": 13,
+          "capacity": 40,
           "version": "2"
         }
       ]
@@ -1422,7 +1416,13 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 20,
+          "capacity": 80,
+          "version": "2"
+        },
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 80,
           "version": "2"
         }
       ]
