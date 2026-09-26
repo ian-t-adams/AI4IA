@@ -753,6 +753,7 @@
         "projectSuffix",
         "baseModel",
         "billingModelId",
+        "liveBillingModelId",
         "promptMaxChars",
         "attributes",
         "preview"
@@ -795,6 +796,11 @@
         },
         "billingModelId": {
           "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,62}$"
+        },
+        "liveBillingModelId": {
+          "type": "string",
+          "description": "The per-second price-book meter for live Voice Live sessions with this avatar product (real-time standard custom avatar).",
           "pattern": "^[a-z][a-z0-9-]{1,62}$"
         },
         "promptMaxChars": {

@@ -26,6 +26,7 @@ COVERAGE: dict[Surface, str] = {
     "mcp": "request only; remote tool/resource meter unbounded",
     "external_tool": "request only; remote execution meter unbounded",
     "avatar": "request only; per-avatar creation dollar meter unbounded",
+    "avatar_live": "request only; per-second live avatar dollar meter unbounded",
 }
 
 

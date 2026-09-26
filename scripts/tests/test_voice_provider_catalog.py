@@ -301,6 +301,8 @@ class VoiceProviderCatalogTests(unittest.TestCase):
             "oversize preview": lambda b: b["preview"].update({"maxBytes": 64 * 1024 * 1024}),
             "html preview": lambda b: b["preview"]["contentTypes"].append("text/html"),
             "missing preview": lambda b: b.pop("preview"),
+            "missing live meter": lambda b: b.pop("liveBillingModelId"),
+            "live meter shape": lambda b: b.update({"liveBillingModelId": "Live Meter"}),
         }
         for label, change in mutations.items():
             with self.subTest(label=label):
@@ -327,6 +329,19 @@ class VoiceProviderCatalogTests(unittest.TestCase):
             lambda b: b.update({"homeRegion": "swedencentral", "homeDataZone": "EU"})
         )
         self.gen.build_catalog(moved)
+
+    def test_generator_requires_a_live_meter_distinct_from_creation(self) -> None:
+        # Shape-valid for the schema, but a per-avatar meter cannot price live seconds.
+        shared = self._mutated_avatars(
+            lambda b: b.update({"liveBillingModelId": b["billingModelId"]})
+        )
+        jsonschema.validate(shared, self.schema)
+        self.assert_generator_rejects(shared)
+        # Control: a distinct, shape-valid live meter is accepted.
+        distinct = self._mutated_avatars(
+            lambda b: b.update({"liveBillingModelId": "photo-avatar-realtime-other"})
+        )
+        self.gen.build_catalog(distinct)
 
     def test_generated_photo_avatar_policy_is_current_and_catalog_driven(self) -> None:
         catalog = self.gen.build_catalog(self.raw)
