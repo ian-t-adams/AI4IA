@@ -25,6 +25,8 @@ COVERAGE: dict[Surface, str] = {
     "web_search": "request only; service and downstream model meter unbounded",
     "mcp": "request only; remote tool/resource meter unbounded",
     "external_tool": "request only; remote execution meter unbounded",
+    "avatar": "request only; per-avatar creation dollar meter unbounded",
+    "avatar_live": "request only; per-second live avatar dollar meter unbounded",
 }
 
 

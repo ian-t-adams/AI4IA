@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -8,6 +9,7 @@ using SimpleL7Proxy.Backend;
 using SimpleL7Proxy.Backend.Iterators;
 using SimpleL7Proxy.Config;
 using SimpleL7Proxy.Events;
+using SimpleL7Proxy.Llm;
 using SimpleL7Proxy.Queue;
 using SimpleL7Proxy.User;
 using SimpleL7Proxy.Async.ServiceBus;
@@ -367,7 +369,7 @@ public class ProxyWorker : IConfigChangeSubscriber
                         );
 
                     // Log circuit breaker details when status code is -1
-                    if (statusCodeInt == -1 || statusCodeInt == 503)
+                    if (incomingRequest.Debug && (statusCodeInt == -1 || statusCodeInt == 503))
                     {
                         _logger.LogCritical("[CircuitBreaker] Status {StatusCode} detected for request {Guid}. Backend host: {HFstreamost}",
                             statusCodeInt, incomingRequest.Guid, pr.BackendHostname);
@@ -428,6 +430,25 @@ public class ProxyWorker : IConfigChangeSubscriber
                     _lifecycleManager.TransitionToRequeued(incomingRequest);
                     _wrkCntxt.RequeueWorker.DelayAsync(incomingRequest, e.RetryAfter);
 
+                }
+                catch (S7PClientReadException e)
+                {
+                    _lifecycleManager.TransitionToFailed(incomingRequest, HttpStatusCode.BadRequest, e.Message);
+                    eventData.Status = HttpStatusCode.BadRequest;
+                    eventData["Error"] = "Client Read Exception";
+                    eventData["ErrorDetails"] = e.InnerException?.Message ?? e.Message;
+                    eventData.Type = EventType.Exception;
+                    eventData.Exception = e;
+
+                    if (lcontext != null)
+                    {
+                        await WriteErrorToClientAsync(
+                            lcontext,
+                            HttpStatusCode.BadRequest,
+                            e.Message,
+                            eventData,
+                            incomingRequest.Guid);
+                    }
                 }
                 catch (ProxyErrorException e)
                 {
@@ -638,6 +659,10 @@ public class ProxyWorker : IConfigChangeSubscriber
             // by value, so late additions wouldn't propagate.
             context.Response.Headers["Attempts"] = request.BackendAttempts.ToString();
             context.Response.Headers["Lifetime-Attempts"] = request.LifetimeBackendAttempts.ToString();
+            if (request.RequeueDelayMs > 0)
+            {
+                context.Response.Headers["Request-Requeue-Delay"] = request.RequeueDelayMs.ToString("F3", System.Globalization.CultureInfo.InvariantCulture);
+            }
 
             // These were also added to pr.Headers after the by-value copy in CaptureResponseStream,
             // so forward them here too. Read back from pr.Headers (single computation, consistent
@@ -648,6 +673,8 @@ public class ProxyWorker : IConfigChangeSubscriber
                 if (pr.Headers["Request-Queue-Duration"] is { } queueDuration) context.Response.Headers["Request-Queue-Duration"] = queueDuration;
                 if (pr.Headers["Request-Process-Duration"] is { } processDuration) context.Response.Headers["Request-Process-Duration"] = processDuration;
                 if (pr.Headers["Total-Latency"] is { } totalLatency) context.Response.Headers["Total-Latency"] = totalLatency;
+                if (detectModel && request.Model is { Length: > 0 } model) request.EventData["Model"] = model;
+                if (pr.Headers["x-backend-label"] is { } backendLabel) request.EventData["x-backend-label"] = backendLabel;
             }
 
             // Set content-specific headers
@@ -743,7 +770,7 @@ public class ProxyWorker : IConfigChangeSubscriber
     private async Task HandleProbeRequestAsync(RequestData req, HttpListenerContext lcontext)
     {
         int hostCount = _backends.ActiveHostCount();
-        bool hasFailedHosts = _backends.CheckFailedStatusAsync(true).Result;
+        bool hasFailedHosts = _backends.EMSGetBackpressureDelay() > 0;
         _wrkCntxt.HealthCheckService.BuildHealthResponse(req.Path, hostCount, hasFailedHosts, req.Timestamp, out int probeStatus, out string probeMessage);
 
         lcontext.Response.StatusCode = probeStatus;
@@ -848,25 +875,24 @@ public class ProxyWorker : IConfigChangeSubscriber
         HttpStatusCode lastStatusCode = HttpStatusCode.ServiceUnavailable;
         var requestSummary = request.EventData;
         int intCode = 0;
+        bool ttlExpired = false;
 
         // Read the body stream once and reuse it
         //byte[] bodyBytes = await request.CachBodyAsync().ConfigureAwait(false);
         List<S7PRequeueException> retryAfter = new();
 
-        var (hostIterator, sharedIterator, modifiedPath) = CreateHostIterator(request);
-
-        request.Path = modifiedPath;
+        var (iterator, iterationState, modifiedPath) = CreateHostIterator(request);
 
         // Use the host count from the already-created iterator (avoids redundant GetActiveHosts call
         // and fixes a bug where the old code compared stripped path against configured PartialPath)
-        var matchingHostCount = sharedIterator?.HostCount ?? hostIterator?.HostCount ?? 0;
+        var matchingHostCount = iterator.HostCount;
         _logger.LogDebug("[ProxyToBackEnd:{Guid}] Found {HostCount} backend hosts for path {Path}",
-            request.Guid, matchingHostCount, request.Path);
+            request.Guid, matchingHostCount, modifiedPath);
 
-        if (matchingHostCount == 0)
+        if (matchingHostCount == 0 && request.Debug)
         {
             _logger.LogWarning("[ProxyToBackEnd:{Guid}] ⚠ NO BACKEND HOSTS matched path {Path} - Request will fail",
-                request.Guid, request.Path);
+                request.Guid, modifiedPath);
             
             // Log all available hosts and their paths for debugging
             var activeHosts = _backends.GetActiveHosts();
@@ -882,38 +908,11 @@ public class ProxyWorker : IConfigChangeSubscriber
         // Try the request on each active host, stop if it worked
         // Use helper method to abstract over shared vs per-request iterators
 
-        // TODO: Replace dummy parameters with request header lookup (e.g. request.Headers["x-S7P-IterationMode"])
-        bool loop_once = true;
-        bool loop_for_max_attempts = false;
-
-        // For shared iterators, compute the max attempts for this request so the
-        // circular iterator doesn't spin forever.  Per-request iterators already
-        // track their own limits internally, so we use int.MaxValue for them.
-        int maxSharedAttempts = int.MaxValue;
-        if (sharedIterator != null)
-        {
-            if (loop_once)
-                maxSharedAttempts = matchingHostCount;              // SinglePass: try each host once
-            else if (loop_for_max_attempts)
-                maxSharedAttempts = _options.MaxAttempts;           // MultiPass: use configured max
-            // else: no limit (original circular behaviour)
-        }
-
         BaseHostHealth? host;
-        while (request.BackendAttempts < maxSharedAttempts
-            && request.NoReplay?.Claimed != true
-            && TryGetNextHost(hostIterator, sharedIterator, out host) && host != null)
+        while (request.NoReplay?.Claimed != true
+            && TryGetHost(iterator, iterationState, request, out host) && host != null)
         {
             DateTime proxyStartDate = DateTime.UtcNow;
-
-            // Check circuit breaker before sending request to avoid unnecessary load on unhealthy hosts [ will delay if failure > 50% ]
-            if (await host.Config.CheckFailedStatusAsync().ConfigureAwait(false))
-            {
-                var cbStatus = host.Config.GetCircuitBreakerStatusString();
-                _logger.LogCritical("[ProxyToBackEnd:{Guid}] ⚠ Circuit breaker BLOCKING host: {Host} - CB-Status: {CBStatus}",
-                    request.Guid, host.Host, cbStatus);
-                continue;
-            }
 
             // track the number of attempts
             request.BackendAttempts++;
@@ -923,6 +922,7 @@ public class ProxyWorker : IConfigChangeSubscriber
             bool SuccessfulRequest = false;
             bool TriggerHostCB = true;
             string requestState = "Init";
+            HttpResponseHeaders? responseHeaders = null;
             // bool newcode = false;
             ProxyEvent requestAttempt = null!;
             HttpClient? boundedClient = null;
@@ -933,7 +933,7 @@ public class ProxyWorker : IConfigChangeSubscriber
                 ParentId = request.ParentId,
                 MID = $"{request.MID}-{request.LifetimeBackendAttempts}",
                 Method = request.Method,
-                ["Request-Date"] = DateTime.UtcNow.ToString("o"),
+                ["Request-Date"] = proxyStartDate.ToString("o"),
                 ["Backend-Host"] = host.Host,
                 ["Host-URL"] = host.Url,
                 ["Attempt"] = request.BackendAttempts.ToString(),
@@ -947,27 +947,6 @@ public class ProxyWorker : IConfigChangeSubscriber
                 //     requestAttempt.Uri = request.Context!.Request.Url!;
                 // else
                 requestAttempt.Uri = new Uri(host.Config.BuildDestinationUrl(modifiedPath));
-
-
-                switch (host.Config.AuthMode)
-                {
-                    case AuthModeEnum.OAuth2:
-                        // Get a token
-                        var oaToken = await host.Config.OAuth2Token().ConfigureAwait(false);
-                        if (request.Debug)
-                        {
-                            _logger.LogDebug("OAuth Token retrieved for backend {BackendHost}", host.Host);
-                        }
-                        // Set the token in the headers
-                        request.Headers.Set("Authorization", $"Bearer {oaToken}");
-                        break;
-                    case AuthModeEnum.ApiKey:
-                        // Set the API key in the headers
-                        request.Headers.Set(host.Config.ApiKeyHeader, host.Config.ApiKey);
-                        break;
-                }
-
-
                 requestState = "Calc ExpiresAt";
 
                 // Validate request hasn't expired
@@ -979,11 +958,41 @@ public class ProxyWorker : IConfigChangeSubscriber
                 request.Timeout = (int)(minDate - DateTime.UtcNow).TotalMilliseconds;
 
                 request.Headers.Set("Host", host.Hostname);
-                request.FullURL = host.Config.BuildDestinationUrl(request.Path);
+                request.FullURL = host.Config.BuildDestinationUrl(modifiedPath);
 
                 requestState = "Cache Body";
+
                 // Read the body stream once and reuse it
-                byte[] bodyBytes = await request.CacheBodyAsync().ConfigureAwait(false);
+                ReadOnlyMemory<byte> bodyBytes;
+                bool wasCached = false;
+                try 
+                {
+                    bodyBytes = await request.CacheBodyAsync(out wasCached).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogCritical(ex, "[ProxyToBackEnd:{Guid}] Unable to read request body for {FullURL}", request.Guid, request.FullURL);
+                    throw new S7PClientReadException("Unable to read request body: " + ex.Message, request, ex);
+                }
+
+                if (detectModel && !wasCached && bodyBytes.Length > 0)
+                {
+
+                    if (request.Debug)
+                    {
+                        _logger.LogInformation("[ValidateModel:{Guid}] Detecting model in request body of {Length} bytes, override: {Override}",
+                            request.Guid, bodyBytes.Length, request.Headers["S7P-Model-Override"] ?? "(none)");
+                    }
+        
+                    bodyBytes = ModelSwapper.ValidateModel(request, bodyBytes, request.Headers["S7P-Model-Override"]);
+
+                    if (request.Headers["S7PDEBUGBODY"] is {} debugBodyHeader && debugBodyHeader.Equals("true", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var bodyString = System.Text.Encoding.UTF8.GetString(bodyBytes.Span);
+                        _logger.LogInformation("[ValidateModel:{Guid}] Request body after model validation: {BodyContent}",
+                            request.Guid, bodyString);
+                    }
+                }
 
                 if (request.runAsync &&
                     !request.AsyncTriggered &&
@@ -1010,7 +1019,11 @@ public class ProxyWorker : IConfigChangeSubscriber
 
                 requestState = "Create Backend Request";
 
-                using (ByteArrayContent bodyContent = new(bodyBytes))
+                var bodySegment = MemoryMarshal.TryGetArray(bodyBytes, out var segment) && segment.Array != null
+                    ? segment
+                    : new ArraySegment<byte>(bodyBytes.ToArray());
+
+                using (ByteArrayContent bodyContent = new(bodySegment.Array!, bodySegment.Offset, bodySegment.Count))
                 using (HttpRequestMessage proxyRequest = new(new(request.Method), request.FullURL))
                 {
                     proxyRequest.Content = bodyContent;
@@ -1019,8 +1032,8 @@ public class ProxyWorker : IConfigChangeSubscriber
                     // proxyRequest.Version = HttpVersion.Version11;
                     // proxyRequest.VersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
 
-                    proxyRequest.Headers.Add("x-PolicyCycleCounter", request.PolicyCycleCounter.ToString());
-                    proxyRequest.Headers.Add("x-LifetimePolicyCycleCounter", request.LifetimePolicyCycleCounter.ToString());
+                    proxyRequest.Headers.Add("x-PolicyCycleCounter", request.APIMPolicyCycleCounter.ToString());
+                    proxyRequest.Headers.Add("x-LifetimePolicyCycleCounter", request.LifetimeAPIMPolicyCycleCounter.ToString());
                     proxyRequest.Headers.Add("x-LLMModel", request.Model);
                     ProxyHelperUtils.CopyHeaders(request.Headers, proxyRequest, true, s_stripRequestHeaders);
 
@@ -1031,7 +1044,6 @@ public class ProxyWorker : IConfigChangeSubscriber
                         proxyRequest.Headers.Add("S7PDEBUG", "True");
                     }
 
-
                     var contentType = request.Context?.Request.ContentType ?? "application/json";
                     if (!MediaTypeHeaderValue.TryParse(contentType, out var req_mediaType))
                     {
@@ -1041,10 +1053,27 @@ public class ProxyWorker : IConfigChangeSubscriber
                     req_mediaType.CharSet ??= "utf-8";
                     proxyRequest.Content.Headers.ContentType = req_mediaType;
 
-                    if (bodyBytes.Length > 0)
-                        proxyRequest.Content.Headers.ContentLength = bodyBytes.Length;
+                    //if (bodyBytes.Length > 0)
+                    //    proxyRequest.Content.Headers.ContentLength = bodyBytes.Length;
 
                     //proxyRequest.Headers.ConnectionClose = true;
+                    switch (host.Config.AuthMode)
+                    {
+                        case AuthModeEnum.OAuth2:
+                            // Get a token
+                            var oaToken = await host.Config.OAuth2Token().ConfigureAwait(false);
+
+                            // Set the token in the headers
+                            proxyRequest.Headers.Authorization =
+                                new AuthenticationHeaderValue("Bearer", oaToken);
+
+                            break;
+                        case AuthModeEnum.ApiKey:
+                            // Set the API key in the headers
+                            proxyRequest.Headers.Remove(host.Config.ApiKeyHeader);
+                            proxyRequest.Headers.TryAddWithoutValidation(host.Config.ApiKeyHeader, host.Config.ApiKey);
+                            break;
+                    }
 
                     // Log request headers if debugging is enabled
                     if (request.Debug)
@@ -1065,7 +1094,6 @@ public class ProxyWorker : IConfigChangeSubscriber
                         // ASYNC: Calculate the timeout, start async worker
                         _isEvictingAsyncRequest = false;
                         requestState = "Backend Attempt ";
-
 
                         // Create ASYNC Worker if needed, and setup the timeout
                         // SEND THE REQUEST TO THE BACKEND USING THE APROPRIATE TIMEOUT.
@@ -1091,18 +1119,23 @@ public class ProxyWorker : IConfigChangeSubscriber
                                 proxyResponse.Dispose();
                                 throw;
                             }
+                            responseHeaders = proxyResponse.Headers;
                             responseDate = DateTime.UtcNow;
                             lastStatusCode = proxyResponse.StatusCode;
                             requestAttempt.Status = proxyResponse.StatusCode;
 
+                            var responseTimeToFirstByteMs = (responseDate - proxyStartDate).TotalMilliseconds;
+                            host.TimeToFirstByteMs = responseTimeToFirstByteMs;
+
                             _logger.LogDebug("[ProxyToBackEnd:{Guid}] Received response from {Host} - Status: {StatusCode}, Duration: {Duration}ms",
-                                request.Guid, host.Host, lastStatusCode, (responseDate - proxyStartDate).TotalMilliseconds);
+                                request.Guid, host.Host, lastStatusCode, responseTimeToFirstByteMs);
 
                             requestState = "Process Backend Response";
 
                             // Check if the status code of the response is in the set of allowed status codes, else try the next host
                             intCode = (int)proxyResponse.StatusCode;
-                            if (request.NoReplay is null &&
+                            var acceptableStatusCode = _options.AcceptableStatusCodes.Contains(intCode);
+                            if (request.NoReplay is null && !acceptableStatusCode &&
                                 ((intCode > 300 && intCode < 400) || intCode == 404 || intCode == 412 || intCode >= 500))
                             {
                                 requestState = $"Backend proxy status code: {intCode}";
@@ -1128,11 +1161,11 @@ public class ProxyWorker : IConfigChangeSubscriber
                                 ResponseDate = responseDate,
                                 StatusCode = lastStatusCode,
                                 FullURL = request.FullURL,
-                                CalculatedHostLatency = host.CalculatedAverageLatency,
+                                CalculatedHostLatency = host.AverageLatencyMs,
                                 BackendHostname = host.Host
                             };
 
-                            host.AddPxLatency((responseDate - proxyStartDate).TotalMilliseconds);
+                            host.AddProxyLatency((responseDate - proxyStartDate).TotalMilliseconds);
 
                             // Capture the response
                             try
@@ -1167,22 +1200,26 @@ public class ProxyWorker : IConfigChangeSubscriber
                             {
                                 requestSummary["Backend-Host"] = pr.BackendHostname;
                                 requestSummary["Request-Queue-Duration"] = request.Headers["x-Request-Queue-Duration"] ?? "N/A";
+                                if (request.RequeueDelayMs > 0)
+                                {
+                                    requestSummary["Request-Requeue-Delay"] = request.RequeueDelayMs.ToString("F3", System.Globalization.CultureInfo.InvariantCulture);
+                                }
                                 requestSummary["Request-Process-Duration"] = request.Headers["x-Request-Process-Duration"] ?? "N/A";
                                 requestSummary["Total-Latency"] = (DateTime.UtcNow - request.EnqueueTime).TotalMilliseconds.ToString("F3");
                             }
 
 
-                            if (proxyResponse.Headers.TryGetValues("x-PolicyCycleCounter", out var policyAttempts))
+                            if (proxyResponse.Headers.TryGetValues("x-PolicyCycleCounter", out var apimPolicyAttempts))
                             {
-                                if (int.TryParse(policyAttempts.FirstOrDefault(), out var pAttempts))
+                                if (int.TryParse(apimPolicyAttempts.FirstOrDefault(), out var apimPolicyCycleCounter))
                                 {
-                                    var delta = pAttempts - request.PolicyCycleCounter;
-                                    request.LifetimePolicyCycleCounter += delta;
-                                    request.PolicyCycleCounter = pAttempts;
+                                    var apimPolicyCycleDelta = apimPolicyCycleCounter - request.APIMPolicyCycleCounter;
+                                    request.LifetimeAPIMPolicyCycleCounter += apimPolicyCycleDelta;
+                                    request.APIMPolicyCycleCounter = apimPolicyCycleCounter;
                                 }
                             }
 
-                            var (shouldRequeue, retryMs) = request.NoReplay is null
+                            var (shouldRequeue, retryMs) = request.NoReplay is null && !acceptableStatusCode
                                 ? CheckRequeueResponse(proxyResponse, intCode, requestAttempt, ref requestState)
                                 : (false, 0);
 
@@ -1190,7 +1227,7 @@ public class ProxyWorker : IConfigChangeSubscriber
                             {
                                 throw new S7PRequeueException("Requeue request", pr, retryMs);
                             }
-                            else if (intCode == 429 && request.NoReplay is null)
+                            else if (!acceptableStatusCode && intCode == 429 && request.NoReplay is null)
                             {
                                 // S7PREQUEUE was not "true" — capture backend response headers
                                 // (e.g. backendLog, retry-after) into the attempt summary before
@@ -1208,11 +1245,16 @@ public class ProxyWorker : IConfigChangeSubscriber
                                 // request was successful, so we can disable the skip
                                 request.SkipDispose = false;
                                 requestAttempt["RequestSuccess"] = "true"; // Track success in event data
-                                bodyBytes = [];
+                                bodyBytes = ReadOnlyMemory<byte>.Empty;
                             }
 
                             pr.Headers["BackendHost"] = requestSummary["Backend-Host"] = pr.BackendHostname;
                             pr.Headers["Request-Queue-Duration"] = requestSummary["Request-Queue-Duration"] = request.Headers["x-Request-Queue-Duration"] ?? "N/A";
+                            if (request.RequeueDelayMs > 0)
+                            {
+                                var requeueDelay = request.RequeueDelayMs.ToString("F3", System.Globalization.CultureInfo.InvariantCulture);
+                                pr.Headers["Request-Requeue-Delay"] = requestSummary["Request-Requeue-Delay"] = requeueDelay;
+                            }
                             pr.Headers["Request-Process-Duration"] = requestSummary["Request-Process-Duration"] = request.Headers["x-Request-Process-Duration"] ?? "N/A";
                             pr.Headers["Total-Latency"] = requestSummary["Total-Latency"] = (DateTime.UtcNow - request.EnqueueTime).TotalMilliseconds.ToString("F3");
 
@@ -1242,6 +1284,12 @@ public class ProxyWorker : IConfigChangeSubscriber
                         // or when worker shuts down via DecrementActiveWorkers
                     }
                 }
+            }
+            catch (S7PClientReadException)
+            {
+                TriggerHostCB = false;
+                intCode = (int)HttpStatusCode.BadRequest;
+                throw;
             }
             catch (OutOfMemoryException oomEx)
             {
@@ -1275,6 +1323,7 @@ public class ProxyWorker : IConfigChangeSubscriber
 
                 if (e.Type == ProxyErrorException.ErrorType.TTLExpired)
                 {
+                    ttlExpired = true;
                     intCode = 412;//(int)HttpResponseCode.PreconditionFailed; // 412
                     lastStatusCode = HttpStatusCode.PreconditionFailed;
                     TriggerHostCB = false;
@@ -1361,15 +1410,19 @@ public class ProxyWorker : IConfigChangeSubscriber
                 requestAttempt.Duration = DateTime.UtcNow - proxyStartDate;
                 requestAttempt.SendEvent();  // Log the dependent request attempt
                 
-                // Record result for iterator (shared or per-request)
-                if (sharedIterator != null)
-                    sharedIterator.RecordResult(host, SuccessfulRequest);
-                else
-                    hostIterator?.RecordResult(host, SuccessfulRequest);
+                // Record result for the iterator (shared or per-request) and for the
+                // iteration state's attempt count, which enforces MaxAttempts / the shared circular cap.
+                iterator.RecordResult(iterationState, host, SuccessfulRequest);
 
-                // Track host status for circuit breaker
-                if (intCode != 412 && intCode != 429 && !_isEvictingAsyncRequest)
-                    host.Config.TrackStatus(intCode, TriggerHostCB, "Attempt-" + request.LifetimeBackendAttempts);
+                // Track host status for circuit breaker. 429 is normally excluded (a rate-limited
+                // backend behind APIM isn't necessarily unhealthy), but a direct-mode host returning
+                // 429 with a Retry-After header IS specifically that host telling us to back off it.
+                var isDirectModeRateLimit = intCode == 429 && host.Config.DirectMode &&
+                    responseHeaders != null &&
+                    (responseHeaders.Contains("Retry-After") || responseHeaders.Contains("Retry-After-Ms"));
+
+                if (!_isEvictingAsyncRequest && intCode != 412 && (intCode != 429 || isDirectModeRateLimit))
+                    host.Config.TrackStatus(intCode, TriggerHostCB, "Attempt-" + request.LifetimeBackendAttempts, responseHeaders);
 
                 if (!SuccessfulRequest)
                 {
@@ -1390,7 +1443,16 @@ public class ProxyWorker : IConfigChangeSubscriber
 
         // If we get here, then no hosts were able to handle the request
 
-        if (retryAfter.Count > 0)
+        // A route-level maxattempts= (if any) was already resolved into the iteration state's value.
+        // Uses LifetimeBackendAttempts (not the per-cycle BackendAttempts, which the requeue worker
+        // resets to 0) so MaxAttempts is a true ceiling across requeue cycles.
+        var effectiveMaxAttemptsForError = iterationState.MaxAttempts;
+        var maxAttemptsReached = !ttlExpired &&
+            request.IterationMode == IterationModeEnum.MultiPass &&
+            effectiveMaxAttemptsForError > 0 &&
+            request.LifetimeBackendAttempts >= effectiveMaxAttemptsForError;
+
+        if (!maxAttemptsReached && retryAfter.Count > 0)
         {
             // If we have retry after values, return the smallest one
             var exc = retryAfter.MinBy(x => x.RetryAfter);
@@ -1406,8 +1468,26 @@ public class ProxyWorker : IConfigChangeSubscriber
         int currentStatusCode;
         ProxyHelperUtils.GenerateErrorMessage(incompleteRequests, out sb, out statusMatches, out currentStatusCode);
 
-        // 502 Bad Gateway  or   call status code form all attempts ( if they are the same )
-        lastStatusCode = statusMatches ? (HttpStatusCode)currentStatusCode : HttpStatusCode.BadGateway;
+        string errorDetail;
+        if (maxAttemptsReached)
+        {
+            lastStatusCode = HttpStatusCode.PreconditionFailed;
+            errorDetail = $"Maximum backend attempts reached ({effectiveMaxAttemptsForError}).";
+        }
+        else
+        {
+            // 502 Bad Gateway or the common status code when all attempts match
+            lastStatusCode = statusMatches ? (HttpStatusCode)currentStatusCode : HttpStatusCode.BadGateway;
+            errorDetail = ttlExpired
+                ? "Request TTL expired."
+                : incompleteRequests.Count == 0
+                    ? "No backend attempts were completed."
+                    : statusMatches
+                        ? $"All backend attempts returned HTTP {currentStatusCode}."
+                        : "Backends returned mixed status codes.";
+        }
+        var errorMessage = $"No active hosts were able to handle the request: {errorDetail}";
+        sb.Insert(0, errorMessage + Environment.NewLine);
         // requestSummary.Type = EventType.ProxyError;
 
         // ASYNC: Synchronize with AsyncWorker if it was started, even for error responses
@@ -1430,7 +1510,7 @@ public class ProxyWorker : IConfigChangeSubscriber
 
         var errorBodyStr = sb.ToString();
         var errorBytes = Encoding.UTF8.GetBytes(errorBodyStr);
-        var recordedStatusCode = ProxyHelperUtils.RecordIncompleteRequests(requestSummary, lastStatusCode, "No active hosts were able to handle the request", incompleteRequests);
+        var recordedStatusCode = ProxyHelperUtils.RecordIncompleteRequests(requestSummary, lastStatusCode, errorMessage, incompleteRequests);
 
         if (request.AsyncTriggered)
         {
@@ -1463,8 +1543,13 @@ public class ProxyWorker : IConfigChangeSubscriber
             ["x-ProxyHost"] = _options.HostName,
             ["x-MID"] = request.MID,
             ["Attempts"] = request.BackendAttempts.ToString(),
-            ["Lifetime-Attempts"] = request.LifetimeBackendAttempts.ToString()
+            ["Lifetime-Attempts"] = request.LifetimeBackendAttempts.ToString(),
+            ["Model"] = request.Model
         };
+        if (request.RequeueDelayMs > 0)
+        {
+            errorHeaders["Request-Requeue-Delay"] = request.RequeueDelayMs.ToString("F3", System.Globalization.CultureInfo.InvariantCulture);
+        }
 
         var errorResponse = new HttpResponseMessage(lastStatusCode) { Content = errorContent };
 
@@ -1507,7 +1592,7 @@ public class ProxyWorker : IConfigChangeSubscriber
         }
 
         // copy headers from the response to the ProxyData object
-        ProxyHelperUtils.CopyResponseHeaders(proxyResponse, pr);
+        ProxyHelperUtils.CopyResponseHeaders(proxyResponse, pr, s_stripResponseHeaders);
         pr.BodyResponseMessage = proxyResponse;
 
         // // HTTP/1.0 backends use connection-close to delimit the response body (no Content-Length,
@@ -1559,67 +1644,115 @@ public class ProxyWorker : IConfigChangeSubscriber
     }
 
     /// <summary>
-    /// Creates a host iterator for routing requests to backend hosts.
-    /// Uses shared iterators (fair distribution across concurrent requests) or per-request iterators
-    /// based on configuration.
+    /// AI4IA: an all-open circuit makes the iterator throw a delayed requeue before any attempt.
+    /// A bounded one-attempt request has no requeue authority, so refuse it here rather than
+    /// letting the worker's requeue handler refuse it from inside a catch block.
     /// </summary>
-    /// <returns>A tuple of (per-request iterator, shared iterator, modified path). Exactly one iterator will be non-null.</returns>
-    private (IHostIterator? hostIterator, ISharedHostIterator? sharedIterator, string modifiedPath) CreateHostIterator(RequestData request)
+    private static bool TryGetHost(IHostIterator iterator, IterationState state, RequestData request, out BaseHostHealth? host)
+    {
+        try
+        {
+            return iterator.TryGet(state, out host);
+        }
+        catch (S7PRequeueException) when (request.NoReplay is not null)
+        {
+            NoReplayAttempt.RefusePersistence(request);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Creates a host iterator for routing requests to backend hosts, paired with the
+    /// per-request <see cref="IterationState"/> that <see cref="IHostIterator"/> uses for
+    /// pass/repeat control (SinglePass vs MultiPass, MaxAttempts) and circuit-breaker skip/
+    /// all-open handling. Uses shared iterators (fair distribution across concurrent requests)
+    /// or per-request iterators based on configuration.
+    /// </summary>
+    /// <returns>The ready-to-use iterator, its per-request state, and the modified path for this request.</returns>
+    private (IHostIterator iterator, IterationState state, string modifiedPath) CreateHostIterator(RequestData request)
     {
         string modifiedPath = "";
-        IHostIterator? hostIterator = null;
-        ISharedHostIterator? sharedIterator = null;
+        IHostIterator iterator;
+        int maxAttempts = _options.MaxAttempts;
+        var iterationMode = request.IterationMode;
 
-        if (_options.UseSharedIterators && _wrkCntxt.SharedIteratorRegistry != null)
+        var routeMatch = _backends.MatchRoute(request.Path);
+        var usesPriorityRouting = routeMatch != null ||
+            _backends.GetHosts().Any(host =>
+                host.Config.PriorityGroup != 1 || host.Config.AcceptablePriorities.Count > 0);
+
+        // Latency/TTFB re-rank hosts per request using live health metrics — a shared iterator
+        // freezes the order at first creation and cycles it circularly forever, silently
+        // degrading them to round-robin. Only fairness-only, order-agnostic modes may share.
+        var loadBalanceModeSupportsSharing =
+            _options.LoadBalanceMode is Constants.RoundRobin or Constants.Random;
+
+        if (_options.UseSharedIterators && _wrkCntxt.SharedIteratorRegistry != null &&
+            !usesPriorityRouting && loadBalanceModeSupportsSharing)
         {
             // Use shared iterator - multiple requests to same path share the same iterator
             // The modifiedPath is stored on the iterator itself, so we don't need a second filtering call
-            sharedIterator = _wrkCntxt.SharedIteratorRegistry.GetOrCreate(
+            var sharedIterator = _wrkCntxt.SharedIteratorRegistry.GetOrCreate(
                 request.Path,
-                () =>
-                {
-                    var iterator = IteratorFactory.CreateSinglePassIterator(
-                        _backends,
-                        _options.LoadBalanceMode,
-                        request.Path,
-                        out var mp);
-                    return (iterator, mp);
-                });
+                () => IteratorFactory.CreateSharedHostSnapshot(
+                    _backends,
+                    _options.LoadBalanceMode,
+                    request.Path,
+                    request.Priority));
 
             // Read modifiedPath from the shared iterator (computed once, cached)
             modifiedPath = sharedIterator.ModifiedPath;
+            iterator = sharedIterator;
 
             _logger.LogDebug(
                 "[ProxyToBackEnd:{Guid}] Using SHARED iterator for path '{Path}' with {HostCount} hosts",
                 request.Guid, request.Path, sharedIterator.HostCount);
         }
+        else if (routeMatch != null)
+        {
+            // Named Path_* route matched — honor its configured host list and order directly,
+            // regardless of LoadBalanceMode (the route's "hosts=" order is the explicit intent).
+            var candidateHosts = routeMatch.Value.Route.GetCandidateHosts(request.Priority);
+            modifiedPath = routeMatch.Value.ModifiedPath;
+
+            // A route-level maxattempts= overrides the global MaxAttempts option when set.
+            maxAttempts = routeMatch.Value.Route.MaxAttempts ?? _options.MaxAttempts;
+
+            // A valid per-request header remains the most specific override. Otherwise,
+            // use the route mode when configured, then fall back to the global mode.
+            var iterationModeHeader = request.Headers["S7P-Iterator"].AsSpan().Trim();
+            var hasRequestModeOverride =
+                Enum.TryParse(iterationModeHeader, true, out IterationModeEnum requestModeOverride) &&
+                requestModeOverride is IterationModeEnum.SinglePass or IterationModeEnum.MultiPass;
+            if (!hasRequestModeOverride && routeMatch.Value.Route.IterationMode.HasValue)
+            {
+                iterationMode = routeMatch.Value.Route.IterationMode.Value;
+                request.IterationMode = iterationMode;
+            }
+
+            iterator = IteratorFactory.CreateFixedOrderIterator(candidateHosts);
+
+            _logger.LogDebug(
+                "[ProxyToBackEnd:{Guid}] Using named route '{RouteName}' for path '{Path}' with {HostCount} hosts (IterationMode={IterationMode}, MaxAttempts={MaxAttempts})",
+                request.Guid, routeMatch.Value.Route.Name, request.Path, iterator.HostCount, iterationMode, maxAttempts);
+        }
         else
         {
-            // Use per-request iterator (original behavior)
-            hostIterator = _options.IterationMode switch
-            {
-                IterationModeEnum.SinglePass => IteratorFactory.CreateSinglePassIterator(
-                    _backends,
-                    _options.LoadBalanceMode,
-                    request.Path,
-                    out modifiedPath),
-
-                IterationModeEnum.MultiPass => IteratorFactory.CreateMultiPassIterator(
-                    _backends,
-                    _options.LoadBalanceMode,
-                    _options.MaxAttempts,
-                    request.Path,
-                    out modifiedPath),
-
-                _ => IteratorFactory.CreateSinglePassIterator(
-                    _backends,
-                    _options.LoadBalanceMode,
-                    request.Path,
-                    out modifiedPath)
-            };
+            // Use per-request iterator (original behavior). The ordering iterator no longer
+            // cares about SinglePass vs MultiPass — NextHost owns that.
+            iterator = IteratorFactory.CreateSinglePassIterator(
+                _backends,
+                _options.LoadBalanceMode,
+                request.Path,
+                request.Priority,
+                out modifiedPath);
         }
 
-        return (hostIterator, sharedIterator, modifiedPath);
+        // Seeded with LifetimeBackendAttempts so MaxAttempts is a true ceiling across
+        // requeue cycles, not just the current one.
+        var state = new IterationState(iterationMode, maxAttempts, logger: _logger, priorAttempts: request.LifetimeBackendAttempts);
+
+        return (iterator, state, modifiedPath);
     }
 
     /// <summary>
@@ -1673,7 +1806,7 @@ public class ProxyWorker : IConfigChangeSubscriber
     /// Copies response headers into the request attempt event and parses retry-after timing.
     /// </summary>
     /// <returns>(shouldRequeue: true if S7PREQUEUE="true", retryMs: delay before requeue)</returns>
-    private (bool shouldRequeue, int retryMs) CheckRequeueResponse(
+    internal static (bool shouldRequeue, int retryMs) CheckRequeueResponse(
         HttpResponseMessage proxyResponse,
         int intCode,
         ProxyEvent requestAttempt,
@@ -1731,6 +1864,10 @@ public class ProxyWorker : IConfigChangeSubscriber
                     ["Attempts"] = request.BackendAttempts.ToString(),
                     ["Lifetime-Attempts"] = request.LifetimeBackendAttempts.ToString()
                 };
+                if (request.RequeueDelayMs > 0)
+                {
+                    errorHeaders["Request-Requeue-Delay"] = request.RequeueDelayMs.ToString("F3", System.Globalization.CultureInfo.InvariantCulture);
+                }
 
                 await request.asyncWorker.SaveResponseHeadersAsync(statusCode, errorHeaders);
 
@@ -1754,11 +1891,16 @@ public class ProxyWorker : IConfigChangeSubscriber
                 request.Context.Response.KeepAlive = false;
 
                 request.Context.Response.Headers["x-Request-Queue-Duration"] = (request.DequeueTime - request.EnqueueTime).TotalMilliseconds.ToString("F3") + " ms";
+                if (request.RequeueDelayMs > 0)
+                {
+                    request.Context.Response.Headers["x-Request-Requeue-Delay"] = request.RequeueDelayMs.ToString("F3", System.Globalization.CultureInfo.InvariantCulture);
+                }
                 request.Context.Response.Headers["x-Total-Latency"] = (DateTime.UtcNow - request.EnqueueTime).TotalMilliseconds.ToString("F3") + " ms";
                 request.Context.Response.Headers["x-ProxyHost"] = _options.HostName;
                 request.Context.Response.Headers["x-MID"] = request.MID;
                 request.Context.Response.Headers["Attempts"] = request.BackendAttempts.ToString();
                 request.Context.Response.Headers["Lifetime-Attempts"] = request.LifetimeBackendAttempts.ToString();
+                request.Context.Response.Headers["Model"] = request.Model;
 
                 await request.Context.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(errorBody)).ConfigureAwait(false);
                 await request.Context.Response.OutputStream.FlushAsync().ConfigureAwait(false);
@@ -1844,7 +1986,7 @@ public class ProxyWorker : IConfigChangeSubscriber
     /// <param name="processWith">The name of the processor to use for streaming</param>
     private async Task StreamResponseAsync(RequestData request, ProxyData pr)
     {
-        ProxyEvent requestSummary = request.EventData;
+        //ProxyEvent requestSummary = request.EventData;
         string processWith = pr.StreamingProcessor ?? StreamProcessorFactory.DEFAULT_PROCESSOR;
         var proxyResponse = pr.BodyResponseMessage;
 
@@ -1894,7 +2036,8 @@ public class ProxyWorker : IConfigChangeSubscriber
                 _logger.LogDebug("Streaming to {Destination} for request {Guid}", destinationType, request.Guid);
 
                 var addedToFlusher = _streamFlusher.AddStream(destination);
-                await processor.CopyToAsync(proxyResponse.Content, destination).ConfigureAwait(false);
+                var debugStream = request.Headers["S7PDEBUGSTREAM"] is {} debugValue && debugValue.Equals("true", StringComparison.OrdinalIgnoreCase);
+                await processor.CopyToAsync(proxyResponse.Content, destination, debugStream).ConfigureAwait(false);
                 if (addedToFlusher)
                 {
                     _streamFlusher.RemoveStream(destination);
@@ -1971,7 +2114,7 @@ public class ProxyWorker : IConfigChangeSubscriber
             memoryBuffer.Length, request.Guid);
 
         var pr = new ProxyData();
-        ProxyHelperUtils.CopyResponseHeaders(proxyResponse, pr);
+        ProxyHelperUtils.CopyResponseHeaders(proxyResponse, pr, s_stripResponseHeaders);
         if (pr.Headers != null && request.asyncWorker != null)
         {
             await request.asyncWorker.SaveResponseHeadersAsync(proxyResponse.StatusCode!, pr.Headers);
@@ -2034,36 +2177,5 @@ public class ProxyWorker : IConfigChangeSubscriber
         "Content-Length", "Transfer-Encoding", "Connection", "Proxy-Connection",
         "Keep-Alive", "Upgrade", "Trailer", "TE", "Date", "Server"
     );
-
-    /// <summary>
-    /// Helper method to abstract over shared vs per-request iterators.
-    /// For shared iterators: uses TryGetNextHost (circular, thread-safe)
-    /// For per-request iterators: uses MoveNext/Current pattern
-    /// </summary>
-    /// <param name="perRequestIterator">Per-request iterator (null if using shared)</param>
-    /// <param name="sharedIterator">Shared iterator (null if using per-request)</param>
-    /// <param name="host">Output: the next host, or null if none available</param>
-    /// <returns>True if a host was retrieved, false if iteration is complete</returns>
-    private static bool TryGetNextHost(
-        IHostIterator? perRequestIterator,
-        ISharedHostIterator? sharedIterator,
-        out BaseHostHealth? host)
-    {
-        if (sharedIterator != null)
-        {
-            // Shared iterator - uses atomic TryGetNextHost
-            return sharedIterator.TryGetNextHost(out host);
-        }
-        
-        if (perRequestIterator != null && perRequestIterator.MoveNext())
-        {
-            host = perRequestIterator.Current;
-            return true;
-        }
-        
-        host = null;
-        return false;
-    }
-
 
 }

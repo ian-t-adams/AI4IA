@@ -18,6 +18,10 @@ node_modules/
 .next/
 out/
 dist/
+# The CompanionApp vendors only Bootstrap's minified stylesheet from its dist/ tree.
+!proxy/CompanionApp/wwwroot/lib/bootstrap/dist/
+# ASP.NET Core Data Protection keys written by local CompanionApp runs.
+proxy/CompanionApp/.keys/
 build/
 .turbo/
 *.tsbuildinfo

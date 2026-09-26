@@ -39,6 +39,7 @@ feature posture.
 | Rolling conversation summarization | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | none | `autoSummarizationEnabled` | None beyond the active chat model — once the transcript exceeds the model-derived threshold, older turns fold into a running summary while the full transcript stays in storage/scrollback. Off leaves the manual `/summarize` command working but never auto-injects a summary |
 | Image generation | `AI4IA_IMAGE_GENERATION_ENABLED` | server-advertised imagery controls | `imageGenerationEnabled` | Image-capable deployment and durable media Blob storage outside local; storage presence alone does not enable generation |
 | Video generation | `AI4IA_VIDEO_GENERATION_ENABLED` | server-advertised tools and inline artifacts | `videoGenerationEnabled` | A runtime-enabled video deployment and durable media Blob storage outside local. Advertisement and execution check the gate, the store and model availability together. Sora 2 is runtime-disabled ahead of its 2026-10-15 retirement, so the tool stays hidden. Keep the flag on: it also delivers the Blob settings that serve existing clips (see [Sora 2 runtime retirement](deployment.md#sora-2-runtime-retirement)) |
+| Custom photo avatars | `AI4IA_PHOTO_AVATARS_ENABLED` (+ per-user and live-session limits) | availability from `GET /api/photo-avatars/config` | `photoAvatarsEnabled`, `photoAvatarMaxPerUser`, `photoAvatarMaxCreationsPerDay`, `photoAvatarLiveMaxMinutesPerSession`, `photoAvatarLiveIdleTimeoutSeconds` | Default `false`. Entra, Cosmos, durable Blob and metering outside local. Creation also needs the home account to report the Limited Access capability at runtime. Live avatar sessions also need Speech Voice Live. The approval, the RAI re-approval and the live checks come first: see [below](#custom-photo-avatars) |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
 | Official MCP plane | `AI4IA_OFFICIAL_MCP_ENABLED` | none | `enableOfficialMcp` | MCP-only product/subscription on the shared active Basic v2 APIM + ≥1 server in `infra/mcp-servers.json`; gateway URL + key auto-wired |
 | Foundry toolbox (bridge) | consumed via the official MCP plane (no dedicated flag) | none | `enableFoundryToolbox` (+ `enableOfficialMcp`) | Provisioned toolbox in the default Foundry project + a `foundry-toolbox` entry in `infra/mcp-servers.json`; grants APIM MI the project "Foundry User" role. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
@@ -54,6 +55,7 @@ feature posture.
 | Proxy application profiles | proxy runtime only | none | `proxyProfilesEnabled` | Secret-mounted minimal projection **and verified identity-aware app header**; validator blocks enablement with shared-key ingress |
 | Proxy priority reservations | `AI4IA_PROXY_PRIORITIES_ENABLED` | none | `proxyPrioritiesEnabled`, `proxyPriorityWorkers` | Valid `priority:count` reservations; per-replica fairness only. The API and proxy read the **same** switch — see the note below the table |
 | Proxy metadata telemetry | proxy runtime only | none | `proxyEventHubTelemetryEnabled` | Creates Event Hubs + proxy sender RBAC only when enabled; no prompt/response/header logging |
+| CompanionApp telemetry console | none (not an API feature) | none | `companionAppEnabled` + image, sign-in app, admin set, optional IP ranges and replicas | Default off; creates nothing. Proxy telemetry, an attested digest from `companion-image.yml`, an Entra app registration and at least one admin group or principal. Admin-only and read-only; see [below](#companionapp-telemetry-console) |
 | Proxy durable async | proxy runtime only | none | `proxyAsyncEnabled` | Dedicated AVM Blob + Service Bus resources and proxy MI RBAC |
 | Raw-file compute (code interpreter) | `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` | none | `codeInterpreterRawFilesEnabled` | Requires document understanding + document compute + a code-interpreter base URL; `api.bicep` emits the env var only when all three hold. Uploads a document's **original bytes** to the sandbox instead of Content Understanding's parsed text, falling back transparently on unsupported/oversize/failed uploads. Had **no Bicep parameter at all** until now, so it was implemented but unreachable from a normal `azd` deploy |
 | Azure Monitor alerting baseline | n/a (infra only) | none | `enableAlerts`, `alertEmail` | Action group + api-5xx / Cosmos-429 metric alerts. An action group with **no** receiver is legal ARM and notifies nobody — see the note below |
@@ -911,11 +913,20 @@ application -> SimpleL7Proxy -> APIM -> catalog-selected Foundry deployment
 App Configuration is always connected with the proxy managed identity. The
 postprovision hook reconciles the label-aware `Warm:Sentinel` through the OIDC
 deployment identity using Entra authentication and its store-scoped App Configuration
-Data Owner role. The proxy keeps only Data Reader; the web and API have no App
+Data Owner role: every attempt PUTs the key through the data-plane REST API with a
+fresh `azd auth token` for the documented `https://appconfig.azure.com` audience
+(see [deployment §7.17](./deployment.md#717-app-configuration-sentinel-fails-after-a-long-provision-aadsts700024)).
+The proxy keeps only Data Reader; the web and API have no App
 Configuration data role. This avoids local credentials and the same-deployment ARM
-pass-through RBAC race while making bootstrap and refresh real before any
-behavior-changing settings are added. Additional warm settings refresh on the
-configured interval; cold settings need a revision/restart.
+pass-through RBAC race while keeping bootstrap and refresh real. The proxy applies
+only `Warm:Sentinel` and two reviewed request limits from the store, each within a
+reviewed range (`Request:DefaultTimeout` 180,000 to 1,200,000 ms,
+`Request:DefaultTTLSecs` 300 to 1,200 s); after a sentinel change they refresh on the
+configured interval. Every other key, including every `Cold:` key and the
+circuit-breaker settings, is refused, and so is an out-of-range value. Those settings
+come from the Container App environment and change with a new revision. Making another
+setting App Configuration-writable is a reviewed change to the
+[App Configuration key policy](../../proxy/README.md#app-configuration-key-policy).
 
 - `proxyPrioritiesEnabled=true` requires `proxyPriorityWorkers` such as
   `1:2,3:1`. Reserved capacity and fairness are in-memory **per replica**.
@@ -985,6 +996,126 @@ The onboarding sequence for a future independent application is:
 
 Steps 1-4 are explicit prerequisites, not implemented automation. Until they are
 complete, `proxyProfilesEnabled=true` fails validation.
+
+### CompanionApp telemetry console
+
+`AI4IA_COMPANION_APP_ENABLED` hosts a subset of upstream's SimpleL7Proxy
+CompanionApp as an admin-only, read-only view of the proxy's Event Hub feed. It is
+default off and creates nothing while off.
+
+**What it is.** The console has two pages. The Event Hub monitor shows live
+request flow, backends, status codes, latency, requeues and circuit-breaker events.
+Insights aggregates the same feed per endpoint and model. The vendored subset is
+`proxy/CompanionApp` at the proxy pin.
+
+**What it is not.** Upstream's chat, URL tester, stress, abort, investigator,
+vision, history, preferences, App Configuration editor and deployment pages are
+not vendored. `proxy/upstream-provenance.json` records each one as
+`ai4ia-excluded`, bound to its upstream hash and a reason. Those pages would send
+server-side requests to caller-chosen URLs with caller-chosen headers, generate
+load and model cost, write shared history, or publish proxy configuration with
+the server identity. `AI4IA.CompanionApp.Tests` asserts that the compiled routes
+are exactly `/`, `/explore`, `/eventhub`, `/insights`, `/Error` and `/not-found`.
+As defense in depth, the injected `HttpClient` refuses every request before
+connecting. The console makes no model calls and holds no Foundry, Key Vault,
+Storage, Cosmos or App Configuration access.
+
+**Boundary.**
+
+- **Sign-in.** Container Apps authentication requires an Entra session on every
+  request, including the Blazor circuit, and redirects anonymous browsers to sign
+  in. The built-in authorization policy then admits only the listed admin group or
+  principal object ids; everyone else gets 403.
+- **In-app gate.** The ARM schema accepts `allowedPrincipals.groups`, but the
+  platform documentation only describes `identities` enforcement. So the app
+  re-checks every request itself. It reads the `X-MS-CLIENT-PRINCIPAL-ID` and
+  `X-MS-CLIENT-PRINCIPAL` headers that Container Apps authentication injects;
+  client-supplied copies are dropped. A request passes only if its object id or
+  one of its `groups` claims is in the same allowlist. Anything missing, malformed
+  or unlisted gets an empty 403 before any page, asset or Blazor circuit runs.
+  Group admission requires the app registration to emit **security group claims**;
+  a user whose token overflows to group overage is refused, which fails closed.
+  Principal ids need no group claim. The check is defense in depth behind Easy
+  Auth: it trusts only headers the platform injects on the ingress path and does
+  not authenticate anyone by itself.
+- **Fail-closed.** An empty admin list would admit every user in the tenant. The
+  preprovision validator refuses that configuration. Bicep independently creates
+  nothing unless every prerequisite holds, and the app refuses to start with an
+  empty or malformed list.
+- **Identity.** The dedicated `id-companion-<env>` holds only AcrPull on the
+  environment registry and Azure Event Hubs Data Receiver on the one telemetry hub.
+  The container pins `AZURE_TOKEN_CREDENTIALS=ManagedIdentityCredential`, and
+  startup fails if an Event Hubs connection string or checkpoint store is
+  configured. There is no write-capable mode; a configuration editor would need
+  App Configuration Data Owner and is out of scope.
+- **Ingress.** The Container Apps environment has public ingress and admins have
+  no private path to it, so ingress stays external with HTTPS only.
+  `AI4IA_COMPANION_APP_ALLOWED_IP_RANGES` optionally adds an IPv4 allow-list; a
+  `/0` range is refused. Without one, Easy Auth plus the admin policy is the
+  boundary. The app scales to at most one replica, with sticky sessions for Blazor
+  circuits.
+- **State.** The feed is held in memory, and the console writes no telemetry or
+  chat history to disk. Upstream's raw-event `incomplete.json` writer is removed.
+  The application files are root-owned, so the app user cannot modify them. The
+  only path the app user can write is the ASP.NET Data Protection key ring. It
+  lives in the container and is lost with the revision, which only signs users
+  out. With `AI4IA_COMPANION_APP_MIN_REPLICAS=0` the console scales to zero, and
+  after idle it starts empty from the latest events.
+
+**Cost.** Enabling the console needs `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED=true`,
+which provisions a paid Event Hubs Standard namespace. It also adds one small
+Container App. Both are owner decisions.
+
+**Image path.** The console is **not an azd service**: azd cannot skip a service
+whose app is absent, and the web, api and proxy digest promotion stays unchanged.
+Instead:
+
+1. Run the manual, main-only `companion-image.yml` workflow. It builds
+   `proxy/CompanionApp.Dockerfile` once, pushes
+   `<acr>.azurecr.io/ai4ia/companion-<env>`, gates it on HIGH/CRITICAL findings,
+   attests SLSA provenance and an SPDX SBOM, verifies them, and prints the digest
+   reference in its summary. It uses the `production` environment and the existing
+   deploy identity. It runs in its own concurrency group, because sharing
+   deploy.yml's group would let a dispatch replace a queued deploy.
+2. Set the `AI4IA_COMPANION_APP_IMAGE` repository variable to that
+   `...@sha256:<digest>` reference.
+3. Run deploy.yml. Before provisioning, `scripts/verify-companion-image.py`
+   re-verifies the attestations for exactly that digest with the pinned GitHub CLI:
+   the companion workflow on main, a GitHub-hosted runner, and a single matching
+   subject. Only then may Bicep reference it. A tag, a registry-less reference or
+   another environment's repository is refused.
+
+Every pull request also builds and scans the image in the `api image` job.
+
+**Enable.** The image lives in this environment's registry, so enable the console
+only after the environment has been provisioned once. On a greenfield standup,
+the pre-provision gate stops the run because the registry does not exist yet.
+
+1. Enable proxy telemetry: `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED=true`.
+2. Register an Entra app for sign-in. Its redirect URI is
+   `https://ca-companion-<env>.<environment-default-domain>/.auth/login/aad/callback`.
+   The default domain is the same one the other apps use; read it with
+   `az containerapp env show -g <rg> -n <environment> --query properties.defaultDomain -o tsv`.
+   After provisioning, the exact origin is also emitted as `AZURE_COMPANION_APP_URL`.
+   Enable **ID tokens**, set **Assignment required**, and assign only the admin
+   group. If you allow-list a group, also set **Token configuration > groups
+   claim > Security groups**. No client secret is needed: sign-in uses the
+   ID-token flow, and the token store is off.
+3. Promote the image as above, then set `AI4IA_COMPANION_APP_ENABLED=true`,
+   `AI4IA_COMPANION_APP_IMAGE`, `AI4IA_COMPANION_APP_ENTRA_CLIENT_ID`, and
+   `AI4IA_COMPANION_APP_ADMIN_GROUP_IDS` and/or
+   `AI4IA_COMPANION_APP_ADMIN_PRINCIPAL_IDS`.
+4. Run deploy.yml, then sign in as an admin, and as a non-admin to see the 403.
+
+**Disable.** Set `AI4IA_COMPANION_APP_ENABLED=false` and run deploy.yml. The
+incremental provision stops managing the console but does not delete it. Delete
+`ca-companion-<env>` and `id-companion-<env>` explicitly, following the teardown
+runbook's approval rules. Also remove the identity's two role assignments: a
+deleted identity leaves them behind as orphaned assignments.
+
+**Refresh.** Rerun `companion-image.yml` after a proxy refresh or base-image
+update, then update `AI4IA_COMPANION_APP_IMAGE`. The console rolls only on
+provision.
 
 ### Document library and multimodal understanding
 
@@ -1136,6 +1267,157 @@ on the answer. The collapsed **Memories supplied** view provides focused owner
 navigation and identifies unrecorded or bounded evidence without backfilling old
 answers. Disabling/deleting memories does not erase historical messages/receipts.
 See [Memory architecture](../memory.md).
+
+### Custom photo avatars
+
+Photo avatars generated from a text description are implemented and
+default-off. The design, the provider contract and the risks are in
+[`../photo-avatars.md`](../photo-avatars.md). Turning the flag on is not
+approval to create avatars: the prerequisites below are held outside the
+repository, and creation stays refused until the home account itself reports
+the Limited Access capability.
+
+**Prerequisites, before any enablement:**
+
+1. **Limited Access approval** for custom text to speech avatar, for the
+   subscription that owns the home account, and a registered use case that
+   covers AI-generated characters. Keep the approval evidence with the change
+   record, never in the repository.
+2. **Responsible AI re-approval.** A new modality (synthetic likeness) is a
+   trigger-3 change under the [decision record](../rai-decision-record.md). The
+   existing annotate-only decision does not cover it until the owner re-approves.
+3. **A named owner for the report queue.** Reports land in the owner-partitioned
+   `photoAvatars` container, and each one emits a content-free
+   `photo_avatar_report` event. Someone must review them and, where the Limited
+   Access terms require it, forward them to Microsoft at the report link the API
+   returns.
+
+**Enable:**
+
+```text
+photoAvatarsEnabled=true
+photoAvatarMaxPerUser=5            # optional; 1-50
+photoAvatarMaxCreationsPerDay=5    # optional; 1-50
+photoAvatarLiveMaxMinutesPerSession=10   # optional; 1-60, live avatar sessions
+photoAvatarLiveIdleTimeoutSeconds=120    # optional; 30-900, live avatar sessions
+```
+
+`azd provision` then creates:
+
+- the `photoAvatars` Cosmos container (`/userId`, per-item TTL for reports only);
+- an `avatars` container on the shared generated-media account;
+- the `ai4ia-photo-avatars-v1` APIM API with its six exact operations and generated
+  policy, the `photo-avatar-project` named value and an API-scoped subscription;
+- the `Host-photoavatars` proxy host holding that subscription's key.
+
+No role assignment is added: APIM's system identity already has Cognitive
+Services User on every regional account. Outside local, startup refuses unless
+Entra, Cosmos, durable HTTPS Blob and usage metering are configured, and unless
+the residency policy is one the catalog home region satisfies.
+
+To limit creation to a pilot group, add an `avatars` domain to the group policy.
+Owners outside the group can still list, view, delete and report the avatars they
+already have; only creation (`create`) and previews (`use`) need a grant:
+
+```json
+{"version": 1, "domains": {"avatars": {
+  "default": {"allow": []},
+  "mappings": [{"claim": "groups", "value": "<pilot group object id>", "allow": ["create", "use"]}]
+}}}
+```
+
+**Live checks at enablement.** Run each one once, as a pilot user, and record
+the outcome:
+
+1. `GET /api/photo-avatars/config` reports `reason: available`, which means the
+   features read returned the catalog's feature name. `capability_unavailable`
+   means the approval has not reached the account; stop.
+2. Create one avatar. The provider must accept the create, and status must reach
+   `ready` with a stored preview. This also proves that APIM's Cognitive
+   Services User role can read and create the avatar project and create, read and
+   delete avatars. A 403 on any of those stops enablement; a scoped Speech role on
+   the home account is a separate owner approval.
+3. If a `Succeeded` avatar stays `generating` and the API logs
+   `photo avatar preview blocked code=host_not_in_catalog`, the provider issued the
+   link from a host other than the catalog's `preview.host`. Nothing was fetched and
+   the avatar is not failed: confirm the new host with a read-only observation, and
+   change the catalog through review; the next status read then stores the preview.
+   `preview_rejected` means the link itself failed a check (shape, a non-public
+   address, a redirect, or content that is not a PNG within bounds); stop and
+   investigate.
+4. Delete the avatar, and confirm the record, the Blob preview and the provider
+   avatar are all gone.
+5. Confirm the usage ledger holds one known $2 estimate for the create.
+6. **Live avatar (Phase 2).** This needs Speech Voice Live enabled. In the Speech
+   voice settings, pick the ready avatar and start a signed-in session against
+   the direct API Container App socket.
+   - The avatar must appear and speak within a few seconds, with the
+     `AI-generated` label visible.
+   - The `voice_live_completion` log must show `avatar.confirmed=true` and no
+     provider id.
+   - The usage ledger must hold one `photo_avatar_live` row whose `billableUnits`
+     match the connected seconds at $0.60 per minute.
+   - Then stay silent past the idle timeout and confirm the session ends with the
+     idle notice. This is the first proof through AI4IA's own APIM path.
+
+**Limits and cost.** Each dispatched create is metered once at the catalog
+price; an outcome that is still unknown is recorded as cost-unknown, never as
+free. A daily creation is spent when the create is dispatched, even if the
+provider later rejects it or the avatar is deleted. Creation refuses under any
+cost cap if the price is missing. Hard admission covers avatar creation as a
+request-only surface; token and dollar caps refuse it.
+
+Live avatar time (Phase 2) bills per second at $0.60 per minute while the session
+is connected, idle included.
+- Each session is capped by the smaller of `realtime_max_session_seconds` and
+  `photoAvatarLiveMaxMinutesPerSession`, and ends after
+  `photoAvatarLiveIdleTimeoutSeconds` without conversation.
+- It is admitted on its own request-only `avatar_live` surface, which requires the
+  `avatar.use` grant, before the voice session's own admission.
+- An unpriced live meter refuses under any cost cap.
+- Media stays on the existing Voice Live WebSocket (`output_protocol: websocket`):
+  there is no WebRTC, no TURN and no new network path to allow.
+
+**Changing the home account.** Each avatar exists only in the account that
+created it, and each record keeps that home region. After the catalog's
+`homeRegion` changes, APIM routes to the new account, whose answers say nothing
+about older avatars. So the API never reads, reconciles or re-verifies those
+records, never marks them failed, reports them `usable: false`, and refuses to
+delete them with 409 `avatar_home_changed`. Delete every avatar before the change
+if you can. Otherwise, removing each one is an operator data change: delete the
+provider avatar in the previous home account, then its preview Blob and its record
+and ledger entry in the owner's partition, and record the change.
+
+**Degradation and rollback.**
+
+1. If the capability disappears, creation refuses and existing avatars stay
+   visible and deletable, with `usable: false`. Nothing is deleted automatically.
+2. To stop the feature, first delete any avatars that should not be kept, while
+   deletion still works. Then set `photoAvatarsEnabled=false`. The next provision
+   removes the API's photo avatar settings, the proxy's `Host-photoavatars` host
+   and its `proxy-apim-photo-avatars-key` secret, so nothing in the app can reach
+   the avatar API or hold its key.
+3. ARM Incremental mode does **not** delete what an earlier provision created:
+   the `ai4ia-photo-avatars-v1` API with its six operations and policy, the
+   `photo-avatar-project` named value, and the API-scoped
+   `<workload>-proxy-photo-avatars` subscription, which stays active with the same
+   keys. The `photoAvatars` Cosmos container, the `avatars` Blob container and
+   their data remain, and so does every provider avatar in the home account. The
+   retained API still requires that subscription's key, which the app no longer
+   holds; the retained objects are nevertheless dormant privilege and inventory.
+   No automatic teardown occurs.
+4. Full deactivation is a separate destructive change: refresh the live
+   inventory, suspend or revoke the `<workload>-proxy-photo-avatars` subscription
+   first, then target only the photo avatar API with its operations and policy,
+   and the `photo-avatar-project` named value. Review a targeted what-if with no
+   unplanned deletes, and obtain explicit approval before applying it. Never use
+   complete deployment mode on the shared resource group or APIM. Removing the
+   Cosmos or Blob container deletes user data: that is a separate data-deletion
+   decision.
+
+No user-data deletion or offboarding path exists yet; until one does, remove a
+departing user's avatars through the API or by an operator delete of the provider
+avatar, the preview and the records in that user's partition.
 
 ### Custom MCP tools
 

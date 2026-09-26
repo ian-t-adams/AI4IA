@@ -140,6 +140,27 @@
     "proxyEventHubTelemetryEnabled": {
       "value": "${AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED=false}"
     },
+    "companionAppEnabled": {
+      "value": "${AI4IA_COMPANION_APP_ENABLED=false}"
+    },
+    "companionAppImage": {
+      "value": "${AI4IA_COMPANION_APP_IMAGE=}"
+    },
+    "companionAppEntraClientId": {
+      "value": "${AI4IA_COMPANION_APP_ENTRA_CLIENT_ID=}"
+    },
+    "companionAppAdminGroupIds": {
+      "value": "${AI4IA_COMPANION_APP_ADMIN_GROUP_IDS=}"
+    },
+    "companionAppAdminPrincipalIds": {
+      "value": "${AI4IA_COMPANION_APP_ADMIN_PRINCIPAL_IDS=}"
+    },
+    "companionAppAllowedIpRanges": {
+      "value": "${AI4IA_COMPANION_APP_ALLOWED_IP_RANGES=}"
+    },
+    "companionAppMinReplicas": {
+      "value": "${AI4IA_COMPANION_APP_MIN_REPLICAS=0}"
+    },
     "proxyAsyncEnabled": {
       "value": "${AI4IA_PROXY_ASYNC_ENABLED=false}"
     },
@@ -160,6 +181,21 @@
     },
     "videoGenerationEnabled": {
       "value": "${AI4IA_VIDEO_GENERATION_ENABLED=true}"
+    },
+    "photoAvatarsEnabled": {
+      "value": "${AI4IA_PHOTO_AVATARS_ENABLED=false}"
+    },
+    "photoAvatarMaxPerUser": {
+      "value": "${AI4IA_PHOTO_AVATAR_MAX_PER_USER=5}"
+    },
+    "photoAvatarMaxCreationsPerDay": {
+      "value": "${AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY=5}"
+    },
+    "photoAvatarLiveMaxMinutesPerSession": {
+      "value": "${AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION=10}"
+    },
+    "photoAvatarLiveIdleTimeoutSeconds": {
+      "value": "${AI4IA_PHOTO_AVATAR_LIVE_IDLE_TIMEOUT_SECONDS=120}"
     },
     "documentUnderstandingEnabled": {
       "value": "${AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=true}"

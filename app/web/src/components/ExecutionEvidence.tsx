@@ -245,6 +245,22 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
     ],
     ["Correlation id", receipt.correlationId],
   ];
+  const avatar = receipt.avatar ?? null;
+  const avatarRows: [string, string | null | undefined][] = avatar
+    ? [
+        ["Avatar", `Record ${avatar.recordRef}${avatar.baseModel ? ` · ${avatar.baseModel}` : ""}`],
+        ["Avatar time", avatar.confirmed
+          ? `${avatar.billableSeconds} second${avatar.billableSeconds === 1 ? "" : "s"}, from confirmation to close`
+          : "Never confirmed by the avatar service, so not metered"],
+        ["Estimated avatar cost", !avatar.cost
+          ? null
+          : avatar.cost.known && avatar.cost.estCostMicroUsd != null
+            ? `$${(avatar.cost.estCostMicroUsd / 1_000_000).toFixed(2)} ${avatar.cost.currency} at price version ${avatar.cost.priceVersion ?? "unknown"}`
+            : "Unknown (no price recorded)"],
+        ["Video frames", String(avatar.videoFrames)],
+        ["Ended by", avatar.endReason ? avatar.endReason.replace(/_/g, " ") : null],
+      ]
+    : [];
 
   return (
     <>
@@ -265,6 +281,26 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
           This does not show model-internal reasoning — the platform does not
           report any.
         </p>
+
+        {avatar ? (
+          <details>
+            <summary className="activity-label">Live avatar</summary>
+            <div className="activity-rows">
+              {avatarRows
+                .filter(([, value]) => Boolean(value))
+                .map(([label, value]) => (
+                  <div key={label} className="activity-row">
+                    <span className="activity-label">{label}</span>
+                    <span className="activity-detail">{value}</span>
+                  </div>
+                ))}
+              <p className="safety-note">
+                A synthetic, AI-generated likeness. Avatar video and audio are never stored, and the
+                estimate is billed per second at the recorded rate. It is not a bill.
+              </p>
+            </div>
+          </details>
+        ) : null}
 
         <details>
           <summary className="activity-label">Runtime</summary>

@@ -150,6 +150,15 @@ param codeInterpreterEnabled bool = false
 @description('Exact primary-region deployment accepted by the Code Interpreter APIM policy.')
 param codeInterpreterModel string
 
+@description('Provision the exact-operation photo avatar APIM API, its API-scoped proxy subscription, the avatar project named value and the dedicated proxy host. Default OFF.')
+param photoAvatarsEnabled bool = false
+
+@description('Endpoint of the catalog home account (infra/voice-providers.json photoAvatars.homeRegion) that owns the photo avatar project. The generated policy routes to the same account through its foundry-<region>-endpoint named value.')
+param photoAvatarAccountEndpoint string = ''
+
+@description('Foundry project in the home account that owns the {project}_PhotoAvatar avatar project. Required when photoAvatarsEnabled.')
+param photoAvatarProjectName string = ''
+
 // APIM child entities (products, subscriptions) live in one flat namespace per APIM
 // service. This gateway is a shared plane intended to front more than one workload,
 // so each name is derived from ${workload} rather than hardcoded. For workload
@@ -163,6 +172,7 @@ var realtimeSubscriptionName = '${workload}-api-realtime'
 var realtimeGaSubscriptionName = '${workload}-api-realtime-ga'
 var speechVoiceLiveSubscriptionName = '${workload}-api-speech-voice-live'
 var codeInterpreterSubscriptionName = '${workload}-api-code-interpreter'
+var proxyPhotoAvatarSubscriptionName = '${workload}-proxy-photo-avatars'
 
 var foundryBase = endsWith(primaryFoundryEndpoint, '/') ? primaryFoundryEndpoint : '${primaryFoundryEndpoint}/'
 var foundryOpenAiUrl = '${foundryBase}openai'
@@ -784,6 +794,87 @@ resource sharedCodeInterpreterSubscription 'Microsoft.ApiManagement/service/subs
   ]
 }
 
+// ---------------- Custom photo avatars (default OFF, isolated) ----------------
+// Exact operations only: no wildcard, no list, no inherited base policies. The
+// generated policy (scripts/gen-voice-provider-catalog.py) binds this API-scoped
+// subscription, admits only AI4IA-issued avatar ids, owns the avatar project
+// body and provider paths, authenticates with the APIM system identity (whose
+// Cognitive Services User role on every regional account comes from
+// sharedApimCognitiveUsers) and forwards exactly once. Only SimpleL7Proxy holds
+// the key; FastAPI reaches it through its existing proxy-ingress credential.
+var photoAvatarOperations = [
+  { name: 'photo-avatar-features', method: 'GET', path: '/features', avatar: false }
+  { name: 'photo-avatar-project-read', method: 'GET', path: '/project', avatar: false }
+  { name: 'photo-avatar-project-create', method: 'PUT', path: '/project', avatar: false }
+  { name: 'photo-avatar-create', method: 'PUT', path: '/photoavatars/{avatarId}', avatar: true }
+  { name: 'photo-avatar-read', method: 'GET', path: '/photoavatars/{avatarId}', avatar: true }
+  { name: 'photo-avatar-delete', method: 'DELETE', path: '/photoavatars/{avatarId}', avatar: true }
+]
+
+resource photoAvatarProjectValue 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = if (photoAvatarsEnabled) {
+  parent: sharedApim
+  name: 'photo-avatar-project'
+  properties: {
+    displayName: 'photo-avatar-project'
+    secret: false
+    value: photoAvatarProjectName
+  }
+}
+
+resource sharedPhotoAvatarApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = if (photoAvatarsEnabled) {
+  parent: sharedApim
+  name: 'ai4ia-photo-avatars-v1'
+  properties: {
+    displayName: 'AI4IA photo avatars (exact operations)'
+    path: 'ai4ia-photo-avatars-v1'
+    protocols: [ 'https' ]
+    serviceUrl: photoAvatarAccountEndpoint
+    subscriptionRequired: true
+    apiType: 'http'
+  }
+}
+
+resource sharedPhotoAvatarOperations 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = [for operation in photoAvatarOperations: if (photoAvatarsEnabled) {
+  parent: sharedPhotoAvatarApi
+  name: operation.name
+  properties: {
+    displayName: operation.name
+    method: operation.method
+    urlTemplate: operation.path
+    templateParameters: operation.avatar ? [
+      { name: 'avatarId', type: 'string', required: true }
+    ] : []
+  }
+}]
+
+resource sharedPhotoAvatarApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = if (photoAvatarsEnabled) {
+  parent: sharedPhotoAvatarApi
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: replace(loadTextContent('../policies/photo-avatars.xml'), '__AI4IA_PHOTO_AVATAR_SUBSCRIPTION_ID__', proxyPhotoAvatarSubscriptionName)
+  }
+  dependsOn: [
+    photoAvatarProjectValue
+    sharedFoundryEndpointValues
+    sharedPhotoAvatarOperations
+  ]
+}
+
+resource sharedProxyPhotoAvatarSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = if (photoAvatarsEnabled) {
+  parent: sharedApim
+  name: proxyPhotoAvatarSubscriptionName
+  properties: {
+    displayName: 'AI4IA proxy photo avatar hop'
+    scope: sharedPhotoAvatarApi.id
+    state: 'active'
+    allowTracing: false
+  }
+  dependsOn: [
+    sharedPhotoAvatarApiPolicy
+  ]
+}
+
 // ---------------- Speech Voice Live (additive, isolated) ----------------
 // A second, separately scoped realtime provider on the SAME Basic v2 APIM. It is
 // entirely additive: it adds one new WebSocket API/path, one new subscription, and
@@ -912,10 +1003,13 @@ resource sharedApimSpeechVoiceLiveFoundryUser 'Microsoft.Authorization/roleAssig
 }
 
 // ---------------- SimpleL7Proxy Container App ----------------
+// retryafter=false on every host keeps one tracked 5xx that carries APIM's
+// retry-after-ms from blocking the single catch-all host, and with it every model,
+// until that deadline. The flag was inert before the b0066b0e refresh.
 var hostEnv = concat([
   {
     name: 'Host1'
-    value: 'host=${sharedApimGatewayUrl};mode=apim;probe=/openai/status;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=true'
+    value: 'host=${sharedApimGatewayUrl};mode=apim;probe=/openai/status;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=false'
   }
   {
     name: 'Host1-api-key'
@@ -929,6 +1023,19 @@ var hostEnv = concat([
   {
     name: 'Host2-api-key'
     secretRef: 'proxy-apim-attempts-v1-key'
+  }
+] : [], photoAvatarsEnabled ? [
+  // A named host, not Host3: the proxy stops reading numbered hosts at the first
+  // gap, so Host3 would vanish whenever the conditional Host2 is absent. The exact
+  // non-stripping path makes this the only candidate for avatar requests (the
+  // catch-all Host1 is never tried) and probe=/ keeps the proxy from probing it.
+  {
+    name: 'Host-photoavatars'
+    value: 'host=${sharedApimGatewayUrl};path=/ai4ia-photo-avatars-v1;stripprefix=false;mode=apim;probe=/;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=false'
+  }
+  {
+    name: 'Host-photoavatars-api-key'
+    secretRef: 'proxy-apim-photo-avatars-key'
   }
 ] : [])
 
@@ -965,6 +1072,16 @@ var staticEnv = [
     value: string([
       'backendLog'
       'X-Policy-LastError'
+    ])
+  }
+  // Removed after authentication and before the worker reads them: a caller must not
+  // rewrite the admitted model or make the proxy log the request body or response lines.
+  {
+    name: 'DisallowedHeaders'
+    value: string([
+      'S7P-Model-Override'
+      'S7PDEBUGBODY'
+      'S7PDEBUGSTREAM'
     ])
   }
   { name: 'LogAllRequestHeaders', value: 'false' }
@@ -1038,6 +1155,11 @@ var proxySecrets = concat([
   {
     name: 'proxy-apim-attempts-v1-key'
     value: sharedProxyAttemptsSubscription!.listSecrets().primaryKey
+  }
+] : [], photoAvatarsEnabled ? [
+  {
+    name: 'proxy-apim-photo-avatars-key'
+    value: sharedProxyPhotoAvatarSubscription!.listSecrets().primaryKey
   }
 ] : [], proxyProfilesEnabled ? [
   {

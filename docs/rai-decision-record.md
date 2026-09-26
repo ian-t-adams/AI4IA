@@ -209,6 +209,19 @@ annotate-only posture continues:
 > high-severity annotations; inspection is manual until those controls exist.
 > Do not describe the annual review date as continuous detection.
 
+> **Custom photo avatars: implemented default-off, not enabled.** Phase 1 of photo
+> avatars generated from a text description (create, status, preview, list,
+> delete, report) is in the repository behind a default-off flag. Creation also
+> refuses until the account reports the Limited Access capability. Avatars add
+> synthetic human likeness through custom avatar creation, Voice Live avatar
+> sessions and batch avatar synthesis, so enabling any of them fires trigger 3 and
+> needs re-approval first. The implementation keeps this record's annotate-only
+> posture: deterministic product constraints (a bounded prompt, listed attributes,
+> a fictional/adult/not-a-real-person attestation, AI-generated disclosure and a
+> report path), not classifier-based blocking. Whether that posture covers avatar
+> prompts is part of the pending re-approval. See the
+> [photo avatar design](photo-avatars.md).
+
 ## What would change this decision
 
 - Onboarding a second tenant, or any unauthenticated access.

@@ -669,6 +669,11 @@ results:
 - `App Configuration sentinel | PASS`
 - `Content Understanding defaults | PASS`
 
+A sentinel `FAIL` also fails the provision. Diagnose it with
+[deployment §7.17](./deployment.md#717-app-configuration-sentinel-fails-after-a-long-provision-aadsts700024),
+which separates a token that could not be issued from a data-plane write that was
+refused.
+
 When Content Understanding is enabled, a missing primary output or token and a
 PATCH that still fails after the bounded RBAC-propagation retries is recorded as
 `FAIL` and fails the provision (`continueOnError: false`). `SKIP` is valid only when

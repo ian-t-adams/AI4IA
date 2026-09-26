@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 import threading
 import asyncio
+import socket
 
 import pytest
 
@@ -17,6 +18,7 @@ from ai4ia_api.agents.ssrf import (
     MAX_URL_LEN,
     MAX_CONCURRENT_DNS_RESOLUTIONS,
     DnsCapacityError,
+    DnsLookupError,
     SsrfError,
     async_resolve_pinned_ip,
     async_validate_public_https_url,
@@ -213,6 +215,55 @@ def test_pinned_ip_rejects_unresolvable_and_empty():
         resolve_pinned_ip("nope.example", resolver=boom)
     with pytest.raises(SsrfError):
         resolve_pinned_ip("empty.example", resolver=_only([]))
+
+
+# --- a failed lookup is distinguishable from a refused answer -----------------
+
+
+def _unresolvable(_host: str) -> list[str]:
+    raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+
+
+@pytest.mark.parametrize("resolver", [_unresolvable, _only([])], ids=["lookup-error", "empty-answer"])
+def test_a_failed_lookup_is_a_dns_lookup_error_that_still_refuses(resolver):
+    for check in (
+        lambda: validate_public_https_url("https://nope.example/rpc", resolver=resolver),
+        lambda: resolve_pinned_ip("nope.example", resolver=resolver),
+    ):
+        with pytest.raises(DnsLookupError) as raised:
+            check()
+        assert isinstance(raised.value, SsrfError)  # every existing caller still refuses
+    # Control: a resolved, non-public answer is a refusal, never a lookup failure.
+    for check in (
+        lambda: validate_public_https_url("https://rebind.example/rpc", resolver=_only(["10.0.0.1"])),
+        lambda: resolve_pinned_ip("rebind.example", resolver=_only(["10.0.0.1"])),
+    ):
+        with pytest.raises(SsrfError) as refused:
+            check()
+        assert not isinstance(refused.value, DnsLookupError)
+
+
+async def test_an_async_lookup_timeout_is_a_dns_lookup_error():
+    released = threading.Event()
+
+    def slow(_host: str) -> list[str]:
+        released.wait(timeout=1)
+        return list(_PUBLIC)
+
+    try:
+        with pytest.raises(DnsLookupError, match="timed out"):
+            await async_validate_public_https_url(
+                "https://mcp.example.com/rpc", resolver=slow, timeout_s=0.01
+            )
+        with pytest.raises(DnsLookupError, match="timed out"):
+            await async_resolve_pinned_ip("mcp.example.com", resolver=slow, timeout_s=0.01)
+    finally:
+        released.set()
+        await asyncio.sleep(0.05)
+    # Control: the same helpers accept a prompt public answer.
+    assert await async_resolve_pinned_ip(
+        "mcp.example.com", resolver=_only(_PUBLIC), timeout_s=1
+    ) == _PUBLIC[0]
 
 
 async def test_async_resolution_times_out_without_blocking_the_event_loop():

@@ -233,13 +233,246 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertIn(f"if(parameters('{flag}')", host_env)
         self.assertIn("path=/ai4ia-attempts-v1;stripprefix=false", host_env)
         self.assertIn("mode=apim;probe=/;processor=OpenAI", host_env)
-        self.assertIn("retryafter=false", host_env)
+        self.assertRegex(host_env, r"'Host2', 'value', format\('[^']*;retryafter=false'")
         self.assertIn("Host2-api-key", host_env)
         secrets = resources["proxyApp"]["properties"]["configuration"]["secrets"]
         self.assertIn(f"if(parameters('{flag}')", secrets)
         self.assertIn("proxy-apim-attempts-v1-key", secrets)
         self.assertIn("listSecrets(", secrets)
         self.assertNotIn("proxy-apim-attempts-v1-key", json.dumps(api_module))
+
+    def test_photo_avatar_gateway_is_default_off_exact_and_proxy_scoped(self) -> None:
+        flag = "photoAvatarsEnabled"
+        self.assertIs(self.template["parameters"][flag]["defaultValue"], False)
+        for limit in ("photoAvatarMaxPerUser", "photoAvatarMaxCreationsPerDay"):
+            parameter = self.template["parameters"][limit]
+            self.assertEqual(
+                (parameter["defaultValue"], parameter["minValue"], parameter["maxValue"]), (5, 1, 50),
+            )
+        for limit, bounds in (
+            ("photoAvatarLiveMaxMinutesPerSession", (10, 1, 60)),
+            ("photoAvatarLiveIdleTimeoutSeconds", (120, 30, 900)),
+        ):
+            parameter = self.template["parameters"][limit]
+            self.assertEqual(
+                (parameter["defaultValue"], parameter["minValue"], parameter["maxValue"]), bounds,
+            )
+        gateway_module = self.template["resources"]["gateway"]["properties"]
+        self.assertEqual(gateway_module["parameters"][flag]["value"], f"[parameters('{flag}')]")
+        gateway = gateway_module["template"]
+        self.assertIs(gateway["parameters"][flag]["defaultValue"], False)
+        resources = gateway["resources"]
+        expected = {
+            "photoAvatarProjectValue": "Microsoft.ApiManagement/service/namedValues",
+            "sharedPhotoAvatarApi": "Microsoft.ApiManagement/service/apis",
+            "sharedPhotoAvatarOperations": "Microsoft.ApiManagement/service/apis/operations",
+            "sharedPhotoAvatarApiPolicy": "Microsoft.ApiManagement/service/apis/policies",
+            "sharedProxyPhotoAvatarSubscription": "Microsoft.ApiManagement/service/subscriptions",
+        }
+        gated = {name for name, value in resources.items() if flag in value.get("condition", "")}
+        self.assertEqual(gated, set(expected))
+        for name, kind in expected.items():
+            self.assertEqual(resources[name]["type"], kind)
+            self.assertEqual(resources[name]["condition"], f"[parameters('{flag}')]")
+        api = resources["sharedPhotoAvatarApi"]["properties"]
+        self.assertEqual(api["path"], "ai4ia-photo-avatars-v1")
+        self.assertIs(api["subscriptionRequired"], True)
+        self.assertEqual(api["protocols"], ["https"])
+        self.assertEqual(gateway["variables"]["photoAvatarOperations"], [
+            {"name": "photo-avatar-features", "method": "GET", "path": "/features", "avatar": False},
+            {"name": "photo-avatar-project-read", "method": "GET", "path": "/project", "avatar": False},
+            {"name": "photo-avatar-project-create", "method": "PUT", "path": "/project", "avatar": False},
+            {"name": "photo-avatar-create", "method": "PUT", "path": "/photoavatars/{avatarId}", "avatar": True},
+            {"name": "photo-avatar-read", "method": "GET", "path": "/photoavatars/{avatarId}", "avatar": True},
+            {"name": "photo-avatar-delete", "method": "DELETE", "path": "/photoavatars/{avatarId}", "avatar": True},
+        ])
+        operation = resources["sharedPhotoAvatarOperations"]
+        self.assertEqual(operation["copy"]["count"], "[length(variables('photoAvatarOperations'))]")
+        self.assertNotIn("*", json.dumps(gateway["variables"]["photoAvatarOperations"]))
+        policy = resources["sharedPhotoAvatarApiPolicy"]["properties"]["value"]
+        self.assertIn("'__AI4IA_PHOTO_AVATAR_SUBSCRIPTION_ID__', variables('proxyPhotoAvatarSubscriptionName')", policy)
+        subscription = resources["sharedProxyPhotoAvatarSubscription"]
+        self.assertIn("ai4ia-photo-avatars-v1", subscription["properties"]["scope"])
+        self.assertIs(subscription["properties"]["allowTracing"], False)
+        self.assertNotEqual(
+            subscription["properties"]["scope"], resources["sharedProxyModelSubscription"]["properties"]["scope"],
+        )
+        self.assertIn("sharedPhotoAvatarApiPolicy", json.dumps(subscription["dependsOn"]))
+        # The proxy holds the only key, under a named host that survives an absent Host2.
+        host_env = gateway["variables"]["hostEnv"]
+        self.assertIn(f"if(parameters('{flag}')", host_env)
+        self.assertIn("'Host-photoavatars'", host_env)
+        self.assertIn("path=/ai4ia-photo-avatars-v1;stripprefix=false", host_env)
+        self.assertRegex(host_env, r"'Host-photoavatars', 'value', format\('[^']*probe=/;[^']*retryafter=false'")
+        self.assertNotIn("'Host3'", host_env)
+        secrets = resources["proxyApp"]["properties"]["configuration"]["secrets"]
+        self.assertIn("proxy-apim-photo-avatars-key", secrets)
+        api_module = json.dumps(self.template["resources"]["api"])
+        self.assertNotIn("proxy-apim-photo-avatars-key", api_module)
+        self.assertNotIn("photoAvatarSubscription", api_module)
+        # The home account and project come from the catalog, never a literal.
+        self.assertIn(".photoAvatars.homeRegion", self.template["variables"]["photoAvatarHomeRegion"])
+        self.assertIn("variables('photoAvatarHomeRegion')", self.template["variables"]["photoAvatarIndex"])
+        self.assertIn(
+            "variables('photoAvatarIndex')", gateway_module["parameters"]["photoAvatarProjectName"]["value"],
+        )
+
+    def test_photo_avatar_storage_and_api_settings_follow_the_flag(self) -> None:
+        data_module = self.template["resources"]["data"]["properties"]
+        self.assertEqual(
+            data_module["parameters"]["deployPhotoAvatarStorage"]["value"], "[parameters('photoAvatarsEnabled')]",
+        )
+        data = data_module["template"]
+
+        def one(kind: str, marker: str) -> dict:
+            (match,) = [r for r in data["resources"] if r["type"] == kind and marker in r["name"]]
+            return match
+
+        container = one("Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers", "'photoAvatars'")
+        self.assertEqual(container["condition"], "[parameters('deployPhotoAvatarStorage')]")
+        resource = container["properties"]["resource"]
+        self.assertEqual(resource["partitionKey"]["paths"], ["/userId"])
+        self.assertEqual(resource["defaultTtl"], -1)
+        blob = one(
+            "Microsoft.Storage/storageAccounts/blobServices/containers", "parameters('photoAvatarBlobContainer')",
+        )
+        self.assertEqual(blob["condition"], "[parameters('deployPhotoAvatarStorage')]")
+        self.assertEqual(blob["properties"]["publicAccess"], "None")
+        self.assertIn("parameters('deployPhotoAvatarStorage')", data["variables"]["deployMediaStorage"])
+        api = self.template["resources"]["api"]["properties"]["template"]
+        env = api["variables"]["photoAvatarEnv"]
+        self.assertIn(
+            "createObject('name', 'AI4IA_PHOTO_AVATARS_ENABLED', 'value', string(parameters('photoAvatarsEnabled')))",
+            env,
+        )
+        self.assertIn("if(parameters('photoAvatarsEnabled')", env)
+        for name in (
+            "AI4IA_PHOTO_AVATAR_BLOB_ACCOUNT_URL", "AI4IA_PHOTO_AVATAR_BLOB_CONTAINER",
+            "AI4IA_PHOTO_AVATAR_MAX_PER_USER", "AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY",
+            "AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION",
+            "AI4IA_PHOTO_AVATAR_LIVE_IDLE_TIMEOUT_SECONDS",
+        ):
+            self.assertIn(name, env)
+        self.assertIn("variables('photoAvatarEnv')", api["variables"]["apiEnv"])
+
+    def _companion(self) -> tuple[dict, dict[str, list[dict]]]:
+        module = self.template["resources"]["companion"]
+        resources = module["properties"]["template"]["resources"]
+        rows = resources.values() if isinstance(resources, dict) else resources
+        by_type: dict[str, list[dict]] = {}
+        for row in rows:
+            by_type.setdefault(row["type"], []).append(row)
+        return module, by_type
+
+    def test_companion_console_is_default_off_and_never_created_open(self) -> None:
+        parameters = self.template["parameters"]
+        self.assertIs(parameters["companionAppEnabled"]["defaultValue"], False)
+        self.assertEqual(parameters["companionAppImage"]["defaultValue"], "")
+        module, _ = self._companion()
+        self.assertEqual(module["condition"], "[variables('companionAppDeployable')]")
+        deployable = self.template["variables"]["companionAppDeployable"]
+        # Every prerequisite is part of the one condition; an empty admin set, a
+        # missing sign-in app or a non-digest image never creates the app.
+        for guard in (
+            "parameters('companionAppEnabled')",
+            "parameters('proxyEventHubTelemetryEnabled')",
+            "contains(parameters('companionAppImage'), '@sha256:')",
+            "not(empty(parameters('companionAppEntraClientId')))",
+            "greater(length(concat(variables('companionAdminGroupIds'), "
+            "variables('companionAdminPrincipalIds'))), 0)",
+        ):
+            self.assertIn(guard, deployable)
+
+    def test_companion_console_identity_is_read_only_and_hub_scoped(self) -> None:
+        _, by_type = self._companion()
+        roles = by_type["Microsoft.Authorization/roleAssignments"]
+        # An assignment without an explicit scope lands on the resource group.
+        scopes = {role["properties"]["roleDefinitionId"]: role.get("scope", "<resource group>") for role in roles}
+        self.assertEqual(len(scopes), len(roles), "duplicate role definitions")
+        module_vars = self.template["resources"]["companion"]["properties"]["template"]["variables"]
+        self.assertEqual(module_vars["acrPullRoleId"], "7f951dda-4ed3-4680-a7ca-43fe172d538d")
+        self.assertEqual(module_vars["eventHubsDataReceiverRoleId"], "a638d3c7-ab3a-418d-83e6-5f17a39d4fde")
+        self.assertEqual(set(scopes), {
+            "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('acrPullRoleId'))]",
+            "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', "
+            "variables('eventHubsDataReceiverRoleId'))]",
+        })
+        receiver = scopes[
+            "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', "
+            "variables('eventHubsDataReceiverRoleId'))]"
+        ]
+        self.assertIn("Microsoft.EventHub/namespaces/eventhubs'", receiver)
+        module = json.dumps(self.template["resources"]["companion"])
+        # No write, model, secret or configuration authority: Data Owner/Reader,
+        # Cognitive Services, Foundry and Key Vault roles are all absent.
+        for role in (
+            "5ae67dd6-50cb-40e7-96ff-dc2bfa4b606b", "516239f1-63e1-4d78-a4de-a74fb236a071",
+            "a97b65f3-24c7-4388-baec-2e87135dc908", "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
+            "53ca6127-db72-4b80-b1b0-d745d6d5456d", "4633458b-17de-408a-b874-0445c86b69e6",
+            "2b629674-e913-4c01-ae53-ef4638d8f975",
+        ):
+            self.assertNotIn(role, module)
+        self.assertEqual(len(by_type["Microsoft.EventHub/namespaces/eventhubs/consumergroups"]), 1)
+
+    def test_companion_console_requires_entra_admin_sign_in(self) -> None:
+        _, by_type = self._companion()
+        (auth,) = by_type["Microsoft.App/containerApps/authConfigs"]
+        properties = auth["properties"]
+        self.assertIs(properties["platform"]["enabled"], True)
+        self.assertEqual(properties["globalValidation"]["unauthenticatedClientAction"], "RedirectToLoginPage")
+        self.assertIs(properties["httpSettings"]["requireHttps"], True)
+        self.assertIs(properties["login"]["tokenStore"]["enabled"], False)
+        entra = properties["identityProviders"]["azureActiveDirectory"]
+        self.assertIs(entra["enabled"], True)
+        self.assertNotIn("clientSecretSettingName", entra["registration"])
+        policy = entra["validation"]["defaultAuthorizationPolicy"]
+        self.assertEqual(policy["allowedPrincipals"], {
+            "groups": "[parameters('adminGroupIds')]",
+            "identities": "[parameters('adminPrincipalIds')]",
+        })
+        self.assertEqual(policy["allowedApplications"], ["[parameters('entraClientId')]"])
+
+    def test_companion_console_is_not_an_azd_service_and_holds_no_secrets(self) -> None:
+        _, by_type = self._companion()
+        (app,) = by_type["Microsoft.App/containerApps"]
+        self.assertEqual(app["tags"], "[parameters('tags')]")
+        self.assertNotIn("azd-service-name", json.dumps(app))
+        configuration = app["properties"]["configuration"]
+        self.assertNotIn("secrets", configuration)
+        ingress = configuration["ingress"]
+        self.assertIs(ingress["external"], True)
+        self.assertIs(ingress["allowInsecure"], False)
+        (restrictions,) = ingress["copy"]
+        self.assertEqual(restrictions["name"], "ipSecurityRestrictions")
+        self.assertEqual(restrictions["count"], "[length(parameters('allowedIpRanges'))]")
+        self.assertEqual(restrictions["input"]["action"], "Allow")
+        template = app["properties"]["template"]
+        self.assertEqual(template["scale"]["maxReplicas"], 1)
+        (container,) = template["containers"]
+        self.assertEqual(container["image"], "[parameters('image')]")
+        env = {item["name"]: item.get("value") for item in container["env"]}
+        self.assertEqual(env["AZURE_TOKEN_CREDENTIALS"], "ManagedIdentityCredential")
+        self.assertEqual(env["CompanionApp__EventHubMonitor__eventhub_enabled"], "true")
+        # The in-app admin gate receives exactly the platform policy's allow-list.
+        self.assertEqual(env["CompanionApp__Admin__GroupIds"], "[join(parameters('adminGroupIds'), ',')]")
+        self.assertEqual(env["CompanionApp__Admin__PrincipalIds"], "[join(parameters('adminPrincipalIds'), ',')]")
+        for forbidden in ("EVENTHUB_CONNECTIONSTRING", "CompanionApp__EventHubMonitor__ConnectionString",
+                          "CompanionApp__EventHubMonitor__CheckpointStorage"):
+            self.assertNotIn(forbidden, env)
+
+    def test_proxy_hosts_and_header_policy_keep_upstream_caller_controls_off(self) -> None:
+        gateway = self.template["resources"]["gateway"]["properties"]["template"]
+        host_env = gateway["variables"]["hostEnv"]
+        # Since the b0066b0e refresh, retryafter=true lets one tracked 5xx carrying
+        # APIM's retry-after-ms block the only catch-all host, and every model with it.
+        self.assertRegex(host_env, r"'Host1', 'value', format\('[^']*;retryafter=false'")
+        self.assertNotIn("retryafter=true", host_env)
+        static_env = json.dumps(gateway["variables"]["staticEnv"])
+        self.assertIn(
+            '"name": "DisallowedHeaders", "value": '
+            "\"[string(createArray('S7P-Model-Override', 'S7PDEBUGBODY', 'S7PDEBUGSTREAM'))]\"",
+            static_env,
+        )
 
     def test_versioned_prefix_cannot_resolve_to_any_legacy_gateway_api(self) -> None:
         resources = self.template["resources"]["gateway"]["properties"]["template"]["resources"]
@@ -250,11 +483,14 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertEqual(set(apis.values()), {
             "openai", "openai/realtime", "openai/v1/realtime",
             "code-interpreter", "speech/voice-live/realtime", "ai4ia-attempts-v1",
+            "ai4ia-photo-avatars-v1",
         })
         for name, path in apis.items():
             self.assertTrue(path and "*" not in path)
             if name != "sharedAttemptsApi":
                 self.assertFalse("ai4ia-attempts-v1/openai/responses".startswith(path + "/"))
+            if name != "sharedPhotoAvatarApi":
+                self.assertFalse("ai4ia-photo-avatars-v1/photoavatars".startswith(path + "/"))
         wildcard = resources["sharedModelOperations"]
         self.assertEqual(wildcard["properties"]["urlTemplate"], "/{*path}")
         self.assertNotIn("ai4ia-attempts-v1", wildcard["name"])

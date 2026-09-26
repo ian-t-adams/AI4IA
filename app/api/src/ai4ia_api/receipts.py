@@ -331,6 +331,34 @@ class ReceiptModelRequest(BaseModel):
     promptBytes: int = 0
 
 
+class ReceiptAvatarCost(BaseModel):
+    """Live avatar time priced per second at the rate version snapshotted at connect."""
+
+    known: bool = False
+    estCostMicroUsd: int | None = Field(default=None, ge=0)
+    currency: str = Field(default="USD", max_length=8)
+    priceVersion: str | None = Field(default=None, max_length=96)
+    billingModelId: str | None = Field(default=None, max_length=64)
+    basis: Literal["second"] = "second"
+
+
+class ReceiptAvatarEvidence(BaseModel):
+    """What a live photo avatar session actually ran: never frames or provider ids.
+
+    ``recordRef`` is the owner's record-id prefix (short enough to survive the
+    credential redactor); the provider's avatar id is never part of a receipt.
+    """
+
+    recordRef: str = Field(max_length=16)
+    baseModel: str | None = Field(default=None, max_length=32)
+    outputProtocol: Literal["websocket"] = "websocket"
+    confirmed: bool = False
+    billableSeconds: int = Field(default=0, ge=0)
+    videoFrames: int = Field(default=0, ge=0)
+    endReason: str | None = Field(default=None, max_length=48)
+    cost: ReceiptAvatarCost | None = None
+
+
 class ExecutionReceipt(BaseModel):
     """The full, bounded record of one assistant turn's execution.
 
@@ -388,12 +416,16 @@ class ExecutionReceipt(BaseModel):
     # ``tool_calls_capped``, ``receipt_size_capped``, ``receipt_build_failed``).
     notes: list[str] = Field(default_factory=list)
     workflowMoney: ReceiptWorkflowMoney | None = None
+    # Live photo avatar evidence; absent (and omitted) for every other turn.
+    avatar: ReceiptAvatarEvidence | None = None
 
     @model_serializer(mode="wrap")
     def preserve_legacy_shape(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         body = handler(self)
         if self.workflowMoney is None:
             body.pop("workflowMoney", None)
+        if self.avatar is None:
+            body.pop("avatar", None)
         return body
 
 

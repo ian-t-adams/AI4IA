@@ -99,6 +99,7 @@ class UsageService:
         billing_unit: str | None = None,
         image_size: str | None = None,
         image_quality: str | None = None,
+        resource_ref: str | None = None,
     ) -> UsageRecord:
         from ..hard_quota.dispatch import current_admission_evidence
 
@@ -107,7 +108,7 @@ class UsageService:
         completed = status == "complete" if provider_completed is None else provider_completed
         unit_billable = (
             completed
-            and billing_unit in {"image", "page"}
+            and billing_unit in {"image", "page", "avatar", "second"}
             and billable_units is not None
             and billable_units > 0
         )
@@ -136,6 +137,7 @@ class UsageService:
             billingUnit=billing_unit if unit_billable else None,
             imageSize=image_size,
             imageQuality=image_quality,
+            resourceRef=resource_ref,
             correlationId=correlation_id,
             hardQuota=admissions, hardQuotaCount=admission_count,
         )
@@ -156,6 +158,22 @@ class UsageService:
             operation_est = self._pricing.estimate_pages(
                 model_id, pages=unit_count
             )
+            rec.currency = operation_est.currency
+            rec.priceVersion = operation_est.version
+            rec.pricingBasis = operation_est.pricing_basis
+            if operation_est.known and operation_est.micro_usd is not None:
+                rec.costKnown = True
+                rec.estCostMicroUsd = operation_est.micro_usd
+        elif unit_count is not None and billing_unit == "avatar":
+            operation_est = self._pricing.estimate_avatar(model_id, count=unit_count)
+            rec.currency = operation_est.currency
+            rec.priceVersion = operation_est.version
+            rec.pricingBasis = operation_est.pricing_basis
+            if operation_est.known and operation_est.micro_usd is not None:
+                rec.costKnown = True
+                rec.estCostMicroUsd = operation_est.micro_usd
+        elif unit_count is not None and billing_unit == "second":
+            operation_est = self._pricing.estimate_avatar_seconds(model_id, seconds=unit_count)
             rec.currency = operation_est.currency
             rec.priceVersion = operation_est.version
             rec.pricingBasis = operation_est.pricing_basis
@@ -198,6 +216,7 @@ class UsageService:
         billing_unit: str | None = None,
         image_size: str | None = None,
         image_quality: str | None = None,
+        resource_ref: str | None = None,
     ) -> None:
         """Meter one turn. Never raises: ledger/log failures are swallowed."""
         if not self._enabled:
@@ -214,6 +233,7 @@ class UsageService:
                 provider_completed=provider_completed, agent=agent,
                 correlation_id=correlation_id, billable_units=billable_units,
                 billing_unit=billing_unit, image_size=image_size, image_quality=image_quality,
+                resource_ref=resource_ref,
             ))
             return
         try:
@@ -232,6 +252,7 @@ class UsageService:
                 billing_unit=billing_unit,
                 image_size=image_size,
                 image_quality=image_quality,
+                resource_ref=resource_ref,
             )
         except Exception:  # noqa: BLE001 - metering must never break a turn
             logger.warning("usage record build failed", exc_info=True)
@@ -265,6 +286,59 @@ class UsageService:
             self._emit_event_safe(record)
         return created
 
+    async def record_operation_once(
+        self,
+        *,
+        record_id: str,
+        user_id: str,
+        session_id: str,
+        model_id: str,
+        target: UsageTarget,
+        usage: TokenUsage,
+        status: UsageStatus,
+        provider_completed: bool,
+        correlation_id: str | None = None,
+        billable_units: int | None = None,
+        billing_unit: str | None = None,
+    ) -> bool:
+        """Meter one provider operation at most once under a deterministic row id.
+
+        For operations a status read may rediscover after a crash (a photo avatar
+        create). The first row for ``record_id`` wins: a later attempt, even with
+        better evidence, is a no-op, so history is never repriced or double
+        counted. Best-effort like :meth:`record_completion`; returns whether a
+        row for ``record_id`` is durable after this call (created now or before).
+        """
+        if not self._enabled:
+            return False
+        from .repository import UsageRecordConflict
+
+        try:
+            rec = self.build_record(
+                user_id=user_id, session_id=session_id, model_id=model_id, target=target,
+                usage=usage, status=status, provider_completed=provider_completed, agent=None,
+                correlation_id=correlation_id, billable_units=billable_units,
+                billing_unit=billing_unit,
+            ).model_copy(update={"id": record_id})
+        except Exception:  # noqa: BLE001 - metering must never break the request
+            logger.warning("usage record build failed", exc_info=True)
+            return False
+        try:
+            created = await asyncio.shield(self._repo.record_once(rec))
+        except asyncio.CancelledError:
+            raise
+        except UsageRecordConflict:
+            # A row already exists for this operation; the first one stands.
+            return True
+        except Exception:  # noqa: BLE001 - best-effort ledger durability
+            logger.warning(
+                "usage ledger write failed (correlation_id=%s)", rec.correlationId, exc_info=True
+            )
+            return False
+        if created:
+            self._emit_event_safe(rec)
+        return True
+
     def _emit_event(
         self, rec: UsageRecord, timing_attributes: dict[str, object] | None = None
     ) -> None:
@@ -295,6 +369,7 @@ class UsageService:
             "billingUnit": rec.billingUnit,
             "imageSize": rec.imageSize,
             "imageQuality": rec.imageQuality,
+            "resourceRef": rec.resourceRef,
             "costKnown": rec.costKnown,
             "estCostUsd": rec.estCostUsd,
             "currency": rec.currency,

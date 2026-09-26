@@ -270,6 +270,35 @@ param videoBlobAccountUrl string = ''
 @description('Blob container tool-generated videos are written to.')
 param videoBlobContainer string = 'videos'
 
+@description('Enable custom photo avatars. Default OFF. The Boolean is always emitted; the Blob and limit settings only while it is on.')
+param photoAvatarsEnabled bool = false
+
+@description('Blob account URL backing photo avatar previews. Required for enabled photo avatars outside local development.')
+param photoAvatarBlobAccountUrl string = ''
+
+@description('Blob container photo avatar previews are written to.')
+param photoAvatarBlobContainer string = 'avatars'
+
+@description('Most photo avatars one user may hold at once.')
+@minValue(1)
+@maxValue(50)
+param photoAvatarMaxPerUser int = 5
+
+@description('Most photo avatar creations one user may dispatch in a rolling 24 hours.')
+@minValue(1)
+@maxValue(50)
+param photoAvatarMaxCreationsPerDay int = 5
+
+@description('Longest live photo avatar session, in minutes.')
+@minValue(1)
+@maxValue(60)
+param photoAvatarLiveMaxMinutesPerSession int = 10
+
+@description('Seconds without conversation before the relay ends a live photo avatar session.')
+@minValue(30)
+@maxValue(900)
+param photoAvatarLiveIdleTimeoutSeconds int = 120
+
 @description('Azure AI Search endpoint (e.g. https://<svc>.search.windows.net). Empty unless a search service is provisioned; when set, emitted as AI4IA_SEARCH_ENDPOINT so the api can index/query via managed identity.')
 param searchEndpoint string = ''
 
@@ -786,6 +815,40 @@ var videoEnv = (videoGenerationEnabled && !empty(videoBlobAccountUrl)) ? [
   }
 ] : []
 
+// Always emit the Boolean so a deployed API can never fall back to an implicit
+// default; storage and limits reach the API only while the feature is on.
+var photoAvatarEnv = concat([
+  {
+    name: 'AI4IA_PHOTO_AVATARS_ENABLED'
+    value: string(photoAvatarsEnabled)
+  }
+], photoAvatarsEnabled ? [
+  {
+    name: 'AI4IA_PHOTO_AVATAR_BLOB_ACCOUNT_URL'
+    value: photoAvatarBlobAccountUrl
+  }
+  {
+    name: 'AI4IA_PHOTO_AVATAR_BLOB_CONTAINER'
+    value: photoAvatarBlobContainer
+  }
+  {
+    name: 'AI4IA_PHOTO_AVATAR_MAX_PER_USER'
+    value: string(photoAvatarMaxPerUser)
+  }
+  {
+    name: 'AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY'
+    value: string(photoAvatarMaxCreationsPerDay)
+  }
+  {
+    name: 'AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION'
+    value: string(photoAvatarLiveMaxMinutesPerSession)
+  }
+  {
+    name: 'AI4IA_PHOTO_AVATAR_LIVE_IDLE_TIMEOUT_SECONDS'
+    value: string(photoAvatarLiveIdleTimeoutSeconds)
+  }
+] : [])
+
 // Azure AI Search endpoint, emitted only when a search service is provisioned.
 // The api reaches the data plane via its managed identity (no keys); empty here
 // leaves the env var unset and the feature dormant.
@@ -1012,7 +1075,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], openapiEnv, claudeEnv, toolApprovalEnv, groupPolicyEnv, hardQuotaEnv, sessionDeletionEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, workflowAutomationEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], openapiEnv, claudeEnv, toolApprovalEnv, groupPolicyEnv, hardQuotaEnv, sessionDeletionEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, workflowAutomationEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, photoAvatarEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

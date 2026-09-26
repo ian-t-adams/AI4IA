@@ -60,6 +60,70 @@ def text(value: Any) -> str:
     return str(value).strip()
 
 
+GUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+COMPANION_IMAGE_RE = re.compile(
+    r"(?P<registry>[a-z0-9]+\.azurecr\.io)/ai4ia/companion-(?P<env>[a-z0-9-]+)@sha256:[0-9a-f]{64}"
+)
+CIDR_RE = re.compile(r"(?P<address>\d{1,3}(?:\.\d{1,3}){3})/(?P<prefix>\d{1,2})")
+
+
+def _csv(value: Any) -> list[str]:
+    return [item.strip() for item in text(value).split(",") if item.strip()]
+
+
+def companion_app_errors(parameters: dict[str, Any]) -> list[str]:
+    """Fail-closed prerequisites of the optional admin-only CompanionApp console."""
+
+    if not truthy(parameter_value(parameters, "companionAppEnabled", False)):
+        return []
+    errors: list[str] = []
+    if not truthy(parameter_value(parameters, "proxyEventHubTelemetryEnabled", False)):
+        errors.append(
+            "companionAppEnabled=true requires proxyEventHubTelemetryEnabled=true; "
+            "the proxy Event Hub feed is the console's only data source."
+        )
+    image = text(parameter_value(parameters, "companionAppImage"))
+    match = COMPANION_IMAGE_RE.fullmatch(image)
+    environment = text(os.environ.get("AZURE_ENV_NAME", "")).lower()
+    if match is None:
+        errors.append(
+            "companionAppEnabled=true requires companionAppImage as a digest reference "
+            "<registry>.azurecr.io/ai4ia/companion-<env>@sha256:<digest> produced by the "
+            "companion-image workflow; a tag or placeholder is never deployed."
+        )
+    elif environment and match.group("env") != environment:
+        errors.append("companionAppImage must come from this environment's companion repository.")
+    if not GUID_RE.fullmatch(text(parameter_value(parameters, "companionAppEntraClientId"))):
+        errors.append(
+            "companionAppEnabled=true requires companionAppEntraClientId, the client id of "
+            "the Entra app registration used for sign-in."
+        )
+    admins = [
+        *_csv(parameter_value(parameters, "companionAppAdminGroupIds")),
+        *_csv(parameter_value(parameters, "companionAppAdminPrincipalIds")),
+    ]
+    if not admins:
+        errors.append(
+            "companionAppEnabled=true requires at least one admin group or principal id; "
+            "an empty allow-list would admit every user in the tenant."
+        )
+    elif any(not GUID_RE.fullmatch(admin) for admin in admins):
+        errors.append("CompanionApp admin group and principal ids must be Entra object id GUIDs.")
+    for cidr in _csv(parameter_value(parameters, "companionAppAllowedIpRanges")):
+        parsed = CIDR_RE.fullmatch(cidr)
+        if (
+            parsed is None
+            or int(parsed.group("prefix")) > 32
+            or any(int(octet) > 255 for octet in parsed.group("address").split("."))
+        ):
+            errors.append(f"companionAppAllowedIpRanges entry {cidr!r} must be an IPv4 CIDR.")
+        elif int(parsed.group("prefix")) == 0:
+            errors.append("companionAppAllowedIpRanges must not allow every address.")
+    if text(parameter_value(parameters, "companionAppMinReplicas", 0)) not in {"0", "1"}:
+        errors.append("companionAppMinReplicas must be 0 or 1; Blazor circuits need one replica.")
+    return errors
+
+
 def main(*, require_deployment_attestation: bool = False) -> int:
     raw = json.loads(PARAMETERS_FILE.read_text(encoding="utf-8"))
     parameters = raw.get("parameters", {})
@@ -406,6 +470,32 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             "leave it at its documented default unless a live-validated override is available."
         )
 
+    # Custom photo avatars: default-off, and creation still refuses at runtime
+    # until the account reports the Limited Access capability. These checks catch
+    # a contradictory deployment at plan time; the API enforces the same posture.
+    photo_avatars_enabled = truthy(parameter_value(parameters, "photoAvatarsEnabled", False))
+    for name in ("photoAvatarMaxPerUser", "photoAvatarMaxCreationsPerDay"):
+        raw_limit = text(parameter_value(parameters, name, 5))
+        if not raw_limit.isdigit() or not 1 <= int(raw_limit) <= 50:
+            errors.append(f"{name} must be an integer from 1 to 50.")
+    for name, default, low, high in (
+        ("photoAvatarLiveMaxMinutesPerSession", 10, 1, 60),
+        ("photoAvatarLiveIdleTimeoutSeconds", 120, 30, 900),
+    ):
+        raw_limit = text(parameter_value(parameters, name, default))
+        if not raw_limit.isdigit() or not low <= int(raw_limit) <= high:
+            errors.append(f"{name} must be an integer from {low} to {high}.")
+    if photo_avatars_enabled:
+        if text(parameter_value(parameters, "apiAuthProvider", "dev")).lower() != "entra":
+            errors.append("photoAvatarsEnabled=true requires apiAuthProvider=entra.")
+        warnings.append(
+            "photoAvatarsEnabled provisions a Cosmos container, a Blob container and the "
+            "exact-operation photo avatar APIM API. Creation stays refused until the home "
+            "account reports the CustomAvatar Limited Access capability; the RAI trigger-3 "
+            "re-approval and the enablement checks in docs/runbooks/feature-enablement.md "
+            "remain prerequisites."
+        )
+
     if truthy(parameter_value(parameters, "documentComputeEnabled", False)) and not truthy(
         parameter_value(parameters, "documentUnderstandingEnabled", False)
     ):
@@ -546,6 +636,8 @@ def main(*, require_deployment_attestation: bool = False) -> int:
         errors.append("proxyMinReplicas must be at least 1 for the active gateway path.")
     if min_replicas > max_replicas:
         errors.append("proxyMinReplicas must not exceed proxyMaxReplicas.")
+
+    errors.extend(companion_app_errors(parameters))
 
     if truthy(parameter_value(parameters, "dataTierPrivate", False)) and not truthy(
         parameter_value(parameters, "vnetIsolationEnabled", False)

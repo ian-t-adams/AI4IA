@@ -1,4 +1,4 @@
-"""Best-effort token, image, and document cost estimation.
+"""Best-effort token, image, document, and avatar cost estimation.
 
 Estimates are directional telemetry, never billing. Unsupported models or
 option combinations remain explicitly cost-unknown rather than appearing free.
@@ -57,10 +57,12 @@ class PricingBook:
         image_rates: dict[str, dict[str, Any]] | None = None,
         document_rates: dict[str, dict[str, Any]] | None = None,
         scoped_rates: dict[str, dict[str, PriceRate]] | None = None,
+        avatar_rates: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._rates = rates
         self._image_rates = image_rates or {}
         self._document_rates = document_rates or {}
+        self._avatar_rates = avatar_rates or {}
         self._currency = currency
         self._version = version
         self._scoped_rates = scoped_rates or {}
@@ -218,6 +220,55 @@ class PricingBook:
             version=self._version,
         )
 
+    def estimate_avatar(self, model_id: str, *, count: int = 1) -> OperationCostEstimate:
+        """Per-avatar creation estimate; an absent or malformed rate is unknown, never free."""
+        rate = self._avatar_rates.get(model_id)
+        if rate is None or count <= 0 or rate.get("basis") != "avatar":
+            return self._unknown_operation()
+        try:
+            per_avatar = _decimal(rate["perAvatarUsd"])
+        except (InvalidOperation, KeyError, TypeError, ValueError):
+            return self._unknown_operation()
+        if not per_avatar.is_finite() or per_avatar <= 0:
+            return self._unknown_operation()
+        return OperationCostEstimate(
+            micro_usd=_to_micro_usd(per_avatar * Decimal(count)),
+            known=True,
+            pricing_basis="avatar",
+            billable_units=float(count),
+            billing_unit="avatar",
+            currency=self._currency,
+            version=self._version,
+        )
+
+    def estimate_avatar_seconds(self, model_id: str, *, seconds: int) -> OperationCostEstimate:
+        """Live avatar time billed per second from a per-minute list price.
+
+        An absent or malformed rate, or a non-positive whole-second count, is
+        unknown, never free.
+        """
+        rate = self._avatar_rates.get(model_id)
+        if (
+            rate is None or type(seconds) is not int or seconds <= 0
+            or rate.get("basis") != "second"
+        ):
+            return self._unknown_operation()
+        try:
+            per_minute = _decimal(rate["perMinuteUsd"])
+        except (InvalidOperation, KeyError, TypeError, ValueError):
+            return self._unknown_operation()
+        if not per_minute.is_finite() or per_minute <= 0:
+            return self._unknown_operation()
+        return OperationCostEstimate(
+            micro_usd=_to_micro_usd(per_minute * Decimal(seconds) / Decimal(60)),
+            known=True,
+            pricing_basis="second",
+            billable_units=float(seconds),
+            billing_unit="second",
+            currency=self._currency,
+            version=self._version,
+        )
+
     def _unknown_operation(self) -> OperationCostEstimate:
         return OperationCostEstimate(
             micro_usd=None,
@@ -267,6 +318,7 @@ def _parse(raw: dict[str, Any]) -> PricingBook:
         image_rates=_operation_rates(raw.get("imageModels")),
         document_rates=_operation_rates(raw.get("documentModels")),
         scoped_rates=scoped_rates,
+        avatar_rates=_operation_rates(raw.get("avatarModels")),
     )
 
 

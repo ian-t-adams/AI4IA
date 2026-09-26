@@ -2,6 +2,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using SimpleL7Proxy.Backend.Iterators;
 using SimpleL7Proxy.Proxy;
 
 namespace SimpleL7Proxy.DTO
@@ -18,9 +19,13 @@ namespace SimpleL7Proxy.DTO
         public List<Dictionary<string, string>> IncompleteRequests { get; set; }
         public int AsyncBlobAccessTimeoutSecs { get; set; }
         public int LifetimeBackendAttempts { get; set; }
-        public int LifetimePolicyCycleCounter { get; set; }
+        public double RequeueDelayMs { get; set; }=0;
+        [JsonPropertyName("LifetimePolicyCycleCounter")]
+        public int LifetimeAPIMPolicyCycleCounter { get; set; }
+        public IterationModeEnum? IterationMode { get; set; }
         public int Priority { get; set; }
         public int Priority2 { get; set; }
+        public short S7PHash { get; set; }
         public int Timeout { get; set; }
         public int version { get; set; } = 1;
         public string? AttemptContract { get; set; }
@@ -40,7 +45,9 @@ namespace SimpleL7Proxy.DTO
             NoReplayAttempt.RefusePersistence(data);
             AsyncBlobAccessTimeoutSecs = data.AsyncBlobAccessTimeoutSecs;
             LifetimeBackendAttempts = data.LifetimeBackendAttempts;
-            LifetimePolicyCycleCounter = data.LifetimePolicyCycleCounter;
+            RequeueDelayMs = data.RequeueDelayMs;
+            LifetimeAPIMPolicyCycleCounter = data.LifetimeAPIMPolicyCycleCounter;
+            IterationMode = data.IterationMode;
             BlobContainerName = data.BlobContainerName;
             DequeueTime = data.DequeueTime;
             EnqueueTime = data.EnqueueTime;
@@ -54,6 +61,7 @@ namespace SimpleL7Proxy.DTO
             Path = data.Path;
             Priority = data.Priority;
             Priority2 = data.Priority2;
+            S7PHash = data.S7PHash;
             profileUserId = data.profileUserId;
             Requeued = data.Requeued;
             SBTopicName = data.SBTopicName;
@@ -146,9 +154,12 @@ namespace SimpleL7Proxy.DTO
             data.Populate(Guid.ToString(), Guid, MID, Path, Method, Timestamp, Headers);
             data.AsyncBlobAccessTimeoutSecs = this.AsyncBlobAccessTimeoutSecs;
             data.LifetimeBackendAttempts = this.LifetimeBackendAttempts;
+            data.RequeueDelayMs = this.RequeueDelayMs;
             data.BackendAttempts = 0;
-            data.LifetimePolicyCycleCounter = this.LifetimePolicyCycleCounter;
-            data.PolicyCycleCounter = 0;
+            data.LifetimeAPIMPolicyCycleCounter = this.LifetimeAPIMPolicyCycleCounter;
+            data.APIMPolicyCycleCounter = 0;
+            if (IterationMode.HasValue)
+                data.IterationMode = IterationMode.Value;
             data.BlobContainerName = BlobContainerName;
             data.DequeueTime = DequeueTime;
             data.EnqueueTime = EnqueueTime;
@@ -158,6 +169,7 @@ namespace SimpleL7Proxy.DTO
             data.ParentId = ParentId;
             data.Priority = Priority;
             data.Priority2 = Priority2;
+            data.S7PHash = S7PHash;
             data.profileUserId = this.profileUserId;
             data.Requeued = Requeued;
             data.SBTopicName = SBTopicName;
