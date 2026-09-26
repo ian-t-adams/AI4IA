@@ -724,6 +724,7 @@ python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/red
 python3 -m unittest scripts.tests.test_speech_canary scripts.tests.test_voice_migration_docs
 python3 scripts/gen-voice-migration-docs.py --check              # public dates, never live proof
 python3 -m unittest scripts.tests.test_application_canary       # offline continuous monitor/state/identity controls
+python3 -m unittest scripts.tests.test_canary_runtime           # fresh venv holding only the canary jobs' lock-derived runtime
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
 python3 -m unittest scripts.tests.test_model_retirement         # dates, read-only reports and activation contracts
 python3 -m unittest scripts.tests.test_retirement_reader_setup  # real setup CLI with offline az/gh stubs
@@ -772,6 +773,8 @@ python3 -m unittest scripts.tests.test_image_ownership           # exported-file
 `jmespath==0.9.5`, pinned in quality to the inspected Azure CLI parser version:
 the raw ARM projection regressions must execute the real query, not skip it or
 test only already-projected data. The reporter itself remains stdlib-only.
+`test_canary_runtime` needs PyYAML plus PyPI access for its venv install, and
+must run on the canary workflow's Python major.minor; it fails rather than skips.
 The rest are stdlib-only.
 
 Operational guards must distinguish a failed Azure read from a missing resource.
@@ -860,6 +863,18 @@ operator actor policy must admit the setup-only path separately. See
 and notification boundaries. Its existing quality job installs the same pinned
 aiohttp transport for offline fixtures; app-ci also runs Ruff and Pyright over
 the monitor package.
+
+Both canary jobs install only aiohttp's closure, hash-checked and binary-only
+from `app/api/uv.lock` by `python -m scripts.canaries.dependencies`; never add an
+ad hoc pip install. The monitor must run without API runtime dependencies. It
+prices through `load_model_pricing`, the catalog-free view of the same book,
+because `load_pricing` resolves SKU-scoped rows through the pydantic catalog. Run
+36267220637 failed exactly that way after its OIDC exchange: every unit test
+injects a price book, and an import check passes. `test_canary_runtime` therefore
+drives a synthetic lifecycle through the real CLI in a fresh venv holding only the
+declared runtime, and an allowlist bounds the API modules it may load. A blocked
+chain has no operator-only unblock: a new lease plus bootstrap is refused. The
+runbook's recovery steps need a reviewed source change.
 
 `security-scan` runs Trivy filesystem/config scans and gitleaks over the full
 proxy tree. `.trivyignore.yaml` suppresses only the untouched upstream Dockerfile

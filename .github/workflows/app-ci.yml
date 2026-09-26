@@ -47,6 +47,8 @@ on:
       - "scripts/evaluations/**"
       - "scripts/canaries/**"
       - "scripts/_canary_contract.py"
+      - "scripts/tests/test_canary_runtime.py"
+      - "scripts/tests/_canary_runtime_probe.py"
       - "scripts/tests/test_behavioral_evaluations.py"
       - "scripts/tests/test_live_evaluations.py"
       - "scripts/tests/test_live_evaluation_api.py"
@@ -165,7 +167,7 @@ jobs:
       - name: Operational canary static controls
         working-directory: .
         run: |
-          ruff check --config app/api/pyproject.toml scripts/canaries scripts/_canary_contract.py scripts/tests/test_application_canary.py
+          ruff check --config app/api/pyproject.toml scripts/canaries scripts/_canary_contract.py scripts/tests/test_application_canary.py scripts/tests/test_canary_runtime.py scripts/tests/_canary_runtime_probe.py
           pyright --project scripts/canaries
 
       - name: External Claude source contracts

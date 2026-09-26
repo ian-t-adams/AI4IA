@@ -1022,7 +1022,7 @@ class ObserveCliTests(unittest.IsolatedAsyncioTestCase):
                     patch.object(cli, "utc_now", return_value=NOW),
                     patch("scripts.canaries.identity.acquire", acquire_token),
                     patch("scripts.canaries.transport.Transport", return_value=app),
-                    patch("scripts.canaries.monitor.load_pricing", return_value=BOOK),
+                    patch("scripts.canaries.monitor.load_model_pricing", return_value=BOOK),
                 ):
                     self.assertEqual(await cli.observe_command(directory, environment()), 0)
                 state = State.parse(original_read(directory / "state.json"))
@@ -1128,7 +1128,7 @@ class ObserveCliTests(unittest.IsolatedAsyncioTestCase):
                     patch.object(cli, "utc_now", return_value=NOW),
                     patch("scripts.canaries.identity.acquire", side_effect=token),
                     patch("scripts.canaries.transport.Transport", return_value=app),
-                    patch("scripts.canaries.monitor.load_pricing", return_value=BOOK),
+                    patch("scripts.canaries.monitor.load_model_pricing", return_value=BOOK),
                 ):
                     self.assertEqual(await cli.observe_command(directory, environment(config=config)), 0)
                 self.assertEqual(selected_clients, [CONFIG.client_id] + ([actor.client_id] if protocol == "ga" else []))

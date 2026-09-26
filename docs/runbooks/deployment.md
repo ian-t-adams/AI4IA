@@ -867,6 +867,73 @@ v1 writer cutover/cleanup approval, GA capability and protocol activation,
 frequency/spend approval, a live run and demonstrated alert/recovery remain
 separate operator acceptance. Do not close #412 based only on this source.
 
+#### Declared runtime
+
+Both jobs run `python -m scripts.canaries.dependencies` before any canary
+command. It installs aiohttp's closure, and nothing else, with the versions and
+artifact hashes recorded in `app/api/uv.lock`. The install is `--require-hashes`
+and wheels only, so an artifact or transitive dependency absent from the lock is
+refused rather than resolved. The monitor imports stdlib-only API constants and
+prices through `load_model_pricing()`, the catalog-free view of the committed
+price book. Every lookup it makes has no deployment, and returns the same price
+as the API's `load_pricing()`. `load_pricing()` itself resolves SKU-scoped rows
+through the pydantic catalog, which the canary jobs do not install.
+
+The monitor's unit tests inject a synthetic price book, so they cannot prove
+this runtime. `scripts.tests.test_canary_runtime`, run by the quality job,
+creates a fresh virtual environment. It executes the workflow's own install
+command there, then drives bootstrap, predecessor location, admission,
+observation and notification through the real CLI. The real catalog and price
+book are used; only GitHub, OIDC/Entra and the application are faked. The same
+test also bounds which API modules the job may load.
+
+#### Blocked state and recovery
+
+A blocked state is terminal for the current state chain, by design. A lost,
+stale, gapped, malformed or unresolved predecessor records `blocked: true` with
+`cleanup_safe: false`, and every later state inherits it:
+
+- A disabled schedule keeps the flag and exits 3 on every run.
+- `observe` and `bootstrap`, even under a new `approval_id`, are refused with
+  `state_blocked`: admission checks the predecessor's block before any lease.
+- A re-run is refused (`state_invalid`); only first attempts are admissible.
+- A gap or stale predecessor never becomes a zero-failure baseline.
+
+A chain starts only at the workflow's run number 1, which has no predecessor.
+There is no operator-only unblock. Re-activation needs, in order:
+
+1. **Owner investigation.** From the blocked run's log and handoff artifact, and
+   API telemetry for correlation `application-canary-<run-id>-1`, establish
+   whether any application write could be unresolved. Resolve an unresolved
+   session or chat through the exact-owner v1 cleanup path first.
+2. **A reviewed, owner-approved source change that starts a new chain.** Either
+   a new workflow identity (a new path and `contracts.WORKFLOW`) whose run 1
+   starts a new chain, or an explicit owner-attested resolution transition that
+   records the investigation. Neither exists today, and neither is automatic.
+3. **A new lease.** A new `approval_id` and `expires_at`, then one `bootstrap`
+   dispatch, then observation. A used approval is never reused.
+
+Keep `AI4IA_CANARY_ENABLED=false` until then. Disabling the workflow stops the
+red scheduled runs; the chain then goes stale, which is still blocked.
+
+#### 2026-09-26 missing-runtime incident
+
+- Run 36267164380 (#49) bootstrapped the approved lease: an unscored state.
+- Observation run 36267220637 (#50) exchanged OIDC for the canary token and sent
+  one authenticated, read-only `GET /api/models`, which returned 200. The monitor
+  then called `load_pricing()`. Its lazy catalog import raised
+  `ModuleNotFoundError: pydantic`, because the job installed only aiohttp.
+  This happened before the capability, session, chat and cleanup requests, so no
+  application write or model call occurred. The uncaught exception also skipped
+  the final state write, so #50 retained only its handoff.
+- Scheduled run 36272392656 (#51) found no #50 state (`state_missing`),
+  recorded the durable block and exited 3. Later runs inherit it.
+- The unit tests had passed because every monitor test injected a price book.
+  An import check would also have passed, because the failure was at run time.
+
+The fix is the declared runtime above. It does not unblock the chain; recovery
+follows the steps in [Blocked state and recovery](#blocked-state-and-recovery).
+
 ### Automatic and manual rollback
 
 Rollback restores an app when its serving revision moved **or** a different
