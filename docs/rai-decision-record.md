@@ -209,6 +209,12 @@ annotate-only posture continues:
 > high-severity annotations; inspection is manual until those controls exist.
 > Do not describe the annual review date as continuous detection.
 
+> **Planned: custom photo avatars.** Photo avatars generated from a text
+> description are planned, not enabled. They add synthetic human likeness through
+> custom avatar creation, Voice Live avatar sessions and batch avatar synthesis,
+> so enabling any of them fires trigger 3 and needs re-approval first. See the
+> [photo avatar plan](photo-avatars.md).
+
 ## What would change this decision
 
 - Onboarding a second tenant, or any unauthenticated access.
