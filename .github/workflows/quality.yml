@@ -211,6 +211,16 @@ jobs:
       - name: Run continuous canary offline controls
         run: python3 -m unittest scripts.tests.test_application_canary
 
+      - name: Run canary declared-runtime guard
+        run: |
+          set -euo pipefail
+          # Builds a fresh venv holding only what application-canaries.yml installs
+          # (hash-checked from app/api/uv.lock, downloaded from PyPI) and drives the
+          # real canary CLI through a synthetic lifecycle with only the network
+          # faked. Unit tests inject a price book, so they cannot prove the jobs'
+          # runtime. No model call, credential, OIDC token or Azure access.
+          python3 -m unittest scripts.tests.test_canary_runtime
+
       - name: Run subscription preflight unit tests
         run: |
           set -euo pipefail

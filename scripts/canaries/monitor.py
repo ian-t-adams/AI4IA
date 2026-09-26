@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 
 import aiohttp
 
-from app.api.src.ai4ia_api.usage.pricing import PricingBook, load_pricing
+from app.api.src.ai4ia_api.usage.pricing import PricingBook, load_model_pricing
 from scripts._canary_contract import (
     SESSION_ID_RE, SetupOrderError, SetupState, acknowledge_setup, catalog_model_preferences,
     chat_payload, session_payload, verified_cleanup,
@@ -307,7 +307,9 @@ async def chat(
         report.mark("platform", "pass", elapsed=response.elapsed, attempts=1)
         report.mark("auth", "pass", elapsed=response.elapsed, attempts=1)
         stage = "catalog"
-        book = pricing or load_pricing()
+        # The API loader resolves SKU-scoped rows through the pydantic catalog,
+        # which this job does not install. Every lookup below is deployment-free.
+        book = pricing or load_model_pricing()
         select_chat(source, advertised, book)
         report.catalog_version = digest(source)
         report.mark("catalog", "pass")

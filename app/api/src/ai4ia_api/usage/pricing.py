@@ -6,6 +6,7 @@ option combinations remain explicitly cost-unknown rather than appearing free.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 from functools import lru_cache
@@ -281,7 +282,21 @@ class PricingBook:
         )
 
 
-def _parse(raw: dict[str, Any]) -> PricingBook:
+def _catalog_sku_deployments(model_id: str) -> list[tuple[str, str]]:
+    """(SKU, deployment name) pairs for one catalog model; the API-only dependency."""
+    from ..catalog import load_catalog
+
+    model = load_catalog().get(model_id)
+    return [(option.sku, option.deploymentName) for option in model.options] if model is not None else []
+
+
+def _no_deployments(_model_id: str) -> tuple[tuple[str, str], ...]:
+    return ()
+
+
+def _parse(
+    raw: dict[str, Any], sku_deployments: Callable[[str], Iterable[tuple[str, str]]],
+) -> PricingBook:
     currency = raw.get("currency", "USD")
     version = raw.get("version")
     rates: dict[str, PriceRate] = {}
@@ -297,20 +312,17 @@ def _parse(raw: dict[str, Any]) -> PricingBook:
             output_per_1m=float(out_rate or 0.0),
         )
     scoped_rates: dict[str, dict[str, PriceRate]] = {}
-    if raw.get("tokenRatesBySku"):
-        from ..catalog import load_catalog
-
-        catalog = load_catalog()
-        for model_id, sku_rates in raw["tokenRatesBySku"].items():
-            scoped_rates[model_id] = {}
-            model = catalog.get(model_id)
-            for option in model.options if model is not None else []:
-                entry = sku_rates.get(option.sku)
-                if isinstance(entry, dict):
-                    scoped_rates[model_id][option.deploymentName] = PriceRate(
-                        float(entry["inputPer1M"]), float(entry["outputPer1M"]),
-                        float(entry["cacheReadPer1M"]),
-                    )
+    for model_id, sku_rates in (raw.get("tokenRatesBySku") or {}).items():
+        # A scoped row stays scoped even with no resolvable deployment, so its
+        # deployment-free lookup is unknown rather than a base-table price.
+        scoped_rates[model_id] = {}
+        for sku, deployment in sku_deployments(model_id):
+            entry = sku_rates.get(sku)
+            if isinstance(entry, dict):
+                scoped_rates[model_id][deployment] = PriceRate(
+                    float(entry["inputPer1M"]), float(entry["outputPer1M"]),
+                    float(entry["cacheReadPer1M"]),
+                )
     return PricingBook(
         rates,
         currency=currency,
@@ -370,10 +382,28 @@ def _to_micro_usd(cost_usd: Decimal) -> int:
     return int((cost_usd * Decimal(1_000_000)).to_integral_value(rounding=ROUND_HALF_UP))
 
 
-@lru_cache
-def load_pricing(explicit_path: str | None = None) -> PricingBook:
+def _load(
+    explicit_path: str | None, sku_deployments: Callable[[str], Iterable[tuple[str, str]]],
+) -> PricingBook:
     path = Path(explicit_path) if explicit_path else _PACKAGED
     if not path.exists():
         # Missing price book is non-fatal: everything is recorded as cost-unknown.
         return PricingBook({}, currency="USD", version=None)
-    return _parse(json.loads(path.read_text(encoding="utf-8")))
+    return _parse(json.loads(path.read_text(encoding="utf-8")), sku_deployments)
+
+
+@lru_cache
+def load_pricing(explicit_path: str | None = None) -> PricingBook:
+    return _load(explicit_path, _catalog_sku_deployments)
+
+
+@lru_cache
+def load_model_pricing(explicit_path: str | None = None) -> PricingBook:
+    """The same price book and calculator, keyed by model id alone, without the catalog.
+
+    Every deployment-free lookup equals ``load_pricing()``'s. SKU-scoped token rows
+    have no deployments here, so a deployment-scoped lookup of one is unknown,
+    never a different price. The operational canary runs on this stdlib-only path
+    because its workflow installs none of the API's runtime dependencies.
+    """
+    return _load(explicit_path, _no_deployments)

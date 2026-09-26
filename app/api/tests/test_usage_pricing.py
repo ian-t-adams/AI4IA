@@ -1,13 +1,17 @@
 """Pricing book estimation: micro-USD math, snapshots, and unknown handling."""
 from __future__ import annotations
 
+import ast
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from ai4ia_api.model_evidence import ModelCallRecorder
-from ai4ia_api.usage.pricing import PriceRate, PricingBook, load_pricing
+from ai4ia_api.usage.pricing import PriceRate, PricingBook, load_model_pricing, load_pricing
 
 _CATALOG_PATH = Path(__file__).resolve().parents[3] / "infra" / "models.json"
 
@@ -108,6 +112,61 @@ def test_disabled_model_retains_exact_sku_prices_for_accepted_work(tmp_path, mon
         assert catalog.get(entry.id) is entry
         assert catalog.for_deployment(option.deploymentName) is entry
         assert (catalog.resolve_deployment(entry.id) is not None) is enabled
+
+
+_PACKAGED_PRICING = Path(__file__).parents[1] / "src" / "ai4ia_api" / "data" / "pricing.json"
+
+
+def test_catalog_free_view_prices_every_deployment_free_lookup_identically():
+    from ai4ia_api.catalog import load_catalog
+
+    full, view = load_pricing(), load_model_pricing()
+    raw = json.loads(_PACKAGED_PRICING.read_text(encoding="utf-8"))
+    scoped = raw["tokenRatesBySku"]
+    assert scoped, "the SKU-scoped branch this view exists for is no longer exercised"
+    assert (view.version, view.currency) == (full.version, full.currency)
+    for model_id in sorted(set(raw["models"]) | set(scoped) | {"not-in-the-price-book"}):
+        assert view.rate(model_id) == full.rate(model_id), model_id
+        for book in (full, view):
+            assert book.snapshot_token_prices(model_id).version == full.version
+        assert view.estimate_token_bound(
+            model_id, prompt_tokens=1024, completion_tokens=64,
+        ) == full.estimate_token_bound(model_id, prompt_tokens=1024, completion_tokens=64)
+        assert view.estimate(model_id, prompt_tokens=12, completion_tokens=1) == full.estimate(
+            model_id, prompt_tokens=12, completion_tokens=1,
+        )
+    # Control: the scoped rows stay unknown without a deployment in both books
+    # (their base `models` rows must not leak through), and only the catalog
+    # book prices an exact deployment.
+    for model_id, sku_rates in scoped.items():
+        assert model_id in raw["models"]
+        assert full.rate(model_id) is None and view.rate(model_id) is None
+        entry = load_catalog().get(model_id)
+        assert entry is not None
+        for option in (option for option in entry.options if option.sku in sku_rates):
+            assert full.rate(model_id, deployment=option.deploymentName) is not None
+            assert view.rate(model_id, deployment=option.deploymentName) is None
+
+
+def test_catalog_free_view_never_imports_the_catalog_or_application_settings():
+    probe = (
+        "import sys\n"
+        "from ai4ia_api.usage import pricing\n"
+        "assert getattr(pricing, sys.argv[1])().version\n"
+        "print(sorted(name for name in sys.modules if name.startswith(('pydantic', 'ai4ia_api.'))))\n"
+    )
+    loaded = {}
+    for loader in ("load_model_pricing", "load_pricing"):
+        result = subprocess.run(
+            [sys.executable, "-c", probe, loader], capture_output=True, text=True, timeout=60,
+            cwd=Path(__file__).parents[1],
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")},
+        )
+        assert result.returncode == 0, result.stderr
+        loaded[loader] = set(ast.literal_eval(result.stdout.strip()))
+    assert loaded["load_model_pricing"] == {"ai4ia_api.usage", "ai4ia_api.usage.pricing"}
+    # Control: the same probe observes the catalog path, so the check is not vacuous.
+    assert {"ai4ia_api.catalog", "pydantic"} <= loaded["load_pricing"]
 
 
 def test_packaged_flux_image_rates_preserve_each_meter_basis():
