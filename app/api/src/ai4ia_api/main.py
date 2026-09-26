@@ -35,6 +35,7 @@ from .hard_quota.factory import build_admission_binding
 from .hard_quota.models import QuotaError
 from .policy.models import PolicyError
 from .policy.service import PolicyService
+from .photo_avatars.factory import build_photo_avatar_service
 from .photo_avatars.models import PhotoAvatarError
 from .publishing.models import PublicationError
 from .publishing.service import PublicationService
@@ -362,7 +363,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Custom photo avatars (default OFF). None while the flag is off, so every
         # route except /config answers 404 and no provider client, store or Blob
         # container is constructed.
-        app.state.photo_avatars = None
+        app.state.photo_avatars = build_photo_avatar_service(
+            settings, entitlements=app.state.entitlements, usage=app.state.usage,
+        )
         # Durable store for over-cap ``process_document`` results.
         # Same shared-instance rationale as images/video; reuses the document
         # library's blob account (document_blob_account_url) when configured, else

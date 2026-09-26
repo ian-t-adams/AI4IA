@@ -47,6 +47,18 @@ LIBRARY_CLEANUP = frozenset({
     "purge_document_chunks", "delete_document", "forget_document_from_memory",
     "revoke_document_share", "delete_annotation", "delete_analyzer",
 })
+# Photo avatar routes (routers/photo_avatars.py). Creation spends and viewing a
+# preview is use; owner reads, status reconciliation, deletion and reports
+# never need a grant, so a user outside the pilot can still see and clean up
+# records they own. Any other route in the module is refused.
+PHOTO_AVATAR_OPERATIONS: dict[str, tuple[PolicyOperation, ...]] = {
+    "create_photo_avatar": ("avatar.create",),
+    "get_photo_avatar_preview": ("avatar.use",),
+}
+PHOTO_AVATAR_UNGRANTED = frozenset({
+    "get_photo_avatar_config", "list_photo_avatars", "get_photo_avatar",
+    "delete_photo_avatar", "report_photo_avatar",
+})
 ADMIN_ROUTE_OPERATIONS: dict[str, tuple[PolicyOperation, ...]] = {
     "usage_summary": ("admin.usage.read",),
     "usage_by_model": ("admin.usage.read",),
@@ -112,5 +124,11 @@ async def authorize_http_operation(request: Request) -> None:
             raise PolicyError(PolicyDecision("deny", "policy_surface_unsupported"))
     elif module == "docprocessing":
         operations = ("document.export",)
+    elif module == "photo_avatars":
+        if name in PHOTO_AVATAR_UNGRANTED:
+            return
+        if name not in PHOTO_AVATAR_OPERATIONS:
+            raise PolicyError(PolicyDecision("deny", "policy_surface_unsupported"))
+        operations = PHOTO_AVATAR_OPERATIONS[name]
     for operation in operations:
         await require_policy(PolicyRequest(operation), owner_id=binding.owner_id)
