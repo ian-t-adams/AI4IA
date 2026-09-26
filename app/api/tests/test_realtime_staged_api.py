@@ -27,6 +27,14 @@ from tests.test_realtime_api import (
     _speech_client,
 )
 from tests.test_realtime_protocol import FIXTURES
+from tests.test_realtime_api import (
+    AVATAR_PROVIDER_ID,
+    AVATAR_QUERY,
+    AVATAR_RECORD_ID,
+    _avatar_client,
+    _avatar_video,
+    _seed_avatar,
+)
 
 GA_SETTINGS = {
     "realtime_ga_enabled": True,
@@ -437,3 +445,44 @@ def test_ga_invalid_config_after_an_accepted_frame_is_not_replayed_or_downgraded
             assert ws.receive_text() == f"echo:{invalid}"
     assert len(connector.connects) == len(usage.calls) == 1
     assert connector.upstream.closed
+
+
+
+@pytest.mark.parametrize("protocol", list(RealtimeProtocol))
+def test_speech_avatar_session_keeps_its_target_and_video_under_either_openai_protocol(protocol):
+    c, rig = _avatar_client(realtime_protocol=protocol, **GA_SETTINGS)
+    try:
+        _seed_avatar(c, rig)
+        video = _avatar_video(6_000)
+        connector = ScriptedRealtimeConnector([
+            UpstreamMessage("text", text=video), UpstreamMessage("close", close_code=1000),
+        ])
+        c.app.state.realtime_connector = connector
+        with c.websocket_connect(
+            f"/api/voice/live{AVATAR_QUERY}", subprotocols=[DEV_SUBPROTOCOL, "alice"],
+            headers=_origin(),
+        ) as ws:
+            assert json.loads(ws.receive_text())["type"] == "ai4ia.avatar.session"
+            ws.send_text('{"type":"session.update","session":{}}')
+            assert ws.receive_text() == video  # never rewritten by the OpenAI GA adapter
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_text()
+        opened = connector.connects[0]
+        assert opened["url"].startswith("wss://speech-gateway.test/speech/voice-live/realtime?api-version=")
+        assert opened["headers"]["Ocp-Apim-Subscription-Key"] == "speech-key"
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_avatar_selection_on_the_openai_provider_opens_no_upstream(protocol_client):
+    c = protocol_client
+    with pytest.raises(WebSocketDisconnect):
+        with c.websocket_connect(
+            f"/api/voice/live?avatar={AVATAR_RECORD_ID}", subprotocols=[DEV_SUBPROTOCOL, "owner"],
+            headers=_origin(),
+        ):
+            pass
+    assert c.app.state.realtime_connector.connects == []
+    _echo(c)  # the identical connection without an avatar is allowed
+    assert len(c.app.state.realtime_connector.connects) == 1
+    assert AVATAR_PROVIDER_ID not in json.dumps(c.app.state.realtime_connector.connects)

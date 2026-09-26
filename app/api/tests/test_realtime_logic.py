@@ -25,10 +25,26 @@ from ai4ia_api.voice_provider_catalog import (
     SpeechVoiceProvider,
     load_voice_provider_catalog,
 )
+from ai4ia_api import realtime_avatar
+from ai4ia_api.photo_avatars.live import LiveAvatarError
+from ai4ia_api.policy.context import bind_authenticated, clear_policy_context
+from ai4ia_api.policy.dispatch import authorize_dispatch
+from ai4ia_api.policy.models import PolicyError
+from ai4ia_api.realtime_avatar import (
+    AVATAR_VIDEO_FRAME_MAX_CHARS,
+    LiveAvatarSession,
+    client_frame_is_activity,
+    connect_refused_error,
+    refusal_reason,
+    refused_client_event,
+    unavailable_error,
+)
+from ai4ia_api.usage.pricing import PricingBook, load_pricing
 from ai4ia_api.routers.realtime import (
     BEARER_SUBPROTOCOL,
     DEV_SUBPROTOCOL,
     AuthSubprotocol,
+    ClientFrameRefused,
     LiveVoiceProviderError,
     RealtimeFunctionCall,
     RealtimeResolutionError,
@@ -58,6 +74,9 @@ from ai4ia_api.routers.realtime import (
     _resolve_live_voice_provider,
 )
 from tests.conftest import make_settings
+from tests.test_group_policy import GROUP
+from tests.test_group_policy import service as policy_service
+from tests.test_group_policy import user as policy_user
 
 
 def _opt(region: str, name: str) -> DeploymentOption:
@@ -1588,3 +1607,410 @@ def test_build_session_bridge_store_error_falls_back_to_generic():
     )
     assert bridge.instructions is None  # fail OPEN to the generic assistant
     assert bridge.tools  # builtins still offered
+
+
+# --------------------------------------------------------------------------- #
+# Live photo avatars (Phase 2): pure helpers and the relay's avatar mode.
+# --------------------------------------------------------------------------- #
+
+AVATAR_PROVIDER_ID = "ai4ia-0123456789abcdef0123"
+AVATAR_RECORD_ID = "0123456789abcdef0123456789abcdef"
+
+
+class _Clock:
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _live_avatar(**overrides) -> LiveAvatarSession:
+    values = dict(
+        record_id=AVATAR_RECORD_ID,
+        provider_avatar_id=AVATAR_PROVIDER_ID,
+        base_model="vasa-1",
+        home_region="eastus2",
+        billing_model_id="photo-avatar-realtime-standard",
+        pricing=load_pricing(),
+        max_seconds=600.0,
+        idle_timeout_seconds=120.0,
+    )
+    values.update(overrides)
+    return LiveAvatarSession(**values)  # type: ignore[arg-type]
+
+
+def _video_frame(total_chars: int) -> str:
+    prefix, suffix = '{"type":"response.video.delta","delta":"', '"}'
+    return prefix + "A" * (total_chars - len(prefix) - len(suffix)) + suffix
+
+
+def test_avatar_injection_is_server_owned_and_drops_every_client_avatar_field():
+    provider = _speech_provider()
+    assert provider is not None
+    hostile = json.dumps({"type": "session.update", "session": {
+        "voice": {"type": "azure-standard", "name": "en-US-AvaNeural"},
+        "avatar": {
+            "type": "video-avatar", "character": "someone-else", "customized": False,
+            "output_protocol": "webrtc", "output_audit_audio": True,
+            "video": {"background": {"image_url": "https://attacker.example/bg.png"}},
+        },
+    }})
+    normalized = normalize_speech_client_frame(hostile, provider)
+    assert normalized is not None
+    # Control: Speech normalization alone never forwards a client avatar.
+    assert "avatar" not in json.loads(normalized)["session"]
+    avatar = _live_avatar()
+    injected_text = avatar.inject(normalized)
+    injected = json.loads(injected_text)
+    assert injected["session"]["avatar"] == {
+        "type": "photo-avatar", "model": "vasa-1", "character": AVATAR_PROVIDER_ID,
+        "customized": True, "output_protocol": "websocket",
+    }
+    assert injected["session"]["voice"]["name"] == "en-US-AvaNeural"
+    assert avatar.configured is True
+    for forbidden in ("someone-else", "attacker.example", "webrtc", "output_audit_audio"):
+        assert forbidden not in injected_text
+    append = '{"type":"input_audio_buffer.append","audio":"AAA="}'
+    assert avatar.inject(append) is append
+
+
+@pytest.mark.parametrize("frame", [
+    '{"type":"session.avatar.connect","client_sdp":"dj0wDQ=="}',
+    '{"type":"session\\u002eavatar.connect","client_sdp":"escaped"}',
+    '{"type":"session.avatar.reconnect"}',
+])
+def test_client_avatar_events_are_refused(frame):
+    assert refused_client_event(frame) is True
+
+
+@pytest.mark.parametrize("frame", [
+    '{"type":"input_audio_buffer.append","audio":"AAA="}',
+    '{"type":"session.update","session":{}}',
+    '{"type":"output_audio_buffer.clear"}',
+    '{"type":"response.cancel"}',
+    json.dumps({"type": "conversation.item.create", "item": {
+        "type": "message", "role": "user",
+        "content": [{"type": "input_text", "text": "what is session.avatar.connect?"}],
+    }}),
+    "not json",
+])
+def test_ordinary_client_events_are_not_refused(frame):
+    assert refused_client_event(frame) is False
+
+
+def test_video_frames_forward_verbatim_up_to_the_bound_and_stop_above_it():
+    avatar = _live_avatar()
+    at_bound = _video_frame(AVATAR_VIDEO_FRAME_MAX_CHARS)
+    assert len(at_bound) == AVATAR_VIDEO_FRAME_MAX_CHARS
+    decision = avatar.upstream(at_bound)
+    assert decision.forward is at_bound
+    assert decision.video is True and decision.inspect is None and decision.stop is None
+    assert avatar.video_frames == 1
+    assert avatar.max_video_frame_chars == AVATAR_VIDEO_FRAME_MAX_CHARS
+    refused = avatar.upstream(_video_frame(AVATAR_VIDEO_FRAME_MAX_CHARS + 1))
+    assert refused.stop == "avatar_video_frame_too_large"
+    assert refused.forward is not None
+    assert json.loads(refused.forward)["error"]["code"] == "avatar_frame_too_large"
+    assert "AAAA" not in refused.forward
+    assert avatar.video_frames == 1
+    assert avatar.end_reason == "video_frame_too_large"
+
+
+def test_the_provider_id_never_leaves_the_relay_in_any_upstream_frame():
+    avatar = _live_avatar()
+    avatar.configured = True
+    echo = json.dumps({"type": "session.updated", "session": {
+        "modalities": ["audio", "text", "avatar"], "voice": {"name": "en-US-AvaNeural"},
+        "avatar": {
+            "type": "photo-avatar", "model": "vasa-1", "character": AVATAR_PROVIDER_ID,
+            "customized": True, "output_protocol": "websocket",
+            "ice_servers": [{"urls": ["turn:relay.example"], "username": "u", "credential": "turn-secret"}],
+        },
+    }})
+    decision = avatar.upstream(echo)
+    assert decision.forward is not None and decision.stop is None
+    forwarded = json.loads(decision.forward)
+    assert forwarded["session"]["avatar"] == {"type": "photo-avatar", "output_protocol": "websocket"}
+    assert forwarded["session"]["modalities"] == ["audio", "text", "avatar"]
+    assert AVATAR_PROVIDER_ID not in decision.forward and "turn-secret" not in decision.forward
+    assert avatar.confirmed_at is not None
+    warning = json.dumps({"type": "warning", "warning": {"message": f"Avatar {AVATAR_PROVIDER_ID} is slow"}})
+    scrubbed = avatar.upstream(warning)
+    assert scrubbed.forward is not None
+    assert AVATAR_PROVIDER_ID not in scrubbed.forward and "[avatar]" in scrubbed.forward
+    assert scrubbed.inspect == scrubbed.forward
+    # Control: a frame without the id is forwarded byte-for-byte.
+    transcript = '{"type":"response.audio_transcript.delta","delta":"Hello"}'
+    assert avatar.upstream(transcript).forward is transcript
+
+
+def test_verification_failure_becomes_a_stable_error_while_other_errors_pass():
+    avatar = _live_avatar()
+    failed = json.dumps({"type": "error", "error": {
+        "type": "invalid_request_error", "code": "avatar_verification_failed",
+        "message": f"Avatar {AVATAR_PROVIDER_ID} failed verification.",
+    }})
+    decision = avatar.upstream(failed)
+    assert decision.stop == "avatar_verification_failed"
+    assert decision.forward is not None and decision.inspect is not None
+    assert json.loads(decision.forward) == json.loads(unavailable_error("verification_failed"))
+    assert "failed verification." not in decision.forward
+    assert AVATAR_PROVIDER_ID not in decision.forward
+    assert avatar.verification_failed is True
+    assert '"avatar_verification_failed"' in decision.inspect
+    assert AVATAR_PROVIDER_ID not in decision.inspect
+    control = _live_avatar()
+    other = json.dumps({"type": "error", "error": {
+        "code": "rate_limited", "message": f"Slow down {AVATAR_PROVIDER_ID}.",
+    }})
+    passed = control.upstream(other)
+    assert passed.stop is None and control.verification_failed is False
+    assert passed.forward is not None
+    assert json.loads(passed.forward)["error"]["code"] == "rate_limited"
+    assert AVATAR_PROVIDER_ID not in passed.forward
+
+
+def test_an_update_that_drops_the_avatar_ends_the_session_only_once_configured():
+    updated = json.dumps({"type": "session.updated", "session": {
+        "modalities": ["audio", "text"], "avatar": None,
+    }})
+    # Control: nothing was requested yet, so the update says nothing about it.
+    assert _live_avatar().upstream(updated).stop is None
+    configured = _live_avatar()
+    configured.configured = True
+    decision = configured.upstream(updated)
+    assert decision.stop == "avatar_not_confirmed" and decision.forward is not None
+    assert json.loads(decision.forward)["error"]["reason"] == "not_confirmed"
+    confirmed = _live_avatar()
+    confirmed.configured = True
+    ok = json.dumps({"type": "session.updated", "session": {"modalities": ["audio", "text", "avatar"]}})
+    assert confirmed.upstream(ok).stop is None and confirmed.confirmed_at is not None
+
+
+def test_idle_tracker_counts_conversation_not_media(monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(realtime_avatar, "monotonic", clock)
+    avatar = _live_avatar(idle_timeout_seconds=120.0)
+    assert avatar.idle_warning_seconds == 30
+    clock.now += 89
+    assert avatar.idle_check() == (None, 31)
+    clock.now += 1
+    assert avatar.idle_check() == ("warn", 30)
+    assert avatar.idle_check()[0] is None  # one warning per idle stretch
+    avatar.upstream(_video_frame(64))  # idle video is not activity
+    clock.now += 30
+    assert avatar.idle_check() == ("timeout", 0)
+    assert avatar.end_reason == "idle_timeout"
+    lively = _live_avatar(idle_timeout_seconds=120.0)
+    clock.now += 119
+    lively.upstream('{"type":"input_audio_buffer.speech_started"}')
+    assert lively.idle_check() == (None, 120) and lively.idle_warned is False
+    assert client_frame_is_activity("input_audio_buffer.append") is False
+    assert client_frame_is_activity("conversation.item.create") is True
+    assert client_frame_is_activity(None) is False
+
+
+def test_meter_bills_whole_seconds_from_confirmation_and_nothing_unconfirmed(monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(realtime_avatar, "monotonic", clock)
+    never = _live_avatar()
+    clock.now += 50
+    never.finish()
+    assert never.billable_seconds == 0 and never.cost() is None
+    avatar = _live_avatar()
+    clock.now = 2000.0
+    avatar.upstream(_video_frame(64))  # the first video frame confirms the avatar
+    clock.now = 2002.2
+    avatar.finish()
+    clock.now = 3000.0  # later reads never extend a finished meter
+    assert avatar.billable_seconds == 3
+    cost = avatar.cost()
+    assert cost is not None and cost.known and cost.micro_usd == 30_000
+    assert cost.billing_unit == "second"
+    instant = _live_avatar()
+    instant.upstream(_video_frame(64))
+    instant.finish()
+    assert instant.billable_seconds == 1
+    unpriced = _live_avatar(pricing=PricingBook({}, currency="USD", version="none"))
+    unpriced.upstream(_video_frame(64))
+    clock.now += 5
+    unpriced.finish()
+    unpriced_cost = unpriced.cost()
+    assert unpriced.billable_seconds == 5
+    assert unpriced_cost is not None and unpriced_cost.known is False
+
+
+@pytest.mark.parametrize(("code", "reason", "expected"), [
+    ("not_found", None, "not_found"),
+    ("avatar_not_ready", None, "not_ready"),
+    ("avatar_needs_reverification", None, "needs_reverification"),
+    ("avatar_home_changed", None, "home_changed"),
+    ("policy_denied", None, "policy_denied"),
+    ("photo_avatars_unavailable", "capability_unavailable", "capability_unavailable"),
+    ("photo_avatars_unavailable", "disabled", "disabled"),
+    ("photo_avatars_unavailable", "invented", "unavailable"),
+    ("invented_code", None, "unavailable"),
+])
+def test_live_refusals_map_to_allowlisted_client_reasons(code, reason, expected):
+    assert refusal_reason(LiveAvatarError(409, code, "detail", reason=reason)) == expected
+
+
+def test_client_avatar_errors_are_bounded_and_id_free():
+    body = json.loads(unavailable_error("needs_reverification", retry_after=10**9))
+    assert body == {"type": "error", "error": {
+        "type": "avatar_error", "code": "avatar_unavailable",
+        "message": "The avatar service couldn't verify this avatar. Try again later.",
+        "reason": "needs_reverification", "retry_after_seconds": 86_400,
+    }}
+    assert json.loads(connect_refused_error())["error"]["code"] == "avatar_connect_refused"
+
+
+def test_relay_avatar_mode_bounds_video_scrubs_ids_and_retains_no_content():
+    avatar = _live_avatar()
+    avatar.configured = True
+    echo = json.dumps({"type": "session.updated", "session": {
+        "modalities": ["audio", "text", "avatar"],
+        "avatar": {"character": AVATAR_PROVIDER_ID, "output_protocol": "websocket"},
+    }})
+    video = _video_frame(4096)
+    client = _RelayClient()
+    upstream = _RelayUpstream([
+        UpstreamMessage("text", text=echo),
+        UpstreamMessage("text", text=video),
+        UpstreamMessage("text", text=_video_frame(AVATAR_VIDEO_FRAME_MAX_CHARS + 1)),
+        UpstreamMessage("text", text='{"type":"response.done"}'),
+    ])
+    outcome = asyncio.run(relay(
+        client, upstream, max_seconds=1, bridge=_relay_bridge(), avatar=avatar,
+    ))
+    assert outcome.status == "error"
+    assert outcome.metadata.source_event == "avatar_video_frame_too_large"
+    assert len(client.sent_text) == 3
+    assert client.sent_text[1] is video
+    assert json.loads(client.sent_text[2])["error"]["code"] == "avatar_frame_too_large"
+    assert AVATAR_PROVIDER_ID not in client.sent_text[0]
+    stats = outcome.stats.upstream_to_client
+    assert stats.text_frames == 3
+    assert "response.video.delta" not in stats.event_types
+    assert "session.updated" in stats.event_types
+    assert "AAAA" not in repr(outcome) and AVATAR_PROVIDER_ID not in repr(outcome)
+
+
+def test_relay_answers_a_refused_client_frame_once_and_stops():
+    def rewrite(frame: str) -> str | None:
+        if refused_client_event(frame):
+            raise ClientFrameRefused(connect_refused_error(), "client_avatar_event_refused")
+        return frame
+
+    append = '{"type":"input_audio_buffer.append","audio":"AAA="}'
+    client = _RelayClient([
+        {"type": "websocket.receive", "text": append},
+        {"type": "websocket.receive", "text": '{"type":"session.avatar.connect","client_sdp":"c2Rw"}'},
+        {"type": "websocket.receive", "text": append},
+    ])
+    upstream = _RelayUpstream()
+    outcome = asyncio.run(relay(
+        client, upstream, max_seconds=1, bridge=_relay_bridge(), rewrite_client_frame=rewrite,
+    ))
+    assert outcome.status == "error"
+    assert outcome.metadata.source_event == "client_avatar_event_refused"
+    # The ordinary frame before it passed; the refused frame and anything after did not.
+    assert upstream.sent_text == [append]
+    assert [json.loads(text)["error"]["code"] for text in client.sent_text] == [
+        "avatar_connect_refused",
+    ]
+
+
+class _PacedUpstream(_RelayUpstream):
+    """One frame per short real pause, each advancing the fake clock by ``step``."""
+
+    def __init__(self, messages, clock: _Clock, step: float) -> None:
+        super().__init__(messages)
+        self.clock = clock
+        self.step = step
+
+    async def receive(self) -> UpstreamMessage:
+        await asyncio.sleep(0.003)
+        self.clock.now += self.step
+        return await super().receive()
+
+
+@pytest.mark.parametrize("talking", [False, True])
+def test_relay_idle_watchdog_ends_only_silent_avatar_sessions(monkeypatch, talking):
+    clock = _Clock()
+    monkeypatch.setattr(realtime_avatar, "monotonic", clock)
+    monkeypatch.setattr(realtime_avatar, "IDLE_TICK_SECONDS", 0.001)
+    avatar = _live_avatar(idle_timeout_seconds=30.0)
+    transcript = '{"type":"response.audio_transcript.delta","delta":"hi"}'
+    frames = [
+        UpstreamMessage(
+            "text", text=transcript if talking and index % 10 == 0 else _video_frame(256),
+        )
+        for index in range(60)
+    ]
+    frames.append(UpstreamMessage("close", close_code=1000))
+    client = _RelayClient()
+    outcome = asyncio.run(relay(
+        client, _PacedUpstream(frames, clock, 1.0), max_seconds=5, bridge=_relay_bridge(),
+        avatar=avatar,
+    ))
+    warnings = [json.loads(text) for text in client.sent_text if "ai4ia.avatar.idle_warning" in text]
+    if talking:
+        assert outcome.status == "complete"
+        assert warnings == [] and avatar.end_reason is None
+    else:
+        assert outcome.status == "cancelled"
+        assert outcome.metadata.source_event == "avatar_idle_timeout"
+        assert avatar.end_reason == "idle_timeout"
+        assert len(warnings) == 1
+        assert 1 <= warnings[0]["seconds_remaining"] <= avatar.idle_warning_seconds
+
+
+@pytest.mark.parametrize("relay_cap", [0.0, 600.0])
+def test_relay_caps_every_avatar_session_and_marks_the_limit(relay_cap):
+    avatar = _live_avatar(max_seconds=0.05)
+    outcome = asyncio.run(asyncio.wait_for(
+        relay(_RelayClient(), _RelayUpstream(), max_seconds=relay_cap, bridge=_relay_bridge(), avatar=avatar),
+        timeout=5,
+    ))
+    assert outcome.metadata.source_event == "max_duration_timeout"
+    assert avatar.end_reason == "session_limit"
+    assert json.loads(avatar.ended_event() or "{}") == {
+        "type": "ai4ia.avatar.session_ended", "reason": "session_limit",
+    }
+
+
+USE_ONLY = {"domains": {"avatars": {
+    "default": {"allow": []},
+    "mappings": [{"claim": "groups", "value": GROUP, "allow": ["use"]}],
+}}}
+
+
+@pytest.mark.parametrize("groups, allowed", [([GROUP], True), ([], False)])
+async def test_live_avatar_admission_requires_avatar_use_and_never_creation(groups, allowed):
+    policy, _ = policy_service(USE_ONLY)
+    bind_authenticated(policy, policy_user(groups=groups))
+    try:
+        if allowed:
+            await authorize_dispatch("avatar_live", deployment=None, required=True, final=True)
+        else:
+            with pytest.raises(PolicyError):
+                await authorize_dispatch("avatar_live", deployment=None, required=True, final=True)
+        # Use never implies creation, for members and non-members alike.
+        with pytest.raises(PolicyError):
+            await authorize_dispatch("avatar", deployment=None, required=True, final=True)
+    finally:
+        clear_policy_context()
+
+
+async def test_a_zones_restriction_cannot_silently_cover_live_avatar_dispatch():
+    config = {"domains": {**USE_ONLY["domains"], "zones": {"default": {"allow": ["global"]}}}}
+    policy, _ = policy_service(config)
+    bind_authenticated(policy, policy_user(groups=[GROUP]))
+    try:
+        with pytest.raises(PolicyError) as refused:
+            await authorize_dispatch("avatar_live", deployment=None, required=True)
+        assert refused.value.decision.reason == "policy_surface_unsupported"
+    finally:
+        clear_policy_context()

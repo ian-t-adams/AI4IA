@@ -37,7 +37,7 @@ import re
 import time
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Protocol
@@ -67,6 +67,17 @@ from ..realtime_protocol import (
     rewrite_ga_upstream_frame,
     rewrite_openai_client_frame,
 )
+from .. import realtime_avatar as _avatar
+from ..realtime_avatar import (
+    AvatarRefusal,
+    LiveAvatarSession,
+    client_frame_is_activity,
+    connect_refused_error,
+    open_live_avatar,
+    refused_client_event,
+    valid_record_id,
+)
+from ..photo_avatars.live import mark_live_avatar_verification_failed
 from ..sessions.repository import SessionNotFoundError
 from ..sessions.models import Message, MessageRole, MessageSource, MessageStatus
 from ..policy.context import bind_authenticated, clear_policy_context, require_policy
@@ -76,8 +87,8 @@ from ..publishing.execution import bind_execution, prepare_execution, publicatio
 from ..publishing.models import PublicationError
 from ..publishing.refs import AssetVersionRef
 from ..receipts import (
-    ReceiptRuntime, ReceiptToolCall, build_receipt, enforce_receipt_budget, json_payload,
-    safe_tool_label,
+    ReceiptAvatarCost, ReceiptAvatarEvidence, ReceiptRuntime, ReceiptToolCall, build_receipt,
+    enforce_receipt_budget, json_payload, safe_tool_label,
 )
 from ..voice_provider_catalog import (
     AZURE_OPENAI_PROVIDER_ID,
@@ -89,7 +100,9 @@ from ..voice_provider_catalog import (
     VoiceProviderManagedModel,
     load_voice_provider_catalog,
 )
-from ..usage.models import TokenUsage, UsageStatus, UsageTarget
+from ..usage.models import (
+    PHOTO_AVATAR_LIVE_TARGET, PHOTO_AVATAR_PROVIDER, TokenUsage, UsageStatus, UsageTarget,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,9 +147,11 @@ def decode_dev_credential(credential: str) -> str:
     except (binascii.Error, ValueError, UnicodeDecodeError):
         return credential
 
-# Close codes (RFC 6455). 1008 = policy violation (denied), 1011 = internal error.
+# Close codes (RFC 6455). 1008 = policy violation (denied), 1009 = message too
+# big, 1011 = internal error.
 WS_NORMAL_CLOSURE = 1000
 WS_POLICY_VIOLATION = 1008
+WS_MESSAGE_TOO_BIG = 1009
 WS_INTERNAL_ERROR = 1011
 
 # Metering session id for live-voice traffic (mirrors voice-speech/voice-transcription).
@@ -1481,8 +1496,11 @@ async def _send_upstream(
         if text is not None:
             event_type, _ = inspect_realtime_text_frame(text, include_protocol_error=False)
         guard = _voice_policy.get()
+        # Stopping output never needs a fresh grant: cancellation, truncation,
+        # clearing input, and clearing the avatar's queued speech.
         if guard is not None and event_type not in {
             "response.cancel", "conversation.item.truncate", "input_audio_buffer.clear",
+            "output_audio_buffer.clear",
         }:
             await guard()
         setup = current_realtime_setup()
@@ -1494,13 +1512,45 @@ async def _send_upstream(
             await upstream.send_bytes(data)
 
 
+class ClientFrameRefused(Exception):
+    """A client frame the relay refuses outright: one bounded error, then close."""
+
+    def __init__(self, frame: str, source_event: str) -> None:
+        super().__init__(source_event)
+        self.frame = frame
+        self.source_event = source_event
+
+
+async def _send_client(
+    client_ws: WebSocket,
+    lock: anyio.Lock,
+    *,
+    text: str | None = None,
+    data: bytes | None = None,
+) -> None:
+    """Serialize every write to the browser socket.
+
+    The upstream pump forwards provider frames, the client pump may answer a
+    refused frame, and an avatar session's idle watchdog sends warnings;
+    Starlette's send is not safe under concurrency. Uncontended otherwise.
+    """
+    async with lock:
+        if text is not None:
+            await client_ws.send_text(text)
+        elif data is not None:
+            await client_ws.send_bytes(data)
+
+
 async def _pump_client_to_upstream(
     client_ws: WebSocket,
     upstream: UpstreamConnection,
     lock: anyio.Lock,
     rewrite_client_frame: Callable[[str], str | None],
     state: _RelayState,
+    client_lock: anyio.Lock | None = None,
+    avatar: LiveAvatarSession | None = None,
 ) -> None:
+    client_lock = client_lock or anyio.Lock()
     try:
         while True:
             try:
@@ -1527,7 +1577,18 @@ async def _pump_client_to_upstream(
                     text, include_protocol_error=False
                 )
                 state.client_stats.observe(text=True, event_type=event_type)
-                rewritten = rewrite_client_frame(text)
+                if avatar is not None and client_frame_is_activity(event_type):
+                    avatar.touch()
+                try:
+                    rewritten = rewrite_client_frame(text)
+                except ClientFrameRefused as refusal:
+                    logger.info("voice-live refused a client frame (%s)", refusal.source_event)
+                    try:
+                        await _send_client(client_ws, client_lock, text=refusal.frame)
+                    except (WebSocketDisconnect, RuntimeError):
+                        pass
+                    state.stop(_RelayTermination(status="error", source_event=refusal.source_event))
+                    return
                 if rewritten is not None:
                     await _send_upstream(upstream, lock, text=rewritten)
                 continue
@@ -1555,7 +1616,10 @@ async def _pump_upstream_to_client(
     bridge: ToolBridge,
     state: _RelayState,
     rewrite_upstream_frame: Callable[[str], str] | None,
+    client_lock: anyio.Lock | None = None,
+    avatar: LiveAvatarSession | None = None,
 ) -> None:
+    client_lock = client_lock or anyio.Lock()
     try:
         while True:
             msg = await upstream.receive()
@@ -1590,18 +1654,41 @@ async def _pump_upstream_to_client(
                 setup_complete = False
                 if setup is not None:
                     setup_complete = await setup.server_frame(text=msg.text, data=None)
-                event_type, protocol_error = inspect_realtime_text_frame(
-                    msg.text, include_protocol_error=True
-                )
-                state.upstream_stats.observe(text=True, event_type=event_type)
-                if protocol_error is not None and state.protocol_error is None:
-                    state.protocol_error = protocol_error
-                try:
-                    await client_ws.send_text(
+                video = False
+                stop_event: str | None = None
+                if avatar is not None:
+                    # Avatar sessions: video is bounded and forwarded verbatim but
+                    # never inspected; every other frame is read only after the
+                    # provider avatar id is scrubbed from it.
+                    decision = avatar.upstream(msg.text)
+                    video, stop_event, outbound = decision.video, decision.stop, decision.forward
+                    if decision.inspect is None:
+                        state.upstream_stats.observe(text=True)
+                    else:
+                        event_type, protocol_error = inspect_realtime_text_frame(
+                            decision.inspect, include_protocol_error=True
+                        )
+                        state.upstream_stats.observe(text=True, event_type=event_type)
+                        if protocol_error is not None and state.protocol_error is None:
+                            state.protocol_error = protocol_error
+                else:
+                    event_type, protocol_error = inspect_realtime_text_frame(
+                        msg.text, include_protocol_error=True
+                    )
+                    state.upstream_stats.observe(text=True, event_type=event_type)
+                    if protocol_error is not None and state.protocol_error is None:
+                        state.protocol_error = protocol_error
+                    outbound = (
                         rewrite_upstream_frame(msg.text) if rewrite_upstream_frame else msg.text
                     )
-                except (WebSocketDisconnect, RuntimeError) as exc:
-                    state.stop(_client_termination_from_exception(exc))
+                if outbound is not None:
+                    try:
+                        await _send_client(client_ws, client_lock, text=outbound)
+                    except (WebSocketDisconnect, RuntimeError) as exc:
+                        state.stop(_client_termination_from_exception(exc))
+                        return
+                if stop_event is not None:
+                    state.stop(_RelayTermination(status="error", source_event=stop_event))
                     return
                 if setup_complete:
                     state.stop(_RelayTermination(status="complete", source_event="setup_complete"))
@@ -1609,7 +1696,7 @@ async def _pump_upstream_to_client(
                 # Governed tool calling: a function-call event is executed in-process
                 # and its result returned upstream. No-op (and no JSON parse) for
                 # every other frame, and entirely skipped when tools are disabled.
-                if bridge.enabled:
+                if bridge.enabled and not video:
                     for frame in await bridge.handle_upstream_frame(msg.text):
                         await _send_upstream(upstream, lock, text=frame)
             elif msg.kind == "binary" and msg.data is not None:
@@ -1618,7 +1705,7 @@ async def _pump_upstream_to_client(
                     await setup.server_frame(text=None, data=msg.data)
                 state.upstream_stats.observe(text=False)
                 try:
-                    await client_ws.send_bytes(msg.data)
+                    await _send_client(client_ws, client_lock, data=msg.data)
                 except (WebSocketDisconnect, RuntimeError) as exc:
                     state.stop(_client_termination_from_exception(exc))
                     return
@@ -1635,6 +1722,30 @@ async def _pump_upstream_to_client(
         )
 
 
+async def _avatar_idle_watchdog(
+    client_ws: WebSocket,
+    client_lock: anyio.Lock,
+    avatar: LiveAvatarSession,
+    state: _RelayState,
+) -> None:
+    """End an avatar session nobody is talking in; it streams (and bills) while idle."""
+    try:
+        while True:
+            await anyio.sleep(_avatar.IDLE_TICK_SECONDS)
+            action, remaining = avatar.idle_check()
+            if action == "timeout":
+                state.stop(
+                    _RelayTermination(status="cancelled", source_event="avatar_idle_timeout")
+                )
+                return
+            if action == "warn":
+                await _send_client(
+                    client_ws, client_lock, text=avatar.idle_warning_event(remaining),
+                )
+    except (WebSocketDisconnect, RuntimeError) as exc:
+        state.stop(_client_termination_from_exception(exc))
+
+
 async def relay(
     client_ws: WebSocket,
     upstream: UpstreamConnection,
@@ -1643,12 +1754,20 @@ async def relay(
     bridge: ToolBridge,
     rewrite_client_frame: Callable[[str], str | None] | None = None,
     rewrite_upstream_frame: Callable[[str], str] | None = None,
+    avatar: LiveAvatarSession | None = None,
 ) -> RelayOutcome:
     """Pump frames both ways and return a content-free, typed terminal outcome."""
 
     send_lock = anyio.Lock()
+    client_lock = anyio.Lock()
     if current_realtime_setup() is not None:
         max_seconds = min(max_seconds or SETUP_MAX_SECONDS, SETUP_MAX_SECONDS)
+    if avatar is not None:
+        # Avatar time bills while idle, so an avatar session is always capped.
+        max_seconds = (
+            min(max_seconds, avatar.max_seconds)
+            if max_seconds and max_seconds > 0 else avatar.max_seconds
+        )
     rewrite = rewrite_client_frame or bridge.rewrite_client_frame
     state = _RelayState(stopped=anyio.Event())
 
@@ -1661,6 +1780,8 @@ async def relay(
                 send_lock,
                 rewrite,
                 state,
+                client_lock,
+                avatar,
             )
             tg.start_soon(
                 _pump_upstream_to_client,
@@ -1670,7 +1791,11 @@ async def relay(
                 bridge,
                 state,
                 rewrite_upstream_frame,
+                client_lock,
+                avatar,
             )
+            if avatar is not None:
+                tg.start_soon(_avatar_idle_watchdog, client_ws, client_lock, avatar, state)
             await state.stopped.wait()
             tg.cancel_scope.cancel()
 
@@ -1680,6 +1805,8 @@ async def relay(
             with anyio.move_on_after(max_seconds) as scope:
                 await run()
             if scope.cancelled_caught:
+                if avatar is not None and avatar.end_reason is None:
+                    avatar.end_reason = "session_limit"
                 state.stop(
                     _RelayTermination(
                         status="cancelled", source_event="max_duration_timeout"
@@ -1717,6 +1844,16 @@ async def _deny(
     except (RuntimeError, WebSocketDisconnect):
         # Already closed/disconnected; nothing to do.
         pass
+
+
+async def _refuse_avatar(client_ws: WebSocket, refusal: AvatarRefusal) -> None:
+    """One bounded, id-free error event, then a policy close. No upstream exists yet."""
+    emit_security_block("realtime_auth", refusal.security_reason, "voice_live")
+    try:
+        await client_ws.send_text(refusal.frame)
+    except (RuntimeError, WebSocketDisconnect):
+        pass
+    await _deny(client_ws, WS_POLICY_VIOLATION)
 
 
 def _outcome_with_exception(
@@ -1806,6 +1943,8 @@ def _emit_relay_completion(
     resolution: LiveVoiceProviderResolution,
     outcome: RelayOutcome,
     usage_error: tuple[str | None, str | None] | None,
+    avatar: LiveAvatarSession | None = None,
+    avatar_usage_error: tuple[str | None, str | None] | None = None,
 ) -> None:
     target = resolution.usage_target
     payload: dict[str, object] = {
@@ -1830,6 +1969,16 @@ def _emit_relay_completion(
             "exceptionClass": usage_error[0],
             "exceptionMessage": usage_error[1],
         }
+    avatar_evidence = avatar.evidence() if avatar is not None else None
+    if avatar_evidence is not None:
+        # Counts, durations and an 8-character record prefix only: never a
+        # frame, a provider avatar id or any media byte.
+        payload["avatar"] = avatar_evidence
+        if avatar_usage_error is not None:
+            payload["avatarUsageError"] = {
+                "exceptionClass": avatar_usage_error[0],
+                "exceptionMessage": avatar_usage_error[1],
+            }
     logger.info(json.dumps(payload, separators=(",", ":"), sort_keys=True))
     timestamps = [
         value
@@ -1846,23 +1995,43 @@ def _emit_relay_completion(
         if len(timestamps) >= 2
         else None
     )
-    emit_custom_event(
-        "voice_live_completion",
-        {
-            "correlationId": correlation_id,
-            "provider": resolution.provider.id,
-            "protocol": resolution.protocol,
-            "model": resolution.model_id,
-            "outcome": outcome.status,
-            "sourceEvent": outcome.metadata.source_event,
-            "closeCode": outcome.metadata.close_code,
-            "clientTextFrames": outcome.stats.client_to_upstream.text_frames,
-            "clientBinaryFrames": outcome.stats.client_to_upstream.binary_frames,
-            "upstreamTextFrames": outcome.stats.upstream_to_client.text_frames,
-            "upstreamBinaryFrames": outcome.stats.upstream_to_client.binary_frames,
-            "durationMs": duration_ms,
-        },
-    )
+    attributes: dict[str, object] = {
+        "correlationId": correlation_id,
+        "provider": resolution.provider.id,
+        "protocol": resolution.protocol,
+        "model": resolution.model_id,
+        "outcome": outcome.status,
+        "sourceEvent": outcome.metadata.source_event,
+        "closeCode": outcome.metadata.close_code,
+        "clientTextFrames": outcome.stats.client_to_upstream.text_frames,
+        "clientBinaryFrames": outcome.stats.client_to_upstream.binary_frames,
+        "upstreamTextFrames": outcome.stats.upstream_to_client.text_frames,
+        "upstreamBinaryFrames": outcome.stats.upstream_to_client.binary_frames,
+        "durationMs": duration_ms,
+    }
+    if avatar_evidence is not None:
+        attributes.update({
+            "avatarRef": avatar_evidence["recordRef"],
+            "avatarConfirmed": avatar_evidence["confirmed"],
+            "avatarBillableSeconds": avatar_evidence["billableSeconds"],
+            "avatarVideoFrames": avatar_evidence["videoFrames"],
+            "avatarEndReason": avatar_evidence["endReason"],
+        })
+    emit_custom_event("voice_live_completion", attributes)
+
+
+# Close codes for relay-owned terminations; anything else follows its status.
+_RELAY_CLOSE_CODES: dict[str, int] = {
+    "client_avatar_event_refused": WS_POLICY_VIOLATION,
+    "avatar_video_frame_too_large": WS_MESSAGE_TOO_BIG,
+}
+
+
+def _relay_close_code(outcome: RelayOutcome) -> int:
+    code = _RELAY_CLOSE_CODES.get(outcome.metadata.source_event or "")
+    if code is not None:
+        return code
+    return WS_INTERNAL_ERROR if outcome.status == "error" else WS_NORMAL_CLOSURE
 
 
 async def _finalize_relay(
@@ -1873,6 +2042,7 @@ async def _finalize_relay(
     correlation_id: str,
     resolution: LiveVoiceProviderResolution,
     outcome: RelayOutcome,
+    avatar: LiveAvatarSession | None = None,
 ) -> None:
     usage_error: tuple[str | None, str | None] | None = None
     cancelled_exc_class = anyio.get_cancelled_exc_class()
@@ -1891,14 +2061,130 @@ async def _finalize_relay(
     except Exception as exc:  # noqa: BLE001 - metering is best effort by convention
         usage_error = _safe_exception_parts(exc)
 
+    avatar_usage_error: tuple[str | None, str | None] | None = None
+    if avatar is not None:
+        avatar.finish()
+        seconds = avatar.billable_seconds
+        if seconds > 0:
+            # The avatar meter is its own row, billed per second on top of the
+            # voice session. Only a server-observed, confirmed avatar is metered.
+            try:
+                await state.usage.record_completion(
+                    user_id=user.internal_user_id,
+                    session_id=LIVE_SESSION_ID,
+                    model_id=avatar.billing_model_id,
+                    target=UsageTarget.managed_service(
+                        provider=PHOTO_AVATAR_PROVIDER,
+                        target=PHOTO_AVATAR_LIVE_TARGET,
+                        region=avatar.home_region,
+                    ),
+                    usage=TokenUsage(known=False, complete=False, calls=1),
+                    status=outcome.status,
+                    provider_completed=True,
+                    correlation_id=correlation_id,
+                    billable_units=seconds,
+                    billing_unit="second",
+                    resource_ref=avatar.record_ref,
+                )
+            except cancelled_exc_class:
+                raise
+            except Exception as exc:  # noqa: BLE001 - metering is best effort by convention
+                avatar_usage_error = _safe_exception_parts(exc)
+        if avatar.verification_failed:
+            try:
+                await mark_live_avatar_verification_failed(
+                    state, user, avatar.record_id, provider_code=_avatar.VERIFICATION_FAILED_CODE,
+                )
+            except cancelled_exc_class:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the refusal already stood
+                logger.warning(
+                    "voice-live avatar re-verification mark failed (%s)", type(exc).__name__,
+                )
+
     _emit_relay_completion(
         correlation_id=correlation_id,
         resolution=resolution,
         outcome=outcome,
         usage_error=usage_error,
+        avatar=avatar,
+        avatar_usage_error=avatar_usage_error,
     )
-    close_code = WS_INTERNAL_ERROR if outcome.status == "error" else WS_NORMAL_CLOSURE
-    await _deny(websocket, close_code)
+    ended = avatar.ended_event() if avatar is not None else None
+    if ended is not None:
+        try:
+            await websocket.send_text(ended)
+        except (RuntimeError, WebSocketDisconnect):
+            pass
+    await _deny(websocket, _relay_close_code(outcome))
+
+
+async def _record_avatar_receipt(
+    *,
+    state,
+    user: AuthenticatedUser,
+    session,
+    correlation_id: str,
+    resolution: LiveVoiceProviderResolution,
+    bridge: ToolBridge,
+    avatar: LiveAvatarSession,
+    outcome: RelayOutcome,
+) -> None:
+    """Owner-visible execution evidence for a chat-bound live avatar session.
+
+    Mirrors the published-voice receipt: runtime, offered and invoked tools,
+    unknown voice usage, and the avatar's record prefix, confirmed seconds and
+    per-second cost estimate. Never frames, provider ids or hidden reasoning;
+    ``fromCommand`` keeps the marker out of every model history.
+    """
+    cost = avatar.cost()
+    confirmed = avatar.confirmed_at is not None
+    evidence = ReceiptAvatarEvidence(
+        recordRef=avatar.record_ref,
+        baseModel=avatar.base_model,
+        confirmed=confirmed,
+        billableSeconds=avatar.billable_seconds,
+        videoFrames=avatar.video_frames,
+        endReason=avatar.end_reason,
+        cost=ReceiptAvatarCost(
+            known=bool(cost is not None and cost.known),
+            estCostMicroUsd=cost.micro_usd if cost is not None and cost.known else None,
+            currency=cost.currency if cost is not None else avatar.pricing.currency,
+            priceVersion=cost.version if cost is not None else avatar.pricing.version,
+            billingModelId=avatar.billing_model_id,
+        ) if confirmed else None,
+    )
+    receipt = build_receipt(
+        runtime=ReceiptRuntime(
+            modelId=resolution.model_id, api=resolution.protocol,
+            region=resolution.usage_target.region, agent=session.agentName,
+        ),
+        correlation_id=correlation_id,
+        calls=bridge.calls,
+        usage=_session_usage(),
+        offered=[{"type": "function", "function": tool} for tool in bridge.tools],
+        status=(
+            "error" if outcome.status == "error"
+            else "cancelled" if outcome.status == "cancelled" else "complete"
+        ),
+        partial=outcome.status != "complete",
+        notes=[
+            "voice_usage_not_recorded", "voice_model_parameters_not_recorded",
+            "avatar_media_not_recorded",
+        ],
+    )
+    receipt.toolCallCount = bridge.call_count
+    receipt.avatar = evidence
+    try:
+        await state.session_repo.add_message(user.internal_user_id, Message(
+            sessionId=session.id, userId=user.internal_user_id, role=MessageRole.assistant,
+            source=MessageSource.voice, fromCommand=True,
+            content="Avatar voice session ended.", agent=session.agentName,
+            status=MessageStatus.error if outcome.status == "error" else MessageStatus.complete,
+            executionReceipt=enforce_receipt_budget(receipt),
+        ))
+    except Exception as exc:  # noqa: BLE001 - evidence is best effort after the session
+        logger.warning("voice-live avatar receipt write failed (%s)", type(exc).__name__)
 
 
 async def _realtime_setup_for_actor(
@@ -1920,7 +2206,7 @@ async def _realtime_setup_for_actor(
     if (
         profile != "realtime-setup-canary" or resolution.provider.id != AZURE_OPENAI_PROVIDER_ID
         or resolution.protocol != "ga" or resolution.deployment is None
-        or any(name in query for name in ("agent", "session", "tools"))
+        or any(name in query for name in ("agent", "session", "tools", _avatar.AVATAR_QUERY_PARAM))
         or bridge.enabled
     ):
         raise RealtimeSetupRejected()
@@ -2017,6 +2303,24 @@ async def voice_live(websocket: WebSocket) -> None:
         )
         return
 
+    # Live photo avatar (Speech Voice Live only). The browser names one of its
+    # own record ids; a wrong provider or a malformed id never reaches a store.
+    avatar_param = websocket.query_params.get(_avatar.AVATAR_QUERY_PARAM)
+    avatar_record_id: str | None = None
+    if avatar_param is not None:
+        if (
+            provider_resolution.provider.id != SPEECH_VOICE_LIVE_PROVIDER_ID
+            or provider_resolution.managed_model is None
+        ):
+            await _deny(
+                websocket, WS_POLICY_VIOLATION, security_reason="avatar_provider_unsupported"
+            )
+            return
+        if not valid_record_id(avatar_param):
+            await _deny(websocket, WS_POLICY_VIOLATION, security_reason="avatar_invalid")
+            return
+        avatar_record_id = avatar_param
+
     # 5. Entitlement gate BEFORE opening the upstream socket.
     decision = await state.entitlements.check(user.internal_user_id)
     if not decision.allowed:
@@ -2043,6 +2347,22 @@ async def voice_live(websocket: WebSocket) -> None:
         correlation_id,
     )
     connector: RealtimeConnector = state.realtime_connector
+    # Resolve the avatar on every connection, before any admission or upstream:
+    # ownership, readiness, re-verification, home and availability (avatar.use
+    # enforced) come from layer 1's grant; the relay adds the target-region match
+    # and refuses an unpriced meter under a cost cap. A refusal is one bounded
+    # error and a policy close, never a silent audio-only fallback.
+    avatar: LiveAvatarSession | None = None
+    if avatar_record_id is not None:
+        managed = provider_resolution.managed_model
+        opened = await open_live_avatar(
+            state, settings, user, avatar_record_id,
+            session_region=managed.initialRegion if managed is not None else None,
+        )
+        if isinstance(opened, AvatarRefusal):
+            await _refuse_avatar(websocket, opened)
+            return
+        avatar = opened
     # Agent-aware live voice: when the browser names an agent (?agent=), bind that
     # agent's persona + tool allowlist into the session (server-authoritative). The
     # ?tools= opt-in gates tool advertisement per session (default OFF).
@@ -2093,17 +2413,26 @@ async def voice_live(websocket: WebSocket) -> None:
                 "realtime", deployment=None,
                 required=bool(policy_service is not None and policy_service.enabled),
             )
+        if avatar is not None:
+            # A revoked avatar.use stops the next send, not only the next session.
+            await require_policy(PolicyRequest("avatar.use"))
 
     _voice_policy.set(check_voice_policy)
 
     def rewrite_client_frame(frame: str) -> str | None:
+        # WebRTC is never used: the relay refuses the handshake (and any other
+        # client avatar control) on every provider instead of passing it through.
+        if refused_client_event(frame):
+            raise ClientFrameRefused(connect_refused_error(), "client_avatar_event_refused")
         provider_frame = provider_resolution.rewrite_client_frame(frame)
         if provider_frame is None:
             return None
         safe_frame = reject_client_system_message(provider_frame)
         if safe_frame is None:
             return None
-        return bridge.rewrite_client_frame(safe_frame)
+        rewritten = bridge.rewrite_client_frame(safe_frame)
+        # Last in the chain, so nothing after it can alter the server-owned block.
+        return avatar.inject(rewritten) if avatar is not None else rewritten
 
     try:
         setup = await _realtime_setup_for_actor(
@@ -2120,27 +2449,50 @@ async def voice_live(websocket: WebSocket) -> None:
 
     async def dispatch_relay() -> RelayOutcome:
         nonlocal connected
-        async with admitted_dispatch(
-            "realtime", open_payload,
-            deployment=(
-                provider_resolution.deployment.deploymentName
-                if provider_resolution.deployment is not None else None
-            ),
-            required=settings.hard_quota_enabled,
-            policy_required=settings.group_policy_enabled,
-        ) as quota:
-            async with connector.connect(
-                url=url, headers=headers, timeout=settings.realtime_timeout_seconds
-            ) as upstream:
-                connected = True
-                outcome = await relay(
-                    websocket, upstream, max_seconds=settings.realtime_max_session_seconds,
-                    bridge=bridge, rewrite_client_frame=rewrite_client_frame,
-                    rewrite_upstream_frame=provider_resolution.rewrite_upstream_frame,
-                )
-                if outcome.status == "complete":
-                    quota.report()
-                return outcome
+        async with AsyncExitStack() as stack:
+            avatar_quota = None
+            if avatar is not None:
+                # Live avatar time is its own metered surface (avatar.use), admitted
+                # before the unchanged voice-session admission and any connect.
+                avatar_quota = await stack.enter_async_context(admitted_dispatch(
+                    "avatar_live", avatar.admission_payload(), deployment=None,
+                    required=settings.hard_quota_enabled,
+                    policy_required=settings.group_policy_enabled,
+                ))
+            quota = await stack.enter_async_context(admitted_dispatch(
+                "realtime", open_payload,
+                deployment=(
+                    provider_resolution.deployment.deploymentName
+                    if provider_resolution.deployment is not None else None
+                ),
+                required=settings.hard_quota_enabled,
+                policy_required=settings.group_policy_enabled,
+            ))
+            try:
+                async with connector.connect(
+                    url=url, headers=headers, timeout=settings.realtime_timeout_seconds
+                ) as upstream:
+                    connected = True
+                    if avatar is not None:
+                        try:
+                            await websocket.send_text(avatar.session_event())
+                        except (WebSocketDisconnect, RuntimeError):
+                            pass
+                    outcome = await relay(
+                        websocket, upstream, max_seconds=settings.realtime_max_session_seconds,
+                        bridge=bridge, rewrite_client_frame=rewrite_client_frame,
+                        rewrite_upstream_frame=provider_resolution.rewrite_upstream_frame,
+                        avatar=avatar,
+                    )
+                    if outcome.status == "complete":
+                        quota.report()
+                        if avatar_quota is not None:
+                            avatar_quota.report()
+                    return outcome
+            finally:
+                if avatar is not None:
+                    # The meter ends when the upstream socket is closed.
+                    avatar.finish()
 
     async def run_relay() -> RelayOutcome:
         if setup is None:
@@ -2162,7 +2514,13 @@ async def voice_live(websocket: WebSocket) -> None:
             correlation_id=correlation_id,
             resolution=provider_resolution,
             outcome=outcome,
+            avatar=avatar,
         )
+        if avatar is not None and session is not None and publication is None and connected:
+            await _record_avatar_receipt(
+                state=state, user=user, session=session, correlation_id=correlation_id,
+                resolution=provider_resolution, bridge=bridge, avatar=avatar, outcome=outcome,
+            )
         if publication is not None and session is not None:
             runtime = ReceiptRuntime(
                 modelId=provider_resolution.model_id, deployment=provider_resolution.target_name,
