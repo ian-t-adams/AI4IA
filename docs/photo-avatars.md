@@ -564,6 +564,10 @@ Limited Access approval.
   channel the Limited Access terms require.
 - **Delete.** An inline confirmation, then optimistic removal. `avatar_confirming`
   puts the avatar back and disables Delete for its `Retry-After`.
+  `provider_delete_failed` and `delete_incomplete` put it back in `deleting`, so
+  Delete can be repeated to finish. `avatar_home_changed` puts it back unchanged and
+  explains that an operator must remove it. Delete then stays disabled while the
+  gallery is open, and no retry is suggested.
 - **Unavailable states.** Each `reason` and refusal code has its own explanation,
   including a pending Limited Access approval (`capability_unavailable`). Existing
   avatars stay listed while creation is unavailable.

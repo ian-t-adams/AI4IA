@@ -279,7 +279,8 @@ it is open. Every preview is labelled **AI-generated**. An avatar marked
 it again; its preview and **Delete** still work. **Report** records a problem
 with an avatar and links to Microsoft's abuse report form. **Delete** asks first,
 then removes the avatar and its preview. Right after a creation it may ask you to
-wait a few seconds.
+wait a few seconds. An avatar created under an earlier avatar configuration can't
+be deleted from the gallery; ask an operator to remove it.
 
 ## Memory
 
