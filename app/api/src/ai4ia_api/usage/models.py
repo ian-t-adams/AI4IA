@@ -36,6 +36,13 @@ UsageStatus = Literal["complete", "cancelled", "error"]
 #: own identity.
 CODE_INTERPRETER_PROVIDER = "azure_openai_code_interpreter"
 
+#: Provider identity for custom photo avatar creation through the photo avatar
+#: gateway. Like Code Interpreter it reports no token usage, so its rows are
+#: never ``usageKnown``; a dispatched create whose acceptance is unknown must
+#: still count as cost-unknown rather than as known free work.
+PHOTO_AVATAR_PROVIDER = "azure_speech_photo_avatar"
+PHOTO_AVATAR_TARGET = "photo_avatar"
+
 
 def cost_bearing_attempt(rec: "UsageRollupSource") -> bool:
     """Whether a row represents provider work whose unknown cost matters.
@@ -45,14 +52,15 @@ def cost_bearing_attempt(rec: "UsageRollupSource") -> bool:
     intentionally ``usageKnown=False`` and therefore ``billable=False`` even
     though each recorded row is a sandbox execution attempt that may incur cost.
     Treating billability as the cost signal made every sandbox rollup report
-    known ``$0`` with zero unknown-cost requests.
+    known ``$0`` with zero unknown-cost requests. Photo avatar rows are recorded
+    only for dispatched creates, so each one is cost-bearing for the same reason.
     """
 
     return (
         rec.billable
         or rec.providerCompleted
         or rec.workflowDispatchClaimed
-        or rec.provider == CODE_INTERPRETER_PROVIDER
+        or rec.provider in {CODE_INTERPRETER_PROVIDER, PHOTO_AVATAR_PROVIDER}
     )
 #: Target/agent label carried alongside the provider, so the admin agents panel
 #: also shows sandbox executions as their own row.

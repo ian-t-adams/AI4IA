@@ -59,6 +59,13 @@ async def authorize_dispatch(
         if "zones" in actor.domains or (surface == "document" and "models" in actor.domains):
             raise PolicyError(PolicyDecision("unavailable", "policy_surface_unsupported"))
         return
+    if surface == "avatar":
+        await require_policy(PolicyRequest("avatar.create"))
+        # A zones restriction describes model processing scope; photo avatar
+        # residency is enforced app-wide by the catalog home instead.
+        if "zones" in actor.domains:
+            raise PolicyError(PolicyDecision("unavailable", "policy_surface_unsupported"))
+        return
     if surface in {"mcp", "external_tool", "web_search"}:
         name = current_tool()
         if name is None:

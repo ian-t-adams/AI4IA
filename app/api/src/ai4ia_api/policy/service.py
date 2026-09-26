@@ -359,7 +359,9 @@ class PolicyService:
         if profile == "realtime-setup-canary" and operation != "model.invoke":
             return PolicyDecision("deny", "canary_policy_incompatible")
         if self.restricted_profile(policy.owner_id) is not None and (
-            policy.user is None or operation in {"tool.invoke", "document.process", "document.compute"}
+            policy.user is None or operation in {
+                "tool.invoke", "document.process", "document.compute", "avatar.create", "avatar.use",
+            }
         ):
             return PolicyDecision(
                 "unavailable" if policy.user is None else "deny",
@@ -373,6 +375,10 @@ class PolicyService:
             return self._domain(policy, "publication", operation.split(".", 1)[1])
         if operation.startswith("document."):
             result = self._domain(policy, "documents", operation.split(".", 1)[1])
+            if not result.allowed:
+                return result
+        if operation.startswith("avatar."):
+            result = self._domain(policy, "avatars", operation.split(".", 1)[1])
             if not result.allowed:
                 return result
         if operation == "tool.invoke":
@@ -397,7 +403,9 @@ class PolicyService:
                 result = self._domain(policy, domain, value)
                 if not result.allowed:
                     return result
-        if operation in {"model.invoke", "tool.invoke", "document.process", "document.compute"}:
+        if operation in {
+            "model.invoke", "tool.invoke", "document.process", "document.compute", "avatar.create",
+        }:
             return self.consumption_state(policy)
         return PolicyDecision("allow", "allowed")
 
@@ -424,7 +432,9 @@ class PolicyService:
         decision = self.decide(current, request)
         if not decision.allowed or not self.enabled:
             return decision
-        if request.operation in {"model.invoke", "tool.invoke", "document.process", "document.compute"}:
+        if request.operation in {
+            "model.invoke", "tool.invoke", "document.process", "document.compute", "avatar.create",
+        }:
             budget = await self.entitlements.check_limits(
                 current.owner_id, current.limits,
                 scope="compute" if request.operation == "document.compute" else "chat",

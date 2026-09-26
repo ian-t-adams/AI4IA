@@ -173,6 +173,9 @@ class PhotoAvatar(_Contract):
     # Ready and the feature is currently available. Later phases gate use on it.
     usable: bool = False
     reported: bool = False
+    # A live session reported that this avatar failed verification. Live use is
+    # refused (``usable`` is false) until a later status read re-verifies it.
+    needsReverification: bool = False
     createdAt: datetime
     updatedAt: datetime
     readyAt: datetime | None = None
