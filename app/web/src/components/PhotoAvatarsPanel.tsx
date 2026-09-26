@@ -71,7 +71,7 @@ type ListState =
   | { phase: "ready" }
   | { phase: "error"; message: string };
 
-type ItemNotice = { message: string; blockedUntil: number | null };
+type ItemNotice = { message: string; tone: "warn" | "danger"; blockedUntil: number | null };
 
 function omit<T>(record: Record<string, T>, key: string): Record<string, T> {
   if (!(key in record)) return record;
@@ -218,7 +218,7 @@ function statusTone(avatar: PhotoAvatar): { tone: string; glyph: string | null }
   if (isPendingPhotoAvatar(avatar)) return { tone: "info", glyph: null };
   switch (avatar.status) {
     case "ready":
-      return avatar.usable ? { tone: "success", glyph: "✓" } : { tone: "warn", glyph: "!" };
+      return { tone: "success", glyph: "✓" };
     case "failed":
       return { tone: "danger", glyph: "✕" };
     case "deleting":
@@ -325,10 +325,7 @@ function AvatarItem({
         ) : (
           <span aria-hidden="true" className="activity-spinner" />
         )}
-        <span>
-          {photoAvatarStatusText(avatar.status)}
-          {ready && !avatar.usable ? " · not usable right now" : ""}
-        </span>
+        <span>{photoAvatarStatusText(avatar.status)}</span>
       </p>
       {avatar.status === "failed" && avatar.failure?.message ? (
         <p className="photo-avatar-note">{avatar.failure.message}</p>
@@ -350,9 +347,12 @@ function AvatarItem({
         </p>
       ) : null}
       {notice ? (
-        <p role="alert" className="photo-avatar-note" data-tone="danger">
+        <p role="alert" className="photo-avatar-note" data-tone={notice.tone}>
           {notice.message}
         </p>
+      ) : null}
+      {ready && !avatar.usable ? (
+        <p className="photo-avatar-note">Not available to use right now.</p>
       ) : null}
       {avatar.reported ? <p className="photo-avatar-note">You reported this avatar.</p> : null}
       <details className="photo-avatar-details">
@@ -877,7 +877,9 @@ export function PhotoAvatarsPanel({ onClose }: { onClose: () => void }) {
     const timers = noticeTimersRef.current;
     clearTimeout(timers.get(id));
     timers.delete(id);
-    setNotices((current) => ({ ...current, [id]: { message, blockedUntil } }));
+    // A wait the server asked for is not a failure; everything else is.
+    const tone = blockedUntil !== null ? "warn" : "danger";
+    setNotices((current) => ({ ...current, [id]: { message, tone, blockedUntil } }));
     if (blockedUntil !== null) {
       timers.set(
         id,

@@ -232,6 +232,18 @@ describe("availability", () => {
     expect(screen.getByRole("button", { name: "New avatar" })).toBeDisabled();
   });
 
+  it("marks a ready avatar that can't be used right now without hiding it", async () => {
+    on("GET", LIST, () =>
+      json({ avatars: [READY_A, avatar({ id: ID_SAS, displayName: "Paused host", usable: false })] }),
+    );
+    render(<PhotoAvatarsPanel onClose={vi.fn()} />);
+    const paused = await waitFor(() => itemFor("Paused host"));
+    expect(within(paused).getByText("Ready")).toBeInTheDocument();
+    expect(within(paused).getByText("Not available to use right now.")).toBeInTheDocument();
+    // Control: a usable ready avatar carries no such note.
+    expect(within(itemFor("Host A")).queryByText("Not available to use right now.")).toBeNull();
+  });
+
   it("distinguishes a gallery that failed to load from an empty one", async () => {
     on("GET", LIST, () => json({ detail: "Cosmos is unavailable." }, 503));
     render(<PhotoAvatarsPanel onClose={vi.fn()} />);
@@ -591,6 +603,8 @@ describe("deleting an avatar", () => {
     expect(within(item).getByRole("alert")).toHaveTextContent(
       "This avatar's creation is still being confirmed. You can delete it in 7 seconds.",
     );
+    // A wait the server asked for reads as a warning, not a failure.
+    expect(within(item).getByRole("alert")).toHaveAttribute("data-tone", "warn");
     expect(within(item).getByRole("button", { name: "Delete Host A" })).toBeDisabled();
     await advance(6_999);
     expect(within(itemFor("Host A")).getByRole("button", { name: "Delete Host A" })).toBeDisabled();
@@ -609,6 +623,7 @@ describe("deleting an avatar", () => {
     await user.click(screen.getByRole("button", { name: "Delete Host A permanently" }));
     const item = await waitFor(() => itemFor("Host A"));
     expect(within(item).getByRole("alert")).toHaveTextContent("Delete it again to finish.");
+    expect(within(item).getByRole("alert")).toHaveAttribute("data-tone", "danger");
     expect(within(item).getByText("Deletion unfinished")).toBeInTheDocument();
     expect(within(item).getByRole("button", { name: "Delete Host A" })).toBeEnabled();
   });

@@ -2439,11 +2439,15 @@ select {
 
 .photo-avatar-status {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   color: var(--fg-muted);
   font-size: 0.8rem;
   font-weight: 600;
+}
+
+.photo-avatar-status .activity-spinner {
+  margin-top: 0.3em;
 }
 
 .photo-avatar-status[data-tone="info"] { color: var(--info); }
@@ -2465,6 +2469,10 @@ select {
 
 .photo-avatar-note[data-tone="danger"] {
   color: var(--danger);
+}
+
+.photo-avatar-note[data-tone="warn"] {
+  color: var(--warn);
 }
 
 .photo-avatar-details {
@@ -2489,6 +2497,8 @@ select {
 
 .photo-avatar-details summary::before {
   content: "\25B8";
+  /* Empty alternative text keeps the marker out of the summary's name. */
+  content: "\25B8" / "";
   display: inline-block;
   transition: transform 0.15s ease-out;
 }
@@ -2547,4 +2557,10 @@ select {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.photo-avatar-report a,
+.photo-avatar-panel a {
+  color: var(--accent);
+  text-underline-offset: 2px;
 }
