@@ -830,11 +830,12 @@ describe("deleting an avatar", () => {
     expect(within(itemFor("Host A")).queryByRole("alert")).toBeNull();
   });
 
-  it("keeps an unfinished provider deletion visible so it can be repeated", async () => {
+  it.each([
+    ["provider_delete_failed", 502, "Provider delete failed."],
+    ["delete_incomplete", 503, "Deletion did not finish. Delete again to finish."],
+  ])("keeps an unfinished deletion (%s) visible so it can be repeated", async (code, status, detail) => {
     const user = userEvent.setup();
-    on("DELETE", `${LIST}/${ID_A}`, () =>
-      json({ detail: "Provider delete failed.", code: "provider_delete_failed" }, 502),
-    );
+    on("DELETE", `${LIST}/${ID_A}`, () => json({ detail, code }, status));
     render(<PhotoAvatarsPanel onClose={vi.fn()} />);
     await user.click(await screen.findByRole("button", { name: "Delete Host A" }));
     await user.click(screen.getByRole("button", { name: "Delete Host A permanently" }));
@@ -843,6 +844,56 @@ describe("deleting an avatar", () => {
     expect(within(item).getByRole("alert")).toHaveAttribute("data-tone", "danger");
     expect(within(item).getByText("Deletion unfinished")).toBeInTheDocument();
     expect(within(item).getByRole("button", { name: "Delete Host A" })).toBeEnabled();
+  });
+
+  it.each([
+    {
+      label: "avatar_home_changed",
+      code: "avatar_home_changed",
+      message:
+        "This avatar belongs to a previous avatar home, so it can't be used or deleted here. An operator must remove it.",
+      tone: "warn",
+      deleteEnabled: false,
+    },
+    {
+      // Control: the same 409 fixture with a code the gallery doesn't know
+      // falls back to the server's detail and its wait, and Delete stays offered.
+      label: "an unrecognized 409 code",
+      code: "some_future_conflict",
+      message: "Fixture detail from the server. Try again in 30 seconds.",
+      tone: "danger",
+      deleteEnabled: true,
+    },
+  ])("keeps the avatar, never deleted, when delete is refused with $label", async (expected) => {
+    vi.useFakeTimers();
+    on("DELETE", `${LIST}/${ID_A}`, () =>
+      json({ detail: "Fixture detail from the server.", code: expected.code }, 409, { "Retry-After": "30" }),
+    );
+    render(<PhotoAvatarsPanel onClose={vi.fn()} />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Delete Host A" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete Host A permanently" }));
+    await flush();
+    const item = itemFor("Host A");
+    const alert = within(item).getByRole("alert");
+    expect(alert).toHaveTextContent(expected.message);
+    expect(alert).toHaveAttribute("data-tone", expected.tone);
+    // Not treated as deleted: the avatar keeps its place and its Ready status.
+    expect(within(item).getByText("Ready")).toBeInTheDocument();
+    expect(within(item).queryByText("Deletion unfinished")).toBeNull();
+    expect(screen.queryByText("Deleted Host A.")).toBeNull();
+    expect(calls("DELETE", `${LIST}/${ID_A}`)).toHaveLength(1);
+    const remove = within(item).getByRole("button", { name: "Delete Host A" });
+    if (expected.deleteEnabled) {
+      expect(remove).toBeEnabled();
+    } else {
+      // No retry is offered, even after the server's Retry-After has passed.
+      expect(alert).not.toHaveTextContent(/try again|again in|seconds/i);
+      expect(remove).toBeDisabled();
+      await advance(10 * 60_000);
+      expect(within(itemFor("Host A")).getByRole("button", { name: "Delete Host A" })).toBeDisabled();
+      expect(within(itemFor("Host A")).getByRole("alert")).toHaveTextContent(expected.message);
+    }
   });
 });
 

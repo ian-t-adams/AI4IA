@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ..policy.context import current_binding
+from ..policy.dispatch import avatar_creation_zone_scoped
 from ..policy.models import PolicyError, PolicyRequest
 from .models import AvailabilityReason
 from .provider import PhotoAvatarGateway
@@ -100,9 +101,16 @@ async def policy_state(operation: Literal["avatar.create", "avatar.use"]) -> Pol
         decision = binding.service.decide(effective, PolicyRequest(operation))
     except PolicyError as exc:
         return "unavailable" if exc.decision.outcome == "unavailable" else "denied"
-    if decision.allowed:
-        return "allowed"
-    return "unavailable" if decision.outcome == "unavailable" else "denied"
+    if not decision.allowed:
+        return "unavailable" if decision.outcome == "unavailable" else "denied"
+    if (
+        operation == "avatar.create"
+        and binding.service.enabled
+        and avatar_creation_zone_scoped(effective)
+    ):
+        # The dispatch seam refuses this actor by the same rule.
+        return "unavailable"
+    return "allowed"
 
 
 async def evaluate_availability(

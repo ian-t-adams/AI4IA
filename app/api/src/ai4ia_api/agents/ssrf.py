@@ -51,6 +51,16 @@ class SsrfError(ValueError):
     """A URL was rejected because it is not a safe public HTTPS endpoint."""
 
 
+class DnsLookupError(SsrfError):
+    """The host did not resolve: a timeout, a resolver error or an empty answer.
+
+    Still an :class:`SsrfError`, so every caller keeps refusing the URL. It says
+    nothing about whether the host is public, so a caller that can retry later
+    may treat it as transient; a resolved non-public address stays a plain
+    :class:`SsrfError`.
+    """
+
+
 class DnsCapacityError(RuntimeError):
     """Local DNS workers are saturated; this says nothing about the target host."""
 
@@ -117,7 +127,7 @@ async def async_validate_public_https_url(
         )
     except TimeoutError as exc:
         emit_security_block("ssrf", "endpoint_rejected", "ssrf_guard")
-        raise SsrfError("Endpoint host resolution timed out.") from exc
+        raise DnsLookupError("Endpoint host resolution timed out.") from exc
     except SsrfError:
         emit_security_block("ssrf", "endpoint_rejected", "ssrf_guard")
         raise
@@ -164,9 +174,9 @@ def _validate_public_https_url(url: str, *, resolver: Resolver | None = None) ->
     try:
         addresses = resolve(host)
     except (OSError, socket.gaierror) as exc:
-        raise SsrfError(f"Endpoint host could not be resolved: {host}.") from exc
+        raise DnsLookupError(f"Endpoint host could not be resolved: {host}.") from exc
     if not addresses:
-        raise SsrfError(f"Endpoint host did not resolve to any address: {host}.")
+        raise DnsLookupError(f"Endpoint host did not resolve to any address: {host}.")
 
     for raw in addresses:
         try:
@@ -203,7 +213,7 @@ async def async_resolve_pinned_ip(
         )
     except TimeoutError as exc:
         emit_security_block("ssrf", "connection_rejected", "ssrf_guard")
-        raise SsrfError("Endpoint host resolution timed out.") from exc
+        raise DnsLookupError("Endpoint host resolution timed out.") from exc
     except SsrfError:
         emit_security_block("ssrf", "connection_rejected", "ssrf_guard")
         raise
@@ -266,9 +276,9 @@ def _resolve_pinned_ip(host: str, *, resolver: Resolver | None = None) -> str:
     try:
         addresses = resolve(host)
     except (OSError, socket.gaierror) as exc:
-        raise SsrfError(f"Endpoint host could not be resolved: {host}.") from exc
+        raise DnsLookupError(f"Endpoint host could not be resolved: {host}.") from exc
     if not addresses:
-        raise SsrfError(f"Endpoint host did not resolve to any address: {host}.")
+        raise DnsLookupError(f"Endpoint host did not resolve to any address: {host}.")
 
     pinned: str | None = None
     for raw in addresses:

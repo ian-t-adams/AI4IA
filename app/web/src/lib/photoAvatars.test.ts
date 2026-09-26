@@ -376,6 +376,16 @@ describe("Retry-After and messages", () => {
     expect(retryAfterPhrase(7200, Date.parse("2026-09-26T12:00:00Z"))).toMatch(/^after /);
   });
 
+  it("never offers a retry for an avatar in a previous home, even with Retry-After", () => {
+    const refusal = (code: string) =>
+      new PhotoAvatarApiError({ status: 409, code, detail: "Moved.", retryAfterSeconds: 30 });
+    expect(photoAvatarErrorMessage(refusal("avatar_home_changed"))).toBe(
+      "This avatar belongs to a previous avatar home, so it can't be used or deleted here. An operator must remove it.",
+    );
+    // Control: the identical refusal with an unrecognized code names the wait.
+    expect(photoAvatarErrorMessage(refusal("some_future_conflict"))).toBe("Moved. Try again in 30 seconds.");
+  });
+
   it("maps availability reasons, including Limited Access, to explanations", () => {
     const refusal = (reason: PhotoAvatarConfig["reason"]) =>
       photoAvatarErrorMessage(new PhotoAvatarApiError({
