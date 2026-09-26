@@ -130,8 +130,9 @@ Retry ownership is deliberately split:
 | FastAPI | User-visible outcome, governance, and usage accounting | Infinite retries hidden from the caller |
 
 When all eligible backends throttle, APIM returns the `429` / `S7PREQUEUE` /
-`retry-after-ms` contract. Proxy `MaxAttempts=1` avoids multiplying APIM's
-immediate attempts. See the [proxy integration](../proxy/README.md).
+`retry-after-ms` contract. The proxy makes one attempt per dispatch against its
+single catch-all host, so it does not multiply APIM's immediate attempts. See the
+[proxy integration](../proxy/README.md).
 
 ### Realtime and voice lifecycle
 

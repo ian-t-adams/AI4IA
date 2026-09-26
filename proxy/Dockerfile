@@ -1,5 +1,5 @@
 # AI4IA-owned wrapper for microsoft/SimpleL7Proxy (MIT) at
-# d9eb1d1fa42820792a9699bfc253562fba07d977; the file-level provenance is in
+# b0066b0e53f89abb5e84cfeacda2fdcaca8b081e; the file-level provenance is in
 # proxy/upstream-provenance.json. Refresh these OCI manifest-list digests with:
 # docker buildx imagetools inspect <tag> --format '{{json .Manifest.Digest}}'
 FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c AS build-env

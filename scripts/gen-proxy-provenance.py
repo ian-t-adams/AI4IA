@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROXY_ROOT = ROOT / "proxy"
 MANIFEST = PROXY_ROOT / "upstream-provenance.json"
 UPSTREAM_REPOSITORY = "https://github.com/microsoft/SimpleL7Proxy.git"
-UPSTREAM_COMMIT = "d9eb1d1fa42820792a9699bfc253562fba07d977"
+UPSTREAM_COMMIT = "b0066b0e53f89abb5e84cfeacda2fdcaca8b081e"
 SOURCE_SCOPES = ("Shared", "Shared-parser", "SimpleL7Proxy")
 
 AI4IA_PATCH_REASONS = {
@@ -37,12 +37,9 @@ AI4IA_PATCH_REASONS = {
     "SimpleL7Proxy/Config/ConfigMetadata.cs": (
         "Declare explicit secret metadata for configuration options."
     ),
-    "SimpleL7Proxy/Config/AppConfigService.cs": (
-        "Keep a failed App Configuration download from dereferencing a null result "
-        "and spinning the refresh loop without its normal interval."
-    ),
     "SimpleL7Proxy/Config/IncomingAuthValidator.cs": (
-        "Honor the configured key header and fail closed for unsigned OAuth modes."
+        "Trim and default the configured key header over upstream's raw assignment "
+        "and fail closed for unsigned OAuth modes."
     ),
     "SimpleL7Proxy/Config/ProxyConfig.cs": (
         "Mark inbound authentication keys as secret configuration."
@@ -78,12 +75,14 @@ AI4IA_PATCH_REASONS = {
     "SimpleL7Proxy/Proxy/NoReplayAttempt.cs": (
         "AI4IA authenticated one-attempt binding, exact byte/model/path HMAC, "
         "mandatory versioned route and non-stripping scoped-host membership, "
-        "pre-send claim, unsupported-shape refusal and nonredirecting HTTP/1.1 transport."
+        "pre-send claim, unsupported-shape and upstream caller-control refusal, "
+        "and nonredirecting HTTP/1.1 transport."
     ),
     "SimpleL7Proxy/Proxy/ProxyWorker.cs": (
-        "Fence bounded sends, host fallback, requeue and recovery; retain one-use "
-        "HTTP clients through streaming; construct portable diagnostic URIs from "
-        "the same destination builder as the transport."
+        "Fence bounded sends, host fallback, requeue and recovery, including the "
+        "iterator's all-open-circuit requeue; retain one-use HTTP clients through "
+        "streaming; construct portable diagnostic URIs from the same destination "
+        "builder as the transport."
     ),
     "SimpleL7Proxy/Proxy/ProxyData.cs": (
         "Dispose the bounded request's dedicated transport after its response body."
