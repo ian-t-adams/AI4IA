@@ -504,10 +504,15 @@ Limited Access approval.
 - **Create.** A name and a description, counted against `promptMaxChars`. Style, age,
   gender and ethnicity are optional and start unspecified. The three attestation
   statements appear as `/config` words them, and Create stays disabled until each is
-  confirmed. The request sends the attestation `version` from `/config`. The form shows
-  the per-avatar estimate, or "unknown" when there is no price, and the current
-  limits. A create whose outcome is unknown is never repeated; the gallery re-reads
-  the list instead.
+  confirmed. The ticks belong to the attestation `version` they were given for, so a
+  refresh that brings new wording clears them. The request sends that `version`. The
+  form shows the per-avatar estimate, or "unknown" when there is no price, and the
+  current limits.
+- **Unknown create outcomes.** A create is never repeated automatically. A 4xx, or
+  a 5xx with one of the codes the service raises before anything reaches the
+  provider, is a definite refusal. Anything else leaves the outcome unknown: a
+  network failure, an unreadable reply, or a 5xx with no code or a generic one. An
+  unknown outcome re-reads the gallery and clears the confirmations.
 - **Status.** Pending records poll `GET /{id}` with backoff from 2 to 15 seconds, for
   at most three minutes and never while the tab is hidden. Polling stops on `ready`,
   on `failed`, or when the gallery closes. A ready record with `needsReverification`
