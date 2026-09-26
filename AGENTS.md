@@ -1508,19 +1508,19 @@ covers both generated Realtime policies; `test_realtime_protocol.py`,
 Keep shared browser fixtures inside the web Docker build context.
 Run the targeted browser lifecycle/settings tests when changing that boundary.
 
-The phase-1 voice migration keeps `gpt-realtime-2` selectable on preview and GA:
-omit `runtimeEnabled` (default true) and `requiredRealtimeProtocol`, preserving
-version `2026-05-06`, eastus2 and its existing capacity/pool metadata. The owner's
-2026-09-23 choice uses the subscription inference deprecation
-`2026-10-31T00:00:00Z`, observed in retirement report run `35722868193` at
-`2026-09-22T11:42:21Z`, not the separately labeled public August reference.
-From `2026-10-24T00:00:00Z`, the existing seven-day policy treats new/changed
-targets as unsafe; exact Succeeded reconciles only warn. A separately approved
-follow-up must runtime-disable RT2 and must merge and deploy before
-`2026-10-31T00:00:00Z`. The supplied September 23 subscription model-list evidence
-offers no later RT2 version: `gpt-realtime-2.1` is the verified successor, a
-different model ID, not an alias for the unoffered public `2026-05-07`.
-No automatic runtime date cutoff is introduced.
+`gpt-realtime-2` (`2026-05-06`) is runtime-disabled (`runtimeEnabled: false`)
+because its subscription inference deprecation is `2026-10-31T00:00:00Z`,
+observed in retirement report run `35722868193` at `2026-09-22T11:42:21Z`, not
+the separately labeled public August reference. The row keeps its eastus2
+deployment, capacity and pool metadata as desired inventory until the separately
+approved phase-2 removal. It has no preview, GA or HTTP route and is not listed;
+a saved RT2 choice is refused explicitly, never aliased. The default
+`gpt-realtime` and `AI4IA_REALTIME_PROTOCOL=preview` are unchanged. Do not
+re-enable it: from `2026-10-24T00:00:00Z` the seven-day policy treats new/changed
+targets as unsafe (exact Succeeded reconciles only warn), and the September 23
+subscription model-list evidence offers no later RT2 version. `gpt-realtime-2.1`
+is the verified successor, a different model ID, not an alias for the unoffered
+public `2026-05-07`. No automatic runtime date cutoff is introduced.
 
 Phase 1 adds GA-only `gpt-realtime-1.5` (`2026-02-23`), `gpt-realtime-2.1` and
 `gpt-realtime-2.1-mini` (both `2026-07-07`), each only in eastus2 GlobalStandard at

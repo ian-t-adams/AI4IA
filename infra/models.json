@@ -1195,6 +1195,7 @@
       "name": "gpt-realtime-2",
       "format": "OpenAI",
       "category": "realtime",
+      "runtimeEnabled": false,
       "deployments": [
         {
           "region": "eastus2",

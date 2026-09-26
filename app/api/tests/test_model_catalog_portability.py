@@ -146,10 +146,10 @@ def test_realtime_and_external_profiles_survive_the_same_catalog_roundtrip():
     assert any(m.get("deploymentTarget") == "external-claude" for m in models)
     assert any(m.get("requiredRealtimeProtocol") == "ga" for m in models)
     retained = next(m for m in models if m["name"] == "gpt-realtime-2")
-    assert retained.get("runtimeEnabled", True) is True
-    for enabled in (True, False):
-        if not enabled:
-            retained["runtimeEnabled"] = False
+    assert retained["runtimeEnabled"] is False
+    for enabled in (False, True):
+        if enabled:
+            del retained["runtimeEnabled"]
         for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
             catalog = ModelCatalog.model_validate(raw)
             restored = ModelCatalog.model_validate(catalog.model_dump())

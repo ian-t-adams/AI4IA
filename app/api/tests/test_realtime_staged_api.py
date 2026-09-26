@@ -63,7 +63,7 @@ def _echo(c, *, query="", user="owner", headers=None):
         assert ws.receive_text() == f"echo:{frame}"
 
 
-@pytest.mark.parametrize("model_id", ["gpt-realtime", "gpt-realtime-2"])
+@pytest.mark.parametrize("model_id", ["gpt-realtime", "gpt-realtime-mini"])
 def test_real_relay_translates_browser_frames_and_owns_the_handshake(protocol_client, model_id):
     c = protocol_client
     connector = c.app.state.realtime_connector
@@ -107,7 +107,7 @@ def test_real_relay_translates_browser_frames_and_owns_the_handshake(protocol_cl
     assert connector.upstream.closed
 
 
-@pytest.mark.parametrize("model_id", ["gpt-realtime", "gpt-realtime-2"])
+@pytest.mark.parametrize("model_id", ["gpt-realtime", "gpt-realtime-mini"])
 def test_real_relay_normalizes_every_server_fixture_and_preserves_usage(protocol_client, caplog, model_id):
     c = protocol_client
     protocol = c.app.state.settings.realtime_protocol

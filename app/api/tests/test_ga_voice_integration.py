@@ -64,8 +64,9 @@ def test_declared_versions_and_runtime_flags_agree_in_all_merged_catalogs():
                 (d["region"], d["sku"], d["version"]) for d in declaration["deployments"]
             }
         retained = catalog.get("gpt-realtime-2")
-        assert retained.runtimeEnabled is True and retained.requiredRealtimeProtocol is None
-        assert catalog.resolve_deployment(retained.id).modelVersion == "2026-05-06"
+        assert retained.runtimeEnabled is False and retained.requiredRealtimeProtocol is None
+        assert [o.modelVersion for o in retained.options] == ["2026-05-06"]
+        assert catalog.resolve_deployment(retained.id) is None
         assert catalog.resolve_deployment(TTS_MODEL).modelVersion == "2025-12-15"
         for name, version in GA_MODELS.items():
             assert catalog.resolve_deployment(name).modelVersion == version
@@ -196,7 +197,7 @@ def test_rest_speech_cannot_reuse_a_restricted_monitor_actor(setup_client, actor
         asyncio.run(http.aclose())
 
 
-def test_ga_setup_candidate_keeps_rt2_selectable_and_skips_explicitly_disabled_models(setup_client):
+def test_ga_setup_candidate_skips_runtime_disabled_rt2(setup_client):
     client, token, connector, _ = setup_client
     state = client.app.state
     catalog = state.catalog.model_copy(deep=True)
@@ -204,10 +205,9 @@ def test_ga_setup_candidate_keeps_rt2_selectable_and_skips_explicitly_disabled_m
     bearer = token()
     assert "model=gpt-realtime&" in setup_target(client, bearer)
     default = catalog.get("gpt-realtime")
-    default.runtimeEnabled = False
     retained = catalog.get("gpt-realtime-2")
-    assert f"model={retained.id}&" in setup_target(client, bearer)
-    retained.runtimeEnabled = False
+    assert retained.runtimeEnabled is False
+    default.runtimeEnabled = False
     target = setup_target(client, bearer)
     assert f"model={GA_MODEL}&" in target
     with client.websocket_connect(
@@ -222,8 +222,10 @@ def test_ga_setup_candidate_keeps_rt2_selectable_and_skips_explicitly_disabled_m
     assert parse_qs(url.query) == {"model": [catalog.resolve_deployment(GA_MODEL).deploymentName]}
     assert connector.upstream.sent_bytes == []
     assert len(connector.upstream.sent_text) == 1
+    # Control: re-enabling only RT2 makes it the next candidate again.
     retained.runtimeEnabled = True
     assert f"model={retained.id}&" in setup_target(client, bearer)
+    retained.runtimeEnabled = False
     default.runtimeEnabled = True
     assert "model=gpt-realtime&" in setup_target(client, bearer)
 

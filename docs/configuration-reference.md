@@ -364,13 +364,13 @@ Catalog `runtimeEnabled=false` retains a desired deployment for inventory and
 quota reconciliation but removes it from new runtime selection and serving.
 `requiredRealtimeProtocol=ga` restricts a model to the server-selected GA surface;
 it never enables the GA flag or changes the selector. Both fields are enforced by
-the API, generated gateway routes and voice model picker. Realtime 2 keeps both
-fields omitted: its unchanged `2026-05-06` deployment remains selectable on
-preview and GA until the authoritative subscription inference deprecation
-`2026-10-31T00:00:00Z`. From October 24, the existing retirement policy blocks
-new/changed unsafe targets; exact reconciles only warn. A separately approved
-runtime-disable follow-up must merge and deploy before October 31; this patch
-adds no automatic date cutoff. The September 23 subscription evidence offers
+the API, generated gateway routes and voice model picker. Realtime 2 is
+runtime-disabled ahead of its authoritative subscription inference deprecation
+`2026-10-31T00:00:00Z`: its unchanged `2026-05-06` deployment stays in desired
+inventory with no preview, GA or HTTP route until phase-2 removal. From
+October 24, the existing retirement policy blocks new/changed unsafe targets;
+exact reconciles only warn, so do not re-enable it. There is no automatic date
+cutoff. The September 23 subscription evidence offers
 only RT2 `2026-05-06`; its verified successor is the distinct `gpt-realtime-2.1`.
 Realtime 1.5, 2.1 and 2.1-mini are GA-only, each eastus2 GlobalStandard baseline
 10 without maximum/pool assumptions, not new defaults or Speech managed models.

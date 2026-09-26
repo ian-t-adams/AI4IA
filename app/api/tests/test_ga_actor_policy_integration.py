@@ -88,7 +88,7 @@ def test_signed_actor_categories_preserve_runtime_protocol_and_default_routing(
 
     monkeypatch.setattr(auth_dependencies, "bind_authenticated", observed_binding)
     retained = state.catalog.get(RETAINED_MODEL)
-    assert retained.runtimeEnabled is True and retained.requiredRealtimeProtocol is None
+    assert retained.runtimeEnabled is False and retained.requiredRealtimeProtocol is None
     for protocol in RealtimeProtocol:
         state.settings.realtime_protocol = protocol
         offered = client.get("/api/models?protocol=ga", headers=authorization(actor))
@@ -97,25 +97,26 @@ def test_signed_actor_categories_preserve_runtime_protocol_and_default_routing(
         assert bindings[-1].actor_policy_digest == policy_digest(parse_policy_config(json.dumps(config)))
         rows = offered.json()["models"]
         assert {row["category"] for row in rows} == {"realtime"}
-        assert RETAINED_MODEL in {row["id"] for row in rows}
+        assert RETAINED_MODEL not in {row["id"] for row in rows}
         assert (model_id in {row["id"] for row in rows}) is (protocol == RealtimeProtocol.ga)
         ordinary_rows = client.get("/api/models", headers=authorization(ordinary)).json()["models"]
         assert model.id in {row["id"] for row in ordinary_rows}
-        assert RETAINED_MODEL in {row["id"] for row in ordinary_rows}
+        assert RETAINED_MODEL not in {row["id"] for row in ordinary_rows}
         assert (model_id in {row["id"] for row in ordinary_rows}) is (protocol == RealtimeProtocol.ga)
         setup_exchange(client, ordinary)
-        setup_exchange(client, actor, RETAINED_MODEL, allowed=protocol == RealtimeProtocol.ga)
-        setup_exchange(client, ordinary, RETAINED_MODEL)
         setup_exchange(client, actor, model_id, allowed=protocol == RealtimeProtocol.ga)
         setup_exchange(client, ordinary, model_id, allowed=protocol == RealtimeProtocol.ga)
-        retained.runtimeEnabled = False
         for bearer in (actor, ordinary):
-            assert RETAINED_MODEL not in {
+            setup_exchange(client, bearer, RETAINED_MODEL, allowed=False)
+        # Control: flipping only the runtime flag restores RT2 under the same reductions.
+        retained.runtimeEnabled = True
+        for bearer in (actor, ordinary):
+            assert RETAINED_MODEL in {
                 row["id"] for row in client.get("/api/models", headers=authorization(bearer)).json()["models"]
             }
-            setup_exchange(client, bearer, RETAINED_MODEL, allowed=False)
-        retained.runtimeEnabled = True
         setup_exchange(client, actor, RETAINED_MODEL, allowed=protocol == RealtimeProtocol.ga)
+        setup_exchange(client, ordinary, RETAINED_MODEL)
+        retained.runtimeEnabled = False
     actor_tools = client.get("/api/tools", headers=authorization(actor)).json()["tools"]
     ordinary_tools = client.get("/api/tools", headers=authorization(ordinary)).json()["tools"]
     assert actor_tools and not any(row["available"] or row["selectable"] for row in actor_tools)

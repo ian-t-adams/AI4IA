@@ -205,7 +205,8 @@ def test_shipped_catalog_keeps_sora_2_inventory_but_routes_no_video_model():
     assert not catalog.available(entry)
     assert catalog.resolve_deployment("sora-2") is None
     assert [m.id for m in catalog.models if m.category == "video" and catalog.available(m)] == []
-    assert [m.id for m in catalog.models if not m.runtimeEnabled] == ["sora-2"]
+    # The only other runtime-disabled row is gpt-realtime-2 (its own retirement).
+    assert [m.id for m in catalog.models if not m.runtimeEnabled] == ["gpt-realtime-2", "sora-2"]
     assert catalog.resolve_deployment("gpt-5.4") is not None
 
 

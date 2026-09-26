@@ -28,21 +28,34 @@ docs_generator = load_script(
 
 
 class GatewayPolicyTests(unittest.TestCase):
-    def test_rt2_is_routable_and_explicitly_disabled_inventory_is_never_served(self) -> None:
+    def test_runtime_disabled_rt2_keeps_inventory_but_gets_no_route(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
         retained = next(m for m in models["catalog"] if m["name"] == "gpt-realtime-2")
-        self.assertNotIn("runtimeEnabled", retained)
+        self.assertIs(retained["runtimeEnabled"], False)
         self.assertNotIn("requiredRealtimeProtocol", retained)
         inventory = load_script("voice_migration_inventory", ROOT / "scripts/check-model-availability.py")
         before = inventory.catalog_requirements(models)
         name = next(
             row["deploymentName"] for row in before["eastus2"] if row["name"] == retained["name"]
         )
-        for enabled in (True, False, True):
-            if not enabled:
-                retained["runtimeEnabled"] = False
-            else:
+        default = next(
+            row["deploymentName"] for row in before["eastus2"] if row["name"] == "gpt-realtime"
+        )
+        policies = ROOT / "infra/policies"
+        realtime = [
+            (policies / f).read_text(encoding="utf-8")
+            for f in ("realtime-routing.xml", "realtime-ga-routing.xml")
+        ]
+        catalog = [p.read_text(encoding="utf-8") for p in policies.glob("simplel7proxy-endpoints-catalog-*.xml")]
+        # The committed routes drop only RT2; the default model keeps both realtime routes.
+        self.assertFalse(any(name in text for text in [*realtime, *catalog]))
+        self.assertTrue(all(default in text for text in realtime))
+        self.assertTrue(any(default in text for text in catalog))
+        for enabled in (False, True, False):
+            if enabled:
                 retained.pop("runtimeEnabled", None)
+            else:
+                retained["runtimeEnabled"] = False
             self.assertEqual(
                 name in "\n".join(gateway_generator.render_catalog(models)[0]), enabled,
             )
@@ -71,8 +84,14 @@ class GatewayPolicyTests(unittest.TestCase):
             self.assertIn(name, gateway_generator.generate_realtime_policy(models))
             model["requiredRealtimeProtocol"] = "ga"
 
+        retained = next(m for m in models["catalog"] if m["name"] == "gpt-realtime-2")
         for ga in (False, True):
+            policy = gateway_generator.generate_realtime_policy(models, ga=ga)
+            self.assertNotIn("gpt-realtime-2-", policy)
+            # Control: the same catalog with only RT2's runtime flag removed routes it.
+            del retained["runtimeEnabled"]
             self.assertIn("gpt-realtime-2-", gateway_generator.generate_realtime_policy(models, ga=ga))
+            retained["runtimeEnabled"] = False
 
     # APIM's policy schema types these forward-request attributes as literal
     # xs:boolean values. Deployment validation rejects expressions there, even
