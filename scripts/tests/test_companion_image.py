@@ -400,9 +400,17 @@ class ImageFilesystemContractTests(unittest.TestCase):
         self.assertRegex(run, r"docker export \S+ \| python3 scripts/check-image-ownership\.py")
         self.assertIn("--root-owned app --owned var/lib/companion/keys=1654", run)
         smoke = steps[names.index("Smoke test - CompanionApp starts and admits only the allow-listed admin")]["run"]
-        for fragment in ("%{content_type}", "*javascript*", '"/${script}" /_framework/blazor.web.js',
-                         "expect 404 /_framework/blazor.missing.js"):
-            self.assertIn(fragment, smoke)
+        loop = re.search(r'for path in "/\$\{script\}" /_framework/blazor\.web\.js; do\n(.*?)\n\s*done\n', smoke, re.S)
+        self.assertIsNotNone(loop, "the served-script loop is missing")
+        assert loop is not None
+        body = loop.group(1)
+        # Each served path must fail the job unless it is a 200 carrying the JavaScript Blazor script.
+        self.assertIn('expect 200 "${path}" "${admin}"', body)
+        self.assertIn('content_type="$(content_type_of "${path}")"', body)
+        self.assertRegex(body, r'if \[\[ "\$\{content_type\}" != \*javascript\* \]\]; then\n\s*echo "::error::[^\n]*"\n\s*exit 1')
+        self.assertRegex(body, r"grep -q 'Blazor'; then\n\s*echo \"::error::[^\n]*\"\n\s*exit 1")
+        self.assertIn('--write-out \'%{content_type}\'', smoke)
+        self.assertIn("expect 404 /_framework/blazor.missing.js", smoke)
         for step in (steps[check], steps[names.index("Smoke test - CompanionApp starts and admits only the allow-listed admin")]):
             self.assertNotIn("continue-on-error", step)
 
