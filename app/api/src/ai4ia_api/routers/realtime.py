@@ -2308,10 +2308,7 @@ async def voice_live(websocket: WebSocket) -> None:
     avatar_param = websocket.query_params.get(_avatar.AVATAR_QUERY_PARAM)
     avatar_record_id: str | None = None
     if avatar_param is not None:
-        if (
-            provider_resolution.provider.id != SPEECH_VOICE_LIVE_PROVIDER_ID
-            or provider_resolution.managed_model is None
-        ):
+        if provider_resolution.provider.id != SPEECH_VOICE_LIVE_PROVIDER_ID:
             await _deny(
                 websocket, WS_POLICY_VIOLATION, security_reason="avatar_provider_unsupported"
             )

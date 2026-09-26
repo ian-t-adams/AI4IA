@@ -1407,6 +1407,28 @@ def test_live_avatar_policy_denial_and_home_mismatch_open_no_upstream(monkeypatc
         c.__exit__(None, None, None)
 
 
+@pytest.mark.parametrize("provider_id", ["not-an-issued-id", AVATAR_PROVIDER_ID])
+def test_live_avatar_refuses_a_malformed_grant_from_the_resolver(monkeypatch, provider_id):
+    async def fake_resolve(state, user, record_id):
+        return LiveAvatarGrant(
+            record_id=record_id, provider_avatar_id=provider_id, base_model="vasa-1",
+            home_region="eastus2",
+        )
+
+    monkeypatch.setattr(realtime_avatar, "resolve_live_avatar", fake_resolve)
+    c, _ = _avatar_client()
+    try:
+        connector = c.app.state.realtime_connector
+        if provider_id == AVATAR_PROVIDER_ID:
+            assert _avatar_connects(c)["type"] == "ai4ia.avatar.session"
+            assert len(connector.connects) == 1
+        else:
+            assert _avatar_refusal(c)["reason"] == "unavailable"
+            assert connector.connects == []
+    finally:
+        c.__exit__(None, None, None)
+
+
 @pytest.mark.parametrize("query", [
     f"?avatar={AVATAR_RECORD_ID}",
     f"?provider=azure_openai&avatar={AVATAR_RECORD_ID}",
@@ -1766,6 +1788,9 @@ def test_live_avatar_use_is_rechecked_on_every_upstream_send(monkeypatch, revoke
             ws.send_text(append)
             ws.receive_text()
             revoked["on"] = revoke
+            # Stopping the avatar's speech never needs a fresh grant.
+            ws.send_text('{"type":"output_audio_buffer.clear"}')
+            assert json.loads(ws.receive_text().removeprefix("echo:")) == {"type": "output_audio_buffer.clear"}
             ws.send_text(append)
             if revoke:
                 with pytest.raises(WebSocketDisconnect) as closed:
@@ -1773,7 +1798,7 @@ def test_live_avatar_use_is_rechecked_on_every_upstream_send(monkeypatch, revoke
                 assert closed.value.code == 1011
             else:
                 ws.receive_text()
-        assert len(connector.upstream.sent_text) == (1 if revoke else 2)
+        assert len(connector.upstream.sent_text) == (2 if revoke else 3)
     finally:
         c.__exit__(None, None, None)
 

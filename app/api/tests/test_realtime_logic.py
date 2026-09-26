@@ -1673,6 +1673,12 @@ def test_avatar_injection_is_server_owned_and_drops_every_client_avatar_field():
         assert forbidden not in injected_text
     append = '{"type":"input_audio_buffer.append","audio":"AAA="}'
     assert avatar.inject(append) is append
+    # Injection also stands on its own: it replaces, never merges, any avatar it meets.
+    raw = json.dumps({"type": "session.update", "session": {"avatar": {
+        "character": "someone-else", "output_protocol": "webrtc", "output_audit_audio": True,
+        "video": {"background": {"image_url": "https://attacker.example/bg.png"}},
+    }}})
+    assert json.loads(avatar.inject(raw))["session"]["avatar"] == avatar.block()
 
 
 @pytest.mark.parametrize("frame", [
@@ -1687,6 +1693,9 @@ def test_client_avatar_events_are_refused(frame):
 @pytest.mark.parametrize("frame", [
     '{"type":"input_audio_buffer.append","audio":"AAA="}',
     '{"type":"session.update","session":{}}',
+    json.dumps({"type": "session.update", "session": {
+        "instructions": "Never send session.avatar.connect yourself.",
+    }}),
     '{"type":"output_audio_buffer.clear"}',
     '{"type":"response.cancel"}',
     json.dumps({"type": "conversation.item.create", "item": {
@@ -1832,6 +1841,15 @@ def test_meter_bills_whole_seconds_from_confirmation_and_nothing_unconfirmed(mon
     instant.upstream(_video_frame(64))
     instant.finish()
     assert instant.billable_seconds == 1
+    # The session.update that asked for the avatar never starts the meter.
+    configured = _live_avatar()
+    clock.now = 4000.0
+    configured.inject('{"type":"session.update","session":{}}')
+    clock.now = 4050.0
+    configured.upstream(json.dumps({"type": "session.updated", "session": {"modalities": ["audio", "avatar"]}}))
+    clock.now = 4052.5
+    configured.finish()
+    assert configured.billable_seconds == 3
     unpriced = _live_avatar(pricing=PricingBook({}, currency="USD", version="none"))
     unpriced.upstream(_video_frame(64))
     clock.now += 5

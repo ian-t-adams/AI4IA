@@ -61,10 +61,19 @@ class FakeSourceBuffer implements SourceBufferLike {
     this.removed.push([start, end]);
   }
 
-  // The test drives completion, like the browser's asynchronous updateend.
-  finish() {
+  // The test drives completion, like the browser's asynchronous updateend. The
+  // spec clears `updating` first and delivers updateend in a later task.
+  settle() {
     this.updating = false;
+  }
+
+  deliver() {
     for (const listener of [...this.listeners.updateend]) listener();
+  }
+
+  finish() {
+    this.settle();
+    this.deliver();
   }
 
   addEventListener(type: "updateend" | "error", listener: () => void) {
@@ -205,6 +214,19 @@ describe("AvatarVideoPlayer", () => {
     buffer.finish();
     expect(buffer.appended.map((data) => fragmentSequence(data))).toEqual([null, 1, 2, 3]);
     expect(player.backlog.chunks).toBe(1);
+    buffer.finish();
+    expect(player.backlog).toEqual({ chunks: 0, bytes: 0 });
+  });
+
+  it("waits for updateend even after updating clears, never overlapping operations", () => {
+    const { player, source } = openPlayer();
+    player.push(toBase64(initSegment()));
+    const buffer = source.buffers[0];
+    buffer.settle(); // updating is false, but updateend has not been delivered yet
+    player.push(toBase64(mediaFragment(1)));
+    expect(buffer.appended).toHaveLength(1);
+    buffer.deliver();
+    expect(buffer.appended.map((data) => fragmentSequence(data))).toEqual([null, 1]);
     buffer.finish();
     expect(player.backlog).toEqual({ chunks: 0, bytes: 0 });
   });
