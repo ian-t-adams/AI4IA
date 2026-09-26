@@ -301,8 +301,11 @@ public sealed class NoReplayWorkerTests
     }
 
     [TestMethod]
-    public async Task OpenCircuitRequeuesOrdinaryWorkButRefusesTheBoundedAttempt()
+    public async Task OpenCircuitSurfacesAsRequeueForOrdinaryWorkButRefusalForTheBoundedAttempt()
     {
+        // This drives ProxyToBackEndAsync directly, so it proves only the exception type
+        // each request leaves the send loop with. The worker loop's consequences, a real
+        // requeue versus an error response, are covered in IngressWorkerPolicyTests.
         foreach (bool bounded in new[] { false, true })
         {
             await using var server = new WireServer(_ => Task.FromResult(new WireReply(200)));
@@ -320,7 +323,6 @@ public sealed class NoReplayWorkerTests
                 Assert.IsTrue(requeue.RetryAfter > 0);
             }
             Assert.AreEqual(0, server.Requests.Count);
-            Assert.AreEqual(0, fixture.Queue.thrdSafeCount);
         }
         // Control: the same bounded request sends once when the circuit is closed.
         await using var closed = new WireServer(_ => Task.FromResult(new WireReply(200)));
@@ -334,6 +336,7 @@ public sealed class NoReplayWorkerTests
     [DataRow("S7P-Model-Override", "fixture-other")]
     [DataRow("S7PDEBUGBODY", "true")]
     [DataRow("S7P-Iterator", "MultiPass")]
+    [DataRow("S7PDEBUGSTREAM", "true")]
     public async Task BoundedRequestRefusesUpstreamCallerControls(string header, string value)
     {
         await using var server = new WireServer(_ => Task.FromResult(new WireReply(200)));
@@ -351,26 +354,6 @@ public sealed class NoReplayWorkerTests
         using var sent = await control.Send();
         Assert.AreEqual(HttpStatusCode.OK, sent.StatusCode);
         Assert.AreEqual(1, server.Requests.Count);
-    }
-
-    [TestMethod]
-    public async Task ModelOverrideHeaderRewritesTheForwardedBodyUnlessItIsStripped()
-    {
-        foreach (bool present in new[] { true, false })
-        {
-            await using var server = new WireServer(_ => Task.FromResult(new WireReply(200)));
-            await using var fixture = await WorkerFixture.Create([server], false);
-            if (present)
-                fixture.Request.Headers["S7P-Model-Override"] = "fixture-override";
-            using var result = await fixture.Send();
-            var sent = server.Requests.Single();
-            // The control proves the upstream header rewrites the admitted model; the gateway's
-            // DisallowedHeaders policy therefore removes it before the worker reads it.
-            Assert.AreEqual(present, Encoding.UTF8.GetString(sent.Body).Contains("fixture-override"));
-            Assert.AreEqual(present ? "fixture-override" : "fixture-text", sent.Headers["x-LLMModel"]);
-            if (!present)
-                CollectionAssert.AreEqual(Body, sent.Body);
-        }
     }
 
     [DataTestMethod]
@@ -405,11 +388,11 @@ public sealed class NoReplayWorkerTests
         Assert.AreEqual(expected, request.Headers[NoReplayAttempt.ProofHeader]);
     }
 
-    private static void SetCircuit(HostConfig config, ICircuitBreaker? circuit = null) =>
+    internal static void SetCircuit(HostConfig config, ICircuitBreaker? circuit = null) =>
         typeof(HostConfig).GetField("_circuitBreaker", BindingFlags.NonPublic | BindingFlags.Instance)!
             .SetValue(config, circuit ?? new HealthyCircuit());
 
-    private class HealthyCircuit : ICircuitBreaker
+    internal class HealthyCircuit : ICircuitBreaker
     {
         public string ID { get; set; } = "fixture";
         public bool TrackRetryAfter { get; set; }
@@ -421,9 +404,12 @@ public sealed class NoReplayWorkerTests
     }
 
     // Every matching host blocked: the upstream iterator requeues before any attempt.
-    private sealed class OpenCircuit : HealthyCircuit
+    // Optionally closes after a number of blocked checks so a requeued request can finish.
+    internal sealed class OpenCircuit(int retryMs = 60_000, int blockedChecks = int.MaxValue) : HealthyCircuit
     {
-        public override int GetMsToNextRetry() => 60_000;
+        private int _checks;
+        public override int GetMsToNextRetry() =>
+            Interlocked.Increment(ref _checks) <= blockedChecks ? retryMs : 0;
     }
 
     internal sealed class FixtureHost(HostConfig config) : BaseHostHealth(config, NullLogger.Instance)
@@ -433,7 +419,7 @@ public sealed class NoReplayWorkerTests
         public override bool SupportsProbing => false;
     }
 
-    private sealed class Backends(List<BaseHostHealth> hosts) : IEndpointMonitorService
+    internal sealed class Backends(List<BaseHostHealth> hosts) : IEndpointMonitorService
     {
         public List<BaseHostHealth> GetHosts() => hosts;
         public List<BaseHostHealth> GetActiveHosts() => hosts;
@@ -576,7 +562,7 @@ public sealed class NoReplayWorkerTests
 }
 
 internal sealed record WireRequest(string Path, string Version, Dictionary<string, string> Headers, byte[] Body, string Method = "POST");
-internal sealed record WireReply(int Status, bool Drop = false, bool Requeue = false, bool Ack = true, string? Location = null, string Body = "{}", Dictionary<string, string[]>? Headers = null, bool AllowDisconnect = false);
+internal sealed record WireReply(int Status, bool Drop = false, bool Requeue = false, bool Ack = true, string? Location = null, string Body = "{}", Dictionary<string, string[]>? Headers = null, bool AllowDisconnect = false, bool Chunked = false);
 
 internal sealed class WireServer : IAsyncDisposable
 {
@@ -646,7 +632,11 @@ internal sealed class WireServer : IAsyncDisposable
                     if (!new[] { "Content-Length", "Content-Type", "Connection", "Transfer-Encoding" }.Contains(pair.Key, StringComparer.OrdinalIgnoreCase))
                         extra += $"{pair.Key}: {string.Join(",", pair.Value)}\r\n";
             var content = Encoding.UTF8.GetBytes(response.Body);
-            var head = Encoding.ASCII.GetBytes($"HTTP/1.1 {response.Status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {content.Length}\r\nConnection: close\r\n{ack}{extra}\r\n");
+            // Chunked framing matches APIM's streamed token-processor responses, which carry no length.
+            string framing = response.Chunked ? "Transfer-Encoding: chunked" : $"Content-Length: {content.Length}";
+            var head = Encoding.ASCII.GetBytes($"HTTP/1.1 {response.Status} Fixture\r\nContent-Type: application/json\r\n{framing}\r\nConnection: close\r\n{ack}{extra}\r\n");
+            if (response.Chunked)
+                content = [.. Encoding.ASCII.GetBytes($"{content.Length:X}\r\n"), .. content, .. "\r\n0\r\n\r\n"u8.ToArray()];
             try
             {
                 await stream.WriteAsync(head);

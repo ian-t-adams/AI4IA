@@ -96,7 +96,7 @@ The complete machine-readable list and reason for every deviation lives in
   A missing bounded host cannot fall back to the catch-all host/key. Missing
   markers on this path, including a recovered DTO, are refused before dispatch.
   The bounded path also refuses upstream's caller controls `S7P-Model-Override`,
-  `S7PDEBUGBODY` and `S7P-Iterator`. When every matching circuit is open, the
+  `S7PDEBUGBODY`, `S7PDEBUGSTREAM` and `S7P-Iterator`. When every matching circuit is open, the
   upstream iterator throws a delayed requeue before any attempt; `ProxyWorker.cs`
   turns that into a refusal for a bounded request instead of a requeue.
   Ordinary retry behavior is unchanged. This is source staging, not
@@ -152,15 +152,20 @@ AI4IA does about each:
   set `retryafter=false`, preserving the previous behavior. Covered by
   `AI4IA.Proxy.Tests/GatewayUpstreamPolicyTests.cs`.
 - **New caller controls.** `S7P-Model-Override` rewrites the body `model` and the
-  `x-LLMModel` routing header, and `S7PDEBUGBODY` logs the full request body. The
-  authored `DisallowedHeaders` policy removes both after authentication and
-  before the worker reads them. `S7P-Iterator` is parsed before that policy runs.
+  `x-LLMModel` routing header, and `S7PDEBUGBODY` logs the full request body.
+  `S7PDEBUGSTREAM` makes the token processor log up to the last ten response lines
+  at Information. For a non-streaming completion that is the whole JSON, including
+  `message.content`. The authored `DisallowedHeaders` policy removes all three
+  after authentication and before the worker reads them
+  (`IngressWorkerPolicyTests`, which runs the real listener and worker loop). The
+  pre-existing `S7PDEBUG` still enables request debug logging, and it cannot be
+  stripped because the listener reads it before the policy runs.
+  `S7P-Iterator` is also parsed before that policy runs.
   It selects `SinglePass` or `MultiPass`. `MultiPass` reuses the single catch-all
   host lap after lap, up to `MaxAttempts`, so the authored `MaxAttempts=1` keeps it
   at one send (`CallerSelectedIterationIsBoundedByTheAuthoredMaxAttempts`). The API
-  never sends any of the three, and a bounded request
-  refuses all three. The pre-existing `S7PDEBUG` also logs captured response lines
-  now; the API never sends it either.
+  never sends any of these headers. A bounded request refuses all four upstream
+  controls, and `S7PDEBUG` as well.
 - **Iteration and retries.** Iterators were rewritten. The default `SinglePass`
   tries each matching host once per dispatch, and `MaxAttempts` now bounds only
   `MultiPass` (default 10). AI4IA's catch-all host still makes one attempt per
