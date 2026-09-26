@@ -274,15 +274,10 @@ function quietly(run: (() => Promise<void> | void) | undefined): void {
 export function hardenAvatarVideoElement(element: HTMLVideoElement): void {
   const doc = element.ownerDocument as ExitableDocument;
   element.controls = false;
+  // Both IDL properties reflect these content attributes where they are supported.
   element.setAttribute("disablepictureinpicture", "");
   element.setAttribute("disableremoteplayback", "");
   element.setAttribute("controlslist", "nofullscreen noremoteplayback nodownload");
-  const media = element as HTMLVideoElement & {
-    disablePictureInPicture?: boolean;
-    disableRemotePlayback?: boolean;
-  };
-  media.disablePictureInPicture = true;
-  media.disableRemotePlayback = true;
   element.addEventListener("contextmenu", (event) => event.preventDefault());
   element.addEventListener("enterpictureinpicture", () => {
     if (doc.pictureInPictureElement === element) quietly(doc.exitPictureInPicture?.bind(doc));

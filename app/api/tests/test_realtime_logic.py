@@ -2182,6 +2182,23 @@ def test_idle_watchdog_rechecks_the_policy_guard_and_ends_on_revocation(monkeypa
     assert errors == [json.loads(unavailable_error(reason))["error"]]
 
 
+def test_the_policy_recheck_is_due_at_most_once_per_interval(monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(realtime_avatar, "monotonic", clock)
+    interval = int(realtime_avatar.POLICY_RECHECK_SECONDS)
+    avatar = _live_avatar()
+    clock.now += interval - 1
+    assert avatar.policy_recheck_due() is False
+    clock.now += 1
+    assert avatar.policy_recheck_due() is True
+    # Due once per interval: the next recheck waits a full interval again.
+    assert avatar.policy_recheck_due() is False
+    clock.now += interval - 1
+    assert avatar.policy_recheck_due() is False
+    clock.now += 1
+    assert avatar.policy_recheck_due() is True
+
+
 def test_the_raw_frame_bound_applies_before_anything_parses_the_frame(monkeypatch):
     parsed: list[int] = []
     real_loads = json.loads
