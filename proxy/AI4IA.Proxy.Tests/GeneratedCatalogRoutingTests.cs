@@ -54,6 +54,7 @@ public sealed class GeneratedCatalogRoutingTests
             {
                 var policy = ga ? bundle.Ga : bundle.Preview;
                 var context = new ApimContext();
+                context.Api.Path = ApimPolicyHarness.RuntimeApiPath(ga ? "openai/v1/realtime" : "openai/realtime");
                 context.Request.Url = new ApimUrl(
                     $"/openai/{(ga ? "v1/" : "")}realtime?{(ga ? "model" : "deployment")}={bundle.VoiceDeployment}");
                 var selected = policy.Element("inbound")!.Element("choose")!.Elements("when")
