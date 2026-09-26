@@ -235,6 +235,64 @@ class StagedRealtimeTests(unittest.TestCase):
                 self.assertEqual(code, 0, err)
 
 
+COMPANION_IMAGE = "crfixture.azurecr.io/ai4ia/companion-ai4ia-fixture@sha256:" + "a" * 64
+COMPANION_READY = {
+    "companionAppEnabled": True,
+    "proxyEventHubTelemetryEnabled": True,
+    "companionAppImage": COMPANION_IMAGE,
+    "companionAppEntraClientId": "22222222-2222-2222-2222-222222222222",
+    "companionAppAdminGroupIds": "33333333-3333-3333-3333-333333333333",
+}
+
+
+class CompanionAppPrerequisiteTests(unittest.TestCase):
+    def test_committed_console_is_default_off(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        self.assertEqual(
+            parameters["companionAppEnabled"]["value"], "${AI4IA_COMPANION_APP_ENABLED=false}",
+        )
+        self.assertEqual(parameters["companionAppImage"]["value"], "${AI4IA_COMPANION_APP_IMAGE=}")
+        # Control: a disabled console ignores even a nonsensical image.
+        with tempfile.TemporaryDirectory() as tmp, _environment(AZURE_ENV_NAME="ai4ia-fixture"):
+            code, _, err = _run(_write_parameters(tmp, {"companionAppImage": "nginx:latest"}))
+            self.assertEqual(code, 0, err)
+
+    def test_every_prerequisite_fails_closed_and_the_complete_set_passes(self) -> None:
+        cases = (
+            ({"proxyEventHubTelemetryEnabled": False}, "requires proxyEventHubTelemetryEnabled=true"),
+            ({"companionAppImage": ""}, "requires companionAppImage as a digest reference"),
+            ({"companionAppImage": "crfixture.azurecr.io/ai4ia/companion-ai4ia-fixture:latest"},
+             "requires companionAppImage as a digest reference"),
+            ({"companionAppImage": "docker.io/ai4ia/companion-ai4ia-fixture@sha256:" + "a" * 64},
+             "requires companionAppImage as a digest reference"),
+            ({"companionAppImage": "crfixture.azurecr.io/ai4ia/companion-other@sha256:" + "a" * 64},
+             "must come from this environment's companion repository"),
+            ({"companionAppEntraClientId": ""}, "requires companionAppEntraClientId"),
+            ({"companionAppAdminGroupIds": ""}, "requires at least one admin group or principal id"),
+            ({"companionAppAdminGroupIds": "admins"}, "must be Entra object id GUIDs"),
+            ({"companionAppAllowedIpRanges": "0.0.0.0/0"}, "must not allow every address"),
+            ({"companionAppAllowedIpRanges": "10.0.0.0/33"}, "must be an IPv4 CIDR"),
+            ({"companionAppMinReplicas": "2"}, "companionAppMinReplicas must be 0 or 1"),
+        )
+        with tempfile.TemporaryDirectory() as tmp, _environment(AZURE_ENV_NAME="ai4ia-fixture"):
+            # Control: the complete prerequisite set validates.
+            code, _, err = _run(_write_parameters(tmp, COMPANION_READY))
+            self.assertEqual(code, 0, err)
+            code, _, err = _run(_write_parameters(tmp, {
+                **COMPANION_READY,
+                "companionAppAdminGroupIds": "",
+                "companionAppAdminPrincipalIds": "44444444-4444-4444-4444-444444444444",
+                "companionAppAllowedIpRanges": "203.0.113.0/24, 198.51.100.7/32",
+                "companionAppMinReplicas": "1",
+            }))
+            self.assertEqual(code, 0, err)
+            for override, message in cases:
+                with self.subTest(override=override):
+                    code, _, err = _run(_write_parameters(tmp, {**COMPANION_READY, **override}))
+                    self.assertEqual(code, 1)
+                    self.assertIn(message, err)
+
+
 class CommittedParametersTests(unittest.TestCase):
     def test_versioned_gateway_staging_is_default_off_and_never_activates_hard_quota(self) -> None:
         parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
