@@ -160,21 +160,21 @@ saved selections are not remapped, historical pricing is retained, and an
 application-image rollback cannot restore a deleted model deployment.
 
 For the [GA voice migration](runbooks/feature-enablement.md#ga-voice-model-migration),
-phase 1 keeps `gpt-realtime-2` selectable on preview and GA, with `runtimeEnabled`
-and `requiredRealtimeProtocol` omitted. Version `2026-05-06`, eastus2
-GlobalStandard and its allocation/pool metadata are unchanged.
-The owner decision follows [retirement report run 35722868193](https://github.com/ian-t-adams/AI4IA/actions/runs/35722868193),
+`gpt-realtime-2` is runtime-disabled (`runtimeEnabled: false`) and keeps
+`requiredRealtimeProtocol` omitted. Version `2026-05-06`, eastus2
+GlobalStandard and its allocation/pool metadata are unchanged in desired
+inventory. The retirement follows [retirement report run 35722868193](https://github.com/ian-t-adams/AI4IA/actions/runs/35722868193),
 observed at `2026-09-22T11:42:21Z`: that exact subscription target is Preview,
 Succeeded without drift, with SKU and inference deprecation both
 `2026-10-31T00:00:00Z`. The public reference table below is not that subscription
 evidence and stays unchanged; the public GA model-list version `2026-05-07` must
 not be aliased to this deployment.
 
-RT2 remains selectable until that authoritative inference deadline. From
-`2026-10-24T00:00:00Z`, the existing retirement policy treats new/changed targets
-as unsafe; exact reconciles only warn. A separately approved follow-up must
-runtime-disable it (`runtimeEnabled=false`) and must merge and deploy before
-`2026-10-31T00:00:00Z`. The supplied September 23, approximately 12:55 UTC
+RT2 has no preview, GA or HTTP route and is not listed; saved RT2 choices are
+refused explicitly. From `2026-10-24T00:00:00Z`, the existing retirement policy
+treats new/changed targets as unsafe; exact reconciles only warn. The runtime
+disablement therefore had to merge and deploy before `2026-10-31T00:00:00Z`; do
+not re-enable it. The supplied September 23, approximately 12:55 UTC
 subscription observation offers only RT2 `2026-05-06`; there is no in-place newer
 version. `gpt-realtime-2.1` is its verified successor, not a version alias.
 No automatic runtime date cutoff is introduced.
