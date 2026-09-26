@@ -149,7 +149,9 @@ public sealed class HostedCompanionAppTests
         listener.Start();
         var target = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/";
 
-        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => hosted.GetAsync(target));
+        // Bounded: a real client would connect to the listener and wait for a reply.
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => hosted.GetAsync(target, deadline.Token));
         Assert.IsFalse(listener.Pending(), "the hosted client opened a connection");
 
         // Control: an ordinary client against the same listener does connect.
