@@ -1940,6 +1940,78 @@ def test_relay_answers_a_refused_client_frame_once_and_stops():
     ]
 
 
+@pytest.mark.parametrize("with_avatar", [True, False])
+@pytest.mark.parametrize("kind", ["close", "error"])
+def test_relay_scrubs_the_provider_id_from_close_reasons_and_errors(kind, with_avatar):
+    reason = f"avatar {AVATAR_PROVIDER_ID} unavailable"
+    message = (
+        UpstreamMessage("close", close_code=4000, close_reason=reason, source_event="CLOSE")
+        if kind == "close"
+        else UpstreamMessage(
+            "error", close_reason=reason, exception_class="RuntimeError",
+            exception_message=reason, source_event="ERROR",
+        )
+    )
+    outcome = asyncio.run(relay(
+        _RelayClient(), _RelayUpstream([message]), max_seconds=1, bridge=_relay_bridge(),
+        avatar=_live_avatar() if with_avatar else None,
+    ))
+    fields = [outcome.metadata.close_reason]
+    if kind == "error":
+        fields.append(outcome.metadata.exception_message)
+    for value in fields:
+        assert value is not None
+        if with_avatar:
+            assert AVATAR_PROVIDER_ID not in value and "[avatar]" in value
+        else:
+            # Control: without an avatar session the same text reaches the metadata.
+            assert AVATAR_PROVIDER_ID in value
+
+
+@pytest.mark.parametrize("with_avatar", [True, False])
+def test_completion_log_and_event_never_carry_the_provider_id_in_any_field(monkeypatch, with_avatar):
+    from ai4ia_api.routers import realtime as realtime_router
+
+    lines: list[str] = []
+    events: list[dict] = []
+
+    class _Log:
+        def info(self, msg, *args):
+            lines.append(msg % args if args else msg)
+
+        warning = info
+
+    monkeypatch.setattr(realtime_router, "logger", _Log())
+    monkeypatch.setattr(
+        realtime_router, "emit_custom_event", lambda name, attrs: events.append(attrs),
+    )
+    resolution = SimpleNamespace(
+        provider=SimpleNamespace(id="speech_voice_live"), protocol="speech",
+        model_id="gpt-realtime",
+        usage_target=SimpleNamespace(
+            provider="speech_voice_live", deployment=None, target="managed_voice_live",
+            region="eastus2", dataZone=None,
+        ),
+    )
+    # Metadata built directly, as if an unscrubbed provider field had reached it.
+    outcome = RelayOutcome(status="error", metadata=RelayMetadata(
+        close_code=4000, close_reason=f"closed {AVATAR_PROVIDER_ID}",
+        exception_message=f"error {AVATAR_PROVIDER_ID}", source_event=f"close-{AVATAR_PROVIDER_ID}",
+    ))
+    realtime_router._emit_relay_completion(
+        correlation_id="corr", resolution=resolution, outcome=outcome, usage_error=None,
+        avatar=_live_avatar() if with_avatar else None,
+    )
+    assert len(lines) == 1 and len(events) == 1
+    event = json.dumps(events[0])
+    if with_avatar:
+        assert AVATAR_PROVIDER_ID not in lines[0] and AVATAR_PROVIDER_ID not in event
+        assert json.loads(lines[0])["metadata"]["closeReason"] == "closed [avatar]"
+    else:
+        # Control: the same fields do reach the log and event outside avatar mode.
+        assert AVATAR_PROVIDER_ID in lines[0] and AVATAR_PROVIDER_ID in event
+
+
 class _PacedUpstream(_RelayUpstream):
     """One frame per short real pause, each advancing the fake clock by ``step``."""
 

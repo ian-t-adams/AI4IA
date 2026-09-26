@@ -344,7 +344,7 @@ class LiveAvatarSession:
 
         # Every other provider event is conversational activity.
         self.touch()
-        scrubbed = self._scrub(text)
+        scrubbed = self.scrub(text)
         if scrubbed is not text:
             try:
                 payload = json.loads(scrubbed)
@@ -383,13 +383,19 @@ class LiveAvatarSession:
                 )
         return UpstreamDecision(forward=scrubbed, inspect=scrubbed)
 
-    def _scrub(self, text: str) -> str:
-        # Provider ids are ``ai4ia-`` + hex, so they can never occur inside
-        # standard base64 video; every other frame is scrubbed before it is
-        # forwarded or inspected for log metadata.
+    def scrub(self, text: str) -> str:
+        """Replace the provider avatar id in any provider-derived text.
+
+        Provider ids are ``ai4ia-`` + hex, so they can never occur inside
+        standard base64 video. Every other frame, close reason and error message
+        is scrubbed before it is forwarded, inspected or logged.
+        """
         if self.provider_avatar_id and self.provider_avatar_id in text:
             return text.replace(self.provider_avatar_id, PROVIDER_ID_PLACEHOLDER)
         return text
+
+    def scrub_optional(self, text: str | None) -> str | None:
+        return None if text is None else self.scrub(text)
 
     def _confirm(self) -> None:
         if self.confirmed_at is None:

@@ -1514,7 +1514,9 @@ def test_live_avatar_frames_and_provider_id_never_reach_logs_telemetry_or_the_br
         ]
         c.app.state.realtime_connector = ScriptedRealtimeConnector([
             *[UpstreamMessage("text", text=frame) for frame in frames],
-            UpstreamMessage("close", close_code=1000),
+            UpstreamMessage(
+                "close", close_code=4000, close_reason=f"avatar {AVATAR_PROVIDER_ID} unavailable",
+            ),
         ])
         received: list[str] = []
         with c.websocket_connect(
@@ -1540,6 +1542,7 @@ def test_live_avatar_frames_and_provider_id_never_reach_logs_telemetry_or_the_br
         assert evidence["recordRef"] == AVATAR_RECORD_ID[:8]
         assert evidence["videoFrames"] == 1 and evidence["confirmed"] is True
         assert "[avatar]" in completions[0]["metadata"]["protocolError"]["message"]
+        assert completions[0]["metadata"]["closeReason"] == "avatar [avatar] unavailable"
         telemetry = json.dumps(events, default=str)
         for forbidden in (AVATAR_PROVIDER_ID, "VIDEOSENTINEL", "turn-secret"):
             assert forbidden not in telemetry

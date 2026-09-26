@@ -1620,6 +1620,9 @@ async def _pump_upstream_to_client(
     avatar: LiveAvatarSession | None = None,
 ) -> None:
     client_lock = client_lock or anyio.Lock()
+    # A close reason or error message is provider text too: in an avatar session
+    # it could echo the provider avatar id, and it is logged at completion.
+    scrub = avatar.scrub_optional if avatar is not None else (lambda value: value)
     try:
         while True:
             msg = await upstream.receive()
@@ -1632,7 +1635,7 @@ async def _pump_upstream_to_client(
                             else "error"
                         ),
                         close_code=msg.close_code,
-                        close_reason=msg.close_reason,
+                        close_reason=scrub(msg.close_reason),
                         source_event=msg.source_event or "upstream.close",
                     )
                 )
@@ -1642,9 +1645,9 @@ async def _pump_upstream_to_client(
                     _RelayTermination(
                         status="error",
                         close_code=msg.close_code,
-                        close_reason=msg.close_reason,
+                        close_reason=scrub(msg.close_reason),
                         exception_class=msg.exception_class,
-                        exception_message=msg.exception_message,
+                        exception_message=scrub(msg.exception_message),
                         source_event=msg.source_event or "upstream.error",
                     )
                 )
@@ -1979,7 +1982,12 @@ def _emit_relay_completion(
                 "exceptionClass": avatar_usage_error[0],
                 "exceptionMessage": avatar_usage_error[1],
             }
-    logger.info(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+    line = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    if avatar is not None:
+        # Backstop for any provider-derived metadata field: the provider avatar
+        # id never reaches the log, whichever field it arrived in.
+        line = avatar.scrub(line)
+    logger.info(line)
     timestamps = [
         value
         for value in (
@@ -2009,7 +2017,7 @@ def _emit_relay_completion(
         "upstreamBinaryFrames": outcome.stats.upstream_to_client.binary_frames,
         "durationMs": duration_ms,
     }
-    if avatar_evidence is not None:
+    if avatar is not None and avatar_evidence is not None:
         attributes.update({
             "avatarRef": avatar_evidence["recordRef"],
             "avatarConfirmed": avatar_evidence["confirmed"],
@@ -2017,6 +2025,10 @@ def _emit_relay_completion(
             "avatarVideoFrames": avatar_evidence["videoFrames"],
             "avatarEndReason": avatar_evidence["endReason"],
         })
+        attributes = {
+            key: avatar.scrub(value) if isinstance(value, str) else value
+            for key, value in attributes.items()
+        }
     emit_custom_event("voice_live_completion", attributes)
 
 
