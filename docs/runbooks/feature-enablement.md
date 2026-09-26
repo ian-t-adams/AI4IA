@@ -875,9 +875,14 @@ postprovision hook reconciles the label-aware `Warm:Sentinel` through the OIDC
 deployment identity using Entra authentication and its store-scoped App Configuration
 Data Owner role. The proxy keeps only Data Reader; the web and API have no App
 Configuration data role. This avoids local credentials and the same-deployment ARM
-pass-through RBAC race while making bootstrap and refresh real before any
-behavior-changing settings are added. Additional warm settings refresh on the
-configured interval; cold settings need a revision/restart.
+pass-through RBAC race while keeping bootstrap and refresh real. The proxy applies
+only `Warm:Sentinel` and four reviewed warm settings from the store
+(`CircuitBreaker:ErrorThreshold`, `CircuitBreaker:Timeslice`,
+`Request:DefaultTimeout`, `Request:DefaultTTLSecs`); after a sentinel change they
+refresh on the configured interval. Every other key, including every `Cold:` key, is
+refused. Those settings come from the Container App environment and change with a new
+revision. Making another setting App Configuration-writable is a reviewed change to
+the [App Configuration key policy](../../proxy/README.md#app-configuration-key-policy).
 
 - `proxyPrioritiesEnabled=true` requires `proxyPriorityWorkers` such as
   `1:2,3:1`. Reserved capacity and fairness are in-memory **per replica**.

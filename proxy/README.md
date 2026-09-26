@@ -213,10 +213,12 @@ AI4IA does about each:
 The generated APIM policies remain derived from upstream's APIM Policy v3.0 at the
 previous pin. They are a separate artifact from this source vendoring.
 Regenerate the manifest whenever the pin, explicit patch list, or vendored file
-contents change. For runtime dependency updates, first refresh the complete graph
-with `dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --force-evaluate`
-from the repository root and commit every changed lockfile. A referenced project's
-updated lock does not automatically refresh the top-level test project's lock.
+contents change. For runtime dependency updates, first refresh both complete graphs
+from the repository root, with
+`dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --force-evaluate` and
+`dotnet restore proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --force-evaluate`,
+and commit every changed lockfile. A referenced project's updated lock does not
+automatically refresh either top-level test project's lock.
 
 To refresh the vendored copy, check out the audited upstream commit and mirror the four project
 directories from upstream `src/` (excluding `bin/`/`obj/`). For `CompanionApp/`, copy only files
