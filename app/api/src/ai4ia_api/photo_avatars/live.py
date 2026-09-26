@@ -26,6 +26,9 @@ When Voice Live reports that an avatar failed verification, the relay calls
 :func:`mark_live_avatar_verification_failed`. Live use is then refused until a
 fresh provider read, at most once per cooldown, still finds the avatar
 ``Succeeded``; the record, its preview and deletion stay available throughout.
+
+For its live meter the relay asks :func:`live_cost_capped`, which applies
+creation's exact cost-cap rule rather than a parallel check.
 """
 from __future__ import annotations
 
@@ -96,3 +99,17 @@ async def mark_live_avatar_verification_failed(
     return await service.mark_live_avatar_verification_failed(
         user, record_id, provider_code=provider_code,
     )
+
+
+async def live_cost_capped(state: Any, user: AuthenticatedUser) -> bool:
+    """Whether ``user``'s effective limits carry a cost cap: creation's exact rule.
+
+    Call it with the caller's policy bound, as for :func:`resolve_live_avatar`.
+    Raises :class:`LiveAvatarError` (unavailable, ``disabled``) while photo
+    avatars are disabled, and ``PolicyError`` if policy resolution fails.
+    """
+    service = getattr(state, "photo_avatars", None)
+    settings = getattr(state, "settings", None)
+    if service is None or not getattr(settings, "photo_avatars_enabled", False):
+        raise _disabled()
+    return await service.cost_capped(user.internal_user_id)
