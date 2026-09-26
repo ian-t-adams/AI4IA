@@ -18,6 +18,10 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
 - `Shared/` — shared library (PackageReferences only).
 - `Shared-parser/` — config parser library (PackageReferences only).
 - `SimpleL7Proxy/` — the proxy worker (.NET 10), references the two libraries above.
+- `CompanionApp/` — an optional, hosted subset of upstream's Blazor telemetry console: the
+  Event Hub monitor and Insights pages only. Every upstream page and asset AI4IA does not
+  vendor is recorded as `ai4ia-excluded` with its upstream hash and reason. See
+  [CompanionApp telemetry console](#companionapp-telemetry-console-optional).
 - `Dockerfile` — AI4IA-maintained multi-stage build with **build context = `./proxy`**. It uses
   digest-pinned .NET 10 SDK/chiseled-runtime bases, restores the checked-in NuGet locks with
   `--locked-mode`, exposes AI4IA's `8080` listener, and starts the worker without the upstream
@@ -27,10 +31,11 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
 
 ### Intentional source deviation
 
-Eighteen upstream files carry AI4IA security, correctness, dependency, or
-telemetry patches over the audited pin. Five additional files are AI4IA-owned.
-The complete machine-readable list and reason for every deviation lives in
-`upstream-provenance.json`; the behaviorally important groups are:
+Twenty-three upstream files carry AI4IA security, correctness, dependency, or
+telemetry patches over the audited pin; five of them are the CompanionApp
+hosted-mode patches described in its section below. Seven additional files are
+AI4IA-owned. The complete machine-readable list and reason for every deviation
+lives in `upstream-provenance.json`; the behaviorally important proxy groups are:
 
 - `SimpleL7Proxy/Config/IncomingAuthValidator.cs` trims the `header=` value of `ValidateAuthConfig`
   and defaults it to `S7P-KEY` for the actual key lookup. Upstream now assigns the raw header, so
@@ -117,14 +122,19 @@ bytes never gate CI. `scripts/tests/test_proxy_provenance.py` fails for an
 added, deleted, or semantically changed file that is not represented exactly.
 The current measured breakdown is:
 
-- **168 files** are content-equivalent to upstream after CRLF/LF canonicalization.
-- **18 files** contain the documented AI4IA source patches.
-- **5 files** are AI4IA additions: `Config/SecretComparer.cs`,
-  `Proxy/NoReplayAttempt.cs`, plus three
-  `packages.lock.json` files used by the runtime project graph.
+- **291 files** are content-equivalent to upstream after CRLF/LF canonicalization.
+- **23 files** contain the documented AI4IA source patches.
+- **7 files** are AI4IA additions: `Config/SecretComparer.cs`,
+  `Proxy/NoReplayAttempt.cs`, `CompanionApp/Ai4ia/HostedGuard.cs`, plus four
+  `packages.lock.json` files used by the runtime project graphs.
+- **95 upstream files** are deliberately not vendored (`ai4ia-excluded`). Each is
+  recorded with its upstream hash under one declared exclusion rule and reason.
+  Generation and `--check` fail if an excluded file appears locally, an
+  unexcluded upstream file is missing, or a rule matches nothing.
 
-The upstream tree has 186 files; the local scoped tree has 191. Regenerate only
-after fetching and reviewing the pinned upstream commit:
+The upstream tree has 409 files; the local scoped tree has 321, and the manifest
+records all 416 paths. Regenerate only after fetching and reviewing the pinned
+upstream commit:
 
 ```powershell
 git fetch --no-tags https://github.com/microsoft/SimpleL7Proxy.git b0066b0e53f89abb5e84cfeacda2fdcaca8b081e
@@ -202,10 +212,12 @@ with `dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --force-ev
 from the repository root and commit every changed lockfile. A referenced project's
 updated lock does not automatically refresh the top-level test project's lock.
 
-To refresh the vendored copy, check out the audited upstream commit and mirror the three project
-directories from upstream `src/` (excluding `bin/`/`obj/`). Keep this README and the root
-`Dockerfile`, reapply/test the documented source patches, verify every other source file is
-byte-for-byte identical to upstream, and update both pin references.
+To refresh the vendored copy, check out the audited upstream commit and mirror the four project
+directories from upstream `src/` (excluding `bin/`/`obj/`). For `CompanionApp/`, copy only files
+that no `AI4IA_EXCLUSION_REASONS` rule in `scripts/gen-proxy-provenance.py` matches, then review
+new upstream pages against the hosted-mode boundary before vendoring them. Keep this README and
+the AI4IA Dockerfiles, reapply/test the documented source patches, verify every other source file
+is byte-for-byte identical to upstream, and update both pin references.
 
 ## Runtime shape
 
@@ -287,22 +299,84 @@ every edge.
   enablement until the edge derives a verified app identity; the proxy never
   reads Cosmos directly.
 
+## CompanionApp telemetry console (optional)
+
+`AI4IA_COMPANION_APP_ENABLED` (default `false`) hosts the vendored CompanionApp
+subset as an admin-only, read-only view of this proxy's Event Hub telemetry. It
+needs `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED=true`, which is a paid resource.
+The operator procedure is in
+[the feature runbook](../docs/runbooks/feature-enablement.md#companionapp-telemetry-console).
+
+- **Retained:** the Event Hub monitor (`/eventhub`) and Insights (`/insights`),
+  which parse the same event schema this pin emits.
+- **Not vendored:** chat, the URL tester, stress, abort, investigator, vision,
+  history, preferences, the App Configuration editor and deployment generation.
+  They would send server-side requests to caller-chosen URLs with caller-chosen
+  headers, create load and model cost, write shared history, or publish proxy
+  configuration with the server identity. Each file is an `ai4ia-excluded`
+  provenance entry. The subset ships only Bootstrap's minified stylesheet, because
+  that is the only asset the retained pages load.
+- **Patches:**
+  - `Program.cs` puts an admin gate first in the pipeline. The gate re-checks the
+    principal Container Apps authentication injects against the configured
+    allowlist, and startup fails when that list is empty. It also replaces the DI
+    `HttpClient` with one that refuses before connecting, and fails startup when an
+    Event Hubs connection string or checkpoint store is configured, so managed
+    identity is the only credential. It drops the App Configuration editor, chat
+    stores and model presets. It removes upstream's fabricated "contoso" sample
+    metrics, so nothing appears until real events arrive. It also lets the Data
+    Protection key ring live outside the content root.
+  - `CompanionApp.csproj` drops the embedded resources and content items of the
+    excluded pages. It also references `Microsoft.AspNetCore.App.Internal.Assets`
+    explicitly, at the runtime image's ASP.NET patch, because that package serves
+    `_framework/blazor.web.js`. The Web SDK would otherwise add it implicitly, but
+    only when `.razor` files exist at restore time, which the Docker restore layer
+    lacks, and only at the SDK's own bundled patch. That would make a locked
+    restore depend on layering and on the SDK version.
+  - `Home.razor` and `NavMenu.razor` link only the retained pages.
+  - `EventHubReader.cs` has two changes:
+    - It serializes the pipeline. Upstream reads every partition concurrently and
+      mutates shared request dictionaries without a lock, so a four-partition hub
+      corrupted them and dropped events.
+    - It no longer appends the raw JSON of unlabeled backend attempts to an unbounded
+      `incomplete.json`. That JSON carries user id, path and backend hosts, and only
+      the excluded `/incomplete` page read it.
+  - The AI4IA-owned guard is `Ai4ia/HostedGuard.cs`.
+  - `AI4IA.CompanionApp.Tests` drives the real host. Each of these checks runs
+    against a control:
+    - the admin gate;
+    - the refused empty allowlist;
+    - the compiled route allowlist, and the 404s for every upstream tool route;
+    - the refused outbound request;
+    - the empty startup catalog;
+    - the refused shared-access secrets.
+- **Image:** `CompanionApp.Dockerfile` reuses this proxy's digest-pinned bases, its
+  locked restore and the build context's recursive `**/.env*` exclusion. It lays the
+  application down as root and runs as the non-root app user. The only path the app
+  user owns is the ephemeral key ring. The PR image job proves this on the built
+  image by exporting its filesystem, because the chiseled runtime has no shell, and
+  checking it with `scripts/check-image-ownership.py`.
+- **Not an azd service:** the manual `companion-image.yml` workflow promotes an
+  attested digest, and deploy.yml re-verifies that digest before provisioning.
+
 ## Build and supply-chain verification
 
-CI restores all four proxy projects from checked-in NuGet locks, builds/tests
-them, and CodeQL analyzes the C# source. The PR image build resolves both
-digest-pinned base images, scans the final loaded proxy image for HIGH/CRITICAL
-findings using the CVE-specific `proxy/.trivyignore` policy, and retains an SPDX
-SBOM plus build metadata for 30 days.
+CI restores the four proxy projects and the two CompanionApp projects from
+checked-in NuGet locks, builds and tests them, and CodeQL analyzes the C# source.
+The PR image build resolves both digest-pinned base images, then scans the final
+loaded proxy and CompanionApp images for HIGH/CRITICAL findings using the
+CVE-specific `proxy/.trivyignore` policy. It retains SPDX SBOMs, plus the proxy's
+build metadata, for 30 days.
 
 Repository secret/config scans also cover the vendored tree. Their only
 upstream exceptions are exact-file/fingerprint entries whose paths are checked
 against `upstream-provenance.json` as unpatched blobs.
 
-The retained provenance is deliberately marked unsigned. Production signing and
-verification would require an approved keyless identity policy or managed key
-and a deploy-time verification design; those remain open work rather than
-new unreviewed Azure infrastructure in this repository.
+The PR build evidence is deliberately marked unsigned and is never deployed.
+Production images are signed separately. deploy.yml attests and verifies the
+web, api and proxy digests, and `companion-image.yml` does the same for the
+optional CompanionApp image. See
+[the release runbook](../docs/runbooks/deployment.md#production-image-attestations).
 
 ## Current scope
 

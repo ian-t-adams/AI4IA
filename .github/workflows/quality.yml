@@ -82,7 +82,7 @@ jobs:
             "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-x86_64"
           chmod +x hadolint
           # AI4IA-owned Dockerfiles only; proxy/SimpleL7Proxy/Dockerfile is vendored upstream.
-          ./hadolint app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile
+          ./hadolint app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile proxy/CompanionApp.Dockerfile
 
   proxy-dotnet:
     name: proxy .NET build + auth tests
@@ -106,6 +106,17 @@ jobs:
             --configuration Release --no-build --no-restore --nologo \
             -- --minimum-expected-tests 40; then
             cat proxy/AI4IA.Proxy.Tests/bin/Release/net10.0/TestResults/AI4IA.Proxy.Tests_net10.0_x64.log
+            exit 1
+          fi
+      - name: Restore, build, and test the CompanionApp hosted boundary in locked mode
+        run: |
+          dotnet restore proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --locked-mode --nologo
+          dotnet build proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj \
+            --configuration Release --no-restore --nologo
+          if ! dotnet test proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj \
+            --configuration Release --no-build --no-restore --nologo \
+            -- --minimum-expected-tests 17; then
+            cat proxy/AI4IA.CompanionApp.Tests/bin/Release/net10.0/TestResults/AI4IA.CompanionApp.Tests_net10.0_x64.log
             exit 1
           fi
 
@@ -461,3 +472,11 @@ jobs:
           # rebuild, and the P1-6 capture/preflight/deploy/verify/rollback
           # ordering still holds.
           python3 -m unittest scripts.tests.test_immutable_image_promotion scripts.tests.test_image_provenance
+
+      - name: Run CompanionApp image promotion tests
+        run: |
+          set -euo pipefail
+          # The optional console is not an azd service. Its manual promotion and
+          # deploy.yml's pre-provision attestation gate are covered with the pinned
+          # GitHub CLI stubbed; no registry, network or credential is used.
+          python3 -m unittest scripts.tests.test_companion_image scripts.tests.test_image_ownership

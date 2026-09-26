@@ -32,6 +32,7 @@ on:
       - "app/web/**"
       - "app/api/**"
       - "proxy/**"
+      - "scripts/check-image-ownership.py"
       - "scripts/tests/test_dockerignore_context.py"
       - "scripts/tests/test_base_image_pins.py"
       - ".github/workflows/docker-build.yml"
@@ -201,6 +202,189 @@ jobs:
           path: |
             proxy-sbom.spdx.json
             proxy-build-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
+      # The optional CompanionApp telemetry console shares the proxy's vendored
+      # source, pinned bases and exact-CVE policy. It is built and scanned on every
+      # PR; production promotion is the separate, attested companion-image workflow.
+      - name: Verify CompanionApp bases are multi-platform index digests
+        run: |
+          set -euo pipefail
+          mapfile -t refs < <(
+            sed -nE \
+              's/^FROM (mcr\.microsoft\.com\/dotnet\/[^ ]+@sha256:[0-9a-f]{64})( AS [^ ]+)?$/\1/p' \
+              proxy/CompanionApp.Dockerfile
+          )
+          if [[ "${#refs[@]}" -ne 2 ]]; then
+            echo "::error::Expected exactly two pinned external CompanionApp bases, found ${#refs[@]}."
+            exit 1
+          fi
+          for ref in "${refs[@]}"; do
+            media_type="$(
+              docker buildx imagetools inspect "${ref}" \
+                --format '{{.Manifest.MediaType}}'
+            )"
+            case "${media_type}" in
+              application/vnd.oci.image.index.v1+json|\
+              application/vnd.docker.distribution.manifest.list.v2+json)
+                ;;
+              *)
+                echo "::error::${ref} resolves to ${media_type}, not a multi-platform index."
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Build CompanionApp image (proxy/CompanionApp.Dockerfile)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: proxy
+          file: proxy/CompanionApp.Dockerfile
+          push: false
+          load: true
+          tags: ai4ia-companion:ci
+          cache-from: type=gha,scope=docker-build-companion
+          cache-to: type=gha,mode=max,scope=docker-build-companion
+
+      - name: Capture final CompanionApp image ID
+        id: companion-image
+        run: |
+          set -euo pipefail
+          echo "image_id=$(docker image inspect ai4ia-companion:ci --format '{{.Id}}')" \
+            >> "${GITHUB_OUTPUT}"
+
+      - name: Smoke test - CompanionApp runs as the non-root app user
+        run: |
+          set -euo pipefail
+          user="$(docker image inspect ai4ia-companion:ci --format '{{.Config.User}}')"
+          if [[ "${user}" != "1654" ]]; then
+            echo "::error::CompanionApp image runs as '${user}', expected the non-root app user 1654."
+            exit 1
+          fi
+
+      - name: Verify CompanionApp application files are root-owned
+        run: |
+          set -euo pipefail
+          # The chiseled runtime has no shell, so read the final owners and modes
+          # from the exported filesystem: the app user must not be able to replace
+          # the application, and the key ring is its only owned path.
+          container="$(docker create ai4ia-companion:ci)"
+          trap 'docker rm --force "${container}" >/dev/null' EXIT
+          docker export "${container}" | python3 scripts/check-image-ownership.py \
+            --root-owned app --owned var/lib/companion/keys=1654
+
+      - name: Smoke test - CompanionApp starts and admits only the allow-listed admin
+        run: |
+          set -euo pipefail
+          admin="11111111-1111-1111-1111-111111111111"
+          # Without an admin allow-list the app must exit, never serve (fail closed).
+          docker run --detach --name companion-refused \
+            --env CompanionApp__EventHubMonitor__eventhub_enabled=false ai4ia-companion:ci >/dev/null
+          status="$(timeout 60 docker wait companion-refused || echo running)"
+          docker rm --force companion-refused >/dev/null
+          if [[ "${status}" == "running" || "${status}" == "0" ]]; then
+            echo "::error::CompanionApp did not refuse to start without an admin allow-list (${status})."
+            exit 1
+          fi
+          docker run --detach --name companion-smoke --publish 127.0.0.1:18080:8080 \
+            --env CompanionApp__EventHubMonitor__eventhub_enabled=false \
+            --env "CompanionApp__Admin__PrincipalIds=${admin}" ai4ia-companion:ci >/dev/null
+          cleanup() {
+            local rc=$?
+            if [[ "${rc}" -ne 0 ]]; then
+              docker logs companion-smoke 2>&1 | tail -n 40 || true
+            fi
+            docker rm --force companion-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          status_of() {
+            local path="$1" principal="$2"
+            local args=(--silent --output /dev/null --write-out '%{http_code}')
+            if [[ -n "${principal}" ]]; then
+              args+=(--header "X-MS-CLIENT-PRINCIPAL-ID: ${principal}")
+            fi
+            curl "${args[@]}" "http://127.0.0.1:18080${path}" || true
+          }
+          for _ in $(seq 1 60); do
+            [[ "$(status_of / "${admin}")" == "200" ]] && break
+            sleep 1
+          done
+          expect() {
+            local expected="$1" path="$2" principal="$3" actual
+            actual="$(status_of "${path}" "${principal}")"
+            if [[ "${actual}" != "${expected}" ]]; then
+              echo "::error::GET ${path} (principal='${principal}') returned ${actual}, expected ${expected}."
+              exit 1
+            fi
+          }
+          expect 200 / "${admin}"
+          expect 200 /eventhub "${admin}"
+          expect 404 /url-tester "${admin}"
+          expect 403 / ""
+          expect 403 /eventhub "33333333-3333-3333-3333-333333333333"
+          # Blazor is interactive only if the script the page references is actually
+          # published and served from the image. Status alone is not enough: a
+          # fallback page could answer 200 with HTML.
+          page="$(curl --silent --fail --header "X-MS-CLIENT-PRINCIPAL-ID: ${admin}" http://127.0.0.1:18080/)"
+          script="$(grep -oE '_framework/blazor\.web[^"]*\.js' <<< "${page}" | head -n 1 || true)"
+          if [[ -z "${script}" ]]; then
+            echo "::error::The CompanionApp page references no Blazor script."
+            exit 1
+          fi
+          content_type_of() {
+            curl --silent --output /dev/null --write-out '%{content_type}' \
+              --header "X-MS-CLIENT-PRINCIPAL-ID: ${admin}" "http://127.0.0.1:18080$1" || true
+          }
+          for path in "/${script}" /_framework/blazor.web.js; do
+            expect 200 "${path}" "${admin}"
+            content_type="$(content_type_of "${path}")"
+            if [[ "${content_type}" != *javascript* ]]; then
+              echo "::error::GET ${path} returned content type '${content_type}', expected JavaScript."
+              exit 1
+            fi
+            if ! curl --silent --fail --header "X-MS-CLIENT-PRINCIPAL-ID: ${admin}" \
+              "http://127.0.0.1:18080${path}" | grep -q 'Blazor'; then
+              echo "::error::${path} is not the Blazor script."
+              exit 1
+            fi
+          done
+          # Controls: an absent script is an HTML 404, and the real one still needs the admin.
+          expect 404 /_framework/blazor.missing.js "${admin}"
+          if [[ "$(content_type_of /_framework/blazor.missing.js)" == *javascript* ]]; then
+            echo "::error::A missing script was served as JavaScript; the content-type check is vacuous."
+            exit 1
+          fi
+          expect 403 "/${script}" ""
+
+      - name: Scan final CompanionApp image for HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.companion-image.outputs.image_id }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: "1"
+          trivyignores: proxy/.trivyignore
+          version: v0.71.2
+
+      - name: Generate CompanionApp SPDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.companion-image.outputs.image_id }}
+          scanners: vuln
+          format: spdx-json
+          output: companion-sbom.spdx.json
+          exit-code: "0"
+          version: v0.71.2
+
+      - name: Retain CompanionApp SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: companion-image-evidence-${{ github.sha }}
+          path: companion-sbom.spdx.json
           if-no-files-found: error
           retention-days: 30
 

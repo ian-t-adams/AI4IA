@@ -25,7 +25,9 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
   execution, sessions, documents, memory, usage, metrics, and gateway calls.
 - `infra` — Bicep plus azd parameters and catalogs, including the authoritative
   `infra/models.json` model catalog.
-- `proxy` — vendored `microsoft/SimpleL7Proxy` source plus AI4IA Dockerfile/notes.
+- `proxy` — vendored `microsoft/SimpleL7Proxy` source plus AI4IA Dockerfile/notes,
+  including an optional, default-off hosted subset of its CompanionApp telemetry
+  console (`proxy/CompanionApp`, `proxy/CompanionApp.Dockerfile`).
 - `scripts` — catalog generators, validators, provisioning helpers, status
   snapshots, teardown/purge scripts, and azd hooks. `scripts/azure-cli.ps1` is a
   shared dot-sourced safety library, not a standalone entry point.
@@ -453,8 +455,8 @@ report is not approval to refresh a base or deploy.
 
 ### Docker image builds
 
-`docker-build` builds (never pushes) the `app/web`, `app/api`, and `proxy` images
-on every PR, so a broken base reference, bad digest pin, or install failure fails
+`docker-build` builds (never pushes) the `app/web`, `app/api`, `proxy` and optional
+CompanionApp images on every PR, so a broken base reference, bad digest pin, or install failure fails
 CI instead of surfacing at deploy. It is separate from `quality`'s `hadolint` job,
 which only lints Dockerfile syntax:
 
@@ -464,11 +466,22 @@ docker buildx build --file app\api\Dockerfile --tag ai4ia-api:local --load app\a
 docker run --rm ai4ia-api:local python -c "import ai4ia_api.main"
 Get-Content -Raw app\api\tests\test_lazy_imports_are_declared.py | docker run --rm --interactive ai4ia-api:local python -
 docker buildx build --file proxy/Dockerfile --load proxy
+docker buildx build --file proxy/CompanionApp.Dockerfile --load proxy
 ```
 
 The proxy's NuGet restore runs in locked mode, and the final image is blocked on
-HIGH/CRITICAL findings under the exact-CVE `proxy/.trivyignore` policy. The job
-retains an SPDX SBOM and unsigned build metadata. These load-only PR artifacts are
+HIGH/CRITICAL findings under the exact-CVE `proxy/.trivyignore` policy. The
+CompanionApp image shares that context, those pinned bases and that policy. Its
+runtime smoke test requires the served Blazor script as JavaScript, with a missing-
+script control. The job also exports the image's filesystem and runs
+`scripts/check-image-ownership.py`: the application tree must be root-owned and
+not group/other-writable, and the key ring must be the only app-user-owned path.
+The Web SDK only implicitly references `Microsoft.AspNetCore.App.Internal.Assets`
+when `.razor` files exist at restore time, and only at its own bundled patch. So
+the CompanionApp project references it explicitly at the runtime base image's
+ASP.NET patch. Keep those two in step, and never replace the explicit reference
+with a non-locked or `--force-evaluate` restore. The job retains SPDX SBOMs and
+unsigned build metadata. These load-only PR artifacts are
 never signed or substituted for the production images built by `deploy.yml`.
 
 The `dockerignore-context` job builds throwaway probe images from each
@@ -617,9 +630,23 @@ dispatches application deployment. See
 This is workflow-origin provenance, not a byte-for-byte reproducibility claim or
 an isolated SLSA trusted builder. A green PR is not production signing evidence.
 
+The optional CompanionApp console is **not an azd service**. Never add it to
+`azure.yaml` or the three-image deploy manifests: azd cannot skip a disabled
+service, and the sealed proof set would become conditional. The manual, main-only
+`companion-image.yml` builds it once, scans it, pushes it, and attests and verifies
+one digest under the same pinned tools and `create-storage-record: false`.
+`deploy.yml` re-verifies the configured `AI4IA_COMPANION_APP_IMAGE` with
+`scripts/verify-companion-image.py` before provisioning, because Bicep references
+the digest during provision. Its certificate must name the companion workflow on
+main and a GitHub-hosted runner, and its subject must be exactly that digest. A
+disabled console references no image. An enabled console has no skip mode, and no
+tag or rebuild path. Its Easy Auth admin policy and read-only identity are
+contracts; see [the runbook](docs/runbooks/feature-enablement.md#companionapp-telemetry-console).
+
 ```powershell
 python -m unittest scripts.tests.test_base_image_pins
 python -m unittest scripts.tests.test_immutable_image_promotion scripts.tests.test_image_provenance
+python -m unittest scripts.tests.test_companion_image
 ```
 
 ### Infra, manifests, and operational quality
@@ -705,12 +732,14 @@ python3 -m unittest scripts.tests.test_base_image_pins
 python3 -m unittest scripts.tests.test_base_image_drift
 python3 -m unittest scripts.tests.test_immutable_image_promotion
 python3 -m unittest scripts.tests.test_image_provenance
+python3 -m unittest scripts.tests.test_companion_image           # CompanionApp promotion + pre-provision attestation gate
+python3 -m unittest scripts.tests.test_image_ownership           # exported-filesystem owner/mode checks for the image job
 ```
 
 `test_custom_domain_preflight`, `test_pages_status_refresh`,
 `test_dependabot_config`, `test_post_deploy_verify`, `test_gating_workflows`,
 `test_base_image_pins`, `test_subscription_preflight`,
-`test_model_retirement`,
+`test_model_retirement`, `test_companion_image`,
 `test_proxy_delivery_contracts`, and `test_immutable_image_promotion` need
 `PyYAML` (pinned in the workflow); `test_immutable_image_promotion` also needs
 `bash` and skips without it. `test_capacity_evidence` and its reused
@@ -820,7 +849,27 @@ The vendored proxy plus AI4IA auth guard tests use .NET 10:
 dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --locked-mode
 dotnet build   proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-restore
 dotnet test    proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-build --no-restore --nologo -- --minimum-expected-tests 40
+dotnet restore proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --locked-mode
+dotnet build   proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --configuration Release --no-restore
+dotnet test    proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --configuration Release --no-build --no-restore --nologo -- --minimum-expected-tests 17
 ```
+
+`AI4IA.CompanionApp.Tests` drives the real vendored CompanionApp host. Each of these checks runs against a control:
+
+- only an allow-listed admin principal or group passes the in-app gate, which reads the principal Container Apps authentication injects;
+- an empty or malformed admin list refuses startup;
+- the compiled routes match the route allowlist, and every excluded upstream tool route returns 404;
+- the Production host maps no endpoint beyond the telemetry pages, the Blazor circuit and read-only static files;
+- the outbound `HttpClient` refuses before it connects;
+- the startup metrics catalog is empty;
+- Event Hubs shared-access secrets refuse startup;
+- the real four-partition `ConsumeAsync` fan-out never runs two pipeline executions at once
+  (a probe holds one open while the others deliver), against a single-partition control;
+- unlabeled backend attempts are processed but nothing is written beside the binary.
+
+A new upstream CompanionApp page is not vendored until it is reviewed against that
+boundary. Exclusions are hash-bound `ai4ia-excluded` provenance rules, never an
+unrecorded omission.
 
 The existing MSTest bridge runs actual tests after locked restore/build. The
 minimum discovery floor also rejects an empty run; the isolated runner controls

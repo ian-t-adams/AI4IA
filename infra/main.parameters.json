@@ -140,6 +140,27 @@
     "proxyEventHubTelemetryEnabled": {
       "value": "${AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED=false}"
     },
+    "companionAppEnabled": {
+      "value": "${AI4IA_COMPANION_APP_ENABLED=false}"
+    },
+    "companionAppImage": {
+      "value": "${AI4IA_COMPANION_APP_IMAGE=}"
+    },
+    "companionAppEntraClientId": {
+      "value": "${AI4IA_COMPANION_APP_ENTRA_CLIENT_ID=}"
+    },
+    "companionAppAdminGroupIds": {
+      "value": "${AI4IA_COMPANION_APP_ADMIN_GROUP_IDS=}"
+    },
+    "companionAppAdminPrincipalIds": {
+      "value": "${AI4IA_COMPANION_APP_ADMIN_PRINCIPAL_IDS=}"
+    },
+    "companionAppAllowedIpRanges": {
+      "value": "${AI4IA_COMPANION_APP_ALLOWED_IP_RANGES=}"
+    },
+    "companionAppMinReplicas": {
+      "value": "${AI4IA_COMPANION_APP_MIN_REPLICAS=0}"
+    },
     "proxyAsyncEnabled": {
       "value": "${AI4IA_PROXY_ASYNC_ENABLED=false}"
     },

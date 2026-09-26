@@ -13,5 +13,6 @@ SimpleL7Proxy/update-packages.sh
 SimpleL7Proxy/Dockerfile
 SimpleL7Proxy/sample-deployment.yaml
 SimpleL7Proxy/scratch
+CompanionApp/.keys
 .git
 README.md

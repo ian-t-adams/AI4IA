@@ -8,7 +8,8 @@
     "PRODUCT.md",
     "DESIGN.md",
     "foundry/skills/**",
-    "proxy/SimpleL7Proxy/**"
+    "proxy/SimpleL7Proxy/**",
+    "proxy/CompanionApp/**"
   ],
   "sections": [
     {

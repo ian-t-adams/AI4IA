@@ -314,6 +314,28 @@ param proxyPriorityWorkers string = ''
 @description('Enable metadata-only SimpleL7Proxy Event Hub telemetry. Default OFF.')
 param proxyEventHubTelemetryEnabled bool = false
 
+@description('Deploy the optional admin-only CompanionApp telemetry console. Default OFF; requires proxy Event Hub telemetry, an attested digest-pinned image, an Entra app registration and at least one admin group or principal.')
+param companionAppEnabled bool = false
+
+@description('Digest-pinned CompanionApp image in this environment registry, produced and attested by .github/workflows/companion-image.yml.')
+param companionAppImage string = ''
+
+@description('Client id of the Entra app registration used for CompanionApp sign-in.')
+param companionAppEntraClientId string = ''
+
+@description('Comma-separated Entra group object ids whose members may use CompanionApp.')
+param companionAppAdminGroupIds string = ''
+
+@description('Comma-separated Entra user or service principal object ids that may use CompanionApp.')
+param companionAppAdminPrincipalIds string = ''
+
+@description('Optional comma-separated admin CIDR ranges allowed to reach CompanionApp ingress.')
+param companionAppAllowedIpRanges string = ''
+
+@description('CompanionApp minimum replicas: 0 scales to zero, 1 keeps the in-memory feed collecting.')
+@allowed([0, 1])
+param companionAppMinReplicas int = 0
+
 @description('Enable durable proxy async processing backed by dedicated Blob + Service Bus resources. Default OFF.')
 param proxyAsyncEnabled bool = false
 
@@ -684,6 +706,40 @@ module eventhubs 'modules/eventhubs.bicep' = if (proxyEventHubTelemetryEnabled) 
     ]
     receiverPrincipalIds: []
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
+  }
+}
+
+// --- Optional admin-only CompanionApp telemetry console (default OFF) ---
+// Not an azd service: the digest comes from the attested companion-image
+// workflow. Fail closed: without the telemetry feed, a digest-pinned image, a
+// sign-in app registration and a non-empty admin set, nothing is created, so an
+// empty Easy Auth allow-list can never admit every tenant user.
+var companionAdminGroupIds = filter(map(split(companionAppAdminGroupIds, ','), id => trim(id)), id => !empty(id))
+var companionAdminPrincipalIds = filter(map(split(companionAppAdminPrincipalIds, ','), id => trim(id)), id => !empty(id))
+var companionAllowedIpRanges = filter(map(split(companionAppAllowedIpRanges, ','), range => trim(range)), range => !empty(range))
+var companionAppDeployable = companionAppEnabled && proxyEventHubTelemetryEnabled && contains(companionAppImage, '@sha256:') && !empty(companionAppEntraClientId) && length(concat(companionAdminGroupIds, companionAdminPrincipalIds)) > 0
+
+module companion 'modules/companion.bicep' = if (companionAppDeployable) {
+  name: 'companion'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    environmentName: environmentName
+    containerEnvId: platform.outputs.containerEnvId
+    acrName: platform.outputs.acrName
+    acrLoginServer: platform.outputs.acrLoginServer
+    image: companionAppImage
+    #disable-next-line BCP318
+    eventHubNamespaceName: eventhubs.outputs.namespaceName
+    #disable-next-line BCP318
+    eventHubName: eventhubs.outputs.telemetryHubName
+    entraTenantId: empty(entraTenantId) ? tenant().tenantId : entraTenantId
+    entraClientId: companionAppEntraClientId
+    adminGroupIds: companionAdminGroupIds
+    adminPrincipalIds: companionAdminPrincipalIds
+    allowedIpRanges: companionAllowedIpRanges
+    minReplicas: companionAppMinReplicas
   }
 }
 
@@ -1261,6 +1317,8 @@ output AZURE_API_URL string = api.outputs.apiUrl
 output AZURE_API_APP_NAME string = api.outputs.apiAppName
 output AZURE_WEB_URL string = web.outputs.webUrl
 output AZURE_WEB_APP_NAME string = web.outputs.webAppName
+#disable-next-line BCP318
+output AZURE_COMPANION_APP_URL string = companionAppDeployable ? 'https://${companion.outputs.fqdn}' : ''
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
 output AZURE_FOUNDRY_ENDPOINTS array = [for (r, i) in regionList: {
   region: r.name

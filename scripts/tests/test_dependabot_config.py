@@ -37,7 +37,9 @@ DEPENDABOT = ROOT / ".github/dependabot.yml"
 APP_CI = ROOT / ".github/workflows/app-ci.yml"
 API_DIR = "/app/api"
 PROXY_PROJECT_DIRS = {
+    "/proxy/AI4IA.CompanionApp.Tests",
     "/proxy/AI4IA.Proxy.Tests",
+    "/proxy/CompanionApp",
     "/proxy/Shared",
     "/proxy/Shared-parser",
     "/proxy/SimpleL7Proxy",
