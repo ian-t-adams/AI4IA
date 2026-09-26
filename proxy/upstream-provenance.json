@@ -68,11 +68,11 @@
     },
     {
       "path": "SimpleL7Proxy/Config/AppConfigKeyPolicy.cs",
-      "reason": "AI4IA default-deny App Configuration key policy: only Warm:Sentinel and the reviewed operational keys may be applied."
+      "reason": "AI4IA default-deny App Configuration key policy: only Warm:Sentinel and the reviewed request limits, within reviewed ranges, may be applied."
     },
     {
       "path": "SimpleL7Proxy/Config/AppConfigService.cs",
-      "reason": "Apply AI4IA's default-deny key policy before any downloaded key is resolved, log refused key names without values, and accept a test client and control policy through an internal constructor."
+      "reason": "Apply AI4IA's default-deny key and value policy before any downloaded key is resolved, log refused key names without values, and accept a test client and control policy through an internal constructor."
     },
     {
       "path": "SimpleL7Proxy/Config/ConfigFactory.cs",
@@ -2133,11 +2133,11 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Config/AppConfigKeyPolicy.cs": {
-      "localCanonicalSha256": "3ffc46716811f72887e71ee2a57f7f626c318ccb9c243fdb1046858c319ed61f",
+      "localCanonicalSha256": "f9e99b2fba7911e96a826a83366a17a87019e4876d1e2a190867bd43b41a17e6",
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/Config/AppConfigService.cs": {
-      "localCanonicalSha256": "43f211aa89df58cb453d5fa0ceecf6f9d8c24da13663403098903f88e21ba5f4",
+      "localCanonicalSha256": "d4b300d44ff03461bf559ed1dc8324711a4b4a53338c64f90b962117c7794a2c",
       "upstreamRawSha256": "762fb5e732990bc78c0d67f8c0649e660e4b98f082ae541a4c219519663025d6",
       "upstreamCanonicalSha256": "762fb5e732990bc78c0d67f8c0649e660e4b98f082ae541a4c219519663025d6",
       "disposition": "ai4ia-patched"

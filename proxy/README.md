@@ -39,8 +39,8 @@ lives in `upstream-provenance.json`; the behaviorally important proxy groups are
 
 - `SimpleL7Proxy/Config/AppConfigService.cs` applies the AI4IA-owned default-deny
   `Config/AppConfigKeyPolicy.cs` to every key it downloads, before the key is resolved. App
-  Configuration can set only the refresh sentinel and four reviewed operational settings;
-  everything else keeps its environment value. See
+  Configuration can set only the refresh sentinel and two reviewed request limits, each within
+  a reviewed range; everything else keeps its environment value. See
   [App Configuration key policy](#app-configuration-key-policy).
 - `SimpleL7Proxy/Config/IncomingAuthValidator.cs` trims the `header=` value of `ValidateAuthConfig`
   and defaults it to `S7P-KEY` for the actual key lookup. Upstream now assigns the raw header, so
@@ -242,6 +242,15 @@ is byte-for-byte identical to upstream, and update both pin references.
   `deployment/deploy.parameters.example.sh`, which upstream commit `714b39f` moved to
   `deployment/interactive/`. AI4IA's vendored csproj does not embed that resource, and
   AI4IA builds its own `CompanionApp.Dockerfile`.
+- **Circuit-breaker settings do not refresh live.** `Backend/CircuitBreaker.cs` copies
+  `CBErrorThreshold` and `CBTimeslice` only in its constructor. A warm refresh changes the
+  option but not a running breaker, so the value applies only to breakers built later, at a
+  restart or scale-out. At a threshold of 1 or less, `GetBackpressureDelay()` reports
+  backpressure with no failure recorded, and `server.cs` then answers every request with 429
+  before authentication. The key policy refuses both keys.
+- **A large default TTL expires every request.** `RequestData.CalculateExpiration` computes
+  `DefaultTTLSecs * 1000` as an `int`. Above 2,147,483 seconds it overflows and every
+  deadline is in the past. The key policy accepts at most 1,200 seconds.
 
 ## Runtime shape
 
@@ -330,29 +339,47 @@ administration. A single write could:
 - rewrite the header strip, disallow and logging lists.
 
 AI4IA authors all of that in `gateway.bicep`. The AI4IA-owned `Config/AppConfigKeyPolicy.cs`
-is default-deny. `Config/AppConfigService.cs` applies it to every key it downloads, at
-startup and on each warm refresh, before the key is resolved. Only these keys apply:
+is default-deny. `Config/AppConfigService.cs` applies it to every key and value it downloads,
+at startup and on each warm refresh, before the key is resolved. Only these keys apply, and
+each limit only within its range:
 
-| App Configuration key | Proxy setting | Effect |
-| --- | --- | --- |
-| `Warm:Sentinel` | `Sentinel` | A change triggers the warm refresh |
-| `Warm:CircuitBreaker:ErrorThreshold` | `CBErrorThreshold` | Circuit-breaker sensitivity |
-| `Warm:CircuitBreaker:Timeslice` | `CBTimeslice` | Circuit-breaker window, in seconds |
-| `Warm:Request:DefaultTimeout` | `Timeout` | Default request timeout, in milliseconds |
-| `Warm:Request:DefaultTTLSecs` | `DefaultTTLSecs` | Default queue time-to-live, in seconds |
+| App Configuration key | Proxy setting | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `Warm:Sentinel` | `Sentinel` | Any | A change triggers the warm refresh |
+| `Warm:Request:DefaultTimeout` | `Timeout` | `180000` to `1200000` | Milliseconds a backend attempt may wait for response headers |
+| `Warm:Request:DefaultTTLSecs` | `DefaultTTLSecs` | `300` to `1200` | Seconds a request may spend queued and retried, from enqueue |
 
 - Every other key keeps its environment value. That includes every `Cold:` key and any
   other prefix, all backend host and route keys, inbound authentication, the header and
-  logging policy, `LoadBalancing:*`, profiles, async, `Server:*` and unknown keys. `UseOAuth`
-  and `OAuthAudience` are read only from the environment.
-- One warning per download names the refused keys: at most 20 names, each bounded and made
-  printable. Values are never logged, because a refused value can be a credential.
+  logging policy, the circuit-breaker settings, `LoadBalancing:*`, profiles, async,
+  `Server:*` and unknown keys. `UseOAuth` and `OAuthAudience` are read only from the
+  environment.
+- A limit accepts only plain digits inside its range. Signs, spaces, decimals and the
+  loader's arithmetic expressions are refused rather than interpreted. A refused value keeps
+  the current setting: the environment value at startup, or the last accepted value on a
+  refresh.
+- The ranges follow from the deployed values. A backend attempt may wait for response headers
+  until the earlier of the TTL deadline and now plus `Timeout`; the limit does not cover
+  reading a streamed body. The API gives up on a proxied call after at most 180 seconds
+  without a response (`gateway_image_timeout_seconds`), so the timeout floor never abandons a
+  call the API is still waiting for. Bicep sets neither limit, so the deployed values are the
+  proxy defaults: a 20-minute timeout and a 300-second TTL. App Configuration can shorten the
+  timeout or lengthen the TTL, but neither beyond 20 minutes.
+- The circuit-breaker settings are refused. A breaker reads them only when it is built, so a
+  warm write does nothing until the next restart or scale-out. It then reaches the parent
+  breaker, which gates all ingress before authentication: at `CBErrorThreshold=1`, every
+  request gets 429 with no failure recorded. See
+  [Recorded upstream findings](#recorded-upstream-findings-not-patched).
+- Each download logs at most two warnings, one for refused keys and one for refused values.
+  Each names at most 20 keys, each bounded and made printable. Values are never logged,
+  because a refused value can be a credential.
 - A store that holds only refused keys behaves like an empty store.
 - Matching is exact: `Warm:` plus a reviewed key path, compared case-insensitively like the
   rest of the loader.
-- Changing the allowlist is a reviewed code change.
+- Changing the allowlist or a range is a reviewed code change.
   `scripts/tests/test_proxy_delivery_contracts.py` fails if a reviewed key is also authored in
-  `gateway.bicep`, so App Configuration can never override a Bicep setting.
+  `gateway.bicep`, so App Configuration can never override a Bicep setting. It also fails if
+  the timeout floor drops below one of the API's gateway timeouts, or infra overrides one.
 - The only writer today is `postprovision.ps1`, which reconciles `Warm:Sentinel=ready`
   through the OIDC deployment identity. That identity is the only one with App Configuration
   Data Owner; the proxy identity has only Data Reader. Never grant a write role to a runtime

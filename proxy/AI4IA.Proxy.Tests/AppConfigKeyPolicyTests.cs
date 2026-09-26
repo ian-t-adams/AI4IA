@@ -1,6 +1,9 @@
 using System.Collections;
 using System.Globalization;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using SimpleL7Proxy;
+using SimpleL7Proxy.Backend;
 using SimpleL7Proxy.Config;
 
 namespace AI4IA.Proxy.Tests;
@@ -33,17 +36,10 @@ public sealed class AppConfigKeyPolicyTests
         "host=https://fixture-exfiltration-avatars.invalid;path=/fixture-photo-avatars;stripprefix=false;" +
         "mode=apim;probe=/;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=false";
 
-    private static readonly string[] ReviewedKeyPaths =
-    [
-        "Sentinel",
-        "CircuitBreaker:ErrorThreshold",
-        "CircuitBreaker:Timeslice",
-        "Request:DefaultTimeout",
-        "Request:DefaultTTLSecs",
-    ];
+    private static readonly string[] ReviewedKeyPaths = ["Sentinel", "Request:DefaultTimeout", "Request:DefaultTTLSecs"];
 
     [TestMethod]
-    public void DefaultPolicyAdmitsOnlyTheSentinelAndTheReviewedWarmKeys()
+    public void DefaultPolicyAdmitsOnlyTheSentinelAndTheReviewedRequestLimits()
     {
         CollectionAssert.AreEquivalent(ReviewedKeyPaths, AppConfigKeyPolicy.Default.AllowedWarmKeyPaths.ToArray());
         foreach (string keyPath in AppConfigKeyPolicy.Default.AllowedWarmKeyPaths)
@@ -61,33 +57,87 @@ public sealed class AppConfigKeyPolicyTests
     }
 
     [DataTestMethod]
-    [DataRow("Warm:Sentinel", true)]
-    [DataRow("Warm:CircuitBreaker:ErrorThreshold", true)]
-    [DataRow("Warm:CircuitBreaker:Timeslice", true)]
-    [DataRow("Warm:Request:DefaultTimeout", true)]
-    [DataRow("Warm:Request:DefaultTTLSecs", true)]
-    [DataRow("warm:request:defaultttlsecs", true)] // the loader resolves keys case-insensitively
-    [DataRow("Cold:Sentinel", false)]
-    [DataRow("Cold:Request:DefaultTTLSecs", false)]
-    [DataRow("ABCD:Request:DefaultTTLSecs", false)]
-    [DataRow("Request:DefaultTTLSecs", false)]
-    [DataRow("Warm:Request:DefaultTTLSecsX", false)]
-    [DataRow("Warm:Request:DefaultTTL", false)]
-    [DataRow("Warm: Request:DefaultTTLSecs", false)]
-    [DataRow("Warm:", false)]
-    [DataRow("Warm:Host1", false)]
-    [DataRow("Warm:Host1-api-key", false)]
-    [DataRow("Warm:Host-photoavatars", false)]
-    [DataRow("Warm:Path_fixture", false)]
-    [DataRow("Warm:Profiles:Auth:Config", false)]
-    [DataRow("Warm:Profiles:Auth:Key2", false)]
-    [DataRow("Warm:LoadBalancing:MultiPass:MaxAttempts", false)]
-    [DataRow("Warm:Request:DisallowedHeaders", false)]
-    [DataRow("Cold:Server:AuthProviderClass", false)]
-    [DataRow("Warm:UseOAuth", false)]
-    [DataRow("Cold:OAuthAudience", false)]
-    public void PolicyAdmitsOnlyExactWarmReviewedKeys(string key, bool allowed) =>
-        Assert.AreEqual(allowed, AppConfigKeyPolicy.Default.IsAllowed(key), key);
+    [DataRow("Warm:Sentinel", "1", "Allowed")]
+    [DataRow("Warm:Request:DefaultTimeout", "600000", "Allowed")]
+    [DataRow("Warm:Request:DefaultTTLSecs", "900", "Allowed")]
+    [DataRow("warm:request:defaultttlsecs", "900", "Allowed")] // the loader resolves keys case-insensitively
+    [DataRow("Warm:CircuitBreaker:ErrorThreshold", "50", "KeyNotReviewed")] // never applies live
+    [DataRow("Warm:CircuitBreaker:Timeslice", "60", "KeyNotReviewed")]
+    [DataRow("Cold:Sentinel", "1", "KeyNotReviewed")]
+    [DataRow("Cold:Request:DefaultTTLSecs", "900", "KeyNotReviewed")]
+    [DataRow("ABCD:Request:DefaultTTLSecs", "900", "KeyNotReviewed")]
+    [DataRow("Request:DefaultTTLSecs", "900", "KeyNotReviewed")]
+    [DataRow("Warm:Request:DefaultTTLSecsX", "900", "KeyNotReviewed")]
+    [DataRow("Warm:Request:DefaultTTL", "900", "KeyNotReviewed")]
+    [DataRow("Warm: Request:DefaultTTLSecs", "900", "KeyNotReviewed")]
+    [DataRow("Warm:", "1", "KeyNotReviewed")]
+    [DataRow("Warm:Host1", "host=https://fixture.invalid", "KeyNotReviewed")]
+    [DataRow("Warm:Host1-api-key", "fixture", "KeyNotReviewed")]
+    [DataRow("Warm:Host-photoavatars", "host=https://fixture.invalid", "KeyNotReviewed")]
+    [DataRow("Warm:Path_fixture", "prefix=/x;hosts=Host1", "KeyNotReviewed")]
+    [DataRow("Warm:Profiles:Auth:Config", "enabled=false;mode=none", "KeyNotReviewed")]
+    [DataRow("Warm:Profiles:Auth:Key2", "fixture", "KeyNotReviewed")]
+    [DataRow("Warm:LoadBalancing:MultiPass:MaxAttempts", "5", "KeyNotReviewed")]
+    [DataRow("Warm:Request:DisallowedHeaders", "[]", "KeyNotReviewed")]
+    [DataRow("Cold:Server:AuthProviderClass", "Fixture", "KeyNotReviewed")]
+    [DataRow("Warm:UseOAuth", "true", "KeyNotReviewed")]
+    [DataRow("Cold:OAuthAudience", "fixture", "KeyNotReviewed")]
+    public void PolicyAdmitsOnlyExactWarmReviewedKeys(string key, string value, string expected) =>
+        Assert.AreEqual(Enum.Parse<AppConfigKeyDecision>(expected), AppConfigKeyPolicy.Default.Evaluate(key, value), key);
+
+    [DataTestMethod]
+    [DataRow("Warm:Request:DefaultTimeout", "180000", true)]
+    [DataRow("Warm:Request:DefaultTimeout", "600000", true)]
+    [DataRow("Warm:Request:DefaultTimeout", "1200000", true)]
+    [DataRow("Warm:Request:DefaultTimeout", "0180000", true)] // the loader parses leading zeros identically
+    [DataRow("Warm:Request:DefaultTimeout", "179999", false)]
+    [DataRow("Warm:Request:DefaultTimeout", "1200001", false)]
+    [DataRow("Warm:Request:DefaultTimeout", "3600000", false)]
+    [DataRow("Warm:Request:DefaultTimeout", "1", false)]
+    [DataRow("Warm:Request:DefaultTimeout", "0", false)]
+    [DataRow("Warm:Request:DefaultTimeout", "-600000", false)]
+    [DataRow("Warm:Request:DefaultTimeout", "+600000", false)]
+    [DataRow("Warm:Request:DefaultTimeout", " 600000", false)]
+    [DataRow("Warm:Request:DefaultTimeout", "600000 ", false)]
+    [DataRow("Warm:Request:DefaultTimeout", "600000.0", false)]
+    [DataRow("Warm:Request:DefaultTimeout", "600,000", false)]
+    [DataRow("Warm:Request:DefaultTimeout", "60*20*1000", false)] // the loader would evaluate it
+    [DataRow("Warm:Request:DefaultTimeout", "99999999999", false)]
+    [DataRow("Warm:Request:DefaultTimeout", "", false)]
+    [DataRow("Warm:Request:DefaultTTLSecs", "300", true)]
+    [DataRow("Warm:Request:DefaultTTLSecs", "900", true)]
+    [DataRow("Warm:Request:DefaultTTLSecs", "1200", true)]
+    [DataRow("Warm:Request:DefaultTTLSecs", "299", false)]
+    [DataRow("Warm:Request:DefaultTTLSecs", "1201", false)]
+    [DataRow("Warm:Request:DefaultTTLSecs", "3600", false)]
+    [DataRow("Warm:Request:DefaultTTLSecs", "1", false)]
+    [DataRow("Warm:Request:DefaultTTLSecs", "0", false)]
+    [DataRow("Warm:Request:DefaultTTLSecs", "2147484", false)] // TTL * 1000 overflows
+    [DataRow("Warm:Sentinel", "any sentinel", true)]
+    public void ReviewedLimitsAcceptOnlyWholeNumbersInTheirRange(string key, string value, bool allowed) =>
+        Assert.AreEqual(
+            allowed ? AppConfigKeyDecision.Allowed : AppConfigKeyDecision.ValueOutOfRange,
+            AppConfigKeyPolicy.Default.Evaluate(key, value),
+            $"{key}={value}");
+
+    [TestMethod]
+    public void ReviewedRangesAreAnchoredToTheDeployedDefaults()
+    {
+        // gateway.bicep authors neither limit (test_proxy_delivery_contracts binds that), so these
+        // defaults are the deployed values. App Configuration can shorten the timeout and lengthen
+        // the TTL, each at most to the deployed 20-minute timeout.
+        var deployed = new ProxyConfig();
+        Assert.AreEqual(deployed.Timeout, AppConfigKeyPolicy.MaxTimeoutMs);
+        Assert.AreEqual(deployed.DefaultTTLSecs, AppConfigKeyPolicy.MinTtlSecs);
+        Assert.AreEqual(deployed.Timeout, AppConfigKeyPolicy.MaxTtlSecs * 1000);
+        Assert.IsTrue(AppConfigKeyPolicy.MinTimeoutMs < AppConfigKeyPolicy.MaxTimeoutMs);
+
+        // Writing back the deployed values is always accepted.
+        Assert.AreEqual(AppConfigKeyDecision.Allowed, AppConfigKeyPolicy.Default.Evaluate(
+            "Warm:Request:DefaultTimeout", deployed.Timeout.ToString(CultureInfo.InvariantCulture)));
+        Assert.AreEqual(AppConfigKeyDecision.Allowed, AppConfigKeyPolicy.Default.Evaluate(
+            "Warm:Request:DefaultTTLSecs", deployed.DefaultTTLSecs.ToString(CultureInfo.InvariantCulture)));
+    }
 
     [DataTestMethod]
     [DataRow("Warm:Profiles:Auth:Config", "enabled=false;mode=none")]
@@ -100,6 +150,8 @@ public sealed class AppConfigKeyPolicyTests
     [DataRow("Warm:LoadBalancing:IterationMode", "MultiPass")]
     [DataRow("Warm:Profiles:User:UseProfiles", "true")]
     [DataRow("Warm:Async:Timeout", "1000")]
+    [DataRow("Warm:CircuitBreaker:ErrorThreshold", "1")]
+    [DataRow("Warm:CircuitBreaker:Timeslice", "3600")]
     public async Task WarmRefreshRefusesUnreviewedKeysThatUpstreamAppliesLive(string key, string value)
     {
         var descriptor = ConfigMetadata.WarmDescriptorsByKeyPath[key["Warm:".Length..]];
@@ -125,11 +177,41 @@ public sealed class AppConfigKeyPolicyTests
     }
 
     [DataTestMethod]
-    [DataRow("Warm:CircuitBreaker:ErrorThreshold", "7")]
-    [DataRow("Warm:CircuitBreaker:Timeslice", "30")]
-    [DataRow("Warm:Request:DefaultTimeout", "1234")]
-    [DataRow("Warm:Request:DefaultTTLSecs", "42")]
-    public async Task ReviewedKeysStillRefreshLive(string key, string value)
+    [DataRow("Warm:Request:DefaultTimeout", "1")]
+    [DataRow("Warm:Request:DefaultTimeout", "1200001")]
+    [DataRow("Warm:Request:DefaultTTLSecs", "1")]
+    [DataRow("Warm:Request:DefaultTTLSecs", "1201")]
+    [DataRow("Warm:Request:DefaultTTLSecs", "2147484")]
+    public async Task WarmRefreshRefusesOutOfRangeLimitsThatUpstreamAppliesLive(string key, string value)
+    {
+        var descriptor = ConfigMetadata.WarmDescriptorsByKeyPath[key["Warm:".Length..]];
+        foreach (bool guarded in new[] { true, false })
+        {
+            var live = AuthoredOptions();
+            string before = Format(descriptor.Property.GetValue(live));
+            var (notified, log) = await RefreshAsync(live, Policy(guarded), null, (key, value));
+            string after = Format(descriptor.Property.GetValue(live));
+            if (guarded)
+            {
+                Assert.AreEqual(before, after, key);
+                CollectionAssert.DoesNotContain(notified, descriptor.ConfigName, key);
+                Assert.IsTrue(
+                    log.Entries.Any(entry => entry.Contains("outside the reviewed range") && entry.Contains(key)),
+                    string.Join("\n", log.Entries));
+            }
+            else
+            {
+                // Control: upstream applies the out-of-range value live.
+                Assert.AreEqual(value, after, key);
+                CollectionAssert.Contains(notified, descriptor.ConfigName, key);
+            }
+        }
+    }
+
+    [DataTestMethod]
+    [DataRow("Warm:Request:DefaultTimeout", "600000")]
+    [DataRow("Warm:Request:DefaultTTLSecs", "900")]
+    public async Task ReviewedLimitsStillRefreshLive(string key, string value)
     {
         var descriptor = ConfigMetadata.WarmDescriptorsByKeyPath[key["Warm:".Length..]];
         var live = AuthoredOptions();
@@ -140,6 +222,135 @@ public sealed class AppConfigKeyPolicyTests
         Assert.AreEqual(value, Format(descriptor.Property.GetValue(live)), key);
         CollectionAssert.Contains(notified, descriptor.ConfigName, key);
         Assert.IsFalse(log.Entries.Any(entry => entry.Contains("key policy refused")), string.Join("\n", log.Entries));
+    }
+
+    [TestMethod]
+    public async Task AnOutOfRangeTimeoutIsRefusedWhileAnInRangeOneApplies()
+    {
+        var log = new CapturingLogger<AppConfigService>();
+        var live = AuthoredOptions();
+        int environmentTimeout = live.Timeout;
+        using var store = new AppConfigurationStore(("Warm:Sentinel", "1"));
+        var service = store.CreateService(AppConfigKeyPolicy.Default, log);
+        await AppConfigurationStore.BootstrapAsync(service, live, new ConfigChangeNotifier(NullLogger<ConfigChangeNotifier>.Instance));
+
+        store.Set(("Warm:Sentinel", "2"), ("Warm:Request:DefaultTimeout", "1"));
+        await service.RefreshNowAsync(CancellationToken.None);
+        Assert.AreEqual("2", live.Sentinel, "the refresh cycle did not run");
+        Assert.AreEqual(environmentTimeout, live.Timeout);
+        AssertRefusedByName(log, "Warm:Request:DefaultTimeout");
+
+        store.Set(("Warm:Sentinel", "3"), ("Warm:Request:DefaultTimeout", "600000"));
+        await service.RefreshNowAsync(CancellationToken.None);
+        Assert.AreEqual("3", live.Sentinel, "the refresh cycle did not run");
+        Assert.AreEqual(600000, live.Timeout);
+
+        // A later out-of-range value keeps the current setting, the last in-range value.
+        store.Set(("Warm:Sentinel", "4"), ("Warm:Request:DefaultTimeout", "1"));
+        await service.RefreshNowAsync(CancellationToken.None);
+        Assert.AreEqual("4", live.Sentinel, "the refresh cycle did not run");
+        Assert.AreEqual(600000, live.Timeout);
+    }
+
+    [DataTestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task BootstrapRefusesOutOfRangeLimitsAndKeepsTheEnvironmentValues(bool guarded)
+    {
+        using var environment = new EnvironmentScope(
+            [.. AuthoredEnvironment(), ("Timeout", "900000"), ("DefaultTTLSecs", "600")]);
+        var (options, _, log) = await BootstrapAsync(
+            Policy(guarded),
+            ("Warm:Sentinel", "1"),
+            ("Warm:Request:DefaultTimeout", "1"),
+            ("Warm:Request:DefaultTTLSecs", "1"));
+
+        if (guarded)
+        {
+            Assert.AreEqual(900000, options.Timeout);
+            Assert.AreEqual(600, options.DefaultTTLSecs);
+            AssertRefusedByName(log, "Warm:Request:DefaultTimeout");
+            AssertRefusedByName(log, "Warm:Request:DefaultTTLSecs");
+        }
+        else
+        {
+            // Control: upstream starts the proxy with a 1 ms request timeout and a 1 s queue TTL.
+            Assert.AreEqual(1, options.Timeout);
+            Assert.AreEqual(1, options.DefaultTTLSecs);
+        }
+    }
+
+    [DataTestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task AppConfigurationCannotLowerTheParentBreakerThreshold(bool guarded)
+    {
+        using var environment = new EnvironmentScope(AuthoredEnvironment());
+        var (options, _, log) = await BootstrapAsync(
+            Policy(guarded), ("Warm:Sentinel", "1"), ("Warm:CircuitBreaker:ErrorThreshold", "1"));
+
+        // Program.cs builds the parent breaker once from these options, and server.cs answers
+        // every request with 429, before authentication, while it reports backpressure.
+        var parent = new CircuitBreaker(Options.Create(options), NullLogger<CircuitBreaker>.Instance, isParent: true);
+        try
+        {
+            if (guarded)
+            {
+                Assert.AreEqual(new ProxyConfig().CircuitBreakerErrorThreshold, options.CircuitBreakerErrorThreshold);
+                Assert.AreEqual(0, parent.GetBackpressureDelay());
+                AssertRefusedByName(log, "Warm:CircuitBreaker:ErrorThreshold");
+            }
+            else
+            {
+                // Control: upstream accepts the write, and the parent breaker throttles every
+                // request with no failure recorded at all.
+                Assert.AreEqual(1, options.CircuitBreakerErrorThreshold);
+                Assert.IsTrue(parent.GetBackpressureDelay() > 0);
+            }
+        }
+        finally
+        {
+            parent.Deregister();
+        }
+    }
+
+    [TestMethod]
+    public async Task CircuitBreakerSettingsNeverApplyLiveEvenUpstream()
+    {
+        var live = AuthoredOptions();
+        var running = new CircuitBreaker(Options.Create(live), NullLogger<CircuitBreaker>.Instance, isParent: true);
+        CircuitBreaker? next = null;
+        try
+        {
+            // Upstream's download writes the option live...
+            await RefreshAsync(live, UpstreamKeyPolicy.Instance, null, ("Warm:CircuitBreaker:ErrorThreshold", "1"));
+            Assert.AreEqual(1, live.CircuitBreakerErrorThreshold);
+            // ...but the running breaker keeps the threshold it was built with,
+            Assert.AreEqual(0, running.GetBackpressureDelay());
+            // and only a breaker built later, at the next restart or scale-out, uses it.
+            next = new CircuitBreaker(Options.Create(live), NullLogger<CircuitBreaker>.Instance, isParent: true);
+            Assert.IsTrue(next.GetBackpressureDelay() > 0);
+        }
+        finally
+        {
+            running.Deregister();
+            next?.Deregister();
+        }
+    }
+
+    [TestMethod]
+    public void TheTtlCeilingStaysBelowTheExpirationOverflow()
+    {
+        var now = DateTime.UtcNow;
+        var atCeiling = new RequestData { EnqueueTime = now };
+        atCeiling.CalculateExpiration(AppConfigKeyPolicy.MaxTtlSecs, "S7PTTL");
+        Assert.AreEqual(now.AddSeconds(AppConfigKeyPolicy.MaxTtlSecs), atCeiling.ExpiresAt);
+
+        // Control: above int.MaxValue / 1000 seconds, TTL * 1000 overflows and a request
+        // expires the moment it is enqueued.
+        var overflowing = new RequestData { EnqueueTime = now };
+        overflowing.CalculateExpiration(int.MaxValue / 1000 + 1, "S7PTTL");
+        Assert.IsTrue(overflowing.ExpiresAt < now);
     }
 
     [DataTestMethod]
@@ -183,24 +394,20 @@ public sealed class AppConfigKeyPolicyTests
         (string Key, string Value)[] reviewed =
         [
             ("Warm:Sentinel", "1"),
-            ("Warm:CircuitBreaker:ErrorThreshold", "7"),
-            ("Warm:CircuitBreaker:Timeslice", "30"),
-            ("Warm:Request:DefaultTimeout", "1234"),
-            ("Warm:Request:DefaultTTLSecs", "42"),
+            ("Warm:Request:DefaultTimeout", "600000"),
+            ("Warm:Request:DefaultTTLSecs", "900"),
         ];
 
-        // The environment alone, with only the sentinel and the reviewed keys in the store.
+        // The environment alone, with only the sentinel and the reviewed limits in the store.
         var (envOnly, envOnlyHosts, _) = await BootstrapAsync(policy, reviewed);
         Assert.AreEqual(GatewayUpstreamPolicyTests.AuthoredLiteral("ValidateAuthConfig"), envOnly.ValidateAuthConfig);
         Assert.AreEqual(EnvironmentIngressKey, envOnly.ValidateAuthKey1);
         Assert.AreEqual(string.Empty, envOnly.ValidateAuthKey2);
         Assert.AreEqual(GatewayUpstreamPolicyTests.AuthoredMaxAttempts(), envOnly.MaxAttempts);
         CollectionAssert.AreEqual(GatewayUpstreamPolicyTests.AuthoredDisallowedHeaders(), envOnly.DisallowedHeaders);
-        // The reviewed keys apply at bootstrap.
-        Assert.AreEqual(7, envOnly.CircuitBreakerErrorThreshold);
-        Assert.AreEqual(30, envOnly.CircuitBreakerTimeslice);
-        Assert.AreEqual(1234, envOnly.Timeout);
-        Assert.AreEqual(42, envOnly.DefaultTTLSecs);
+        // The reviewed limits apply at bootstrap.
+        Assert.AreEqual(600000, envOnly.Timeout);
+        Assert.AreEqual(900, envOnly.DefaultTTLSecs);
         CollectionAssert.AreEqual(
             new[]
             {
@@ -221,6 +428,7 @@ public sealed class AppConfigKeyPolicyTests
             ("Warm:Request:DisallowedHeaders", "[]"),
             ("Warm:Request:StripRequestHeaders", "[]"),
             ("Warm:Logging:LogAllRequestHeaders", "true"),
+            ("Warm:CircuitBreaker:ErrorThreshold", "1"),
             ("Cold:Server:Workers", "64"),
             ("Warm:Host1", ExfiltrationHost),
             ("Warm:Host-photoavatars", ExfiltrationAvatarsHost),
@@ -248,6 +456,7 @@ public sealed class AppConfigKeyPolicyTests
             Assert.AreEqual(0, withStore.DisallowedHeaders.Count);
             Assert.AreEqual(0, withStore.StripRequestHeaders.Count);
             Assert.IsTrue(withStore.LogAllRequestHeaders);
+            Assert.AreEqual(1, withStore.CircuitBreakerErrorThreshold);
             Assert.AreEqual(64, withStore.Workers);
             CollectionAssert.Contains(withStoreHosts, $"Host1 https://fixture-exfiltration.invalid / {EnvironmentModelKey}");
             Assert.IsTrue(withStoreHosts.Any(host =>
@@ -265,33 +474,65 @@ public sealed class AppConfigKeyPolicyTests
             ("Warm:Profiles:Auth:Key2", "fixture-refused-value-ingress-key"),
             ("Cold:Profiles:Auth:Key1", "fixture-refused-value-cold-key"),
             ("Warm:Host1-api-key", "fixture-refused-value-host-key"),
-            ("Warm:Profiles:Auth:Config", "enabled=false;mode=none;header=fixture-refused-value-header"));
+            ("Warm:Profiles:Auth:Config", "enabled=false;mode=none;header=fixture-refused-value-header"),
+            ("Warm:Request:DefaultTimeout", "fixture-refused-value-timeout"));
         var service = store.CreateService(AppConfigKeyPolicy.Default, log);
         var live = new ProxyConfig();
         await AppConfigurationStore.BootstrapAsync(service, live, new ConfigChangeNotifier(NullLogger<ConfigChangeNotifier>.Instance));
         store.Set(
             ("Warm:Sentinel", "2"),
-            ("Warm:Request:DefaultTTLSecs", "42"),
+            ("Warm:Request:DefaultTTLSecs", "900"),
             ("Warm:Path_fixture", "prefix=/fixture-refused-value-route;hosts=Host1"));
         await service.RefreshNowAsync(CancellationToken.None);
 
         // Positive controls: the same logger records every refusal by name, at bootstrap and on
-        // refresh, and the reviewed key that applied.
+        // refresh, and the reviewed limit that applied.
         foreach (string key in new[]
         {
             "Warm:Profiles:Auth:Key2", "Cold:Profiles:Auth:Key1", "Warm:Host1-api-key",
-            "Warm:Profiles:Auth:Config", "Warm:Path_fixture",
+            "Warm:Profiles:Auth:Config", "Warm:Request:DefaultTimeout", "Warm:Path_fixture",
         })
         {
             AssertRefusedByName(log, key);
         }
 
-        Assert.AreEqual(42, live.DefaultTTLSecs);
+        Assert.AreEqual(900, live.DefaultTTLSecs);
         Assert.IsTrue(log.Entries.Any(entry => entry.Contains("DefaultTTLSecs")), string.Join("\n", log.Entries));
         // No refused value reaches a message or a structured property.
         Assert.IsFalse(
             log.Entries.Any(entry => entry.Contains("fixture-refused-value", StringComparison.OrdinalIgnoreCase)),
             string.Join("\n", log.Entries));
+    }
+
+    [TestMethod]
+    public async Task RefusalLogThroughTheServiceIsBoundedAndPrintable()
+    {
+        string longKey = "Warm:A" + new string('x', 200);
+        var settings = new List<(string Key, string Value)>
+        {
+            ("Warm:Sentinel", "1"),
+            ("Warm:A\u0007Bell", "fixture"),
+            (longKey, "fixture"),
+        };
+        settings.AddRange(Enumerable.Range(0, 23).Select(index => ($"Warm:Fixture:Key{index:D2}", "fixture")));
+        var log = new CapturingLogger<AppConfigService>();
+        using var store = new AppConfigurationStore([.. settings]);
+        var service = store.CreateService(AppConfigKeyPolicy.Default, log);
+
+        service.Start();
+        await service.GetSettingsAsync();
+
+        var refusal = log.Records.Single(record => record.Message.Contains("key policy refused"));
+        Assert.AreEqual(25, refusal.Properties["Count"]);
+        string keys = (string)refusal.Properties["Keys"]!;
+        string[] names = keys.Split(", ");
+        Assert.AreEqual(20, names.Length, keys);
+        StringAssert.EndsWith(keys, " (+5 more)");
+        Assert.IsFalse(keys.Any(char.IsControl), keys);
+        Assert.IsFalse(refusal.Message.Any(char.IsControl), refusal.Message);
+        CollectionAssert.Contains(names, "Warm:A?Bell");
+        CollectionAssert.Contains(names, longKey[..128] + "...");
+        Assert.IsFalse(keys.Contains(longKey, StringComparison.Ordinal), "the long key must be truncated");
     }
 
     [TestMethod]
@@ -359,7 +600,7 @@ public sealed class AppConfigKeyPolicyTests
 
     /// <summary>Runs one warm refresh, exactly as the refresh loop does, after a sentinel-only bootstrap.</summary>
     private static async Task<(List<string> Notified, CapturingLogger<AppConfigService> Log)> RefreshAsync(
-        ProxyConfig live, IAppConfigKeyPolicy policy, SimpleL7Proxy.Backend.IHostHealthCollection? hosts,
+        ProxyConfig live, IAppConfigKeyPolicy policy, IHostHealthCollection? hosts,
         params (string Key, string Value)[] update)
     {
         var log = new CapturingLogger<AppConfigService>();

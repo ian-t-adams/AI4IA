@@ -44,7 +44,7 @@ its SVG; rendering does not send the architecture to an external drawing service
 | Azure AI Search | Hybrid keyword/vector document retrieval and semantic reranking | An index can be rebuilt; authorization must still filter every query |
 | Durable Task Scheduler | Persistent orchestration state for opted-in workflows | Work can survive an API restart; scheduling does not make external effects exactly-once |
 | Entra ID, managed identities, and Key Vault | User authentication, service permissions, durable MCP secrets | End-user identity and application identity are distinct; RBAC does not replace user-level ownership checks |
-| App Configuration | Sentinel-driven refresh of four reviewed proxy settings | Only `Warm:Sentinel` and the reviewed circuit-breaker and timeout settings apply. Every other proxy setting comes from the Container App environment, and the store is not a second authority for application features |
+| App Configuration | Sentinel-driven refresh of two reviewed proxy request limits | Only `Warm:Sentinel` and the reviewed request timeout and TTL, within reviewed ranges, apply. Every other proxy setting comes from the Container App environment, and the store is not a second authority for application features |
 | Application Insights, Log Analytics, Azure Monitor | Correlation, operational signals, fixed admin queries | Metadata-only telemetry is distinct from owner-visible execution receipts |
 
 WebIQ is a separate, feature-gated grounding service. Content Understanding is a

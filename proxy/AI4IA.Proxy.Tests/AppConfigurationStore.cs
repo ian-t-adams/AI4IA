@@ -135,12 +135,12 @@ internal sealed class AppConfigurationStore : IDisposable
     }
 }
 
-/// <summary>The control policy: accepts every key, which is upstream's download behavior.</summary>
+/// <summary>The control policy: accepts every key and value, which is upstream's download behavior.</summary>
 internal sealed class UpstreamKeyPolicy : IAppConfigKeyPolicy
 {
     internal static readonly UpstreamKeyPolicy Instance = new();
 
-    public bool IsAllowed(string key) => true;
+    public AppConfigKeyDecision Evaluate(string key, string value) => AppConfigKeyDecision.Allowed;
 }
 
 /// <summary>
@@ -149,9 +149,22 @@ internal sealed class UpstreamKeyPolicy : IAppConfigKeyPolicy
 /// </summary>
 internal sealed class CapturingLogger<T> : ILogger<T>
 {
-    private readonly ConcurrentQueue<string> _entries = new();
+    private readonly ConcurrentQueue<Record> _records = new();
 
-    internal IReadOnlyCollection<string> Entries => _entries;
+    internal sealed record Record(LogLevel Level, string Message, IReadOnlyDictionary<string, object?> Properties);
+
+    internal IReadOnlyCollection<Record> Records => _records;
+
+    /// <summary>Each entry as one string: level, message, then every structured property.</summary>
+    internal IReadOnlyList<string> Entries => _records
+        .Select(record =>
+        {
+            var entry = new StringBuilder().Append(record.Level).Append(": ").Append(record.Message);
+            foreach (var (name, value) in record.Properties)
+                entry.Append(" | ").Append(name).Append('=').Append(value);
+            return entry.ToString();
+        })
+        .ToList();
 
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -160,16 +173,16 @@ internal sealed class CapturingLogger<T> : ILogger<T>
     public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
         Func<TState, Exception?, string> formatter)
     {
-        var entry = new StringBuilder().Append(logLevel).Append(": ").Append(formatter(state, exception));
-        if (state is IEnumerable<KeyValuePair<string, object?>> properties)
+        var properties = new Dictionary<string, object?>(StringComparer.Ordinal);
+        if (state is IEnumerable<KeyValuePair<string, object?>> pairs)
         {
-            foreach (var (name, value) in properties)
-                entry.Append(" | ").Append(name).Append('=').Append(value);
+            foreach (var (name, value) in pairs)
+                properties[name] = value;
         }
 
         if (exception != null)
-            entry.Append(" | ").Append(exception);
-        _entries.Enqueue(entry.ToString());
+            properties["Exception"] = exception.ToString();
+        _records.Enqueue(new Record(logLevel, formatter(state, exception), properties));
     }
 }
 

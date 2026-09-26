@@ -34,12 +34,12 @@ AI4IA_PATCH_REASONS = {
     "SimpleL7Proxy/packages.lock.json": "AI4IA-generated NuGet lock for deterministic restore.",
     "SimpleL7Proxy/Config/AppConfigKeyPolicy.cs": (
         "AI4IA default-deny App Configuration key policy: only Warm:Sentinel and the "
-        "reviewed operational keys may be applied."
+        "reviewed request limits, within reviewed ranges, may be applied."
     ),
     "SimpleL7Proxy/Config/AppConfigService.cs": (
-        "Apply AI4IA's default-deny key policy before any downloaded key is resolved, "
-        "log refused key names without values, and accept a test client and control "
-        "policy through an internal constructor."
+        "Apply AI4IA's default-deny key and value policy before any downloaded key is "
+        "resolved, log refused key names without values, and accept a test client and "
+        "control policy through an internal constructor."
     ),
     "SimpleL7Proxy/Config/ConfigFactory.cs": (
         "Redact declared secrets and remove warm-reload value logging."

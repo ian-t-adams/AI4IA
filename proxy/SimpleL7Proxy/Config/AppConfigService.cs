@@ -269,17 +269,19 @@ public class AppConfigService : BackgroundService
             var warm = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var cold = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var refused = new List<string>();
+            var refusedValues = new List<string>();
 
             var selector = new SettingSelector { KeyFilter = "*", LabelFilter = _labelFilter };
             foreach (var setting in client.GetConfigurationSettings(selector))
             {
                 var (key, value) = (setting.Key, setting.Value ?? "");
 
-                // AI4IA: default-deny. Anything but Warm:Sentinel and the reviewed operational
-                // keys keeps the value authored in the Container App environment.
-                if (!_keyPolicy.IsAllowed(key))
+                // AI4IA: default-deny. Anything but Warm:Sentinel and the reviewed request limits,
+                // with values in their reviewed ranges, keeps its current value.
+                var decision = _keyPolicy.Evaluate(key, value);
+                if (decision != AppConfigKeyDecision.Allowed)
                 {
-                    refused.Add(key);
+                    (decision == AppConfigKeyDecision.ValueOutOfRange ? refusedValues : refused).Add(key);
                     continue;
                 }
 
@@ -308,8 +310,15 @@ public class AppConfigService : BackgroundService
             {
                 // Key names only: a refused value can be a credential.
                 _logger.LogWarning(
-                    "[CONFIGS] App Configuration key policy refused {Count} key(s); only Warm:Sentinel and the reviewed operational keys apply: {Keys}",
+                    "[CONFIGS] App Configuration key policy refused {Count} key(s); only Warm:Sentinel and the reviewed request limits apply: {Keys}",
                     refused.Count, AppConfigKeyPolicy.DescribeKeys(refused));
+            }
+
+            if (refusedValues.Count > 0)
+            {
+                _logger.LogWarning(
+                    "[CONFIGS] App Configuration key policy refused {Count} value(s) outside the reviewed range; the current setting stays: {Keys}",
+                    refusedValues.Count, AppConfigKeyPolicy.DescribeKeys(refusedValues));
             }
             
 
