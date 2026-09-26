@@ -281,6 +281,20 @@ with an avatar and links to Microsoft's abuse report form. **Delete** asks first
 then removes the avatar and its preview. Right after a creation it may ask you to
 wait a few seconds.
 
+### Talking with your avatar
+
+With Azure Speech selected in **Setup > Voice**, the **Avatar** list offers your
+ready avatars. Pick one, then start Voice Live: the avatar appears above the
+composer and speaks the replies, labelled **AI-generated** for the whole session.
+Choose **None (voice only)** to go back to audio.
+
+Avatar time is billed per second while the session is connected, even when nobody
+is talking, so a session ends on its own after a stretch of silence (a countdown
+warns you first) or at its time limit. **End session** stops it at once. Speaking
+over the avatar interrupts it. If your browser can't play the avatar video, the
+list is disabled and Voice Live stays voice only. Headphones help the avatar not
+hear itself.
+
 ## Memory
 
 Memory can carry personal context between conversations. In **Context > Memory**,
@@ -446,6 +460,8 @@ still apply and modality coverage remains incomplete.
 | Voice settings seem unchanged | Stop and reconnect; settings affect the next connection |
 | Speech is not offered | The operator's provider allowlist and Speech feature gate |
 | Photo avatars are missing | They are off by default and need Microsoft's Limited Access approval |
+| No **Avatar** list in voice settings | Azure Speech must be the provider, and you need at least one ready avatar that isn't re-verifying |
+| An avatar session ended by itself | It ends after a stretch of silence or at its time limit; start Voice Live again |
 | Search or another tool fails | Its visible error/approval state; an enabled gate does not prove upstream entitlement |
 | An admin panel is unavailable | Resource wiring, API identity permissions, and source freshness |
 
