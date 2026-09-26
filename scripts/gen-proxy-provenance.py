@@ -407,6 +407,15 @@ def check() -> list[str]:
     for path in sorted(set(local).intersection(vendored)):
         entry = recorded[path]
         local_bytes = local[path]
+        # A reviewed exclusion covers the path no matter how the manifest records it, so a
+        # re-added file cannot pass by flipping its entry while the rule still matches others.
+        try:
+            rule = _exclusion_rule(path)
+        except ValueError as exc:
+            errors.append(str(exc))
+        else:
+            if rule is not None:
+                errors.append(f"{path}: vendored file matches exclusion rule {rule!r}")
         actual_hash = _canonical_sha256(local_bytes)
         if entry.get("localCanonicalSha256") != actual_hash:
             errors.append(f"{path}: local canonical SHA-256 drift")

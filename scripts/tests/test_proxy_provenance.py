@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -73,6 +74,59 @@ class ProxyProvenanceTests(unittest.TestCase):
         with mock.patch.object(proxy_provenance, "AI4IA_EXCLUSION_REASONS", rules):
             errors = proxy_provenance.check()
         self.assertIn("exclusion rules match no recorded file: ['CompanionApp/no-such-file']", errors)
+
+    def _check_with_vendored_entry(self, path: str, data: bytes) -> list[str]:
+        """check() after vendoring ``data`` at ``path`` and recording it as upstream-equivalent.
+
+        Every other invariant is kept consistent (hashes, counts), so the only thing
+        that can fail is whether a reviewed exclusion rule matches ``path``.
+        """
+        document = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        previous = document["files"].get(path, {}).get("disposition")
+        digest = proxy_provenance._canonical_sha256(data)
+        document["files"][path] = {
+            "localCanonicalSha256": digest,
+            "upstreamRawSha256": proxy_provenance._sha256(data),
+            "upstreamCanonicalSha256": digest,
+            "disposition": "upstream-equivalent",
+        }
+        counts = document["counts"]
+        if previous is not None:
+            counts[previous] -= 1
+        counts["upstream-equivalent"] += 1
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "upstream-provenance.json"
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            local = {**proxy_provenance._local_files(), path: data}
+            with (
+                mock.patch.object(proxy_provenance, "MANIFEST", manifest),
+                mock.patch.object(proxy_provenance, "_local_files", return_value=local),
+            ):
+                return proxy_provenance.check()
+
+    def test_readded_file_under_a_multi_file_exclusion_rule_is_rejected(self) -> None:
+        document = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        for path, rule in (
+            ("CompanionApp/chat-models.json", "CompanionApp/chat-models*"),
+            ("CompanionApp/Components/Pages/DeploymentSetupPage.razor",
+             "CompanionApp/Components/Pages/Deployment*"),
+        ):
+            with self.subTest(path=path):
+                # The rule still matches another recorded file, so "unused rule" cannot fire.
+                siblings = [
+                    other for other, entry in document["files"].items()
+                    if other != path and entry.get("rule") == rule
+                ]
+                self.assertTrue(siblings, f"{rule} must cover more than one file")
+                errors = self._check_with_vendored_entry(path, b'{"fixture": true}\n')
+                self.assertEqual(errors, [f"{path}: vendored file matches exclusion rule {rule!r}"])
+
+    def test_the_same_flip_on_an_unexcluded_file_passes(self) -> None:
+        # Control: the identical manifest rewrite of a path no rule matches is accepted.
+        path = "CompanionApp/wwwroot/app.css"
+        self.assertIsNone(proxy_provenance._exclusion_rule(path))
+        data = proxy_provenance._local_files()[path]
+        self.assertEqual(self._check_with_vendored_entry(path, data), [])
 
     def test_generation_rejects_undeclared_missing_and_present_excluded_files(self) -> None:
         local = proxy_provenance._local_files()
