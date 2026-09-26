@@ -35,6 +35,10 @@ const mocks = vi.hoisted(() => ({
   updateMemory: vi.fn(),
   deleteMemory: vi.fn(),
   appendVoiceTurns: vi.fn(),
+  // ChatApp reads image options on mount to gate image editing; editing stays off here.
+  getImageOptions: vi.fn(async () => ({
+    maxSelectedModels: 3, currency: "USD", priceVersion: null, models: [],
+  })),
   apiFetch: vi.fn(),
 }));
 

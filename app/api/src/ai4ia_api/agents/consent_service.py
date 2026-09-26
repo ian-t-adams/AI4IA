@@ -34,6 +34,7 @@ from .tools import ToolRegistry
 from ..policy.context import current_binding
 from ..policy.models import PolicyDecision, PolicyError
 from ..request_constraints import tools_allowed
+from ..images.availability import image_editing_available_for_state
 from ..videos.availability import video_generation_available_for_state
 
 _CREDENTIAL_FIELD = re.compile(
@@ -265,6 +266,23 @@ async def _chat_schemas(
             artifact_store=state.image_artifacts, entitlements=state.entitlements,
             metering=state.usage, catalog=state.catalog, user_id=user_id,
             session_id=session.id, sink=[], preferences=session.imagePreferences,
+        )
+        schemas.extend(extra)
+    if "edit_image" in tool_names and image_editing_available_for_state(
+        state, policy_filter=not publication_metadata,
+    ):
+        from ..images.edit_capability import build_image_edit_capability
+        from ..images.editing import ImageEditService
+
+        extra, _ = build_image_edit_capability(
+            edit_service=ImageEditService(
+                settings=state.settings, catalog=state.catalog, gateway=state.gateway,
+            ),
+            artifact_store=state.image_artifacts, entitlements=state.entitlements,
+            metering=state.usage, catalog=state.catalog, user_id=user_id,
+            session_id=session.id, sink=[], repo=state.session_repo,
+            retrieval=getattr(state, "document_retrieval", None),
+            policy_filter=not publication_metadata,
         )
         schemas.extend(extra)
     if "generate_video" in tool_names and video_generation_available_for_state(

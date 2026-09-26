@@ -94,8 +94,15 @@ class MessageAttachment(BaseModel):
     error: str | None = None
     # Video-only: the requested clip length in seconds.
     durationSeconds: int | None = None
-    # Document-only: the source library document's display name.
+    # Document-only: the source library document's display name. An edited image
+    # from a library source also records that document's display name here.
     filename: str | None = None
+    # Edited-image provenance: where the source came from (``generated`` or
+    # ``library``), its artifact/document id, and whether a region mask limited
+    # the edit. Additive and optional, so existing rows are unchanged.
+    sourceKind: str | None = None
+    sourceId: str | None = None
+    masked: bool | None = None
 
 
 class ActivityStep(BaseModel):

@@ -205,6 +205,8 @@ param workflowSchedulingEnabled bool = false
 
 @description('Enable the agent-callable generate_image tool. Default OFF. When on, a dedicated image blob storage account is provisioned and any agent may attach generate_image; produced images persist durably and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
+@description('Enable governed image editing (edit_image tool and the image-edit endpoint) for catalog models that declare imageEditing. Default OFF. Requires imageGenerationEnabled: edits read and store generated-image artifacts in the same durable storage.')
+param imageEditingEnabled bool = false
 @description('Enable the agent-callable generate_video tool. Default OFF. When on, a videos container is provisioned on the shared generated-media account and any agent may attach generate_video; produced clips persist durably and serve through an authenticated endpoint.')
 param videoGenerationEnabled bool = false
 
@@ -1166,6 +1168,7 @@ module api 'modules/api.bicep' = {
     // deployed media must have durable storage; disabled media cannot fall back
     // to creating process-local artifacts.
     imageGenerationEnabled: imageGenerationEnabled
+    imageEditingEnabled: imageEditingEnabled
     imageBlobAccountUrl: data.outputs.imageBlobAccountUrl
     imageBlobContainer: data.outputs.imageBlobContainerName
     videoGenerationEnabled: videoGenerationEnabled

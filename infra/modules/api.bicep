@@ -255,6 +255,9 @@ param workflowSchedulingEnabled bool = false
 @description('Enable the agent-callable generate_image tool. Default OFF. When on (and an image blob account is provisioned) any agent may attach generate_image; produced images persist to dedicated blob storage and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 
+@description('Enable governed image editing for catalog models that declare imageEditing. Default OFF. The API refuses to start with it on while image generation is off.')
+param imageEditingEnabled bool = false
+
 @description('Blob account URL backing generated images. Required for enabled image generation outside local development.')
 param imageBlobAccountUrl string = ''
 
@@ -780,12 +783,16 @@ var inlineComputeEnv = inlineDocumentComputeEnabled ? [
   }
 ] : []
 
-// Always emit both Boolean gates; removing storage must never enable an
+// Always emit the Boolean gates; removing storage must never enable an
 // in-memory generation fallback in a deployed API.
 var mediaFeatureEnv = [
   {
     name: 'AI4IA_IMAGE_GENERATION_ENABLED'
     value: string(imageGenerationEnabled)
+  }
+  {
+    name: 'AI4IA_IMAGE_EDITING_ENABLED'
+    value: string(imageEditingEnabled)
   }
   {
     name: 'AI4IA_VIDEO_GENERATION_ENABLED'

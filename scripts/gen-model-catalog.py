@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _generator import build_parser, check_or_write
-from _model_targets import model_target, runtime_enabled
+from _model_targets import image_editing, image_editing_default, model_target, runtime_enabled
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE = REPO_ROOT / "infra" / "models.json"
@@ -74,6 +74,10 @@ def build_catalog(models: dict) -> dict:
                 "inputModalities": model.get("inputModalities", ["text"]),
                 "imageSizes": model.get("imageSizes"),
                 "imageQualities": model.get("imageQualities"),
+                # Sparse: only an editing-capable row records these, so every
+                # other row stays byte-identical.
+                **({"imageEditing": True} if image_editing(model) else {}),
+                **({"imageEditingDefault": True} if image_editing_default(model) else {}),
                 "reasoningEffort": model.get("reasoningEffort"),
                 **({"deploymentTarget": target} if target != "source" else {}),
                 **{key: model[key] for key in ("samplingSupported", "anthropicThinking") if key in model},

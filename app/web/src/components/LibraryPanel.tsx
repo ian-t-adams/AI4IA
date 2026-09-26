@@ -138,7 +138,27 @@ function LibraryDocumentRow({
   );
 }
 
-export function LibraryPanel({ onClose }: { onClose: () => void }) {
+// Only PNG and JPEG are accepted by the image-edit provider contract; the server
+// re-checks the actual bytes, ownership, readiness and conversation scope.
+const EDITABLE_IMAGE_TYPES = new Set(["image/png", "image/jpeg"]);
+
+export function LibraryPanel({
+  onClose,
+  onEditImage,
+  editImageScope = null,
+}: {
+  onClose: () => void;
+  /** Present only while image editing is available in an active conversation. */
+  onEditImage?: (doc: LibraryDocument) => void;
+  /** The active conversation's library selection; null means every document. */
+  editImageScope?: string[] | null;
+}) {
+  const editableImage = (doc: LibraryDocument) =>
+    onEditImage !== undefined &&
+    doc.status === "ready" &&
+    doc.modality === "image" &&
+    EDITABLE_IMAGE_TYPES.has((doc.contentType || "").toLowerCase()) &&
+    (editImageScope === null || editImageScope.includes(doc.id));
   const [docs, setDocs] = useState<LibraryDocument[]>([]);
   const [analyzers, setAnalyzers] = useState<LibraryAnalyzer[]>([]);
   const [analyzerId, setAnalyzerId] = useState<string>("");
@@ -631,6 +651,23 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                       ▶️
                     </button>
                   )}
+                {editableImage(doc) && (
+                  <button
+                    type="button"
+                    onClick={() => onEditImage?.(doc)}
+                    aria-label={`Edit image ${doc.filename}`}
+                    title="Edit this image; the result is added to the current conversation"
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: "var(--fg-muted)",
+                      fontSize: "1em",
+                      cursor: "pointer",
+                    }}
+                  >
+                    ✏️
+                  </button>
+                )}
                 {doc.status === "ready" && (
                   <button
                     onClick={() => onSaveToMemory(doc)}

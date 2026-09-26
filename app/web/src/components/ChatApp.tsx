@@ -26,6 +26,8 @@ import type {
   ConversationDraftDefaults,
   DeletionStatus,
   DocumentSummary,
+  ImageEditSource,
+  ImageOptionsResponse,
   Message,
   ModelEntry,
   PendingToolApprovalPrompt,
@@ -60,6 +62,7 @@ import {
   type VoicePreferences,
 } from "@/lib/voicePreferences";
 import { LibraryPanel } from "./LibraryPanel";
+import { ImageEditDialog } from "./ImageEditDialog";
 import { PhotoAvatarsPanel } from "./PhotoAvatarsPanel";
 import { usePhotoAvatarsEnabled } from "./usePhotoAvatarsEnabled";
 import { useLiveAvatarChoices } from "./useLiveAvatarChoices";
@@ -328,6 +331,14 @@ export function ChatApp() {
     PendingToolApprovalPrompt[]
   >([]);
   const [error, setError] = useState<string | null>(null);
+  // Server-authoritative image-editing availability (flags, store and a
+  // routable editing model). It only hides UI; the edit endpoint re-checks.
+  const [imageOptions, setImageOptions] = useState<ImageOptionsResponse | null>(null);
+  const [imageEditTarget, setImageEditTarget] = useState<{
+    sessionId: string;
+    source: ImageEditSource;
+    label: string;
+  } | null>(null);
   // Citation deep-link: the audio/video doc a clicked chat citation
   // resolved to, plus the moment to seek. Opens the same MediaPlayer modal the
   // LibraryPanel uses. Null when no citation is open.
@@ -2299,6 +2310,53 @@ export function ChatApp() {
     [activeId, libraryDocs],
   );
 
+  useEffect(() => {
+    let cancelled = false;
+    api.getImageOptions().then(
+      (options) => {
+        if (!cancelled) setImageOptions(options);
+      },
+      () => {
+        if (!cancelled) setImageOptions(null);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Append a persisted edit exchange the same way voice turns are merged: the
+  // server already stored both messages, so merge them into the view and then
+  // reconcile against a fresh read. A response for a conversation the user has
+  // since left is dropped from view (it is still in that conversation).
+  const handleImageEdited = useCallback(
+    (sessionId: string, created: Message[]) => {
+      if (sessionIdRef.current !== sessionId) return;
+      setMessages((previous) => {
+        const createdIds = new Set(created.map((message) => message.id));
+        return [
+          ...previous.filter((message) => !createdIds.has(message.id)),
+          ...created,
+        ];
+      });
+      setInspectorVersion((value) => value + 1);
+      void Promise.allSettled([
+        api.listMessages(sessionId).then((fresh) => {
+          if (sessionIdRef.current === sessionId) {
+            setMessages((previous) => reconcileMessages(previous, fresh));
+          }
+        }),
+        refreshSessions(),
+      ]);
+    },
+    [refreshSessions],
+  );
+
+  const imageEditingAvailable =
+    imageOptions?.editingEnabled === true && activeId !== null && !streaming;
+  const activeLibraryScope =
+    sessions.find((candidate) => candidate.id === activeId)?.libraryDocumentIds ?? null;
+
   // Resolve a clicked chat citation to a ready audio/video library document and
   // open the player at the cited moment.
   //
@@ -3072,6 +3130,16 @@ export function ChatApp() {
             }));
             if (rightIsCollapsed) toggleRightPanel();
           }}
+          onEditImage={
+            imageEditingAvailable && activeId
+              ? (attachment) =>
+                  setImageEditTarget({
+                    sessionId: activeId,
+                    source: { kind: "generated", id: attachment.id },
+                    label: attachment.prompt?.trim() || "Generated image",
+                  })
+              : undefined
+          }
         />
         <LiveAvatarStage
           avatar={inlineVoice.avatar}
@@ -3235,8 +3303,33 @@ export function ChatApp() {
         />
       )}
       {libraryOpen && libraryEnabled && (
-        <LibraryPanel onClose={closeLibrary} />
+        <LibraryPanel
+          onClose={closeLibrary}
+          onEditImage={
+            imageEditingAvailable && activeId
+              ? (doc) => {
+                  closeLibrary();
+                  setImageEditTarget({
+                    sessionId: activeId,
+                    source: { kind: "library", id: doc.id },
+                    label: doc.filename,
+                  });
+                }
+              : undefined
+          }
+          editImageScope={activeLibraryScope}
+        />
       )}
+      {imageEditTarget && imageOptions?.editingEnabled ? (
+        <ImageEditDialog
+          sessionId={imageEditTarget.sessionId}
+          source={imageEditTarget.source}
+          label={imageEditTarget.label}
+          options={imageOptions}
+          onClose={() => setImageEditTarget(null)}
+          onEdited={handleImageEdited}
+        />
+      ) : null}
       {photoAvatarsOpen && photoAvatarsEnabled && owner.key !== null && (
         // Keyed by owner so an account switch never shows another owner's avatars.
         <PhotoAvatarsPanel key={owner.key} onClose={closePhotoAvatarGallery} />

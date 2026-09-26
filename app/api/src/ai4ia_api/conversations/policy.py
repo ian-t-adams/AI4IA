@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..agents.agent_catalog import AgentSpec
+from ..images.availability import image_editing_available_for_state
 from ..sessions.models import Session
 from ..policy.context import current_binding
 from ..policy.models import PolicyDecision, PolicyError
@@ -64,10 +65,12 @@ async def resolve_conversation_policy(
     )
     removed_set = set(session.toolOverrides.removed)
     settings = getattr(state, "settings", None)
-    # Video asks the shared predicate (flag, store and a routable video model) so
-    # effective tools agree with every other seam that offers generate_video.
+    # Video and image editing ask their shared predicates (flag, store and a
+    # routable model) so effective tools agree with every other seam that
+    # offers generate_video or edit_image.
     media_enabled = {
         "generate_image": getattr(settings, "image_generation_enabled", False),
+        "edit_image": image_editing_available_for_state(state),
         "generate_video": video_generation_available_for_state(state),
     }
     effective = tuple(

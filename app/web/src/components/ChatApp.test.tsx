@@ -46,6 +46,9 @@ const mocks = vi.hoisted(() => ({
   updateSession: vi.fn(),
   setSessionToolConsent: vi.fn(),
   getImageOptions: vi.fn(),
+  fetchImageArtifact: vi.fn(),
+  fetchLibraryImageSource: vi.fn(),
+  editImage: vi.fn(),
   getInspector: vi.fn(),
   listMemories: vi.fn(),
   getMemoryPreference: vi.fn(),
@@ -170,11 +173,13 @@ vi.mock("./MessageList", () => ({
     conversationId,
     onCitation,
     onInspectMemory,
+    onEditImage,
   }: {
     messages: { id: string; content: string }[];
     conversationId?: string | null;
     onCitation?: (target: CitationTarget) => void;
     onInspectMemory?: (memoryId: string | null) => void;
+    onEditImage?: (attachment: { id: string; kind: string; prompt: string | null }) => void;
   }) => (
     <div aria-label="Conversation" data-conversation-id={conversationId ?? "draft"}>
       {messages.map((message) => (
@@ -182,6 +187,14 @@ vi.mock("./MessageList", () => ({
       ))}
       {onInspectMemory ? (
         <button type="button" onClick={() => onInspectMemory("owned")}>Open memory reference</button>
+      ) : null}
+      {onEditImage ? (
+        <button
+          type="button"
+          onClick={() => onEditImage({ id: "e".repeat(32), kind: "image", prompt: "A lighthouse" })}
+        >
+          Edit conversation image
+        </button>
       ) : null}
       {onCitation && [
         { label: "Open shared citation", documentId: "shared-media", filename: "shared.mp4", ms: 42_000 },
@@ -375,6 +388,86 @@ describe("ChatApp landmarks", () => {
         "B",
       ),
     );
+  });
+});
+
+describe("ChatApp image editing", () => {
+  const makeMessage = (id: string, role: "user" | "assistant", content: string) => ({
+    id, sessionId: "A", userId: "u1", role, content, status: "complete" as const,
+    model: null, agent: null, createdAt: "2026-09-23T00:00:00Z", attachments: [],
+  });
+  const EDIT_OPTIONS = {
+    enabled: true, maxSelectedModels: 3, currency: "USD", priceVersion: "test",
+    editingEnabled: true, defaultEditModel: "gpt-image-2.5-sunburst",
+    models: [{
+      id: "gpt-image-2.5-sunburst", displayName: "gpt-image-2.5-sunburst", provider: "openai",
+      // The real API shape: generation's list is narrowed, editing's is not.
+      sizes: ["1024x1024"], qualities: ["auto"], dataZones: [], residencies: ["global"],
+      prices: [], editing: true,
+      editSizes: ["auto", "1024x1024", "1024x1536", "1536x1024"],
+      editQualities: ["auto", "low", "medium", "high"],
+    }],
+  };
+
+  beforeEach(() => {
+    mocks.fetchImageArtifact.mockResolvedValue(new Blob(["png"], { type: "image/png" }));
+    vi.stubGlobal("URL", Object.assign(URL, {
+      createObjectURL: vi.fn(() => "blob:source"),
+      revokeObjectURL: vi.fn(),
+    }));
+  });
+
+  it.each([false, true])(
+    "offers the edit affordance only when the server reports editing (%s)",
+    async (editingEnabled) => {
+      mocks.getImageOptions.mockResolvedValue({ ...EDIT_OPTIONS, editingEnabled });
+      const user = userEvent.setup();
+      render(<ChatApp />);
+      await user.click(await screen.findByRole("button", { name: "Session A" }));
+      await waitFor(() =>
+        expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "A"),
+      );
+      await waitFor(() => expect(mocks.getImageOptions).toHaveBeenCalled());
+      if (editingEnabled) {
+        expect(
+          await screen.findByRole("button", { name: "Edit conversation image" }),
+        ).toBeInTheDocument();
+      } else {
+        expect(screen.queryByRole("button", { name: "Edit conversation image" })).toBeNull();
+      }
+    },
+  );
+
+  it("edits through the dialog and shows the persisted result in the conversation", async () => {
+    mocks.getImageOptions.mockResolvedValue(EDIT_OPTIONS);
+    const created = [
+      makeMessage("edit-user", "user", "Edit image: add a moon"),
+      makeMessage("edit-assistant", "assistant", "Edited the image with gpt-image-2.5-sunburst."),
+    ];
+    mocks.editImage.mockResolvedValue({ messages: created });
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(await screen.findByRole("button", { name: "Edit conversation image" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit image" });
+    await waitFor(() =>
+      expect(within(dialog).getByRole("button", { name: "Close image editor" })).toHaveFocus(),
+    );
+    mocks.listMessages.mockResolvedValue(created);
+    await user.type(within(dialog).getByRole("textbox", { name: "Describe the change" }), "add a moon");
+    await user.click(within(dialog).getByRole("button", { name: "Edit image" }));
+    await waitFor(() => expect(mocks.editImage).toHaveBeenCalledTimes(1));
+    expect(mocks.editImage).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "A",
+      source: { kind: "generated", id: "e".repeat(32) },
+      prompt: "add a moon",
+      model: "gpt-image-2.5-sunburst",
+      size: "auto",
+    }));
+    expect(
+      await screen.findByText("Edited the image with gpt-image-2.5-sunburst."),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit image" })).toBeNull());
   });
 });
 

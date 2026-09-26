@@ -26,13 +26,14 @@ const ACTION_COMMANDS: SlashCommand[] = [
 ];
 
 // Tools runnable directly as a slash command. Calculator/current-time run
-// instantly; research / generate_* / process_document / recall_memory drive the
-// matching capability through a normal turn.
+// instantly; research / generate_* / edit_image / process_document /
+// recall_memory drive the matching capability through a normal turn.
 const TOOL_COMMANDS: SlashCommand[] = [
   { name: "calculator", label: "Calculator", hint: "Evaluate an arithmetic expression" },
   { name: "get_current_time", label: "Current time", hint: "Show the current UTC time" },
   { name: "research", label: "Research", hint: "Search the live web and cite sources" },
   { name: "generate_image", label: "Generate image", hint: "Create an image from a description" },
+  { name: "edit_image", label: "Edit image", hint: "Change the latest image in this conversation" },
   { name: "generate_video", label: "Generate video", hint: "Create a short video from a description" },
   { name: "process_document", label: "Process document", hint: "Analyze a document in your library" },
   { name: "run_workflow", label: "Run workflow", hint: "Run one of your saved safe workflows" },

@@ -36,6 +36,7 @@ export const ATTACHABLE_TOOLS = [
   "calculator",
   "get_current_time",
   "generate_image",
+  "edit_image",
   "generate_video",
   "process_document",
   "recall_memory",

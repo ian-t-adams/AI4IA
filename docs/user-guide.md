@@ -247,6 +247,17 @@ save. **Start image in chat** or **Start comparison in chat** adds
 comparison output stays in selection order and records its model and deployment
 provenance.
 
+When image editing is enabled, choose **Edit** under an image in the
+conversation, or the ✏️ button on one of your own PNG or JPEG library images
+selected for the conversation. Describe the change and keep the recommended
+model (GPT Image 2.5 Sunburst) or pick another editing model. **Whole image**
+edits everything; **Selected region** marks a rectangle to change: drag across
+the preview or set its edges with the sliders. The result arrives as a new image
+in the conversation; the source is never changed. You can also type
+`/edit_image <what to change>` to edit the latest image, or attach the
+`edit_image` tool to an agent. Region edits are unavailable for rotated phone
+photos; edit the whole image instead.
+
 Video generation is asynchronous and slower than a text reply. Supported clip
 lengths are 4, 8, or 12 seconds, with 4 seconds as the default.
 

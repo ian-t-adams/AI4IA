@@ -1216,6 +1216,13 @@ Four rules follow:
    stamp the trusted model header, then let APIM rewrite to the fixed provider
    operation. Do not reuse the Azure OpenAI image route or the retired
    `/v1/video/generations/jobs` contract.
+   Every image row also carries a generated APIM operation allowlist:
+   `images/generations`, plus `images/edits` only when the row declares the strict
+   `imageEditing` Boolean (Azure OpenAI image rows only). Edits are
+   deployment-scoped multipart requests forwarded unparsed; never JSON-parse,
+   rebuild or move them to the v1 `model`-in-body surface. One availability
+   predicate (`images/availability.py`) gates every editing seam, and sources
+   are only the caller's own conversation or owned in-scope library images.
 7. Anthropic deployments additionally require explicit `modelProviderData` and the
    default-off `AI4IA_CLAUDE_ENABLED` gate. Never infer the legal entity, country,
    or industry from tags; `validate-feature-prereqs.py` must fail before provision

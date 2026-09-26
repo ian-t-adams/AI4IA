@@ -29,6 +29,7 @@ export const TOOL_LABELS: Record<string, string> = {
   calculator: "Calculator",
   get_current_time: "Current time",
   generate_image: "Generate image",
+  edit_image: "Edit image",
   generate_video: "Generate video",
   process_document: "Process document",
   run_workflow: "Run workflow",
@@ -54,6 +55,12 @@ export const BUILT_IN_TOOL_HELP: Record<string, ToolHelpCopy> = {
     when: "Use when the user asks for a picture, illustration, diagram, or visual mockup.",
     tradeoffs: "Counts toward usage like any model call, and typically takes longer than a text reply.",
     risk: "safe",
+  },
+  edit_image: {
+    what: "Edits an image already in this conversation, or one of your own library images, and attaches the result as a new image.",
+    when: "Use when the user asks to change, retouch, restyle, or remove something in an existing picture.",
+    tradeoffs: "Counts toward usage like any image request and has no published per-edit price. The source image is never changed.",
+    risk: "external",
   },
   run_workflow: {
     what: "Runs one of your saved workflows and returns its final result to this chat.",

@@ -143,6 +143,12 @@ class ModelEntry(BaseModel):
     # defaults; a recorded list is authoritative for validation and tooling.
     imageSizes: list[str] | None = None
     imageQualities: list[str] | None = None
+    # ``infra/models.json`` ``imageEditing``: this Azure OpenAI image row serves
+    # the deployment-scoped ``images/edits`` operation. ``imageEditingDefault``
+    # marks the single preferred editing model. Both default false and are
+    # omitted from serialization when false, so other rows are unchanged.
+    imageEditing: StrictBool = False
+    imageEditingDefault: StrictBool = False
     # ``reasoning_effort`` values this model accepts, from ``infra/models.json``.
     # ``None`` means "not recorded" and falls back to the family heuristic;
     # an empty list means "recorded, and this model takes no effort value".
@@ -156,7 +162,7 @@ class ModelEntry(BaseModel):
         result = handler(self)
         for key, default in (
             ("deploymentTarget", "source"), ("samplingSupported", None), ("anthropicThinking", None),
-            ("runtimeEnabled", True),
+            ("runtimeEnabled", True), ("imageEditing", False), ("imageEditingDefault", False),
         ):
             if result.get(key) == default:
                 result.pop(key, None)
@@ -165,6 +171,12 @@ class ModelEntry(BaseModel):
     @model_validator(mode="after")
     def external_profile(self) -> ModelEntry:
         self.require_external_profile()
+        if self.imageEditing and (
+            self.category != "image" or self.api != "chat" or self.format != "OpenAI"
+        ):
+            raise ValueError("imageEditing requires an Azure OpenAI image model.")
+        if self.imageEditingDefault and not self.imageEditing:
+            raise ValueError("imageEditingDefault requires imageEditing.")
         return self
 
     def require_external_profile(self) -> None:
@@ -383,6 +395,8 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                 "anthropicThinking": model.get("anthropicThinking"),
                 "toolCalling": model.get("toolCalling"),
                 "inputModalities": model.get("inputModalities", ["text"]),
+                "imageEditing": model.get("imageEditing", False),
+                "imageEditingDefault": model.get("imageEditingDefault", False),
                 "options": options,
             }
         )
