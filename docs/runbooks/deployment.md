@@ -445,6 +445,16 @@ The App Configuration sentinel is owned by the OIDC deployment identity. A local
 for the signed-in human. Use the workflow for greenfield setup or any repair that
 must reconcile the sentinel.
 
+The hook writes the sentinel with a `PUT /kv/Warm:Sentinel` to the store's
+data-plane REST API. Each attempt first mints a Microsoft Entra token with
+`azd auth token` for App Configuration's documented global-cloud audience,
+`https://appconfig.azure.com`. In the workflow that token comes from azd's GitHub
+federated credential, which fetches a fresh OIDC assertion for every token, so the
+gate does not depend on how long `azd provision` ran. The Azure CLI
+(`az account get-access-token`) is only a fallback for local runs where azd has no
+credential. See [§7.17](#717-app-configuration-sentinel-fails-after-a-long-provision-aadsts700024)
+for the failure this replaced.
+
 This local path rebuilds and has no automatic post-deploy rollback. Prefer the
 workflow when the goal is a production release with recorded digest evidence.
 Validate potentially destructive infrastructure changes in an isolated
@@ -1988,6 +1998,58 @@ stored: `store` has been dropped from the request body.
 continuity. Request `include: ["reasoning.encrypted_content"]` and pass the
 encrypted reasoning items forward — that is the stateless-mode equivalent and
 keeps the content in the app's control.
+
+### 7.17 `App Configuration sentinel` fails after a long provision (`AADSTS700024`)
+
+Symptom — **Provision infrastructure** finishes the ARM deployment, then the
+postprovision smoke gate reports:
+
+```text
+[FAIL] App Configuration sentinel - Entra-authenticated set failed within the 900-second budget after 29 attempt(s)
+```
+
+Every other gate passes, and the workflow rolls back to the captured revisions.
+The deploy identity's Microsoft Entra sign-in log shows every token request for
+**Azure App Configuration** failing with
+`AADSTS700024: Client assertion is not within its valid time range`, while
+Azure Resource Manager and Cognitive Services tokens are still issued.
+
+Cause — the gate used to write the key with the Azure CLI (`--auth-mode login`).
+`azure/login` hands the CLI one GitHub OIDC assertion at login, and the CLI keeps
+presenting it whenever it needs a token for a resource it has not cached yet. The
+assertion is short-lived. The model-deployment and Content Understanding gates ask
+`azd auth token` for their ARM and Cognitive Services tokens, so they kept working;
+App Configuration was the only data plane the CLI was asked for. Once a slow
+provision pushed that first request past the assertion's lifetime, every retry
+failed the same way. In the failed release the first request came about
+14.5 minutes after login; the previous release passed after about 5.5 minutes,
+which is why the path looked healthy.
+
+Fix — the gate now mints a token with
+`azd auth token --scope https://appconfig.azure.com/.default` on every attempt and
+sets the key through the data-plane REST API. azd's GitHub federated credential
+fetches a new OIDC assertion for each token, so provisioning time no longer
+matters, and no workflow, identity, role or secret changed. If the gate still
+fails:
+
+1. Read the App Configuration token requests in the sign-in log.
+   - `AADSTS700024` again means the token came from the Azure CLI fallback, so
+     `azd auth token` failed. Confirm the job still runs
+     `azd auth login --federated-credential-provider github` with
+     `id-token: write`.
+   - Issued tokens mean the write itself failed. Confirm the deploy principal
+     still holds **App Configuration Data Owner** on the store, since a new
+     assignment can take up to 15 minutes to propagate, and that `Warm:Sentinel`
+     is not locked.
+2. Rerun the workflow:
+
+   ```powershell
+   gh workflow run deploy.yml -f provision=true --ref main
+   ```
+
+The gate reports only an attempt count on purpose. It never prints the token, the
+`Authorization` header, a response body or exception text, so the sign-in log is
+where the cause shows up.
 
 ## Switching the search index tenancy model
 
