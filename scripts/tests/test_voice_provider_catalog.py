@@ -16,6 +16,7 @@ GEN = REPO_ROOT / "scripts" / "gen-voice-provider-catalog.py"
 SOURCE = REPO_ROOT / "infra" / "voice-providers.json"
 SCHEMA = REPO_ROOT / "infra" / "voice-providers.schema.json"
 POLICY = REPO_ROOT / "infra" / "policies" / "speech-voice-live.xml"
+PHOTO_AVATAR_POLICY = REPO_ROOT / "infra" / "policies" / "photo-avatars.xml"
 
 EXPECTED_MODELS = (
     ("gpt-realtime", "native_audio", "openai", "gpt-4o-transcribe"),
@@ -249,6 +250,115 @@ class VoiceProviderCatalogTests(unittest.TestCase):
             inbound.find("./authentication-managed-identity").attrib["resource"],
             "{{speech-voice-live-mi-audience}}",
         )
+
+    # --- photoAvatars -----------------------------------------------------
+
+    @property
+    def avatars(self) -> dict:
+        return self.raw["photoAvatars"]
+
+    def _mutated_avatars(self, change) -> dict:
+        mutated = copy.deepcopy(self.raw)
+        change(mutated["photoAvatars"])
+        return mutated
+
+    def test_photo_avatar_block_is_projected_unchanged_and_bound_to_models_regions(self) -> None:
+        catalog = self.gen.build_catalog(self.raw)
+        self.assertEqual(catalog["photoAvatars"], self.avatars)
+        models = json.loads((REPO_ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
+        region = models["regions"][self.avatars["homeRegion"]]
+        self.assertEqual(region["dataZone"], self.avatars["homeDataZone"])
+        self.assertEqual(self.avatars["requiredFeature"], "CustomAvatar")
+        self.assertEqual(self.avatars["apiVersion"], "2023-12-01-preview")
+        self.assertEqual(
+            self.avatars["attributes"]["style"], ["Realistic", "DigitalIllustration", "Stylized3D"],
+        )
+        packaged = json.loads(
+            (REPO_ROOT / "app/api/src/ai4ia_api/data/voice_provider_catalog.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(packaged["photoAvatars"], self.avatars)
+
+    def test_schema_and_generator_reject_invalid_photo_avatar_blocks(self) -> None:
+        mutations = {
+            "unknown key": lambda b: b.update({"endpoint": "https://example.invalid"}),
+            "account override": lambda b: b.update({"accountName": "someone-else"}),
+            "api version shape": lambda b: b.update({"apiVersion": "latest"}),
+            "empty feature": lambda b: b.update({"requiredFeature": ""}),
+            "project suffix": lambda b: b.update({"projectSuffix": "_Other"}),
+            "prompt bound zero": lambda b: b.update({"promptMaxChars": 0}),
+            "prompt bound huge": lambda b: b.update({"promptMaxChars": 5000}),
+            "prompt bound float": lambda b: b.update({"promptMaxChars": 10.5}),
+            "duplicate enum": lambda b: b["attributes"]["gender"].append("Male"),
+            "enum token": lambda b: b["attributes"]["age"].append("Young Adult"),
+            "extra attribute": lambda b: b["attributes"].update({"hair": ["Long"]}),
+            "missing attribute": lambda b: b["attributes"].pop("style"),
+            "lookalike host": lambda b: b["preview"].update(
+                {"host": "stttssvcproduse2.blob.core.windows.net.example.com"}
+            ),
+            "non-blob host": lambda b: b["preview"].update({"host": "example.com"}),
+            "oversize preview": lambda b: b["preview"].update({"maxBytes": 64 * 1024 * 1024}),
+            "html preview": lambda b: b["preview"]["contentTypes"].append("text/html"),
+            "missing preview": lambda b: b.pop("preview"),
+        }
+        for label, change in mutations.items():
+            with self.subTest(label=label):
+                mutated = self._mutated_avatars(change)
+                self.assert_schema_rejects(mutated)
+                self.assert_generator_rejects(mutated)
+        missing = copy.deepcopy(self.raw)
+        del missing["photoAvatars"]
+        self.assert_schema_rejects(missing)
+        self.assert_generator_rejects(missing)
+
+    def test_generator_binds_home_region_and_zone_to_the_model_catalog(self) -> None:
+        # Shape-valid values the schema cannot judge: only models.json can.
+        for label, change in {
+            "region outside the catalog": lambda b: b.update({"homeRegion": "westus2"}),
+            "zone mismatch": lambda b: b.update({"homeDataZone": "EU"}),
+        }.items():
+            with self.subTest(label=label):
+                mutated = self._mutated_avatars(change)
+                jsonschema.validate(mutated, self.schema)
+                self.assert_generator_rejects(mutated)
+        # Control: a real catalog region with its own zone is accepted.
+        moved = self._mutated_avatars(
+            lambda b: b.update({"homeRegion": "swedencentral", "homeDataZone": "EU"})
+        )
+        self.gen.build_catalog(moved)
+
+    def test_generated_photo_avatar_policy_is_current_and_catalog_driven(self) -> None:
+        catalog = self.gen.build_catalog(self.raw)
+        rendered = self.gen.render_photo_avatar_policy(catalog)
+        actual = PHOTO_AVATAR_POLICY.read_text(encoding="utf-8")
+        self.assertEqual(actual, rendered)
+        root = ElementTree.fromstring(actual)
+        validation = root.find("./inbound/set-variable").attrib["value"]
+        for name, values in self.avatars["attributes"].items():
+            listed = ", ".join(f'"{value}"' for value in values)
+            self.assertIn(f'item.Name == "{name}" ? new string[] {{ {listed} }}', validation)
+        self.assertIn(f"text.Length > {self.avatars['promptMaxChars']}", validation)
+        templates = {element.attrib["template"] for element in root.iter("rewrite-uri")}
+        self.assertTrue(all(template.endswith("?api-version=2023-12-01-preview") for template in templates))
+        self.assertEqual(
+            root.find("./inbound/set-backend-service").attrib["base-url"],
+            "{{foundry-eastus2-endpoint}}",
+        )
+        # Catalog-driven, not a static file: each catalog value moves the policy.
+        changed = self._mutated_avatars(
+            lambda b: (
+                b["attributes"]["style"].append("Watercolor"),
+                b.update({"promptMaxChars": 900, "apiVersion": "2027-01-01-preview"}),
+                b.update({"homeRegion": "swedencentral", "homeDataZone": "EU"}),
+            )
+        )
+        moved = self.gen.render_photo_avatar_policy(self.gen.build_catalog(changed))
+        self.assertIn("&quot;Watercolor&quot;", moved)
+        self.assertIn("text.Length &gt; 900", moved)
+        self.assertIn("api-version=2027-01-01-preview", moved)
+        self.assertIn("{{foundry-swedencentral-endpoint}}", moved)
+        self.assertNotIn("Watercolor", actual)
 
 
 if __name__ == "__main__":
