@@ -217,13 +217,23 @@ block replay:
     calls or results in history are refused before dispatch.
 - **Runtime.**
   - `toolCalling: false` already refuses tool-using or linked agents, capability
-    slash commands such as `/research`, workflows, automation and published
-    sources.
+    slash commands such as `/research`, workflows and automation.
   - Stage 1 also withholds the injected `load_skill` tool from such models.
-  - A published profile that lists the loader refuses rather than narrowing.
+  - A published chat source settles its reviewed profile before the user
+    message is saved. When the profile has contracts that can't be offered
+    without tools and no declared narrowing applies, the turn refuses with a
+    stable 422 `publication_model_tools_unsupported`. A declared
+    `request_tools_disabled` narrowing still runs and is recorded.
+- **Token-limit stops.** A `max_tokens` stop, including a thinking-only reply,
+  reports the existing incomplete outcome on both transports: fallback text, an
+  incomplete partial receipt and no automatic memory write. Automatic
+  summarization folds only a complete reply with text, and a tool call cut off
+  by the limit is never executed.
 - **History and evidence.** The existing parsers drop `thinking` and
   `redacted_thinking` blocks. Controls prove that non-empty thinking text never
   reaches SSE events, message history, receipts or logs on either transport.
+  The log control attaches capture after the app configures logging and proves
+  capture works with the turn's own request record.
 - **Pricing.** `tokenRatesBySku` has Opus 5.5 rates: Global 4/20 with 0.20
   cache reads, and US Data Zone 4.4/22 with 0.22. Thinking tokens bill as output
   tokens and arrive in `usage.output_tokens`. Cache writes stay cost-unknown,
@@ -237,8 +247,8 @@ existing turn-local continuation channel rather than adding storage:
   AI4IA's effort vocabulary stops at `xhigh`) is a separate reviewed change.
 - **Payload.** Size `max_tokens` from the profile rather than the adapter's
   generic 4,096 default, because thinking counts against it. Chat already sends
-  the profile ceiling by default. A `max_tokens` stop keeps mapping to the
-  incomplete outcome.
+  the profile ceiling by default. Stage 1 reports a `max_tokens` stop as
+  incomplete, so summarization's 1,024-token cap can end in a skipped fold.
 - **Capture.** `anthropic_json_to_chat` and `parse_anthropic_event` keep a
   tool-use response's ordered content blocks as opaque provider continuation
   items.

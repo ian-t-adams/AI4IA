@@ -1087,7 +1087,8 @@ Four rules follow:
 - Skills are discovered only from generated official-catalog entries with
   `resourcesEnabled`; never accept BYO MCP resources as instructions.
   `load_skill` is a tool, so a `toolCalling: false` model never receives it; a
-  published profile that lists it then refuses rather than narrowing silently.
+  published chat source that can't be satisfied without tools refuses with a
+  422 before the user message is saved, rather than narrowing silently.
 - Preserve progressive disclosure: advertise bounded name/description metadata,
   load the full resource only through `load_skill`, and retain URI, version/default
   resolution, content digest, and truncation provenance in execution receipts.

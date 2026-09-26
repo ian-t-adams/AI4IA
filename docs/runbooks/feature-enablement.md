@@ -419,6 +419,12 @@ native `output_config.effort` low/medium/high:
   - Thinking and redacted-thinking blocks are dropped on both transports and
     never reach SSE events, history, receipts or logs.
 
+For every Claude profile, a `max_tokens` stop, including a thinking-only
+adaptive reply, is an incomplete outcome on both transports: fallback text, an
+incomplete partial receipt and no automatic memory write. Automatic
+summarization folds only a complete reply with text, and a tool call cut off by
+the limit is never executed.
+
 Neither profile advertises native vision, xhigh/max or signed-thinking
 continuation. Signed continuation is the recorded tool-capable stage of the
 [adaptive-thinking profile design](../foundry-platform-evaluation.md#adaptive-thinking-profile-design).
@@ -439,8 +445,11 @@ A model with `toolCalling: false` never receives a tool server-side:
   commands such as `/research`, with 422;
 - workflow runs and automation refuse the model;
 - the injected `load_skill` tool is withheld;
-- a published chat profile that lists that loader refuses with
-  `publication_optional_contract_unavailable` rather than narrowing silently.
+- a published chat source settles its reviewed profile before the user message
+  is saved. If contracts can't be offered without tools and no declared
+  narrowing applies, it refuses with a stable 422
+  `publication_model_tools_unsupported` rather than narrowing silently. A
+  declared `request_tools_disabled` narrowing still runs and is recorded.
 
 **Claude Opus 5.5 (evaluated 2026-09-24, live check 2026-09-25).** It is GA in
 Foundry, but thinking cannot be disabled: `thinking: {"type": "disabled"}`
