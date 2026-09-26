@@ -24,7 +24,7 @@
     },
     {
       "path": "CompanionApp/CompanionApp.csproj",
-      "reason": "Drop the embedded resources and content items of the excluded deployment page and chat/vision presets, and reference the Blazor script asset package explicitly so locked restore does not depend on restore layering or SDK patch."
+      "reason": "Drop the embedded resources and content items of the excluded deployment page and chat/vision presets, reference the Blazor script asset package explicitly so locked restore does not depend on restore layering or SDK patch, and keep runtime dependencies current."
     },
     {
       "path": "CompanionApp/Components/Layout/NavMenu.razor",
@@ -403,7 +403,7 @@
       "upstreamCanonicalSha256": "b1a07dc4771bc2aeff6b561fcc215c0a6007b597fcfe47190fffef70b2bd277a"
     },
     "CompanionApp/CompanionApp.csproj": {
-      "localCanonicalSha256": "25405973424bc456f561ab276e5fdfeff295b47bd86dfc6d626903fc35e3d3af",
+      "localCanonicalSha256": "b83ae8c9ef3c36376ccf01d4df4dbeed1d53b8765cb8c3c8c23fe2b735658b41",
       "upstreamRawSha256": "5ab7d47c9825fe112bbcc486724c5d8ef49a87e548f8e4caf20e233832b49c15",
       "upstreamCanonicalSha256": "5ab7d47c9825fe112bbcc486724c5d8ef49a87e548f8e4caf20e233832b49c15",
       "disposition": "ai4ia-patched"
@@ -1345,7 +1345,7 @@
       "upstreamCanonicalSha256": "f5874823b8278f77acb55627c7f14c433b4e75cd6bdfac767b0b891d6b3af3fd"
     },
     "CompanionApp/packages.lock.json": {
-      "localCanonicalSha256": "174480815d5d34513ff7810c18195d88e402e62014abc8e2d032f7307ac4ea28",
+      "localCanonicalSha256": "201fc03126af889778ffa65c2423d349920d7c518736ca6cb6a6004b80e8b80a",
       "disposition": "ai4ia-added"
     },
     "CompanionApp/readme.md": {
@@ -2643,7 +2643,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/SimpleL7Proxy.csproj": {
-      "localCanonicalSha256": "56b310b1103fd9e1c78fa8942efb9d00bbdc6f3b9e28c6454c03dfbcac8c2962",
+      "localCanonicalSha256": "9640f2ac18f76cb720efd770d14d267d67865719f3db394807ef8a5f126b3870",
       "upstreamRawSha256": "7c636c17cd56878968f04b86b95a855771a2555ebc446b7f1556ddd5ca23c19d",
       "upstreamCanonicalSha256": "7c636c17cd56878968f04b86b95a855771a2555ebc446b7f1556ddd5ca23c19d",
       "disposition": "ai4ia-patched"
@@ -2721,7 +2721,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/packages.lock.json": {
-      "localCanonicalSha256": "42d996fc379dcbc191c300022c747e775713340ce025e4eb4b7f0d7497eb1dff",
+      "localCanonicalSha256": "5807651419fad274c699988bf9ed290abe8ff52e03ebee7023072e2416e8a4fb",
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/sample-deployment.yaml": {

@@ -105,8 +105,9 @@ AI4IA_PATCH_REASONS = {
     ),
     "CompanionApp/CompanionApp.csproj": (
         "Drop the embedded resources and content items of the excluded deployment "
-        "page and chat/vision presets, and reference the Blazor script asset package "
-        "explicitly so locked restore does not depend on restore layering or SDK patch."
+        "page and chat/vision presets, reference the Blazor script asset package "
+        "explicitly so locked restore does not depend on restore layering or SDK patch, "
+        "and keep runtime dependencies current."
     ),
     "CompanionApp/Program.cs": (
         "Hosted mode: a first-in-pipeline admin gate over the platform principal with a "
