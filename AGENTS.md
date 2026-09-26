@@ -1530,9 +1530,11 @@ Deployment-profile lookup keeps disabled metadata for fail-closed adaptation;
 both Claude HTTP and SSE construction refuse a runtime-disabled profile before
 egress, rather than dropping it and restoring provider defaults.
 
-This is source preparation only: no live success claim, flag/default cutover,
-allocation approval or physical legacy removal. Full provision applies the
-desired model changes, so keep the migration on HOLD until explicitly approved.
+The owner approved phase 1 for merge on 2026-09-26. A merge to main runs
+deploy.yml's `azd provision`, which creates the three GA-only deployments; it is
+still no live success claim, protocol/default cutover or physical legacy removal.
+Keep `AI4IA_REALTIME_PROTOCOL=preview` until a separately approved GA cutover:
+under preview the additions stay unlisted and refused.
 The strict desired-inventory check stays intact through coexistence; phase 2
 requires separately approved exact-resource and desired-row removal after live
 acceptance. The separate opt-in `scripts/speech-canary.py` checks bounded PCM/WAV

@@ -807,9 +807,12 @@ documents the exact wire boundary and prerequisites.
 
 ### GA voice model migration
 
-**LIVE-MIGRATION HOLD.** This is phase-1 source preparation for
-[#413](https://github.com/ian-t-adams/AI4IA/issues/413), not model/capacity approval,
-a live realtime canary result, a cutover, or completed cleanup. The TTS upgrade
+**Phase 1 approved for merge (owner, 2026-09-26).** This is phase-1 source for
+[#413](https://github.com/ian-t-adams/AI4IA/issues/413). Merging it to main
+provisions the three GA-only deployments below through deploy.yml's
+`azd provision`. It is not a live realtime canary result, a GA protocol cutover,
+or completed cleanup: keep `AI4IA_REALTIME_PROTOCOL=preview` until a separately
+approved cutover, so preview users see no new model. The TTS upgrade
 already shipped in #492; this candidate preserves it rather than scheduling it
 again. It also preserves the retired-model removals and default-off external
 Claude integration from current main.
@@ -849,7 +852,16 @@ GlobalStandard and DataZoneStandard; mini offers GlobalStandard only. Each
 GlobalStandard counter reads 0/10 in both regions. Equal counters do not prove
 independent quota pools or permit duplicate regional allocations; this source
 chooses only the approved eastus2 portable baseline, not a maximum or Data Zone.
-Fresh offering/allocation checks remain required before any provisioning.
+
+**Fresh provisioning evidence, 2026-09-26 at 16:31 UTC (read-only):** the eastus2
+subscription model list offers all three additions at their catalog versions as
+GenerallyAvailable GlobalStandard models. Their deprecation dates are
+`2027-08-24T00:00:00Z` for 1.5 and `2027-07-31T00:00:00Z` for 2.1 and 2.1-mini.
+Each `OpenAI.GlobalStandard.<model>` counter reads 0/10 in eastus2 and
+swedencentral. Whether a counter is regional or subscription-wide, each single
+10-unit deployment fits and leaves zero headroom. The preprovision preflight,
+`scripts/check-model-availability.py` with the maximum capacity profile,
+reported no blocking problem in any catalog region.
 
 Those lists offer RT2 only as `2026-05-06`, with the October 31 inference date:
 there is **no in-place newer RT2 version**. `gpt-realtime-2.1` is the verified
