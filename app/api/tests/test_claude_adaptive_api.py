@@ -454,3 +454,35 @@ def test_published_skill_profile_narrows_for_a_declared_request_tool_denial(publ
     assert [message["role"] for message in persisted] == ["user", "assistant"]
     evidence = response.json()["message"]["executionReceipt"]["runtime"]["publication"]
     assert evidence["narrowing"] == ["request_tools_disabled"]
+
+
+def test_published_webiq_profile_refuses_early_only_where_no_tool_can_be_offered(published_claude):
+    from ai4ia_api.websearch.factory import build_web_search_service
+    from tests.test_chat_websearch_api import FakeWebClient
+
+    client, headers, provider = published_claude
+    state = client.app.state
+    state.web_search = build_web_search_service(
+        make_settings(web_search_enabled=True), entitlements=state.entitlements,
+        metering=state.usage, client=FakeWebClient(),
+    )
+    tool_model = next(
+        entry.id for entry in state.catalog.models
+        if entry.supportsTools and entry.api == "chat" and not entry.reasoningEffortOptions
+    )
+    # Web IQ tools are optional contracts of every chat profile while web search
+    # is on, so the same early refusal covers them on a model without tools.
+    handle = _publish(
+        client, headers, "shared-search", tools=[], skill_mode="excluded",
+        model_ids=(tool_model, NON_TOOL_SOURCE),
+    )
+    results = _consume(client, headers, provider, handle, models=(NON_TOOL_SOURCE, tool_model))
+    refused, _, persisted, dispatched = results[NON_TOOL_SOURCE]
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["code"] == "publication_model_tools_unsupported"
+    assert (persisted, dispatched) == ([], 0)
+    # Control: a tool-capable model offers the reviewed Web IQ contracts and runs.
+    allowed, _, persisted, dispatched = results[tool_model]
+    assert allowed.status_code == 200, allowed.text
+    assert [message["role"] for message in persisted] == ["user", "assistant"]
+    assert dispatched >= 1
