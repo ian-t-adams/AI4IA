@@ -8,10 +8,13 @@ itself is never stored, logged or returned, and every check below runs before
 any byte is kept:
 
 * HTTPS only, no userinfo, the default port, and the catalog's exact provider
-  storage host (a lookalike or subdomain is refused before DNS);
+  storage host (a lookalike or subdomain is refused before DNS; a host the
+  catalog does not name blocks the copy without failing the avatar, so a
+  reviewed catalog fix recovers it);
 * every DNS answer must be public, and the connection is pinned to the checked
   address so a rebind cannot redirect it (the SSRF helpers the MCP connector
-  uses);
+  uses); a lookup that fails or times out is transient, a non-public answer is
+  permanent;
 * no redirects, a streamed byte cap, an allowed content type, and a real PNG
   whose IHDR dimensions fit the catalog bound.
 
@@ -29,7 +32,7 @@ from dataclasses import dataclass
 import httpx
 
 from ..agents.mcp_client import _PinnedHttpsTransport
-from ..agents.ssrf import DnsCapacityError, SsrfError, async_resolve_pinned_ip
+from ..agents.ssrf import DnsCapacityError, DnsLookupError, SsrfError, async_resolve_pinned_ip
 from ..config import Settings
 from ..library.blob_store import AzureBlobStore, BlobNotFoundError, BlobStore, InMemoryBlobStore
 from ..logging_setup import emit_security_block
@@ -41,10 +44,12 @@ logger = logging.getLogger(__name__)
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 PREVIEW_CONTENT_TYPE = "image/png"
 FETCH_TIMEOUT_SECONDS = 20.0
+DNS_TIMEOUT_SECONDS = 5.0
 AVATARS_DIR = "avatars"
 
 __all__ = [
     "BlobNotFoundError",
+    "PreviewBlocked",
     "PreviewImage",
     "PreviewRejected",
     "PreviewUnavailable",
@@ -57,6 +62,19 @@ __all__ = [
 
 class PreviewRejected(Exception):
     """The provider's preview failed a permanent check; it will not be stored."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class PreviewBlocked(Exception):
+    """A well-formed link on a host the catalog does not name; nothing is fetched.
+
+    Not terminal: the catalog host may be the stale part. Each status read gets
+    a fresh link from the provider, so a reviewed catalog change recovers the
+    avatar without re-creating it.
+    """
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
@@ -98,12 +116,15 @@ def _checked_url(link: PreviewLink, catalog: PhotoAvatarPreviewCatalog) -> httpx
         url.scheme != "https"
         or url.userinfo
         or url.port not in (None, 443)
-        or url.host.lower() != catalog.host
         or not url.path.strip("/")
         or url.fragment
     ):
         emit_security_block("photo_avatar_preview", "host_rejected", "preview_fetch")
         raise PreviewRejected("host_not_allowed")
+    if url.host.lower() != catalog.host:
+        # Refused before DNS, like every shape check; only the verdict differs.
+        emit_security_block("photo_avatar_preview", "host_not_in_catalog", "preview_fetch")
+        raise PreviewBlocked("host_not_in_catalog")
     return url
 
 
@@ -124,10 +145,14 @@ async def fetch_preview(
     """
     url = _checked_url(link, catalog)
     try:
-        pinned = await async_resolve_pinned_ip(url.host, resolver=resolver, timeout_s=5.0)
+        pinned = await async_resolve_pinned_ip(url.host, resolver=resolver, timeout_s=DNS_TIMEOUT_SECONDS)
     except DnsCapacityError:
         raise PreviewUnavailable("dns_capacity") from None
+    except DnsLookupError:
+        # A timeout or resolver error says nothing about the host; retry later.
+        raise PreviewUnavailable("dns_lookup") from None
     except SsrfError:
+        # The name resolved, and an answer was not a public address.
         raise PreviewRejected("host_not_public") from None
     transport = _PinnedHttpsTransport(
         pinned, inner=inner_transport or httpx.AsyncHTTPTransport(retries=0, trust_env=False),

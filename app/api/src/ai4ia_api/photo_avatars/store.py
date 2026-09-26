@@ -98,6 +98,9 @@ class PhotoAvatarRecord(_Persisted):
     dispatchedAt: datetime | None = None
     readyAt: datetime | None = None
     lastReconciledAt: datetime | None = None
+    # Set while the provider's preview link names a host the catalog does not;
+    # the avatar stays non-terminal and is re-checked at the slow poll rate.
+    previewBlockedAt: datetime | None = None
     deleteRequestedAt: datetime | None = None
     reportedAt: datetime | None = None
     # Set when a live session reported that the avatar failed verification.

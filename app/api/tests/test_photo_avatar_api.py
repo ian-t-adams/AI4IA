@@ -9,8 +9,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+import socket
 import struct
 import zlib
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -30,6 +32,7 @@ from ai4ia_api.photo_avatars.preview import PhotoAvatarArtifactStore, fetch_prev
 from ai4ia_api.photo_avatars.provider import PhotoAvatarGateway
 from ai4ia_api.photo_avatars.service import CONFIRM_GRACE, PhotoAvatarService
 from ai4ia_api.photo_avatars.store import LEDGER_ID, PhotoAvatarStore
+from ai4ia_api.policy.models import PolicyDecision, PolicyError
 from ai4ia_api.publishing.store import InMemoryRecordStore
 from ai4ia_api.usage.models import PHOTO_AVATAR_PROVIDER
 from ai4ia_api.usage.pricing import PricingBook
@@ -41,6 +44,7 @@ HOST = CATALOG.preview.host
 TOKEN = "-".join(("synthetic", "sas", "signature", "fixture"))
 T0 = datetime(2026, 9, 26, 12, tzinfo=timezone.utc)
 NOT_FOUND = {"error": {"code": "NotFound", "message": "Synthetic avatar not found."}}
+APIM_NOT_FOUND = {"statusCode": 404, "message": "Resource not found"}
 BODY = {
     "displayName": "Friendly host",
     "prompt": "A friendly virtual host, head and shoulders, plain background.",
@@ -84,6 +88,8 @@ class Provider:
         self.accept_despite_reply = False
         self.delete_status: int | None = None
         self.preview_host = HOST
+        # How this fake answers a missing avatar; APIM's own 404 has another shape.
+        self.missing_body: object = NOT_FOUND
         self.requests: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -116,7 +122,7 @@ class Provider:
         if request.method == "GET":
             avatar = self.avatars.get(avatar_id)
             if avatar is None:
-                return httpx.Response(404, json=NOT_FOUND)
+                return httpx.Response(404, json=self.missing_body)
             payload = {"id": avatar_id, "state": avatar["state"], **avatar["body"]}
             if avatar["state"] == "Succeeded":
                 payload["promptImageUri"] = (
@@ -126,7 +132,12 @@ class Provider:
         assert request.method == "DELETE"
         if self.delete_status is not None:
             return httpx.Response(self.delete_status)
-        return httpx.Response(204) if self.avatars.pop(avatar_id, None) else httpx.Response(404, json=NOT_FOUND)
+        if self.avatars.pop(avatar_id, None):
+            return httpx.Response(204)
+        return httpx.Response(404, json=self.missing_body)
+
+    def reads(self) -> list[httpx.Request]:
+        return [r for r in self.requests if r.method == "GET" and "/photoavatars/" in r.url.path]
 
     def creates(self) -> list[httpx.Request]:
         return [r for r in self.requests if r.method == "PUT" and "/photoavatars/" in r.url.path]
@@ -158,6 +169,8 @@ class Harness:
         self.client.__enter__()
         self.provider, self.blob, self.clock = Provider(), Blob(), Clock()
         self.records, self.previews = InMemoryRecordStore(), InMemoryBlobStore()
+        # The resolver the preview fetch uses; tests swap it to fail lookups.
+        self.resolve: Callable[[str], list[str]] = lambda host: ["20.60.1.10"]
         config = self.app.state.settings
         gateway = PhotoAvatarGateway(config, http_client=httpx.AsyncClient(
             transport=httpx.MockTransport(self.provider), follow_redirects=False,
@@ -165,7 +178,7 @@ class Harness:
 
         async def fetcher(link, preview):
             return await fetch_preview(
-                link, preview, resolver=lambda host: ["20.60.1.10"], inner_transport=self.blob,
+                link, preview, resolver=lambda host: self.resolve(host), inner_transport=self.blob,
             )
 
         self.service = PhotoAvatarService(
@@ -496,20 +509,179 @@ def test_a_provider_404_on_delete_counts_as_gone(h):
     assert h.call("GET", f"/{avatar['id']}").status_code == 404
 
 
-def test_a_lookalike_preview_host_is_rejected_and_nothing_is_stored(h):
+def _stored(h, avatar_id: str) -> dict:
+    return next(s.body for k, s in h.records.items.items() if k[1] == avatar_id)
+
+
+def test_a_preview_host_outside_the_catalog_blocks_without_failing_and_recovers(h):
     avatar = h.create().json()
     h.provider.preview_host = f"{HOST}.attacker.example"
     h.provider.finish()
     view = h.poll(avatar["id"])
-    assert view["status"] == "failed" and view["failure"]["code"] == "preview_rejected"
+    # A paid, provider-accepted avatar is not failed over a link it was never
+    # given a chance to fetch: an operator can correct the catalog host.
+    assert view["status"] == "generating" and view["failure"] is None
     assert h.blob.requests == [] and h.previews._data == {}
     assert TOKEN not in h.stored_bodies()
-    # Control: the exact host is fetched and stored for a second avatar.
-    second = h.create().json()
+    assert _stored(h, avatar["id"])["previewBlockedAt"] is not None
+    # A blocked record drops to the slow poll: no read five seconds later ...
+    reads = len(h.provider.reads())
+    assert h.poll(avatar["id"], seconds=5)["status"] == "generating"
+    assert len(h.provider.reads()) == reads
+    # ... and one read after the slow interval, still blocked.
+    assert h.poll(avatar["id"], seconds=30)["status"] == "generating"
+    assert len(h.provider.reads()) == reads + 1 and h.blob.requests == []
+    # Control: once the link names the catalog host, the same avatar recovers.
     h.provider.preview_host = HOST
+    ready = h.poll(avatar["id"], seconds=30)
+    assert ready["status"] == "ready" and len(h.blob.requests) == 1
+    assert _stored(h, avatar["id"])["previewBlockedAt"] is None
+
+
+def test_a_preview_that_is_not_an_image_still_fails_permanently(h):
+    avatar = h.create().json()
+    h.blob.body = b"<html>not an image</html>"
+    h.provider.finish()
+    view = h.poll(avatar["id"])
+    assert view["status"] == "failed" and view["failure"]["code"] == "preview_rejected"
+    assert h.previews._data == {}
+    # Control: a real image for a second avatar is stored.
+    second = h.create().json()
+    h.blob.body = png()
     h.provider.finish()
     assert h.poll(second["id"])["status"] == "ready"
 
+
+def test_a_failed_lookup_is_retried_while_a_private_answer_fails(h):
+    def unreachable(host: str) -> list[str]:
+        raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+
+    avatar = h.create().json()
+    h.provider.finish()
+    h.resolve = unreachable
+    assert h.poll(avatar["id"])["status"] == "generating"
+    assert h.blob.requests == [] and h.previews._data == {}
+    h.resolve = lambda host: ["20.60.1.10"]
+    assert h.poll(avatar["id"])["status"] == "ready"
+    # Control: an answer that is not public is a permanent refusal.
+    second = h.create().json()
+    h.provider.finish()
+    h.resolve = lambda host: ["10.0.0.5"]
+    view = h.poll(second["id"])
+    assert view["status"] == "failed" and view["failure"]["code"] == "preview_rejected"
+    assert len(h.blob.requests) == 1
+
+
+def _apim_missing_api(h) -> None:
+    """APIM answers every call with its own 404, as for a missing or removed API."""
+    h.provider.avatars.clear()
+    h.provider.missing_body = APIM_NOT_FOUND
+
+
+def test_an_apim_404_on_delete_is_not_proof_the_avatar_is_gone(h):
+    avatar = h.create().json()
+    h.provider.finish()
+    assert h.poll(avatar["id"])["status"] == "ready"
+    key = f"{owner('alice')}/avatars/{avatar['id']}.png"
+    _apim_missing_api(h)
+    failed = h.call("DELETE", f"/{avatar['id']}")
+    assert failed.status_code == 502 and failed.json()["code"] == "provider_delete_failed"
+    assert h.poll(avatar["id"])["status"] == "deleting" and key in h.previews._data
+    # Control: the provider's own NotFound does prove it gone.
+    h.provider.missing_body = NOT_FOUND
+    assert h.call("DELETE", f"/{avatar['id']}").status_code == 204
+    assert key not in h.previews._data
+    assert h.call("GET", f"/{avatar['id']}").status_code == 404
+
+
+def test_an_apim_404_on_a_status_read_never_fails_or_abandons_an_avatar(h):
+    pending = h.create().json()
+    h.provider.create_reply = httpx.Response(503)  # lost: never landed
+    confirming = h.create().json()
+    h.provider.create_reply = None
+    assert (pending["status"], confirming["status"]) == ("generating", "confirming")
+    _apim_missing_api(h)
+    h.clock.advance(CONFIRM_GRACE.total_seconds())
+    assert h.poll(pending["id"])["status"] == "generating"
+    assert h.poll(confirming["id"])["status"] == "confirming"
+    # Control: the same reads, answered in the provider's own shape.
+    h.provider.missing_body = NOT_FOUND
+    missing = h.poll(pending["id"])
+    assert missing["status"] == "failed" and missing["failure"]["code"] == "provider_missing"
+    never = h.poll(confirming["id"])
+    assert never["status"] == "failed" and never["failure"]["code"] == "not_created"
+
+
+def test_after_a_home_change_no_provider_answer_can_end_or_delete_an_avatar(h):
+    ready = h.create().json()
+    h.provider.finish()
+    assert h.poll(ready["id"])["usable"] is True
+    pending = h.create().json()
+    key = f"{owner('alice')}/avatars/{ready['id']}.png"
+    # The new home's provider has never heard of these ids: its NotFound is
+    # well formed, and still says nothing about the previous account.
+    h.service._catalog = CATALOG.model_copy(update={"homeRegion": "swedencentral", "homeDataZone": "EU"})
+    h.provider.avatars.clear()
+    reads = len(h.provider.reads())
+    assert h.poll(pending["id"])["status"] == "generating"
+    moved = h.poll(ready["id"])
+    assert moved["status"] == "ready" and moved["usable"] is False
+    assert [item["usable"] for item in h.call("GET").json()["avatars"]] == [False, False]
+    assert len(h.provider.reads()) == reads
+    refused = h.call("DELETE", f"/{ready['id']}")
+    assert refused.status_code == 409 and refused.json()["code"] == "avatar_home_changed"
+    assert h.provider.deletes() == [] and key in h.previews._data
+    # Control: the home the records were created in reads and deletes them.
+    h.service._catalog = CATALOG
+    missing = h.poll(pending["id"])
+    assert missing["status"] == "failed" and missing["failure"]["code"] == "provider_missing"
+    assert h.poll(ready["id"])["usable"] is True
+    assert h.call("DELETE", f"/{ready['id']}").status_code == 204
+    assert len(h.provider.deletes()) == 1 and key not in h.previews._data
+
+
+@pytest.mark.parametrize("race", ["none", "removed", "deleting"])
+def test_a_delete_that_wins_the_race_leaves_no_orphan_preview(h, monkeypatch, race):
+    avatar = h.create().json()
+    h.provider.finish()
+    key = f"{owner('alice')}/avatars/{avatar['id']}.png"
+    store = h.service._artifacts.put
+
+    async def put_then_lose(owner_id, record_id, data):
+        await store(owner_id, record_id, data)
+        if race == "removed":
+            await h.service._store.remove(owner_id, record_id)
+        elif race == "deleting":
+            await h.service._apply(owner_id, record_id, {"status": "deleting"})
+
+    monkeypatch.setattr(h.service._artifacts, "put", put_then_lose)
+    h.poll(avatar["id"])
+    assert len(h.blob.requests) == 1  # the copy really ran and stored first
+    if race == "none":
+        # Control: an undisturbed copy stores the preview and the record is ready.
+        assert key in h.previews._data and _stored(h, avatar["id"])["status"] == "ready"
+    else:
+        assert key not in h.previews._data
+
+
+def test_deleting_a_missing_record_removes_its_leftover_preview(h, monkeypatch):
+    record_id = "1" * 32
+    key = f"{owner('alice')}/avatars/{record_id}.png"
+    h.previews._data[key] = png()
+    # Control: the cleanup is owner scoped; another user's delete leaves it.
+    assert h.call("DELETE", f"/{record_id}", user="bob").status_code == 204
+    assert key in h.previews._data
+    remove = h.service._artifacts.delete
+
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError("blob service unavailable")
+
+    monkeypatch.setattr(h.service._artifacts, "delete", unavailable)
+    failed = h.call("DELETE", f"/{record_id}")
+    assert failed.status_code == 503 and failed.json()["code"] == "delete_incomplete"
+    monkeypatch.setattr(h.service._artifacts, "delete", remove)
+    assert h.call("DELETE", f"/{record_id}").status_code == 204
+    assert key not in h.previews._data and h.provider.deletes() == []
 
 def test_reports_are_stored_capped_and_leave_the_avatar_intact(h, monkeypatch):
     monkeypatch.setattr(service_module, "MAX_REPORTS_PER_DAY", 2)
@@ -537,6 +709,82 @@ def test_a_refusal_before_sending_releases_the_reservation(h, monkeypatch):
     ledger = next(s.body for k, s in h.records.items.items() if k[1] == LEDGER_ID)
     assert ledger["active"] == [] and ledger["creations"] == []
     assert h.usage_rows() == []
+
+
+@pytest.mark.parametrize("raised, status, code", [
+    (QuotaError("Hard quota requestsPerMinute would be exceeded.", code=429), 429, "hard_quota_refused"),
+    (PolicyError(PolicyDecision("deny", "policy_denied")), 403, "policy_denied"),
+    (RuntimeError("an unexpected fault after the request may have left"), 202, None),
+])
+def test_only_an_admission_refusal_releases_a_create_reservation(h, monkeypatch, raised, status, code):
+    async def create_avatar(*args, **kwargs):
+        raise raised
+
+    monkeypatch.setattr(h.service._gateway, "create_avatar", create_avatar)
+    response = h.create()
+    assert response.status_code == status, response.text
+    ledger = next(s.body for k, s in h.records.items.items() if k[1] == LEDGER_ID)
+    if code is not None:
+        # Admission refused before sending: nothing exists, nothing is spent.
+        assert response.json()["code"] == code
+        assert ledger["active"] == [] and ledger["creations"] == []
+        assert h.usage_rows() == []
+        return
+    # Anything else may have followed a sent create: keep the slot and the
+    # daily creation, and record the charge as unknown rather than free.
+    avatar = response.json()
+    assert avatar["status"] == "confirming"
+    assert ledger["active"] == [avatar["id"]] and len(ledger["creations"]) == 1
+    (row,) = h.usage_rows()
+    assert row.costKnown is False and row.providerCompleted is False
+
+
+def test_an_unreadable_accepted_reply_is_still_a_known_charge(h):
+    deep = b"[" * 200_000 + b"]" * 200_000
+    with pytest.raises(RecursionError):
+        json.loads(deep)  # the reply really does defeat the parser
+    h.provider.create_reply = httpx.Response(201, content=deep)
+    h.provider.accept_despite_reply = True
+    created = h.create()
+    assert created.status_code == 202
+    assert created.json()["status"] == "generating"  # accepted by its status alone
+    (row,) = h.usage_rows()
+    assert row.costKnown is True and row.estCostMicroUsd == 2_000_000 and row.providerCompleted is True
+    ledger = next(s.body for k, s in h.records.items.items() if k[1] == LEDGER_ID)
+    assert ledger["active"] == [created.json()["id"]]
+    h.provider.create_reply = None
+    h.provider.finish()
+    assert h.poll(created.json()["id"])["status"] == "ready"
+    assert len(h.provider.creates()) == 1
+
+
+def test_a_zones_restriction_makes_creation_unavailable_but_leaves_use():
+    allowed = {"version": 1, "domains": {"avatars": {"default": {"allow": ["create", "use"]}}}}
+    zoned = {"version": 1, "domains": {**allowed["domains"], "zones": {"default": {"allow": ["global"]}}}}
+    harness = Harness(group_policy_enabled=True, group_policy_json=json.dumps(allowed))
+    try:
+        # Control: without a zones restriction, creation is advertised and admitted.
+        assert harness.call("GET", "/config").json()["canCreate"] is True
+        avatar = harness.create().json()
+        harness.provider.finish()
+        assert harness.poll(avatar["id"])["status"] == "ready"
+        harness.app.state.settings.group_policy_json = json.dumps(zoned)
+        config = harness.call("GET", "/config").json()
+        assert (config["available"], config["reason"], config["canCreate"]) == (
+            False, "policy_unavailable", False,
+        )
+        refused = harness.create()
+        assert refused.status_code == 503
+        assert (refused.json()["code"], refused.json()["reason"]) == (
+            "photo_avatars_unavailable", "policy_unavailable",
+        )
+        assert len(harness.provider.creates()) == 1
+        assert [item["id"] for item in harness.call("GET").json()["avatars"]] == [avatar["id"]]
+        # Using an existing avatar is not model processing scope: it stays usable.
+        assert harness.call("GET", f"/{avatar['id']}/preview").status_code == 200
+        assert harness.poll(avatar["id"])["usable"] is True
+    finally:
+        harness.close()
 
 
 @pytest.mark.parametrize("allowed", [True, False])

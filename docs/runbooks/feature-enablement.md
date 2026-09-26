@@ -1293,9 +1293,14 @@ the outcome:
    Services User role can read and create the avatar project and create, read and
    delete avatars. A 403 on any of those stops enablement; a scoped Speech role on
    the home account is a separate owner approval.
-3. If the preview fails with `preview_rejected`, the provider issued the link from
-   a host other than the catalog's `preview.host`. Confirm the new host with a
-   read-only observation, and change the catalog through review.
+3. If a `Succeeded` avatar stays `generating` and the API logs
+   `photo avatar preview blocked code=host_not_in_catalog`, the provider issued the
+   link from a host other than the catalog's `preview.host`. Nothing was fetched and
+   the avatar is not failed: confirm the new host with a read-only observation, and
+   change the catalog through review; the next status read then stores the preview.
+   `preview_rejected` means the link itself failed a check (shape, a non-public
+   address, a redirect, or content that is not a PNG within bounds); stop and
+   investigate.
 4. Delete the avatar, and confirm the record, the Blob preview and the provider
    avatar are all gone.
 5. Confirm the usage ledger holds one known $2 estimate for the create.
@@ -1307,14 +1312,46 @@ provider later rejects it or the avatar is deleted. Creation refuses under any
 cost cap if the price is missing. Hard admission covers avatar creation as a
 request-only surface; token and dollar caps refuse it.
 
-**Degradation and rollback.** If the capability disappears, creation refuses and
-existing avatars stay visible and deletable, with `usable: false`. Nothing is
-deleted automatically. To roll back, delete any avatars that should not be kept,
-then set `photoAvatarsEnabled=false`. The API is removed, but the Cosmos and Blob
-containers keep their data until an operator removes them. No user-data deletion
-or offboarding path exists yet; until one does, remove a departing user's avatars
-through the API or by an operator delete of the provider avatar, the preview and
-the records in that user's partition.
+**Changing the home account.** Each avatar exists only in the account that
+created it, and each record keeps that home region. After the catalog's
+`homeRegion` changes, APIM routes to the new account, whose answers say nothing
+about older avatars. So the API never reads, reconciles or re-verifies those
+records, never marks them failed, reports them `usable: false`, and refuses to
+delete them with 409 `avatar_home_changed`. Delete every avatar before the change
+if you can. Otherwise, removing each one is an operator data change: delete the
+provider avatar in the previous home account, then its preview Blob and its record
+and ledger entry in the owner's partition, and record the change.
+
+**Degradation and rollback.**
+
+1. If the capability disappears, creation refuses and existing avatars stay
+   visible and deletable, with `usable: false`. Nothing is deleted automatically.
+2. To stop the feature, first delete any avatars that should not be kept, while
+   deletion still works. Then set `photoAvatarsEnabled=false`. The next provision
+   removes the API's photo avatar settings, the proxy's `Host-photoavatars` host
+   and its `proxy-apim-photo-avatars-key` secret, so nothing in the app can reach
+   the avatar API or hold its key.
+3. ARM Incremental mode does **not** delete what an earlier provision created:
+   the `ai4ia-photo-avatars-v1` API with its six operations and policy, the
+   `photo-avatar-project` named value, and the API-scoped
+   `<workload>-proxy-photo-avatars` subscription, which stays active with the same
+   keys. The `photoAvatars` Cosmos container, the `avatars` Blob container and
+   their data remain, and so does every provider avatar in the home account. The
+   retained API still requires that subscription's key, which the app no longer
+   holds; the retained objects are nevertheless dormant privilege and inventory.
+   No automatic teardown occurs.
+4. Full deactivation is a separate destructive change: refresh the live
+   inventory, suspend or revoke the `<workload>-proxy-photo-avatars` subscription
+   first, then target only the photo avatar API with its operations and policy,
+   and the `photo-avatar-project` named value. Review a targeted what-if with no
+   unplanned deletes, and obtain explicit approval before applying it. Never use
+   complete deployment mode on the shared resource group or APIM. Removing the
+   Cosmos or Blob container deletes user data: that is a separate data-deletion
+   decision.
+
+No user-data deletion or offboarding path exists yet; until one does, remove a
+departing user's avatars through the API or by an operator delete of the provider
+avatar, the preview and the records in that user's partition.
 
 ### Custom MCP tools
 

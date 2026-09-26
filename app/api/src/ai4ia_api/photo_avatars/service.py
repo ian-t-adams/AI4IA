@@ -33,6 +33,7 @@ from typing import Any
 from ..auth.base import AuthenticatedUser
 from ..config import Settings
 from ..entitlements.service import EntitlementService
+from ..hard_quota.models import QuotaError
 from ..logging_setup import emit_custom_event, get_correlation_id
 from ..policy.context import current_binding, require_bound_policy, require_policy
 from ..policy.models import PolicyError, PolicyRequest
@@ -75,6 +76,7 @@ from .models import (
 from .preview import (
     BlobNotFoundError,
     PhotoAvatarArtifactStore,
+    PreviewBlocked,
     PreviewImage,
     PreviewRejected,
     PreviewUnavailable,
@@ -359,10 +361,16 @@ class PhotoAvatarService:
                 record.providerAvatarId, build_create_body(prompt, attributes),
                 correlation_id=record.correlationId,
             )
-        except Exception:
-            # Refused before anything was sent (hard quota or policy admission).
+        except (QuotaError, PolicyError):
+            # Admission refused it before the request left: nothing was sent.
             await self._release(record, created_at)
             raise
+        except Exception as exc:  # noqa: BLE001 - a create that may have been sent is never released
+            logger.warning(
+                "photo avatar create raised unexpectedly error=%s record=%s",
+                type(exc).__name__, record.id[:8],
+            )
+            outcome = CreateOutcome("unknown")
         if outcome.kind == "not_sent":
             # The proxy was never reached, so nothing was created anywhere; do
             # not spend the user's daily creation on an infrastructure fault.
@@ -448,8 +456,13 @@ class PhotoAvatarService:
     async def _reconcile(self, record: PhotoAvatarRecord) -> PhotoAvatarRecord:
         if record.status in TERMINAL_STATUSES or record.status == "deleting":
             return record
+        if self._home_changed(record):
+            # APIM now routes to a different home account, whose answers say
+            # nothing about this avatar: never read it, never make it terminal.
+            return record
         now = self._clock()
-        interval = FAST_POLL if now - record.createdAt < FAST_POLL_WINDOW else SLOW_POLL
+        fast = record.previewBlockedAt is None and now - record.createdAt < FAST_POLL_WINDOW
+        interval = FAST_POLL if fast else SLOW_POLL
         if record.lastReconciledAt is not None and now - record.lastReconciledAt < interval:
             return record
         read = await self._gateway.get_avatar(
@@ -481,6 +494,11 @@ class PhotoAvatarService:
             only_if=lambda current: current.status not in TERMINAL_STATUSES
             and current.status != "deleting",
         )
+        if fields.get("status") == "ready" and (updated is None or updated.status == "deleting"):
+            # A delete won the race after the copy: remove the likeness it would
+            # otherwise orphan. A concurrent winner that stored the same preview
+            # leaves the record ready, and its blob untouched.
+            await self._discard_preview(record.userId, record.id)
         return updated or record
 
     async def _copy_preview(
@@ -488,25 +506,35 @@ class PhotoAvatarService:
     ) -> dict[str, Any]:
         try:
             image = await self._fetch(link, self._catalog.preview)
+        except PreviewBlocked as exc:
+            logger.warning("photo avatar preview blocked code=%s record=%s", exc.code, record.id[:8])
+            return {"status": "generating", "previewBlockedAt": record.previewBlockedAt or now}
         except PreviewRejected as exc:
             logger.warning("photo avatar preview rejected code=%s record=%s", exc.code, record.id[:8])
-            return {"status": "failed", "failureCode": "preview_rejected"}
+            return {"status": "failed", "failureCode": "preview_rejected", "previewBlockedAt": None}
         except PreviewUnavailable as exc:
             logger.info("photo avatar preview unavailable code=%s record=%s", exc.code, record.id[:8])
-            return {"status": "generating"}
+            return {"status": "generating", "previewBlockedAt": None}
         try:
             await self._artifacts.put(record.userId, record.id, image.data)
         except Exception:  # noqa: BLE001 - retried on the next status read
             logger.warning("photo avatar preview store failed record=%s", record.id[:8])
-            return {"status": "generating"}
+            return {"status": "generating", "previewBlockedAt": None}
         return {
             "status": "ready",
             "readyAt": now,
+            "previewBlockedAt": None,
             "preview": PreviewMeta(
                 width=image.width, height=image.height, bytes=len(image.data),
                 sha256Prefix=image.sha256[:16],
             ),
         }
+
+    async def _discard_preview(self, owner: str, record_id: str) -> None:
+        try:
+            await self._artifacts.delete(owner, record_id)
+        except Exception:  # noqa: BLE001 - a later delete of the same id removes it
+            logger.warning("photo avatar orphan preview cleanup failed record=%s", record_id[:8])
 
     # --- live sessions (server-only; see live.py) ----------------------------
 
@@ -530,7 +558,7 @@ class PhotoAvatarService:
             or not valid_provider_avatar_id(record.providerAvatarId)
         ):
             raise LiveAvatarError(409, "avatar_not_ready", "This avatar is not ready.")
-        if record.homeRegion != self._catalog.homeRegion:
+        if self._home_changed(record):
             raise LiveAvatarError(
                 409, "avatar_home_changed",
                 "This avatar belongs to a different avatar home than the one in use.",
@@ -594,6 +622,9 @@ class PhotoAvatarService:
         failed_at = record.liveVerificationFailedAt
         if failed_at is None or self._clock() - failed_at < REVERIFY_COOLDOWN:
             return record
+        if self._home_changed(record):
+            # A read now reaches a different account; keep refusing live use.
+            return record
         read = await self._gateway.get_avatar(
             record.providerAvatarId, correlation_id=self._correlation(),
         )
@@ -632,10 +663,24 @@ class PhotoAvatarService:
         owner = user.internal_user_id
         loaded = await self._store.get(owner, avatar_id)
         if loaded is None:
-            # Idempotent; also drops a ledger entry left by an interrupted delete.
+            # Idempotent. Also drops a ledger entry left by an interrupted delete
+            # and a preview a status read stored after a delete won the race.
             await self._store.remove(owner, avatar_id)
+            try:
+                await self._artifacts.delete(owner, avatar_id)
+            except Exception as exc:  # noqa: BLE001 - a retry lands here again
+                raise PhotoAvatarError(
+                    503, "delete_incomplete", "Deletion did not finish. Delete again to finish.",
+                ) from exc
             return
         record = loaded[0]
+        if self._home_changed(record):
+            # A provider delete would reach the new home, where a NotFound says
+            # nothing; the avatar may still exist, billed, in its own account.
+            raise PhotoAvatarError(
+                409, "avatar_home_changed",
+                "This avatar belongs to a previous avatar home. An operator must remove it there first.",
+            )
         now = self._clock()
         if record.status in {"creating", "confirming"}:
             remaining = CONFIRM_GRACE - (now - (record.dispatchedAt or record.createdAt))
@@ -826,6 +871,10 @@ class PhotoAvatarService:
         value = get_correlation_id()
         return value if value and value != "-" else None
 
+    def _home_changed(self, record: PhotoAvatarRecord) -> bool:
+        """The record's avatar lives in a different account from the one APIM routes to."""
+        return record.homeRegion != self._catalog.homeRegion
+
     def _view(self, record: PhotoAvatarRecord, usable: bool) -> PhotoAvatar:
         failure = (
             PhotoAvatarFailure(code=record.failureCode, message=FAILURE_MESSAGES[record.failureCode])  # pyright: ignore[reportArgumentType]
@@ -854,7 +903,8 @@ class PhotoAvatarService:
                 known=record.cost.known,
                 priceVersion=record.cost.priceVersion,
             ),
-            usable=usable and record.status == "ready" and record.liveVerificationFailedAt is None,
+            usable=usable and record.status == "ready" and record.liveVerificationFailedAt is None
+            and not self._home_changed(record),
             reported=record.reportedAt is not None,
             needsReverification=record.status == "ready" and record.liveVerificationFailedAt is not None,
             createdAt=record.createdAt,

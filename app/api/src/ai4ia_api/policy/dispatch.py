@@ -8,7 +8,20 @@ from .models import PolicyDecision, PolicyError, PolicyRequest
 
 if TYPE_CHECKING:
     from ..hard_quota.models import Surface
+    from .models import EffectivePolicy
     from .service import PolicyService
+
+
+def avatar_creation_zone_scoped(actor: EffectivePolicy) -> bool:
+    """A zones restriction cannot be applied to photo avatar creation.
+
+    A zones restriction describes model processing scope; photo avatar residency
+    is enforced app-wide by the catalog home instead. The dispatch seam refuses
+    such an actor, and the photo avatar availability predicate reports it
+    unavailable by this same rule, so the API never advertises a creation that
+    dispatch would refuse.
+    """
+    return "zones" in actor.domains
 
 
 async def authorize_dispatch(
@@ -61,9 +74,7 @@ async def authorize_dispatch(
         return
     if surface == "avatar":
         await require_policy(PolicyRequest("avatar.create"))
-        # A zones restriction describes model processing scope; photo avatar
-        # residency is enforced app-wide by the catalog home instead.
-        if "zones" in actor.domains:
+        if avatar_creation_zone_scoped(actor):
             raise PolicyError(PolicyDecision("unavailable", "policy_surface_unsupported"))
         return
     if surface in {"mcp", "external_tool", "web_search"}:
