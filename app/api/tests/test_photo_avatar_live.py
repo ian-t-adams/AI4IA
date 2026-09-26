@@ -364,11 +364,14 @@ async def test_the_app_state_entry_points_report_a_disabled_feature():
     await rig.seed()
     state = SimpleNamespace(settings=rig.settings, photo_avatars=rig.service)
     assert (await live.resolve_live_avatar(state, user, RECORD_ID)).record_id == RECORD_ID
-    assert await live.mark_live_avatar_verification_failed(state, user, RECORD_ID) is True
-    # A service left behind after the flag turns off is still refused.
+    # A service left behind after the flag turns off is refused by the entry
+    # point itself, while this service's own predicate would still grant.
     off = SimpleNamespace(settings=make_settings(), photo_avatars=rig.service)
-    with pytest.raises(LiveAvatarError):
+    with pytest.raises(LiveAvatarError) as caught:
         await live.resolve_live_avatar(off, user, RECORD_ID)
+    assert (caught.value.code, caught.value.reason) == ("photo_avatars_unavailable", "disabled")
+    assert await rig.service.resolve_live_avatar(user, RECORD_ID)  # control: the service alone grants
+    assert await live.mark_live_avatar_verification_failed(state, user, RECORD_ID) is True
 
 
 async def test_malformed_ids_never_reach_the_store():
