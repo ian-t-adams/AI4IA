@@ -76,6 +76,10 @@ def main() -> int:
             ))
         ):
             errors.append(f"{name}: unsupported Anthropic Claude profile")
+        if model.get("requiredRealtimeProtocol") not in (None, "ga") or (
+            "requiredRealtimeProtocol" in model and model["category"] != "realtime"
+        ):
+            errors.append(f"{name}: requiredRealtimeProtocol is only valid as 'ga' on realtime models")
         api = model.get("api", "chat")
         if api not in {
             "chat",

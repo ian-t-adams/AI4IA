@@ -128,6 +128,7 @@ class ModelEntry(BaseModel):
     # External Claude profile: "disabled" is text plus the governed tool loop;
     # "adaptive" is text-only because signed thinking blocks are not replayed.
     anthropicThinking: Literal["disabled", "adaptive"] | None = None
+    requiredRealtimeProtocol: Literal["ga"] | None = None
     # Per-model context window (total prompt+completion tokens the deployment
     # accepts) and the maximum tokens it will emit in one completion. Both are
     # OPTIONAL: when absent (``None``) the backend falls back to its fixed
@@ -196,16 +197,26 @@ class ModelEntry(BaseModel):
                 "or adaptive text-only profile."
             )
 
+    @model_validator(mode="after")
+    def validate_realtime_protocol(self) -> ModelEntry:
+        if self.requiredRealtimeProtocol is not None and self.category != "realtime":
+            raise ValueError("Only realtime models may require a realtime protocol.")
+        return self
+
+    def supports_realtime_protocol(self, protocol: str) -> bool:
+        return self.requiredRealtimeProtocol is None or self.requiredRealtimeProtocol == protocol
+
     @computed_field
     @property
     def conversational(self) -> bool:
-        """Whether this model is offered in the chat/agent model pickers.
+        """Whether this model belongs in the chat/agent category.
 
         True for text-chat categories (chat, reasoning, router, …); False for
         capability models (image, video, tts, transcription, embedding, rerank)
         and voice models (realtime, audio), which are reached through their own
         surfaces/tools rather than selected as a raw chat target. Serialized so
         the web app can filter the dropdowns from the same source of truth.
+        Runtime availability is separate, so disabled metadata retains its traits.
         """
         return self.category in CONVERSATIONAL_CATEGORIES
 
@@ -263,9 +274,11 @@ class ModelCatalog(BaseModel):
     residencyPolicy: str = GLOBAL_RESIDENCY
 
     def get(self, model_id: str) -> ModelEntry | None:
+        """Look up metadata, including disabled rows; eligibility governs serving."""
         return next((m for m in self.models if m.id == model_id), None)
 
     def for_deployment(self, deployment: str) -> ModelEntry | None:
+        """Retain disabled profiles so adaptation cannot fall back to provider defaults."""
         return next(
             (m for m in self.models if any(o.deploymentName == deployment for o in m.options)),
             None,
@@ -373,6 +386,7 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                 "runtimeEnabled": model.get("runtimeEnabled", True),
                 "format": model["format"],
                 "api": model.get("api", "chat"),
+                "requiredRealtimeProtocol": model.get("requiredRealtimeProtocol"),
                 "contextWindow": model.get("contextWindow"),
                 "maxOutputTokens": model.get("maxOutputTokens"),
                 "reasoningEffort": model.get("reasoningEffort"),

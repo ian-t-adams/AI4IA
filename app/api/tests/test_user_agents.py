@@ -101,6 +101,26 @@ async def test_create_then_compose_into_catalog():
     assert catalog.get("coder") is not None
 
 
+async def test_disabled_model_metadata_cannot_admit_a_new_agent_default():
+    service, model = _service()
+    service._catalog = service._catalog.model_copy(deep=True)
+    entry = service._catalog.get(model)
+    assert entry is not None
+    request = UserAgentCreate(name="choice", systemPrompt="Synthetic.", defaultModel=model)
+    entry.runtimeEnabled = False
+    assert service._catalog.get(model) is entry
+    with pytest.raises(AgentValidationError, match="unavailable"):
+        await service.create("u1", request, reserved_names=_curated_names())
+    assert (await service.catalog_for("u1", CURATED)).get("choice") is None
+    entry.runtimeEnabled = True
+    created = await service.create("u1", request, reserved_names=_curated_names())
+    assert created.defaultModel == model
+    entry.runtimeEnabled = False
+    saved = (await service.catalog_for("u1", CURATED)).get("choice")
+    assert saved is not None and saved.defaultModel == model
+    assert service._catalog.resolve_deployment(model) is None
+
+
 async def test_create_with_generate_image_tool_is_accepted():
     # ``generate_image`` is a service-backed synthetic capability offered via the
     # selectable allowlist, so an agent may compose it like a safe built-in.

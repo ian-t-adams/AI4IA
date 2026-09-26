@@ -32,11 +32,12 @@ async def list_models(
     if binding is not None:
         binding.require_configuration()
     catalog: ModelCatalog = request.app.state.catalog
+    protocol = request.app.state.settings.realtime_protocol
     return ModelCatalog(
         residencyPolicy=catalog.residencyPolicy,
         models=[
             entry.model_copy(update={"options": catalog.eligible_options(entry)})
             for entry in catalog.models
-            if catalog.available(entry)
+            if catalog.available(entry) and entry.supports_realtime_protocol(protocol)
         ],
     )

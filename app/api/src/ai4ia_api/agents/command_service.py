@@ -297,8 +297,11 @@ async def _reply_for(
     if kind is CommandKind.model:
         if not args:
             return "Usage: /model <model-id>"
-        if catalog.get(args) is None:
+        entry = catalog.get(args)
+        if entry is None:
             return f"Unknown model: {args}. Pick one from the model menu."
+        if not catalog.available(entry):
+            return f"Model '{args}' is unavailable. Pick one from the model menu."
         session.model = args
         return f"Model switched to {args}."
 

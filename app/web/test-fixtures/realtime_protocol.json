@@ -2,6 +2,7 @@
   "sources": {
     "migration": "https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-preview-api-migration-guide",
     "websocket": "https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets",
+    "realtime2": "https://learn.microsoft.com/azure/foundry/openai/concepts/realtime-2",
     "schema": "https://github.com/openai/openai-python/tree/41f0a2317759e8796ccfbde75536bd42e4aca7a2/src/openai/types/realtime",
     "note": "Synthetic offline examples shared by API and browser tests. Kept inside the web Docker build context; not recorded live success."
   },
@@ -146,8 +147,8 @@
     },
     {
       "name": "output-item",
-      "ga": {"type": "response.output_item.done", "response_id": "resp_1", "output_index": 0, "item": {"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_audio", "transcript": "Hello"}]}},
-      "application": {"type": "response.output_item.done", "response_id": "resp_1", "output_index": 0, "item": {"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "audio", "transcript": "Hello"}]}}
+      "ga": {"type": "response.output_item.done", "response_id": "resp_1", "output_index": 0, "item": {"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "phase": "commentary", "status": "completed", "content": [{"type": "output_audio", "transcript": "Hello"}]}},
+      "application": {"type": "response.output_item.done", "response_id": "resp_1", "output_index": 0, "item": {"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "phase": "commentary", "status": "completed", "content": [{"type": "audio", "transcript": "Hello"}]}}
     },
     {
       "name": "content-part",
@@ -155,9 +156,24 @@
       "application": {"type": "response.content_part.done", "response_id": "resp_1", "item_id": "item_1", "output_index": 0, "content_index": 0, "part": {"type": "audio", "transcript": "Hello"}}
     },
     {
+      "name": "function-call-done",
+      "ga": {"type": "response.function_call_arguments.done", "response_id": "resp_1", "item_id": "tool_1", "output_index": 1, "call_id": "call_1", "name": "calculator", "arguments": "{\"expression\":\"2+3\"}", "phase": "future_phase"},
+      "application": {"type": "response.function_call_arguments.done", "response_id": "resp_1", "item_id": "tool_1", "output_index": 1, "call_id": "call_1", "name": "calculator", "arguments": "{\"expression\":\"2+3\"}", "phase": "future_phase"}
+    },
+    {
+      "name": "second-item-audio-delta",
+      "ga": {"type": "response.output_audio.delta", "response_id": "resp_1", "item_id": "item_2", "output_index": 2, "content_index": 0, "delta": "AAA=", "phase": "future_phase"},
+      "application": {"type": "response.audio.delta", "response_id": "resp_1", "item_id": "item_2", "output_index": 2, "content_index": 0, "delta": "AAA=", "phase": "future_phase"}
+    },
+    {
+      "name": "second-item-transcript-delta",
+      "ga": {"type": "response.output_audio_transcript.delta", "response_id": "resp_1", "item_id": "item_2", "output_index": 2, "content_index": 0, "delta": "Ready"},
+      "application": {"type": "response.audio_transcript.delta", "response_id": "resp_1", "item_id": "item_2", "output_index": 2, "content_index": 0, "delta": "Ready"}
+    },
+    {
       "name": "response-done",
-      "ga": {"type": "response.done", "response": {"id": "resp_1", "object": "realtime.response", "status": "completed", "output_modalities": ["audio"], "audio": {"output": {"voice": "alloy", "format": {"type": "audio/pcm", "rate": 24000}}}, "output": [{"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "content": [{"type": "output_audio", "transcript": "Hello"}]}], "usage": {"total_tokens": 14, "input_tokens": 10, "output_tokens": 4, "input_token_details": {"cached_tokens": 2, "text_tokens": 4, "audio_tokens": 6}, "output_token_details": {"text_tokens": 1, "audio_tokens": 3}}}},
-      "application": {"type": "response.done", "response": {"id": "resp_1", "object": "realtime.response", "status": "completed", "modalities": ["text", "audio"], "voice": "alloy", "output_audio_format": "pcm16", "output": [{"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "content": [{"type": "audio", "transcript": "Hello"}]}], "usage": {"total_tokens": 14, "input_tokens": 10, "output_tokens": 4, "input_token_details": {"cached_tokens": 2, "text_tokens": 4, "audio_tokens": 6}, "output_token_details": {"text_tokens": 1, "audio_tokens": 3}}}}
+      "ga": {"type": "response.done", "response": {"id": "resp_1", "object": "realtime.response", "status": "completed", "output_modalities": ["audio"], "audio": {"output": {"voice": "alloy", "format": {"type": "audio/pcm", "rate": 24000}}}, "output": [{"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "phase": "commentary", "content": [{"type": "output_audio", "transcript": "Hello"}]}, {"id": "tool_1", "type": "function_call", "call_id": "call_1", "name": "calculator", "arguments": "{\"expression\":\"2+3\"}", "phase": "future_phase"}, {"id": "item_2", "type": "message", "role": "assistant", "phase": "final_answer", "content": [{"type": "output_audio", "transcript": "Ready"}]}], "usage": {"total_tokens": 14, "input_tokens": 10, "output_tokens": 4, "input_token_details": {"cached_tokens": 2, "text_tokens": 4, "audio_tokens": 6}, "output_token_details": {"text_tokens": 1, "audio_tokens": 3}}}},
+      "application": {"type": "response.done", "response": {"id": "resp_1", "object": "realtime.response", "status": "completed", "modalities": ["text", "audio"], "voice": "alloy", "output_audio_format": "pcm16", "output": [{"id": "item_1", "object": "realtime.item", "type": "message", "role": "assistant", "phase": "commentary", "content": [{"type": "audio", "transcript": "Hello"}]}, {"id": "tool_1", "type": "function_call", "call_id": "call_1", "name": "calculator", "arguments": "{\"expression\":\"2+3\"}", "phase": "future_phase"}, {"id": "item_2", "type": "message", "role": "assistant", "phase": "final_answer", "content": [{"type": "audio", "transcript": "Ready"}]}], "usage": {"total_tokens": 14, "input_tokens": 10, "output_tokens": 4, "input_token_details": {"cached_tokens": 2, "text_tokens": 4, "audio_tokens": 6}, "output_token_details": {"text_tokens": 1, "audio_tokens": 3}}}}
     }
   ]
 }

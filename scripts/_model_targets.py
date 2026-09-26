@@ -45,7 +45,7 @@ def runtime_enabled(model: dict[str, Any]) -> bool:
 
     False keeps the row's deployments in desired infrastructure, quota and
     retirement inventory; it only withdraws runtime availability and generated
-    HTTP routes. It is never physical deletion or free quota.
+    HTTP/realtime routes. It is never physical deletion or free quota.
     """
     value = model.get("runtimeEnabled", True)
     if type(value) is not bool:

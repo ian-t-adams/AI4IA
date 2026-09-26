@@ -123,6 +123,7 @@ class VoiceProviderModelCatalogFilter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     category: str
+    runtimeEnabled: Literal[True] = True
 
 
 class VoiceProviderModelCatalogRef(BaseModel):

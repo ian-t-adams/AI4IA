@@ -4,7 +4,7 @@
   "_caveats": "Flat rates cannot express every meter dimension. Long-context, cache, priority, Data Zone, regional, batch, reference-image, annotation, and provisioned variants may differ. Astra's Global Standard long-context rates are $20 input/$75 output per million tokens rather than the short-context $10/$50 estimate recorded here; its US Data Zone Standard deployment carries a 10% premium ($11/$55 short context). Global Standard long-context rates are $4/$15 for GPT-6 Sol, $0.20/$0.75 for GPT-6 Luna and $10/$45 for GPT-5.5 rather than the short-context estimates recorded here; their Data Zone Standard rates carry a 10% US or 20% EU premium for GPT-6 Sol/Luna and a 10% premium for GPT-5.5. FLUX.2 estimates use output megapixels; FLUX.1 uses one image. MAI-Image-2.5/Pro/Flash, MAI-Image-2.6/Flash, gpt-image-2, and gpt-image-1-mini remain cost-unknown because no unambiguous Azure retail meter is published. gpt-image-2.5-flare and gpt-image-2.5-sunburst also remain cost-unknown: their Azure retail meters (verified 2026-09-23) bill text and image tokens per million, which this per-image/megapixel image book cannot map. Mistral OCR 4 annotation pricing is excluded because this app requests OCR only. Content Understanding page meters are recorded separately by minimal/basic/standard usage; standard versus advanced contextualization is taken from the service's own contextualizationTokens and advancedContextualizationTokens usage properties, never from a locally authored analyzer label.",
   "_claudeSource": "Verified 2026-09-20 and 2026-09-25: https://platform.claude.com/docs/en/about-claude/pricing#claude-in-microsoft-foundry-pricing and #model-pricing. Opus 5 $5/$25, Sonnet 5 $2/$10 and Opus 5.5 $4/$20 standard USD/MTok; cache hits are 0.1x input except Opus 5.5 at 0.05x ($0.20). US DataZoneStandard applies 1.1x, including cache reads. Rates are estimates, not a bill cap. Cache writes remain cost-unknown when their duration is not evidenced; no caching is requested by the adapter.",
   "_avatarSource": "Azure Speech pricing (https://azure.microsoft.com/pricing/details/cognitive-services/speech-services/), observed 2026-09-25 for westus2: photo avatar creation $2 per avatar, and real-time standard custom avatar $0.60 per minute. The page footnote says avatar is billed per second, so the live meter (basis second) prices whole seconds at perMinuteUsd/60. The eastus2 home account's prices were not observed separately and are assumed equal. Estimates only; HD custom avatar and rendered (batch) avatar minutes are separate meters that this book does not price.",
-  "version": "2026-09-26-avatars-opus-5-5",
+  "version": "2026-09-26-voice-avatar-opus55",
   "currency": "USD",
   "models": {
     "gpt-6-astra": { "inputPer1M": 10.0, "outputPer1M": 50.0 },
@@ -58,6 +58,94 @@
     "claude-opus-5-5": {
       "GlobalStandard": { "inputPer1M": 4.0, "outputPer1M": 20.0, "cacheReadPer1M": 0.2 },
       "DataZoneStandard": { "inputPer1M": 4.4, "outputPer1M": 22.0, "cacheReadPer1M": 0.22 }
+    }
+  },
+  "referenceModalityModels": {
+    "gpt-realtime-1.5": {
+      "provider": "OpenAI",
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-realtime-1.5",
+      "observedAt": "2026-09-10",
+      "catalogVersion": "2026-02-23",
+      "currency": "USD",
+      "basis": "per_1m_modality_tokens",
+      "azureBillingVerified": false,
+      "runtimeEstimate": "unknown",
+      "notes": "Published OpenAI reference estimates, not verified Azure billing rates. The realtime ledger has no complete modality/cache breakdown or bounded session envelope. Do not flatten these into models or use them for hard admission.",
+      "text": { "inputPer1M": 4.0, "cachedInputPer1M": 0.4, "outputPer1M": 16.0 },
+      "audio": { "inputPer1M": 32.0, "cachedInputPer1M": 0.4, "outputPer1M": 64.0 },
+      "image": { "inputPer1M": 5.0, "cachedInputPer1M": 0.5 }
+    },
+    "gpt-realtime-2.1": {
+      "provider": "OpenAI",
+      "sourceUrl": "https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview",
+      "observedAt": "2026-09-23",
+      "catalogVersion": "2026-07-07",
+      "currency": "USD",
+      "basis": "per_1m_modality_tokens",
+      "retailPricesVerified": true,
+      "azureBillingVerified": false,
+      "runtimeEstimate": "unknown",
+      "retailSource": {
+        "serviceName": "Foundry Models",
+        "productName": "Azure OpenAI Media",
+        "armRegionName": "eastus2",
+        "deploymentSku": "GlobalStandard",
+        "type": "Consumption",
+        "unitOfMeasure": "1M",
+        "tierMinimumUnits": 0,
+        "isPrimaryMeterRegion": true,
+        "effectiveStartDate": "2026-07-01T00:00:00Z",
+        "meterIds": {
+          "textInput": "9f9064f0-859d-581c-bd0b-f7d23e2e7b2c",
+          "textCachedInput": "b573bf6c-f8e6-541f-8b4b-da854e7bcbc3",
+          "textOutput": "a419ed11-a11c-527b-8957-9afb58b77e6e",
+          "audioInput": "34344c3d-465f-56e2-b406-d0ebd58f91d1",
+          "audioCachedInput": "568b8b5a-1a0f-576b-b563-4d3473d68e35",
+          "audioOutput": "b75a1221-f3ec-5f84-9c09-8da9d28f88e8",
+          "imageInput": "3a6187e4-2485-571a-b9fa-28c264222c8e",
+          "imageCachedInput": "2a1b9107-c0ff-5610-b467-584e6b29616c"
+        }
+      },
+      "notes": "Verified public Azure retail Gl meters for this model and eastus2 only, not a subscription price quote or actual billing validation. Modality/cache usage and a bounded session envelope remain incomplete, so runtime cost and hard admission stay unknown. Do not flatten these references into models. Image meters do not enable a new image-input surface.",
+      "text": { "inputPer1M": 4.0, "cachedInputPer1M": 0.4, "outputPer1M": 24.0 },
+      "audio": { "inputPer1M": 32.0, "cachedInputPer1M": 0.4, "outputPer1M": 64.0 },
+      "image": { "inputPer1M": 5.0, "cachedInputPer1M": 0.5 }
+    },
+    "gpt-realtime-2.1-mini": {
+      "provider": "OpenAI",
+      "sourceUrl": "https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview",
+      "observedAt": "2026-09-23",
+      "catalogVersion": "2026-07-07",
+      "currency": "USD",
+      "basis": "per_1m_modality_tokens",
+      "retailPricesVerified": true,
+      "azureBillingVerified": false,
+      "runtimeEstimate": "unknown",
+      "retailSource": {
+        "serviceName": "Foundry Models",
+        "productName": "Azure OpenAI Media",
+        "armRegionName": "eastus2",
+        "deploymentSku": "GlobalStandard",
+        "type": "Consumption",
+        "unitOfMeasure": "1M",
+        "tierMinimumUnits": 0,
+        "isPrimaryMeterRegion": true,
+        "effectiveStartDate": "2026-07-01T00:00:00Z",
+        "meterIds": {
+          "textInput": "28fd376c-06fd-55db-88f8-4e6202e0dfcd",
+          "textCachedInput": "e0f0c184-582e-50df-8b78-a78dd108b79b",
+          "textOutput": "a433c97d-a133-56ff-b822-3e8b341da41f",
+          "audioInput": "e4abdb4e-4667-5834-b124-f232bf081887",
+          "audioCachedInput": "57ce43f3-a7ac-5bbd-a0ef-b121eb813caf",
+          "audioOutput": "9e679ddd-f3f6-5e37-94ce-52db891b35d9",
+          "imageInput": "cfee3566-a2b7-5cab-9693-b082202e3b9b",
+          "imageCachedInput": "54eea545-94db-5418-9242-102cd4753cff"
+        }
+      },
+      "notes": "Verified public Azure retail Gl meters specific to 2.1-mini; no rate is copied from full 2.1 or an older mini. Retail DZ meters do not prove a subscription DataZoneStandard offering. These references do not establish actual billed usage, a flat runtime price, a session bound, or an image-input capability.",
+      "text": { "inputPer1M": 0.6, "cachedInputPer1M": 0.06, "outputPer1M": 2.4 },
+      "audio": { "inputPer1M": 10.0, "cachedInputPer1M": 0.3, "outputPer1M": 20.0 },
+      "image": { "inputPer1M": 0.8, "cachedInputPer1M": 0.08 }
     }
   },
   "imageModels": {

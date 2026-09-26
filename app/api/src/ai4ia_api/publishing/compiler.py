@@ -84,7 +84,7 @@ class PublicationCompiler:
         bindings: list[PublishedModel] = []
         for identifier in ids:
             entry = self.state.catalog.get(identifier)
-            if entry is None or getattr(entry, "runtimeEnabled", True) is not True:
+            if entry is None:
                 raise PublicationError("publication_model_unavailable", 422)
             options = self.state.catalog.eligible_options(entry, policy_filter=check_policy)
             for option in options:

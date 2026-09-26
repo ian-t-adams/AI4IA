@@ -111,6 +111,28 @@ async def test_model_unknown_does_not_change_session():
     assert stored.model == "gpt-5.2"
 
 
+async def test_model_switch_requires_eligibility_even_when_disabled_metadata_exists():
+    repo, user, session = await _setup()
+    catalog = load_catalog().model_copy(deep=True)
+    entry = catalog.get("gpt-5.4")
+    assert entry is not None
+    for enabled in (False, True):
+        entry.runtimeEnabled = enabled
+        assert catalog.get(entry.id) is entry
+        message = await execute_command(
+            parsed=parse_input(f"/model {entry.id}"),
+            session=session, user=user, repo=repo,
+            catalog=catalog, agents=load_agent_catalog(),
+        )
+        stored = await repo.get_session(user.internal_user_id, session.id)
+        if enabled:
+            assert message.content == f"Model switched to {entry.id}."
+            assert stored.model == entry.id
+        else:
+            assert "unavailable" in message.content
+            assert stored.model == "gpt-5.2"
+
+
 async def test_model_no_args_shows_usage():
     repo, user, session = await _setup()
     msg = await _run(repo, user, session, "/model")

@@ -206,6 +206,54 @@ afterEach(() => {
 });
 
 describe("useVoiceLive lifecycle", () => {
+  it("plays every phased output item and retains tool events in one RT2 response", async () => {
+    auth.getToken.mockResolvedValue("token");
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
+      },
+    });
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "azure_openai", "gpt-realtime-2", "eastus2", "alloy", vi.fn()),
+    );
+    act(() => {
+      result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    const context = FakeAudioContext.instances[0];
+    const emit = (name: string) => {
+      const fixture = protocolFixtures.server.find((item) => item.name === name);
+      if (!fixture) throw new Error(`Missing protocol fixture: ${name}`);
+      socket.onmessage?.(new MessageEvent("message", { data: JSON.stringify(fixture.application) }));
+    };
+    act(() => {
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onopen?.();
+      socket.onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({ type: "response.created", response: { id: "resp_1" } }),
+      }));
+      emit("audio-delta");
+      emit("transcript-delta");
+      emit("output-item");
+      emit("function-call-done");
+      emit("second-item-audio-delta");
+      emit("second-item-transcript-delta");
+    });
+    expect(context.createBuffer).toHaveBeenCalledTimes(2);
+    expect(context.bufferSources.every((source) => source.start.mock.calls.length === 1)).toBe(true);
+    expect(result.current.assistantTranscript).toBe("HelloReady");
+    const turn = result.current.turns.find((item) => item.role === "assistant");
+    expect(turn?.text).toBe("HelloReady");
+    expect(turn?.tool).toMatch(/calculat/i);
+    expect(result.current.speaking).toBe(true);
+    act(() => emit("response-done"));
+    expect(result.current.speaking).toBe(false);
+    expect(result.current.turns.find((item) => item.role === "assistant")?.streaming).toBe(false);
+    expect(context.createBuffer).toHaveBeenCalledTimes(2);
+  });
+
   it("plays normalized GA audio, preserves transcripts, and suppresses barged-in output", async () => {
     auth.getToken.mockResolvedValue("token");
     Object.defineProperty(navigator, "mediaDevices", {

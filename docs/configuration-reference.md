@@ -360,6 +360,26 @@ preference is retained for preview rollback; Speech temperature is unchanged.
 There is no automatic retry, protocol downgrade or replay after a failed
 handshake, provider error or possibly accepted frame.
 
+Catalog `runtimeEnabled=false` retains a desired deployment for inventory and
+quota reconciliation but removes it from new runtime selection and serving.
+`requiredRealtimeProtocol=ga` restricts a model to the server-selected GA surface;
+it never enables the GA flag or changes the selector. Both fields are enforced by
+the API, generated gateway routes and voice model picker. Realtime 2 keeps both
+fields omitted: its unchanged `2026-05-06` deployment remains selectable on
+preview and GA until the authoritative subscription inference deprecation
+`2026-10-31T00:00:00Z`. From October 24, the existing retirement policy blocks
+new/changed unsafe targets; exact reconciles only warn. A separately approved
+runtime-disable follow-up must merge and deploy before October 31; this patch
+adds no automatic date cutoff. The September 23 subscription evidence offers
+only RT2 `2026-05-06`; its verified successor is the distinct `gpt-realtime-2.1`.
+Realtime 1.5, 2.1 and 2.1-mini are GA-only, each eastus2 GlobalStandard baseline
+10 without maximum/pool assumptions, not new defaults or Speech managed models.
+The two 2.1 entries pin `2026-07-07`; this does not upgrade or alias RT2.
+Unavailable saved choices require an explicit replacement and never rewrite
+stored conversations. See the
+[two-phase model/TTS migration and speech canary](runbooks/feature-enablement.md#ga-voice-model-migration)
+for separate model/capacity, cutover, rollback and exact-resource cleanup approval.
+
 Contract sources are the
 [Microsoft GA migration guide](https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-preview-api-migration-guide),
 the [GA WebSocket examples](https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets),

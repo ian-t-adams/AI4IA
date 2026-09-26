@@ -920,6 +920,13 @@ def generate_realtime_policy(models: dict[str, Any], *, ga: bool = False) -> str
     for model in models["catalog"]:
         if model["category"] != "realtime":
             continue
+        if not runtime_enabled(model):
+            continue
+        required_protocol = model.get("requiredRealtimeProtocol")
+        if required_protocol not in (None, "ga"):
+            raise ValueError("Unsupported requiredRealtimeProtocol in the model catalog")
+        if required_protocol == "ga" and not ga:
+            continue
         for deployment in model["deployments"]:
             name = deployment_name(
                 model=model["name"],
