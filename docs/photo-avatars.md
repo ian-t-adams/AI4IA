@@ -1,17 +1,23 @@
 # Custom photo avatars: design and phased plan
 
-> **Status (2026-09-26): Phase 1 backend implemented, default-off.** The API
-> (`app/api/src/ai4ia_api/photo_avatars/`), the catalog block, the generated
-> exact-operation APIM policy, the flag-gated infrastructure and the tests are in
-> the repository. Nothing is enabled. Creation also refuses at runtime until the
-> home account reports the Limited Access capability. Activation still waits on
-> three things: the Limited Access approval for custom text to speech avatar,
-> re-approval under [RAI review trigger 3](rai-decision-record.md#review-triggers),
-> and the enablement checks in
-> [the runbook](runbooks/feature-enablement.md#custom-photo-avatars). Phase 2 (real-time
-> conversation) is implemented in source on the existing Voice Live WebSocket. It adds
-> no new gate: it inherits photo avatars, Speech Voice Live and the capability. Phase 3
-> (rendered videos) is deferred until the registered use case is confirmed.
+> **Status (2026-09-26): owner-approved for enablement.** Phase 1 (create from a
+> description, then status, preview, list, delete and report) and Phase 2 (real-time
+> conversation on the existing Voice Live WebSocket) are implemented. Phase 2 adds no
+> gate of its own: it inherits photo avatars, Speech Voice Live and the capability.
+> On 2026-09-26 the owner:
+>
+> - approved enabling both phases in production;
+> - re-approved the annotate-only posture for avatar prompts and live sessions under
+>   [RAI review trigger 3](rai-decision-record.md#review-triggers);
+> - reported the Limited Access approval for custom text to speech avatar as held
+>   (the evidence stays outside the repository);
+> - took ownership of the report queue.
+>
+> Creation and live sessions still work only while the home account itself reports
+> the Limited Access capability. Until it does, the API reports
+> `capability_unavailable`, and nothing is created or billed. The enablement checks
+> are in [the runbook](runbooks/feature-enablement.md#custom-photo-avatars). Phase 3
+> (rendered videos) is not built, and this approval does not cover it.
 
 ## Requirement and scope
 
