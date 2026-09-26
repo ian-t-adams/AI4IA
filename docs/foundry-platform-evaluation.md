@@ -11,6 +11,10 @@
 > 2026-09-25 follows the same rule: its Phase 1 backend is implemented behind a
 > default-off flag and a fail-closed Limited Access check, and nothing is enabled
 > (see the [design](photo-avatars.md)).
+>
+> **Update (2026-09-25):** Opus 5.5 is now cataloged under a second, explicit
+> adaptive text-only profile ([below](#claude-opus-55)). Claude stays
+> default-off, and no Claude model is activated.
 
 AI4IA's FastAPI runtime owns agents, tools, approvals, receipts, memory and
 scheduling. Foundry supplies model deployments behind SimpleL7Proxy → APIM,
@@ -26,7 +30,7 @@ owner approval before merge.
 | Announcement | Platform status | AI4IA position | Decision and next step |
 | --- | --- | --- | --- |
 | GPT-6 Astra, Sol and Luna | GA | Astra (Global Standard) and Sol/Luna (Global and Data Zone Standard) are catalog rows with sourced prices | #511 adds Astra's eastus2 US Data Zone row (merge provisions); swedencentral offers no Astra Data Zone yet |
-| Claude Opus 5.5 | GA, Hosted on Azure | Capacity deployed in the dedicated Claude account; not cataloged. Opus 5 and Sonnet 5 are deployed but not activated | Live check confirmed disabled thinking returns 400; needs the adaptive profile, and activation waits on target-tenant admin actions |
+| Claude Opus 5.5 | GA, Hosted on Azure | Capacity cataloged under the adaptive text-only profile; Opus 5 and Sonnet 5 keep the thinking-disabled text/tool profile. None is activated | Tool use needs the signed thinking-block replay stage; activation waits on target-tenant admin actions |
 | Voice agents in Agent Service | Public preview | Voice Live through the FastAPI relay → APIM, two providers | Not adopted; needs a new provider design |
 | Voice-agent observability | Public preview | Applies only to Foundry voice agents | Not applicable |
 | Custom photo avatars from a description (owner requirement, 2026-09-25) | Limited Access; creation REST surface undocumented | Phase 1 backend implemented default-off: create, status, preview, list, delete and report through an exact-operation APIM API, with a fail-closed capability check. Real-time avatar sessions are in progress | [Design](photo-avatars.md); activation waits on the Limited Access approval and RAI re-approval |
@@ -77,33 +81,45 @@ Verified on 2026-09-24:
   input), 5 for five-minute and 8 for one-hour cache writes. US Data Zone
   Standard applies the documented 1.1x multiplier.
 
-It is not cataloged because it conflicts with the shipped external-Claude
-profile (`anthropicThinking: "disabled"`, low/medium/high effort, text and the
-governed function-tool loop):
+It conflicts with the original external-Claude profile (`anthropicThinking:
+"disabled"`, low/medium/high effort, text and the governed function-tool loop).
+It is therefore cataloged under a second, explicit profile:
+`anthropicThinking: "adaptive"` with `toolCalling: false`, text input,
+`samplingSupported: false` and low/medium/high effort. The first stage of the
+[adaptive-thinking design](#adaptive-thinking-profile-design) handles each
+breaking change as follows:
 
 1. **Adaptive thinking is always on.** `thinking: {"type": "disabled"}` or a
-   manual `budget_tokens` returns HTTP 400. `build_anthropic_payload` in
-   `app/api/src/ai4ia_api/gateway/anthropic.py` sends disabled thinking for every
-   external-Claude profile, so every request would fail. Microsoft Learn's
-   thinking/effort table still footnotes `disabled` as allowed at effort `high`
-   or below for this model. Live calls on 2026-09-25 settled it: both Opus 5.5
-   deployments returned HTTP 400 `"thinking.type.disabled" is not supported for
-   this model` at effort `low` and `high`, and HTTP 200 with `thinking` omitted.
+   manual `budget_tokens` returns HTTP 400. Microsoft Learn's thinking/effort
+   table still footnotes `disabled` as allowed at effort `high` or below for
+   this model. Live calls on 2026-09-25 settled it: both Opus 5.5 deployments
+   returned HTTP 400 `"thinking.type.disabled" is not supported for this model`
+   at effort `low` and `high`, and HTTP 200 with `thinking` omitted.
+   `build_anthropic_payload` in `app/api/src/ai4ia_api/gateway/anthropic.py` now
+   sends disabled thinking only for the thinking-disabled profile. Adaptive rows
+   omit `thinking`, which the provider treats as adaptive, and always send
+   `output_config.effort`. When no effort is requested the adapter sends
+   `medium`, the documented Opus 5.5 default, rather than the disabled profile's
+   `high`.
 2. **Forced tool use returns HTTP 400.** Only `tool_choice` `auto` and `none`
    are accepted. AI4IA's agent loop already sends `auto` and strips any
-   caller-supplied `tool_choice` (`agents/runtime.py`), but
-   `_tool_choice_to_anthropic` would still translate an explicit `required` or
-   named choice to the rejected `any` and `tool` types.
+   caller-supplied `tool_choice` (`agents/runtime.py`). The thinking-disabled
+   profile keeps translating an explicit `required` or named choice. The adaptive
+   profile refuses, before dispatch, any tools, any `tool_choice` other than
+   absent, `auto` or `none`, and assistant tool calls or tool results in history.
 3. **Thinking blocks bind to the conversation.** They must be passed back
    unmodified in tool loops. A replay after any system, tool or earlier-message
    change returns 400 by default for accounts created on or after 2026-08-31.
-   Both of the adapter's response parsers drop thinking blocks today, so the
-   first tool continuation would fail. Progress text between tool calls also
-   arrives in thinking blocks, which are empty at the default display setting.
+   Progress text between tool calls also arrives in thinking blocks, which are
+   empty at the default display setting. A text-only profile never continues a
+   tool loop, so the adapter keeps dropping `thinking` and `redacted_thinking`
+   blocks on both transports. They never reach SSE events, message history,
+   receipts or logs.
 
-The Opus 5.5 capacity is deployed in the dedicated account (below) but stays out
-of the catalog until the adaptive-thinking profile exists. A catalog row now
-would have to declare the thinking-disabled profile the model rejects.
+All five dedicated-account deployments are now cataloged. Opus 5.5 cannot call
+tools until the design's tool-capable stage (signed block capture and replay)
+ships. Chat, agents, workflows, published sources and the injected `load_skill`
+tool all refuse or withhold tools for a `toolCalling: false` model server-side.
 
 #### Current Claude status
 
@@ -126,6 +142,8 @@ Done on 2026-09-25, through the approved operator units:
     only.
   - The terms attestation matches the one already on record for the target
     subscription, not the repository variables.
+  - The catalog now lists all five deployments. The binding readback requires
+    the account's deployment inventory to equal the catalog's exactly.
 - **Live model check.** With temporary operator access, the adapter's exact
   payload (thinking disabled, effort `low`) returned HTTP 200 from Opus 5 DZ and
   from Sonnet 5 GS and DZ. Opus 5.5 behaved as recorded above.
@@ -179,27 +197,62 @@ The cross-tenant path must never use a client secret.
 #### Adaptive-thinking profile design
 
 The live check on 2026-09-25 settled the contradiction: Opus 5.5 rejects
-disabled thinking. The design below therefore applies. It needs an owner
-decision to amend the thinking-disabled rule in `AGENTS.md`. A first,
-text-only stage is smaller: omitting `thinking` already returns HTTP 200, and a
-profile without tool calling never continues a tool loop, so it needs no block
-replay. The full design reuses the agent loop's existing turn-local
-continuation channel rather than adding storage:
+disabled thinking, so the design below applies. It is staged. The `AGENTS.md`
+Claude profile rule now allows the explicit adaptive text-only profile; that
+amendment is an owner decision reviewed with the change that made it.
 
-- **Catalog.** `anthropicThinking` gains `"adaptive"` in
-  `infra/models.schema.json` and `ModelEntry`.
-  - `require_external_profile` accepts, for adaptive rows only, effort `low`
-    to `xhigh` with default `medium`. Learn documents `xhigh` and `max` as
-    equivalent, and AI4IA's effort vocabulary stops at `xhigh`.
+**Stage 1 (text-only) is implemented.** Omitting `thinking` returns HTTP 200,
+and a profile without tool calling never continues a tool loop, so it needs no
+block replay:
+
+- **Catalog.** `anthropicThinking` accepts `"adaptive"` in
+  `infra/models.schema.json`, `ModelEntry` and the catalog scripts.
+  - Adaptive rows require `toolCalling: false`, text-only input,
+    `samplingSupported: false` and low/medium/high effort. The schema, both
+    catalog scripts and `require_external_profile` enforce the pairing, and
+    disabled rows keep their rules.
   - Ordinary rows still omit the field, preserving legacy consent and
     publication digests.
 - **Payload.**
-  - Omit `thinking` (equivalent to adaptive), send `output_config.effort`, and
-    keep the default `display: "omitted"`.
-  - Refuse a `required` or named `tool_choice` before dispatch.
-  - Size `max_tokens` from the profile rather than the adapter's generic 4,096
-    default, because thinking counts against it. A `max_tokens` stop keeps
-    mapping to the incomplete outcome.
+  - `thinking` is omitted (equivalent to adaptive) and `output_config.effort` is
+    always sent, defaulting to `medium`. The default `display: "omitted"` is
+    kept.
+  - Any tools, any `tool_choice` other than absent, `auto` or `none`, and tool
+    calls or results in history are refused before dispatch.
+- **Runtime.**
+  - `toolCalling: false` already refuses tool-using or linked agents, capability
+    slash commands such as `/research`, workflows and automation.
+  - Stage 1 also withholds the injected `load_skill` tool from such models.
+  - A published chat source settles its reviewed profile before the user
+    message is saved. When the profile has contracts that can't be offered
+    without tools and no declared narrowing applies, the turn refuses with a
+    stable 422 `publication_model_tools_unsupported`. A declared
+    `request_tools_disabled` narrowing still runs and is recorded.
+- **Token-limit stops.** A `max_tokens` stop, including a thinking-only reply,
+  reports the existing incomplete outcome on both transports: fallback text, an
+  incomplete partial receipt and no automatic memory write. Automatic
+  summarization folds only a complete reply with text, and a tool call cut off
+  by the limit is never executed.
+- **History and evidence.** The existing parsers drop `thinking` and
+  `redacted_thinking` blocks. Controls prove that non-empty thinking text never
+  reaches SSE events, message history, receipts or logs on either transport.
+  The log control attaches capture after the app configures logging and proves
+  capture works with the turn's own request record.
+- **Pricing.** `tokenRatesBySku` has Opus 5.5 rates: Global 4/20 with 0.20
+  cache reads, and US Data Zone 4.4/22 with 0.22. Thinking tokens bill as output
+  tokens and arrive in `usage.output_tokens`. Cache writes stay cost-unknown,
+  and the adapter still requests no caching.
+
+**The tool-capable stage remains future work.** It reuses the agent loop's
+existing turn-local continuation channel rather than adding storage:
+
+- **Catalog.** Allowing `toolCalling: true` for adaptive rows needs this whole
+  stage. Accepting `xhigh` (Learn documents `xhigh` and `max` as equivalent;
+  AI4IA's effort vocabulary stops at `xhigh`) is a separate reviewed change.
+- **Payload.** Size `max_tokens` from the profile rather than the adapter's
+  generic 4,096 default, because thinking counts against it. Chat already sends
+  the profile ceiling by default. Stage 1 reports a `max_tokens` stop as
+  incomplete, so summarization's 1,024-token cap can end in a skipped fold.
 - **Capture.** `anthropic_json_to_chat` and `parse_anthropic_event` keep a
   tool-use response's ordered content blocks as opaque provider continuation
   items.
@@ -231,16 +284,9 @@ continuation channel rather than adding storage:
   - Execution-time denials stay appended tool results, never schema edits.
   - The beta `thinking-binding-controls-2026-08-01` header's `drop_block`
     behavior stays unused.
-- **Pricing and refusals.**
-  - `tokenRatesBySku` gains Opus 5.5 rates: Global 4/20 with 0.20 cache reads,
-    and US Data Zone 4.4/22 with 0.22.
-  - Thinking tokens bill as output tokens and arrive in
-    `usage.output_tokens`. Cache writes stay cost-unknown, and the adapter
-    still requests no caching.
-  - `stop_reason: "refusal"` maps to an explicit refused outcome with no retry
-    instead of passing through as an unknown finish reason.
+- **Refusals.** `stop_reason: "refusal"` maps to an explicit refused outcome
+  with no retry instead of passing through as an unknown finish reason.
 - **Controls.**
-  - Payload shape and forced-choice refusal.
   - Byte-identical capture and replay on both transports.
   - Approval-pause resume.
   - Receipt, event and log stripping, with a mutation that removes the strip.

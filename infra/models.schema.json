@@ -58,8 +58,8 @@
           },
           "samplingSupported": { "type": "boolean" },
           "anthropicThinking": {
-            "const": "disabled",
-            "description": "Explicit unified-history profile. Signed adaptive-thinking continuation is not supported."
+            "enum": ["disabled", "adaptive"],
+            "description": "Explicit external-Claude profile. disabled sends thinking disabled and supports the governed text/tool loop. adaptive omits thinking (provider adaptive thinking), is text-only (toolCalling false) and never captures or replays signed thinking blocks."
           },
           "contextWindow": { "type": "integer", "minimum": 1 },
           "maxOutputTokens": { "type": "integer", "minimum": 1 },
@@ -92,7 +92,7 @@
             }
           },
           "reasoningEffort": {
-            "description": "Application-supported effort values. Existing OpenAI values are live-probed; source-only Claude values are the documented thinking-disabled subset, not a live compatibility claim. An empty array disables the control.",
+            "description": "Application-supported effort values. Existing OpenAI values are live-probed; Claude values are the documented low/medium/high subset of its thinking-disabled or adaptive text-only profile, not a live compatibility claim. An empty array disables the control.",
             "type": "array",
             "uniqueItems": true,
             "items": {
@@ -129,6 +129,23 @@
                 },
                 "version": { "type": "string" }
               }
+            }
+          }
+        },
+        "if": {
+          "required": ["anthropicThinking"],
+          "properties": { "anthropicThinking": { "const": "adaptive" } }
+        },
+        "then": {
+          "description": "The adaptive profile is text-only: no tool loop can start, so signed thinking blocks never need replay.",
+          "required": ["toolCalling", "inputModalities", "samplingSupported", "reasoningEffort"],
+          "properties": {
+            "toolCalling": { "const": false },
+            "inputModalities": { "const": ["text"] },
+            "samplingSupported": { "const": false },
+            "reasoningEffort": {
+              "minItems": 1,
+              "items": { "enum": ["low", "medium", "high"] }
             }
           }
         }

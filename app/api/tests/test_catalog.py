@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -617,6 +620,56 @@ def test_claude_is_wired_for_chat_and_agents_through_messages():
         ("eastus2", "GlobalStandard"),
         ("eastus2", "DataZoneStandard"),
     }
+
+
+def test_claude_opus_5_5_uses_the_explicit_adaptive_text_only_profile():
+    """Opus 5.5 rejects disabled thinking, so it ships text-only: no tool loop, no replay."""
+    catalog = load_catalog()
+    entry = catalog.get("claude-opus-5-5")
+    assert entry is not None
+    assert (entry.displayName, entry.category, entry.api, entry.format) == (
+        "Claude Opus 5.5", "reasoning", "anthropic", "Anthropic",
+    )
+    assert (entry.deploymentTarget, entry.anthropicThinking) == ("external-claude", "adaptive")
+    assert (entry.contextWindow, entry.maxOutputTokens) == (1_000_000, 128_000)
+    assert entry.inputModalities == ["text"]
+    assert entry.toolCalling is False and entry.supportsTools is False
+    assert entry.conversational is True and entry.supportsSampling is False
+    assert entry.reasoningEffortOptions == ["low", "medium", "high"]
+    # Exactly the two deployments that exist in the dedicated account (2026-09-25).
+    assert [
+        (option.region, option.sku, option.residency, option.modelVersion, option.deploymentName)
+        for option in entry.options
+    ] == [
+        ("eastus2", "GlobalStandard", "global", "2", "claude-opus-5-5-slurmfactory-eastus2-glbl"),
+        ("eastus2", "DataZoneStandard", "us", "2", "claude-opus-5-5-slurmfactory-eastus2-dz"),
+    ]
+    assert load_catalog(None, "global", False).get("claude-opus-5-5") is None
+
+
+def test_models_schema_requires_the_exact_adaptive_text_only_shape():
+    from copy import deepcopy
+
+    import jsonschema
+
+    root = Path(__file__).resolve().parents[3]
+    schema = json.loads((root / "infra" / "models.schema.json").read_text(encoding="utf-8"))
+    document = json.loads((root / "infra" / "models.json").read_text(encoding="utf-8"))
+    validator = jsonschema.Draft7Validator(schema)
+    assert not list(validator.iter_errors(document))
+    name = next(m["name"] for m in document["catalog"] if m.get("anthropicThinking") == "adaptive")
+    for field, value in (
+        ("toolCalling", True), ("toolCalling", None), ("inputModalities", ["text", "image"]),
+        ("inputModalities", None), ("samplingSupported", True), ("samplingSupported", None),
+        ("reasoningEffort", ["low", "xhigh"]), ("reasoningEffort", []), ("anthropicThinking", "enabled"),
+    ):
+        changed = deepcopy(document)
+        row = next(m for m in changed["catalog"] if m["name"] == name)
+        if value is None:
+            row.pop(field)
+        else:
+            row[field] = value
+        assert list(validator.iter_errors(changed)), (field, value)
 
 
 def test_claude_entitlement_gate_removes_model_from_runtime_catalog():

@@ -1155,6 +1155,9 @@ Four rules follow:
   before the toolbox and reuses matching versions after interrupted activation.
 - Skills are discovered only from generated official-catalog entries with
   `resourcesEnabled`; never accept BYO MCP resources as instructions.
+  `load_skill` is a tool, so a `toolCalling: false` model never receives it; a
+  published chat source that can't be satisfied without tools refuses with a
+  422 before the user message is saved, rather than narrowing silently.
 - Preserve progressive disclosure: advertise bounded name/description metadata,
   load the full resource only through `load_skill`, and retain URI, version/default
   resolution, content digest, and truncation provenance in execution receipts.
@@ -1224,8 +1227,13 @@ Four rules follow:
    compare ordered policy structure and exact parsed expression/body/value text,
    never collapse whitespace inside code or payloads. Keep stable raw observations
    around that comparison and keep the postprovision check at script scope.
-   New Claude profiles require thinking disabled, text/tools and low/medium/high
-   native effort throughout catalog, consent/publication and adapter/receipts.
+   New Claude profiles are either thinking-disabled text/tools or the explicit
+   adaptive text-only profile (`anthropicThinking: "adaptive"`, `toolCalling:
+   false`), with low/medium/high native effort throughout catalog,
+   consent/publication and adapter/receipts. Adaptive requests omit `thinking`,
+   refuse tools, forced tool choice and tool history before dispatch, and never
+   surface thinking or redacted-thinking blocks in events, history, receipts or
+   logs. Tool-capable adaptive continuation (signed block replay) is unsupported.
    Exact deployment/SKU selects frozen pricing, including the US DataZone premium;
    missing cache-write duration or lost cache coverage stays unknown. No hidden
    reasoning, historical repricing or Cosmos schema change is introduced. See

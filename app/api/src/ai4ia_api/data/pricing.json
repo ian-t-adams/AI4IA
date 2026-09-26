@@ -2,9 +2,9 @@
   "_comment": "Best-effort USD estimates for cost tracking ONLY, never authoritative billing. Token models use inputPer1M/outputPer1M. imageModels, documentModels and avatarModels use the explicit billing basis shown. Any absent model or unsupported option records cost as unknown rather than zero.",
   "_source": "Azure Retail Prices API (https://prices.azure.com/api/retail/prices, 2023-01-01-preview) for Azure BFL Flux Models, Azure Mistral Models Global Standard meters, and Azure Content Understanding document/contextualization meters. GPT-6 Astra uses Microsoft's official Global Standard short-context launch pricing (https://azure.microsoft.com/en-us/blog/gpt-6-astra-frontier-intelligence-for-work-now-generally-available-in-microsoft-foundry/), verified 2026-09-06 while its retail meters await publication. GPT-6 Sol and GPT-6 Luna use Microsoft's official Global Standard short-context launch pricing (https://azure.microsoft.com/en-us/blog/gpt-6-astra-sol-and-luna-for-production-agents-in-microsoft-foundry/), verified 2026-09-23 while their retail meters await publication. GPT-5.5 uses the Azure Retail Prices API Global Standard short-context meters '5.5 ShortCo inp Gl' and '5.5 ShortCo opt Gl' (product Azure OpenAI GPT5, eastus2 and swedencentral, effective 2026-05-01), verified 2026-09-23. MAI-Thinking-1 comes from the official Azure MAI registry asset. Claude comes from Anthropic's official Microsoft Foundry pricing documentation.",
   "_caveats": "Flat rates cannot express every meter dimension. Long-context, cache, priority, Data Zone, regional, batch, reference-image, annotation, and provisioned variants may differ. Astra's Global Standard long-context rates are $20 input/$75 output per million tokens rather than the short-context $10/$50 estimate recorded here; its US Data Zone Standard deployment carries a 10% premium ($11/$55 short context). Global Standard long-context rates are $4/$15 for GPT-6 Sol, $0.20/$0.75 for GPT-6 Luna and $10/$45 for GPT-5.5 rather than the short-context estimates recorded here; their Data Zone Standard rates carry a 10% US or 20% EU premium for GPT-6 Sol/Luna and a 10% premium for GPT-5.5. FLUX.2 estimates use output megapixels; FLUX.1 uses one image. MAI-Image-2.5/Pro/Flash, MAI-Image-2.6/Flash, gpt-image-2, and gpt-image-1-mini remain cost-unknown because no unambiguous Azure retail meter is published. gpt-image-2.5-flare and gpt-image-2.5-sunburst also remain cost-unknown: their Azure retail meters (verified 2026-09-23) bill text and image tokens per million, which this per-image/megapixel image book cannot map. Mistral OCR 4 annotation pricing is excluded because this app requests OCR only. Content Understanding page meters are recorded separately by minimal/basic/standard usage; standard versus advanced contextualization is taken from the service's own contextualizationTokens and advancedContextualizationTokens usage properties, never from a locally authored analyzer label.",
-  "_claudeSource": "Verified 2026-09-20 and 2026-09-25: https://platform.claude.com/docs/en/about-claude/pricing#claude-in-microsoft-foundry-pricing and #model-pricing. Opus 5 $5/$25, Sonnet 5 $2/$10 standard USD/MTok; US DataZoneStandard applies 1.1x, including cache reads. Rates are estimates, not a bill cap. Cache writes remain cost-unknown when their duration is not evidenced; no caching is requested by the adapter.",
+  "_claudeSource": "Verified 2026-09-20 and 2026-09-25: https://platform.claude.com/docs/en/about-claude/pricing#claude-in-microsoft-foundry-pricing and #model-pricing. Opus 5 $5/$25, Sonnet 5 $2/$10 and Opus 5.5 $4/$20 standard USD/MTok; cache hits are 0.1x input except Opus 5.5 at 0.05x ($0.20). US DataZoneStandard applies 1.1x, including cache reads. Rates are estimates, not a bill cap. Cache writes remain cost-unknown when their duration is not evidenced; no caching is requested by the adapter.",
   "_avatarSource": "Azure Speech pricing (https://azure.microsoft.com/pricing/details/cognitive-services/speech-services/), observed 2026-09-25 for westus2: photo avatar creation $2 per avatar, and real-time standard custom avatar $0.60 per minute. The page footnote says avatar is billed per second, so the live meter (basis second) prices whole seconds at perMinuteUsd/60. The eastus2 home account's prices were not observed separately and are assumed equal. Estimates only; HD custom avatar and rendered (batch) avatar minutes are separate meters that this book does not price.",
-  "version": "2026-09-26-photo-avatars-live",
+  "version": "2026-09-26-avatars-opus-5-5",
   "currency": "USD",
   "models": {
     "gpt-6-astra": { "inputPer1M": 10.0, "outputPer1M": 50.0 },
@@ -33,6 +33,7 @@
     "claude-opus-4-8": { "inputPer1M": 5.0, "outputPer1M": 25.0 },
     "claude-opus-5": { "inputPer1M": 5.0, "outputPer1M": 25.0 },
     "claude-sonnet-5": { "inputPer1M": 2.0, "outputPer1M": 10.0 },
+    "claude-opus-5-5": { "inputPer1M": 4.0, "outputPer1M": 20.0 },
     "Mistral-Large-3": { "inputPer1M": 0.5, "outputPer1M": 1.5 },
     "gpt-4.1-mini": { "inputPer1M": 0.4, "outputPer1M": 1.6 },
     "gpt-4.1-nano": { "inputPer1M": 0.1, "outputPer1M": 0.4 },
@@ -53,6 +54,10 @@
     "claude-sonnet-5": {
       "GlobalStandard": { "inputPer1M": 2.0, "outputPer1M": 10.0, "cacheReadPer1M": 0.2 },
       "DataZoneStandard": { "inputPer1M": 2.2, "outputPer1M": 11.0, "cacheReadPer1M": 0.22 }
+    },
+    "claude-opus-5-5": {
+      "GlobalStandard": { "inputPer1M": 4.0, "outputPer1M": 20.0, "cacheReadPer1M": 0.2 },
+      "DataZoneStandard": { "inputPer1M": 4.4, "outputPer1M": 22.0, "cacheReadPer1M": 0.22 }
     }
   },
   "imageModels": {
