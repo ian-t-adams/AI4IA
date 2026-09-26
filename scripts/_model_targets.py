@@ -15,13 +15,20 @@ def model_target(model: dict[str, Any]) -> ModelTarget:
     if value == "external-claude":
         if model.get("format") != "Anthropic" or model.get("api") != "anthropic":
             raise ValueError("external-claude requires the Anthropic Messages adapter")
+        thinking = model.get("anthropicThinking")
         if (
-            model.get("anthropicThinking") != "disabled"
+            thinking not in ("disabled", "adaptive")
             or model.get("samplingSupported") is not False
             or not model.get("reasoningEffort")
             or set(model["reasoningEffort"]) - {"low", "medium", "high"}
+            # Adaptive thinking blocks are never replayed, so that profile is text-only.
+            or (thinking == "adaptive" and (
+                model.get("toolCalling") is not False or model.get("inputModalities") != ["text"]
+            ))
         ):
-            raise ValueError("external-claude requires the explicit thinking-disabled effort profile")
+            raise ValueError(
+                "external-claude requires the explicit thinking-disabled or adaptive text-only effort profile"
+            )
         for deployment in model.get("deployments", []):
             if (
                 deployment.get("region") != "eastus2"

@@ -125,7 +125,9 @@ class ModelEntry(BaseModel):
     api: str = "chat"
     deploymentTarget: Literal["source", "external-claude"] = "source"
     samplingSupported: bool | None = None
-    anthropicThinking: Literal["disabled"] | None = None
+    # External Claude profile: "disabled" is text plus the governed tool loop;
+    # "adaptive" is text-only because signed thinking blocks are not replayed.
+    anthropicThinking: Literal["disabled", "adaptive"] | None = None
     requiredRealtimeProtocol: Literal["ga"] | None = None
     # Per-model context window (total prompt+completion tokens the deployment
     # accepts) and the maximum tokens it will emit in one completion. Both are
@@ -168,16 +170,20 @@ class ModelEntry(BaseModel):
     def require_external_profile(self) -> None:
         if self.deploymentTarget == "external-claude" and (
             self.api != "anthropic" or self.format != "Anthropic"
-            or self.anthropicThinking != "disabled" or self.samplingSupported is not False
+            or (self.anthropicThinking, self.toolCalling) not in {("disabled", True), ("adaptive", False)}
+            or self.samplingSupported is not False
             or not self.reasoningEffort or set(self.reasoningEffort) - {"low", "medium", "high"}
-            or self.toolCalling is not True or self.inputModalities != ["text"]
+            or self.inputModalities != ["text"]
             or not self.contextWindow or not self.maxOutputTokens
             or not self.options or any(
                 o.region != "eastus2" or o.sku not in {"GlobalStandard", "DataZoneStandard"}
                 or not o.modelVersion for o in self.options
             )
         ):
-            raise ValueError("External Claude requires the complete thinking-disabled text/tool profile.")
+            raise ValueError(
+                "External Claude requires a complete thinking-disabled text/tool "
+                "or adaptive text-only profile."
+            )
 
     @model_validator(mode="after")
     def validate_realtime_protocol(self) -> ModelEntry:

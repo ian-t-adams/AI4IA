@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import tomllib
-from importlib.metadata import version
+from importlib.metadata import PackagePath, distribution, version
 from pathlib import Path
 from types import SimpleNamespace
 from typing import get_args
@@ -47,7 +48,7 @@ def _valid_manifest() -> dict:
         "owner": "repository-owner",
         "sdkContract": {
             "package": "azure-ai-projects",
-            "version": "2.6.1",
+            "version": "2.7.0",
             "status": "validated",
             "surface": "project.toolboxes",
         },
@@ -176,6 +177,19 @@ def _assert_sdk_contract_metadata():
         schema = json.loads((path.parent / manifest["$schema"]).read_text(encoding="utf-8"))
         assert manifest["sdkContract"]["version"] == pins[0], path
         assert schema["properties"]["sdkContract"]["properties"]["version"]["const"] == pins[0]
+    # Operator-facing install instructions must cite the same exact pin. The portal's
+    # requirements page still said 2.4.0 when 2.6.1 was the pin.
+    for path in (
+        _TOOLBOX_SCRIPT,
+        _REPO_ROOT / "foundry" / "README.md",
+        _REPO_ROOT / "docs" / "foundry-toolbox.md",
+        _REPO_ROOT / "site" / "data" / "requirements.js",
+    ):
+        cited = re.findall(r"azure-ai-projects==([^\s`'\",)]+)", path.read_text(encoding="utf-8"))
+        assert cited and set(cited) == {pins[0]}, (
+            f"{path.relative_to(_REPO_ROOT).as_posix()} cites azure-ai-projects=={cited}, "
+            f"not the exact pin {pins[0]}"
+        )
 
 
 def test_sdk_contract_metadata_matches_the_installed_exact_pin():
@@ -186,9 +200,39 @@ def test_sdk_contract_metadata_rejects_mismatched_imported_source(monkeypatch):
     from azure.ai import projects
 
     _assert_sdk_contract_metadata()
-    monkeypatch.setattr(projects, "__version__", "2.6.0")
+    monkeypatch.setattr(projects, "__version__", "2.6.1")
     with pytest.raises(AssertionError, match="Imported SDK source"):
         _assert_sdk_contract_metadata()
+
+
+def _sdk_distribution_stray_files(dist) -> list[str]:
+    # RECORD lists what the installer actually wrote. SDK 2.7.0's top_level.txt also names
+    # `scripts`, an upstream directory that holds only a PowerShell helper; nothing ships there.
+    files = dist.files
+    assert files, "azure-ai-projects has no installed RECORD to review"
+    dist_info = f"azure_ai_projects-{dist.version}.dist-info"
+    return sorted(
+        str(file)
+        for file in files
+        if file.parts[:3] != ("azure", "ai", "projects") and file.parts[0] != dist_info
+    )
+
+
+def test_installed_sdk_distribution_installs_only_its_own_package():
+    # A regular top-level package from the SDK, such as scripts/__init__.py, would shadow this
+    # repository's namespace `scripts` package. The api job imports that package with the
+    # foundry extra installed (`python -m scripts.evaluations`, `scripts.tests.*`).
+    assert _sdk_distribution_stray_files(distribution("azure-ai-projects")) == []
+
+
+@pytest.mark.parametrize("stray", ["scripts/__init__.py", "azure/__init__.py"])
+def test_sdk_distribution_inventory_rejects_files_outside_its_package(stray):
+    installed = distribution("azure-ai-projects")
+    assert _sdk_distribution_stray_files(installed) == []
+    widened = SimpleNamespace(
+        version=installed.version, files=[*installed.files, PackagePath(stray)]
+    )
+    assert _sdk_distribution_stray_files(widened) == [stray]
 
 
 @pytest.mark.parametrize(
@@ -207,7 +251,7 @@ def test_sdk_contract_schema_rejects_the_previous_version(path):
     manifest = _tb.load_manifest(path)
     schema = json.loads((path.parent / manifest["$schema"]).read_text(encoding="utf-8"))
     jsonschema.validate(manifest, schema)
-    manifest["sdkContract"]["version"] = "2.6.0"
+    manifest["sdkContract"]["version"] = "2.6.1"
     errors = list(jsonschema.Draft7Validator(schema).iter_errors(manifest))
     assert any(
         error.validator == "const" and list(error.path) == ["sdkContract", "version"]
@@ -2570,14 +2614,20 @@ def _schema_fields_for_tool(tool_schema, tool_type):
     return fields
 
 
-def _assert_sdk_toolbox_parity(m):
-    sdk_toolbox_classes: dict[str, type] = {}
+def _sdk_toolbox_classes(m) -> dict[str, type]:
+    # Membership follows the SDK's own ToolboxTool hierarchy, not the class name:
+    # SDK 2.7.0's VoiceAgentToolboxTool is a VoiceAgentTool that attaches a
+    # toolbox to a voice agent, not a toolbox tool type.
+    classes: dict[str, type] = {}
     for class_name in dir(m):
-        if not class_name.endswith("ToolboxTool") or class_name == "ToolboxTool":
-            continue
         obj = getattr(m, class_name)
-        if isinstance(obj, type):
-            sdk_toolbox_classes[class_name] = obj
+        if class_name != "ToolboxTool" and isinstance(obj, type) and issubclass(obj, m.ToolboxTool):
+            classes[class_name] = obj
+    return classes
+
+
+def _assert_sdk_toolbox_parity(m):
+    sdk_toolbox_classes = _sdk_toolbox_classes(m)
     assert len(sdk_toolbox_classes) >= 16, (
         f"expected at least the 16 known toolbox types via reflection, found: {sorted(sdk_toolbox_classes)}"
     )
@@ -2638,6 +2688,27 @@ def test_unknown_future_sdk_toolbox_type_still_fails_parity(monkeypatch):
     _assert_sdk_toolbox_parity(m)
     monkeypatch.setattr(m, "FutureToolboxTool", m.ToolboxTool, raising=False)
     with pytest.raises(AssertionError, match="SDK-only.*FutureToolboxTool"):
+        _assert_sdk_toolbox_parity(m)
+
+
+def test_unknown_toolbox_subclass_fails_parity_whatever_its_name(monkeypatch):
+    m = pytest.importorskip("azure.ai.projects.models")
+    _assert_sdk_toolbox_parity(m)
+    monkeypatch.setattr(m, "FutureTool", m.ToolboxTool, raising=False)
+    with pytest.raises(AssertionError, match="SDK-only.*FutureTool"):
+        _assert_sdk_toolbox_parity(m)
+
+
+def test_class_named_like_a_toolbox_tool_outside_the_hierarchy_is_not_a_toolbox_type(monkeypatch):
+    m = pytest.importorskip("azure.ai.projects.models")
+
+    class VoiceAgentToolboxTool:  # stands in for SDK 2.7.0's VoiceAgentTool subclass
+        pass
+
+    monkeypatch.setattr(m, "VoiceAgentToolboxTool", VoiceAgentToolboxTool, raising=False)
+    _assert_sdk_toolbox_parity(m)
+    monkeypatch.setattr(m, "VoiceAgentToolboxTool", m.ToolboxTool)
+    with pytest.raises(AssertionError, match="SDK-only.*VoiceAgentToolboxTool"):
         _assert_sdk_toolbox_parity(m)
 
 

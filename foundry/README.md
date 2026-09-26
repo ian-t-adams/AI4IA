@@ -29,12 +29,13 @@ APIM injects the managed-identity bearer, the static
 | `routines/routine.schema.json` + `routines/example.routine.json` | Design/preview routine contract. It is validated against canonical toolbox names but is not created or served. |
 | `a2a/a2a.schema.json` + `a2a/example.a2a.json` | Design/preview A2A contract with an explicit blocker inventory. It does not create a callable integration. |
 
-The audited provisioning SDK is `azure-ai-projects==2.6.1`. The `shell` and
+The audited provisioning SDK is `azure-ai-projects==2.7.0`. The `shell` and
 `web_iq_preview` toolbox types introduced in 2.6.0 remain unsupported pending capability
-and governance review. All 16 SDK classes are accounted for, but the manifest
+and governance review. All 16 SDK toolbox classes are accounted for, but the manifest
 allowlist remains 14 types and the canonical three tools plus `evidence-review`
-skill are unchanged. The 2.6.1 patch fixes Agent Insights polling, not toolbox or
-Skills contracts. See the full runbook for the SDK review and exact exclusions.
+skill are unchanged. The 2.7.0 release adds preview voice agents and other agent
+surfaces; the toolbox and Skills contracts the provisioner uses are unchanged. See
+the full runbook for the SDK review and exact exclusions.
 
 ## Reconciliation
 
@@ -73,6 +74,8 @@ python scripts/provision-foundry-toolbox.py --check-access
 # 3. Populate toolbox.manifest.json, then inspect the reconciliation plan.
 #    Tip: copy toolbox.manifest.example.json, prune/review it, and change
 #    lifecycle from reference to active before any approved reconciliation.
+#    Then run python scripts/gen-mcp-catalog.py: the manifest digest is part
+#    of the toolbox's consent identity, and app-ci fails until it matches.
 python scripts/provision-foundry-toolbox.py            # dry run: prints plan + mcp-servers.json entry
 
 # 4. Paste the printed entry into infra/mcp-servers.json, set
@@ -92,5 +95,8 @@ The toolbox script reads the project endpoint from `--project-endpoint` or
 For a first standup, the workflow is authoritative because it runs after deploy
 has created the OIDC identity's project role. Reserve a local `--create` for an
 explicitly approved repair after confirming the local operator has that same role.
-Routine and A2A scripts are offline design validators. Everything here is public
-preview; do not infer that a schema-valid routine or A2A design is callable.
+Routine and A2A scripts are offline design validators. The toolbox bridge uses
+preview toolbox/Skills contracts. Foundry routines and the A2A tool became GA in
+September 2026, but these routine and A2A files remain design-only (see
+[`docs/foundry-platform-evaluation.md`](../docs/foundry-platform-evaluation.md));
+do not infer that a schema-valid routine or A2A design is callable.

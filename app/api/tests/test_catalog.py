@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -292,11 +295,42 @@ def test_astra_metadata_and_residency():
     assert entry.maxOutputTokens == 128_000
     assert entry.inputModalities == ["text", "image"]
     assert entry.toolCalling is True
-    assert {(option.region, option.sku) for option in entry.options} == {
-        ("eastus2", "GlobalStandard"),
-        ("swedencentral", "GlobalStandard"),
-    }
-    assert all(option.residency == "global" for option in entry.options)
+    # 2026-09-23 read-only offering/quota evidence: eastus2 offers
+    # DataZoneStandard (US zone, 0/333 used); swedencentral offers only
+    # GlobalStandard, so there is deliberately no EU zone row.
+    assert [(option.region, option.sku, option.residency) for option in entry.options] == [
+        ("eastus2", "GlobalStandard", "global"),
+        ("eastus2", "DataZoneStandard", "us"),
+        ("swedencentral", "GlobalStandard", "global"),
+    ]
+    assert {option.modelVersion for option in entry.options} == {"2026-09-03"}
+
+
+@pytest.mark.parametrize(("policy", "expected"), [
+    ("global", ("eastus2", "GlobalStandard", "global")),
+    ("us", ("eastus2", "DataZoneStandard", "us")),
+    ("zonal", ("eastus2", "DataZoneStandard", "us")),
+    ("eu", None),
+])
+def test_astra_zone_policies_route_only_to_the_us_data_zone_row(policy, expected):
+    chosen = load_catalog(None, policy).resolve_deployment("gpt-6-astra")
+    assert (None if chosen is None else (chosen.region, chosen.sku, chosen.residency)) == expected
+
+
+@pytest.mark.parametrize(("policy", "residencies"), [
+    ("global", {"global", "us"}),
+    ("us", {"us"}),
+    ("eu", None),
+])
+def test_models_api_advertises_the_astra_zone_row_exactly_where_policy_routes_it(policy, residencies):
+    with TestClient(create_app(make_settings(data_residency=policy))) as client:
+        response = client.get("/api/models")
+    assert response.status_code == 200, response.text
+    advertised = {model["id"]: model for model in response.json()["models"]}
+    if residencies is None:
+        assert "gpt-6-astra" not in advertised
+    else:
+        assert {option["residency"] for option in advertised["gpt-6-astra"]["options"]} == residencies
 
 
 _TEXT_PROFILE = (
@@ -574,10 +608,68 @@ def test_claude_is_wired_for_chat_and_agents_through_messages():
     assert entry.anthropicThinking == "disabled"
     assert entry.deploymentTarget == "external-claude"
     assert entry.supportsSampling is False
+    # 2026-09-25: GlobalStandard quota for Opus 5 is held by a separately owned
+    # deployment in the target subscription, so the dedicated account serves it
+    # as US DataZoneStandard only.
     assert {(option.region, option.sku) for option in entry.options} == {
+        ("eastus2", "DataZoneStandard"),
+    }
+    sonnet = catalog.get("claude-sonnet-5")
+    assert sonnet is not None
+    assert {(option.region, option.sku) for option in sonnet.options} == {
         ("eastus2", "GlobalStandard"),
         ("eastus2", "DataZoneStandard"),
     }
+
+
+def test_claude_opus_5_5_uses_the_explicit_adaptive_text_only_profile():
+    """Opus 5.5 rejects disabled thinking, so it ships text-only: no tool loop, no replay."""
+    catalog = load_catalog()
+    entry = catalog.get("claude-opus-5-5")
+    assert entry is not None
+    assert (entry.displayName, entry.category, entry.api, entry.format) == (
+        "Claude Opus 5.5", "reasoning", "anthropic", "Anthropic",
+    )
+    assert (entry.deploymentTarget, entry.anthropicThinking) == ("external-claude", "adaptive")
+    assert (entry.contextWindow, entry.maxOutputTokens) == (1_000_000, 128_000)
+    assert entry.inputModalities == ["text"]
+    assert entry.toolCalling is False and entry.supportsTools is False
+    assert entry.conversational is True and entry.supportsSampling is False
+    assert entry.reasoningEffortOptions == ["low", "medium", "high"]
+    # Exactly the two deployments that exist in the dedicated account (2026-09-25).
+    assert [
+        (option.region, option.sku, option.residency, option.modelVersion, option.deploymentName)
+        for option in entry.options
+    ] == [
+        ("eastus2", "GlobalStandard", "global", "2", "claude-opus-5-5-slurmfactory-eastus2-glbl"),
+        ("eastus2", "DataZoneStandard", "us", "2", "claude-opus-5-5-slurmfactory-eastus2-dz"),
+    ]
+    assert load_catalog(None, "global", False).get("claude-opus-5-5") is None
+
+
+def test_models_schema_requires_the_exact_adaptive_text_only_shape():
+    from copy import deepcopy
+
+    import jsonschema
+
+    root = Path(__file__).resolve().parents[3]
+    schema = json.loads((root / "infra" / "models.schema.json").read_text(encoding="utf-8"))
+    document = json.loads((root / "infra" / "models.json").read_text(encoding="utf-8"))
+    validator = jsonschema.Draft7Validator(schema)
+    assert not list(validator.iter_errors(document))
+    name = next(m["name"] for m in document["catalog"] if m.get("anthropicThinking") == "adaptive")
+    for field, value in (
+        ("toolCalling", True), ("toolCalling", None), ("inputModalities", ["text", "image"]),
+        ("inputModalities", None), ("samplingSupported", True), ("samplingSupported", None),
+        ("reasoningEffort", ["low", "xhigh"]), ("reasoningEffort", []), ("anthropicThinking", "enabled"),
+    ):
+        changed = deepcopy(document)
+        row = next(m for m in changed["catalog"] if m["name"] == name)
+        if value is None:
+            row.pop(field)
+        else:
+            row[field] = value
+        assert list(validator.iter_errors(changed)), (field, value)
 
 
 def test_claude_entitlement_gate_removes_model_from_runtime_catalog():

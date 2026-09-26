@@ -49,6 +49,11 @@ export interface VoiceSettingsProvider {
   description: string;
 }
 
+export interface VoiceSettingsAvatarChoice {
+  id: string;
+  displayName: string;
+}
+
 export interface VoiceSettingsPanelProps {
   providers: VoiceSettingsProvider[];
   provider: VoiceProviderId;
@@ -68,6 +73,14 @@ export interface VoiceSettingsPanelProps {
   speechSettings: SpeechVoiceLiveSettings;
   onSpeechSettingsChange: (settings: SpeechVoiceLiveSettings) => void;
   onReset: () => void;
+  // Owned photo avatars usable with Speech Voice Live right now. The picker
+  // appears only when there is at least one; it grants nothing (the server
+  // re-checks every connection).
+  avatarChoices?: VoiceSettingsAvatarChoice[];
+  avatarId?: string | null;
+  onAvatarChange?: (id: string | null) => void;
+  // False when this browser can't play the avatar stream, so sessions stay voice only.
+  avatarVideoSupported?: boolean;
   // True while a live session is connecting/live/closing or a transcript save
   // is in flight — controls disable but stay visible; edits apply next
   // connection.
@@ -110,6 +123,10 @@ export function VoiceSettingsPanel({
   speechSettings,
   onSpeechSettingsChange,
   onReset,
+  avatarChoices,
+  avatarId = null,
+  onAvatarChange,
+  avatarVideoSupported = true,
   locked,
 }: VoiceSettingsPanelProps) {
   const idPrefix = useId();
@@ -126,6 +143,9 @@ export function VoiceSettingsPanel({
   );
   const turnDetectionOptions: readonly SpeechVoiceLiveSettings["turnDetection"][] =
     speechProvider?.capabilities.turnDetection.options ?? [];
+  const showAvatarPicker = isSpeechProvider && (avatarChoices?.length ?? 0) > 0;
+  const selectedAvatarId =
+    avatarId && avatarChoices?.some((choice) => choice.id === avatarId) ? avatarId : "";
 
   function patchSettings(patch: Partial<VoiceSessionSettings>) {
     onSettingsChange({ ...settings, ...patch });
@@ -263,6 +283,34 @@ export function VoiceSettingsPanel({
             ))}
           </select>
         </label>
+
+        {showAvatarPicker && (
+          <div style={FIELD_STYLE}>
+            <label htmlFor={`${idPrefix}-avatar`}>Avatar</label>
+            <select
+              id={`${idPrefix}-avatar`}
+              aria-describedby={`${idPrefix}-avatar-description`}
+              value={avatarVideoSupported ? selectedAvatarId : ""}
+              disabled={locked || !avatarVideoSupported || !onAvatarChange}
+              onChange={(event) =>
+                onAvatarChange?.(event.target.value === "" ? null : event.target.value)
+              }
+              style={CONTROL_STYLE}
+            >
+              <option value="">None (voice only)</option>
+              {avatarChoices?.map((choice) => (
+                <option key={choice.id} value={choice.id}>
+                  {choice.displayName}
+                </option>
+              ))}
+            </select>
+            <span id={`${idPrefix}-avatar-description`} style={{ maxWidth: 260 }}>
+              {avatarVideoSupported
+                ? "Your AI-generated avatar speaks the replies on video. It streams, and is billed, while the session is connected."
+                : "This browser can't play avatar video, so Voice Live stays voice only."}
+            </span>
+          </div>
+        )}
 
         <div style={{ flexBasis: "100%" }}>
           <div

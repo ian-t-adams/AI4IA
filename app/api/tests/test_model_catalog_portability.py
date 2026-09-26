@@ -101,6 +101,25 @@ def test_required_realtime_protocol_survives_generator_and_dev_fallback():
         assert entry.supports_realtime_protocol("ga")
 
 
+def test_schema_limits_required_realtime_protocol_to_realtime_rows():
+    import jsonschema
+    import pytest
+
+    schema = json.loads((_REPO_ROOT / "infra" / "models.schema.json").read_text(encoding="utf-8"))
+    validator = jsonschema.Draft7Validator(schema)
+    source = _synthetic_models("tenant")
+    row = source["catalog"][0]
+    row.update(category="realtime", requiredRealtimeProtocol="ga")
+    validator.validate(source)
+    # Flip only the category: the identical requirement must now be refused.
+    row["category"] = "chat"
+    with pytest.raises(jsonschema.ValidationError, match="'realtime' was expected"):
+        validator.validate(source)
+    # Without the requirement the same chat row is valid again.
+    del row["requiredRealtimeProtocol"]
+    validator.validate(source)
+
+
 def test_runtime_disable_survives_generator_and_dev_fallback():
     from ai4ia_api.catalog import ModelCatalog, _transform_infra_models
 

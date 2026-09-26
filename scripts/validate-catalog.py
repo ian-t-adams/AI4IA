@@ -54,14 +54,18 @@ def main() -> int:
             runtime_enabled(model)
         except ValueError as exc:
             errors.append(f"{name}: {exc}")
-        if model.get("anthropicThinking") is not None and (
+        thinking = model.get("anthropicThinking")
+        if thinking is not None and (
             model.get("api") != "anthropic"
-            or model["anthropicThinking"] != "disabled"
+            or thinking not in ("disabled", "adaptive")
             or not model.get("reasoningEffort")
             or set(model["reasoningEffort"]) - {"low", "medium", "high"}
             or model.get("samplingSupported") is not False
+            or (thinking == "adaptive" and (
+                model.get("toolCalling") is not False or model.get("inputModalities") != ["text"]
+            ))
         ):
-            errors.append(f"{name}: unsupported Anthropic unified-history profile")
+            errors.append(f"{name}: unsupported Anthropic Claude profile")
         if model.get("requiredRealtimeProtocol") not in (None, "ga") or (
             "requiredRealtimeProtocol" in model and model["category"] != "realtime"
         ):

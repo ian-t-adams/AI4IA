@@ -23,6 +23,7 @@ export function Sidebar({
   onOpenSettings,
   onOpenStudio,
   onOpenLibrary,
+  onOpenPhotoAvatars,
   onBeforeSignOut,
   onCollapse,
   openerRef,
@@ -40,6 +41,8 @@ export function Sidebar({
   onOpenSettings: () => void;
   onOpenStudio: () => void;
   onOpenLibrary?: () => void;
+  /** Present only while the server reports photo avatars enabled. */
+  onOpenPhotoAvatars?: () => void;
   onBeforeSignOut?: () => boolean | void;
   onCollapse?: () => void;
   openerRef?: RefObject<HTMLElement | null>;
@@ -287,6 +290,23 @@ export function Sidebar({
             }}
           >
             📚 Document library
+          </button>
+        )}
+        {onOpenPhotoAvatars && (
+          <button
+            type="button"
+            className="sidebar-utility-action"
+            onClick={onOpenPhotoAvatars}
+            style={{
+              width: "100%",
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "transparent",
+              color: "var(--sidebar-fg)",
+            }}
+          >
+            <span aria-hidden="true">👤</span> Photo avatars
           </button>
         )}
         <button

@@ -74,7 +74,7 @@ public sealed class ClaudeFederationTests
     [TestMethod]
     public async Task ActualGeneratedCatalogUsesOnlyTheBoundTargetAndTargetToken()
     {
-        Assert.AreEqual(3, Deployments().Length);
+        Assert.AreEqual(5, Deployments().Length);
         foreach (string deployment in Deployments())
         {
             await using var provider = new WireServer(_ => Task.FromResult(new WireReply(200)));

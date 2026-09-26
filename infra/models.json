@@ -1,6 +1,6 @@
 {
   "$schema": "./models.schema.json",
-  "_comment": "Every deployment pins an explicit version. Existing OpenAI effort values reflect governed live probes, not exhaustive provider capabilities. The 2026-09 gpt-6-sol, gpt-6-luna and gpt-5.5 rows carry Microsoft Learn documented values that mirror their probed gpt-6-astra/GPT-5.6 siblings; governed live probes remain a candidate-rollout step. External Claude is DEFAULT-OFF SOURCE INTENT: target offerings/version/SKU raw capacity were observed separately; its low/medium/high effort is the documented thinking-disabled text/tool subset, NOT a live integration claim. No tenant, account or credential binding is stored here. See docs/runbooks/feature-enablement.md#cross-tenant-claude-source-contract for evidence, prerequisites and activation holds. New probes must stay SimpleL7Proxy -> APIM -> Foundry.",
+  "_comment": "Every deployment pins an explicit version. Existing OpenAI effort values reflect governed live probes, not exhaustive provider capabilities. The 2026-09 gpt-6-sol, gpt-6-luna and gpt-5.5 rows carry Microsoft Learn documented values that mirror their probed gpt-6-astra/GPT-5.6 siblings; governed live probes remain a candidate-rollout step. External Claude is DEFAULT-OFF SOURCE INTENT: target offerings/version/SKU raw capacity were observed separately; its low/medium/high effort is the documented subset of the thinking-disabled text/tool profile (Opus 5, Sonnet 5) or the adaptive text-only profile (Opus 5.5, which rejects disabled thinking), NOT a live integration claim. No tenant, account or credential binding is stored here. See docs/runbooks/feature-enablement.md#cross-tenant-claude-source-contract for evidence, prerequisites and activation holds. New probes must stay SimpleL7Proxy -> APIM -> Foundry.",
   "naming": {
     "_comment": "Naming tokens for the whole stack (single source of truth). `subscriptionToken` is stamped into every model deployment name; `foundryToken` names the Foundry accounts/projects (mf-<foundryToken>-<env>-<region>). main.bicep, scripts/gen-model-catalog.py, scripts/validate-catalog.py, and app/api catalog.py all read these, so changing them here (plus AZURE_ENV_NAME) is what makes a subscription/tenant move 1:1. After changing, run scripts/gen-model-catalog.py to regenerate the runtime catalog. See docs/runbooks/greenfield-standup.md#5-select-environment-posture-and-names.",
     "subscriptionToken": "slurmfactory",
@@ -71,6 +71,12 @@
           "version": "2026-09-03",
           "maxCapacity": 500,
           "maxCapacityPool": "global"
+        },
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 50,
+          "version": "2026-09-03"
         },
         {
           "region": "swedencentral",
@@ -1428,14 +1434,8 @@
       "deployments": [
         {
           "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 40,
-          "version": "2"
-        },
-        {
-          "region": "eastus2",
           "sku": "DataZoneStandard",
-          "capacity": 13,
+          "capacity": 40,
           "version": "2"
         }
       ]
@@ -1458,7 +1458,42 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 20,
+          "capacity": 80,
+          "version": "2"
+        },
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 80,
+          "version": "2"
+        }
+      ]
+    },
+    {
+      "name": "claude-opus-5-5",
+      "displayName": "Claude Opus 5.5",
+      "format": "Anthropic",
+      "category": "reasoning",
+      "api": "anthropic",
+      "deploymentTarget": "external-claude",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "toolCalling": false,
+      "inputModalities": ["text"],
+      "samplingSupported": false,
+      "anthropicThinking": "adaptive",
+      "reasoningEffort": ["low", "medium", "high"],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 40,
+          "version": "2"
+        },
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 40,
           "version": "2"
         }
       ]

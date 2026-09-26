@@ -11,6 +11,7 @@
 // still exist?) happens where the live catalog is available (ChatApp), via the
 // resolveEffective* helpers below.
 import { useCallback, useEffect, useState } from "react";
+import { isPhotoAvatarId } from "./photoAvatars";
 import {
   DEFAULT_VOICE,
   DEFAULT_VOICE_SETTINGS,
@@ -50,6 +51,10 @@ export interface VoicePreferences {
   tools: boolean;
   settings: VoiceSessionSettings;
   speech: SpeechVoiceLiveSettings;
+  // The owned photo avatar (record id) for Speech Voice Live, or null for voice
+  // only. Offered only while the owner still has it as a usable avatar; the
+  // server re-checks ownership and availability on every connection.
+  speechAvatarId: string | null;
 }
 
 export const DEFAULT_VOICE_PREFERENCES: VoicePreferences = {
@@ -61,6 +66,7 @@ export const DEFAULT_VOICE_PREFERENCES: VoicePreferences = {
   tools: false,
   settings: DEFAULT_VOICE_SETTINGS,
   speech: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  speechAvatarId: null,
 };
 
 // Safe bounds for the advanced numeric settings — mirrors what the realtime
@@ -160,6 +166,7 @@ export function normalizeVoicePreferences(raw: unknown): VoicePreferences {
     tools: typeof r.tools === "boolean" ? r.tools : false,
     settings: normalizeVoiceSessionSettings(r.settings),
     speech: normalizeSpeechVoiceLiveSettings(r.speech),
+    speechAvatarId: isPhotoAvatarId(r.speechAvatarId) ? r.speechAvatarId : null,
   };
 }
 

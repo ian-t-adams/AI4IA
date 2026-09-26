@@ -23,11 +23,17 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import re
+import secrets
 import socket
 import ssl
+import subprocess
+import tempfile
 import threading
 import sys
 import unittest
+import uuid
 import warnings
 from copy import deepcopy
 from contextlib import redirect_stdout
@@ -40,6 +46,7 @@ from unittest.mock import Mock, patch
 import yaml
 
 from scripts.tests._loader import load_script
+from scripts.tests._platform import find_bash
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "post-deploy-verify.py"
@@ -3663,6 +3670,301 @@ class DeployWorkflowWiringTests(unittest.TestCase):
         runbook = (ROOT / "docs/runbooks/deployment.md").read_text(encoding="utf-8")
         self.assertIn("post-deploy-verify.py", runbook)
         self.assertIn("AI4IA_DEPLOY_VERIFY_CANARY", runbook)
+
+
+# ---------------------------------------------------------------------------
+# canary token acquisition, executed
+# ---------------------------------------------------------------------------
+
+BASH = find_bash()
+PREFLIGHT_STEP = "Preflight the post-deploy canary token"
+TOKEN_STEP = "Acquire the canary token for verification"
+PREFLIGHT_ERROR = (
+    "::error::The deploy identity could not obtain an access token for the API "
+    "audience in AI4IA_ENTRA_AUDIENCE, so the post-deploy canary could not run. The "
+    "API app registration needs a service principal in this tenant "
+    "(scripts/provision-entra-apps.ps1 runs 'az ad sp create'), and if that app "
+    "requires assignment, the deploy identity needs an app role on it. Fix the "
+    "grant, or set AI4IA_DEPLOY_VERIFY_CANARY=false to ship without end-to-end proof."
+)
+TOKEN_ERROR = (
+    "::error::Could not obtain a canary token even though the pre-deploy preflight "
+    "could. That is an Entra or network problem, not a bad release, so this run "
+    "stops WITHOUT rolling back. The deploy is live but unverified -- check it, "
+    "then re-run the workflow."
+)
+EXPIRED_ASSERTION = "AADSTS700024: Client assertion is not within its valid time range."
+
+# Each CLI stub also writes its own token to stderr on every call, so a step that
+# let either CLI's stderr through would leak it. Tokens are minted per test.
+AZD_TOKEN_STUB = r"""#!/usr/bin/env bash
+printf 'azd %s\n' "$*" >> "$STUB_CALLS"
+echo "azd stub diagnostics for $STUB_AZD_TOKEN" >&2
+count=$(( $(cat "$STUB_DIR/azd-count" 2>/dev/null || echo 0) + 1 ))
+printf '%s' "$count" > "$STUB_DIR/azd-count"
+if [ "$count" -le "${STUB_AZD_FAILURES:-0}" ]; then
+  exit 1
+fi
+case "$STUB_AZD_MODE" in
+  ok) printf '%s\n' "$STUB_AZD_TOKEN" ;;
+  empty) ;;
+  noisy) printf 'WARNING: stub notice\n%s\n' "$STUB_AZD_TOKEN" ;;
+  *) exit 1 ;;
+esac
+"""
+# The Azure CLI whose login-time assertion has expired fails the way the deploy
+# runs did, unless a test says its token request works.
+AZ_TOKEN_STUB = r"""#!/usr/bin/env bash
+printf 'az %s\n' "$*" >> "$STUB_CALLS"
+echo "az stub diagnostics for $STUB_AZ_TOKEN" >&2
+if [ "$STUB_AZ_MODE" = "ok" ]; then
+  printf '%s\n' "$STUB_AZ_TOKEN"
+  exit 0
+fi
+if [ "$STUB_AZ_MODE" = "noisy" ]; then
+  printf 'WARNING: stub notice\n%s\n' "$STUB_AZ_TOKEN"
+  exit 0
+fi
+echo "ERROR: AADSTS700024: Client assertion is not within its valid time range." >&2
+exit 1
+"""
+SLEEP_STUB = r"""sleep() {
+  printf 'sleep %s\n' "$*" >> "$STUB_CALLS"
+}
+"""
+
+
+@unittest.skipIf(BASH is None, "bash is unavailable on this machine")
+class CanaryTokenAcquisitionTests(unittest.TestCase):
+    """Run both API-audience token steps with azd, az and sleep stubbed.
+
+    The Azure CLI holds the single GitHub OIDC assertion `azure/login` gave it,
+    and Entra rejects that assertion about ten minutes after login. A deploy run
+    failed the canary preflight 11.1 minutes after login for exactly that
+    reason. azd's GitHub federated credential fetches a new assertion for every
+    token, so both steps must ask azd first and use the CLI only as a fallback.
+    """
+
+    def setUp(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        self.steps = {step.get("name"): step for step in workflow["jobs"]["deploy"]["steps"]}
+        self.audience = str(uuid.uuid4())
+        self.azd_token = "stub-azd-" + secrets.token_hex(16)
+        self.az_token = "stub-az-" + secrets.token_hex(16)
+
+    def script(self, name: str) -> str:
+        return self.steps[name]["run"]
+
+    def run_step(
+        self,
+        name: str,
+        *,
+        azd: str = "ok",
+        az: str = "ok",
+        azd_failures: int = 0,
+        audience: str | None = None,
+        without_audience: bool = False,
+        canary: str | None = None,
+        script: str | None = None,
+    ) -> dict[str, Any]:
+        assert BASH is not None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            for tool, body in (("azd", AZD_TOKEN_STUB), ("az", AZ_TOKEN_STUB)):
+                path = bin_dir / tool
+                path.write_text(body, encoding="utf-8", newline="\n")
+                path.chmod(0o755)
+            # Git for Windows' bash launcher puts /usr/bin ahead of PATH, so a
+            # PATH stub cannot shadow `sleep`. BASH_ENV defines it as a function
+            # before the step runs, and leaves the step text unchanged.
+            bash_env = root / "stub-sleep.sh"
+            bash_env.write_text(SLEEP_STUB, encoding="utf-8", newline="\n")
+            calls = root / "calls"
+            github_env = root / "github-env"
+            for path in (calls, github_env):
+                path.write_text("", encoding="utf-8")
+            step_file = root / "step.sh"
+            step_file.write_text(
+                self.script(name) if script is None else script, encoding="utf-8", newline="\n"
+            )
+            env = {
+                key: value
+                for key, value in os.environ.items()
+                if key not in {"AI4IA_ENTRA_AUDIENCE", "AI4IA_DEPLOY_VERIFY_CANARY", "BASH_ENV"}
+            }
+            env.update(
+                PATH=f"{bin_dir}{os.pathsep}{env.get('PATH', '')}",
+                BASH_ENV=str(bash_env),
+                STUB_DIR=str(root),
+                STUB_CALLS=str(calls),
+                STUB_AZD_MODE=azd,
+                STUB_AZ_MODE=az,
+                STUB_AZD_FAILURES=str(azd_failures),
+                STUB_AZD_TOKEN=self.azd_token,
+                STUB_AZ_TOKEN=self.az_token,
+                GITHUB_ENV=str(github_env),
+            )
+            if not without_audience:
+                env["AI4IA_ENTRA_AUDIENCE"] = audience or self.audience
+            if canary is not None:
+                env["AI4IA_DEPLOY_VERIFY_CANARY"] = canary
+            # The runner's default for a `run:` block without `shell:`.
+            result = subprocess.run(
+                [BASH, "-e", str(step_file)],
+                capture_output=True, text=True, env=env, cwd=str(ROOT), timeout=60,
+            )
+            return {
+                "code": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "calls": calls.read_text(encoding="utf-8").splitlines(),
+                "env": github_env.read_text(encoding="utf-8"),
+            }
+
+    def azd_call(self, audience: str | None = None) -> str:
+        return f"azd auth token --scope {audience or self.audience}/.default"
+
+    def az_call(self, audience: str | None = None) -> str:
+        return (
+            f"az account get-access-token --resource {audience or self.audience} "
+            "--query accessToken -o tsv"
+        )
+
+    def assert_token_confined(self, run: dict[str, Any], *, masked: str | None) -> None:
+        """No token on either stream, except the mask command for the one in use."""
+        output = run["stdout"] + run["stderr"]
+        for token in (self.azd_token, self.az_token):
+            leaked = [line for line in output.splitlines() if token in line]
+            expected = [f"::add-mask::{token}"] if token == masked else []
+            if leaked != expected:
+                raise AssertionError(f"token lines {leaked!r}, expected {expected!r}")
+
+    def test_both_steps_ask_azd_first_for_the_cli_equivalent_scope(self) -> None:
+        # az turns `--resource X` into the scope `X/.default` for either form.
+        for audience in (self.audience, "api://ai4ia-api"):
+            for name in (PREFLIGHT_STEP, TOKEN_STEP):
+                with self.subTest(step=name, audience=audience):
+                    run = self.run_step(name, audience=audience)
+                    self.assertEqual(run["code"], 0, run)
+                    self.assertEqual(run["calls"], [self.azd_call(audience)])
+                    if name == PREFLIGHT_STEP:
+                        self.assertIn("The deploy identity can obtain a token", run["stdout"])
+                        self.assertEqual(run["env"], "")
+                        self.assert_token_confined(run, masked=None)
+                    else:
+                        self.assertEqual(run["env"], f"AI4IA_DEPLOY_CANARY_TOKEN={self.azd_token}\n")
+                        self.assert_token_confined(run, masked=self.azd_token)
+
+    def test_the_cli_is_the_fallback_only_after_azd_yields_no_token(self) -> None:
+        # A multi-line result is not a token: it would reach GITHUB_ENV as two
+        # lines, or fail the canary and roll back a healthy release.
+        for azd in ("fail", "empty", "noisy"):
+            for name in (PREFLIGHT_STEP, TOKEN_STEP):
+                with self.subTest(azd=azd, step=name):
+                    run = self.run_step(name, azd=azd)
+                    self.assertEqual(run["code"], 0, run)
+                    self.assertEqual(run["calls"], [self.azd_call(), self.az_call()])
+                    if name == TOKEN_STEP:
+                        self.assertEqual(run["env"], f"AI4IA_DEPLOY_CANARY_TOKEN={self.az_token}\n")
+                    self.assert_token_confined(run, masked=self.az_token if name == TOKEN_STEP else None)
+        # Control: the same fixture never reaches the CLI while azd has a token.
+        for name in (PREFLIGHT_STEP, TOKEN_STEP):
+            with self.subTest(azd="ok", step=name):
+                self.assertEqual(self.run_step(name)["calls"], [self.azd_call()])
+
+    def test_an_expired_cli_assertion_no_longer_fails_the_canary_steps(self) -> None:
+        # The failed deploy: every Azure CLI token request for the API audience
+        # was rejected with AADSTS700024 while azd could still mint tokens.
+        for name in (PREFLIGHT_STEP, TOKEN_STEP):
+            with self.subTest(step=name):
+                run = self.run_step(name, az="fail")
+                self.assertEqual(run["code"], 0, run)
+                self.assertEqual(run["calls"], [self.azd_call()])
+                self.assertNotIn(EXPIRED_ASSERTION, run["stdout"] + run["stderr"])
+                self.assert_token_confined(run, masked=self.azd_token if name == TOKEN_STEP else None)
+                # Control: the same fixture fails once azd has no token either.
+                self.assertEqual(self.run_step(name, azd="fail", az="fail")["code"], 1)
+        token = self.run_step(TOKEN_STEP, az="fail")
+        self.assertEqual(token["env"], f"AI4IA_DEPLOY_CANARY_TOKEN={self.azd_token}\n")
+
+    def test_each_retry_asks_azd_again_before_the_cli(self) -> None:
+        run = self.run_step(TOKEN_STEP, azd_failures=1, az="fail")
+        self.assertEqual(run["code"], 0, run)
+        self.assertEqual(run["calls"], [self.azd_call(), self.az_call(), "sleep 10", self.azd_call()])
+        self.assertEqual(run["env"], f"AI4IA_DEPLOY_CANARY_TOKEN={self.azd_token}\n")
+        self.assert_token_confined(run, masked=self.azd_token)
+
+    def test_no_token_keeps_the_existing_errors_and_writes_nothing(self) -> None:
+        # A multi-line CLI result is no more a token than a multi-line azd one.
+        for az in ("fail", "noisy"):
+            with self.subTest(az=az):
+                preflight = self.run_step(PREFLIGHT_STEP, azd="fail", az=az)
+                self.assertEqual(preflight["code"], 1, preflight)
+                self.assertEqual(preflight["stdout"].splitlines(), [PREFLIGHT_ERROR])
+                self.assertEqual(preflight["calls"], [self.azd_call(), self.az_call()])
+                token = self.run_step(TOKEN_STEP, azd="fail", az=az)
+                self.assertEqual(token["code"], 1, token)
+                self.assertEqual(token["stdout"].splitlines(), [TOKEN_ERROR])
+                self.assertEqual(token["calls"], [self.azd_call(), self.az_call(), "sleep 10"] * 3)
+                for run in (preflight, token):
+                    self.assertEqual(run["env"], "")
+                    self.assertNotIn(EXPIRED_ASSERTION, run["stdout"] + run["stderr"])
+                    self.assert_token_confined(run, masked=None)
+
+    def test_the_opt_out_and_a_missing_audience_request_no_token(self) -> None:
+        for name in (PREFLIGHT_STEP, TOKEN_STEP):
+            with self.subTest(step=name):
+                run = self.run_step(name, canary="false")
+                self.assertEqual(run["code"], 0, run)
+                self.assertEqual(run["calls"], [])
+                self.assertEqual(run["env"], "")
+        missing = self.run_step(PREFLIGHT_STEP, without_audience=True)
+        self.assertEqual(missing["code"], 1, missing)
+        self.assertIn("::error::AI4IA_ENTRA_AUDIENCE is empty", missing["stdout"])
+        self.assertEqual(missing["calls"], [])
+
+    def test_the_leak_check_sees_a_token_the_step_would_print(self) -> None:
+        # Controls for every confinement assertion above: the same fixture, with
+        # only the step text flipped to print what it currently suppresses.
+        def edited(name: str, old: str, new: str) -> str:
+            script = self.script(name)
+            self.assertEqual(script.count(old), 1, old)
+            return script.replace(old, new)
+
+        azd_stderr = '--scope "${AI4IA_ENTRA_AUDIENCE}/.default" 2>/dev/null)"'
+        cases = {
+            "preflight prints its token": (
+                PREFLIGHT_STEP, edited(PREFLIGHT_STEP, "if ! api_token >/dev/null; then", "if ! api_token; then"), None,
+            ),
+            "preflight lets azd stderr through": (
+                PREFLIGHT_STEP, edited(PREFLIGHT_STEP, azd_stderr, '--scope "${AI4IA_ENTRA_AUDIENCE}/.default")"'), None,
+            ),
+            "token step lets azd stderr through": (
+                TOKEN_STEP, edited(TOKEN_STEP, azd_stderr, '--scope "${AI4IA_ENTRA_AUDIENCE}/.default")"'), self.azd_token,
+            ),
+            "token step echoes its token": (
+                TOKEN_STEP, self.script(TOKEN_STEP) + "\nprintf 'debug %s\\n' \"$token\"\n", self.azd_token,
+            ),
+            "token step never masks": (
+                TOKEN_STEP, edited(TOKEN_STEP, 'echo "::add-mask::$token"\n', ""), self.azd_token,
+            ),
+        }
+        for case, (name, script, masked) in cases.items():
+            with self.subTest(case=case):
+                run = self.run_step(name, script=script)
+                self.assertEqual(run["code"], 0, run)
+                with self.assertRaises(AssertionError):
+                    self.assert_token_confined(run, masked=masked)
+
+    def test_both_steps_share_one_acquisition_function(self) -> None:
+        pattern = re.compile(r"^api_token\(\) \{\n.*?^\}\n", re.MULTILINE | re.DOTALL)
+        functions = [pattern.findall(self.script(name)) for name in (PREFLIGHT_STEP, TOKEN_STEP)]
+        self.assertEqual([len(found) for found in functions], [1, 1])
+        (preflight,), (token,) = functions
+        self.assertEqual(preflight, token)
+        self.assertLess(preflight.index("azd auth token --scope"), preflight.index("az account get-access-token"))
 
 
 if __name__ == "__main__":

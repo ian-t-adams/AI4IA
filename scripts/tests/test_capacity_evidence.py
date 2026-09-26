@@ -268,8 +268,8 @@ class EvidenceTests(unittest.TestCase):
             fixture = Fixture(Path(tmp), document)
             report = fixture.report()
         external = [row for row in report["deployments"] if row["catalog"].get("deploymentTarget") == "external-claude"]
-        self.assertEqual(len(report["deployments"]), 5)
-        self.assertEqual(len(external), 3)
+        self.assertEqual(len(report["deployments"]), 7)
+        self.assertEqual(len(external), 5)
         self.assertTrue(all(row["inventoryStatus"] == "unknown" and row["live"] is None for row in external))
         self.assertTrue(all(row["account"] is None for row in external))
         self.assertTrue(all(

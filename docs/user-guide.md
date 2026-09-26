@@ -259,6 +259,43 @@ conversations and stay viewable.
 **Cost estimate unavailable** is not free. Published estimates can differ from
 Azure billing, especially for provider-specific media meters.
 
+## Photo avatars
+
+Photo avatars are off by default. An operator can turn them on only after
+Microsoft approves the deployment's Limited Access registration for custom
+avatars; until then the sidebar shows no **Photo avatars** entry. See
+[custom photo avatars](photo-avatars.md) for the design and its boundaries.
+
+When they are on, **Photo avatars** in the sidebar opens your gallery. Describe a
+fictional adult and give the avatar a name. Style, age, gender, and ethnicity are
+optional and start unspecified. Before creating, you confirm that the character is
+fictional, an adult, and not modeled on a real or identifiable person. Each
+creation is billed and counts toward your avatar and 24-hour limits, which the form
+shows along with the estimated cost.
+
+Generation typically takes under a minute, and the gallery shows its progress while
+it is open. Every preview is labelled **AI-generated**. An avatar marked
+**Re-verifying…** can't be used in a live session until the avatar service confirms
+it again; its preview and **Delete** still work. **Report** records a problem
+with an avatar and links to Microsoft's abuse report form. **Delete** asks first,
+then removes the avatar and its preview. Right after a creation it may ask you to
+wait a few seconds. An avatar created under an earlier avatar configuration can't
+be deleted from the gallery; ask an operator to remove it.
+
+### Talking with your avatar
+
+With Azure Speech selected in **Setup > Voice**, the **Avatar** list offers your
+ready avatars. Pick one, then start Voice Live: the avatar appears above the
+composer and speaks the replies, labelled **AI-generated** for the whole session.
+Choose **None (voice only)** to go back to audio.
+
+Avatar time is billed per second while the session is connected, even when nobody
+is talking, so a session ends on its own after a stretch of silence (a countdown
+warns you first) or at its time limit. **End session** stops it at once. Speaking
+over the avatar interrupts it. If your browser can't play the avatar video, the
+list is disabled and Voice Live stays voice only. Headphones help the avatar not
+hear itself.
+
 ## Memory
 
 Memory can carry personal context between conversations. In **Context > Memory**,
@@ -423,6 +460,9 @@ still apply and modality coverage remains incomplete.
 | Voice fails before connecting | Microphone permission, sign-in, API URL, and allowed Origin |
 | Voice settings seem unchanged | Stop and reconnect; settings affect the next connection |
 | Speech is not offered | The operator's provider allowlist and Speech feature gate |
+| Photo avatars are missing | They are off by default and need Microsoft's Limited Access approval |
+| No **Avatar** list in voice settings | Azure Speech must be the provider, and you need at least one ready avatar that isn't re-verifying |
+| An avatar session ended by itself | It ends after a stretch of silence or at its time limit; start Voice Live again |
 | Search or another tool fails | Its visible error/approval state; an enabled gate does not prove upstream entitlement |
 | An admin panel is unavailable | Resource wiring, API identity permissions, and source freshness |
 

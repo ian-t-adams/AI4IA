@@ -161,9 +161,15 @@ def test_us_and_eu_are_deliberately_unequal_and_that_is_visible():
     assert eu_chat < us_chat, "expected EU to be a strict subset of US today"
     assert us_chat - eu_chat == {
         "claude-opus-5",
+        # 2026-09-25: Opus 5.5 is also deployed only in the dedicated eastus2 account.
+        "claude-opus-5-5",
+        # 2026-09-25: the dedicated Claude account serves Sonnet 5 as US DataZoneStandard too.
+        "claude-sonnet-5",
         "gpt-5.2",
         "gpt-5.3-codex",
         "gpt-5.4-nano",
+        # 2026-09-23 evidence: swedencentral offers Astra only as GlobalStandard.
+        "gpt-6-astra",
         "grok-4-1-fast-reasoning",
     }
 

@@ -49,6 +49,12 @@ param deployVideoStorage bool = false
 @description('Blob container holding tool-generated videos, scoped per-user as {userId}/generated/{id}.mp4.')
 param videoBlobContainer string = 'videos'
 
+@description('Provision the photo avatar Cosmos container and preview Blob container. Gated on the photo avatar flag so nothing is created by default. The preview container reuses the generated-media account; its account-scoped RBAC already covers it.')
+param deployPhotoAvatarStorage bool = false
+
+@description('Blob container holding copied photo avatar previews, scoped per-user as {userId}/avatars/{recordId}.png.')
+param photoAvatarBlobContainer string = 'avatars'
+
 @description('''Public network access for the data tier (Cosmos + both storage
 accounts). 'Enabled' (default) keeps today's public + identity-gated posture.
 'Disabled' makes the data tier private-only: only valid once
@@ -269,6 +275,29 @@ resource cosmosMemoriesContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatab
   }
 }
 
+// Photo avatar records, the per-user limit ledger and user reports share each
+// owner's dedicated partition in their own container, created only with the
+// feature flag. It sits apart from the shared canonical containers above, whose
+// retention must stay unchanged: defaultTtl -1 enables per-item TTL without
+// expiring anything by default, and only report documents carry a ttl.
+resource cosmosPhotoAvatarsContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = if (deployPhotoAvatarStorage) {
+  parent: cosmosDb
+  name: 'photoAvatars'
+  properties: {
+    resource: {
+      id: 'photoAvatars'
+      partitionKey: {
+        paths: [
+          '/userId'
+        ]
+        kind: 'Hash'
+        version: 2
+      }
+      defaultTtl: -1
+    }
+  }
+}
+
 // Cosmos data-plane RBAC: api identity gets the built-in Data Contributor role.
 var cosmosDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
 
@@ -438,7 +467,7 @@ resource documentStorageDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-
 // Artifacts live under {userId}/generated/{id}.{ext} — the userId prefix is the
 // per-user isolation boundary enforced by the authenticated serve endpoints.
 var imageStorageName = 'sti${uniqueString(resourceGroup().id)}'
-var deployMediaStorage = deployImageStorage || deployVideoStorage
+var deployMediaStorage = deployImageStorage || deployVideoStorage || deployPhotoAvatarStorage
 
 resource imageStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (deployMediaStorage) {
   name: imageStorageName
@@ -483,6 +512,14 @@ resource videoContainer 'Microsoft.Storage/storageAccounts/blobServices/containe
   }
 }
 
+resource photoAvatarContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (deployPhotoAvatarStorage) {
+  parent: imageBlobService
+  name: photoAvatarBlobContainer
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
 resource imageStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployMediaStorage) {
   name: guid(imageStorage.id, apiPrincipalId, storageBlobDataContributorRoleId)
   scope: imageStorage
@@ -520,6 +557,8 @@ output imageBlobAccountUrl string = imageStorage.?properties.primaryEndpoints.bl
 output imageBlobContainerName string = imageBlobContainer
 output videoBlobAccountUrl string = imageStorage.?properties.primaryEndpoints.blob ?? ''
 output videoBlobContainerName string = videoBlobContainer
+output photoAvatarBlobAccountUrl string = deployPhotoAvatarStorage ? (imageStorage.?properties.primaryEndpoints.blob ?? '') : ''
+output photoAvatarBlobContainerName string = photoAvatarBlobContainer
 
 // Resource IDs consumed by the private-endpoint module (network-isolation pass).
 // Conditional storage accounts return '' when not deployed; main.bicep filters

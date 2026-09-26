@@ -13,8 +13,10 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import * as api from "@/lib/api";
+import { supportsAvatarVideo } from "@/lib/avatarVideo";
 import { inspectedSessionConsent, unverifiedSessionConsent, type SessionConsentView, type ToolConsentInspection } from "@/lib/toolConsent";
 import type {
   ActivityStep,
@@ -58,6 +60,10 @@ import {
   type VoicePreferences,
 } from "@/lib/voicePreferences";
 import { LibraryPanel } from "./LibraryPanel";
+import { PhotoAvatarsPanel } from "./PhotoAvatarsPanel";
+import { usePhotoAvatarsEnabled } from "./usePhotoAvatarsEnabled";
+import { useLiveAvatarChoices } from "./useLiveAvatarChoices";
+import { LiveAvatarStage } from "./LiveAvatarStage";
 import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import type { CitationTarget } from "./Markdown";
@@ -164,6 +170,12 @@ function providerModelRegion(models: ModelEntry[], modelId: string | null): stri
   return model?.options[0]?.region ?? null;
 }
 
+// MediaSource support never changes during a page's life; the store only keeps
+// server rendering (no window) and hydration in agreement.
+function subscribeAvatarVideoSupport(): () => void {
+  return () => {};
+}
+
 export function ChatApp() {
   const owner = useCurrentOwner();
   const deletionOwnerRef = useRef(owner);
@@ -203,12 +215,15 @@ export function ChatApp() {
     settingsOpen,
     studioOpen,
     libraryOpen,
+    photoAvatarsOpen,
     openSettings,
     closeSettings,
     openStudio,
     closeStudio,
     openLibrary,
     closeLibrary,
+    openPhotoAvatars,
+    closePhotoAvatars,
     mobileSidebar,
     drawerInspector,
     mobileSidebarOpen,
@@ -223,6 +238,15 @@ export function ChatApp() {
   // session-scoped local-extract path, so the doc is parsed, surfaced to the
   // agent (retrieval tiers + fetch_document) and runnable via run_code.
   const libraryEnabled = libraryConfig.enabled;
+  // Photo avatars follow the server's own /config (default off, and only for
+  // the current owner). Visibility only: the API enforces the gate itself.
+  const photoAvatarsEnabled = usePhotoAvatarsEnabled(owner.key);
+  // Closing the gallery refreshes the avatars live voice may offer.
+  const [liveAvatarRefresh, setLiveAvatarRefresh] = useState(0);
+  const closePhotoAvatarGallery = useCallback(() => {
+    closePhotoAvatars();
+    setLiveAvatarRefresh((count) => count + 1);
+  }, [closePhotoAvatars]);
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -1975,6 +1999,37 @@ export function ChatApp() {
     voicePrefsResolved.provider === "speech_voice_live"
       ? voicePrefsResolved.speech.voice
       : voicePrefsResolved.voice;
+  // Owned photo avatars for Speech Voice Live: offered only while the photo
+  // avatar /config is enabled and available and the avatar is usable. The relay
+  // re-checks everything on every connection; this is visibility only.
+  const speechVoiceOffered =
+    voiceLiveEnabled && voiceProviders.some((provider) => provider.id === "speech_voice_live");
+  const liveAvatarChoices = useLiveAvatarChoices(
+    owner.key,
+    photoAvatarsEnabled && speechVoiceOffered,
+    liveAvatarRefresh,
+  );
+  const avatarVideoSupported = useSyncExternalStore(
+    subscribeAvatarVideoSupport,
+    supportsAvatarVideo,
+    () => false,
+  );
+  const selectedLiveAvatar =
+    voicePrefsResolved.provider === "speech_voice_live"
+      ? liveAvatarChoices.avatars.find(
+          (candidate) => candidate.id === voicePrefsResolved.speechAvatarId,
+        ) ?? null
+      : null;
+  const selectedLiveAvatarId = selectedLiveAvatar?.id ?? null;
+  const selectedLiveAvatarLabel =
+    selectedLiveAvatar?.disclosure?.label?.trim() || liveAvatarChoices.disclosureLabel;
+  const liveAvatarSelection = useMemo(
+    () =>
+      selectedLiveAvatarId
+        ? { id: selectedLiveAvatarId, label: selectedLiveAvatarLabel }
+        : null,
+    [selectedLiveAvatarId, selectedLiveAvatarLabel],
+  );
 
   const authorizedVoiceLiveConfig = useMemo(
     () => ({ ...voiceLiveConfig, enabled: voiceLiveEnabled }),
@@ -1992,6 +2047,7 @@ export function ChatApp() {
     settings: voicePrefsResolved.settings,
     speechSettings: voicePrefsResolved.speech,
     tools: voiceToolsAvailable && voicePrefsResolved.tools,
+    avatar: liveAvatarSelection,
     activeSessionId: activeId,
     ensureSession,
     abandonPendingSessionCreation,
@@ -2141,6 +2197,14 @@ export function ChatApp() {
             speechSettings: voicePrefsResolved.speech,
             onSpeechSettingsChange: (nextSpeech: VoicePreferences["speech"]) =>
               updateVoicePrefs({ ...voicePrefsResolved, speech: nextSpeech }),
+            avatarChoices: liveAvatarChoices.avatars.map((candidate) => ({
+              id: candidate.id,
+              displayName: candidate.displayName,
+            })),
+            avatarId: selectedLiveAvatarId,
+            onAvatarChange: (nextAvatar: string | null) =>
+              updateVoicePrefs({ ...voicePrefsResolved, speechAvatarId: nextAvatar }),
+            avatarVideoSupported,
             onReset: () =>
               updateVoicePrefs(
                 voicePrefsResolved.provider === "speech_voice_live"
@@ -2173,6 +2237,9 @@ export function ChatApp() {
       voiceProviders,
       voiceToolsAvailable,
       voiceProviderConfig?.openaiRealtimeProtocol,
+      liveAvatarChoices.avatars,
+      selectedLiveAvatarId,
+      avatarVideoSupported,
     ],
   );
 
@@ -2881,6 +2948,7 @@ export function ChatApp() {
           onOpenSettings={openSettings}
           onOpenStudio={openStudio}
           onOpenLibrary={libraryEnabled ? openLibrary : undefined}
+          onOpenPhotoAvatars={photoAvatarsEnabled ? openPhotoAvatars : undefined}
           onBeforeSignOut={prepareSignOut}
           onCollapse={toggleLeftPanel}
           openerRef={sidebarReturnFocusRef}
@@ -3004,6 +3072,11 @@ export function ChatApp() {
             }));
             if (rightIsCollapsed) toggleRightPanel();
           }}
+        />
+        <LiveAvatarStage
+          avatar={inlineVoice.avatar}
+          active={inlineVoice.active}
+          onEnd={inlineVoice.stop}
         />
         <InlineVoiceLiveStatus voice={inlineVoice} />
         <ToolApprovalPanel
@@ -3163,6 +3236,10 @@ export function ChatApp() {
       )}
       {libraryOpen && libraryEnabled && (
         <LibraryPanel onClose={closeLibrary} />
+      )}
+      {photoAvatarsOpen && photoAvatarsEnabled && owner.key !== null && (
+        // Keyed by owner so an account switch never shows another owner's avatars.
+        <PhotoAvatarsPanel key={owner.key} onClose={closePhotoAvatarGallery} />
       )}
       {citationTarget && libraryEnabled && (
         <MediaPlayer

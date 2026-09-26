@@ -71,6 +71,40 @@ class GatewayPolicyTests(unittest.TestCase):
         for ga in (False, True):
             self.assertIn("gpt-realtime-2-", gateway_generator.generate_realtime_policy(models, ga=ga))
 
+    # APIM's policy schema types these forward-request attributes as literal
+    # xs:boolean values. Deployment validation rejects expressions there, even
+    # though the offline harness can evaluate them.
+    _LITERAL_BOOLEAN_FORWARD_ATTRIBUTES = (
+        "buffer-request-body", "buffer-response", "fail-on-error-status-code",
+    )
+
+    @classmethod
+    def _non_literal_forward_booleans(cls, xml_text: str, source: str) -> list[str]:
+        problems = []
+        for element in ElementTree.fromstring(xml_text).iter("forward-request"):
+            for name in cls._LITERAL_BOOLEAN_FORWARD_ATTRIBUTES:
+                value = element.attrib.get(name)
+                if value is not None and value not in ("true", "false"):
+                    problems.append(f"{source}: {name}={value!r}")
+        return problems
+
+    def test_forward_request_boolean_attributes_are_schema_literals(self) -> None:
+        policies = sorted((ROOT / "infra/policies").glob("*.xml"))
+        checked = 0
+        problems = []
+        for path in policies:
+            text = path.read_text(encoding="utf-8")
+            checked += len(ElementTree.fromstring(text).findall(".//forward-request"))
+            problems += self._non_literal_forward_booleans(text, path.name)
+        self.assertEqual(problems, [])
+        self.assertGreaterEqual(checked, 16, "the scan must reach the generated backend forwards")
+        # Control: the rejected 2026-09-25 shape is detected by the same check.
+        rejected = (
+            '<fragment><forward-request buffer-request-body="@(!context.Variables'
+            '.GetValueOrDefault&lt;bool&gt;(&quot;noReplay&quot;, false))" /></fragment>'
+        )
+        self.assertEqual(len(self._non_literal_forward_booleans(rejected, "fixture")), 1)
+
     def test_fragment_compaction_preserves_code_and_string_bytes(self) -> None:
         source = (
             '<fragment><!-- remove this XML comment -->\n'
@@ -369,7 +403,7 @@ class GatewayPolicyTests(unittest.TestCase):
             for block in blocks
             if 'new JProperty("claude-' in block
         ]
-        self.assertEqual(len(claude), 3)
+        self.assertEqual(len(claude), 5)
         for block in claude:
             self.assertIn('new JProperty("path", "anthropic")', block)
             self.assertNotIn('new JProperty("path", "openai")', block)
@@ -570,6 +604,44 @@ class GatewayPolicyTests(unittest.TestCase):
                     self.assertEqual(backends, [name])
                 checked[deployment["sku"]] += 1
         self.assertEqual(checked, {"GlobalStandard": 8, "DataZoneStandard": 6})
+
+    def test_astra_us_zone_row_keeps_one_in_zone_backend(self) -> None:
+        """Astra's eastus2 DataZoneStandard row never fails over across regions.
+
+        Control: the same model's GlobalStandard rows, from the same generated
+        catalog, keep their two-region failover.
+        """
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        naming = models["naming"]
+        blocks, _ = gateway_generator.render_catalog(models)
+        by_key = {}
+        for block in blocks:
+            key = re.search(r'new JProperty\("([^"]+)", new JObject', block)
+            assert key is not None
+            by_key[key.group(1)] = block
+        astra = next(model for model in models["catalog"] if model["name"] == "gpt-6-astra")
+        seen = []
+        for deployment in astra["deployments"]:
+            region = deployment["region"]
+            name = gateway_generator.deployment_name(
+                model=astra["name"], subscription_token=naming["subscriptionToken"],
+                region=region, sku=deployment["sku"], sku_short=naming["skuShort"],
+            )
+            block = by_key[name.lower()]
+            backends = re.findall(r'new JProperty\("deployment", "([^"]+)"\)', block)
+            urls = re.findall(r'new JProperty\("url", "([^"]+)"\)', block)
+            self.assertEqual((backends[0], urls[0]), (name, f"{{{{foundry-{region}-endpoint}}}}"))
+            if deployment["sku"] == "DataZoneStandard":
+                self.assertEqual(backends, [name])
+            else:
+                self.assertEqual(len(backends), 2, name)
+                self.assertNotEqual(urls[1], urls[0])
+            seen.append((region, deployment["sku"]))
+        self.assertEqual(seen, [
+            ("eastus2", "GlobalStandard"),
+            ("eastus2", "DataZoneStandard"),
+            ("swedencentral", "GlobalStandard"),
+        ])
 
     def test_policy_fragments_normalize_crlf_before_hashing_and_storage(
         self,
@@ -1606,6 +1678,70 @@ class GatewayPolicyTests(unittest.TestCase):
             policy, "code-interpreter-routing.xml"
         )
 
+    def test_photo_avatar_policy_is_exact_isolated_and_single_send(self) -> None:
+        policy = (ROOT / "infra/policies/photo-avatars.xml").read_text(encoding="utf-8")
+        gateway_generator.validate_policy_expressions(policy, "photo-avatars.xml")
+        gateway_generator.validate_photo_avatar_policy(policy, "photo-avatars.xml")
+        root = ElementTree.fromstring(policy)
+        self.assertEqual(root.findall(".//retry"), [])
+        self.assertEqual(root.findall(".//base"), [])
+        self.assertEqual(len(root.findall(".//forward-request")), 1)
+
+    def test_photo_avatar_policy_guards_are_non_vacuous(self) -> None:
+        policy = (ROOT / "infra/policies/photo-avatars.xml").read_text(encoding="utf-8")
+        identity = '<authentication-managed-identity resource="https://cognitiveservices.azure.com" />'
+        strip = '<set-header name="S7PTTL" exists-action="delete" />'
+        delete_line = (
+            "operation == &quot;photo-avatar-delete&quot; ? &quot;DELETE /photoavatars&quot; :"
+        )
+        mutations = {
+            "api path check": ("context.Api.Path != &quot;ai4ia-photo-avatars-v1&quot;", "false"),
+            "subscription check": (
+                "context.Subscription.Id != &quot;__AI4IA_PHOTO_AVATAR_SUBSCRIPTION_ID__&quot;", "false",
+            ),
+            "provider id pattern": ("ai4ia-[0-9a-f]{20}", r"[A-Za-z][\w.-]{1,62}[\dA-Za-z]"),
+            "caller query": ("string.IsNullOrEmpty(query)", "true"),
+            "method binding": ("context.Request.Method + &quot; &quot; + route != expected", "false"),
+            "path parameter binding": (
+                "context.Request.MatchedParameters[&quot;avatarId&quot;] != match.Groups[2].Value", "false",
+            ),
+            "body keys": ("body.Properties().Count() != 1", "false"),
+            "prompt bound": ("text.Length &gt; 1000", "text.Length &gt; 4000"),
+            "enum widened": (
+                "&quot;Male&quot;, &quot;Female&quot;", "&quot;Male&quot;, &quot;Female&quot;, &quot;Other&quot;",
+            ),
+            "extra operation": (
+                delete_line,
+                delete_line + "\n        operation == &quot;photo-avatar-list&quot; ? &quot;GET /photoavatars&quot; :",
+            ),
+            "retry": ("  <backend>\n", '  <backend>\n    <retry condition="@(true)" count="1" interval="1" />\n'),
+            "base inheritance": ("  <inbound>\n", "  <inbound>\n    <base />\n"),
+            "identity audience": (identity, identity.replace("cognitiveservices.azure.com", "ai.azure.com")),
+            "strip after identity": (strip + "\n", ""),
+            "redirects": ('follow-redirects="false"', 'follow-redirects="true"'),
+            "timeout": ('timeout="30"', 'timeout="600"'),
+            "requeue": ('<set-header name="S7PREQUEUE" exists-action="delete" />', ""),
+            "caller query copy": ('copy-unmatched-params="false"', 'copy-unmatched-params="true"'),
+            "project body": (
+                '"foundryProjectName":"{{photo-avatar-project}}"',
+                '"foundryProjectName":"@(context.Request.Headers.GetValueOrDefault(&quot;x-project&quot;, &quot;&quot;))"',
+            ),
+            "canonical body": ('new JProperty("properties", canonical)', 'new JProperty("properties", properties)'),
+            "backend": ("{{foundry-eastus2-endpoint}}", "{{foundry-swedencentral-endpoint}}"),
+            "rejection status": (
+                '<set-status code="400" reason="Invalid photo avatar request" />',
+                '<set-status code="200" reason="Invalid photo avatar request" />',
+            ),
+        }
+        for label, (before, after) in mutations.items():
+            with self.subTest(mutation=label):
+                self.assertIn(before, policy, "the mutation must target the actual policy")
+                mutated = policy.replace(before, after, 1)
+                if label == "strip after identity":
+                    mutated = mutated.replace(identity, f"{identity}\n    {strip}", 1)
+                with self.assertRaises(ValueError):
+                    gateway_generator.validate_photo_avatar_policy(mutated, "photo-avatars.xml")
+
     def test_code_interpreter_policy_guards_are_non_vacuous(self) -> None:
         policy = (
             ROOT / "infra/policies/code-interpreter-routing.xml"
@@ -2386,7 +2522,7 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertNotIn("telemetrySenderPrincipalIds", main)
 
     def test_proxy_pin_is_consistent(self) -> None:
-        pin = "d9eb1d1fa42820792a9699bfc253562fba07d977"
+        pin = "b0066b0e53f89abb5e84cfeacda2fdcaca8b081e"
         self.assertIn(pin, (ROOT / "proxy/README.md").read_text(encoding="utf-8"))
         self.assertIn(pin, (ROOT / "proxy/Dockerfile").read_text(encoding="utf-8"))
 
@@ -2838,6 +2974,11 @@ class SubscriptionCredentialPolicyTests(unittest.TestCase):
                 "code-interpreter-routing.xml",
                 "api-key",
                 gateway_generator.validate_code_interpreter_policy,
+            ),
+            (
+                "photo-avatars.xml",
+                self.HEADER,
+                gateway_generator.validate_photo_avatar_policy,
             ),
         ):
             with self.subTest(policy=filename):

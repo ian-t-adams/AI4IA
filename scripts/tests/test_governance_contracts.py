@@ -103,7 +103,7 @@ class FoundryManifestContractTests(unittest.TestCase):
                 self.assertEqual("1.0", manifest["manifestVersion"])
                 self.assertTrue(manifest["owner"])
                 self.assertEqual("azure-ai-projects", manifest["sdkContract"]["package"])
-                self.assertEqual("2.6.1", manifest["sdkContract"]["version"])
+                self.assertEqual("2.7.0", manifest["sdkContract"]["version"])
 
     def test_only_the_toolbox_is_executable(self) -> None:
         """Routine and A2A are design artifacts; nothing may reconcile them."""
@@ -213,6 +213,84 @@ class DeployableSurfaceTests(unittest.TestCase):
             "Any other direct model call is a security architecture change", security
         )
 
+
+def _runbook_section(heading: str) -> str:
+    runbook = read("docs/runbooks/feature-enablement.md")
+    start = runbook.index(f"\n### {heading}\n")
+    end = runbook.find("\n### ", start + 1)
+    return runbook[start:end if end != -1 else None]
+
+
+# The vocabulary every retained-object rollback in the runbook uses: Incremental
+# mode keeps the objects, the key is suspended or revoked first, and deletion is
+# a targeted, reviewed what-if, never complete mode.
+RETAINED_ROLLBACK_TERMS = ("Incremental mode", "suspend or revoke", "what-if", "complete deployment mode")
+
+
+class RetainedInventoryContractTests(unittest.TestCase):
+    """A flag-off rollback must name what an earlier provision leaves behind.
+
+    Turning a flag off under ARM Incremental mode stops managing, but never
+    deletes, the objects an earlier provision created. The inventory is derived
+    from the Bicep, so a new flag-gated object fails here until the runbook names
+    it; the prose around it is not pinned.
+    """
+
+    RESOURCE = re.compile(
+        r"^resource \w+ '(?P<type>Microsoft\.[\w./]+)@[\w.-]+' = (?:\[for \w+ in \w+: )?"
+        r"if \((?P<flag>\w+)\) \{\n(?P<body>.*?)^\}",
+        re.MULTILINE | re.DOTALL,
+    )
+
+    def _gated(self, module: str, flag: str) -> dict[str, str]:
+        """Map each resource type gated on ``flag`` to the token a runbook names it by."""
+        source = read(module)
+        found: dict[str, str] = {}
+        for match in self.RESOURCE.finditer(source):
+            if match["flag"] != flag:
+                continue
+            name = re.search(r"^  name: (.+)$", match["body"], re.MULTILINE)
+            self.assertIsNotNone(name, match["type"])
+            assert name is not None
+            value = name[1].strip()
+            if value == "'policy'":
+                token = "policy"
+            elif value.endswith(".name"):  # one resource per loop row
+                token = "operations"
+            elif value.startswith("'"):
+                token = value.strip("'")
+            else:  # a variable or parameter holding the name
+                declared = re.search(rf"^(?:var|param) {value}(?: string)? = '([^']+)'$", source, re.MULTILINE)
+                self.assertIsNotNone(declared, value)
+                assert declared is not None
+                token = declared[1].replace("${workload}", "<workload>")
+            found[match["type"]] = token
+        return found
+
+    def test_photo_avatar_rollback_names_every_object_the_flag_created(self) -> None:
+        apim = self._gated("infra/modules/gateway.bicep", "photoAvatarsEnabled")
+        data = self._gated("infra/modules/data.bicep", "deployPhotoAvatarStorage")
+        # Non-vacuity: the derivation still sees every gated object.
+        self.assertEqual(sorted(apim), sorted(
+            f"Microsoft.ApiManagement/service/{kind}"
+            for kind in ("namedValues", "apis", "apis/operations", "apis/policies", "subscriptions")
+        ))
+        self.assertEqual(len(data), 2)
+        inventory = sorted({*apim.values(), *data.values()})
+        section = _runbook_section("Custom photo avatars")
+        rollback = section[section.index("**Degradation and rollback.**"):]
+        for token in inventory:
+            with self.subTest(token=token):
+                self.assertIn(f"`{token}`" if token not in {"operations", "policy"} else token, rollback)
+        for term in RETAINED_ROLLBACK_TERMS:
+            with self.subTest(term=term):
+                self.assertIn(term, rollback)
+        # Control: another feature's rollback, written to the same rules, uses the
+        # same vocabulary but cannot satisfy this inventory.
+        voice = _runbook_section("Speech Voice Live (second voice provider)")
+        for term in RETAINED_ROLLBACK_TERMS:
+            self.assertIn(term, voice)
+        self.assertFalse(all(f"`{token}`" in voice for token in inventory if token not in {"operations", "policy"}))
 
 if __name__ == "__main__":
     unittest.main()

@@ -98,11 +98,21 @@ class ActiveConfigurationTests(unittest.TestCase):
         assert "function Register-AppConfigurationSentinel" in postprovision
         assert "Get-EnvValue 'AZURE_PRINCIPAL_ID'" in postprovision
         assert "workflow-owned sentinel left unchanged" in postprovision
-        assert "'--auth-mode', 'login'" in postprovision
+        # A fresh azd-minted token for the documented audience on every attempt,
+        # never the Azure CLI's one-time OIDC assertion or an access key.
+        assert (
+            "'auth', 'token', '--scope', 'https://appconfig.azure.com/.default'"
+            in postprovision
+        )
+        assert "$token = Get-AppConfigurationToken -TimeoutSec $tokenTimeout" in postprovision
+        assert (
+            "Invoke-AppConfigKeyValuePut -Uri $uri -Token $token -Body $body "
+            "-TimeoutSec $requestTimeout"
+        ) in postprovision
+        assert "'appconfig', 'kv'" not in postprovision
         assert "$budgetSeconds = 900" in postprovision
         assert "$retrySeconds = 30" in postprovision
         assert "Get-MonotonicTime" in postprovision
-        assert "Invoke-AppConfigSet -Arguments $arguments -TimeoutSec $commandTimeout" in postprovision
         assert (
             "Add-Result -Name 'App Configuration sentinel' -Status 'FAIL'"
             in postprovision
@@ -131,7 +141,15 @@ class ActiveConfigurationTests(unittest.TestCase):
                 "? [] : [deploymentPrincipalId]",
                 "appConfigDataOwnerPrincipalIds: [deploymentPrincipalId]",
             ), KEYVAULT, POSTPROVISION),
-            (MAIN, KEYVAULT, POSTPROVISION.replace("'--auth-mode', 'login'", "'--auth-mode', 'key'")),
+            (MAIN, KEYVAULT, POSTPROVISION.replace(
+                "https://appconfig.azure.com/.default",
+                "https://management.azure.com/.default",
+            )),
+            (MAIN, KEYVAULT, POSTPROVISION.replace(
+                "$token = Get-AppConfigurationToken -TimeoutSec $tokenTimeout",
+                "$token = $cachedToken",
+            )),
+            (MAIN, KEYVAULT, POSTPROVISION + "\n$legacy = @('appconfig', 'kv', 'set')\n"),
             (MAIN, KEYVAULT, POSTPROVISION.replace("$budgetSeconds = 900", "$budgetSeconds = 90")),
             (
                 MAIN,

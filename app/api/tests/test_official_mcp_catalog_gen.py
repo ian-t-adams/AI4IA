@@ -107,11 +107,71 @@ def test_generator_accepts_portable_foundry_toolbox_without_upstream_url():
             "path": "ai4ia-toolbox/mcp",
             "resourcesEnabled": True,
             "protocolVersion": "2025-06-18",
+            "toolboxManifestSha256": _generator().toolbox_manifest_sha256(_canonical_manifest()),
         }
     ]
     [item] = out["servers"]
     for field in _INFRA_ONLY_FIELDS:
         assert field not in item
+
+
+def _generator():
+    spec = importlib.util.spec_from_file_location("gen_mcp_catalog", _GEN)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _canonical_manifest() -> dict:
+    return json.loads((_REPO_ROOT / "foundry" / "toolbox.manifest.json").read_text(encoding="utf-8"))
+
+
+def test_toolbox_digest_binds_executable_content_and_ignores_bookkeeping():
+    from ai4ia_api.official_mcp_catalog import toolbox_manifest_sha256
+
+    generator = _generator()
+    manifest = _canonical_manifest()
+    baseline = generator.toolbox_manifest_sha256(manifest)
+    assert baseline == toolbox_manifest_sha256(manifest)
+    bookkeeping = json.loads(json.dumps(manifest))
+    bookkeeping["_comment"] = "edited"
+    bookkeeping["sdkContract"]["version"] = "9.9.9"
+    bookkeeping["owner"] = "someone-else"
+    assert generator.toolbox_manifest_sha256(bookkeeping) == baseline
+    for change in ("tool-description", "added-tool", "skills"):
+        executable = json.loads(json.dumps(manifest))
+        if change == "tool-description":
+            executable["tools"][0]["description"] = "edited"
+        elif change == "added-tool":
+            executable["tools"].append({"type": "web_search", "name": "second-search"})
+        else:
+            executable["skills"] = []
+        digest = generator.toolbox_manifest_sha256(executable)
+        assert digest != baseline, change
+        assert digest == toolbox_manifest_sha256(executable), change
+
+
+def test_foundry_toolbox_entry_must_name_the_canonical_manifest():
+    assert _build_catalog()({"servers": [_PORTABLE_TOOLBOX_ENTRY]})["servers"]
+    other = {**_PORTABLE_TOOLBOX_ENTRY, "name": "other-toolbox"}
+    with pytest.raises(SystemExit, match="foundry/toolbox.manifest.json"):
+        _build_catalog()({"servers": [other]})
+
+
+def test_generator_dev_projection_and_packaged_catalog_bind_the_same_toolbox_digest():
+    from ai4ia_api.official_mcp_catalog import (
+        OfficialMcpCatalog, _project_infra_catalog, load_official_mcp_catalog, toolbox_manifest_sha256,
+    )
+
+    raw = json.loads((_REPO_ROOT / "infra" / "mcp-servers.json").read_text(encoding="utf-8"))
+    generated = _build_catalog()(raw)
+    assert generated["servers"] == _project_infra_catalog(raw)["servers"]
+    expected = toolbox_manifest_sha256(_canonical_manifest())
+    toolbox = OfficialMcpCatalog(**generated).get("ai4ia-toolbox")
+    assert toolbox is not None and toolbox.toolboxManifestSha256 == expected
+    packaged = load_official_mcp_catalog().get("ai4ia-toolbox")
+    assert packaged is not None and packaged.toolboxManifestSha256 == expected
 
 
 def test_generator_still_requires_url_for_non_toolbox_entries():

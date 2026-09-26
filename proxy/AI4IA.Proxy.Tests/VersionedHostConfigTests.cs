@@ -109,7 +109,7 @@ public sealed class VersionedHostConfigTests
 
     private static string SourceFile([CallerFilePath] string path = "") => path;
 
-    private static bool IsHostSetting(string key) =>
+    internal static bool IsHostSetting(string key) =>
         key.StartsWith("Host", StringComparison.OrdinalIgnoreCase) ||
         key.StartsWith("Probe", StringComparison.OrdinalIgnoreCase) ||
         key.StartsWith("IP", StringComparison.OrdinalIgnoreCase) ||
@@ -119,12 +119,14 @@ public sealed class VersionedHostConfigTests
     // Capture the production loader's HostConfigs and use real categorization,
     // without activating circuits or background services. The test invokes the
     // actual probe method separately against loopback with synthetic keys.
-    private sealed class CapturedHosts : IHostHealthCollection
+    internal sealed class CapturedHosts : IHostHealthCollection
     {
         private readonly List<HostConfig> _configs = [];
         public HostCollectionSnapshot Current { get; private set; } = HostCollectionSnapshot.Empty;
         public void StageHost(HostConfig config) => _configs.Add(config);
         public void Activate() => Current = HostCollectionSnapshot.Build(_configs, NullLogger.Instance);
+        public void ReplaceConfiguration(IEnumerable<HostConfig> configs, IEnumerable<PathRouteDefinition> routes) =>
+            Current = HostCollectionSnapshot.Build(configs, routes, NullLogger.Instance);
         public void LoadFromConfig(IEnumerable<HostConfig> configs) => throw new AssertFailedException("Unexpected reload.");
         public BaseHostHealth AddHost(HostConfig config) => throw new AssertFailedException("Unexpected host add.");
         public bool RemoveHost(Guid id) => throw new AssertFailedException("Unexpected host removal.");

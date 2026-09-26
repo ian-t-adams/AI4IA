@@ -19,6 +19,13 @@ import {
 } from "react";
 
 import { getApiAccessToken, isEntraEnabled } from "./auth";
+import {
+  AvatarVideoPlayer,
+  browserAvatarVideoEnvironment,
+  hardenAvatarVideoElement,
+  supportsAvatarVideo,
+  type AvatarVideoFailure,
+} from "./avatarVideo";
 import { reportClientEvent } from "./clientTelemetry";
 import {
   DEFAULT_VOICE_PROVIDER_ID,
@@ -26,6 +33,7 @@ import {
   type VoiceProvider,
   type VoiceProviderId,
 } from "./data/voice_provider_catalog";
+import { isPhotoAvatarId } from "./photoAvatars";
 
 // Azure realtime speaks 24 kHz mono PCM16 in both directions.
 export const PCM_SAMPLE_RATE = 24000;
@@ -209,9 +217,40 @@ export interface VoiceLiveController {
   listening: boolean;
   // The assistant is currently producing audio (speaking) for its reply.
   speaking: boolean;
+  // The live photo avatar for the current (or last) session, or null when the
+  // session is voice only.
+  avatar: LiveAvatarView | null;
   start: () => void;
   toggle: () => void;
   stop: () => void;
+}
+
+// The owned photo avatar the user picked for Speech Voice Live. Only the
+// record id travels to the relay; the server resolves and injects the rest.
+export interface LiveAvatarSelection {
+  id: string;
+  // The record's own disclosure label ("AI-generated"), shown for the whole session.
+  label: string;
+}
+
+export interface LiveAvatarView {
+  // The controller-owned <video>; the stage adopts it. Null for an audio-only
+  // fallback decided before connecting.
+  element: HTMLVideoElement | null;
+  label: string;
+  // The browser can't play the avatar stream, so this session is voice only.
+  unsupported: boolean;
+  failure: AvatarVideoFailure | null;
+  // Video has started playing for this session.
+  started: boolean;
+  speaking: boolean;
+  // Epoch ms when the relay will end an idle session, while it is warning.
+  idleEndsAt: number | null;
+  // Epoch ms when the relay's per-session cap ends the session.
+  sessionEndsAt: number | null;
+  // Autoplay with sound was blocked; `resume` retries from a user gesture.
+  playbackBlocked: boolean;
+  resume: () => void;
 }
 
 // --- PCM <-> base64 helpers (pure; exported for unit tests) ---
@@ -485,6 +524,7 @@ export function buildVoiceLiveWebSocketUrl(
     sessionId?: string | null;
     agent?: string | null;
     tools?: boolean;
+    avatar?: string | null;
   },
 ): string {
   const params = new URLSearchParams();
@@ -495,6 +535,11 @@ export function buildVoiceLiveWebSocketUrl(
     if (input.region) params.set("region", input.region);
   } else if (input.providerId === "speech_voice_live" && input.model) {
     params.set("model", input.model);
+  }
+  // Photo avatars are a Speech Voice Live feature; only a well-formed record id
+  // is ever sent, and the server re-checks ownership on every connection.
+  if (input.providerId === "speech_voice_live" && isPhotoAvatarId(input.avatar)) {
+    params.set("avatar", input.avatar);
   }
   if (input.agent) params.set("agent", input.agent);
   if (input.tools) params.set("tools", "1");
@@ -607,6 +652,11 @@ interface LiveSession {
   // AudioContext go "suspended" mid-session (see AUDIO_CONTEXT_SUSPENDED_MESSAGE).
   // Tracked on the session so cleanupSession can clear it deterministically.
   suspendRecoveryTimer: ReturnType<typeof setTimeout> | null;
+  // Present only for a live photo avatar session: the audio then arrives inside
+  // the avatar video, so the PCM playback path stays unused.
+  avatarPlayer: AvatarVideoPlayer | null;
+  // Why the relay ended an avatar session on purpose (idle or time limit).
+  avatarEndReason: string | null;
 }
 
 // The message shown when the WebSocket fails or closes before ever reaching
@@ -653,7 +703,77 @@ const AUDIO_CONTEXT_RESUME_GRACE_MS = 4000;
 interface PendingLiveSession {
   ctx: AudioContext | null;
   stream: MediaStream | null;
+  avatarPlayer: AvatarVideoPlayer | null;
   cleaned: boolean;
+}
+
+const AVATAR_IDLE_ENDED_MESSAGE =
+  "The avatar session ended because nobody spoke for a while. Start Voice Live again to continue.";
+const AVATAR_LIMIT_ENDED_MESSAGE =
+  "The avatar session reached its time limit. Start Voice Live again to continue.";
+const AVATAR_VIDEO_FAILED_MESSAGE =
+  "The avatar video couldn't play in this browser. Choose \u201cNone (voice only)\u201d as the avatar in Voice settings to continue.";
+
+function avatarEndMessage(reason: string | null): string | null {
+  if (reason === "idle_timeout") return AVATAR_IDLE_ENDED_MESSAGE;
+  if (reason === "session_limit") return AVATAR_LIMIT_ENDED_MESSAGE;
+  return null;
+}
+
+function retryPhrase(seconds: unknown): string {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
+    return " Try again later.";
+  }
+  const minutes = Math.ceil(seconds / 60);
+  return minutes <= 1
+    ? " Try again in a minute."
+    : ` Try again in ${minutes} minutes.`;
+}
+
+/**
+ * A readable message for the relay's bounded avatar errors, or null for any
+ * other error (which keeps the generic protocol-error formatting).
+ */
+export function avatarErrorMessage(value: unknown): string | null {
+  const error =
+    value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  if (error.type !== "avatar_error") return null;
+  switch (error.code) {
+    case "cost_unknown_under_cap":
+      return "Live avatar time can't be priced while your usage has a spending cap, so the avatar can't start.";
+    case "avatar_frame_too_large":
+    case "avatar_stream_refused":
+      return "The avatar video stream failed, so the session ended.";
+    case "avatar_connect_refused":
+      return "This session doesn't accept WebRTC avatar connections.";
+    case "avatar_unavailable":
+      break;
+    default:
+      return "Live avatars are unavailable right now.";
+  }
+  switch (error.reason) {
+    case "not_found":
+      return "This avatar no longer exists. Choose another avatar in Voice settings.";
+    case "not_ready":
+      return "This avatar isn't ready for live voice yet.";
+    case "needs_reverification":
+      return `The avatar service couldn't verify this avatar.${retryPhrase(error.retry_after_seconds)}`;
+    case "verification_failed":
+      return "The avatar service couldn't verify this avatar, so the session ended.";
+    case "not_confirmed":
+      return "The avatar service didn't start this avatar, so the session ended.";
+    case "home_changed":
+    case "home_mismatch":
+      return "This avatar can't be used with live voice in this deployment.";
+    case "policy_denied":
+      return "Live avatars aren't permitted for your account.";
+    case "disabled":
+      return "Photo avatars are turned off.";
+    case "capability_unavailable":
+      return "Live avatars are waiting on access approval.";
+    default:
+      return "Live avatars are unavailable right now.";
+  }
 }
 
 const MAX_SAFE_ERROR_CHARS = 512;
@@ -744,6 +864,7 @@ export function useVoiceLive(
   speechSettings: SpeechVoiceLiveSettings = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   tools: boolean = false,
   sessionId: string | null = null,
+  avatar: LiveAvatarSelection | null = null,
 ): VoiceLiveController {
   const [status, setStatus] = useState<VoiceLiveStatus>("idle");
   const supported = useSyncExternalStore(
@@ -757,6 +878,7 @@ export function useVoiceLive(
   const [turns, setTurns] = useState<LiveTurn[]>([]);
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [avatarView, setAvatarView] = useState<LiveAvatarView | null>(null);
 
   const sessionRef = useRef<LiveSession | null>(null);
   const pendingRef = useRef<PendingLiveSession | null>(null);
@@ -814,6 +936,12 @@ export function useVoiceLive(
   useEffect(() => {
     toolsRef.current = tools;
   }, [tools]);
+  // Read at connect time like the other settings, so a picker change applies to
+  // the next session without restarting the current one.
+  const avatarRef = useRef(avatar);
+  useEffect(() => {
+    avatarRef.current = avatar;
+  }, [avatar]);
 
   const cleanupPending = useCallback((pending: PendingLiveSession) => {
     if (pending.cleaned) return;
@@ -825,6 +953,7 @@ export function useVoiceLive(
     if (pending?.ctx) {
       void pending.ctx.close().catch(() => {});
     }
+    pending.avatarPlayer?.destroy();
   }, []);
 
   const cleanupSession = useCallback((s: LiveSession) => {
@@ -872,6 +1001,7 @@ export function useVoiceLive(
     // via a self-triggered "closed" statechange notification.
     s.ctx.onstatechange = null;
     void s.ctx.close().catch(() => {});
+    s.avatarPlayer?.destroy();
   }, []);
 
   const teardown = useCallback(() => {
@@ -910,9 +1040,88 @@ export function useVoiceLive(
     setTurns([]);
     setListening(false);
     setSpeaking(false);
-    const pending: PendingLiveSession = { ctx: null, stream: null, cleaned: false };
+    setAvatarView(null);
+    const pending: PendingLiveSession = {
+      ctx: null,
+      stream: null,
+      avatarPlayer: null,
+      cleaned: false,
+    };
     pendingRef.current = pending;
+    // Transcript and response events arrive many times a second; a patch that
+    // changes nothing keeps the same view so the stage does not re-render.
+    const patchAvatar = (patch: Partial<LiveAvatarView>) => {
+      if (!mountedRef.current) return;
+      setAvatarView((prev) => {
+        if (!prev) return prev;
+        const keys = Object.keys(patch) as (keyof LiveAvatarView)[];
+        return keys.some((key) => prev[key] !== patch[key]) ? { ...prev, ...patch } : prev;
+      });
+    };
+    // Set once the session exists; the player may fail before that.
+    const avatarEvents: { onFailure?: (reason: AvatarVideoFailure) => void } = {};
     try {
+      // A photo avatar (Speech Voice Live only) is attached and primed here,
+      // inside the start gesture, so its video element may play sound later.
+      // Without MediaSource support for the stream the session is voice only
+      // from the start: the relay would send no PCM in avatar mode.
+      const avatarSelection =
+        providerIdRef.current === "speech_voice_live" &&
+        avatarRef.current &&
+        isPhotoAvatarId(avatarRef.current.id)
+          ? avatarRef.current
+          : null;
+      if (avatarSelection) {
+        const env = browserAvatarVideoEnvironment();
+        if (env && supportsAvatarVideo(env)) {
+          const element = document.createElement("video");
+          element.playsInline = true;
+          element.autoplay = true;
+          element.setAttribute("aria-label", `${avatarSelection.label} avatar video`);
+          element.style.cssText =
+            "display:block;width:100%;height:100%;object-fit:cover;background:var(--bg-sidebar)";
+          hardenAvatarVideoElement(element);
+          const player = new AvatarVideoPlayer(element, env, {
+            liveEdgeSeconds: PLAYBACK_BUFFER_MS[settingsRef.current.playbackProfile] / 1000,
+            onFailure: (reason) => {
+              patchAvatar({ failure: reason });
+              avatarEvents.onFailure?.(reason);
+            },
+            onPlaybackBlocked: () => patchAvatar({ playbackBlocked: true }),
+            onFirstFrame: () => patchAvatar({ started: true }),
+          });
+          pending.avatarPlayer = player;
+          setAvatarView({
+            element,
+            label: avatarSelection.label,
+            unsupported: false,
+            failure: null,
+            started: false,
+            speaking: false,
+            idleEndsAt: null,
+            sessionEndsAt: null,
+            playbackBlocked: false,
+            resume: () => {
+              player.resume();
+              patchAvatar({ playbackBlocked: false });
+            },
+          });
+          player.prime();
+        } else {
+          setAvatarView({
+            element: null,
+            label: avatarSelection.label,
+            unsupported: true,
+            failure: null,
+            started: false,
+            speaking: false,
+            idleEndsAt: null,
+            sessionEndsAt: null,
+            playbackBlocked: false,
+            resume: () => {},
+          });
+        }
+      }
       // Begin permission-gated browser APIs before the first await so this work is
       // still directly attributable to the microphone button's user gesture.
       const streamPromise = navigator.mediaDevices
@@ -967,11 +1176,20 @@ export function useVoiceLive(
       // agent's server-authoritative persona + tool allowlist; the browser only
       // names them. An unknown/disabled agent falls back to the generic assistant.
       const boundSessionId = sessionIdRef.current;
+      // A player that already failed (for example, no MediaSource object) means
+      // this session is voice only: the relay is never asked for an avatar.
+      if (pending.avatarPlayer?.failed) {
+        pending.avatarPlayer.destroy();
+        patchAvatar({ element: null, unsupported: true });
+      }
+      const avatarPlayer =
+        pending.avatarPlayer && !pending.avatarPlayer.failed ? pending.avatarPlayer : null;
       const wsUrl = buildVoiceLiveWebSocketUrl(config.wsUrl, {
         providerId: providerIdRef.current,
         model: modelRef.current,
         region: regionRef.current,
         sessionId: boundSessionId,
+        avatar: avatarPlayer && avatarSelection ? avatarSelection.id : null,
         ...(boundSessionId ? {} : { agent, tools: toolsRef.current }),
       });
       const ws = new WebSocket(wsUrl, subprotocols);
@@ -992,9 +1210,12 @@ export function useVoiceLive(
         onTrackEnded: null,
         onTrackMuted: null,
         suspendRecoveryTimer: null,
+        avatarPlayer,
+        avatarEndReason: null,
       };
       sessionRef.current = session;
       pendingRef.current = null;
+      avatarEvents.onFailure = () => finishSession(AVATAR_VIDEO_FAILED_MESSAGE);
 
       // The mic track can die out from under an otherwise-healthy socket
       // (permission revoked mid-call, device unplugged, another app taking
@@ -1145,12 +1366,13 @@ export function useVoiceLive(
         node.onended = () => session.scheduled.delete(node);
       };
 
-      const bargeIn = () => {
+      // Returns whether the reply was interrupted (Speech can turn that off).
+      const bargeIn = (): boolean => {
         if (
           providerIdRef.current === "speech_voice_live" &&
           !speechSettingsRef.current.interruptResponse
         ) {
-          return;
+          return false;
         }
         const playedMs =
           responseAudioStartTime === null
@@ -1197,6 +1419,7 @@ export function useVoiceLive(
             );
           }
         }
+        return true;
       };
 
       // --- live timeline state (per session; closed over by the event handler) ---
@@ -1253,6 +1476,9 @@ export function useVoiceLive(
           name?: unknown;
           transcript?: unknown;
           error?: unknown;
+          max_session_seconds?: unknown;
+          seconds_remaining?: unknown;
+          reason?: unknown;
         } | null = null;
         try {
           msg = JSON.parse(ev.data);
@@ -1261,8 +1487,53 @@ export function useVoiceLive(
         }
         if (!msg) return;
         const type = typeof msg.type === "string" ? msg.type : "";
+        const avatarPlayerForSession = session.avatarPlayer;
+        if (avatarPlayerForSession && type && type !== "response.video.delta") {
+          // Any other server event is conversation the relay's idle timer also sees.
+          if (type !== "ai4ia.avatar.idle_warning") patchAvatar({ idleEndsAt: null });
+        }
         switch (type) {
+          case "response.video.delta": {
+            if (avatarPlayerForSession && typeof msg.delta === "string") {
+              avatarPlayerForSession.push(msg.delta);
+            }
+            break;
+          }
+          case "session.avatar.switch_to_speaking":
+          case "session.avatar.switch_to_idle": {
+            if (avatarPlayerForSession && mountedRef.current) {
+              const talking = type === "session.avatar.switch_to_speaking";
+              setSpeaking(talking);
+              patchAvatar({ speaking: talking });
+            }
+            break;
+          }
+          case "ai4ia.avatar.session": {
+            const max =
+              typeof msg.max_session_seconds === "number" &&
+              Number.isFinite(msg.max_session_seconds) &&
+              msg.max_session_seconds > 0
+                ? msg.max_session_seconds
+                : null;
+            patchAvatar({ sessionEndsAt: max === null ? null : Date.now() + max * 1000 });
+            break;
+          }
+          case "ai4ia.avatar.idle_warning": {
+            const seconds =
+              typeof msg.seconds_remaining === "number" &&
+              Number.isFinite(msg.seconds_remaining)
+                ? Math.max(0, msg.seconds_remaining)
+                : null;
+            patchAvatar({ idleEndsAt: seconds === null ? null : Date.now() + seconds * 1000 });
+            break;
+          }
+          case "ai4ia.avatar.session_ended": {
+            session.avatarEndReason = typeof msg.reason === "string" ? msg.reason : null;
+            break;
+          }
           case "response.audio.delta": {
+            // In avatar mode the speech is inside the video: never play PCM too.
+            if (avatarPlayerForSession) break;
             if (cancellationRequested) break;
             const delta = typeof msg.delta === "string" ? msg.delta : "";
             if (delta) {
@@ -1378,8 +1649,10 @@ export function useVoiceLive(
             // The model finished this response. Mark the open assistant turn idle
             // and stop the speaking indicator; the turn stays open (a tool call can
             // chain a second response into the same bubble) until the user speaks.
+            // An avatar is still speaking its buffered video here; its own
+            // switch_to_idle event ends the indicator instead.
             if (mountedRef.current) {
-              setSpeaking(false);
+              if (!avatarPlayerForSession) setSpeaking(false);
               if (assistantTurnId) patchTurn(assistantTurnId, (t) => ({ ...t, streaming: false }));
             }
             activeResponseId = null;
@@ -1392,7 +1665,9 @@ export function useVoiceLive(
             break;
           }
           case "input_audio_buffer.speech_started": {
-            bargeIn();
+            // Skip whatever speech the avatar had buffered, but only when the
+            // reply is actually interrupted; otherwise the avatar keeps talking.
+            if (bargeIn()) avatarPlayerForSession?.jumpToLiveEdge();
             // A new user turn supersedes the last tool hint, closes the assistant
             // turn, and stops playback/indicators.
             if (mountedRef.current) {
@@ -1424,7 +1699,9 @@ export function useVoiceLive(
             if (!session.protocolError) {
               session.protocolError = parseVoiceProtocolError(msg.error);
             }
-            finishSession(formatVoiceProtocolError(session.protocolError));
+            finishSession(
+              avatarErrorMessage(msg.error) ?? formatVoiceProtocolError(session.protocolError),
+            );
             break;
           }
           default:
@@ -1493,15 +1770,17 @@ export function useVoiceLive(
       }
       ws.onerror = () =>
         finishSession(
-          session.protocolError
-            ? formatVoiceProtocolError(session.protocolError)
-            : formatVoiceCloseError(session.opened),
+          avatarEndMessage(session.avatarEndReason) ??
+            (session.protocolError
+              ? formatVoiceProtocolError(session.protocolError)
+              : formatVoiceCloseError(session.opened)),
         );
       ws.onclose = (event) =>
         finishSession(
-          session.protocolError
-            ? formatVoiceProtocolError(session.protocolError)
-            : formatVoiceCloseError(session.opened, event),
+          avatarEndMessage(session.avatarEndReason) ??
+            (session.protocolError
+              ? formatVoiceProtocolError(session.protocolError)
+              : formatVoiceCloseError(session.opened, event)),
         );
     } catch (e) {
       const cancelled =
@@ -1557,6 +1836,7 @@ export function useVoiceLive(
     turns,
     listening,
     speaking,
+    avatar: avatarView,
     start,
     toggle,
     stop,

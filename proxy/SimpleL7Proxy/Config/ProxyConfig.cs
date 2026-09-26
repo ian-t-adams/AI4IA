@@ -45,6 +45,7 @@ public class ProxyConfig
     public IterationModeEnum IterationMode { get; set; } = IterationModeEnum.SinglePass;
     [ConfigOption("LoadBalancing:Mode")]
     public string LoadBalanceMode { get; set; } = Constants.Latency;
+    /// <summary>Maximum backend attempts in MultiPass mode. Set to 0 to disable the attempt-count limit.</summary>
     [ConfigOption("LoadBalancing:MultiPass:MaxAttempts")]
     public int MaxAttempts { get; set; } = 10;
 
@@ -195,7 +196,7 @@ public class ProxyConfig
     [ConfigOption("Logging:EventHub:StartupSeconds", ConfigName = "EVENTHUB_STARTUP_SECONDS", Mode = ConfigMode.Cold)]
     public int EventHubStartupSeconds { get; set; } = 10;
     [ConfigOption("Logging:EventLoggers", ConfigName = "EVENT_LOGGERS", Mode = ConfigMode.Cold)]
-    public string EventLoggers { get; set; } = "file";
+    public string EventLoggers { get; set; } = "none";
     [ConfigOption("Logging:LogDateTime", ConfigName = "LOGDATETIME", Mode = ConfigMode.Cold)]
     public bool LogDateTime { get; set; } = false;
     [ConfigOption("Logging:LogFileName", ConfigName = "LOGFILE_NAME", Mode = ConfigMode.Cold)]
@@ -218,8 +219,10 @@ public class ProxyConfig
     // public bool UseOAuth { get; set; } = false;
 
     // ── Server ──
+    [ConfigOption("Server:AuthProviderClass", ConfigName = "AuthProviders", Mode = ConfigMode.Cold)]
+    public string AuthProviderClass { get; set; } = "Auth.AzureProvider";
     [ConfigOption("Server:EnvPluginClass", ConfigName = "EnvPluginClass", Mode = ConfigMode.Cold)]
-    public string EnvPluginClass { get; set; } = "SimpleL7Proxy.Plugins.AzureConfigPlugin";
+    public string EnvPluginClass { get; set; } = "SimpleL7Proxy.Plugin.AzureConfigPlugin";
     [ConfigOption("Server:GC2InternalSecs", ConfigName = "GC2InternalSecs", Mode = ConfigMode.Cold)]
     public int GC2InternalSecs { get; set; } = 300; // 5 minutes
     [ConfigOption("Server:StreamFlushInterval", ConfigName = "StreamFlushInterval", Mode = ConfigMode.Cold)]

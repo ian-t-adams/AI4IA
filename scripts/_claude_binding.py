@@ -17,7 +17,7 @@ from _model_targets import model_target
 from _model_retirement import parse_date
 
 ROOT = Path(__file__).resolve().parents[1]
-INFERENCE_ACTIONS = ["Microsoft.CognitiveServices/accounts/MaaS/*"]
+INFERENCE_ACTIONS = ["Microsoft.CognitiveServices/accounts/AIServices/*"]
 FIELDS = frozenset({
     "sourceTenantId", "sourceSubscriptionId", "sourceApimResourceId", "sourceApimPrincipalId",
     "sourceIdentityResourceId", "sourceIdentityClientId", "sourceIdentityPrincipalId",

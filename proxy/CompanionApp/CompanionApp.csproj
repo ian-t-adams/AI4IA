@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>CompanionApp</AssemblyName>
+    <RootNamespace>CompanionApp</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+    <DefaultItemExcludes>$(DefaultItemExcludes);artifacts/**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.Core" Version="1.63.0" />
+    <PackageReference Include="Azure.Data.AppConfiguration" Version="1.11.1" />
+    <PackageReference Include="Azure.Messaging.EventHubs" Version="5.12.2" />
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <PackageReference Include="Azure.Storage.Blobs" Version="12.29.2" />
+    <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.63.1" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <!-- AI4IA: serves _framework/blazor.web.js. Without it the Web SDK references this package
+         implicitly, but only when .razor files exist at restore time (the Docker restore layer
+         has none) and only at the SDK's own bundled patch (CI's SDK floats), so a locked restore
+         would break. An explicit reference replaces the implicit one. Keep it private and at the
+         runtime base image's ASP.NET patch. -->
+    <PackageReference Include="Microsoft.AspNetCore.App.Internal.Assets" Version="10.0.12" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SimpleL7Proxy\SimpleL7Proxy.csproj" />
+  </ItemGroup>
+
+</Project>

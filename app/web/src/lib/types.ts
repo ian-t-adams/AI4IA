@@ -29,7 +29,8 @@ export interface ModelEntry {
   runtimeEnabled?: boolean;
   api?: string;
   deploymentTarget?: "source" | "external-claude";
-  anthropicThinking?: "disabled" | null;
+  // External Claude profile: "adaptive" is text-only (supportsTools is false).
+  anthropicThinking?: "disabled" | "adaptive" | null;
   requiredRealtimeProtocol?: "ga" | null;
   // True for text-chat models offered in the chat/agent pickers; false for
   // capability models (image, video, tts, transcription, embedding, rerank) and
@@ -433,6 +434,28 @@ export interface ExecutionReceipt {
   partial: boolean;
   truncated: boolean;
   notes: string[];
+  // Present only for a live photo avatar session's receipt.
+  avatar?: ReceiptAvatarEvidence | null;
+}
+
+// What a live photo avatar session ran: an 8-character record prefix, the
+// confirmed billable seconds and a per-second estimate. Never video or ids.
+export interface ReceiptAvatarEvidence {
+  recordRef: string;
+  baseModel?: string | null;
+  outputProtocol: "websocket";
+  confirmed: boolean;
+  billableSeconds: number;
+  videoFrames: number;
+  endReason?: string | null;
+  cost?: {
+    known: boolean;
+    estCostMicroUsd: number | null;
+    currency: string;
+    priceVersion: string | null;
+    billingModelId: string | null;
+    basis: "second";
+  } | null;
 }
 
 // --- Citation provenance (audit P1-14) --------------------------------------

@@ -92,3 +92,22 @@ condition = "AND"
 regexTarget = "line"
 paths = ['''app/api/src/ai4ia_api/routers/memories\.py''']
 regexes = ['''alias="Idempotency-Key", max_length=128''']
+
+# 7) Synthetic SAS-signature fixtures in the photo avatar preview-copy tests.
+#    Commit 5d196df briefly stored two dummy, high-entropy-looking signature
+#    values assigned to `TOKEN` names, which the generic-api-key rule reads as
+#    credentials. They stand in for the query signature of a provider-issued
+#    Blob SAS link, so the tests can prove the link never reaches responses,
+#    records or logs; they were never credentials. A follow-up commit builds
+#    them at runtime instead. Scoped to that exact historical commit AND the two
+#    test files (by SHA, not by regex, so this entry never repeats the fixture
+#    values) so any other secret added to these files in a different commit
+#    remains blocking.
+[[allowlists]]
+description = "Synthetic photo avatar SAS-signature fixtures, built at runtime in a follow-up commit (historical false positive in commit 5d196df)."
+condition = "AND"
+commits = ["5d196df54366d2e4329da88589564c1dbbe89bb6"]
+paths = [
+  '''app/api/tests/test_photo_avatar_preview\.py''',
+  '''app/api/tests/test_photo_avatar_api\.py''',
+]

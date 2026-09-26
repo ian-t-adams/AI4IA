@@ -223,5 +223,51 @@
         }
       }
     }
-  ]
+  ],
+  "photoAvatars": {
+    "displayName": "Azure Speech photo avatars",
+    "description": "Custom photo avatars generated from a text description (Create with AI). Limited Access; default-off in AI4IA.",
+    "homeRegion": "eastus2",
+    "homeDataZone": "US",
+    "apiVersion": "2023-12-01-preview",
+    "requiredFeature": "CustomAvatar",
+    "projectSuffix": "_PhotoAvatar",
+    "baseModel": "vasa-1",
+    "billingModelId": "photo-avatar-standard",
+    "liveBillingModelId": "photo-avatar-realtime-standard",
+    "promptMaxChars": 1000,
+    "attributes": {
+      "gender": [
+        "Male",
+        "Female"
+      ],
+      "age": [
+        "YoungAdult",
+        "MiddleAged",
+        "Senior"
+      ],
+      "ethnicity": [
+        "Asian",
+        "White",
+        "BlackAndAfricanAmerican",
+        "SouthAsian",
+        "MiddleEastern",
+        "HispanicAndLatinx"
+      ],
+      "style": [
+        "Realistic",
+        "DigitalIllustration",
+        "Stylized3D"
+      ]
+    },
+    "preview": {
+      "host": "stttssvcproduse2.blob.core.windows.net",
+      "maxBytes": 8388608,
+      "maxDimension": 4096,
+      "contentTypes": [
+        "application/octet-stream",
+        "image/png"
+      ]
+    }
+  }
 }

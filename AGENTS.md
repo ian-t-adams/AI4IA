@@ -25,7 +25,9 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
   execution, sessions, documents, memory, usage, metrics, and gateway calls.
 - `infra` — Bicep plus azd parameters and catalogs, including the authoritative
   `infra/models.json` model catalog.
-- `proxy` — vendored `microsoft/SimpleL7Proxy` source plus AI4IA Dockerfile/notes.
+- `proxy` — vendored `microsoft/SimpleL7Proxy` source plus AI4IA Dockerfile/notes,
+  including an optional, default-off hosted subset of its CompanionApp telemetry
+  console (`proxy/CompanionApp`, `proxy/CompanionApp.Dockerfile`).
 - `scripts` — catalog generators, validators, provisioning helpers, status
   snapshots, teardown/purge scripts, and azd hooks. `scripts/azure-cli.ps1` is a
   shared dot-sourced safety library, not a standalone entry point.
@@ -45,7 +47,12 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    stateful sandbox calls take FastAPI → Code Interpreter APIM → Foundry because
    they are not compatible catalog deployments. Direct calls are reserved for
    non-model control/data planes such as Content Understanding, WebIQ grounding,
-   Azure Monitor, Key Vault, Blob, Cosmos, and Azure AI Search.
+   Azure Monitor, Key Vault, Blob, Cosmos, and Azure AI Search. Photo avatar
+   calls use the proxy → exact photo-avatar APIM API; their one direct exception
+   is a single bounded fetch of the provider-issued preview SAS link into AI4IA
+   Blob (HTTPS, catalog host only, pinned public IP, no redirects, size/PNG
+   checks), and the link is never stored, logged or returned
+   (`photo_avatars/preview.py`).
 2. **Catalog-driven models.** Do not hardcode deployment names or model lists.
    `infra/models.json` is the source of truth; generated runtime catalog data must
    match it. `runtimeEnabled` is a strict optional Boolean, default true: false
@@ -459,8 +466,8 @@ report is not approval to refresh a base or deploy.
 
 ### Docker image builds
 
-`docker-build` builds (never pushes) the `app/web`, `app/api`, and `proxy` images
-on every PR, so a broken base reference, bad digest pin, or install failure fails
+`docker-build` builds (never pushes) the `app/web`, `app/api`, `proxy` and optional
+CompanionApp images on every PR, so a broken base reference, bad digest pin, or install failure fails
 CI instead of surfacing at deploy. It is separate from `quality`'s `hadolint` job,
 which only lints Dockerfile syntax:
 
@@ -470,11 +477,22 @@ docker buildx build --file app\api\Dockerfile --tag ai4ia-api:local --load app\a
 docker run --rm ai4ia-api:local python -c "import ai4ia_api.main"
 Get-Content -Raw app\api\tests\test_lazy_imports_are_declared.py | docker run --rm --interactive ai4ia-api:local python -
 docker buildx build --file proxy/Dockerfile --load proxy
+docker buildx build --file proxy/CompanionApp.Dockerfile --load proxy
 ```
 
 The proxy's NuGet restore runs in locked mode, and the final image is blocked on
-HIGH/CRITICAL findings under the exact-CVE `proxy/.trivyignore` policy. The job
-retains an SPDX SBOM and unsigned build metadata. These load-only PR artifacts are
+HIGH/CRITICAL findings under the exact-CVE `proxy/.trivyignore` policy. The
+CompanionApp image shares that context, those pinned bases and that policy. Its
+runtime smoke test requires the served Blazor script as JavaScript, with a missing-
+script control. The job also exports the image's filesystem and runs
+`scripts/check-image-ownership.py`: the application tree must be root-owned and
+not group/other-writable, and the key ring must be the only app-user-owned path.
+The Web SDK only implicitly references `Microsoft.AspNetCore.App.Internal.Assets`
+when `.razor` files exist at restore time, and only at its own bundled patch. So
+the CompanionApp project references it explicitly at the runtime base image's
+ASP.NET patch. Keep those two in step, and never replace the explicit reference
+with a non-locked or `--force-evaluate` restore. The job retains SPDX SBOMs and
+unsigned build metadata. These load-only PR artifacts are
 never signed or substituted for the production images built by `deploy.yml`.
 
 The `dockerignore-context` job builds throwaway probe images from each
@@ -532,6 +550,16 @@ unchanged-template/parameter shortcut is not a live drift check and can skip
 reconciliation after application rollback. Keep the supported `--no-state`
 option, not state-file deletion or an unsupported `--force` substitute. The
 explicit manual `provision=false` opt-out remains unchanged.
+
+The job's Azure CLI holds one GitHub OIDC assertion from `azure/login`, and Entra
+rejects it about 10 minutes later (`AADSTS700024`). From then on the CLI can use
+only tokens it already cached, such as ARM. `deploy.yml` therefore repeats the
+identical pinned login, with the same inputs and no `if:`, directly after
+provisioning. The postprovision data-plane helpers and both canary token steps ask
+`azd auth token --scope <resource>/.default` first, because azd's GitHub federated
+credential fetches a new assertion for every token. A new late-job step, hook or
+script that needs a token for a resource the CLI has not cached must do the same.
+`test_gating_workflows.py` and `test_post_deploy_verify.py` guard the workflow half.
 
 Rollback state is captured **before `azd provision`**, not merely before
 application deployment: all three Bicep app modules use a quickstart placeholder
@@ -625,9 +653,23 @@ dispatches application deployment. See
 This is workflow-origin provenance, not a byte-for-byte reproducibility claim or
 an isolated SLSA trusted builder. A green PR is not production signing evidence.
 
+The optional CompanionApp console is **not an azd service**. Never add it to
+`azure.yaml` or the three-image deploy manifests: azd cannot skip a disabled
+service, and the sealed proof set would become conditional. The manual, main-only
+`companion-image.yml` builds it once, scans it, pushes it, and attests and verifies
+one digest under the same pinned tools and `create-storage-record: false`.
+`deploy.yml` re-verifies the configured `AI4IA_COMPANION_APP_IMAGE` with
+`scripts/verify-companion-image.py` before provisioning, because Bicep references
+the digest during provision. Its certificate must name the companion workflow on
+main and a GitHub-hosted runner, and its subject must be exactly that digest. A
+disabled console references no image. An enabled console has no skip mode, and no
+tag or rebuild path. Its Easy Auth admin policy and read-only identity are
+contracts; see [the runbook](docs/runbooks/feature-enablement.md#companionapp-telemetry-console).
+
 ```powershell
 python -m unittest scripts.tests.test_base_image_pins
 python -m unittest scripts.tests.test_immutable_image_promotion scripts.tests.test_image_provenance
+python -m unittest scripts.tests.test_companion_image
 ```
 
 ### Infra, manifests, and operational quality
@@ -715,12 +757,14 @@ python3 -m unittest scripts.tests.test_base_image_pins
 python3 -m unittest scripts.tests.test_base_image_drift
 python3 -m unittest scripts.tests.test_immutable_image_promotion
 python3 -m unittest scripts.tests.test_image_provenance
+python3 -m unittest scripts.tests.test_companion_image           # CompanionApp promotion + pre-provision attestation gate
+python3 -m unittest scripts.tests.test_image_ownership           # exported-filesystem owner/mode checks for the image job
 ```
 
 `test_custom_domain_preflight`, `test_pages_status_refresh`,
 `test_dependabot_config`, `test_post_deploy_verify`, `test_gating_workflows`,
 `test_base_image_pins`, `test_subscription_preflight`,
-`test_model_retirement`,
+`test_model_retirement`, `test_companion_image`,
 `test_proxy_delivery_contracts`, and `test_immutable_image_promotion` need
 `PyYAML` (pinned in the workflow); `test_immutable_image_promotion` also needs
 `bash` and skips without it. `test_capacity_evidence` and its reused
@@ -830,7 +874,27 @@ The vendored proxy plus AI4IA auth guard tests use .NET 10:
 dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --locked-mode
 dotnet build   proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-restore
 dotnet test    proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-build --no-restore --nologo -- --minimum-expected-tests 40
+dotnet restore proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --locked-mode
+dotnet build   proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --configuration Release --no-restore
+dotnet test    proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --configuration Release --no-build --no-restore --nologo -- --minimum-expected-tests 17
 ```
+
+`AI4IA.CompanionApp.Tests` drives the real vendored CompanionApp host. Each of these checks runs against a control:
+
+- only an allow-listed admin principal or group passes the in-app gate, which reads the principal Container Apps authentication injects;
+- an empty or malformed admin list refuses startup;
+- the compiled routes match the route allowlist, and every excluded upstream tool route returns 404;
+- the Production host maps no endpoint beyond the telemetry pages, the Blazor circuit and read-only static files;
+- the outbound `HttpClient` refuses before it connects;
+- the startup metrics catalog is empty;
+- Event Hubs shared-access secrets refuse startup;
+- the real four-partition `ConsumeAsync` fan-out never runs two pipeline executions at once
+  (a probe holds one open while the others deliver), against a single-partition control;
+- unlabeled backend attempts are processed but nothing is written beside the binary.
+
+A new upstream CompanionApp page is not vendored until it is reviewed against that
+boundary. Exclusions are hash-bound `ai4ia-excluded` provenance rules, never an
+unrecorded omission.
 
 The existing MSTest bridge runs actual tests after locked restore/build. The
 minimum discovery floor also rejects an empty run; the isolated runner controls
@@ -845,6 +909,13 @@ Retain their disabled/enabled and protocol controls: a preselected fake backend
 does not prove the generated runtime gate. Generated backend fragments omit only
 parser-identified XML comment nodes to fit the unchanged 48 KiB compiler ceiling;
 authored comments and C# bytes stay intact.
+APIM's policy schema types `forward-request` `buffer-request-body`,
+`buffer-response` and `fail-on-error-status-code` as literal booleans. Since
+2026-09-25, deployment validation has rejected expressions there, even though
+the offline harness evaluates them, and `test_gateway_policy.py` guards this.
+Every forward buffers the request body: a `noReplay` request still makes exactly
+one attempt because the retry condition excludes it and the claim check refuses
+a second forward, not because its body is unbuffered.
 
 Throttle-failover controls drive the generated two-region GlobalStandard row. A
 429/5xx must mark the failed backend's `throttleId` (endpoint + region label +
@@ -950,6 +1021,11 @@ must remain rejected by both the manifest and adapter.
 The exact-pin and reflected parity gates require the installed SDK, not a skip.
 Compare its imported source version as well as distribution metadata, lockfile,
 and every shipped manifest/schema; keep the two missing-SDK install hints aligned.
+The same gate requires the provisioner hints, `foundry/README.md`, the toolbox
+runbook and the portal requirements page to cite the pin as `azure-ai-projects==`,
+and confines the installed RECORD to `azure/ai/projects/` and the SDK's
+dist-info: a regular top-level `scripts` package would shadow this repository's
+namespace `scripts` package in the api job.
 Review patch-release wheel/source changes even when reflected fields are unchanged.
 The gate installers are pinned by `UV_VERSION`
 in `app-ci.yml` (also the API Dockerfile's build-only installer) and
@@ -1084,11 +1160,18 @@ Four rules follow:
 - Author instruction-only skills at `foundry/skills/<name>/SKILL.md` using the
   Agent Skills front matter (`name`, `description`) and add an unpinned reference
   to `foundry/toolbox.manifest.json`.
+- Regenerate the official MCP catalog with `python scripts/gen-mcp-catalog.py`.
+  Any executable manifest change moves its `toolboxManifestSha256` and therefore
+  the toolbox's consent identity; tool search's generic `call_tool` would
+  otherwise let an existing consent cover new toolbox content.
 - Run `python scripts/provision-foundry-toolbox.py` for offline source/manifest
   validation. The approved `--create` path reconciles immutable skill versions
   before the toolbox and reuses matching versions after interrupted activation.
 - Skills are discovered only from generated official-catalog entries with
   `resourcesEnabled`; never accept BYO MCP resources as instructions.
+  `load_skill` is a tool, so a `toolCalling: false` model never receives it; a
+  published chat source that can't be satisfied without tools refuses with a
+  422 before the user message is saved, rather than narrowing silently.
 - Preserve progressive disclosure: advertise bounded name/description metadata,
   load the full resource only through `load_skill`, and retain URI, version/default
   resolution, content digest, and truncation provenance in execution receipts.
@@ -1145,7 +1228,10 @@ Four rules follow:
    advertisement/traffic. Exact configured target tokens flow only through the
    existing proxy/APIM path. Never use an app key, runtime Graph calls, a shared
    deployment credential or built-in Foundry User as a narrow inference grant.
-   The documented MaaS-only custom role is exact-account assigned and read back.
+   The custom inference role grants only
+   `Microsoft.CognitiveServices/accounts/AIServices/*` data actions; the
+   documented MaaS-only role did not authorize Claude Messages in a 2026-09-25
+   live check. It is exact-account assigned and read back.
    Separate source/target readers must prove app/FIC/SP/role/model/route metadata
    freshly; saved JSON and flags do not prove it. Single-subscription reports
    retain external unknowns, not borrowed source evidence. A live binding must be
@@ -1155,8 +1241,13 @@ Four rules follow:
    compare ordered policy structure and exact parsed expression/body/value text,
    never collapse whitespace inside code or payloads. Keep stable raw observations
    around that comparison and keep the postprovision check at script scope.
-   New Claude profiles require thinking disabled, text/tools and low/medium/high
-   native effort throughout catalog, consent/publication and adapter/receipts.
+   New Claude profiles are either thinking-disabled text/tools or the explicit
+   adaptive text-only profile (`anthropicThinking: "adaptive"`, `toolCalling:
+   false`), with low/medium/high native effort throughout catalog,
+   consent/publication and adapter/receipts. Adaptive requests omit `thinking`,
+   refuse tools, forced tool choice and tool history before dispatch, and never
+   surface thinking or redacted-thinking blocks in events, history, receipts or
+   logs. Tool-capable adaptive continuation (signed block replay) is unsupported.
    Exact deployment/SKU selects frozen pricing, including the US DataZone premium;
    missing cache-write duration or lost cache coverage stays unknown. No hidden
    reasoning, historical repricing or Cosmos schema change is introduced. See
@@ -1454,6 +1545,58 @@ price versions must remain compact and pass the actual receipt redaction path.
 Follow the approved
 [activation/rollback procedure](docs/runbooks/feature-enablement.md#staged-ga-realtime).
 Issue #413 stays open for its realtime/model/cutover and approved cleanup criteria.
+
+## Live photo avatars on Speech Voice Live
+
+Live avatars reuse the relay → APIM Voice Live WebSocket path. They need no
+rule-1 exception. `output_protocol: websocket` is mandatory: never enable
+WebRTC, forward ICE/TURN credentials or SDP, or open a browser media plane without
+a new owner-approved exception.
+
+- **Selection.** Only `?avatar=<own 32-hex record id>` on the Speech provider. The
+  relay calls layer 1's `resolve_live_avatar` on every connection, before
+  admission or connect. Never cache a grant or add a parallel ownership,
+  readiness or policy check.
+- **Home region.** It must equal the managed model's region, so the session targets
+  the account that owns the avatar.
+- **Server-owned block.** The relay injects the avatar block itself, last in the
+  rewrite chain: `photo-avatar`, the catalog base model, the provider id,
+  `customized`, `websocket`. No client avatar field or provider id may reach it.
+- **Client events.** Client `session.avatar.*` events are refused on every
+  provider.
+- **Video.** `response.video.delta` is forwarded verbatim. Every upstream text
+  frame is bounded at 256 KiB before it is parsed, and an upstream binary frame ends
+  the avatar session. Video is never logged, receipted, parsed beyond its type, or
+  copied into telemetry.
+- **Provider id.** It is scrubbed from the `session.updated` echo, every other
+  frame, and upstream close reasons and error messages before they are forwarded,
+  inspected or logged. The completion log and event scrub it again as a backstop.
+  Evidence and usage carry only the
+  8-character record prefix (`resourceRef`); the receipt redactor would mask a
+  full id anyway.
+- **Admission and caps.**
+  - Live time is the `avatar_live` hard-quota surface (`avatar.use`), admitted
+    before the unchanged `realtime` admission.
+  - The per-send guard re-checks `avatar.use`, and the idle watchdog re-runs it
+    every 15 seconds so silence can't outlast a revocation.
+  - Avatar sessions bill while idle, so they are always capped by the smaller of
+    `realtime_max_session_seconds` and the live minutes setting, and they end at
+    the idle timeout. Microphone audio, video and the guard-exempt output stop
+    events (`OUTPUT_STOP_EVENT_TYPES`) are not activity.
+  - The countdown holds while the avatar speaks (`switch_to_speaking` until
+    `switch_to_idle`), for at most five minutes.
+- **Meter.** Server-measured from avatar confirmation to close, in whole seconds,
+  through the catalog's `liveBillingModelId` (`basis: second`,
+  `estimate_avatar_seconds`). An unconfirmed avatar records no row. An unknown
+  price refuses under layer 1's `live_cost_capped` rule, never free.
+- **Verification failure.** `avatar_verification_failed` becomes a stable client
+  error and calls `mark_live_avatar_verification_failed` once. Do not
+  auto-reconnect around the re-verification cooldown.
+- **Web.** Avatar mode plays no PCM, because the speech is inside the video. The
+  MediaSource player appends strictly in order through its bounded queue, and
+  fails the avatar rather than dropping a fragment. An unsupported browser stays
+  voice only before connecting. The `AI-generated` disclosure label stays visible
+  for the whole session.
 
 ## Group policy and publication source contract
 
