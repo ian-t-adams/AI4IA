@@ -21,6 +21,8 @@ import {
   PHOTO_AVATAR_ATTRIBUTE_KEYS,
   PHOTO_AVATAR_ATTRIBUTE_LABELS,
   PHOTO_AVATAR_POLL_BUDGET_MS,
+  PHOTO_AVATAR_REVERIFY_BUDGET_MS,
+  PHOTO_AVATAR_REVERIFY_POLL_MS,
   PhotoAvatarApiError,
   attestationRecognized,
   createPhotoAvatar,
@@ -30,13 +32,14 @@ import {
   getPhotoAvatar,
   getPhotoAvatarConfig,
   isPendingPhotoAvatar,
+  isReverifyingPhotoAvatar,
   listPhotoAvatars,
   newerPhotoAvatar,
   photoAvatarAttributeLabel,
+  photoAvatarDisplayStatus,
   photoAvatarErrorMessage,
   photoAvatarPollDelay,
   photoAvatarReportReasonLabel,
-  photoAvatarStatusText,
   photoAvatarUnavailableText,
   reportPhotoAvatar,
   safeReportUrl,
@@ -133,26 +136,36 @@ function draftHint(issues: PhotoAvatarDraftIssue[], limits: PhotoAvatarLimits | 
   return parts.length ? `To create an avatar, ${joinList(parts)}.` : null;
 }
 
+type PollMode = "pending" | "reverify";
+
+// A record is polled while its creation is in flight, or while it is ready but
+// waiting on re-verification (only a status read lets the server re-check it).
+function pollMode(avatar: PhotoAvatar): PollMode | null {
+  if (isPendingPhotoAvatar(avatar)) return "pending";
+  if (isReverifyingPhotoAvatar(avatar)) return "reverify";
+  return null;
+}
+
 /**
- * Polls one pending record with backoff until it is ready or failed, for at
- * most PHOTO_AVATAR_POLL_BUDGET_MS of wall time. It never polls while the tab
- * is hidden, and stops as soon as the item unmounts (the panel closed or the
- * avatar was removed).
+ * Polls one record until it leaves its polling mode, within a bounded wall-time
+ * budget per mode. It never polls while the tab is hidden, and stops as soon as
+ * the item unmounts (the panel closed or the avatar was removed).
  */
 function usePhotoAvatarPolling(
   avatar: PhotoAvatar,
   onRecord: (record: PhotoAvatar) => void,
   onGone: () => void,
-): { stalled: boolean; resume: () => void } {
-  const pending = isPendingPhotoAvatar(avatar);
+): { stalled: PollMode | null; resume: () => void } {
+  const mode = pollMode(avatar);
   const [session, setSession] = useState(0);
-  const [stalledSession, setStalledSession] = useState<number | null>(null);
+  const [stalledAt, setStalledAt] = useState<{ session: number; mode: PollMode } | null>(null);
   const receive = useEffectEvent(onRecord);
   const gone = useEffectEvent(onGone);
   const id = avatar.id;
 
   useEffect(() => {
-    if (!pending) return;
+    if (mode === null) return;
+    const budget = mode === "pending" ? PHOTO_AVATAR_POLL_BUDGET_MS : PHOTO_AVATAR_REVERIFY_BUDGET_MS;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | null = null;
@@ -160,9 +173,14 @@ function usePhotoAvatarPolling(
     let waitingForVisible = false;
     const startedAt = Date.now();
 
+    const delayFor = (n: number) => {
+      if (mode === "pending") return photoAvatarPollDelay(n);
+      // The list never re-verifies, so read a flagged record at once.
+      return n === 0 ? 0 : PHOTO_AVATAR_REVERIFY_POLL_MS;
+    };
     const schedule = () => {
-      const remaining = PHOTO_AVATAR_POLL_BUDGET_MS - (Date.now() - startedAt);
-      const delay = Math.max(0, Math.min(photoAvatarPollDelay(attempt), remaining));
+      const remaining = budget - (Date.now() - startedAt);
+      const delay = Math.max(0, Math.min(delayFor(attempt), remaining));
       attempt += 1;
       timer = setTimeout(() => void tick(), delay);
     };
@@ -177,7 +195,7 @@ function usePhotoAvatarPolling(
         const record = await getPhotoAvatar(id, controller.signal);
         if (cancelled) return;
         receive(record);
-        if (!isPendingPhotoAvatar(record)) return;
+        if (pollMode(record) !== mode) return;
       } catch (error) {
         if (cancelled) return;
         if (error instanceof PhotoAvatarApiError && error.status === 404) {
@@ -186,8 +204,8 @@ function usePhotoAvatarPolling(
         }
         // Anything else is transient: keep backing off within the budget.
       }
-      if (Date.now() - startedAt >= PHOTO_AVATAR_POLL_BUDGET_MS) {
-        setStalledSession(session);
+      if (Date.now() - startedAt >= budget) {
+        setStalledAt({ session, mode });
         return;
       }
       schedule();
@@ -206,16 +224,19 @@ function usePhotoAvatarPolling(
       controller?.abort();
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [id, pending, session]);
+  }, [id, mode, session]);
 
   return {
-    stalled: pending && stalledSession === session,
+    stalled: mode !== null && stalledAt?.session === session && stalledAt.mode === mode ? mode : null,
     resume: () => setSession((value) => value + 1),
   };
 }
 
 function statusTone(avatar: PhotoAvatar): { tone: string; glyph: string | null } {
-  if (isPendingPhotoAvatar(avatar)) return { tone: "info", glyph: null };
+  // In progress, never alarming: creation, and re-verification of a ready avatar.
+  if (isPendingPhotoAvatar(avatar) || isReverifyingPhotoAvatar(avatar)) {
+    return { tone: "info", glyph: null };
+  }
   switch (avatar.status) {
     case "ready":
       return { tone: "success", glyph: "✓" };
@@ -259,11 +280,18 @@ function AvatarItem({
   const { stalled, resume } = usePhotoAvatarPolling(
     avatar,
     (record) => {
-      if (record.status !== avatar.status) {
-        if (record.status === "ready") onAnnounce(`${record.displayName} is ready.`);
-        if (record.status === "failed") {
-          onAnnounce(`Couldn't create ${record.displayName}. ${record.failure?.message ?? ""}`.trim());
-        }
+      const name = record.displayName;
+      if (record.status === "ready" && !isReverifyingPhotoAvatar(record)) {
+        if (avatar.status !== "ready") onAnnounce(`${name} is ready.`);
+        else if (isReverifyingPhotoAvatar(avatar)) onAnnounce(`${name} is verified again.`);
+      } else if (record.status === "failed" && avatar.status !== "failed") {
+        const detail = record.failure?.message ?? "";
+        onAnnounce(
+          (record.readyAt || avatar.readyAt
+            ? `${name} is no longer available. ${detail}`
+            : `Couldn't create ${name}. ${detail}`
+          ).trim(),
+        );
       }
       onRecord(record);
     },
@@ -295,6 +323,7 @@ function AvatarItem({
   };
 
   const pending = isPendingPhotoAvatar(avatar);
+  const reverifying = isReverifyingPhotoAvatar(avatar);
   const { tone, glyph } = statusTone(avatar);
   const ready = avatar.status === "ready";
   const blocked = notice?.blockedUntil != null;
@@ -325,8 +354,13 @@ function AvatarItem({
         ) : (
           <span aria-hidden="true" className="activity-spinner" />
         )}
-        <span>{photoAvatarStatusText(avatar.status)}</span>
+        <span>{photoAvatarDisplayStatus(avatar)}</span>
       </p>
+      {reverifying ? (
+        <p className="photo-avatar-note">
+          Live use is paused until the avatar service confirms it again.
+        </p>
+      ) : null}
       {avatar.status === "failed" && avatar.failure?.message ? (
         <p className="photo-avatar-note">{avatar.failure.message}</p>
       ) : null}
@@ -335,7 +369,8 @@ function AvatarItem({
       ) : null}
       {stalled ? (
         <p className="photo-avatar-note">
-          Still working on it. Automatic checks have stopped.{" "}
+          {stalled === "reverify" ? "Still being checked." : "Still working on it."} Automatic
+          checks have stopped.{" "}
           <button
             type="button"
             style={compactBtn}
@@ -351,7 +386,7 @@ function AvatarItem({
           {notice.message}
         </p>
       ) : null}
-      {ready && !avatar.usable ? (
+      {ready && !avatar.usable && !reverifying ? (
         <p className="photo-avatar-note">Not available to use right now.</p>
       ) : null}
       {avatar.reported ? <p className="photo-avatar-note">You reported this avatar.</p> : null}

@@ -2,14 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   PHOTO_AVATAR_POLL_BUDGET_MS,
+  PHOTO_AVATAR_REVERIFYING_TEXT,
   PhotoAvatarApiError,
   createPhotoAvatar,
   deletePhotoAvatar,
   fetchPhotoAvatarPreview,
   getPhotoAvatar,
+  isReverifyingPhotoAvatar,
   listPhotoAvatars,
   newerPhotoAvatar,
   parseRetryAfter,
+  photoAvatarDisplayStatus,
   photoAvatarErrorMessage,
   photoAvatarPollDelay,
   photoAvatarPreviewPath,
@@ -350,6 +353,22 @@ describe("Retry-After and messages", () => {
 });
 
 describe("polling and merging", () => {
+  it("treats only a ready avatar with the flag as re-verifying", () => {
+    expect(isReverifyingPhotoAvatar(avatar({ needsReverification: true, usable: false }))).toBe(true);
+    // Controls: the same record without the flag, or with it on a non-ready status.
+    expect(isReverifyingPhotoAvatar(avatar({ needsReverification: false }))).toBe(false);
+    expect(isReverifyingPhotoAvatar(avatar({ needsReverification: undefined }))).toBe(false);
+    expect(isReverifyingPhotoAvatar(avatar({ status: "generating", needsReverification: true }))).toBe(false);
+  });
+
+  it("names the displayed status for re-verification and for a failure after ready", () => {
+    expect(photoAvatarDisplayStatus(avatar({ needsReverification: true }))).toBe(PHOTO_AVATAR_REVERIFYING_TEXT);
+    expect(photoAvatarDisplayStatus(avatar())).toBe("Ready");
+    expect(photoAvatarDisplayStatus(avatar({ status: "failed" }))).toBe("No longer available");
+    expect(photoAvatarDisplayStatus(avatar({ status: "failed", readyAt: null }))).toBe("Couldn't create");
+    expect(photoAvatarDisplayStatus(avatar({ status: "generating", readyAt: null }))).toBe("Generating…");
+  });
+
   it("backs off to a ceiling within a bounded budget", () => {
     const delays = Array.from({ length: 12 }, (_value, attempt) => photoAvatarPollDelay(attempt));
     expect(delays.slice(0, 3)).toEqual([2_000, 3_000, 5_000]);

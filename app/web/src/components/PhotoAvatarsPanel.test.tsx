@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   PHOTO_AVATAR_POLL_BUDGET_MS,
+  PHOTO_AVATAR_REVERIFY_BUDGET_MS,
   type PhotoAvatar,
   type PhotoAvatarConfig,
 } from "@/lib/photoAvatars";
@@ -18,6 +19,7 @@ const ID_NEW = "c".repeat(32);
 const ID_PENDING = "d".repeat(32);
 const ID_HOSTILE = "e".repeat(32);
 const ID_SAS = "f".repeat(32);
+const ID_REVERIFY = "9".repeat(32);
 const NOW = "2026-09-26T12:00:00Z";
 const LATER = "2026-09-26T12:01:00Z";
 const LIST = "/api/photo-avatars";
@@ -99,6 +101,13 @@ const CREATED = avatar({
   usable: false,
   readyAt: null,
 });
+// Ready, but a live session could not verify it: usable is false meanwhile.
+const REVERIFYING = avatar({
+  id: ID_REVERIFY,
+  displayName: "Checked host",
+  usable: false,
+  needsReverification: true,
+});
 
 function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -169,7 +178,9 @@ beforeEach(() => {
   });
   on("GET", CONFIG_PATH, () => json(CONFIG));
   on("GET", LIST, () => json({ avatars: [READY_A] }));
-  for (const id of [ID_A, ID_NEW, ID_PENDING, ID_HOSTILE, ID_SAS]) on("GET", previewPath(id), () => png());
+  for (const id of [ID_A, ID_NEW, ID_PENDING, ID_HOSTILE, ID_SAS, ID_REVERIFY]) {
+    on("GET", previewPath(id), () => png());
+  }
   on("GET", `${LIST}/${ID_NEW}`, () => json(CREATED));
   Object.defineProperty(URL, "createObjectURL", {
     configurable: true,
@@ -502,6 +513,117 @@ describe("status polling", () => {
     await advance(2_000);
     expect(screen.queryByRole("heading", { name: "Pending host" })).toBeNull();
     expect(screen.getByRole("heading", { name: "Host A" })).toBeInTheDocument();
+  });
+});
+
+describe("re-verification", () => {
+  it("shows a calm Re-verifying state while the flag is set, keeping the preview and Delete", async () => {
+    on("GET", LIST, () => json({ avatars: [REVERIFYING] }));
+    on("GET", `${LIST}/${ID_REVERIFY}`, () => json(REVERIFYING));
+    render(<PhotoAvatarsPanel onClose={vi.fn()} />);
+    const item = await waitFor(() => itemFor("Checked host"));
+    const status = within(item).getByText("Re-verifying…").closest("p");
+    expect(status).toHaveAttribute("data-tone", "info");
+    expect(within(item).getByText("Live use is paused until the avatar service confirms it again.")).toBeInTheDocument();
+    // Non-alarming: no alert, no failure wording, no generic "unavailable" note.
+    expect(within(item).queryByRole("alert")).toBeNull();
+    expect(within(item).queryByText(/Couldn't|No longer available/)).toBeNull();
+    expect(within(item).queryByText("Not available to use right now.")).toBeNull();
+    // The preview, its label, Report and Delete all stay available.
+    expect(await within(item).findByRole("img", { name: "Preview of Checked host" })).toBeInTheDocument();
+    expect(within(item).getByText("AI-generated")).toBeInTheDocument();
+    expect(within(item).getByRole("button", { name: "Delete Checked host" })).toBeEnabled();
+    expect(within(item).getByRole("button", { name: "Report a problem with Checked host" })).toBeEnabled();
+  });
+
+  it.each([
+    ["false", false],
+    ["absent", undefined],
+  ])("shows plain Ready when the flag is %s", async (_label, needsReverification) => {
+    const cleared = { ...REVERIFYING, usable: true, needsReverification };
+    on("GET", LIST, () => json({ avatars: [cleared] }));
+    render(<PhotoAvatarsPanel onClose={vi.fn()} />);
+    const item = await waitFor(() => itemFor("Checked host"));
+    expect(within(item).getByText("Ready").closest("p")).toHaveAttribute("data-tone", "success");
+    expect(within(item).queryByText("Re-verifying…")).toBeNull();
+    expect(within(item).queryByText(/Live use is paused/)).toBeNull();
+    expect(await within(item).findByRole("img", { name: "Preview of Checked host" })).toBeInTheDocument();
+  });
+
+  it("re-reads a flagged avatar at once and each minute until the server clears it", async () => {
+    vi.useFakeTimers();
+    let reads = 0;
+    let unflaggedReads = 0;
+    on("GET", LIST, () => json({ avatars: [REVERIFYING, READY_A] }));
+    on("GET", `${LIST}/${ID_REVERIFY}`, () => {
+      reads += 1;
+      return json(reads < 2 ? REVERIFYING : { ...REVERIFYING, needsReverification: false, usable: true, updatedAt: LATER });
+    });
+    on("GET", `${LIST}/${ID_A}`, () => {
+      unflaggedReads += 1;
+      return json(READY_A);
+    });
+    render(<PhotoAvatarsPanel onClose={vi.fn()} />);
+    await flush();
+    // The immediate re-read is a zero-delay timer scheduled once the list commits.
+    await flush();
+    // The list never re-verifies, so the flagged record is read straight away.
+    expect(reads).toBe(1);
+    expect(within(itemFor("Checked host")).getByText("Re-verifying…")).toBeInTheDocument();
+    await advance(59_999);
+    expect(reads).toBe(1);
+    await advance(1);
+    expect(reads).toBe(2);
+    expect(within(itemFor("Checked host")).getByText("Ready")).toBeInTheDocument();
+    expect(screen.getByText("Checked host is verified again.")).toBeInTheDocument();
+    await advance(10 * 60_000);
+    expect(reads).toBe(2);
+    // Control: a ready avatar without the flag is never polled at all.
+    expect(unflaggedReads).toBe(0);
+  });
+
+  it("stops re-reading after its bounded budget and checks again only when asked", async () => {
+    vi.useFakeTimers();
+    let reads = 0;
+    on("GET", LIST, () => json({ avatars: [REVERIFYING] }));
+    on("GET", `${LIST}/${ID_REVERIFY}`, () => {
+      reads += 1;
+      return json(REVERIFYING);
+    });
+    render(<PhotoAvatarsPanel onClose={vi.fn()} />);
+    await flush();
+    await advance(PHOTO_AVATAR_REVERIFY_BUDGET_MS);
+    // At once, then every minute for six minutes.
+    expect(reads).toBe(7);
+    expect(screen.getByText(/Still being checked\. Automatic checks have stopped\./)).toBeInTheDocument();
+    await advance(10 * 60_000);
+    expect(reads).toBe(7);
+    fireEvent.click(screen.getByRole("button", { name: "Check the status of Checked host" }));
+    await flush();
+    expect(reads).toBe(8);
+  });
+
+  it("says a ready avatar that fails re-verification is no longer available", async () => {
+    vi.useFakeTimers();
+    on("GET", LIST, () => json({ avatars: [REVERIFYING] }));
+    on("GET", `${LIST}/${ID_REVERIFY}`, () =>
+      json({
+        ...REVERIFYING,
+        status: "failed",
+        needsReverification: false,
+        preview: null,
+        failure: { code: "provider_missing", message: "The avatar no longer exists in the avatar service." },
+        updatedAt: LATER,
+      }),
+    );
+    render(<PhotoAvatarsPanel onClose={vi.fn()} />);
+    await flush();
+    await flush();
+    const item = itemFor("Checked host");
+    expect(within(item).getByText("No longer available")).toBeInTheDocument();
+    expect(within(item).queryByText("Couldn't create")).toBeNull();
+    expect(screen.getByText("Checked host is no longer available. The avatar no longer exists in the avatar service.")).toBeInTheDocument();
+    expect(within(item).getByRole("button", { name: "Delete Checked host" })).toBeEnabled();
   });
 });
 

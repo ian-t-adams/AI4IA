@@ -116,6 +116,12 @@ export interface PhotoAvatar {
   cost: PhotoAvatarCost;
   usable: boolean;
   reported: boolean;
+  /**
+   * A live session reported that this avatar failed verification. While true,
+   * `usable` is false; a status read after the server's cooldown re-checks it
+   * with the provider. Optional so a payload without it still reads as false.
+   */
+  needsReverification?: boolean;
   createdAt: string;
   updatedAt: string;
   readyAt: string | null;
@@ -529,6 +535,13 @@ export function isPendingPhotoAvatar(avatar: Pick<PhotoAvatar, "status">): boole
   return PENDING.has(avatar.status);
 }
 
+/** Ready, but live use is refused until the server re-verifies it. */
+export function isReverifyingPhotoAvatar(
+  avatar: Pick<PhotoAvatar, "status" | "needsReverification">,
+): boolean {
+  return avatar.status === "ready" && avatar.needsReverification === true;
+}
+
 export function isKnownPhotoAvatarStatus(status: string): status is PhotoAvatarStatus {
   return (PHOTO_AVATAR_STATUSES as readonly string[]).includes(status);
 }
@@ -542,6 +555,12 @@ export function photoAvatarPollDelay(attempt: number): number {
   const index = Math.min(Math.max(0, attempt), PHOTO_AVATAR_POLL_DELAYS_MS.length - 1);
   return PHOTO_AVATAR_POLL_DELAYS_MS[index];
 }
+
+// Only a status read re-verifies a flagged avatar, and the server does it at
+// most once per five-minute cooldown. So a flagged record is read at once, then
+// once a minute, for a little longer than one cooldown.
+export const PHOTO_AVATAR_REVERIFY_POLL_MS = 60_000;
+export const PHOTO_AVATAR_REVERIFY_BUDGET_MS = 6 * 60_000;
 
 /** Keeps the newer of two copies of a record, so a late read never regresses it. */
 export function newerPhotoAvatar(current: PhotoAvatar, incoming: PhotoAvatar): PhotoAvatar {
@@ -564,6 +583,21 @@ export const PHOTO_AVATAR_STATUS_TEXT: Record<PhotoAvatarStatus, string> = {
 
 export function photoAvatarStatusText(status: string): string {
   return isKnownPhotoAvatarStatus(status) ? PHOTO_AVATAR_STATUS_TEXT[status] : "Status unknown";
+}
+
+export const PHOTO_AVATAR_REVERIFYING_TEXT = "Re-verifying…";
+
+/**
+ * The status to show for one record: "Re-verifying…" for a ready avatar that is
+ * waiting on re-verification, "No longer available" for one that failed after
+ * it had been ready, and the plain status text otherwise.
+ */
+export function photoAvatarDisplayStatus(
+  avatar: Pick<PhotoAvatar, "status" | "needsReverification" | "readyAt">,
+): string {
+  if (isReverifyingPhotoAvatar(avatar)) return PHOTO_AVATAR_REVERIFYING_TEXT;
+  if (avatar.status === "failed" && avatar.readyAt) return "No longer available";
+  return photoAvatarStatusText(avatar.status);
 }
 
 export const PHOTO_AVATAR_UNAVAILABLE_TEXT: Record<
