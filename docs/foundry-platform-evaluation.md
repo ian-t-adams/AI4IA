@@ -8,9 +8,10 @@
 > Claude profile, and no Claude model is activated yet. The Agent Service
 > features target Foundry prompt and hosted agents, which AI4IA deliberately
 > does not use as its runtime. The custom photo avatar requirement added on
-> 2026-09-25 follows the same rule: its Phase 1 backend is implemented behind a
-> default-off flag and a fail-closed Limited Access check, and nothing is enabled
-> (see the [design](photo-avatars.md)).
+> 2026-09-25 follows the same rule. Its Phase 1 backend and Phase 2 live sessions
+> are implemented behind a default-off flag and a fail-closed Limited Access check.
+> The owner approved enabling them on 2026-09-26 (see the
+> [design](photo-avatars.md)).
 >
 > **Update (2026-09-25):** Opus 5.5 is now cataloged under a second, explicit
 > adaptive text-only profile ([below](#claude-opus-55)). Claude stays
@@ -33,7 +34,7 @@ owner approval before merge.
 | Claude Opus 5.5 | GA, Hosted on Azure | Capacity cataloged under the adaptive text-only profile; Opus 5 and Sonnet 5 keep the thinking-disabled text/tool profile. None is activated | Tool use needs the signed thinking-block replay stage; activation waits on target-tenant admin actions |
 | Voice agents in Agent Service | Public preview | Voice Live through the FastAPI relay → APIM, two providers | Not adopted; needs a new provider design |
 | Voice-agent observability | Public preview | Applies only to Foundry voice agents | Not applicable |
-| Custom photo avatars from a description (owner requirement, 2026-09-25) | Limited Access; creation REST surface undocumented | Phase 1 backend implemented default-off: create, status, preview, list, delete and report through an exact-operation APIM API, with a fail-closed capability check. Real-time avatar sessions are in progress | [Design](photo-avatars.md); activation waits on the Limited Access approval and RAI re-approval |
+| Custom photo avatars from a description (owner requirement, 2026-09-25) | Limited Access; creation REST surface undocumented | Phase 1 and Phase 2 implemented behind a fail-closed capability check. Phase 1 covers create, status, preview, list, delete and report through an exact-operation APIM API; Phase 2 is live avatar sessions on the existing Voice Live WebSocket. The owner approved enablement on 2026-09-26 | [Design](photo-avatars.md); works once the home account reports the Limited Access capability |
 | Long-running resilience | Public preview, hosted agents | Resumable workflows on the Durable Task Scheduler worker | Not applicable |
 | Agent Framework updates | Announced | No Agent Framework dependency | Not applicable |
 | Foundry dev pack | Public preview | Optional operator toolchain | No repository requirement changes |
@@ -323,32 +324,30 @@ resources:
 
 - **Creation** takes about 30-45 seconds and produces a 1024×1024 portrait.
 - **Batch talking-head video** takes about 20 seconds for a 10-second clip.
-- **Voice Live** accepts a custom photo avatar and negotiates WebRTC. The media
-  stream itself is not tested yet.
+- **Voice Live** accepts a custom photo avatar. With `output_protocol: websocket`
+  at API version 2026-04-10, it streams the avatar as fragmented MP4 on the existing
+  WebSocket, so no WebRTC or browser media plane is needed.
 
 The creation REST surface is the Foundry portal's own endpoint, and it isn't
-publicly documented. Custom text to speech avatar is Limited Access, and AI4IA's
-registration is pending.
+publicly documented. Custom text to speech avatar is Limited Access. On 2026-09-26
+the owner reported AI4IA's approval as held; the evidence stays outside the
+repository.
 
-The Phase 1 backend is now implemented behind a default-off flag: create,
-status, preview, list, delete and report, through an exact-operation APIM API,
-with a fail-closed capability check. The Speech Voice Live relay still rebuilds
-`session.update` and drops any client `avatar` field, and the web voice client
-still uses only WebSocket audio; real-time avatar sessions are the next phase.
-The [photo avatar design](photo-avatars.md) phases the work:
+Phase 1 (create, status, preview, list, delete and report, through an
+exact-operation APIM API) and Phase 2 (live avatar sessions through the existing
+FastAPI relay and the APIM Voice Live WebSocket) are implemented behind a
+default-off flag and a fail-closed capability check. The
+[photo avatar design](photo-avatars.md) phases the work:
 
 1. decisions and spikes;
 2. create, preview, list and delete;
 3. real-time conversation;
-4. optionally, rendered videos.
+4. optionally, rendered videos (not built).
 
-It needs two owner-approved exceptions to the gateway rule:
-
-- WebRTC media that flows directly between the browser and Microsoft's media relay;
-- a bounded fetch of provider-issued artifact links.
-
-It also needs re-approval under
-[review trigger 3](rai-decision-record.md#review-triggers).
+It needs one owner-approved exception to the gateway rule: a bounded fetch of
+provider-issued preview links. The WebRTC exception first planned turned out to be
+unnecessary. The owner re-approved the feature under
+[review trigger 3](rai-decision-record.md#review-triggers) on 2026-09-26.
 
 ## Long-running work and developer tooling
 
