@@ -148,7 +148,7 @@ public sealed class PhotoAvatarApimTests
         {
             string path = defect switch
             {
-                "foreign-id" when defective => Prefix + "/photoavatars/demo-ai-host",
+                "foreign-id" when defective => Prefix + "/photoavatars/sample-foreign-avatar",
                 "uppercase-id" when defective => Prefix + "/photoavatars/ai4ia-0123456789ABCDEF0123",
                 "query" when defective => avatarPath + "?api-version=2099-01-01",
                 "body-on-project-create" => Prefix + "/project",

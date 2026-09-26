@@ -179,7 +179,7 @@ async def test_foreign_unknown_and_malformed_ids_are_one_indistinguishable_not_f
     {"status": "failed", "failureCode": "provider_failed"},
     {"status": "deleting"},
     {"preview": None},  # ready without a stored preview
-    {"providerAvatarId": "demo-ai-host"},  # not an AI4IA-issued provider id
+    {"providerAvatarId": "sample-foreign-avatar"},  # not an AI4IA-issued provider id
 ])
 async def test_only_a_ready_record_with_a_preview_and_issued_provider_id_is_granted(fields):
     rig = Rig()
