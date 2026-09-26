@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Azure.Core;
 using Azure.Identity;
 using Azure.Messaging.EventHubs;
@@ -28,6 +27,10 @@ public sealed class EventHubReader : BackgroundService
     // Per-request field capture keyed by S7P-ID: the enqueue, each backend attempt, and the final
     // proxy-request fields are retained so the request detail can show the full lifecycle.
     private readonly Dictionary<string, RequestPhaseRecord> _requestPhases = new(StringComparer.OrdinalIgnoreCase);
+    // AI4IA: ConsumeAsync runs one reader loop per partition concurrently, and the pipeline
+    // mutates the plain dictionaries above. Every record is processed under this gate; each
+    // loop still awaits its own events in order, so per-partition ordering is unchanged.
+    private readonly object _pipelineGate = new();
     private bool _logSkippedRecords;
 
     private static readonly PipelineStage[] OrderedStages =
@@ -183,9 +186,12 @@ public sealed class EventHubReader : BackgroundService
         }
 
         _store.DisableRequestAging = true;
-        _store.Clear();
-        _requestLifecycle.Clear();
-        _requestPhases.Clear();
+        lock (_pipelineGate)
+        {
+            _store.Clear();
+            _requestLifecycle.Clear();
+            _requestPhases.Clear();
+        }
         _logSkippedRecords = true;
 
         var importedCount = 0;
@@ -445,6 +451,14 @@ public sealed class EventHubReader : BackgroundService
             return (0, 0);
         }
 
+        lock (_pipelineGate)
+        {
+            return RunPipelineCore(incomingRecords, source);
+        }
+    }
+
+    private (int Processed, int Skipped) RunPipelineCore(string[] incomingRecords, string source)
+    {
         var parsed = new List<ParsedEventRecord>(incomingRecords.Length);
         var processed = 0;
         var skipped = 0;
@@ -464,12 +478,6 @@ public sealed class EventHubReader : BackgroundService
             }
 
             parsed.Add(new ParsedEventRecord(raw, eventData));
-
-            if (eventData.TryGetValue("Type", out var recordType)
-                && IsIncompleteRecord(eventData, recordType))
-            {
-                AppendIncompleteRecord(raw);
-            }
 
             if (ProcessEventData(eventData))
             {
@@ -500,70 +508,9 @@ public sealed class EventHubReader : BackgroundService
         _logger.LogWarning(exception, "Ignoring invalid Event Hub record from {Source}.", source);
     }
 
-    // Matches the friendly backend selection logged by the APIM Priority-with-retry policy
-    // (e.g. "Using PAYGO URL: https://..."). Records without this AND without an x-backend-label
-    // are the "incomplete" / unlabeled attempts the Endpoints card falls back to a raw URL for.
-    private static readonly Regex UsingBackendUrlRegex = new(
-        @"Using\s+[A-Za-z0-9_-]+\s+URL:\s*https?://",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
-
-    // incomplete.json lives next to the running binary; appended as JSON Lines (one record/line).
-    private static readonly string IncompleteRecordsPath =
-        Path.Combine(AppContext.BaseDirectory, "incomplete.json");
-
-    private readonly object _incompleteFileGate = new();
-
-    // A backend attempt (S7P-BackendRequest) or the final response (S7P-ProxyRequest) is
-    // "incomplete" when it carries neither an x-backend-label header nor a "Using <NAME> URL:"
-    // entry in any backendLog, so no friendly backend label can be resolved for it.
-    private static bool IsIncompleteRecord(IReadOnlyDictionary<string, string> eventData, string eventType)
-    {
-        if (eventType is not ("S7P-BackendRequest" or "S7P-ProxyRequest"))
-        {
-            return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(GetValue(eventData, "x-backend-label")))
-        {
-            return false;
-        }
-
-        if (UsingBackendUrlRegex.IsMatch(GetValue(eventData, "backendLog")))
-        {
-            return false;
-        }
-
-        for (var attempt = 1; ; attempt++)
-        {
-            var log = GetValue(eventData, $"Attempt-{attempt}-backendLog");
-            if (string.IsNullOrWhiteSpace(log))
-            {
-                break;
-            }
-
-            if (UsingBackendUrlRegex.IsMatch(log))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private void AppendIncompleteRecord(string raw)
-    {
-        try
-        {
-            lock (_incompleteFileGate)
-            {
-                File.AppendAllText(IncompleteRecordsPath, raw.Trim() + Environment.NewLine);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to append incomplete record to {Path}.", IncompleteRecordsPath);
-        }
-    }
+    // AI4IA: upstream appended every unlabeled backend attempt's raw event JSON (user id, path,
+    // backend hosts) to an unbounded incomplete.json beside the binary for its excluded /incomplete
+    // page. Nothing in the hosted subset reads it, so the console persists no telemetry.
 
     private bool ProcessEventData(IReadOnlyDictionary<string, string> eventData)
     {
