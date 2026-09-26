@@ -65,15 +65,33 @@ AVATAR_OUTPUT_PROTOCOL = "websocket"
 SESSION_UPDATE_TYPE = "session.update"
 VIDEO_DELTA_TYPE = "response.video.delta"
 AUDIO_APPEND_TYPE = "input_audio_buffer.append"
+SPEAKING_EVENT_TYPE = "session.avatar.switch_to_speaking"
+IDLE_EVENT_TYPE = "session.avatar.switch_to_idle"
 CLIENT_AVATAR_EVENT_PREFIX = "session.avatar."
 VERIFICATION_FAILED_CODE = "avatar_verification_failed"
 AVATAR_MODALITY = "avatar"
 
-# The largest whole frame observed at 2026-04-10 was 24,178 characters, so this
-# leaves more than 10x headroom. It bounds the entire text frame, not just the delta.
-AVATAR_VIDEO_FRAME_MAX_CHARS = 256 * 1024
+# Client events that only stop or clear output. The per-send policy guard lets
+# them through without a fresh grant, so they never count as conversation: a
+# client whose grant was revoked cannot keep an idle avatar streaming with them.
+OUTPUT_STOP_EVENT_TYPES = frozenset({
+    "response.cancel", "conversation.item.truncate", "input_audio_buffer.clear",
+    "output_audio_buffer.clear",
+})
+
+# Every upstream text frame in an avatar session is bounded before it is parsed.
+# The largest frame observed at 2026-04-10 was a 24,841-character video delta, so
+# this leaves more than 10x headroom.
+AVATAR_FRAME_MAX_CHARS = 256 * 1024
 PROVIDER_ID_PLACEHOLDER = "[avatar]"
 IDLE_TICK_SECONDS = 1.0
+# While the avatar speaks its buffered answer only video arrives, so the idle
+# countdown pauses. The pause is bounded: a speaking state that never ends
+# resumes the countdown after this long (the session cap bounds it regardless).
+SPEAKING_HOLD_MAX_SECONDS = 300.0
+# How often the idle watchdog re-runs the session's policy guard, so a revoked
+# grant ends a session even when the client sends nothing that is checked.
+POLICY_RECHECK_SECONDS = 15.0
 MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60
 
 # Relay-originated events. The ``ai4ia.`` prefix never collides with provider events.
@@ -83,7 +101,7 @@ SESSION_ENDED_EVENT = "ai4ia.avatar.session_ended"
 
 AvatarErrorCode = Literal[
     "avatar_unavailable", "cost_unknown_under_cap", "avatar_connect_refused",
-    "avatar_frame_too_large",
+    "avatar_frame_too_large", "avatar_stream_refused",
 ]
 AvatarUnavailableReason = Literal[
     # Layer 1's live refusal codes.
@@ -119,11 +137,11 @@ UNAVAILABLE_MESSAGES: dict[str, str] = {
     "verification_failed": "The avatar service couldn't verify this avatar, so the session ended.",
 }
 StopReason = Literal[
-    "avatar_video_frame_too_large", "avatar_verification_failed", "avatar_not_confirmed",
+    "avatar_frame_too_large", "avatar_verification_failed", "avatar_not_confirmed",
 ]
 EndReason = Literal[
-    "idle_timeout", "session_limit", "video_frame_too_large", "verification_failed",
-    "not_confirmed",
+    "idle_timeout", "session_limit", "frame_too_large", "stream_refused",
+    "verification_failed", "not_confirmed", "policy_revoked",
 ]
 
 
@@ -180,6 +198,13 @@ def frame_too_large_error() -> str:
     )
 
 
+def stream_refused_error() -> str:
+    return client_error(
+        "avatar_stream_refused",
+        "The avatar service sent data this session can't accept, so the session ended.",
+    )
+
+
 def refusal_reason(exc: LiveAvatarError) -> AvatarUnavailableReason:
     """Map a layer-1 live refusal to an allowlisted client reason."""
     if exc.code == "photo_avatars_unavailable":
@@ -207,8 +232,12 @@ def refused_client_event(frame: str) -> bool:
 
 
 def client_frame_is_activity(event_type: str | None) -> bool:
-    """Any client event except streaming microphone audio."""
-    return event_type is not None and event_type != AUDIO_APPEND_TYPE
+    """Any client event except streaming microphone audio and output stop events."""
+    return (
+        event_type is not None
+        and event_type != AUDIO_APPEND_TYPE
+        and event_type not in OUTPUT_STOP_EVENT_TYPES
+    )
 
 
 def idle_warning_seconds(idle_timeout_seconds: float) -> int:
@@ -264,6 +293,9 @@ class LiveAvatarSession:
     ended_at: float | None = None
     last_activity: float = field(default_factory=now)
     idle_warned: bool = False
+    # Set by switch_to_speaking, cleared by switch_to_idle.
+    speaking_since: float | None = None
+    last_policy_check: float = field(default_factory=now)
     video_frames: int = 0
     video_chars: int = 0
     max_video_frame_chars: int = 0
@@ -323,19 +355,20 @@ class LiveAvatarSession:
     # --- provider frames --------------------------------------------------
 
     def upstream(self, text: str) -> UpstreamDecision:
+        size = len(text)
+        # The raw frame is bounded before anything parses it: no text frame above
+        # the bound is parsed, inspected or forwarded in an avatar session.
+        if size > AVATAR_FRAME_MAX_CHARS:
+            self.end_reason = "frame_too_large"
+            return UpstreamDecision(
+                forward=frame_too_large_error(), inspect=None, stop="avatar_frame_too_large",
+            )
         try:
             payload = json.loads(text)
         except (TypeError, ValueError):
             payload = None
         event_type = payload.get("type") if isinstance(payload, dict) else None
         if event_type == VIDEO_DELTA_TYPE:
-            size = len(text)
-            if size > AVATAR_VIDEO_FRAME_MAX_CHARS:
-                self.end_reason = "video_frame_too_large"
-                return UpstreamDecision(
-                    forward=frame_too_large_error(), inspect=None, video=True,
-                    stop="avatar_video_frame_too_large",
-                )
             self.video_frames += 1
             self.video_chars += size
             self.max_video_frame_chars = max(self.max_video_frame_chars, size)
@@ -344,6 +377,10 @@ class LiveAvatarSession:
 
         # Every other provider event is conversational activity.
         self.touch()
+        if event_type == SPEAKING_EVENT_TYPE:
+            self.speaking_since = now()
+        elif event_type == IDLE_EVENT_TYPE:
+            self.speaking_since = None
         scrubbed = self.scrub(text)
         if scrubbed is not text:
             try:
@@ -408,7 +445,14 @@ class LiveAvatarSession:
         self.idle_warned = False
 
     def idle_check(self) -> tuple[Literal["warn", "timeout"] | None, int]:
-        remaining = self.idle_timeout_seconds - (now() - self.last_activity)
+        current = now()
+        reference = self.last_activity
+        if self.speaking_since is not None:
+            # The avatar is still speaking its answer, which is conversation even
+            # though only video arrives. Hold the countdown, but only for a bounded
+            # time, so a speaking state that never ends cannot hold the session open.
+            reference = max(reference, min(current, self.speaking_since + SPEAKING_HOLD_MAX_SECONDS))
+        remaining = self.idle_timeout_seconds - (current - reference)
         if remaining <= 0:
             self.end_reason = "idle_timeout"
             return "timeout", 0
@@ -417,6 +461,14 @@ class LiveAvatarSession:
             self.idle_warned = True
             return "warn", seconds
         return None, seconds
+
+    def policy_recheck_due(self) -> bool:
+        """True at most once per ``POLICY_RECHECK_SECONDS``."""
+        current = now()
+        if current - self.last_policy_check < POLICY_RECHECK_SECONDS:
+            return False
+        self.last_policy_check = current
+        return True
 
     def finish(self) -> None:
         if self.ended_at is None:

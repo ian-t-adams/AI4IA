@@ -69,6 +69,7 @@ from ..realtime_protocol import (
 )
 from .. import realtime_avatar as _avatar
 from ..realtime_avatar import (
+    OUTPUT_STOP_EVENT_TYPES,
     AvatarRefusal,
     LiveAvatarSession,
     client_frame_is_activity,
@@ -1497,11 +1498,9 @@ async def _send_upstream(
             event_type, _ = inspect_realtime_text_frame(text, include_protocol_error=False)
         guard = _voice_policy.get()
         # Stopping output never needs a fresh grant: cancellation, truncation,
-        # clearing input, and clearing the avatar's queued speech.
-        if guard is not None and event_type not in {
-            "response.cancel", "conversation.item.truncate", "input_audio_buffer.clear",
-            "output_audio_buffer.clear",
-        }:
+        # clearing input, and clearing the avatar's queued speech. The same set
+        # never counts as avatar-session activity (realtime_avatar).
+        if guard is not None and event_type not in OUTPUT_STOP_EVENT_TYPES:
             await guard()
         setup = current_realtime_setup()
         if setup is not None:
@@ -1707,6 +1706,21 @@ async def _pump_upstream_to_client(
                 if setup is not None:
                     await setup.server_frame(text=None, data=msg.data)
                 state.upstream_stats.observe(text=False)
+                if avatar is not None:
+                    # Voice Live sends JSON text only. A binary frame would bypass
+                    # the frame bound and the provider-id scrub, so it ends the
+                    # avatar session instead of reaching the browser.
+                    avatar.end_reason = "stream_refused"
+                    try:
+                        await _send_client(
+                            client_ws, client_lock, text=_avatar.stream_refused_error(),
+                        )
+                    except (WebSocketDisconnect, RuntimeError):
+                        pass
+                    state.stop(_RelayTermination(
+                        status="error", source_event="avatar_upstream_binary_refused",
+                    ))
+                    return
                 try:
                     await _send_client(client_ws, client_lock, data=msg.data)
                 except (WebSocketDisconnect, RuntimeError) as exc:
@@ -1731,7 +1745,12 @@ async def _avatar_idle_watchdog(
     avatar: LiveAvatarSession,
     state: _RelayState,
 ) -> None:
-    """End an avatar session nobody is talking in; it streams (and bills) while idle."""
+    """End an avatar session nobody is talking in; it streams (and bills) while idle.
+
+    It also re-runs the session's per-send policy guard at a bounded interval,
+    so a revoked grant ends the session even if the client sends nothing the
+    guard checks.
+    """
     try:
         while True:
             await anyio.sleep(_avatar.IDLE_TICK_SECONDS)
@@ -1745,6 +1764,22 @@ async def _avatar_idle_watchdog(
                 await _send_client(
                     client_ws, client_lock, text=avatar.idle_warning_event(remaining),
                 )
+            guard = _voice_policy.get()
+            if guard is None or not avatar.policy_recheck_due():
+                continue
+            try:
+                await guard()
+            except Exception as exc:  # noqa: BLE001 - any failure refuses, fail closed
+                denied = isinstance(exc, PolicyError) and exc.decision.outcome != "unavailable"
+                avatar.end_reason = "policy_revoked"
+                await _send_client(
+                    client_ws, client_lock,
+                    text=_avatar.unavailable_error("policy_denied" if denied else "policy_unavailable"),
+                )
+                state.stop(
+                    _RelayTermination(status="error", source_event="avatar_policy_revoked")
+                )
+                return
     except (WebSocketDisconnect, RuntimeError) as exc:
         state.stop(_client_termination_from_exception(exc))
 
@@ -2035,7 +2070,8 @@ def _emit_relay_completion(
 # Close codes for relay-owned terminations; anything else follows its status.
 _RELAY_CLOSE_CODES: dict[str, int] = {
     "client_avatar_event_refused": WS_POLICY_VIOLATION,
-    "avatar_video_frame_too_large": WS_MESSAGE_TOO_BIG,
+    "avatar_policy_revoked": WS_POLICY_VIOLATION,
+    "avatar_frame_too_large": WS_MESSAGE_TOO_BIG,
 }
 
 

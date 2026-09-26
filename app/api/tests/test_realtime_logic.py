@@ -31,7 +31,8 @@ from ai4ia_api.policy.context import bind_authenticated, clear_policy_context
 from ai4ia_api.policy.dispatch import authorize_dispatch
 from ai4ia_api.policy.models import PolicyError
 from ai4ia_api.realtime_avatar import (
-    AVATAR_VIDEO_FRAME_MAX_CHARS,
+    AVATAR_FRAME_MAX_CHARS,
+    OUTPUT_STOP_EVENT_TYPES,
     LiveAvatarSession,
     client_frame_is_activity,
     connect_refused_error,
@@ -1710,20 +1711,20 @@ def test_ordinary_client_events_are_not_refused(frame):
 
 def test_video_frames_forward_verbatim_up_to_the_bound_and_stop_above_it():
     avatar = _live_avatar()
-    at_bound = _video_frame(AVATAR_VIDEO_FRAME_MAX_CHARS)
-    assert len(at_bound) == AVATAR_VIDEO_FRAME_MAX_CHARS
+    at_bound = _video_frame(AVATAR_FRAME_MAX_CHARS)
+    assert len(at_bound) == AVATAR_FRAME_MAX_CHARS
     decision = avatar.upstream(at_bound)
     assert decision.forward is at_bound
     assert decision.video is True and decision.inspect is None and decision.stop is None
     assert avatar.video_frames == 1
-    assert avatar.max_video_frame_chars == AVATAR_VIDEO_FRAME_MAX_CHARS
-    refused = avatar.upstream(_video_frame(AVATAR_VIDEO_FRAME_MAX_CHARS + 1))
-    assert refused.stop == "avatar_video_frame_too_large"
+    assert avatar.max_video_frame_chars == AVATAR_FRAME_MAX_CHARS
+    refused = avatar.upstream(_video_frame(AVATAR_FRAME_MAX_CHARS + 1))
+    assert refused.stop == "avatar_frame_too_large"
     assert refused.forward is not None
     assert json.loads(refused.forward)["error"]["code"] == "avatar_frame_too_large"
     assert "AAAA" not in refused.forward
     assert avatar.video_frames == 1
-    assert avatar.end_reason == "video_frame_too_large"
+    assert avatar.end_reason == "frame_too_large"
 
 
 def test_the_provider_id_never_leaves_the_relay_in_any_upstream_frame():
@@ -1896,14 +1897,14 @@ def test_relay_avatar_mode_bounds_video_scrubs_ids_and_retains_no_content():
     upstream = _RelayUpstream([
         UpstreamMessage("text", text=echo),
         UpstreamMessage("text", text=video),
-        UpstreamMessage("text", text=_video_frame(AVATAR_VIDEO_FRAME_MAX_CHARS + 1)),
+        UpstreamMessage("text", text=_video_frame(AVATAR_FRAME_MAX_CHARS + 1)),
         UpstreamMessage("text", text='{"type":"response.done"}'),
     ])
     outcome = asyncio.run(relay(
         client, upstream, max_seconds=1, bridge=_relay_bridge(), avatar=avatar,
     ))
     assert outcome.status == "error"
-    assert outcome.metadata.source_event == "avatar_video_frame_too_large"
+    assert outcome.metadata.source_event == "avatar_frame_too_large"
     assert len(client.sent_text) == 3
     assert client.sent_text[1] is video
     assert json.loads(client.sent_text[2])["error"]["code"] == "avatar_frame_too_large"
@@ -2010,6 +2011,218 @@ def test_completion_log_and_event_never_carry_the_provider_id_in_any_field(monke
     else:
         # Control: the same fields do reach the log and event outside avatar mode.
         assert AVATAR_PROVIDER_ID in lines[0] and AVATAR_PROVIDER_ID in event
+
+
+SPEAKING = '{"type":"session.avatar.switch_to_speaking"}'
+STOPPED_SPEAKING = '{"type":"session.avatar.switch_to_idle"}'
+TRANSCRIPT = '{"type":"response.audio_transcript.delta","delta":"word "}'
+
+
+def _stream_video(avatar: LiveAvatarSession, clock: _Clock, seconds: int) -> list:
+    """25 video frames per second of fake time, then one idle check per second."""
+    frame = _video_frame(512)
+    actions = []
+    for _ in range(seconds):
+        clock.now += 1
+        for _ in range(25):
+            avatar.upstream(frame)
+        actions.append(avatar.idle_check()[0])
+    return actions
+
+
+@pytest.mark.parametrize("speaking", [True, False])
+def test_idle_countdown_waits_while_the_avatar_speaks_its_buffered_answer(monkeypatch, speaking):
+    clock = _Clock()
+    monkeypatch.setattr(realtime_avatar, "monotonic", clock)
+    avatar = _live_avatar(idle_timeout_seconds=120.0)
+    if speaking:
+        # The reviewer's sequence: speech starts, the answer is generated, and
+        # response.done arrives while the avatar is still speaking it.
+        avatar.upstream(SPEAKING)
+        for _ in range(20):
+            avatar.upstream(TRANSCRIPT)
+        avatar.upstream('{"type":"response.done","response":{"status":"completed"}}')
+    actions = _stream_video(avatar, clock, 150)
+    if not speaking:
+        # Control: the same video with nobody speaking warns at 90 s, ends at 120 s.
+        assert actions.index("warn") == 89 and actions.index("timeout") == 119
+        return
+    assert actions == [None] * 150
+    # Once the avatar stops speaking, the countdown starts from that moment.
+    avatar.upstream(STOPPED_SPEAKING)
+    after = _stream_video(avatar, clock, 121)
+    assert after.index("warn") == 89 and after.index("timeout") == 119
+
+
+def test_a_stuck_speaking_state_cannot_hold_the_idle_countdown_forever(monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(realtime_avatar, "monotonic", clock)
+    monkeypatch.setattr(realtime_avatar, "SPEAKING_HOLD_MAX_SECONDS", 60.0)
+    avatar = _live_avatar(idle_timeout_seconds=120.0)
+    avatar.upstream(SPEAKING)
+    actions = _stream_video(avatar, clock, 200)
+    # The hold lasts 60 s, then the countdown runs: warn at 60+90 s, end at 60+120 s.
+    assert actions[:60] == [None] * 60
+    assert actions.index("warn") == 149 and actions.index("timeout") == 179
+
+
+@pytest.mark.parametrize("finishes", [False, True])
+def test_relay_idle_watchdog_waits_for_the_avatar_to_finish_speaking(monkeypatch, finishes):
+    clock = _Clock()
+    monkeypatch.setattr(realtime_avatar, "monotonic", clock)
+    monkeypatch.setattr(realtime_avatar, "IDLE_TICK_SECONDS", 0.001)
+    avatar = _live_avatar(idle_timeout_seconds=30.0)
+    video = UpstreamMessage("text", text=_video_frame(256))
+    frames = [UpstreamMessage("text", text=SPEAKING), *[video] * 60]
+    if finishes:
+        frames += [UpstreamMessage("text", text=STOPPED_SPEAKING), *[video] * 60]
+    frames.append(UpstreamMessage("close", close_code=1000))
+    outcome = asyncio.run(relay(
+        _RelayClient(), _PacedUpstream(frames, clock, 1.0), max_seconds=5, bridge=_relay_bridge(),
+        avatar=avatar,
+    ))
+    if finishes:
+        # Control: after the avatar stops speaking, silence counts again.
+        assert outcome.metadata.source_event == "avatar_idle_timeout"
+    else:
+        # A minute of the avatar speaking (video only) is not idleness.
+        assert outcome.status == "complete" and avatar.end_reason is None
+
+
+@pytest.mark.parametrize("event_type", sorted(OUTPUT_STOP_EVENT_TYPES))
+def test_output_stop_events_never_count_as_avatar_activity(event_type):
+    assert client_frame_is_activity(event_type) is False
+    # Control: an ordinary conversation event does count.
+    assert client_frame_is_activity("conversation.item.create") is True
+
+
+class _PacedClient(_RelayClient):
+    """Client frames one short real pause apart, each advancing the fake clock."""
+
+    def __init__(self, messages, clock: _Clock, step: float) -> None:
+        super().__init__(messages)
+        self.clock = clock
+        self.step = step
+
+    async def receive(self):
+        await asyncio.sleep(0.003)
+        self.clock.now += self.step
+        return await super().receive()
+
+
+@pytest.mark.parametrize("stop_only", [True, False])
+def test_output_stop_events_cannot_keep_an_idle_avatar_streaming(monkeypatch, stop_only):
+    clock = _Clock()
+    monkeypatch.setattr(realtime_avatar, "monotonic", clock)
+    monkeypatch.setattr(realtime_avatar, "IDLE_TICK_SECONDS", 0.001)
+    frame = (
+        '{"type":"output_audio_buffer.clear"}' if stop_only
+        else json.dumps({"type": "conversation.item.create", "item": {
+            "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": "still here"}],
+        }})
+    )
+    client = _PacedClient(
+        [*[{"type": "websocket.receive", "text": frame}] * 60, {"type": "websocket.disconnect", "code": 1000}],
+        clock, 1.0,
+    )
+    upstream = _RelayUpstream()
+    outcome = asyncio.run(relay(
+        client, upstream, max_seconds=5, bridge=_relay_bridge(),
+        avatar=_live_avatar(idle_timeout_seconds=30.0),
+    ))
+    assert upstream.sent_text  # the frames did reach the relay's client pump
+    if stop_only:
+        assert outcome.metadata.source_event == "avatar_idle_timeout"
+    else:
+        # Control: the same cadence of real conversation keeps the session open.
+        assert outcome.metadata.source_event == "websocket.disconnect"
+
+
+@pytest.mark.parametrize("outcome_kind", ["deny", "unavailable", "allow"])
+def test_idle_watchdog_rechecks_the_policy_guard_and_ends_on_revocation(monkeypatch, outcome_kind):
+    from ai4ia_api.policy.models import PolicyDecision
+    from ai4ia_api.routers import realtime as realtime_router
+
+    clock = _Clock()
+    monkeypatch.setattr(realtime_avatar, "monotonic", clock)
+    monkeypatch.setattr(realtime_avatar, "IDLE_TICK_SECONDS", 0.001)
+    monkeypatch.setattr(realtime_avatar, "POLICY_RECHECK_SECONDS", 0.0)
+    calls: list[int] = []
+
+    async def guard() -> None:
+        calls.append(1)
+        if outcome_kind != "allow":
+            raise PolicyError(PolicyDecision(outcome_kind, "policy_denied"))
+
+    video = UpstreamMessage("text", text=_video_frame(256))
+    client = _RelayClient()
+
+    async def scenario():
+        token = realtime_router._voice_policy.set(guard)
+        try:
+            return await relay(
+                client, _PacedUpstream([*[video] * 20, UpstreamMessage("close", close_code=1000)], clock, 0.0),
+                max_seconds=5, bridge=_relay_bridge(), avatar=avatar,
+            )
+        finally:
+            realtime_router._voice_policy.reset(token)
+
+    avatar = _live_avatar()
+    outcome = asyncio.run(scenario())
+    assert calls  # the watchdog re-ran the guard with no client frame at all
+    if outcome_kind == "allow":
+        # Control: an allowed guard never ends the session.
+        assert outcome.status == "complete" and avatar.end_reason is None
+        return
+    assert outcome.metadata.source_event == "avatar_policy_revoked"
+    assert avatar.end_reason == "policy_revoked"
+    errors = [json.loads(text)["error"] for text in client.sent_text if '"type":"error"' in text]
+    reason = "policy_denied" if outcome_kind == "deny" else "policy_unavailable"
+    assert errors == [json.loads(unavailable_error(reason))["error"]]
+
+
+def test_the_raw_frame_bound_applies_before_anything_parses_the_frame(monkeypatch):
+    parsed: list[int] = []
+    real_loads = json.loads
+
+    def spy(text, *args, **kwargs):
+        parsed.append(len(text))
+        return real_loads(text, *args, **kwargs)
+
+    monkeypatch.setattr(realtime_avatar, "json", SimpleNamespace(loads=spy, dumps=json.dumps))
+    avatar = _live_avatar()
+    oversized = TRANSCRIPT[:-2] + "x" * (AVATAR_FRAME_MAX_CHARS + 1 - len(TRANSCRIPT)) + '"}'
+    assert len(oversized) == AVATAR_FRAME_MAX_CHARS + 1
+    decision = avatar.upstream(oversized)
+    assert decision.stop == "avatar_frame_too_large" and decision.inspect is None
+    assert json.loads(decision.forward or "{}")["error"]["code"] == "avatar_frame_too_large"
+    assert parsed == [] and avatar.end_reason == "frame_too_large"
+    # Control: the same kind of frame at the bound is parsed and forwarded.
+    at_bound = TRANSCRIPT[:-2] + "x" * (AVATAR_FRAME_MAX_CHARS - len(TRANSCRIPT)) + '"}'
+    control = _live_avatar()
+    assert control.upstream(at_bound).forward is at_bound
+    assert parsed == [AVATAR_FRAME_MAX_CHARS]
+
+
+@pytest.mark.parametrize("with_avatar", [True, False])
+def test_upstream_binary_frames_never_reach_the_browser_in_avatar_sessions(with_avatar):
+    avatar = _live_avatar() if with_avatar else None
+    client = _RelayClient()
+    upstream = _RelayUpstream([
+        UpstreamMessage("binary", data=b"\x00" + AVATAR_PROVIDER_ID.encode()),
+        UpstreamMessage("close", close_code=1000),
+    ])
+    outcome = asyncio.run(relay(client, upstream, max_seconds=1, bridge=_relay_bridge(), avatar=avatar))
+    if not with_avatar:
+        # Control: outside avatar sessions binary frames are still forwarded unchanged.
+        assert client.sent_bytes == [b"\x00" + AVATAR_PROVIDER_ID.encode()]
+        assert outcome.status == "complete"
+        return
+    assert client.sent_bytes == []
+    assert [json.loads(text)["error"]["code"] for text in client.sent_text] == ["avatar_stream_refused"]
+    assert outcome.metadata.source_event == "avatar_upstream_binary_refused"
+    assert avatar is not None and avatar.end_reason == "stream_refused"
 
 
 class _PacedUpstream(_RelayUpstream):

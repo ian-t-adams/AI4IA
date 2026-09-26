@@ -23,7 +23,7 @@ from ai4ia_api.hard_quota.models import QuotaError
 from ai4ia_api.main import create_app
 from ai4ia_api.photo_avatars.live import LiveAvatarError, LiveAvatarGrant
 from ai4ia_api.policy.models import PolicyDecision, PolicyError
-from ai4ia_api.realtime_avatar import AVATAR_VIDEO_FRAME_MAX_CHARS
+from ai4ia_api.realtime_avatar import AVATAR_FRAME_MAX_CHARS
 from ai4ia_api.routers import realtime as realtime_module
 from ai4ia_api.routers.realtime import (
     DEV_SUBPROTOCOL,
@@ -1459,7 +1459,7 @@ def test_live_avatar_oversized_video_closes_while_normal_video_forwards():
         video = _avatar_video(8_000)
         connector = ScriptedRealtimeConnector([
             UpstreamMessage("text", text=video),
-            UpstreamMessage("text", text=_avatar_video(AVATAR_VIDEO_FRAME_MAX_CHARS + 1)),
+            UpstreamMessage("text", text=_avatar_video(AVATAR_FRAME_MAX_CHARS + 1)),
         ])
         c.app.state.realtime_connector = connector
         c.app.state.usage = usage = FakeUsageService()
@@ -1848,5 +1848,78 @@ def test_live_avatar_receipt_is_written_for_chat_bound_sessions_only(bound):
         assert "avatar_media_not_recorded" in receipt["notes"]
         assert receipt["runtime"]["api"] == "speech"
         assert AVATAR_PROVIDER_ID not in json.dumps(ended[0])
+    finally:
+        c.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("revoke", [True, False])
+def test_live_avatar_watchdog_rechecks_avatar_use_while_the_client_is_silent(monkeypatch, revoke):
+    monkeypatch.setattr(realtime_avatar, "IDLE_TICK_SECONDS", 0.02)
+    monkeypatch.setattr(realtime_avatar, "POLICY_RECHECK_SECONDS", 0.05)
+    checks = {"avatar_use": 0}
+    revoked = {"on": False}
+    real_require = realtime_module.require_policy
+
+    async def guarded(request, **kwargs):
+        if request.operation == "avatar.use":
+            checks["avatar_use"] += 1
+            if revoked["on"]:
+                raise PolicyError(PolicyDecision("deny", "policy_denied"))
+        await real_require(request, **kwargs)
+
+    monkeypatch.setattr(realtime_module, "require_policy", guarded)
+    append = '{"type":"input_audio_buffer.append","audio":"AAA="}'
+    c, rig = _avatar_client()
+    try:
+        _seed_avatar(c, rig)
+        connector = c.app.state.realtime_connector
+        with c.websocket_connect(
+            f"/api/voice/live{AVATAR_QUERY}", subprotocols=[DEV_SUBPROTOCOL, "alice"],
+            headers=_origin(),
+        ) as ws:
+            assert json.loads(ws.receive_text())["type"] == "ai4ia.avatar.session"
+            revoked["on"] = revoke
+            if revoke:
+                # The client sends nothing, yet the revocation ends the session.
+                error = json.loads(ws.receive_text())["error"]
+                assert error["code"] == "avatar_unavailable" and error["reason"] == "policy_denied"
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    ws.receive_text()
+                assert closed.value.code == 1008
+            else:
+                before = checks["avatar_use"]
+                time.sleep(0.3)
+                # Control: the watchdog re-ran the check, and an allowed grant keeps it open.
+                assert checks["avatar_use"] > before
+                ws.send_text(append)
+                ws.receive_text()
+        sent = [json.loads(frame) for frame in connector.upstream.sent_text]
+        assert sent == ([] if revoke else [json.loads(append)])
+    finally:
+        c.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("with_avatar", [True, False])
+def test_live_upstream_binary_frames_are_refused_only_in_avatar_sessions(with_avatar):
+    c, rig = _avatar_client()
+    try:
+        _seed_avatar(c, rig)
+        c.app.state.realtime_connector = ScriptedRealtimeConnector([
+            UpstreamMessage("binary", data=b"\x01\x02"),
+            UpstreamMessage("close", close_code=1000),
+        ])
+        query = AVATAR_QUERY if with_avatar else "?provider=speech_voice_live"
+        with c.websocket_connect(
+            f"/api/voice/live{query}", subprotocols=[DEV_SUBPROTOCOL, "alice"], headers=_origin(),
+        ) as ws:
+            if with_avatar:
+                assert json.loads(ws.receive_text())["type"] == "ai4ia.avatar.session"
+                assert json.loads(ws.receive_text())["error"]["code"] == "avatar_stream_refused"
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    ws.receive_text()
+                assert closed.value.code == 1011
+            else:
+                # Control: an ordinary Speech session forwards the same frame unchanged.
+                assert ws.receive_bytes() == b"\x01\x02"
     finally:
         c.__exit__(None, None, None)
