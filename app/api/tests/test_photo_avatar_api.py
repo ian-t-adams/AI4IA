@@ -173,6 +173,7 @@ class Harness:
             capability=CapabilityProbe(gateway, CATALOG.requiredFeature),
             entitlements=self.app.state.entitlements, usage=self.app.state.usage,
             pricing=self.app.state.usage.pricing, clock=self.clock, preview_fetcher=fetcher,
+            policy=self.app.state.policy,
         )
         self.app.state.photo_avatars = self.service
 

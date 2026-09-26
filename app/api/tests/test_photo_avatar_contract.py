@@ -45,7 +45,8 @@ VALID_BODY = {
 
 AVATAR_KEYS = {
     "id", "displayName", "prompt", "attributes", "status", "failure", "preview",
-    "disclosure", "cost", "usable", "reported", "createdAt", "updatedAt", "readyAt",
+    "disclosure", "cost", "usable", "reported", "needsReverification", "createdAt", "updatedAt",
+    "readyAt",
 }
 CONFIG_KEYS = {
     "enabled", "available", "reason", "canCreate", "limits", "attributes",

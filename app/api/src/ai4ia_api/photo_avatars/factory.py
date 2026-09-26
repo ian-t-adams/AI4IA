@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from ..config import Settings
 from ..entitlements.service import EntitlementService
+from ..policy.service import PolicyService
 from ..usage.service import UsageService
 from .availability import CapabilityProbe
 from .catalog import load_photo_avatar_catalog
@@ -14,6 +15,7 @@ from .store import build_photo_avatar_store
 
 def build_photo_avatar_service(
     settings: Settings, *, entitlements: EntitlementService, usage: UsageService,
+    policy: PolicyService | None = None,
 ) -> PhotoAvatarService | None:
     """``None`` while ``AI4IA_PHOTO_AVATARS_ENABLED`` is off: no client, store or Blob."""
     if not settings.photo_avatars_enabled:
@@ -30,4 +32,5 @@ def build_photo_avatar_service(
         entitlements=entitlements,
         usage=usage,
         pricing=usage.pricing,
+        policy=policy,
     )

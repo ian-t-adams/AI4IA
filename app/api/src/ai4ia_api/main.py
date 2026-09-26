@@ -365,6 +365,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # container is constructed.
         app.state.photo_avatars = build_photo_avatar_service(
             settings, entitlements=app.state.entitlements, usage=app.state.usage,
+            policy=app.state.policy,
         )
         # Durable store for over-cap ``process_document`` results.
         # Same shared-instance rationale as images/video; reuses the document

@@ -34,15 +34,25 @@ from ..auth.base import AuthenticatedUser
 from ..config import Settings
 from ..entitlements.service import EntitlementService
 from ..logging_setup import emit_custom_event, get_correlation_id
-from ..policy.context import current_binding
+from ..policy.context import current_binding, require_bound_policy, require_policy
+from ..policy.models import PolicyError, PolicyRequest
+from ..policy.service import PolicyService
 from ..usage.models import PHOTO_AVATAR_PROVIDER, PHOTO_AVATAR_TARGET, TokenUsage, UsageTarget
 from ..usage.pricing import PricingBook
 from ..usage.service import UsageService
-from .availability import Availability, CapabilityProbe, evaluate_availability, policy_state
+from .availability import (
+    Availability,
+    CapabilityProbe,
+    PolicyState,
+    evaluate_availability,
+    policy_state,
+)
 from .catalog import ATTRIBUTE_NAMES, PhotoAvatarCatalog, PhotoAvatarPreviewCatalog
+from .live import LiveAvatarError, LiveAvatarGrant
 from .models import (
     ATTESTATION_VERSION,
     FAILURE_MESSAGES,
+    RECORD_ID_PATTERN,
     TERMINAL_STATUSES,
     CreatePhotoAvatarRequest,
     PhotoAvatar,
@@ -77,6 +87,7 @@ from .provider import (
     PreviewLink,
     build_create_body,
     new_provider_avatar_id,
+    valid_provider_avatar_id,
 )
 from .store import (
     CostSnapshot,
@@ -98,9 +109,15 @@ CONFIRM_GRACE = timedelta(seconds=CREATE_PROXY_TTL_SECONDS) + timedelta(minutes=
 FAST_POLL = timedelta(seconds=3)
 SLOW_POLL = timedelta(seconds=30)
 FAST_POLL_WINDOW = timedelta(minutes=10)
+# After a live session reports a verification failure, no re-check (and so no
+# new live session) runs for this long: an auto-reconnecting client costs at
+# most one upstream session per avatar per cooldown.
+REVERIFY_COOLDOWN = timedelta(minutes=5)
 MAX_REPORTS_PER_DAY = 20
 USAGE_SESSION_ID = "photo-avatars"
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_RECORD_ID = re.compile(RECORD_ID_PATTERN)
+_PROVIDER_CODE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 
 PreviewFetcher = Callable[[PreviewLink, PhotoAvatarPreviewCatalog], Awaitable[PreviewImage]]
 
@@ -134,6 +151,7 @@ class PhotoAvatarService:
         pricing: PricingBook,
         clock: Callable[[], datetime] = utcnow,
         preview_fetcher: PreviewFetcher | None = None,
+        policy: PolicyService | None = None,
     ) -> None:
         self._settings = settings
         self._catalog = catalog
@@ -146,22 +164,52 @@ class PhotoAvatarService:
         self._pricing = pricing
         self._clock = clock
         self._fetch: PreviewFetcher = preview_fetcher or fetch_preview
+        self._policy = policy
         self._project_ready = False
         self._project_lock = asyncio.Lock()
         self._background: set[asyncio.Task[Any]] = set()
 
     # --- availability -------------------------------------------------------
 
-    async def availability(self, operation: str = "avatar.create") -> Availability:
+    async def availability(
+        self,
+        operation: str = "avatar.create",
+        *,
+        policy: Callable[[], Awaitable[PolicyState]] | None = None,
+    ) -> Availability:
+        """The one availability predicate. ``policy`` replaces the display snapshot."""
+        use = "avatar.use" if operation == "avatar.use" else "avatar.create"
         return await evaluate_availability(
             enabled=self._settings.photo_avatars_enabled,
             storage_ready=True,
             residency_ok=self._catalog.satisfies_residency(
                 (self._settings.data_residency or "").strip().lower(),
             ),
-            policy=lambda: policy_state("avatar.use" if operation == "avatar.use" else "avatar.create"),
+            policy=policy or (lambda: policy_state(use)),
             capability=self._capability.status,
         )
+
+    async def _enforced_use_policy(self, owner_id: str) -> PolicyState:
+        """Enforce ``avatar.use`` for the bound caller, as execution does.
+
+        Unlike the display snapshot, an enabled policy service with no binding
+        for this request refuses (``reauthentication_required``), so a caller
+        that forgot to bind policy cannot turn the check into an allow.
+        """
+        binding = current_binding()
+        if binding is not None and binding.owner_id != owner_id:
+            return "denied"
+        request = PolicyRequest("avatar.use")
+        try:
+            if self._policy is not None:
+                await require_bound_policy(self._policy, request)
+            elif self._settings.group_policy_enabled:
+                return "unavailable"
+            else:
+                await require_policy(request, owner_id=owner_id)
+        except PolicyError as exc:
+            return "unavailable" if exc.decision.outcome == "unavailable" else "denied"
+        return "allowed"
 
     async def _usable_now(self) -> bool:
         return (await self.availability("avatar.use")).available
@@ -214,6 +262,8 @@ class PhotoAvatarService:
 
     async def get(self, user: AuthenticatedUser, avatar_id: str) -> PhotoAvatar:
         record = await self._reconcile(await self._owned(user, avatar_id))
+        if record.status == "ready" and record.liveVerificationFailedAt is not None:
+            record = await self._reverify(record)
         usable = await self._usable_now() if record.status == "ready" else False
         return self._view(record, usable)
 
@@ -458,6 +508,124 @@ class PhotoAvatarService:
             ),
         }
 
+    # --- live sessions (server-only; see live.py) ----------------------------
+
+    async def resolve_live_avatar(self, user: AuthenticatedUser, record_id: str) -> LiveAvatarGrant:
+        """Grant one live session the right to name ``record_id``, or refuse.
+
+        Order: id shape and ownership (indistinguishable not-found), then the
+        record state, then a pending re-verification, then the full
+        availability predicate with ``avatar.use`` enforced.
+        """
+        owner = user.internal_user_id
+        if not isinstance(record_id, str) or not _RECORD_ID.fullmatch(record_id):
+            raise LiveAvatarError(404, "not_found", "Not found.")
+        loaded = await self._store.get(owner, record_id)
+        if loaded is None:
+            raise LiveAvatarError(404, "not_found", "Not found.")
+        record = loaded[0]
+        if (
+            record.status != "ready"
+            or record.preview is None
+            or not valid_provider_avatar_id(record.providerAvatarId)
+        ):
+            raise LiveAvatarError(409, "avatar_not_ready", "This avatar is not ready.")
+        if record.homeRegion != self._catalog.homeRegion:
+            raise LiveAvatarError(
+                409, "avatar_home_changed",
+                "This avatar belongs to a different avatar home than the one in use.",
+            )
+        if record.liveVerificationFailedAt is not None:
+            record = await self._reverify(record)
+            if record.liveVerificationFailedAt is not None or record.status != "ready":
+                raise self._reverification_refusal(record)
+        availability = await self.availability(
+            "avatar.use", policy=lambda: self._enforced_use_policy(owner),
+        )
+        if availability.reason == "policy_denied":
+            raise LiveAvatarError(
+                403, "policy_denied", "Using photo avatars is not permitted for your account.",
+            )
+        if not availability.available:
+            raise LiveAvatarError(
+                503, "photo_avatars_unavailable", "Photo avatars are unavailable.",
+                reason=availability.reason,
+            )
+        return LiveAvatarGrant(
+            record_id=record.id,
+            provider_avatar_id=record.providerAvatarId,
+            base_model=self._catalog.baseModel,
+            home_region=record.homeRegion,
+        )
+
+    async def mark_live_avatar_verification_failed(
+        self, user: AuthenticatedUser, record_id: str, *, provider_code: str | None = None,
+    ) -> bool:
+        owner = user.internal_user_id
+        if not isinstance(record_id, str) or not _RECORD_ID.fullmatch(record_id):
+            return False
+        loaded = await self._store.get(owner, record_id)
+        if loaded is None or loaded[0].status != "ready":
+            return False
+        code = provider_code if isinstance(provider_code, str) and _PROVIDER_CODE.fullmatch(provider_code) else None
+        updated = await self._apply(
+            owner, record_id,
+            {"liveVerificationFailedAt": self._clock(), "liveVerificationCode": code},
+            only_if=lambda current: current.status == "ready",
+        )
+        marked = updated is not None and updated.liveVerificationFailedAt is not None
+        if marked:
+            logger.warning(
+                "photo avatar live verification failed record=%s code=%s", record_id[:8], code,
+            )
+            emit_custom_event("photo_avatar_live_verification_failed", {
+                "avatar": record_id[:8], "code": code, "correlationId": self._correlation(),
+            })
+        return marked
+
+    async def _reverify(self, record: PhotoAvatarRecord) -> PhotoAvatarRecord:
+        """Clear a verification failure only on a fresh provider read after the cooldown.
+
+        A provider ``Succeeded`` clears it; ``Failed`` or 404 make the record
+        terminal (the owner can still see and delete it); anything else keeps
+        the flag so live use stays refused. The record, its stored preview and
+        cleanup are never withdrawn by this check.
+        """
+        failed_at = record.liveVerificationFailedAt
+        if failed_at is None or self._clock() - failed_at < REVERIFY_COOLDOWN:
+            return record
+        read = await self._gateway.get_avatar(
+            record.providerAvatarId, correlation_id=self._correlation(),
+        )
+        fields: dict[str, Any] = {"lastReconciledAt": self._clock()}
+        if read.kind == "found" and read.avatar is not None and read.avatar.state == "succeeded":
+            fields.update(liveVerificationFailedAt=None, liveVerificationCode=None)
+        elif read.kind == "found" and read.avatar is not None and read.avatar.state == "failed":
+            fields.update(
+                status="failed", failureCode="provider_failed", providerErrorCode=read.avatar.error_code,
+            )
+        elif read.kind == "absent":
+            fields.update(status="failed", failureCode="provider_missing")
+        else:
+            # Unknown or pending: keep refusing, and wait another cooldown.
+            fields["liveVerificationFailedAt"] = self._clock()
+        updated = await self._apply(
+            record.userId, record.id, fields,
+            only_if=lambda current: current.liveVerificationFailedAt == failed_at,
+        )
+        return updated or record
+
+    def _reverification_refusal(self, record: PhotoAvatarRecord) -> LiveAvatarError:
+        if record.status != "ready":
+            return LiveAvatarError(409, "avatar_not_ready", "This avatar is no longer available.")
+        failed_at = record.liveVerificationFailedAt or self._clock()
+        remaining = REVERIFY_COOLDOWN - (self._clock() - failed_at)
+        return LiveAvatarError(
+            409, "avatar_needs_reverification",
+            "The avatar service could not verify this avatar. Try again later.",
+            retry_after=max(1, math.ceil(remaining.total_seconds())),
+        )
+
     # --- delete and report --------------------------------------------------
 
     async def delete(self, user: AuthenticatedUser, avatar_id: str) -> None:
@@ -674,8 +842,9 @@ class PhotoAvatarService:
                 known=record.cost.known,
                 priceVersion=record.cost.priceVersion,
             ),
-            usable=usable and record.status == "ready",
+            usable=usable and record.status == "ready" and record.liveVerificationFailedAt is None,
             reported=record.reportedAt is not None,
+            needsReverification=record.status == "ready" and record.liveVerificationFailedAt is not None,
             createdAt=record.createdAt,
             updatedAt=record.updatedAt,
             readyAt=record.readyAt,

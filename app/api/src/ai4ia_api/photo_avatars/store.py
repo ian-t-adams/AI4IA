@@ -100,6 +100,10 @@ class PhotoAvatarRecord(_Persisted):
     lastReconciledAt: datetime | None = None
     deleteRequestedAt: datetime | None = None
     reportedAt: datetime | None = None
+    # Set when a live session reported that the avatar failed verification.
+    # Cleared only by a later provider read that still finds it Succeeded.
+    liveVerificationFailedAt: datetime | None = None
+    liveVerificationCode: str | None = Field(default=None, max_length=80)
     correlationId: str | None = Field(default=None, max_length=128)
 
 
