@@ -1214,6 +1214,13 @@ async def chat(
                 ),
             )
 
+    # A published source on a model without tool calling offers no contracts.
+    # Settle the reviewed profile's outcome here, before the user message is
+    # persisted, like the capability refusals above.
+    publication_precheck = current_execution()
+    if publication_precheck is not None and entry is not None and not entry.supportsTools:
+        publication_precheck.require_toolless_offer()
+
     # Entitlement enforcement. Placed here so it gates only true
     # model-consuming turns: /commands and @mention errors already returned
     # above (a rate-limited or disabled user can still run /help, /usage, etc.).

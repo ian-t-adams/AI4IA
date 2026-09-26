@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 ANTHROPIC_API = "anthropic"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_MAX_TOKENS = 4096
+MAX_TOKENS_STOP = "max_tokens"
 _TOKEN_FIELDS = (
     "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens",
 )
@@ -323,6 +324,12 @@ def anthropic_json_to_chat(payload: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {
         "choices": [{"message": message, "finish_reason": finish_reason}]
     }
+    if stop_reason == MAX_TOKENS_STOP:
+        # The token limit cut the reply short; with adaptive thinking it can end
+        # before any text. Report it through the shared incomplete signal the
+        # Responses translation uses, so every caller treats it the same way.
+        result["_responses_status"] = "incomplete"
+        result["_responses_incomplete_reason"] = MAX_TOKENS_STOP
     usage = anthropic_usage_to_chat(payload.get("usage"))
     if usage is not None:
         result["usage"] = usage
@@ -338,6 +345,7 @@ class AnthropicStreamState:
     reported_fields: set[str] = field(default_factory=set)
     final_output_reported: bool = False
     invalid_usage: bool = False
+    stop_reason: str | None = None
 
     def update(self, usage: Any, *, final_output: bool = False) -> None:
         if usage is None:
@@ -381,6 +389,8 @@ class AnthropicStreamEvent:
     usage: dict[str, Any] | None = None
     done: bool = False
     error: bool = False
+    # Set on the terminal event when the provider stopped at max_tokens.
+    incomplete: bool = False
 
 
 def _chat_raw(delta: dict[str, Any]) -> str:
@@ -412,10 +422,16 @@ def parse_anthropic_event(
         state.update((event.get("message") or {}).get("usage"))
         return None
     if event_type == "message_delta":
+        delta = event.get("delta")
+        if isinstance(delta, dict) and isinstance(delta.get("stop_reason"), str):
+            state.stop_reason = delta["stop_reason"]
         state.update(event.get("usage"), final_output=True)
         return AnthropicStreamEvent(usage=state.as_chat_usage())
     if event_type == "message_stop":
-        return AnthropicStreamEvent(done=True, usage=state.as_chat_usage())
+        return AnthropicStreamEvent(
+            done=True, usage=state.as_chat_usage(),
+            incomplete=state.stop_reason == MAX_TOKENS_STOP,
+        )
     if event_type == "content_block_start":
         index = event.get("index")
         block = event.get("content_block") or {}

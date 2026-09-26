@@ -207,6 +207,96 @@ def test_thinking_blocks_never_reach_translated_output_on_either_transport():
         assert marker not in serialized
 
 
+@pytest.mark.parametrize(("stop_reason", "incomplete"), [("max_tokens", True), ("end_turn", False)])
+def test_max_tokens_stop_reports_the_shared_incomplete_signal_on_both_transports(stop_reason, incomplete):
+    from ai4ia_api.gateway.anthropic import (
+        AnthropicStreamState, anthropic_json_to_chat, parse_anthropic_event,
+    )
+
+    translated = anthropic_json_to_chat({
+        "content": [{"type": "thinking", "thinking": "", "signature": "opaque"}],
+        "stop_reason": stop_reason, "usage": {"input_tokens": 3, "output_tokens": 9},
+    })
+    state = AnthropicStreamState()
+    events = [
+        parse_anthropic_event(json.dumps(event), state) for event in (
+            {"type": "message_start", "message": {"usage": {"input_tokens": 3, "output_tokens": 0}}},
+            {"type": "message_delta", "delta": {"stop_reason": stop_reason}, "usage": {"output_tokens": 9}},
+            {"type": "message_stop"},
+        )
+    ]
+    terminal = events[-1]
+    assert terminal is not None and terminal.done
+    assert terminal.incomplete is incomplete
+    assert (translated.get("_responses_status"), translated.get("_responses_incomplete_reason")) == (
+        ("incomplete", "max_tokens") if incomplete else (None, None)
+    )
+    assert translated["choices"][0]["finish_reason"] == ("length" if incomplete else "stop")
+
+
+@pytest.mark.parametrize(("stop_reason", "incomplete"), [("max_tokens", True), ("end_turn", False)])
+async def test_gateway_stream_terminal_chunk_carries_the_max_tokens_stop(stop_reason, incomplete):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=_sse(
+            {"type": "message_start", "message": {"usage": {"input_tokens": 3, "output_tokens": 0}}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Partial"}},
+            {"type": "message_delta", "delta": {"stop_reason": stop_reason}, "usage": {"output_tokens": 9}},
+            {"type": "message_stop"},
+        ))
+
+    client = _client(handler, enabled=True)
+    chunks = [
+        chunk async for chunk in client.stream(
+            deployment="claude-opus-5-5-slurmfactory-eastus2-glbl",
+            messages=[{"role": "user", "content": "Hello"}], api="anthropic",
+        )
+    ]
+    assert "".join(chunk.delta for chunk in chunks) == "Partial"
+    assert chunks[-1].done
+    assert (chunks[-1].incomplete, chunks[-1].incompleteReason) == (
+        (True, "max_tokens") if incomplete else (False, None)
+    )
+    assert not any(chunk.incomplete for chunk in chunks[:-1])
+    await client._http.aclose()  # type: ignore[union-attr]
+
+
+async def test_truncated_tool_use_ends_the_turn_incomplete_without_running_the_tool():
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=_sse(
+            {"type": "message_start", "message": {"usage": {"input_tokens": 8, "output_tokens": 0}}},
+            {"type": "content_block_start", "index": 0, "content_block": {
+                "type": "tool_use", "id": "call_calc", "name": "calculator", "input": {},
+            }},
+            {"type": "content_block_delta", "index": 0, "delta": {
+                "type": "input_json_delta", "partial_json": '{"expression":"6*',
+            }},
+            {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}, "usage": {"output_tokens": 4}},
+            {"type": "message_stop"},
+        ))
+
+    client = _client(handler, enabled=True)
+    registry, executor = build_tools()
+
+    async def on_delta(_text: str) -> None:
+        return None
+
+    result = await run_agent_turn(
+        deployment="claude-opus-5-slurmfactory-eastus2-dz",
+        messages=[{"role": "user", "content": "What is 6*7?"}],
+        tool_names=["calculator"], gateway=client, registry=registry, executor=executor,
+        ctx=ToolContext(), on_delta=on_delta,
+    )
+    # A tool call cut off by the token limit is never executed; the turn ends
+    # incomplete. Control: the end-to-end loop below runs the same tool.
+    assert result.incomplete is True
+    assert [step.kind for step in result.steps] == ["final"]
+    assert len(requests) == 1
+    await client._http.aclose()  # type: ignore[union-attr]
+
+
 async def test_nonstream_response_translates_text_tools_and_usage():
     captured: dict = {}
 

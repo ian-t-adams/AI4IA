@@ -207,6 +207,73 @@ async def test_incomplete_summary_does_not_advance_fold_marker():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("prior_summary", [None, "PRIOR"])
+async def test_empty_automatic_summary_neither_commits_nor_advances_the_fold(prior_summary):
+    # An empty fold would advance summarizedThroughMessageId and drop the folded
+    # turns from later prompts. Control: test_apply_folds_oldest_when_over_threshold
+    # commits the same fold when the reply has text.
+    svc = SummarizationService(
+        enabled=True, recent_turns=2, fallback_threshold_chars=10
+    )
+    repo = _FakeRepo()
+    session = _session(summary=prior_summary)
+
+    with pytest.raises(RuntimeError, match="no text"):
+        await svc.apply(
+            gateway=_FakeGateway(""), repo=repo, session=session, user_id="u",
+            deployment="dep", prior=_long_turns(4), system_prompt=None, context_window=None,
+        )
+
+    assert repo.updates == 0
+    assert (session.summary, session.summarizedThroughMessageId) == (prior_summary, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("stop_reason", "text"), [("max_tokens", None), ("end_turn", "ROLLING")])
+async def test_adaptive_claude_max_tokens_stop_cannot_fold_through_the_real_gateway(stop_reason, text):
+    import httpx
+
+    from ai4ia_api.gateway.client import ModelGatewayClient
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        content: list[dict] = [{"type": "thinking", "thinking": "", "signature": "opaque"}]
+        if text is not None:
+            content.append({"type": "text", "text": text})
+        return httpx.Response(200, json={
+            "content": content, "stop_reason": stop_reason,
+            "usage": {"input_tokens": 5, "output_tokens": 1024},
+        })
+
+    svc = SummarizationService(
+        enabled=True, recent_turns=2, fallback_threshold_chars=10
+    )
+    repo, session, prior = _FakeRepo(), _session(model="claude-opus-5-5"), _long_turns(4)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        gateway = ModelGatewayClient(make_settings(
+            claude_enabled=True, claude_external_enabled=True,
+            model_gateway_url="https://proxy.test/openai",
+        ), http_client=http)
+        arguments = dict(
+            gateway=gateway, repo=repo, session=session, user_id="u",
+            deployment="claude-opus-5-5-slurmfactory-eastus2-glbl", prior=prior,
+            system_prompt=None, context_window=None, api="anthropic",
+        )
+        if stop_reason == "max_tokens":
+            with pytest.raises(RuntimeError, match="incomplete"):
+                await svc.apply(**arguments)
+        else:
+            _, summary = await svc.apply(**arguments)
+            assert summary == "ROLLING"
+
+    if stop_reason == "max_tokens":
+        assert repo.updates == 0
+        assert (session.summary, session.summarizedThroughMessageId) == (None, None)
+    else:
+        assert repo.updates == 1
+        assert session.summarizedThroughMessageId == prior[-3].id
+
+
+@pytest.mark.asyncio
 async def test_apply_noop_below_threshold():
     svc = SummarizationService(
         enabled=True, recent_turns=2, fallback_threshold_chars=10_000_000

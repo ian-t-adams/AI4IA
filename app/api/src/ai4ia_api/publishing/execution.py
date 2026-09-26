@@ -84,6 +84,25 @@ class PublicationExecution:
             raise PublicationError("publication_approval_subset_changed")
         self.actual = subset
 
+    def require_toolless_offer(self) -> None:
+        """Decide, before anything is persisted, whether an empty offer satisfies the profile.
+
+        A model without tool calling can offer no contract at all. The reviewed
+        profile may narrow an optional contract only for a declared reason, so
+        any other missing contract is a capability mismatch: a stable,
+        non-retryable refusal instead of a late subset failure.
+        """
+        try:
+            self.state.publications.validate_subset(
+                self.resolved.version.profiles[self.mode], self.scope, {},
+                empty_document_scope=self.document_scope == (),
+                tools_disabled=self.tools_disabled,
+            )
+        except PublicationError as exc:
+            if exc.reason in {"publication_optional_contract_unavailable", "publication_contract_changed"}:
+                raise PublicationError("publication_model_tools_unsupported", 422) from exc
+            raise
+
     def check_request(self, request: PolicyRequest) -> None:
         from ..agents.consent_service import environment_hash
 
