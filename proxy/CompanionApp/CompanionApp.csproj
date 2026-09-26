@@ -18,6 +18,12 @@
     <PackageReference Include="Azure.Storage.Blobs" Version="12.29.2" />
     <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.47.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <!-- AI4IA: serves _framework/blazor.web.js. Without it the Web SDK references this package
+         implicitly, but only when .razor files exist at restore time (the Docker restore layer
+         has none) and only at the SDK's own bundled patch (CI's SDK floats), so a locked restore
+         would break. An explicit reference replaces the implicit one. Keep it private and at the
+         runtime base image's ASP.NET patch. -->
+    <PackageReference Include="Microsoft.AspNetCore.App.Internal.Assets" Version="10.0.12" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
