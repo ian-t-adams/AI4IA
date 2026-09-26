@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ai4ia_api.photo_avatars.availability import policy_state
 from ai4ia_api.policy.context import bind_authenticated, clear_policy_context
 from ai4ia_api.policy.dispatch import authorize_dispatch
 from ai4ia_api.policy.models import PolicyError, PolicyRequest, parse_policy_config
@@ -133,5 +134,24 @@ async def test_a_zones_restriction_cannot_silently_cover_avatar_dispatch():
         with pytest.raises(PolicyError) as refused:
             await authorize_dispatch("avatar", deployment=None, required=True)
         assert refused.value.decision.reason == "policy_surface_unsupported"
+    finally:
+        clear_policy_context()
+
+
+@pytest.mark.parametrize("zoned", [True, False])
+async def test_availability_advertises_creation_exactly_when_dispatch_would_admit_it(zoned):
+    domains = {**PILOT["domains"], **({"zones": {"default": {"allow": ["global"]}}} if zoned else {})}
+    policy, _ = service({"domains": domains})
+    bind_authenticated(policy, user(groups=[GROUP]))
+    try:
+        try:
+            await authorize_dispatch("avatar", deployment=None, required=True)
+            admitted = True
+        except PolicyError:
+            admitted = False
+        assert admitted is not zoned
+        assert await policy_state("avatar.create") == ("allowed" if admitted else "unavailable")
+        # Using an existing avatar is not model processing scope.
+        assert await policy_state("avatar.use") == "allowed"
     finally:
         clear_policy_context()

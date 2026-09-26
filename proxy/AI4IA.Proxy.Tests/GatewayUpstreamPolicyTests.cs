@@ -89,13 +89,32 @@ public sealed class GatewayUpstreamPolicyTests
         return ConfigParser.ApplyEnv(new() { ["MaxAttempts"] = match.Groups["value"].Value }, new ProxyConfig()).MaxAttempts;
     }
 
-    private static Dictionary<string, string> AuthoredHosts()
+    internal static Dictionary<string, string> AuthoredHosts()
     {
         var matches = Regex.Matches(GatewaySource(), @"name:\s*'(Host[12])'\s+value:\s*'([^']+)'");
         Assert.AreEqual(2, matches.Count);
         return matches.ToDictionary(
             match => match.Groups[1].Value,
             match => match.Groups[2].Value.Replace("${sharedApimGatewayUrl}", LoopbackGateway));
+    }
+
+    /// <summary>An authored gateway.bicep proxy setting whose value is a string literal.</summary>
+    internal static string AuthoredLiteral(string name)
+    {
+        var match = Regex.Match(GatewaySource(),
+            @"\{\s*name:\s*'" + Regex.Escape(name) + @"',\s*value:\s*'(?<value>[^']*)'\s*\}");
+        Assert.IsTrue(match.Success, $"gateway.bicep must author {name} for the proxy");
+        return match.Groups["value"].Value;
+    }
+
+    /// <summary>An authored gateway.bicep string list, rendered the way Bicep's string([...]) does.</summary>
+    internal static string AuthoredList(string name)
+    {
+        var match = Regex.Match(GatewaySource(),
+            @"name:\s*'" + Regex.Escape(name) + @"'\s+value:\s*string\(\[(?<items>[^\]]*)\]\)");
+        Assert.IsTrue(match.Success, $"gateway.bicep must author {name} for the proxy");
+        var items = Regex.Matches(match.Groups["items"].Value, "'([^']+)'").Select(item => $"\"{item.Groups[1].Value}\"");
+        return "[" + string.Join(",", items) + "]";
     }
 
     private static ServiceProvider Services()
@@ -108,7 +127,7 @@ public sealed class GatewayUpstreamPolicyTests
         return services.BuildServiceProvider();
     }
 
-    private static string GatewaySource() => File.ReadAllText(Path.GetFullPath(Path.Combine(
+    internal static string GatewaySource() => File.ReadAllText(Path.GetFullPath(Path.Combine(
         Path.GetDirectoryName(SourceFile())!, "..", "..", "infra", "modules", "gateway.bicep")));
 
     private static string SourceFile([CallerFilePath] string path = "") => path;

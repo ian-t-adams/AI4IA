@@ -4,18 +4,24 @@ Shapes mirror a read-only observation of the creation surface on 2026-09-26.
 """
 from __future__ import annotations
 
+import json
 import pickle
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import httpx
 import pytest
 
+from ai4ia_api.photo_avatars import provider as provider_module
 from ai4ia_api.photo_avatars.provider import (
     API_PATH,
     CREATE_PROXY_TTL_SECONDS,
+    CREATE_TIMEOUT_SECONDS,
+    FEATURES_TIMEOUT_SECONDS,
     PROVIDER_ID_PATTERN,
     PROVIDER_ID_RULE,
+    READ_TIMEOUT_SECONDS,
     PhotoAvatarGateway,
     PreviewLink,
     bounded_error_code,
@@ -24,6 +30,7 @@ from ai4ia_api.photo_avatars.provider import (
     new_provider_avatar_id,
     parse_avatar,
     parse_features,
+    provider_not_found,
     valid_provider_avatar_id,
 )
 from tests.conftest import make_settings
@@ -242,3 +249,117 @@ async def test_bearer_mode_and_priority_band_follow_the_model_gateway_headers():
     request = recorder.requests[0]
     assert request.headers["authorization"] == "Bearer proxy-ingress-key"
     assert request.headers[PRIORITY_HEADER] == "1"
+
+
+# ---- a 404 proves absence only in the provider's own shape ----------------
+
+APIM_NOT_FOUND = {"statusCode": 404, "message": "Resource not found"}
+NOT_PROVIDER_404_BODIES = [
+    pytest.param(APIM_NOT_FOUND, id="apim-missing-api"),
+    pytest.param(None, id="empty-body"),
+    pytest.param({"code": "NotFound"}, id="top-level-code"),
+    pytest.param({"error": {"code": "ResourceNotFound"}}, id="other-nested-code"),
+    pytest.param({"error": "NotFound"}, id="error-not-an-object"),
+    pytest.param("Resource not found", id="text-body"),
+]
+
+
+def _reply_404(body) -> httpx.Response:
+    if body is None:
+        return httpx.Response(404)
+    if isinstance(body, str):
+        return httpx.Response(404, text=body)
+    return httpx.Response(404, json=body)
+
+
+@pytest.mark.parametrize("body", NOT_PROVIDER_404_BODIES)
+async def test_only_the_providers_not_found_proves_an_avatar_or_project_absent(body):
+    """APIM answers 404 for a missing or rolled-back API; that proves nothing."""
+    other = await _gateway(Recorder(_reply_404(body))).get_avatar("ai4ia-0123456789abcdef0123")
+    assert (other.kind, other.status) == ("unknown", 404)
+    assert await _gateway(Recorder(_reply_404(body))).delete_avatar("ai4ia-0123456789abcdef0123") == "failed"
+    assert await _gateway(Recorder(_reply_404(body))).get_project() == "unknown"
+    # Control: the identical calls, answered in the provider's own shape.
+    absent = await _gateway(Recorder(httpx.Response(404, json=NOT_FOUND))).get_avatar(
+        "ai4ia-0123456789abcdef0123",
+    )
+    assert absent.kind == "absent"
+    assert await _gateway(Recorder(httpx.Response(404, json=NOT_FOUND))).delete_avatar(
+        "ai4ia-0123456789abcdef0123",
+    ) == "absent"
+    assert await _gateway(Recorder(httpx.Response(404, json=NOT_FOUND))).get_project() == "absent"
+
+
+def test_the_generated_policy_cannot_answer_in_the_providers_not_found_shape():
+    policy = ET.parse(REPO / "infra" / "policies" / "photo-avatars.xml").getroot()
+    refusals = policy.findall(".//return-response")
+    assert len(refusals) >= 2  # the 400 request refusal and the 502 gateway error
+    for refusal in refusals:
+        status = int(refusal.find("set-status").get("code"))
+        body = json.loads(refusal.find("set-body").text)
+        assert status != 404
+        assert body["error"]["code"] != provider_module.PROVIDER_NOT_FOUND
+        assert not provider_not_found(httpx.Response(404, json=body))
+    # Control: the provider's own shape is recognized.
+    assert provider_not_found(httpx.Response(404, json=NOT_FOUND))
+
+
+# ---- a sent create is never lost to a parsing or classification fault ----
+
+DEEP = b"[" * 200_000 + b"]" * 200_000
+
+
+async def test_a_pathologically_nested_body_is_read_as_no_body_not_raised():
+    with pytest.raises(RecursionError):
+        json.loads(DEEP)  # the fixture really does break the parser
+    created = await _gateway(Recorder(httpx.Response(201, content=DEEP))).create_avatar(
+        "ai4ia-0123456789abcdef0123", build_create_body("A host.", {}),
+    )
+    # The status proves acceptance; the unreadable body only loses the state.
+    assert created.kind == "accepted" and created.status == 201 and created.avatar.state == "pending"
+    read = await _gateway(Recorder(httpx.Response(200, content=DEEP))).get_avatar(
+        "ai4ia-0123456789abcdef0123",
+    )
+    assert read.kind == "found" and read.avatar.state == "pending"
+    assert await _gateway(Recorder(httpx.Response(404, content=DEEP))).get_project() == "unknown"
+
+
+async def test_any_classification_fault_leaves_a_sent_create_unknown(monkeypatch):
+    def broken(_body):
+        raise RuntimeError("unexpected provider shape")
+
+    control = await _gateway(Recorder(httpx.Response(201, json=AVATAR_FIXTURE))).create_avatar(
+        "ai4ia-0123456789abcdef0123", build_create_body("A host.", {}),
+    )
+    assert control.kind == "accepted"
+    monkeypatch.setattr(provider_module, "parse_avatar", broken)
+    recorder = Recorder(httpx.Response(201, json=AVATAR_FIXTURE))
+    outcome = await _gateway(recorder).create_avatar(
+        "ai4ia-0123456789abcdef0123", build_create_body("A host.", {}),
+    )
+    assert (outcome.kind, outcome.status) == ("unknown", 201)
+    assert len(recorder.requests) == 1  # classified, never re-sent
+
+
+# ---- merge seam: the proxy's App Configuration timeout floor --------------
+
+def test_every_proxied_photo_avatar_wait_fits_under_the_proxy_timeout_floor():
+    """#529 bounds App Configuration's request timeout below by MinTimeoutMs.
+
+    Its contract enumerates the API's gateway_*_timeout_seconds settings; these
+    adapter constants are proxied waits too, so the floor must cover them.
+    """
+    source = (REPO / "proxy" / "SimpleL7Proxy" / "Config" / "AppConfigKeyPolicy.cs").read_text(
+        encoding="utf-8",
+    )
+    match = re.search(r"internal const int MinTimeoutMs = ([\d_]+);", source)
+    assert match is not None
+    floor_ms = int(match[1].replace("_", ""))
+    waits = {
+        "create": CREATE_TIMEOUT_SECONDS, "read": READ_TIMEOUT_SECONDS,
+        "features": FEATURES_TIMEOUT_SECONDS,
+    }
+    assert 1000 * max(waits.values()) <= floor_ms, waits
+    # The create's own TTL ends the proxy's wait before the API's, so the API
+    # always hears an answer rather than timing out on a send it cannot see.
+    assert CREATE_PROXY_TTL_SECONDS < CREATE_TIMEOUT_SECONDS

@@ -8,8 +8,10 @@ import zlib
 import httpx
 import pytest
 
+from ai4ia_api.photo_avatars import preview as preview_module
 from ai4ia_api.photo_avatars.catalog import load_photo_avatar_catalog
 from ai4ia_api.photo_avatars.preview import (
+    PreviewBlocked,
     PreviewRejected,
     PreviewUnavailable,
     fetch_preview,
@@ -20,7 +22,8 @@ from ai4ia_api.photo_avatars.provider import PreviewLink
 CATALOG = load_photo_avatar_catalog().preview
 HOST = CATALOG.host
 PUBLIC_IP = "20.60.1.10"
-TOKEN = "SYNTHETICSAS0123456789abcdef"
+# Built at runtime so the source holds no secret-shaped literal (.gitleaks.toml entry 7).
+TOKEN = "-".join(("synthetic", "sas", "signature", "fixture"))
 URL = f"https://{HOST}/container/a/b/c/d/e?sv=2025&sp=r&sig={TOKEN}"
 
 
@@ -64,7 +67,7 @@ async def _fetch(response, url: str = URL, resolver: Resolver | None = None):
     resolver = resolver or Resolver()
     try:
         image = await fetch_preview(PreviewLink(url), CATALOG, resolver=resolver, inner_transport=transport)
-    except (PreviewRejected, PreviewUnavailable) as exc:
+    except (PreviewRejected, PreviewBlocked, PreviewUnavailable) as exc:
         return exc, transport, resolver
     return image, transport, resolver
 
@@ -85,18 +88,70 @@ async def test_the_exact_provider_host_is_fetched_once_over_a_pinned_connection(
     f"https://{HOST}.attacker.example/x?sig={TOKEN}",
     f"https://evil.{HOST}/x?sig={TOKEN}",
     f"https://{HOST.replace('use2', 'use3')}/x?sig={TOKEN}",
+    f"https://{PUBLIC_IP}/x?sig={TOKEN}",
+])
+async def test_a_host_outside_the_catalog_is_blocked_before_dns_not_failed(url):
+    """Not fetched, like every refusal, but not terminal: the catalog may be stale."""
+    result, transport, resolver = await _fetch(ok(), url=url)
+    assert isinstance(result, PreviewBlocked) and result.code == "host_not_in_catalog"
+    assert not isinstance(result, PreviewRejected)
+    assert resolver.calls == [] and transport.requests == []
+    # Control: the same link on the catalog host is resolved and fetched once.
+    control, control_transport, control_resolver = await _fetch(ok(), url=url.replace(
+        httpx.URL(url).host, HOST,
+    ))
+    assert not isinstance(control, Exception)
+    assert control_resolver.calls == [HOST] and len(control_transport.requests) == 1
+
+
+@pytest.mark.parametrize("url", [
     f"http://{HOST}/x?sig={TOKEN}",
     f"https://user:pass@{HOST}/x?sig={TOKEN}",
     f"https://{HOST}:8443/x?sig={TOKEN}",
     f"https://{HOST}/?sig={TOKEN}",
     "not a url at all",
 ])
-async def test_lookalike_hosts_and_shapes_are_refused_before_dns(url):
+async def test_malformed_links_are_refused_permanently_before_dns(url):
     result, transport, resolver = await _fetch(ok(), url=url)
     assert isinstance(result, PreviewRejected)
     assert resolver.calls == [] and transport.requests == []
     control, control_transport, _ = await _fetch(ok())
     assert not isinstance(control, Exception) and len(control_transport.requests) == 1
+
+
+class FailingResolver:
+    """The shared resolver seam, failing the way real lookups do."""
+
+    def __init__(self, failure: str) -> None:
+        self.failure = failure
+        self.calls: list[str] = []
+
+    def __call__(self, host: str) -> list[str]:
+        import socket
+        import time
+
+        self.calls.append(host)
+        if self.failure == "eai_again":
+            raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+        if self.failure == "oserror":
+            raise OSError("resolver unreachable")
+        if self.failure == "timeout":
+            time.sleep(0.3)
+            return [PUBLIC_IP]
+        return []  # an empty answer
+
+
+@pytest.mark.parametrize("failure", ["eai_again", "oserror", "timeout", "empty"])
+async def test_a_failed_lookup_is_transient_while_a_private_answer_is_permanent(failure, monkeypatch):
+    monkeypatch.setattr(preview_module, "DNS_TIMEOUT_SECONDS", 0.05)
+    resolver = FailingResolver(failure)
+    result, transport, _ = await _fetch(ok(), resolver=resolver)
+    assert isinstance(result, PreviewUnavailable) and result.code == "dns_lookup"
+    assert resolver.calls == [HOST] and transport.requests == []
+    # Control: the same link whose name resolved to a private address is final.
+    rejected, rejected_transport, _ = await _fetch(ok(), resolver=Resolver("10.1.2.3"))
+    assert isinstance(rejected, PreviewRejected) and rejected.code == "host_not_public"
+    assert rejected_transport.requests == []
 
 
 async def test_a_private_dns_answer_is_refused_without_connecting():

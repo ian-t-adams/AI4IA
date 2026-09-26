@@ -156,8 +156,39 @@ def build_create_body(prompt: str, attributes: dict[str, str | None]) -> dict[st
 def _json(response: httpx.Response) -> Any:
     try:
         return response.json()
-    except ValueError:
+    except (ValueError, RecursionError):
+        # An unreadable or pathologically nested body is no body at all.
         return None
+
+
+PROVIDER_NOT_FOUND = "NotFound"
+
+
+def provider_not_found(response: httpx.Response) -> bool:
+    """A 404 proves absence only in the provider's own error shape.
+
+    APIM answers 404 for a missing or rolled-back API as
+    ``{"statusCode":404,...}``, and the generated policy's own refusals use
+    distinct codes, so neither can pass for the provider's
+    ``{"error":{"code":"NotFound"}}``. Such a 404 says nothing about the
+    avatar and stays unknown.
+    """
+    if response.status_code != 404:
+        return False
+    body = _json(response)
+    error = body.get("error") if isinstance(body, dict) else None
+    return isinstance(error, dict) and error.get("code") == PROVIDER_NOT_FOUND
+
+
+def _classify_create(response: httpx.Response) -> CreateOutcome:
+    status = response.status_code
+    body_json = _json(response)
+    if 200 <= status < 300:
+        # The status proves acceptance; the body only adds state and a preview.
+        return CreateOutcome("accepted", status, parse_avatar(body_json))
+    if status in DEFINITE_REJECTIONS:
+        return CreateOutcome("rejected", status, error_code=bounded_error_code(body_json))
+    return CreateOutcome("unknown", status, error_code=bounded_error_code(body_json))
 
 
 CreateKind = Literal["accepted", "rejected", "not_sent", "unknown"]
@@ -267,7 +298,7 @@ class PhotoAvatarGateway:
             return "unknown"
         if response.status_code == 200:
             return "present"
-        if response.status_code == 404:
+        if provider_not_found(response):
             return "absent"
         return "unknown"
 
@@ -336,13 +367,13 @@ class PhotoAvatarGateway:
         response = state["response"]
         if response is None:
             return CreateOutcome("unknown")
-        status = response.status_code
-        body_json = _json(response)
-        if 200 <= status < 300:
-            return CreateOutcome("accepted", status, parse_avatar(body_json))
-        if status in DEFINITE_REJECTIONS:
-            return CreateOutcome("rejected", status, error_code=bounded_error_code(body_json))
-        return CreateOutcome("unknown", status, error_code=bounded_error_code(body_json))
+        try:
+            return _classify_create(response)
+        except Exception:  # noqa: BLE001 - a sent create is never lost to a classification fault
+            logger.warning(
+                "photo avatar create response could not be classified status=%s", response.status_code,
+            )
+            return CreateOutcome("unknown", response.status_code)
 
     async def get_avatar(self, provider_id: str, *, correlation_id: str | None = None) -> ReadOutcome:
         url_route = self.avatar_url(provider_id).removeprefix(self._root)
@@ -352,7 +383,7 @@ class PhotoAvatarGateway:
             return ReadOutcome("unknown")
         if response.status_code == 200:
             return ReadOutcome("found", parse_avatar(_json(response)), 200)
-        if response.status_code == 404:
+        if provider_not_found(response):
             return ReadOutcome("absent", status=404)
         return ReadOutcome("unknown", status=response.status_code)
 
@@ -366,7 +397,7 @@ class PhotoAvatarGateway:
             return "failed"
         if response.status_code in {200, 202, 204}:
             return "deleted"
-        if response.status_code == 404:
+        if provider_not_found(response):
             return "absent"
         if response.status_code in {400, 409}:
             return "rejected"

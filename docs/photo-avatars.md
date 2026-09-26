@@ -318,8 +318,8 @@ approved exceptions, and the prices are sourced.
   - create returns 202 with the new record;
   - status polls the provider, with a bound;
   - list reads only the owner's Cosmos records;
-  - delete idempotently removes the provider avatar (a 404 counts as gone), the
-    Blob preview and the record;
+  - delete idempotently removes the provider avatar (the provider's own NotFound
+    counts as gone), the Blob preview and the record;
   - preview images are served owner-scoped.
 - **Provider adapter.** One adapter module owns the undocumented creation
   contract: paths, api-version, id pattern, enums and state machine, backed by
@@ -369,7 +369,7 @@ flag is off. Errors use the shared body `{"detail", "code", "correlation_id"}`, 
 | `POST /api/photo-avatars` | 202 `PhotoAvatar` whenever a record was created; its `status` carries the outcome | 422 `validation_error`, `invalid_photo_avatar_request`, `attestation_outdated`; 409 `avatar_limit_reached`; 429 `daily_creation_limit` with `Retry-After`; 403/429 entitlement refusals; 403 `policy_denied`; 503 `photo_avatars_unavailable` with `reason`; 503 `cost_unknown_under_cap`; `hard_quota_refused` |
 | `GET /api/photo-avatars/{id}` | 200 `PhotoAvatar`, reconciled with at most one rate-limited provider read | 404 `not_found` |
 | `GET /api/photo-avatars/{id}/preview` | 200 `image/png`, private caching, `X-AI4IA-Synthetic-Media: ai-generated` | 404 `not_found`; 403 `policy_denied` |
-| `DELETE /api/photo-avatars/{id}` | 204; repeating it, or an unknown id, is also 204 | 409 `avatar_confirming` with `Retry-After`; 502 `provider_delete_failed` (the record stays `deleting`, and repeating the call finishes it) |
+| `DELETE /api/photo-avatars/{id}` | 204; repeating it, or an unknown id, is also 204 | 409 `avatar_confirming` with `Retry-After`; 409 `avatar_home_changed` (the avatar belongs to a previous home account; an operator removes it); 502 `provider_delete_failed` (the record stays `deleting`, and repeating the call finishes it); 503 `delete_incomplete` (repeating the call finishes it) |
 | `POST /api/photo-avatars/{id}/reports` | 202 `{"id", "avatarId", "reason", "createdAt"}` | 404 `not_found`; 422; 429 `report_limit` |
 
 `{id}` is an opaque 32-character lowercase hex record id; any other shape is 404.
@@ -386,7 +386,8 @@ estimate recorded at dispatch, never repriced), `usable`, `reported`, `createdAt
 `updatedAt` and `readyAt`. Its `status` is one of:
 
 - `creating`: reserved, and the provider outcome isn't recorded yet;
-- `generating`: accepted and still being generated;
+- `generating`: accepted, and still being generated or waiting for its preview to
+  be stored;
 - `confirming`: the create outcome is unknown, and a status read reconciles it;
 - `ready`: the preview is stored;
 - `failed`: terminal, with a `failure.code`;
@@ -431,6 +432,24 @@ later status read re-verifies the avatar.
   - anything else becomes `confirming`. A status read settles it: the provider's
     state is adopted, or the record fails as `not_created` only after the proxy
     time to live plus a four-minute margin.
+
+  Only an admission refusal raised before the request leaves (hard quota or
+  policy) releases the reservation. Any other fault after dispatch, including a
+  reply that can't be parsed or classified, leaves the create `confirming` and
+  metered as cost-unknown. A 2xx reply is accepted by its status alone, even when
+  its body can't be read.
+- **Absence.** Only the provider's own `404 {"error":{"code":"NotFound"}}` proves
+  that an avatar or the avatar project is gone. Any other 404, such as APIM's own
+  `{"statusCode":404}` for a missing or rolled-back API, is an unknown answer: a
+  status read changes nothing, and a delete fails with `provider_delete_failed`.
+  The generated policy's own refusals are 400 and 502 with AI4IA codes, and a test
+  parses the policy to keep it that way.
+- **Home changes.** Each record keeps the home region it was created in. After
+  the catalog home changes, APIM routes to the new account, whose answers say
+  nothing about older avatars, even a well-formed NotFound. Those records are
+  never read, reconciled or re-verified and never become terminal. They report
+  `usable: false`, and deletion refuses with 409 `avatar_home_changed` until an
+  operator removes them from the previous account (see the runbook).
 - **Avatar project.** It is created lazily and idempotently at runtime, through the
   same gateway: a GET, then a PUT only on 404. This reuses APIM's existing
   Cognitive Services User role, needs no deploy-identity role, and never replaces an
@@ -453,7 +472,11 @@ later status read re-verifies the avatar.
   concurrent requests.
 - **Pilot access.** A group-policy `avatars` domain with two actions: `create`,
   which is consumption, and `use`. Owner reads, status, deletion and reports need
-  no grant.
+  no grant. A `zones` restriction makes creation `policy_unavailable`: zones
+  describe model processing scope, and avatar residency comes from the catalog
+  home instead. The dispatch seam refuses the same actor, through the same shared
+  rule (`avatar_creation_zone_scoped`), so `/config` never advertises a creation
+  that dispatch would refuse. Using an existing avatar is unaffected.
 - **Metering.** One usage row per dispatched create, under a deterministic id:
   `photo-avatar-create-<record id>`. An accepted create records a known $2
   estimate; an unknown outcome records cost-unknown, never free. Hard admission
@@ -462,7 +485,18 @@ later status read re-verifies the avatar.
   host. The fetch pins the checked public address, refuses redirects, streams under
   a byte cap and requires a PNG within the catalog's dimension bound. It drives the
   pinned transport directly, because the HTTP client logs full request URLs and
-  this one carries the SAS signature.
+  this one carries the SAS signature. Failures split by what they prove:
+  - a link on any other host is never fetched. The avatar stays `generating`,
+    status reads drop to the slow interval, and a `host_not_in_catalog` security
+    event names the problem, so a corrected catalog recovers the paid avatar;
+  - a DNS lookup that fails or times out, a network or stream error, or a failed
+    Blob write is retried on a later status read;
+  - a malformed link, a non-public address, a redirect, or content that isn't a
+    PNG within bounds fails the avatar with `preview_rejected`.
+
+  A status read that stores a preview after a delete has won removes that preview
+  again, and deleting a record that no longer exists also removes a preview left
+  behind.
 - **Live sessions.** `photo_avatars/live.py` gives the Phase 2 relay
   `resolve_live_avatar(state, user, record_id)`. The returned `LiveAvatarGrant` is
   the only way the provider id leaves the package. Refusals carry stable codes.
@@ -489,7 +523,8 @@ shapes the adapter's synthetic fixtures use:
 The catalog's eastus2 preview host follows the observed naming for westus2. The
 account name resolves in DNS, and a one-character variant does not. It has not yet
 been seen as an issued preview host, so confirming it is an enablement check. If
-the host is wrong, the fetch fails closed with `preview_rejected`.
+the host is wrong, nothing is fetched: the avatar stays `generating` and the API
+logs `host_not_in_catalog` until the catalog is corrected.
 
 #### Phase 1 web experience
 
@@ -655,7 +690,8 @@ records the operator cleanup until one does.
   exists on the resource, not who owns it. AI4IA's owner-scoped records are the
   only boundary between users.
 - **Home account lock-in.** Each avatar is bound to one account, so changing the
-  home region means re-creating avatars.
+  home region means re-creating avatars, and removing the old ones from the
+  previous account is operator cleanup.
 - **Cost.** Every creation, real-time minute and rendered minute is billable, so
   limits and admission come first.
 

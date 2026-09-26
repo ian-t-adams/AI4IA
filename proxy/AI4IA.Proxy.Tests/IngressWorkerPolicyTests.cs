@@ -113,6 +113,30 @@ public sealed class IngressWorkerPolicyTests
         }
     }
 
+    [DataTestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task AppConfigurationCannotTurnOffInboundAuthentication(bool guarded)
+    {
+        await using var backend = new WireServer(_ => Task.FromResult(new WireReply(200)));
+        await using var gateway = await Gateway.Start(backend, authoredPolicy: true);
+        using var store = new AppConfigurationStore(("Warm:Sentinel", "1"));
+        var service = store.CreateService(AppConfigKeyPolicyTests.Policy(guarded));
+        await AppConfigurationStore.BootstrapAsync(service, gateway.LiveOptions, gateway.Notifier);
+        using (var before = await gateway.Post(ModelPath, NoReplayWorkerTests.Body, new(), authenticate: false))
+            Assert.AreEqual(HttpStatusCode.Forbidden, before.StatusCode);
+
+        store.Set(("Warm:Sentinel", "2"), ("Warm:Profiles:Auth:Config", "enabled=false;mode=none"));
+        await service.RefreshNowAsync(CancellationToken.None);
+        Assert.AreEqual("2", gateway.LiveOptions.Sentinel, "the refresh cycle did not run");
+
+        using var after = await gateway.Post(ModelPath, NoReplayWorkerTests.Body, new(), authenticate: false);
+        // Control: without the key policy, the same App Configuration write turns inbound
+        // authentication off, and an unauthenticated request reaches the backend.
+        Assert.AreEqual(guarded ? HttpStatusCode.Forbidden : HttpStatusCode.OK, after.StatusCode);
+        Assert.AreEqual(guarded ? 0 : 1, backend.Requests.Count);
+    }
+
     private sealed class Gateway : IAsyncDisposable
     {
         private readonly CancellationTokenSource _stop = new();
@@ -127,6 +151,8 @@ public sealed class IngressWorkerPolicyTests
         private ProxyConfig _options = null!;
         private string _url = null!;
         internal SpyQueue Queue { get; private set; } = null!;
+        internal ProxyConfig LiveOptions => _options;
+        internal ConfigChangeNotifier Notifier { get; private set; } = null!;
 
         internal static async Task<Gateway> Start(
             WireServer backend, bool authoredPolicy, bool bounded = false, Func<ICircuitBreaker>? circuit = null)
@@ -159,7 +185,7 @@ public sealed class IngressWorkerPolicyTests
             var wrapped = Options.Create(options);
             gateway.Queue = new SpyQueue(new ConcurrentPriQueue<RequestData>(wrapped, NullLogger<ConcurrentPriQueue<RequestData>>.Instance));
             gateway._requeue = new RequeueDelayWorker(NullLogger<RequeueDelayWorker>.Instance, gateway.Queue);
-            var notifier = new ConfigChangeNotifier(NullLogger<ConfigChangeNotifier>.Instance);
+            var notifier = gateway.Notifier = new ConfigChangeNotifier(NullLogger<ConfigChangeNotifier>.Instance);
             gateway._registry = new SharedIteratorRegistry(NullLogger<SharedIteratorRegistry>.Instance, options, notifier);
             var profiles = DispatchProxy.Create<IUserProfileService, NoReplayWorkerTests.UnusedDependency>();
             var context = new WorkerContext(
@@ -246,11 +272,13 @@ public sealed class IngressWorkerPolicyTests
             await probe.ConnectAsync(IPAddress.Loopback, port, deadline.Token);
         }
 
-        internal Task<HttpResponseMessage> Post(string path, byte[] body, Dictionary<string, string> headers)
+        internal Task<HttpResponseMessage> Post(
+            string path, byte[] body, Dictionary<string, string> headers, bool authenticate = true)
         {
             var request = new HttpRequestMessage(HttpMethod.Post, _url + path) { Content = new ByteArrayContent(body) };
             request.Content.Headers.ContentType = new("application/json");
-            request.Headers.TryAddWithoutValidation("S7P-KEY", IngressKey);
+            if (authenticate)
+                request.Headers.TryAddWithoutValidation("S7P-KEY", IngressKey);
             foreach (var (name, value) in headers)
                 request.Headers.TryAddWithoutValidation(name, value);
             return _caller.SendAsync(request);

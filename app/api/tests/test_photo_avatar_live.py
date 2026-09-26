@@ -338,6 +338,42 @@ async def test_a_failed_or_missing_avatar_becomes_terminal_but_stays_visible_and
     assert listed.avatars[0].needsReverification is False
 
 
+async def test_an_apim_404_during_reverification_keeps_refusing_and_never_ends_the_avatar():
+    rig = Rig()
+    await rig.seed()
+    await rig.service.mark_live_avatar_verification_failed(person("alice"), RECORD_ID)
+    rig.clock.advance(REVERIFY_COOLDOWN)
+    rig.provider.avatar_reply = httpx.Response(404, json={"statusCode": 404, "message": "Resource not found"})
+    assert (await refusal(rig, person("alice"))).code == "avatar_needs_reverification"
+    stored = await rig.stored()
+    assert stored.status == "ready" and stored.liveVerificationFailedAt == rig.clock.now
+    # Control: after the next cooldown the provider's own NotFound does end it.
+    rig.clock.advance(REVERIFY_COOLDOWN)
+    rig.provider.avatar_reply = httpx.Response(404, json=NOT_FOUND)
+    assert (await refusal(rig, person("alice"))).code == "avatar_not_ready"
+    assert ((await rig.stored()).status, (await rig.stored()).failureCode) == ("failed", "provider_missing")
+
+
+@pytest.mark.parametrize("moved", [True, False])
+async def test_reverification_never_reads_an_avatar_from_another_home(moved):
+    rig = Rig()
+    await rig.seed(
+        homeRegion="swedencentral" if moved else CATALOG.homeRegion, liveVerificationFailedAt=T0,
+    )
+    rig.clock.advance(REVERIFY_COOLDOWN)
+    rig.provider.avatar_reply = httpx.Response(404, json=NOT_FOUND)
+    view = await rig.service.get(person("alice"), RECORD_ID)
+    route = f"/photoavatars/{PROVIDER_ID}"
+    if moved:
+        # A read would reach the new home, whose NotFound says nothing here.
+        assert rig.provider.reads(route) == 0
+        assert (view.status, view.needsReverification, view.usable) == ("ready", True, False)
+    else:
+        # Control: in its own home the same answer is read and ends the avatar.
+        assert rig.provider.reads(route) == 1
+        assert view.status == "failed"
+
+
 async def test_marking_ignores_foreign_unknown_malformed_and_not_ready_records():
     rig = Rig()
     await rig.seed()
