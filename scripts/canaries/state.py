@@ -203,13 +203,15 @@ def resolve(
         raise CanaryError("resolution_unapproved")
     if record.blocked_run_id != previous.report.run.run_id:
         raise CanaryError("resolution_stale")
-    if (
-        record.approval_id != config.approval_id
-        or (previous.approval_digest is not None
-            and previous.approval_digest not in record.superseded_approval_digests)
+    superseded = record.superseded_approval_digests
+    if record.approval_id != config.approval_id or (
+        previous.approval_digest not in superseded if previous.approval_digest is not None
+        else not superseded
     ):
         # A resolution admits a new lease; it never renews or resets a used one.
-        # The record's own new approval can never be superseded (`Resolution.load`).
+        # A chain that lost its lease still requires the owner to name the retired
+        # one. The record's own new approval can never be listed (`Resolution.load`),
+        # so it differs from every lease named here.
         raise CanaryError("resolution_invalid")
     rows = list(attested or ())
     if (
@@ -223,10 +225,12 @@ def resolve(
     ):
         raise CanaryError("resolution_invalid")
     # Cadence runs from the latest investigated attempt, so a resolution can
-    # never shorten the interval after a lost observation.
+    # never shorten the interval after a lost observation. Every attempt precedes
+    # the first block, and the blocked predecessor is at or after it, so when the
+    # chain lost its last attempt that observation bounds the cadence regardless
+    # of which runs the owner lists.
     anchors = [row.updated_at for row in rows]
-    if previous.last_attempt_at is not None:
-        anchors.append(previous.last_attempt_at)
+    anchors.append(previous.last_attempt_at or previous.report.observed_at)
     return Resolved(
         {
             "sha256": record.sha256, "blocked_run_id": record.blocked_run_id,
@@ -251,7 +255,9 @@ def chat_outcome(report: Report) -> str:
 def finish(
     report: Report, config: Configuration | None, previous: State | None, *,
     control: str, attempted: bool = False, resolved: Resolved | None = None,
+    lease: Configuration | None = None,
 ) -> State:
+    """``lease`` labels only a state without a predecessor, never an inherited one."""
     if (control == "resolved") != (resolved is not None) or (resolved and (config is None or previous is None)):
         raise ValueError("Only an admitted resolution produces a resolved state.")
     if control in ("bootstrap", "resolved"):
@@ -267,7 +273,9 @@ def finish(
     return State(
         report=report,
         scope_digest=config.scope_digest if attempted and config else (previous.scope_digest if previous else None),
-        approval_digest=config.approval_digest if attempted and config else (previous.approval_digest if previous else None),
+        approval_digest=config.approval_digest if attempted and config else (
+            previous.approval_digest if previous else (lease.approval_digest if lease else None)
+        ),
         previous_run_id=previous.report.run.run_id if previous else None,
         observations=min(MAX_RUNS, (previous.observations if previous else 0) + int(attempted)),
         last_attempt_at=report.observed_at if attempted else (previous.last_attempt_at if previous else None),

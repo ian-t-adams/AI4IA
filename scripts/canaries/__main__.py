@@ -7,7 +7,7 @@ import asyncio
 import os
 import signal
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -122,12 +122,27 @@ def _attested(value: Any) -> list[Attested] | None:
         return None
 
 
+def _configured_lease(env: Mapping[str, str], now: datetime) -> Configuration | None:
+    """The configured lease, only to label a block written without a predecessor.
+
+    A chain that loses its predecessor would otherwise forget which lease was
+    active, and resolving it could then renew that used lease. Admission loads
+    and enforces the configuration separately; a failure here never raises, so
+    it cannot hide the block. It only leaves the label unknown.
+    """
+    try:
+        return Configuration.load(env, now)
+    except CanaryError:
+        return None
+
+
 def prepare_command(directory: Path, env: Mapping[str, str]) -> int:
     run = current_run(env)
     now = utc_now()
     report = Report(run, stamp(now))
     previous: State | None = None
     config: Configuration | None = None
+    lease = _configured_lease(env, now)
     try:
         previous, metadata, attested = _previous(directory, run)
         config = Configuration.load(env, now)
@@ -171,7 +186,7 @@ def prepare_command(directory: Path, env: Mapping[str, str]) -> int:
             False if exc.code in {"state_missing", "state_invalid", "state_stale", "state_gap"}
             else previous.report.cleanup_safe if previous else run.number == 1
         )
-        state = finish(report, config, previous, control="blocked")
+        state = finish(report, config, previous, control="blocked", lease=lease)
     write_state(directory, state)
     output(env, "observe", "false")
     return 0
@@ -188,6 +203,7 @@ async def observe_command(directory: Path, env: Mapping[str, str]) -> int:
     report = Report(run, stamp(now))
     config: Configuration | None = None
     previous: State | None = None
+    lease = _configured_lease(env, now)
     attempted = False
     control = "blocked"
     task = asyncio.current_task()
@@ -269,7 +285,9 @@ async def observe_command(directory: Path, env: Mapping[str, str]) -> int:
         else "partial" if any(value in ("pass", "fail", "partial") for value in measured)
         else "unscored"
     )
-    write_state(directory, finish(report, config, previous, control=control, attempted=attempted))
+    write_state(directory, finish(
+        report, config, previous, control=control, attempted=attempted, lease=lease,
+    ))
     return 0
 
 

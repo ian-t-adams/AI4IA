@@ -1069,6 +1069,8 @@ class ObserveCliTests(unittest.IsolatedAsyncioTestCase):
             state = State.parse(cli.read_json(directory / "state.json"))
             self.assertTrue(state.blocked)
             self.assertIsNone(state.chat.failures)
+            # The block still records the configured lease, so resolving it must retire that lease.
+            self.assertEqual(state.approval_digest, CONFIG.approval_digest)
             acquire_token.assert_not_awaited()
 
     async def test_malformed_predecessor_metadata_is_never_promoted_to_trusted_state(self):
@@ -1260,7 +1262,8 @@ class ResolutionTransitionTests(unittest.TestCase):
         state = State.parse(resolved_state(blocked).document())
         self.assertEqual((state.blocked, state.control, state.observations), (False, "resolved", 0))
         self.assertEqual((state.scope_digest, state.approval_digest), (LEASE.scope_digest, LEASE.approval_digest))
-        self.assertEqual((state.previous_run_id, state.last_attempt_at), (BLOCKED_RUN.run_id, ATTESTED[0].updated_at))
+        # The chain lost its last attempt, so the blocked observation bounds cadence.
+        self.assertEqual((state.previous_run_id, state.last_attempt_at), (BLOCKED_RUN.run_id, blocked.report.observed_at))
         self.assertEqual(state.report.coverage, "unscored")
         self.assertIsNone(state.chat.failures)
         self.assertEqual(state.resolution, {
@@ -1285,6 +1288,21 @@ class ResolutionTransitionTests(unittest.TestCase):
             admit(LEASE, NEXT_RUN, recent, NOW + timedelta(minutes=1), bootstrap=False)
         with self.assertRaisesRegex(ValueError, "admitted resolution"):
             finish(Report(RESOLVE_RUN, stamp(NOW)), LEASE, blocked_state(), control="resolved")
+
+    def test_a_lost_attempt_time_is_bounded_by_the_block_not_by_the_listing(self):
+        # Incident shape: the chain lost its last attempt. The listed run finished
+        # seven hours ago, but the chain blocked one hour ago.
+        recent_block = blocked_state(observed=NOW - timedelta(hours=1))
+        self.assertIsNone(recent_block.last_attempt_at)
+        floored = resolved_state(recent_block)
+        self.assertEqual(floored.last_attempt_at, recent_block.report.observed_at)
+        with self.assertRaisesRegex(CanaryError, "cadence"):
+            admit(LEASE, NEXT_RUN, floored, NOW + timedelta(minutes=1), bootstrap=False)
+        # Control: a chain that kept its last attempt anchors exactly there.
+        known = replace(recent_block, last_attempt_at=stamp(NOW - timedelta(hours=7)))
+        exact = resolved_state(known)
+        self.assertEqual(exact.last_attempt_at, stamp(NOW - timedelta(hours=7)))
+        admit(LEASE, NEXT_RUN, exact, NOW + timedelta(minutes=1), bootstrap=False)
 
     def test_legacy_states_parse_and_only_resolved_states_carry_a_resolution(self):
         legacy = previous_state().document()
@@ -1384,6 +1402,84 @@ class ResolutionCliTests(unittest.TestCase):
             previous=acknowledged, record=unacknowledged, approval=Resolution.load(unacknowledged).sha256,
         )[0]
         self.assertTrue(state.blocked)
+
+    def test_a_chain_that_lost_its_lease_still_retires_it(self):
+        # Run 36272392656's shape: its predecessor was lost, so it kept no lease and no attempt.
+        incident = blocked_state()
+        self.assertEqual((incident.approval_digest, incident.last_attempt_at), (None, None))
+        # Control: naming #49's retired lease resolves into the new one.
+        state = self.prepare(previous=incident)[0]
+        self.assertEqual((state.blocked, state.approval_digest), (False, LEASE.approval_digest))
+
+        def refused(record, config=LEASE):
+            try:
+                approval = Resolution.load(record).sha256
+            except CanaryError:
+                approval = "0" * 64  # an invalid record has no approvable digest
+            state = self.prepare(previous=incident, record=record, approval=approval, config=config)[0]
+            self.assertTrue(state.blocked)
+            self.assertEqual({row.code for row in state.report.stages.values()}, {"resolution_invalid"})
+
+        with self.subTest("no retired lease named"):
+            refused(record_text(superseded_approval_digests=[]))
+        with self.subTest("the used lease renewed, unlisted"):
+            # The review's scenario: only expires_at edited, the used lease re-approved.
+            refused(record_text(approval_id=OLD_APPROVAL, superseded_approval_digests=[]), config=CONFIG)
+        with self.subTest("the used lease renewed, listed"):
+            refused(record_text(approval_id=OLD_APPROVAL), config=CONFIG)
+
+    def test_a_block_without_a_predecessor_records_the_configured_lease(self):
+        def introduce(**changes):
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                cli.write_json(directory / "history.json", {
+                    "run": asdict(RESOLVE_RUN), "code": "state_missing", "predecessor": None,
+                    "resolution": None,
+                })
+                with patch.object(cli, "utc_now", return_value=NOW):
+                    self.assertEqual(cli.prepare_command(directory, {**environment(RESOLVE_RUN), **changes}), 0)
+                return State.parse(cli.read_json(directory / "state.json"))
+
+        labelled = introduce()
+        self.assertTrue(labelled.blocked)
+        self.assertEqual(labelled.approval_digest, CONFIG.approval_digest)
+        # Resolving it must now retire that lease; renewing it is refused.
+        renewal = record_text(approval_id=OLD_APPROVAL, superseded_approval_digests=[])
+        blocked = replace(labelled, report=replace(labelled.report, run=BLOCKED_RUN, observed_at=stamp(NOW - timedelta(hours=6))))
+        state = self.prepare(previous=blocked, record=renewal, approval=Resolution.load(renewal).sha256, config=CONFIG)[0]
+        self.assertTrue(state.blocked)
+        # A disabled or unloadable configuration leaves the label unknown, never the block hidden.
+        for changes in ({"AI4IA_CANARY_ENABLED": "false"}, {"AI4IA_CANARY_HARD_USD_CAP": "5"}):
+            with self.subTest(changes=changes):
+                state = introduce(**changes)
+                self.assertTrue(state.blocked)
+                self.assertIsNone(state.approval_digest)
+
+    def test_an_inherited_block_never_adopts_the_lease_prepared_to_resolve_it(self):
+        # The owner configures the new lease first; a schedule before the dispatch
+        # must not record it, or the resolution could never admit it.
+        incident = blocked_state()
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            metadata = run_metadata(incident.report.run)
+            cli.write_json(directory / "history.json", {
+                "run": asdict(RESOLVE_RUN), "code": "ok", "resolution": None,
+                "predecessor": {
+                    "run": asdict(incident.report.run), "artifact_id": 99,
+                    "created_at": metadata["created_at"], "updated_at": metadata["updated_at"],
+                },
+            })
+            cli.write_json(directory / "previous" / "state.json", incident.document())
+            with patch.object(cli, "utc_now", return_value=NOW):
+                self.assertEqual(cli.prepare_command(directory, environment(RESOLVE_RUN, LEASE)), 0)
+            inherited = State.parse(cli.read_json(directory / "state.json"))
+        self.assertTrue(inherited.blocked)
+        self.assertEqual(inherited.report.stages["platform"].code, "state_blocked")
+        self.assertIsNone(inherited.approval_digest)
+        # Control: the prepared lease still resolves the chain at the next run.
+        record = record_text(blocked_run_id=RESOLVE_RUN.run_id)
+        resolve(LEASE, Resolution.load(record), ATTESTED, NEXT_RUN, inherited,
+                NOW + timedelta(minutes=1), Resolution.load(record).sha256)
 
     def test_a_mistaken_resolution_never_blocks_a_healthy_chain(self):
         report = Report(BLOCKED_RUN, stamp(NOW - timedelta(hours=6)))

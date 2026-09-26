@@ -941,10 +941,20 @@ Admission accepts the record only if it holds all of these:
 - **Verified lost runs.** Each lost run is re-read from GitHub as a completed,
   first-attempt main run of this workflow that precedes the block. Its artifacts
   and logs are not used.
-- **New lease.** `approval_id` is the configured one. It is never listed as
-  superseded, and every lease the blocked state still names is.
-  `superseded_approval_digests` values are each `sha256(json.dumps(approval_id))`,
-  as retained in earlier states' `approval_digest`.
+- **New lease.** `approval_id` is the configured one, and the record retires
+  the used lease:
+  - The new lease is never listed as superseded.
+  - Every lease the blocked state still names must be listed.
+  - A chain that lost its lease together with its predecessor names none, but
+    must still list at least one superseded lease. The owner attests which one.
+  - `superseded_approval_digests` values are each `sha256(json.dumps(approval_id))`,
+    as retained in earlier states' `approval_digest`.
+
+A block introduced without a predecessor records the configured lease's digest,
+if the configuration is enabled and loads, so its resolution must retire that
+lease. A configuration that fails to load only leaves the lease unknown; the
+block is still written. An inherited block never adopts the configured lease,
+so configuring the new lease before dispatching `resolve` cannot burn it.
 
 Every refusal leaves a blocked chain blocked and a healthy chain unaffected. A
 stale record fails once a newer blocked run exists, so write it against the
@@ -952,9 +962,20 @@ latest run.
 
 The `resolved` state is unscored and claims no health. Alerts stay active, and
 it records the record's SHA-256, the blocked run, the lost runs and the evidence.
-Its cadence counts from the latest investigated run, so the six-hour interval
-after a lost attempt is never shortened. It admits the new lease directly, so a
-separate bootstrap is not needed.
+It admits the new lease directly, so a separate bootstrap is not needed.
+
+Cadence never shortens the six-hour interval after a lost attempt:
+
+- **Last attempt retained.** If the blocked chain still names its last attempt,
+  cadence counts from the later of that attempt and the investigated runs'
+  completion.
+- **Last attempt lost.** If the chain lost it, cadence counts from the later of
+  the listed runs' completion and the blocked predecessor's observation. Every
+  attempt precedes the first block, and that predecessor is at or after it, so
+  the floor does not depend on which runs the owner lists.
+
+The first observation therefore waits until six hours after the blocked
+predecessor ran, and the next scheduled run normally performs it.
 
 A record resolves one block only. Its predecessor is unblocked afterwards, and a
 later block has a different `blocked_run_id`. Leave the variable unchanged or
@@ -980,7 +1001,9 @@ recovery is the procedure in
 [Blocked state and recovery](#blocked-state-and-recovery), with `lost_run_ids`
 `[36267220637]` and #49's retained lease digest
 `b99461865b4b2670f2ac5a2c53619133edca0f53a779bd1d39f07f31e6f251b5` as the
-superseded approval.
+superseded approval. #51 recorded neither a lease nor a last attempt, so that
+entry is mandatory. The first observation comes six hours after the blocked run
+the record names.
 
 ### Automatic and manual rollback
 

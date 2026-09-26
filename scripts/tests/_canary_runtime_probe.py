@@ -18,8 +18,9 @@ import sys
 import sysconfig
 import tempfile
 from collections import Counter
+from contextlib import nullcontext
 from dataclasses import asdict, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -337,27 +338,38 @@ def invoke(command: str, directory: Path, env: dict[str, str], expected: int = 0
     require(code == expected, f"{command} exited {code}, expected {expected}")
 
 
+def clock(at: datetime | None) -> Any:
+    # Runs 1-3 happened hours before the resolution, as in the live incident.
+    return patch.object(cli, "utc_now", return_value=at) if at else nullcontext()
+
+
 def admission(
     run: Run, scratch: Path, env: dict[str, str], github: GitHub, retained: bytes | None,
+    at: datetime | None = None,
 ) -> Path:
     """The prepare job: locate, download the exact predecessor state, admit."""
     directory = scratch / f"prepare-{run.number}"
-    with patch("scripts.canaries.transport.Transport", return_value=github):
-        invoke("locate", directory, env)
-    if retained is not None:
-        # actions/download-artifact places exactly the predecessor's state file here.
-        (directory / "previous").mkdir()
-        (directory / "previous" / "state.json").write_bytes(retained)
-    invoke("prepare", directory, env)
+    with clock(at):
+        with patch("scripts.canaries.transport.Transport", return_value=github):
+            invoke("locate", directory, env)
+        if retained is not None:
+            # actions/download-artifact places exactly the predecessor's state file here.
+            (directory / "previous").mkdir()
+            (directory / "previous" / "state.json").write_bytes(retained)
+        invoke("prepare", directory, env)
     return directory
 
 
-def observation(directory: Path, scratch: Path, env: dict[str, str], application: Application) -> Path:
+def observation(
+    directory: Path, scratch: Path, env: dict[str, str], application: Application,
+    at: datetime | None = None,
+) -> Path:
     # The observation job starts from a fresh runner holding only the handoff.
     observed = scratch / f"observe-{env['GITHUB_RUN_NUMBER']}"
     observed.mkdir()
     shutil.copyfile(directory / "handoff.json", observed / "handoff.json")
     with (
+        clock(at),
         patch("scripts.canaries.identity.acquire", new=acquire),
         patch("scripts.canaries.transport.Transport", return_value=application),
     ):
@@ -366,29 +378,33 @@ def observation(directory: Path, scratch: Path, env: dict[str, str], application
 
 
 def lifecycle(scratch: Path) -> dict[str, Any]:
-    def ago(**delta: float) -> str:
-        # Read the clock per admission so a predecessor always completed before its reader.
-        return stamp(utc_now() - timedelta(**delta))
+    start = utc_now()
+    booted, lost_at, blocked_at = (start - timedelta(hours=hours) for hours in (8, 7.2, 7))
+
+    def at(moment: datetime, **delta: float) -> str:
+        return stamp(moment - timedelta(**delta))
 
     # 1. Bootstrap the first lease.
     env = environment(BOOTSTRAP, scratch / "runner-1", "bootstrap")
-    prepared = admission(BOOTSTRAP, scratch, env, GitHub(metadata(BOOTSTRAP, ago(hours=8), ago(hours=8), "in_progress")), None)
+    prepared = admission(BOOTSTRAP, scratch, env, GitHub(
+        metadata(BOOTSTRAP, at(booted, minutes=1), at(booted, minutes=1), "in_progress"),
+    ), None, booted)
     invoke("notify", prepared, env)
     bootstrapped = (prepared / "state.json").read_bytes()
 
     # 2. The observation is admitted, then dies on an import after one catalog read,
     #    exactly as run 36267220637 did. No final state is written.
     env = environment(LOST, scratch / "runner-2", "observe")
-    lost_meta = metadata(LOST, ago(hours=7, minutes=1), ago(hours=7), "completed")
+    lost_meta = metadata(LOST, at(lost_at, minutes=1), at(lost_at, minutes=-1), "completed")
     prepared = admission(LOST, scratch, env, GitHub(
-        metadata(LOST, ago(hours=7, minutes=1), ago(hours=7, minutes=1), "in_progress"),
-        metadata(BOOTSTRAP, ago(hours=8, minutes=1), ago(minutes=0), "completed"), len(bootstrapped),
-    ), bootstrapped)
+        metadata(LOST, at(lost_at, minutes=1), at(lost_at, minutes=1), "in_progress"),
+        metadata(BOOTSTRAP, at(booted, minutes=1), at(booted), "completed"), len(bootstrapped),
+    ), bootstrapped, lost_at)
     lost_application = Application()
     crash = ModuleNotFoundError("No module named 'pydantic'")
     try:
         with patch("scripts.canaries.monitor.load_model_pricing", side_effect=crash):
-            observation(prepared, scratch, env, lost_application)
+            observation(prepared, scratch, env, lost_application, lost_at)
     except ModuleNotFoundError:
         pass
     else:
@@ -398,8 +414,8 @@ def lifecycle(scratch: Path) -> dict[str, Any]:
     # 3. A disabled schedule finds only the lost run's handoff and blocks durably.
     env = environment(BLOCKED, scratch / "runner-3", "observe", enabled=False, event="schedule")
     prepared = admission(BLOCKED, scratch, env, GitHub(
-        metadata(BLOCKED, ago(minutes=2), ago(minutes=2), "in_progress"), lost_meta,
-    ), None)
+        metadata(BLOCKED, at(blocked_at, minutes=1), at(blocked_at, minutes=1), "in_progress"), lost_meta,
+    ), None, blocked_at)
     invoke("notify", prepared, env, expected=3)
     blocked = (prepared / "state.json").read_bytes()
 
@@ -413,9 +429,10 @@ def lifecycle(scratch: Path) -> dict[str, Any]:
     env = environment(RESOLVE, scratch / "runner-4", "resolve", config=LEASE, extra={
         "AI4IA_CANARY_RESOLUTION": record, "CANARY_RESOLUTION_SHA256": approval,
     })
+    now = utc_now()
     prepared = admission(RESOLVE, scratch, env, GitHub(
-        metadata(RESOLVE, ago(minutes=1), ago(minutes=1), "in_progress"),
-        metadata(BLOCKED, ago(minutes=3), ago(minutes=0), "completed"), len(blocked),
+        metadata(RESOLVE, at(now, minutes=1), at(now, minutes=1), "in_progress"),
+        metadata(BLOCKED, at(blocked_at, minutes=1), at(blocked_at), "completed"), len(blocked),
         {LOST.run_id: lost_meta},
     ), blocked)
     invoke("notify", prepared, env)
@@ -423,9 +440,10 @@ def lifecycle(scratch: Path) -> dict[str, Any]:
 
     # 5. The new lease observes; the chain now scores again.
     env = environment(OBSERVE, scratch / "runner-5", "observe", config=LEASE)
+    now = utc_now()
     prepared = admission(OBSERVE, scratch, env, GitHub(
-        metadata(OBSERVE, ago(minutes=0), ago(minutes=0), "in_progress"),
-        metadata(RESOLVE, ago(minutes=2), ago(minutes=0), "completed"), len(resolved),
+        metadata(OBSERVE, at(now), at(now), "in_progress"),
+        metadata(RESOLVE, at(now, minutes=2), at(now), "completed"), len(resolved),
     ), resolved)
     require("observe=true" in (scratch / "runner-5" / "outputs").read_text(encoding="utf-8"),
             "the resolved lease was not admitted to observe")
