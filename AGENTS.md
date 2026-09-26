@@ -1478,9 +1478,10 @@ a new owner-approved exception.
   `customized`, `websocket`. No client avatar field or provider id may reach it.
 - **Client events.** Client `session.avatar.*` events are refused on every
   provider.
-- **Video.** `response.video.delta` is forwarded verbatim under the 256 KiB frame
-  bound. It is never logged, receipted, parsed beyond its type, or copied into
-  telemetry.
+- **Video.** `response.video.delta` is forwarded verbatim. Every upstream text
+  frame is bounded at 256 KiB before it is parsed, and an upstream binary frame ends
+  the avatar session. Video is never logged, receipted, parsed beyond its type, or
+  copied into telemetry.
 - **Provider id.** It is scrubbed from the `session.updated` echo, every other
   frame, and upstream close reasons and error messages before they are forwarded,
   inspected or logged. The completion log and event scrub it again as a backstop.
@@ -1490,10 +1491,14 @@ a new owner-approved exception.
 - **Admission and caps.**
   - Live time is the `avatar_live` hard-quota surface (`avatar.use`), admitted
     before the unchanged `realtime` admission.
-  - The per-send guard re-checks `avatar.use`.
+  - The per-send guard re-checks `avatar.use`, and the idle watchdog re-runs it
+    every 15 seconds so silence can't outlast a revocation.
   - Avatar sessions bill while idle, so they are always capped by the smaller of
     `realtime_max_session_seconds` and the live minutes setting, and they end at
-    the idle timeout. Microphone audio and video are not activity.
+    the idle timeout. Microphone audio, video and the guard-exempt output stop
+    events (`OUTPUT_STOP_EVENT_TYPES`) are not activity.
+  - The countdown holds while the avatar speaks (`switch_to_speaking` until
+    `switch_to_idle`), for at most five minutes.
 - **Meter.** Server-measured from avatar confirmation to close, in whole seconds,
   through the catalog's `liveBillingModelId` (`basis: second`,
   `estimate_avatar_seconds`). An unconfirmed avatar records no row. An unknown

@@ -599,9 +599,12 @@ avatar byte stays on the existing governed path: browser → FastAPI
   `session.avatar.connect`, is refused on every provider: one bounded error, then a
   1008 close. `output_audio_buffer.clear` passes and, like `response.cancel`,
   needs no fresh policy grant.
-- **Video forwarding.** `response.video.delta` frames of at most 256 KiB are
-  forwarded verbatim. An oversized frame ends the session with a bounded error and
-  a 1009 close.
+- **Video forwarding.** `response.video.delta` frames are forwarded verbatim.
+  - Every upstream text frame is bounded at 256 KiB before anything parses it. An
+    oversized frame ends the session with a bounded error and a 1009 close.
+  - Voice Live sends JSON text only, so an upstream binary frame ends an avatar
+    session (`avatar_stream_refused`) instead of reaching the browser past the
+    bound and the scrub. Other sessions still forward binary frames unchanged.
   - Video is never parsed beyond its event type, logged, receipted or copied into
     telemetry.
   - The provider id is scrubbed from the `session.updated` echo, every other
@@ -621,8 +624,15 @@ avatar byte stays on the existing governed path: browser → FastAPI
     `realtime_max_session_seconds` and `AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION`
     (default 10);
   - it ends after `AI4IA_PHOTO_AVATAR_LIVE_IDLE_TIMEOUT_SECONDS` (default 120)
-    without conversation. Microphone audio and idle video never count as
-    conversation.
+    without conversation. Microphone audio, idle video and output stop events
+    (`response.cancel`, `conversation.item.truncate`, `input_audio_buffer.clear`,
+    `output_audio_buffer.clear`) never count as conversation. The stop events skip
+    the per-send grant check, so they can't keep a revoked session alive either.
+  - The countdown holds while the avatar is speaking, between
+    `session.avatar.switch_to_speaking` and `switch_to_idle`. `response.done`
+    arrives while the avatar is still speaking its buffered answer, and only video
+    follows it. The hold lasts at most five minutes, so a speaking state that never
+    ends can't keep the session open.
   - The relay sends `ai4ia.avatar.session` with the limits,
     `ai4ia.avatar.idle_warning` shortly before an idle end, and
     `ai4ia.avatar.session_ended` for an idle or cap end.
@@ -631,7 +641,10 @@ avatar byte stays on the existing governed path: browser → FastAPI
   session admission and before `connector.connect`. The request-count scope
   counts each, and USD caps refuse as for every surface.
   - In an avatar session the per-send policy guard also re-checks `avatar.use`, so
-    a revocation stops the next send.
+    a revocation stops the next send. The idle watchdog re-runs the same guard
+    every 15 seconds. A client that sends nothing the guard checks still loses the
+    session: it gets `avatar_unavailable` with `policy_denied` or
+    `policy_unavailable`, then a 1008 close.
 - **Meter.** Server-measured from avatar confirmation to relay close, in whole
   seconds, rounded up. It is priced at $0.60 per minute billed per second through
   the catalog's `liveBillingModelId` (`photo-avatar-realtime-standard`) in
@@ -661,9 +674,16 @@ avatar byte stays on the existing governed path: browser → FastAPI
   - **Stage.** `app/web/src/components/LiveAvatarStage.tsx` keeps the
     `AI-generated` label visible, counts down the idle and session limits, and
     offers **End session**.
+    - The label is drawn over the video, so the video can't leave the stage.
+      Picture-in-picture, fullscreen, remote playback and the context menu are
+      disabled, and entering either mode anyway exits it at once.
+    - The countdowns are `role="timer"`, which isn't announced. A separate status
+      region speaks once when a warning appears and once about ten seconds before
+      the end.
   - **Barge-in.** Barge-in relies on server VAD `interrupt_response` and jumps the
-    player to the live edge. There is no manual truncate, because avatar mode has
-    no PCM timeline.
+    player to the live edge, only when the reply is actually interrupted. With
+    **Interrupt response** off, the avatar keeps talking. There is no manual
+    truncate, because avatar mode has no PCM timeline.
 - **Tests.** Paired and mutation-proven, in `app/api/tests/test_realtime_logic.py`,
   `app/api/tests/test_realtime_api.py` (with layer 1's real service) and
   `app/api/tests/test_realtime_staged_api.py`, plus vitest tests on synthetic
