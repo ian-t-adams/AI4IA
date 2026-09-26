@@ -334,6 +334,33 @@ async function jsonOrThrow<T>(resp: Response): Promise<T> {
   return (await resp.json()) as T;
 }
 
+// Create refusals the API raises before anything reaches the provider (the
+// service's create path, up to and including a dispatch that was never sent).
+// Any other 5xx can follow a provider accept: the API's generic handlers answer
+// a failed Cosmos write with 503 `service_unavailable` or 500 `internal_error`,
+// and the same-origin proxy answers a dropped upstream with a code-less 502.
+export const PHOTO_AVATAR_DEFINITE_CREATE_REFUSALS: ReadonlySet<string> = new Set([
+  "photo_avatars_unavailable",
+  "cost_unknown_under_cap",
+  "avatar_project_unavailable",
+  "photo_avatar_gateway_unavailable",
+  "hard_quota_refused",
+  "policy_unavailable",
+  "entitlements_unavailable",
+]);
+
+/**
+ * Whether a failed create may still have created, and billed, an avatar. A 4xx
+ * is a definite refusal, and so is a 5xx carrying one of the codes above.
+ * Anything else is unknown and must never be re-sent blindly: a network failure,
+ * an unreadable reply, or a 5xx with no code or a generic one.
+ */
+export function isUncertainCreateOutcome(error: unknown): boolean {
+  if (!(error instanceof PhotoAvatarApiError)) return true;
+  if (error.status >= 400 && error.status < 500) return false;
+  return error.code === null || !PHOTO_AVATAR_DEFINITE_CREATE_REFUSALS.has(error.code);
+}
+
 function isPhotoAvatarRecord(value: unknown): value is PhotoAvatar {
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<PhotoAvatar>;
@@ -445,6 +472,12 @@ export interface PhotoAvatarDraft {
   /** "" (or absent) means unspecified. */
   attributes: Partial<Record<PhotoAvatarAttributeKey, string>>;
   attested: Partial<Record<string, boolean>>;
+  /**
+   * The attestation version the ticks were given against. When it differs from
+   * the version /config now publishes, the ticks count as unticked: consent to
+   * wording the user never saw is no consent.
+   */
+  attestedVersion?: string;
 }
 
 export type PhotoAvatarDraftIssue =
@@ -504,7 +537,12 @@ export function validatePhotoAvatarDraft(
   if (!attestationRecognized(attestation)) {
     return { request: null, issues: [...issues, "attestationUnrecognized"] };
   }
-  if (!attestation.statements.every((statement) => draft.attested[statement.id] === true)) {
+  const currentTicks =
+    draft.attestedVersion === undefined || draft.attestedVersion === attestation.version;
+  if (
+    !currentTicks ||
+    !attestation.statements.every((statement) => draft.attested[statement.id] === true)
+  ) {
     issues.push("attestation");
   }
   if (issues.length > 0) return { request: null, issues };

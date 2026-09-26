@@ -33,6 +33,7 @@ import {
   getPhotoAvatarConfig,
   isPendingPhotoAvatar,
   isReverifyingPhotoAvatar,
+  isUncertainCreateOutcome,
   listPhotoAvatars,
   newerPhotoAvatar,
   photoAvatarAttributeLabel,
@@ -481,7 +482,11 @@ function CreateAvatarForm({
   const [displayName, setDisplayName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [attributes, setAttributes] = useState<Partial<Record<PhotoAvatarAttributeKey, string>>>({});
-  const [attested, setAttested] = useState<Record<string, boolean>>({});
+  // Ticks belong to the attestation version they were given against.
+  const [attested, setAttested] = useState<{ version: string | null; ids: Record<string, boolean> }>({
+    version: null,
+    ids: {},
+  });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -510,11 +515,17 @@ function CreateAvatarForm({
   const limits = config.limits;
   const options = config.attributes;
   const attestation = config.attestation;
+  const attestationVersion = attestation?.version ?? null;
+  // A config refresh can bring new wording under an open form; ticks given for
+  // an older version never count for the new one.
+  const ticks = attested.version === attestationVersion ? attested.ids : {};
+  const clearTicks = () => setAttested({ version: attestationVersion, ids: {} });
   const { request, issues } = validatePhotoAvatarDraft(config, {
     displayName,
     prompt,
     attributes,
-    attested,
+    attested: ticks,
+    attestedVersion: attested.version ?? undefined,
   });
   const canSubmit = config.canCreate && request !== null && !submitting;
   const promptLength = prompt.trim().length;
@@ -534,18 +545,20 @@ function CreateAvatarForm({
       if (mountedRef.current) onCreated(record);
     } catch (reason) {
       if (!mountedRef.current) return;
-      if (reason instanceof PhotoAvatarApiError) {
-        setError(photoAvatarErrorMessage(reason));
-        if (reason.code === "attestation_outdated") setAttested({});
-        // Limits, availability or the attestation may have moved under us.
-        onRefreshConfig();
-      } else {
-        // The request may or may not have reached the server. Never repeat it;
-        // re-read the gallery so an avatar that was created shows up.
+      if (isUncertainCreateOutcome(reason)) {
+        // The avatar may exist, and may be billed. Never repeat the request:
+        // re-read the gallery, and ask for the confirmations again so the same
+        // form can't simply be sent a second time.
+        clearTicks();
         setError(
-          "The request didn't complete, so it isn't known whether the avatar was created. The gallery is refreshing to check before you try again.",
+          "The request didn't complete, so it isn't known whether the avatar was created. The gallery is refreshing to check. If it isn't there, confirm the statements again to retry.",
         );
         onOutcomeUncertain();
+      } else {
+        setError(photoAvatarErrorMessage(reason));
+        if (reason instanceof PhotoAvatarApiError && reason.code === "attestation_outdated") clearTicks();
+        // Limits, availability or the attestation may have moved under us.
+        onRefreshConfig();
       }
     } finally {
       if (mountedRef.current) setSubmitting(false);
@@ -631,10 +644,17 @@ function CreateAvatarForm({
               <label key={statement.id} className="photo-avatar-check">
                 <input
                   type="checkbox"
-                  checked={attested[statement.id] === true}
-                  onChange={(event) =>
-                    setAttested((current) => ({ ...current, [statement.id]: event.target.checked }))
-                  }
+                  checked={ticks[statement.id] === true}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setAttested((current) => ({
+                      version: attestationVersion,
+                      ids: {
+                        ...(current.version === attestationVersion ? current.ids : {}),
+                        [statement.id]: checked,
+                      },
+                    }));
+                  }}
                 />
                 <span>{statement.text}</span>
               </label>

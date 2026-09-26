@@ -376,6 +376,43 @@ describe("creating an avatar", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(message);
     await waitFor(() => expect(calls("GET", CONFIG_PATH)).toHaveLength(2));
     expect(calls("POST", LIST)).toHaveLength(1);
+    // A definite refusal (these 5xx codes are all raised before dispatch) is
+    // no unknown outcome: the gallery is not re-read and the ticks stay.
+    expect(calls("GET", LIST)).toHaveLength(1);
+    for (const statement of CONFIG.attestation!.statements) {
+      expect(screen.getByRole("checkbox", { name: statement.text })).toBeChecked();
+    }
+  });
+
+  it.each([
+    ["a proxy-shaped 502 with no code", 502, { detail: "API upstream unavailable" }],
+    ["a service_unavailable 503", 503, { detail: "Service temporarily unavailable", code: "service_unavailable" }],
+    ["an internal_error 500", 500, { detail: "Internal server error", code: "internal_error" }],
+    ["a gateway_timeout 504", 504, { detail: "Gateway timeout.", code: "gateway_timeout" }],
+  ])("treats %s from create as an unknown outcome and never re-sends it", async (_label, status, body) => {
+    const user = userEvent.setup();
+    on("POST", LIST, () => {
+      // The provider accepted before the reply was lost.
+      on("GET", LIST, () => json({ avatars: [CREATED, READY_A] }));
+      return json(body, status);
+    });
+    render(<PhotoAvatarsPanel onClose={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "New avatar" }));
+    await fillValidDraft(user);
+    await attestAll(user);
+    await user.click(screen.getByRole("button", { name: "Create avatar" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "it isn't known whether the avatar was created",
+    );
+    // The gallery is re-read, and the avatar that was created shows up.
+    expect(await screen.findByRole("heading", { name: "Office guide" })).toBeInTheDocument();
+    expect(calls("GET", LIST)).toHaveLength(2);
+    // The same form is not immediately re-sendable: the ticks are cleared.
+    for (const statement of CONFIG.attestation!.statements) {
+      expect(screen.getByRole("checkbox", { name: statement.text })).not.toBeChecked();
+    }
+    expect(screen.getByRole("button", { name: "Create avatar" })).toBeDisabled();
+    expect(calls("POST", LIST)).toHaveLength(1);
   });
 
   it("never repeats a create whose outcome is unknown, and re-reads the gallery instead", async () => {
@@ -393,6 +430,64 @@ describe("creating an avatar", () => {
     expect(await screen.findByRole("heading", { name: "Office guide" })).toBeInTheDocument();
     expect(calls("POST", LIST)).toHaveLength(1);
     expect(calls("GET", LIST)).toHaveLength(2);
+  });
+
+  it.each([
+    ["changes", true],
+    ["stays the same", false],
+  ])("when a delete-triggered refresh's attestation version %s, ticks follow it", async (_label, changed) => {
+    const user = userEvent.setup();
+    const next: PhotoAvatarConfig = changed
+      ? {
+          ...CONFIG,
+          attestation: {
+            version: "fixture-attestation-9",
+            statements: [
+              { id: "fictional", text: "Revised statement: the character is invented by you." },
+              { id: "adult", text: "Revised statement: the character is 18 or older." },
+              { id: "notRealPerson", text: "Revised statement: the character is not anyone real." },
+            ],
+          },
+        }
+      : CONFIG;
+    let posted: { attestation: { version: string } } | null = null;
+    on("POST", LIST, (init) => {
+      posted = JSON.parse(String(init?.body));
+      return json(CREATED, 202);
+    });
+    on("DELETE", `${LIST}/${ID_A}`, () => {
+      on("GET", CONFIG_PATH, () => json(next));
+      return new Response(null, { status: 204 });
+    });
+    render(<PhotoAvatarsPanel onClose={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "New avatar" }));
+    await fillValidDraft(user);
+    await attestAll(user);
+    const create = screen.getByRole("button", { name: "Create avatar" });
+    expect(create).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Delete Host A" }));
+    await user.click(screen.getByRole("button", { name: "Delete Host A permanently" }));
+    await waitFor(() => expect(calls("GET", CONFIG_PATH)).toHaveLength(2));
+    await screen.findByText("Deleted Host A.");
+
+    const boxes = next.attestation!.statements.map((statement) =>
+      screen.getByRole("checkbox", { name: statement.text }),
+    );
+    if (changed) {
+      // New wording: the earlier ticks are consent to text that is gone.
+      for (const box of boxes) expect(box).not.toBeChecked();
+      expect(create).toBeDisabled();
+      expect(screen.getByText(/To create an avatar, confirm each statement\./)).toBeInTheDocument();
+      await attestAll(user, next);
+      expect(create).toBeEnabled();
+    } else {
+      // Control: an unchanged version keeps the ticks and Create stays available.
+      for (const box of boxes) expect(box).toBeChecked();
+      expect(create).toBeEnabled();
+    }
+    await user.click(create);
+    await waitFor(() => expect(posted?.attestation.version).toBe(next.attestation!.version));
   });
 
   it("counts the description against promptMaxChars and blocks an over-long one", async () => {
