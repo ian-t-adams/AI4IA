@@ -76,7 +76,7 @@ modality-specific assessment, monitoring, or escalation evidence.
 | Azure exception evidence | The deployed text-policy configuration itself — see below |
 | Azure approval reference | Reported as held by the owner (guardrails-modification approval email); not stored in the repo |
 | Owner policy direction | **Recorded 2026-09-03:** no AI4IA guardrail-based blocking; expose all returned assessments and explicit unavailable coverage |
-| Decision scope | Azure OpenAI text/image/video/Voice Live, Speech Voice Live, Black Forest Labs image, and Claude if enabled, for named authenticated internal users |
+| Decision scope | Azure OpenAI text/image/video/Voice Live, Speech Voice Live, Black Forest Labs image, and Claude if enabled, for named authenticated internal users. Custom photo avatars (created from a description, and live Speech Voice Live avatar sessions) were added by the trigger-3 re-approval on 2026-09-26 |
 | Provider-native behavior | Still applies. A provider may refuse or suppress output independently; AI4IA reports that outcome rather than claiming it was unblocked |
 | Control status | **Owner decision complete; implementation evidence incomplete pending modality coverage, aggregate monitoring, disclosure, and escalation** |
 | Next scheduled review | **2027-09-03**, or immediately on any review trigger below |
@@ -209,18 +209,29 @@ annotate-only posture continues:
 > high-severity annotations; inspection is manual until those controls exist.
 > Do not describe the annual review date as continuous detection.
 
-> **Custom photo avatars: implemented default-off, not enabled.** Phase 1 of photo
-> avatars generated from a text description (create, status, preview, list,
-> delete, report) is in the repository behind a default-off flag. Creation also
-> refuses until the account reports the Limited Access capability. Avatars add
-> synthetic human likeness through custom avatar creation, Voice Live avatar
-> sessions and batch avatar synthesis, so enabling any of them fires trigger 3 and
-> needs re-approval first. The implementation keeps this record's annotate-only
-> posture: deterministic product constraints (a bounded prompt, listed attributes,
-> a fictional/adult/not-a-real-person attestation, AI-generated disclosure and a
-> report path), not classifier-based blocking. Whether that posture covers avatar
-> prompts is part of the pending re-approval. See the
-> [photo avatar design](photo-avatars.md).
+> **Custom photo avatars: trigger 3 re-approved on 2026-09-26.** Photo avatars add
+> synthetic human likeness, which fired trigger 3.
+>
+> - **Scope.** On 2026-09-26 the owner re-approved this record's annotate-only
+>   posture for two phases:
+>   - Phase 1: creating avatars from a text description, with status, preview,
+>     list, delete and report;
+>   - Phase 2: live Speech Voice Live avatar sessions.
+> - **Basis.** The approval rests on deterministic product constraints, not
+>   classifier-based blocking: a bounded prompt, listed attributes, a
+>   fictional/adult/not-a-real-person attestation, AI-generated disclosure on every
+>   record, preview and live session, and a report path.
+> - **Report queue.** The accountable owner owns it. Reports land in the
+>   owner-partitioned `photoAvatars` container, and each emits a content-free
+>   `photo_avatar_report` event. The owner reviews them and forwards them to
+>   Microsoft where the Limited Access terms require it.
+> - **Limited Access.** The owner reports the approval as held, and it is not
+>   stored in the repo. Creation and live sessions stay refused until the home
+>   account itself reports the capability.
+> - **Not covered.** Batch avatar synthesis (Phase 3) is not built. Enabling it
+>   fires trigger 3 again.
+>
+> See the [photo avatar design](photo-avatars.md).
 
 ## What would change this decision
 
