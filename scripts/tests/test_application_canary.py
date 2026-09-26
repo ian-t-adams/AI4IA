@@ -26,15 +26,17 @@ import yaml
 
 from app.api.src.ai4ia_api.usage.pricing import PriceRate, PricingBook
 from scripts.canaries import __main__ as cli
+from scripts.canaries import resolution as resolution_cli
 from scripts.canaries.configuration import Configuration, RealtimeActor, current_run
 from scripts.canaries.contracts import (
     CanaryError, INTERVAL_SECONDS, MAX_HTTP_BYTES, MAX_OUTPUT_TOKENS,
-    Report, Run, STAGES, encoded, public_origin, stamp, strict_json,
+    Report, Run, STAGES, digest, encoded, public_origin, stamp, strict_json,
 )
-from scripts.canaries.github import artifact_name, locate
+from scripts.canaries.github import artifact_name, attested_runs, locate
 from scripts.canaries.identity import acquire, validate_api_token
 from scripts.canaries.monitor import Budget, chat, realtime
-from scripts.canaries.state import Counter, State, admit, finish
+from scripts.canaries.resolution import Attested, Resolution
+from scripts.canaries.state import Counter, State, admit, finish, resolve
 from scripts.canaries.transport import PublicResolver, Response, Transport
 from scripts.tests import test_gating_workflows as gating
 
@@ -918,6 +920,21 @@ class WorkflowAndCliTests(unittest.TestCase):
         notify = next(index for index, step in enumerate(observe["steps"]) if step["name"] == "Publish coverage and alert transitions")
         self.assertLess(upload, notify)
 
+    def test_resolution_is_dispatch_only_and_reaches_only_admission(self):
+        inputs = self.workflow["on" if "on" in self.workflow else True]["workflow_dispatch"]["inputs"]
+        self.assertEqual(inputs["operation"]["options"], ["observe", "bootstrap", "resolve"])
+        self.assertEqual((inputs["resolution_sha256"]["type"], inputs["resolution_sha256"]["default"]), ("string", ""))
+        prepare, observe = self.workflow["jobs"]["prepare"], self.workflow["jobs"]["observe"]
+        self.assertEqual(prepare["env"]["AI4IA_CANARY_RESOLUTION"], "${{ vars.AI4IA_CANARY_RESOLUTION }}")
+        self.assertEqual(prepare["env"]["CANARY_RESOLUTION_SHA256"], "${{ inputs.resolution_sha256 || '' }}")
+        self.assertEqual(prepare["permissions"], {"contents": "read", "actions": "read"})
+        for key in ("AI4IA_CANARY_RESOLUTION", "CANARY_RESOLUTION_SHA256"):
+            self.assertNotIn(key, observe["env"])
+        for job in self.workflow["jobs"].values():
+            for step in job["steps"]:
+                # Dispatch values reach Python through env, never a shell string.
+                self.assertNotRegex(step.get("run", ""), r"\$\{\{")
+
     def test_new_permission_consumers_are_load_bearing(self):
         checker = gating.WorkflowPermissionBoundaryTests()
         for command, permission in (("locate", {"actions": "read"}), ("observe", {"id-token": "write"})):
@@ -1052,6 +1069,8 @@ class ObserveCliTests(unittest.IsolatedAsyncioTestCase):
             state = State.parse(cli.read_json(directory / "state.json"))
             self.assertTrue(state.blocked)
             self.assertIsNone(state.chat.failures)
+            # The block still records the configured lease, so resolving it must retire that lease.
+            self.assertEqual(state.approval_digest, CONFIG.approval_digest)
             acquire_token.assert_not_awaited()
 
     async def test_malformed_predecessor_metadata_is_never_promoted_to_trusted_state(self):
@@ -1144,6 +1163,410 @@ class ObserveCliTests(unittest.IsolatedAsyncioTestCase):
                 state = State.parse(original_read(directory / "state.json"))
                 self.assertNotIn("ga-token", encoded(state.document()).decode())
                 self.assertNotIn("monitor-token", encoded(state.document()).decode())
+
+
+OLD_APPROVAL, NEW_APPROVAL = CONFIG.approval_id, "77777777-7777-7777-7777-777777777777"
+LEASE = replace(CONFIG, approval_id=NEW_APPROVAL)
+LOST = Run(RUN.repository, RUN.repository_id, 200, 2, 1, "c" * 40)
+BLOCKED_RUN = Run(RUN.repository, RUN.repository_id, 300, 3, 1, "d" * 40)
+RESOLVE_RUN = Run(RUN.repository, RUN.repository_id, 400, 4, 1, "e" * 40)
+NEXT_RUN = Run(RUN.repository, RUN.repository_id, 500, 5, 1, "f" * 40)
+ATTESTED = [Attested(LOST, stamp(NOW - timedelta(hours=7)))]
+
+
+def blocked_state(run=BLOCKED_RUN, *, approval=None, observed=NOW - timedelta(hours=6)):
+    # The shape run 36272392656 retained after its predecessor's state was lost.
+    report = Report(run, stamp(observed))
+    report.unobserved("state_missing")
+    report.cleanup_safe = False
+    return replace(finish(report, None, None, control="blocked"), approval_digest=approval)
+
+
+def record_text(**changes):
+    document = {
+        "version": 1, "blocked_run_id": BLOCKED_RUN.run_id, "lost_run_ids": [LOST.run_id],
+        "evidence": "no_application_write", "approval_id": NEW_APPROVAL,
+        "superseded_approval_digests": [digest(OLD_APPROVAL)],
+    }
+    document.update(changes)
+    return json.dumps(document)
+
+
+def resolved_state(previous=None, attested=ATTESTED):
+    previous = previous or blocked_state()
+    record = Resolution.load(record_text())
+    report = Report(RESOLVE_RUN, stamp(NOW))
+    report.unobserved("resolved")
+    resolved = resolve(LEASE, record, attested, RESOLVE_RUN, previous, NOW, record.sha256)
+    return finish(report, LEASE, previous, control="resolved", resolved=resolved)
+
+
+class ResolutionRecordTests(unittest.TestCase):
+    def test_record_digest_is_canonical_and_ambiguous_records_refuse(self):
+        record = Resolution.load(record_text())
+        reordered = json.dumps(dict(reversed(json.loads(record_text()).items())), indent=2)
+        self.assertEqual(Resolution.load(reordered).sha256, record.sha256)
+        self.assertEqual(record.sha256, digest(record.document()))
+        self.assertNotEqual(Resolution.load(record_text(lost_run_ids=[199])).sha256, record.sha256)
+        missing = {key: value for key, value in json.loads(record_text()).items() if key != "evidence"}
+        cases = {
+            "unknown field": record_text(note="free text"),
+            "missing field": json.dumps(missing),
+            "version": record_text(version=2),
+            "unsorted lost runs": record_text(lost_run_ids=[250, LOST.run_id]),
+            "duplicate lost run": record_text(lost_run_ids=[LOST.run_id, LOST.run_id]),
+            "lost run not before the block": record_text(lost_run_ids=[BLOCKED_RUN.run_id]),
+            "no lost run": record_text(lost_run_ids=[]),
+            "too many lost runs": record_text(lost_run_ids=[1, 2, 3, 4, 5]),
+            "boolean run id": record_text(blocked_run_id=True),
+            "unadmitted evidence": record_text(evidence="cleanup_done"),
+            "malformed approval": record_text(approval_id="not-a-guid"),
+            "new lease already superseded": record_text(superseded_approval_digests=[digest(NEW_APPROVAL)]),
+            "unsorted superseded": record_text(superseded_approval_digests=["f" * 64, "0" * 64]),
+            "superseded shape": record_text(superseded_approval_digests=["F" * 64]),
+            "too many superseded": record_text(superseded_approval_digests=[f"{i:064x}" for i in range(9)]),
+            "duplicate key": record_text()[:-1] + ', "version": 1}',
+            "oversize": record_text() + " " * 5000,
+            "not an object": "[]",
+        }
+        for label, text in cases.items():
+            with self.subTest(label), self.assertRaisesRegex(CanaryError, "resolution_invalid"):
+                Resolution.load(text)
+
+    def test_digest_helper_runs_offline_and_approves_only_a_valid_record(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "record.json"
+            path.write_text(record_text(), encoding="utf-8")
+            env = {key: value for key, value in os.environ.items() if not key.startswith("GITHUB_")}
+            result = subprocess.run(
+                [sys.executable, "-m", "scripts.canaries.resolution", str(path)],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines()[-1], Resolution.load(record_text()).sha256)
+            path.write_text(record_text(evidence="guessed"), encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output), patch("sys.stderr", io.StringIO()):
+                self.assertEqual(resolution_cli.main([str(path)]), 2)
+            self.assertNotRegex(output.getvalue(), r"[0-9a-f]{64}")
+
+
+class ResolutionTransitionTests(unittest.TestCase):
+    def test_one_attested_resolution_starts_a_new_lease_exactly_once(self):
+        blocked = blocked_state()
+        record = Resolution.load(record_text())
+        # Control: nothing but the attested resolution leaves a blocked chain.
+        for bootstrap in (False, True):
+            with self.assertRaisesRegex(CanaryError, "state_blocked"):
+                admit(LEASE, RESOLVE_RUN, blocked, NOW, bootstrap=bootstrap)
+        state = State.parse(resolved_state(blocked).document())
+        self.assertEqual((state.blocked, state.control, state.observations), (False, "resolved", 0))
+        self.assertEqual((state.scope_digest, state.approval_digest), (LEASE.scope_digest, LEASE.approval_digest))
+        # The chain lost its last attempt, so the blocked observation bounds cadence.
+        self.assertEqual((state.previous_run_id, state.last_attempt_at), (BLOCKED_RUN.run_id, blocked.report.observed_at))
+        self.assertEqual(state.report.coverage, "unscored")
+        self.assertIsNone(state.chat.failures)
+        self.assertEqual(state.resolution, {
+            "sha256": record.sha256, "blocked_run_id": BLOCKED_RUN.run_id,
+            "lost_run_ids": [LOST.run_id], "evidence": "no_application_write",
+        })
+        # The new lease observes normally...
+        later = NOW + timedelta(minutes=1)
+        admit(LEASE, NEXT_RUN, state, later, bootstrap=False)
+        # ...and the same approved record cannot resolve anything again.
+        with self.assertRaisesRegex(CanaryError, "not_blocked"):
+            resolve(LEASE, record, ATTESTED, NEXT_RUN, state, later, record.sha256)
+        reblocked = blocked_state(replace(NEXT_RUN, run_id=600, number=6), observed=later)
+        with self.assertRaisesRegex(CanaryError, "resolution_stale"):
+            resolve(LEASE, record, ATTESTED, replace(NEXT_RUN, run_id=700, number=7), reblocked, later, record.sha256)
+
+    def test_resolution_keeps_alerts_and_cadence_and_never_claims_health(self):
+        alerting = replace(blocked_state(), chat=Counter(None, True, "none"))
+        self.assertTrue(resolved_state(alerting).chat.alerting)
+        recent = resolved_state(attested=[Attested(LOST, stamp(NOW - timedelta(hours=1)))])
+        with self.assertRaisesRegex(CanaryError, "cadence"):
+            admit(LEASE, NEXT_RUN, recent, NOW + timedelta(minutes=1), bootstrap=False)
+        with self.assertRaisesRegex(ValueError, "admitted resolution"):
+            finish(Report(RESOLVE_RUN, stamp(NOW)), LEASE, blocked_state(), control="resolved")
+
+    def test_a_lost_attempt_time_is_bounded_by_the_block_not_by_the_listing(self):
+        # Incident shape: the chain lost its last attempt. The listed run finished
+        # seven hours ago, but the chain blocked one hour ago.
+        recent_block = blocked_state(observed=NOW - timedelta(hours=1))
+        self.assertIsNone(recent_block.last_attempt_at)
+        floored = resolved_state(recent_block)
+        self.assertEqual(floored.last_attempt_at, recent_block.report.observed_at)
+        with self.assertRaisesRegex(CanaryError, "cadence"):
+            admit(LEASE, NEXT_RUN, floored, NOW + timedelta(minutes=1), bootstrap=False)
+        # Control: a chain that kept its last attempt anchors exactly there.
+        known = replace(recent_block, last_attempt_at=stamp(NOW - timedelta(hours=7)))
+        exact = resolved_state(known)
+        self.assertEqual(exact.last_attempt_at, stamp(NOW - timedelta(hours=7)))
+        admit(LEASE, NEXT_RUN, exact, NOW + timedelta(minutes=1), bootstrap=False)
+
+    def test_legacy_states_parse_and_only_resolved_states_carry_a_resolution(self):
+        legacy = previous_state().document()
+        # Non-resolved states keep the previous schema's exact key set, so the
+        # previous parser still reads them after a revert.
+        self.assertNotIn("resolution", legacy)
+        self.assertEqual(set(legacy), set(State.__dataclass_fields__) - {"resolution"})
+        State.parse(legacy)
+        valid = resolved_state().document()
+        self.assertIn("resolution", valid)
+        mutations = {
+            "resolved without a resolution": lambda value: value.update(resolution=None),
+            "resolved but blocked": lambda value: value.update(blocked=True),
+            "resolution for another block": lambda value: value["resolution"].update(blocked_run_id=299),
+            "resolved with observations": lambda value: value.update(observations=1),
+            "resolved without a lease": lambda value: value.update(approval_digest=None),
+        }
+        for label, mutate in mutations.items():
+            document = copy.deepcopy(valid)
+            mutate(document)
+            with self.subTest(label), self.assertRaises(CanaryError):
+                State.parse(document)
+        bootstrap = previous_state().document()
+        bootstrap["resolution"] = valid["resolution"]
+        with self.assertRaisesRegex(CanaryError, "state_invalid"):
+            State.parse(bootstrap)
+
+
+class ResolutionCliTests(unittest.TestCase):
+    def prepare(self, *, record=None, approval=None, attested=ATTESTED, previous=None,
+                config=LEASE, event="workflow_dispatch", enabled=True):
+        record = record_text() if record is None else record
+        approval = Resolution.load(record_text()).sha256 if approval is None else approval
+        previous = previous or blocked_state()
+        metadata = run_metadata(previous.report.run)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            cli.write_json(directory / "history.json", {
+                "run": asdict(RESOLVE_RUN), "code": "ok",
+                "predecessor": {
+                    "run": asdict(previous.report.run), "artifact_id": 99,
+                    "created_at": metadata["created_at"], "updated_at": metadata["updated_at"],
+                },
+                "resolution": None if attested is None else {
+                    "code": "ok", "runs": [row.document() for row in attested],
+                },
+            })
+            cli.write_json(directory / "previous" / "state.json", previous.document())
+            env = {
+                **environment(RESOLVE_RUN, config), "GITHUB_EVENT_NAME": event,
+                "CANARY_OPERATION": "resolve", "AI4IA_CANARY_RESOLUTION": record,
+                "CANARY_RESOLUTION_SHA256": approval,
+                "AI4IA_CANARY_ENABLED": "true" if enabled else "false",
+            }
+            with patch.object(cli, "utc_now", return_value=NOW):
+                self.assertEqual(cli.prepare_command(directory, env), 0)
+                self.assertFalse((directory / "handoff.json").exists(), "a resolution never observes")
+                state = State.parse(cli.read_json(directory / "state.json"))
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    notified = cli.notify_command(directory, environment(RESOLVE_RUN, config))
+        return state, notified, output.getvalue()
+
+    def test_the_approved_record_resolves_and_every_stale_or_mismatched_one_stays_blocked(self):
+        state, notified, output = self.prepare()
+        self.assertEqual((state.blocked, state.control, notified), (False, "resolved", 0))
+        self.assertIn("resolved by owner attestation", output)
+        stale = record_text(blocked_run_id=250)
+        cases = [
+            ("resolution_unapproved", {"approval": ""}),
+            ("resolution_unapproved", {"approval": "0" * 64}),
+            ("resolution_stale", {"record": stale, "approval": Resolution.load(stale).sha256}),
+            ("resolution_invalid", {"config": replace(LEASE, approval_id="88888888-8888-8888-8888-888888888888")}),
+            ("resolution_invalid", {"previous": blocked_state(approval=digest("99999999-9999-9999-9999-999999999999"))}),
+            ("resolution_invalid", {"attested": None}),
+            ("resolution_invalid", {"attested": []}),
+            ("resolution_invalid", {"attested": [Attested(replace(LOST, run_id=201), ATTESTED[0].updated_at)]}),
+            ("resolution_invalid", {"attested": [Attested(replace(LOST, number=3), ATTESTED[0].updated_at)]}),
+            ("resolution_invalid", {"attested": [Attested(LOST, stamp(NOW + timedelta(hours=1)))]}),
+            ("resolution_invalid", {"record": record_text(evidence="cleanup_done")}),
+            ("not_ready", {"enabled": False}),
+            ("invalid_configuration", {"event": "schedule"}),
+        ]
+        for code, change in cases:
+            with self.subTest(code=code, change=sorted(change)):
+                state, notified, _ = self.prepare(**change)
+                self.assertTrue(state.blocked)
+                self.assertEqual(state.control, "blocked")
+                self.assertEqual({row.code for row in state.report.stages.values()}, {code})
+                self.assertEqual(notified, 3)
+
+    def test_the_blocked_lease_must_be_superseded_by_the_record(self):
+        acknowledged = blocked_state(approval=digest(OLD_APPROVAL))
+        self.assertFalse(self.prepare(previous=acknowledged)[0].blocked)
+        unacknowledged = record_text(superseded_approval_digests=[])
+        state = self.prepare(
+            previous=acknowledged, record=unacknowledged, approval=Resolution.load(unacknowledged).sha256,
+        )[0]
+        self.assertTrue(state.blocked)
+
+    def test_a_chain_that_lost_its_lease_still_retires_it(self):
+        # Run 36272392656's shape: its predecessor was lost, so it kept no lease and no attempt.
+        incident = blocked_state()
+        self.assertEqual((incident.approval_digest, incident.last_attempt_at), (None, None))
+        # Control: naming #49's retired lease resolves into the new one.
+        state = self.prepare(previous=incident)[0]
+        self.assertEqual((state.blocked, state.approval_digest), (False, LEASE.approval_digest))
+
+        def refused(record, config=LEASE):
+            try:
+                approval = Resolution.load(record).sha256
+            except CanaryError:
+                approval = "0" * 64  # an invalid record has no approvable digest
+            state = self.prepare(previous=incident, record=record, approval=approval, config=config)[0]
+            self.assertTrue(state.blocked)
+            self.assertEqual({row.code for row in state.report.stages.values()}, {"resolution_invalid"})
+
+        with self.subTest("no retired lease named"):
+            refused(record_text(superseded_approval_digests=[]))
+        with self.subTest("the used lease renewed, unlisted"):
+            # The review's scenario: only expires_at edited, the used lease re-approved.
+            refused(record_text(approval_id=OLD_APPROVAL, superseded_approval_digests=[]), config=CONFIG)
+        with self.subTest("the used lease renewed, listed"):
+            refused(record_text(approval_id=OLD_APPROVAL), config=CONFIG)
+
+    def test_a_block_without_a_predecessor_records_the_configured_lease(self):
+        def introduce(**changes):
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                cli.write_json(directory / "history.json", {
+                    "run": asdict(RESOLVE_RUN), "code": "state_missing", "predecessor": None,
+                    "resolution": None,
+                })
+                with patch.object(cli, "utc_now", return_value=NOW):
+                    self.assertEqual(cli.prepare_command(directory, {**environment(RESOLVE_RUN), **changes}), 0)
+                return State.parse(cli.read_json(directory / "state.json"))
+
+        labelled = introduce()
+        self.assertTrue(labelled.blocked)
+        self.assertEqual(labelled.approval_digest, CONFIG.approval_digest)
+        # Resolving it must now retire that lease; renewing it is refused.
+        renewal = record_text(approval_id=OLD_APPROVAL, superseded_approval_digests=[])
+        blocked = replace(labelled, report=replace(labelled.report, run=BLOCKED_RUN, observed_at=stamp(NOW - timedelta(hours=6))))
+        state = self.prepare(previous=blocked, record=renewal, approval=Resolution.load(renewal).sha256, config=CONFIG)[0]
+        self.assertTrue(state.blocked)
+        # A disabled or unloadable configuration leaves the label unknown, never the block hidden.
+        for changes in ({"AI4IA_CANARY_ENABLED": "false"}, {"AI4IA_CANARY_HARD_USD_CAP": "5"}):
+            with self.subTest(changes=changes):
+                state = introduce(**changes)
+                self.assertTrue(state.blocked)
+                self.assertIsNone(state.approval_digest)
+
+    def test_an_inherited_block_never_adopts_the_lease_prepared_to_resolve_it(self):
+        # The owner configures the new lease first; a schedule before the dispatch
+        # must not record it, or the resolution could never admit it.
+        incident = blocked_state()
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            metadata = run_metadata(incident.report.run)
+            cli.write_json(directory / "history.json", {
+                "run": asdict(RESOLVE_RUN), "code": "ok", "resolution": None,
+                "predecessor": {
+                    "run": asdict(incident.report.run), "artifact_id": 99,
+                    "created_at": metadata["created_at"], "updated_at": metadata["updated_at"],
+                },
+            })
+            cli.write_json(directory / "previous" / "state.json", incident.document())
+            with patch.object(cli, "utc_now", return_value=NOW):
+                self.assertEqual(cli.prepare_command(directory, environment(RESOLVE_RUN, LEASE)), 0)
+            inherited = State.parse(cli.read_json(directory / "state.json"))
+        self.assertTrue(inherited.blocked)
+        self.assertEqual(inherited.report.stages["platform"].code, "state_blocked")
+        self.assertIsNone(inherited.approval_digest)
+        # Control: the prepared lease still resolves the chain at the next run.
+        record = record_text(blocked_run_id=RESOLVE_RUN.run_id)
+        resolve(LEASE, Resolution.load(record), ATTESTED, NEXT_RUN, inherited,
+                NOW + timedelta(minutes=1), Resolution.load(record).sha256)
+
+    def test_a_mistaken_resolution_never_blocks_a_healthy_chain(self):
+        report = Report(BLOCKED_RUN, stamp(NOW - timedelta(hours=6)))
+        report.unobserved("bootstrap")
+        healthy = finish(report, LEASE, None, control="bootstrap")
+        state, notified, _ = self.prepare(previous=healthy)
+        self.assertEqual((state.blocked, notified), (False, 3))
+        self.assertEqual(state.report.stages["platform"].code, "not_blocked")
+        # Control: the chain it left still admits the next observation.
+        admit(LEASE, NEXT_RUN, state, NOW + timedelta(minutes=1), bootstrap=False)
+
+
+class AttestedRunTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.metadata = run_metadata(LOST)
+
+    async def request(self, method, url, **_):
+        path = urlsplit(url).path
+        if path.endswith("/application-canaries.yml"):
+            return response({"id": 123, "path": ".github/workflows/application-canaries.yml"})
+        if path.endswith(f"/runs/{LOST.run_id}"):
+            return response(self.metadata)
+        return response({"message": "Not Found"}, 404)
+
+    async def test_only_exact_completed_first_attempt_runs_of_this_workflow_are_attested(self):
+        transport = SimpleNamespace(request=self.request)
+        rows = await attested_runs(RESOLVE_RUN, [LOST.run_id], "repo-token", transport=transport)
+        self.assertEqual(rows, [Attested(LOST, self.metadata["updated_at"])])
+        for field, value in (
+            ("run_attempt", 2), ("workflow_id", 999), ("status", "in_progress"),
+            ("head_branch", "other"), ("id", 201), ("run_number", RESOLVE_RUN.number),
+            ("event", "pull_request"),
+        ):
+            saved = copy.deepcopy(self.metadata)
+            self.metadata[field] = value
+            with self.subTest(field=field), self.assertRaises(CanaryError):
+                await attested_runs(RESOLVE_RUN, [LOST.run_id], "repo-token", transport=transport)
+            self.metadata = saved
+        for identifiers, token in (([LOST.run_id + 1], "repo-token"), ([LOST.run_id], "")):
+            with self.subTest(identifiers=identifiers), self.assertRaises(CanaryError):
+                await attested_runs(RESOLVE_RUN, identifiers, token, transport=transport)
+
+    async def test_a_refused_attestation_never_hides_the_located_predecessor(self):
+        current, outer = BLOCKED_RUN, self
+        artifact = {
+            "id": 99, "name": artifact_name(LOST), "expired": False, "size_in_bytes": 2000,
+            "workflow_run": {
+                "id": LOST.run_id, "repository_id": RUN.repository_id,
+                "head_repository_id": RUN.repository_id, "head_branch": "main", "head_sha": LOST.sha,
+            },
+        }
+
+        class GitHub:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def request(self, method, url, **_):
+                path = urlsplit(url).path
+                if path.endswith("/application-canaries.yml"):
+                    return response({"id": 123, "path": ".github/workflows/application-canaries.yml"})
+                if path.endswith(f"/runs/{current.run_id}"):
+                    return response(run_metadata(current))
+                if path.endswith("/123/runs"):
+                    return response({"workflow_runs": [run_metadata(current), run_metadata(LOST)]})
+                if path.endswith(f"/runs/{LOST.run_id}/artifacts"):
+                    return response({"total_count": 1, "artifacts": [artifact]})
+                if path.endswith(f"/runs/{LOST.run_id}"):
+                    return response(outer.metadata)
+                raise AssertionError(path)
+
+        record = record_text(blocked_run_id=250)
+        for valid in (True, False):
+            with self.subTest(valid=valid), tempfile.TemporaryDirectory() as temporary:
+                # The inventory row stays valid; only the attested read differs.
+                self.metadata = run_metadata(LOST) if valid else {**run_metadata(LOST), "run_attempt": 2}
+                env = {**environment(current), "GH_TOKEN": "repo-token",
+                       "CANARY_OPERATION": "resolve", "AI4IA_CANARY_RESOLUTION": record}
+                with patch("scripts.canaries.transport.Transport", return_value=GitHub()):
+                    self.assertEqual(await cli.locate_command(Path(temporary), env), 0)
+                written = cli.read_json(Path(temporary) / "history.json")
+                self.assertEqual(written["code"], "ok")
+                self.assertEqual(written["predecessor"]["run"], asdict(LOST))
+                self.assertEqual(written["resolution"]["code"], "ok" if valid else "resolution_invalid")
+                self.assertEqual(len(written["resolution"]["runs"]), int(valid))
 
 
 if __name__ == "__main__":

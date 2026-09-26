@@ -1,12 +1,14 @@
-"""The canary jobs' declared runtime must run a complete synthetic lifecycle.
+"""The canary jobs' declared runtime must replay the incident and its recovery.
 
 Run 36267220637's observation job installed only aiohttp. Every offline unit test
 injected a synthetic price book, so none executed the real loader, whose lazy
 catalog import needs pydantic: the first live observation failed after its OIDC
 exchange and one read-only catalog request. Importing the package still passed.
 This builds a fresh virtual environment containing only what
-application-canaries.yml installs and drives the real CLI through it with only
-the network faked. No model call, credential, OIDC token or Azure access.
+application-canaries.yml installs and drives the real CLI through it, from
+bootstrap through that lost observation, the durable block and the owner-attested
+resolution to a scored observation, with only the network faked. No model call,
+credential, OIDC token or Azure access.
 """
 
 from __future__ import annotations
@@ -205,6 +207,14 @@ class DeclaredRuntimeLifecycleTests(unittest.TestCase):
         self.assertEqual(len(lines), 1, probe.stdout)
         summary = json.loads(lines[0][len(MARK):])
         self.assertEqual(summary["python"], version)
+        incident = summary["incident"]
+        # The replayed loss read the catalog once, wrote nothing and left no state...
+        self.assertEqual(incident["lost_requests"], ["GET /api/models"])
+        self.assertFalse(incident["lost_state_written"])
+        # ...so the next schedule blocked, and only the approved record resolved it.
+        self.assertEqual(incident["blocked"], [True, ["state_missing"]])
+        self.assertEqual(incident["resolved"], ["resolved", False, 0])
+        self.assertTrue(incident["resolution_matches"])
         self.assertEqual(summary["api_modules"], API_MODULES)
         self.assertEqual(summary["outside"], [], "a module was loaded from outside the declared runtime")
         self.assertEqual(summary["coverage"], "complete", summary["stages"])

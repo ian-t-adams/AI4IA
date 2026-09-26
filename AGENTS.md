@@ -873,8 +873,12 @@ because `load_pricing` resolves SKU-scoped rows through the pydantic catalog. Ru
 injects a price book, and an import check passes. `test_canary_runtime` therefore
 drives a synthetic lifecycle through the real CLI in a fresh venv holding only the
 declared runtime, and an allowlist bounds the API modules it may load. A blocked
-chain has no operator-only unblock: a new lease plus bootstrap is refused. The
-runbook's recovery steps need a reviewed source change.
+chain leaves only through `resolve`: an owner-attested bootstrap of a new lease
+bound to a digest-approved `AI4IA_CANARY_RESOLUTION` record. The record names the
+exact blocked predecessor, GitHub-verified lost runs and the superseded leases;
+even a chain that lost its lease must retire one, and a lost last attempt floors
+cadence at the blocked observation. Its refusals never poison a healthy chain,
+and nothing unblocks automatically.
 
 `security-scan` runs Trivy filesystem/config scans and gitleaks over the full
 proxy tree. `.trivyignore.yaml` suppresses only the untouched upstream Dockerfile

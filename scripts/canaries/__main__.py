@@ -7,7 +7,7 @@ import asyncio
 import os
 import signal
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -16,7 +16,8 @@ from .contracts import (
     CanaryError, MAX_HTTP_BYTES, MAX_REPORT_BYTES, Report, Run,
     encoded, obj, stamp, strict_json, timestamp, utc_now,
 )
-from .state import State, admit, finish
+from .resolution import MAX_LOST_RUNS, Attested, Resolution
+from .state import State, admit, finish, resolve
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -53,45 +54,86 @@ def write_state(directory: Path, state: State) -> None:
 
 
 async def locate_command(directory: Path, env: Mapping[str, str]) -> int:
-    from .github import locate
+    from .github import attested_runs, locate
     from .transport import Transport
 
     run = current_run(env)
     try:
         async with Transport({"https://api.github.com"}) as transport:
             predecessor = await locate(run, env.get("GH_TOKEN", ""), transport=transport)
+            resolution = None
+            if env.get("CANARY_OPERATION") == "resolve":
+                # Separate from predecessor discovery: a refused attestation can
+                # never turn into a missing predecessor that poisons the chain.
+                try:
+                    record = Resolution.load(env.get("AI4IA_CANARY_RESOLUTION", ""))
+                    rows = await attested_runs(
+                        run, record.lost_run_ids, env.get("GH_TOKEN", ""), transport=transport,
+                    )
+                    resolution = {"code": "ok", "runs": [row.document() for row in rows]}
+                except CanaryError:
+                    resolution = {"code": "resolution_invalid", "runs": []}
         write_json(directory / "history.json", {
             "run": run.__dict__, "code": "ok",
             "predecessor": predecessor.document() if predecessor else None,
+            "resolution": resolution,
         })
         output(env, "artifact_id", str(predecessor.artifact_id) if predecessor else "")
         output(env, "previous_run_id", str(predecessor.run.run_id) if predecessor else "")
     except CanaryError as exc:
         write_json(directory / "history.json", {
-            "run": run.__dict__, "code": exc.code, "predecessor": None,
+            "run": run.__dict__, "code": exc.code, "predecessor": None, "resolution": None,
         })
         output(env, "artifact_id", "")
         output(env, "previous_run_id", "")
     return 0
 
 
-def _previous(directory: Path, run: Run) -> tuple[State | None, Any]:
+def _previous(directory: Path, run: Run) -> tuple[State | None, Any, list[Attested] | None]:
     from .github import Predecessor
 
-    history = obj(read_json(directory / "history.json"), {"run", "code", "predecessor"})
+    history = obj(read_json(directory / "history.json"))
+    if set(history) not in ({"run", "code", "predecessor"}, {"run", "code", "predecessor", "resolution"}):
+        raise CanaryError("invalid_response")
     if Run.parse(history["run"]) != run or history["code"] != "ok":
         raise CanaryError("state_missing")
+    attested = _attested(history.get("resolution"))
     if history["predecessor"] is None:
         if run.number != 1:
             raise CanaryError("state_missing")
-        return None, None
+        return None, None, attested
     metadata = Predecessor.parse(history["predecessor"])
     previous_dir = directory / "previous"
     if not previous_dir.is_dir() or sorted(path.name for path in previous_dir.iterdir()) != ["state.json"]:
         raise CanaryError("state_missing")
     previous = State.parse(read_json(previous_dir / "state.json"))
     metadata.validate_state(previous, run, utc_now())
-    return previous, metadata
+    return previous, metadata, attested
+
+
+def _attested(value: Any) -> list[Attested] | None:
+    """Verified lost-run metadata, or None; never an error that could poison the chain."""
+    try:
+        data = obj(value, {"code", "runs"})
+        if data["code"] != "ok" or not isinstance(data["runs"], list) or len(data["runs"]) > MAX_LOST_RUNS:
+            return None
+        return [Attested.parse(row) for row in data["runs"]]
+    except CanaryError:
+        return None
+
+
+def _configured_lease(env: Mapping[str, str], now: datetime) -> Configuration | None:
+    """The configured lease, only to label a block written without a predecessor.
+
+    A chain that loses its predecessor would otherwise forget which lease was
+    active, and resolving it could then renew that used lease. Admission loads
+    and enforces the configuration separately; a failure here never raises, so
+    it cannot hide the block. It only leaves the label unknown.
+    """
+    try:
+        return Configuration.load(env, now)
+    except CanaryError:
+        return None
 
 
 def prepare_command(directory: Path, env: Mapping[str, str]) -> int:
@@ -100,15 +142,26 @@ def prepare_command(directory: Path, env: Mapping[str, str]) -> int:
     report = Report(run, stamp(now))
     previous: State | None = None
     config: Configuration | None = None
+    lease = _configured_lease(env, now)
     try:
-        previous, metadata = _previous(directory, run)
+        previous, metadata, attested = _previous(directory, run)
         config = Configuration.load(env, now)
         operation = env.get("CANARY_OPERATION", "observe")
-        if operation not in ("observe", "bootstrap") or (
-            operation == "bootstrap" and env.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+        if operation not in ("observe", "bootstrap", "resolve") or (
+            operation != "observe" and env.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
         ):
             raise CanaryError("invalid_configuration")
-        if config is None:
+        if operation == "resolve":
+            if config is None:
+                # A resolution admits a configured new lease; it is never a disabled control.
+                raise CanaryError("not_ready")
+            resolved = resolve(
+                config, Resolution.load(env.get("AI4IA_CANARY_RESOLUTION", "")), attested,
+                run, previous, now, env.get("CANARY_RESOLUTION_SHA256", ""),
+            )
+            report.unobserved("resolved")
+            state = finish(report, config, previous, control="resolved", resolved=resolved)
+        elif config is None:
             report.unobserved("disabled")
             state = finish(report, None, previous, control="disabled")
         else:
@@ -133,7 +186,7 @@ def prepare_command(directory: Path, env: Mapping[str, str]) -> int:
             False if exc.code in {"state_missing", "state_invalid", "state_stale", "state_gap"}
             else previous.report.cleanup_safe if previous else run.number == 1
         )
-        state = finish(report, config, previous, control="blocked")
+        state = finish(report, config, previous, control="blocked", lease=lease)
     write_state(directory, state)
     output(env, "observe", "false")
     return 0
@@ -150,6 +203,7 @@ async def observe_command(directory: Path, env: Mapping[str, str]) -> int:
     report = Report(run, stamp(now))
     config: Configuration | None = None
     previous: State | None = None
+    lease = _configured_lease(env, now)
     attempted = False
     control = "blocked"
     task = asyncio.current_task()
@@ -231,7 +285,9 @@ async def observe_command(directory: Path, env: Mapping[str, str]) -> int:
         else "partial" if any(value in ("pass", "fail", "partial") for value in measured)
         else "unscored"
     )
-    write_state(directory, finish(report, config, previous, control=control, attempted=attempted))
+    write_state(directory, finish(
+        report, config, previous, control=control, attempted=attempted, lease=lease,
+    ))
     return 0
 
 
@@ -251,6 +307,11 @@ def notify_command(directory: Path, env: Mapping[str, str]) -> int:
             print(f"::warning::Application canary {name}: alert remains active; no recovery is claimed.")
     if state.blocked:
         print("::error::Application canary state is blocked. No automatic retry, baseline reset, or cleanup scan is authorized.")
+    elif state.control == "resolved" and state.resolution is not None:
+        print(
+            "::notice::Application canary chain resolved by owner attestation "
+            f"{state.resolution['sha256'][:12]}; a new lease is bootstrapped. No health is claimed.",
+        )
     elif state.report.coverage != "complete":
         print("::warning::Application canary coverage is partial or unscored; collection success is not application health.")
     target = env.get("GITHUB_STEP_SUMMARY")

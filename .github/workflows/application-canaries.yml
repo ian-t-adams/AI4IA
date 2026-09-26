@@ -6,10 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: "Observe, or initialize a reviewed finite lease without app calls"
+        description: "Observe, initialize a reviewed finite lease, or resolve a blocked chain under a reviewed attestation"
         type: choice
-        options: [observe, bootstrap]
+        options: [observe, bootstrap, resolve]
         default: observe
+      resolution_sha256:
+        description: "resolve only: SHA-256 printed by python -m scripts.canaries.resolution for the reviewed AI4IA_CANARY_RESOLUTION"
+        type: string
+        default: ""
   schedule:
     - cron: "23 */6 * * *"
 
@@ -36,6 +40,10 @@ jobs:
       AI4IA_CANARY_HARD_USD_CAP: ${{ vars.AI4IA_CANARY_HARD_USD_CAP }}
       DEPLOY_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       CANARY_OPERATION: ${{ inputs.operation || 'observe' }}
+      # Owner-attested resolution record and its dispatch-time approval digest.
+      # Consumed only by admission; the observation job never receives them.
+      AI4IA_CANARY_RESOLUTION: ${{ vars.AI4IA_CANARY_RESOLUTION }}
+      CANARY_RESOLUTION_SHA256: ${{ inputs.resolution_sha256 || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
