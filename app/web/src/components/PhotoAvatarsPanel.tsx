@@ -77,6 +77,11 @@ type ListState =
 
 type ItemNotice = { message: string; tone: "warn" | "danger"; blockedUntil: number | null };
 
+// A notice's Delete block that never lifts while the gallery is open, for a
+// refusal no retry can clear. It must never reach setTimeout: an infinite delay
+// overflows to an immediate timer.
+const BLOCKED_FOR_GOOD = Number.POSITIVE_INFINITY;
+
 function omit<T>(record: Record<string, T>, key: string): Record<string, T> {
   if (!(key in record)) return record;
   const next = { ...record };
@@ -932,10 +937,11 @@ export function PhotoAvatarsPanel({ onClose }: { onClose: () => void }) {
     const timers = noticeTimersRef.current;
     clearTimeout(timers.get(id));
     timers.delete(id);
-    // A wait the server asked for is not a failure; everything else is.
+    // A wait the server asked for, or a state only an operator can clear, reads
+    // as a warning; any other refusal as an error.
     const tone = blockedUntil !== null ? "warn" : "danger";
     setNotices((current) => ({ ...current, [id]: { message, tone, blockedUntil } }));
-    if (blockedUntil !== null) {
+    if (blockedUntil !== null && Number.isFinite(blockedUntil)) {
       timers.set(
         id,
         setTimeout(() => {
@@ -978,8 +984,11 @@ export function PhotoAvatarsPanel({ onClose }: { onClose: () => void }) {
       void refreshConfig();
     } catch (error) {
       if (!mountedRef.current) return;
-      const unfinished =
-        error instanceof PhotoAvatarApiError && error.code === "provider_delete_failed";
+      const refusal = error instanceof PhotoAvatarApiError ? error : null;
+      const code = refusal?.code ?? null;
+      // The server keeps the record in `deleting`, so Delete finishes it.
+      const unfinished = code === "provider_delete_failed" || code === "delete_incomplete";
+      // Any other refusal leaves the avatar exactly as it was: never deleted.
       const restored: PhotoAvatar = unfinished ? { ...avatar, status: "deleting" } : avatar;
       setAvatars((current) => {
         if (current.some((item) => item.id === avatar.id)) return current;
@@ -988,11 +997,12 @@ export function PhotoAvatarsPanel({ onClose }: { onClose: () => void }) {
         return copy;
       });
       const blockedUntil =
-        error instanceof PhotoAvatarApiError &&
-        error.code === "avatar_confirming" &&
-        error.retryAfterSeconds !== null
-          ? Date.now() + error.retryAfterSeconds * 1000
-          : null;
+        code === "avatar_home_changed"
+          ? // Only an operator can remove it, so Delete isn't offered again.
+            BLOCKED_FOR_GOOD
+          : code === "avatar_confirming" && refusal?.retryAfterSeconds != null
+            ? Date.now() + refusal.retryAfterSeconds * 1000
+            : null;
       showNotice(avatar.id, photoAvatarErrorMessage(error), blockedUntil);
     }
   };

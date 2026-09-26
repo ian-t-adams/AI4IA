@@ -789,6 +789,12 @@ export function photoAvatarErrorMessage(error: unknown, now: number = Date.now()
       return later("This avatar's creation is still being confirmed. You can delete it");
     case "provider_delete_failed":
       return "The avatar service didn't confirm the deletion. Delete it again to finish.";
+    case "delete_incomplete":
+      return "The deletion didn't finish. Delete it again to finish.";
+    case "avatar_home_changed":
+      // Retrying can't help: the avatar lives in an account this deployment no
+      // longer routes to, so even a Retry-After is never offered as a way out.
+      return "This avatar belongs to a previous avatar home, so it can't be used or deleted here. An operator must remove it.";
     case "report_limit":
       return later("You've sent several reports recently. You can send another");
     case "not_found":
