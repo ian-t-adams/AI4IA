@@ -18,7 +18,9 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddDataProtection()
     .SetApplicationName("chat_tester")
-    .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(builder.Environment.ContentRootPath, ".keys")));
+    // AI4IA: keys live outside the content root when configured, never in the source tree.
+    .PersistKeysToFileSystem(new DirectoryInfo(builder.Configuration["CompanionApp:DataProtectionKeysPath"]
+        ?? Path.Combine(builder.Environment.ContentRootPath, ".keys")));
 // AI4IA: no page may send server-side requests to caller-chosen URLs or forward headers.
 builder.Services.AddSingleton(HostedGuard.CreateRefusingHttpClient());
 builder.Services.AddSingleton<AuthTokenSettings>();

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "upstream": {
     "repository": "https://github.com/microsoft/SimpleL7Proxy.git",
     "commit": "b0066b0e53f89abb5e84cfeacda2fdcaca8b081e",
@@ -8,14 +8,40 @@
   "sourceScopes": [
     "Shared",
     "Shared-parser",
-    "SimpleL7Proxy"
+    "SimpleL7Proxy",
+    "CompanionApp"
   ],
   "counts": {
-    "ai4ia-added": 5,
-    "ai4ia-patched": 18,
-    "upstream-equivalent": 168
+    "ai4ia-added": 7,
+    "ai4ia-excluded": 95,
+    "ai4ia-patched": 22,
+    "upstream-equivalent": 292
   },
   "patches": [
+    {
+      "path": "CompanionApp/Ai4ia/HostedGuard.cs",
+      "reason": "AI4IA hosted-mode guards: a refusing HttpClient and managed-identity-only Event Hubs."
+    },
+    {
+      "path": "CompanionApp/CompanionApp.csproj",
+      "reason": "Drop the embedded resources and content items of the excluded deployment page and chat/vision presets."
+    },
+    {
+      "path": "CompanionApp/Components/Layout/NavMenu.razor",
+      "reason": "Link only the retained Event Hub monitor and Insights pages."
+    },
+    {
+      "path": "CompanionApp/Components/Pages/Home.razor",
+      "reason": "Offer only the Event Hub monitor and Insights; drop the routes, links and Investigator wizard of excluded tools."
+    },
+    {
+      "path": "CompanionApp/Program.cs",
+      "reason": "Hosted mode: refuse outbound HTTP, require managed identity for Event Hubs, drop the App Configuration editor, chat stores and preset files, never publish fabricated sample metrics, and allow a configured key-ring path."
+    },
+    {
+      "path": "CompanionApp/packages.lock.json",
+      "reason": "AI4IA-generated NuGet lock for deterministic restore."
+    },
     {
       "path": "Shared-parser/Shared-parser.csproj",
       "reason": "Remove unused runtime packages and update Microsoft.Extensions.Logging.Abstractions to 10.0.12 for the parser."
@@ -109,7 +135,1503 @@
       "reason": "Compare opaque inbound authentication keys exactly and in constant time; remove redundant request-null control flow; return 404 for privileged legacy diagnostics before auth or worker dispatch; bind reduction-only attempt metadata only after successful key authentication."
     }
   ],
+  "exclusions": [
+    {
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "reason": "Embedded templates of the excluded deployment page."
+    },
+    {
+      "rule": "CompanionApp/Components/Pages/AbortTestPage.razor",
+      "reason": "Disconnect tester sends caller-directed server-side requests."
+    },
+    {
+      "rule": "CompanionApp/Components/Pages/AdminConfigurationPage.razor*",
+      "reason": "App Configuration editor publishes with the server identity; AI4IA keeps proxy settings in Bicep."
+    },
+    {
+      "rule": "CompanionApp/Components/Pages/ChatPage.razor",
+      "reason": "Model chat would bypass the API's admission, quota, receipts and ownership."
+    },
+    {
+      "rule": "CompanionApp/Components/Pages/Deployment*",
+      "reason": "Generates upstream's own deployment topology, not AI4IA's."
+    },
+    {
+      "rule": "CompanionApp/Components/Pages/HistoryPage.razor",
+      "reason": "Instance-wide chat history of the excluded chat tools."
+    },
+    {
+      "rule": "CompanionApp/Components/Pages/IncompletePage.razor",
+      "reason": "Placeholder for unfinished upstream features."
+    },
+    {
+      "rule": "CompanionApp/Components/Pages/InvestigatorPage.razor",
+      "reason": "Sends caller-chosen URLs and headers from the server: SSRF and credential forwarding."
+    },
+    {
+      "rule": "CompanionApp/Components/Pages/StressTestPage.razor",
+      "reason": "Generates concurrent caller-directed load and model cost from the server."
+    },
+    {
+      "rule": "CompanionApp/Components/Pages/TestsPage.razor",
+      "reason": "Runs caller-directed request tests from the server."
+    },
+    {
+      "rule": "CompanionApp/Components/Pages/UrlTesterPage.razor",
+      "reason": "Sends caller-chosen URLs and headers from the server: SSRF and credential forwarding."
+    },
+    {
+      "rule": "CompanionApp/Components/Pages/UserPreferencesPage.razor",
+      "reason": "Lets a user point history storage at arbitrary Blob or Cosmos accounts with the server identity."
+    },
+    {
+      "rule": "CompanionApp/Dockerfile*",
+      "reason": "Upstream image definition with floating base tags; AI4IA builds proxy/CompanionApp.Dockerfile."
+    },
+    {
+      "rule": "CompanionApp/Properties/launchSettings.json",
+      "reason": "Local development launch profile."
+    },
+    {
+      "rule": "CompanionApp/S7P-CircuitBreakerError_DataFlow.md",
+      "reason": "Upstream documentation; proxy/README.md documents the AI4IA subset."
+    },
+    {
+      "rule": "CompanionApp/chat-models*",
+      "reason": "Presets of the excluded chat tools; AI4IA models come from infra/models.json."
+    },
+    {
+      "rule": "CompanionApp/configuration.md",
+      "reason": "Upstream documentation; proxy/README.md documents the AI4IA subset."
+    },
+    {
+      "rule": "CompanionApp/data/.gitignore",
+      "reason": "Placeholder of the excluded disk history store."
+    },
+    {
+      "rule": "CompanionApp/delpoyment.md",
+      "reason": "Upstream documentation; proxy/README.md documents the AI4IA subset."
+    },
+    {
+      "rule": "CompanionApp/deploy.sh",
+      "reason": "Upstream operator script for its own deployment."
+    },
+    {
+      "rule": "CompanionApp/deployment-cli.md",
+      "reason": "Upstream documentation; proxy/README.md documents the AI4IA subset."
+    },
+    {
+      "rule": "CompanionApp/event.json",
+      "reason": "Sample event data for local replay."
+    },
+    {
+      "rule": "CompanionApp/image*.png",
+      "reason": "Documentation screenshot."
+    },
+    {
+      "rule": "CompanionApp/make-zip.sh",
+      "reason": "Upstream operator script for its own deployment."
+    },
+    {
+      "rule": "CompanionApp/managed-identity.png",
+      "reason": "Documentation screenshot."
+    },
+    {
+      "rule": "CompanionApp/readme.md",
+      "reason": "Upstream documentation; proxy/README.md documents the AI4IA subset."
+    },
+    {
+      "rule": "CompanionApp/testing.md",
+      "reason": "Upstream documentation; proxy/README.md documents the AI4IA subset."
+    },
+    {
+      "rule": "CompanionApp/todo.md",
+      "reason": "Upstream documentation; proxy/README.md documents the AI4IA subset."
+    },
+    {
+      "rule": "CompanionApp/update_settings.sh",
+      "reason": "Upstream operator script for its own deployment."
+    },
+    {
+      "rule": "CompanionApp/upload_zip.sh",
+      "reason": "Upstream operator script for its own deployment."
+    },
+    {
+      "rule": "CompanionApp/vision-models*",
+      "reason": "Presets of the excluded vision tools; AI4IA models come from infra/models.json."
+    },
+    {
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "reason": "Images of the excluded deployment page."
+    },
+    {
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "reason": "Bootstrap stylesheet variants the retained pages never load."
+    },
+    {
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap.css",
+      "reason": "Bootstrap stylesheet variants the retained pages never load."
+    },
+    {
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap.rtl*",
+      "reason": "Bootstrap stylesheet variants the retained pages never load."
+    },
+    {
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/js/*",
+      "reason": "Bootstrap scripts the retained pages never load."
+    },
+    {
+      "rule": "CompanionApp/zip-upload.png",
+      "reason": "Documentation screenshot."
+    }
+  ],
   "files": {
+    "CompanionApp/Ai4ia/HostedGuard.cs": {
+      "localCanonicalSha256": "112dc1a78955cf857fe001d0fdce796200c0e0f39c8302d8e7cecdee64d11e5f",
+      "disposition": "ai4ia-added"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/bootstrap.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "8a10f8b27ed480c9ed462691e5cc3aa40e64add5e40c976695375d6511787a42",
+      "upstreamCanonicalSha256": "8a10f8b27ed480c9ed462691e5cc3aa40e64add5e40c976695375d6511787a42"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/main.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "8af6f3d0688101ac46da2407c6e898aabc436fe817107a3b2ff463d35f69a9be",
+      "upstreamCanonicalSha256": "8af6f3d0688101ac46da2407c6e898aabc436fe817107a3b2ff463d35f69a9be"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/blob-access.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "8a6928f591566cf185dcdcdc57f59fe7c7ffc06f99644658d3e1eaf2e437712a",
+      "upstreamCanonicalSha256": "8a6928f591566cf185dcdcdc57f59fe7c7ffc06f99644658d3e1eaf2e437712a"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/blob-storage.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "89418cf2480ab4bbc71ef90f36f2efcca4352a252017d3a5cbab644b5358fc3e",
+      "upstreamCanonicalSha256": "89418cf2480ab4bbc71ef90f36f2efcca4352a252017d3a5cbab644b5358fc3e"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/configuration-access.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "adda2b766e3c195fd8b61b281eaf38f297f7f55669cc785cf29da9be788d1c26",
+      "upstreamCanonicalSha256": "adda2b766e3c195fd8b61b281eaf38f297f7f55669cc785cf29da9be788d1c26"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/configuration.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "c3f45c0d3dc84a9562d3ddb6eb4a7d900baf2f57428cda2c98f6196684d01240",
+      "upstreamCanonicalSha256": "c3f45c0d3dc84a9562d3ddb6eb4a7d900baf2f57428cda2c98f6196684d01240"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/container-app.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "dbc632e95422f0c8f8469bdf9d539694b3e1d2a0f216a00b82541c2d574fd66e",
+      "upstreamCanonicalSha256": "dbc632e95422f0c8f8469bdf9d539694b3e1d2a0f216a00b82541c2d574fd66e"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/cosmos-access.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "ee4e443aa7e97537cbeb9708f34be000799b49903c0838a3877b0478a9dbd42f",
+      "upstreamCanonicalSha256": "ee4e443aa7e97537cbeb9708f34be000799b49903c0838a3877b0478a9dbd42f"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/foundation.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "047221322608eac3e51c2a95bbb51a41b930abda0a6abb9ec099e6c6d7fc0697",
+      "upstreamCanonicalSha256": "047221322608eac3e51c2a95bbb51a41b930abda0a6abb9ec099e6c6d7fc0697"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/network.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "d31442f02ee5abf6e156d64d3b5ec311af0fb3a3cc457a91951a4ac25dc2d1f2",
+      "upstreamCanonicalSha256": "d31442f02ee5abf6e156d64d3b5ec311af0fb3a3cc457a91951a4ac25dc2d1f2"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/private-dns.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "6f61653db04effc6a85faeb4c303819bdde28452082bac3d76e4f1e1812fe9f9",
+      "upstreamCanonicalSha256": "6f61653db04effc6a85faeb4c303819bdde28452082bac3d76e4f1e1812fe9f9"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/registry-access.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "bd8ecf2851be4cf7fc90d70481a506f5951f51d0c9357238018a6283039d1f7e",
+      "upstreamCanonicalSha256": "bd8ecf2851be4cf7fc90d70481a506f5951f51d0c9357238018a6283039d1f7e"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/registry.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "9d47870c300d1086bfdb9273cab4544a047fa9e06a8b6a74de54250714c17e2f",
+      "upstreamCanonicalSha256": "9d47870c300d1086bfdb9273cab4544a047fa9e06a8b6a74de54250714c17e2f"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/request-api.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "e4d072d06b1f6f1e1282040713970cb66234b236fbf575d8e3e308a774d664c8",
+      "upstreamCanonicalSha256": "e4d072d06b1f6f1e1282040713970cb66234b236fbf575d8e3e308a774d664c8"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/modules/service-bus-access.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "6629d186d649f37011f1258516ebfbc54de25ed60795e8efd04bbfab52a23442",
+      "upstreamCanonicalSha256": "6629d186d649f37011f1258516ebfbc54de25ed60795e8efd04bbfab52a23442"
+    },
+    "CompanionApp/Assets/Deployment/Bicep/types.bicep": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "597ce80b9cdd97e0602d5e543348c9ae89aef7a5ee30be55be49574e03bb428b",
+      "upstreamCanonicalSha256": "597ce80b9cdd97e0602d5e543348c9ae89aef7a5ee30be55be49574e03bb428b"
+    },
+    "CompanionApp/Assets/Deployment/README.template.md": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "8d8644bdd52d9c4924b3186b2b073457ec9153d4f61a27c6a6778eaa97ff1669",
+      "upstreamCanonicalSha256": "8d8644bdd52d9c4924b3186b2b073457ec9153d4f61a27c6a6778eaa97ff1669"
+    },
+    "CompanionApp/Assets/Deployment/deploy.template.sh": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Assets/Deployment/*",
+      "upstreamRawSha256": "b1a07dc4771bc2aeff6b561fcc215c0a6007b597fcfe47190fffef70b2bd277a",
+      "upstreamCanonicalSha256": "b1a07dc4771bc2aeff6b561fcc215c0a6007b597fcfe47190fffef70b2bd277a"
+    },
+    "CompanionApp/CompanionApp.csproj": {
+      "localCanonicalSha256": "d2dd09808678b955da53b095e6d3ee9d16a03145532dbd2ca9773a427a12e4f9",
+      "upstreamRawSha256": "5ab7d47c9825fe112bbcc486724c5d8ef49a87e548f8e4caf20e233832b49c15",
+      "upstreamCanonicalSha256": "5ab7d47c9825fe112bbcc486724c5d8ef49a87e548f8e4caf20e233832b49c15",
+      "disposition": "ai4ia-patched"
+    },
+    "CompanionApp/Components/App.razor": {
+      "localCanonicalSha256": "dcf0f408d608120504a9d4995cf632d4bb906f093f5d633ecc77fef25458cbe9",
+      "upstreamRawSha256": "dcf0f408d608120504a9d4995cf632d4bb906f093f5d633ecc77fef25458cbe9",
+      "upstreamCanonicalSha256": "dcf0f408d608120504a9d4995cf632d4bb906f093f5d633ecc77fef25458cbe9",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Layout/MainLayout.razor": {
+      "localCanonicalSha256": "4d1d90c692c7cf57354f87ecdfd2c8cdc2c550f5646e31d8e3735b427ea937fb",
+      "upstreamRawSha256": "4d1d90c692c7cf57354f87ecdfd2c8cdc2c550f5646e31d8e3735b427ea937fb",
+      "upstreamCanonicalSha256": "4d1d90c692c7cf57354f87ecdfd2c8cdc2c550f5646e31d8e3735b427ea937fb",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Layout/MainLayout.razor.css": {
+      "localCanonicalSha256": "02f0bffd6862b4ac127a4fa977ee3c6ce9be4532089cd46a91e85d763fa31e7a",
+      "upstreamRawSha256": "02f0bffd6862b4ac127a4fa977ee3c6ce9be4532089cd46a91e85d763fa31e7a",
+      "upstreamCanonicalSha256": "02f0bffd6862b4ac127a4fa977ee3c6ce9be4532089cd46a91e85d763fa31e7a",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Layout/NavMenu.razor": {
+      "localCanonicalSha256": "0247799b101488f0a4f80e0a48b643f06eab24dc31be1843dd9724232473d1aa",
+      "upstreamRawSha256": "a9d48f1729020565504e67343551f1d282efaafe3aaaaf921355741d030c8fce",
+      "upstreamCanonicalSha256": "a9d48f1729020565504e67343551f1d282efaafe3aaaaf921355741d030c8fce",
+      "disposition": "ai4ia-patched"
+    },
+    "CompanionApp/Components/Layout/NavMenu.razor.css": {
+      "localCanonicalSha256": "9b57cdac8c27ea92b7d0c402c08c812043db8498921f2ac7858392e0f4088838",
+      "upstreamRawSha256": "9b57cdac8c27ea92b7d0c402c08c812043db8498921f2ac7858392e0f4088838",
+      "upstreamCanonicalSha256": "9b57cdac8c27ea92b7d0c402c08c812043db8498921f2ac7858392e0f4088838",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Layout/ReconnectModal.razor": {
+      "localCanonicalSha256": "bda6c5e5680ea86a6ff1533ccb0674a8de1e9c6dd1fded4c83c40bc0e4a61929",
+      "upstreamRawSha256": "bda6c5e5680ea86a6ff1533ccb0674a8de1e9c6dd1fded4c83c40bc0e4a61929",
+      "upstreamCanonicalSha256": "bda6c5e5680ea86a6ff1533ccb0674a8de1e9c6dd1fded4c83c40bc0e4a61929",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Layout/ReconnectModal.razor.css": {
+      "localCanonicalSha256": "3f672eea19a76f24518b6a02d2014d5c5f6fd4e4bd2f97eac9e431b4dd0973fd",
+      "upstreamRawSha256": "3f672eea19a76f24518b6a02d2014d5c5f6fd4e4bd2f97eac9e431b4dd0973fd",
+      "upstreamCanonicalSha256": "3f672eea19a76f24518b6a02d2014d5c5f6fd4e4bd2f97eac9e431b4dd0973fd",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Layout/ReconnectModal.razor.js": {
+      "localCanonicalSha256": "bc924313acad6186b22e5331a52fe18a4e3186a5082185e40f2e89620932814e",
+      "upstreamRawSha256": "bc924313acad6186b22e5331a52fe18a4e3186a5082185e40f2e89620932814e",
+      "upstreamCanonicalSha256": "bc924313acad6186b22e5331a52fe18a4e3186a5082185e40f2e89620932814e",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Pages/AbortTestPage.razor": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/AbortTestPage.razor",
+      "upstreamRawSha256": "d9cce38f9ced12cabaf800eee3ef2122c3f06ce8c75874a9872ec5cc2d85cd5a",
+      "upstreamCanonicalSha256": "d9cce38f9ced12cabaf800eee3ef2122c3f06ce8c75874a9872ec5cc2d85cd5a"
+    },
+    "CompanionApp/Components/Pages/AdminConfigurationPage.razor": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/AdminConfigurationPage.razor*",
+      "upstreamRawSha256": "89d078230bfb6509f665c268c7cec4639332452f85388a5cfc27f73839042ff2",
+      "upstreamCanonicalSha256": "89d078230bfb6509f665c268c7cec4639332452f85388a5cfc27f73839042ff2"
+    },
+    "CompanionApp/Components/Pages/AdminConfigurationPage.razor.js": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/AdminConfigurationPage.razor*",
+      "upstreamRawSha256": "76cff990a0fe5f19aff4da059bd801b7aab3087aa868159b0f5e106a29bbc63d",
+      "upstreamCanonicalSha256": "76cff990a0fe5f19aff4da059bd801b7aab3087aa868159b0f5e106a29bbc63d"
+    },
+    "CompanionApp/Components/Pages/ChatPage.razor": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/ChatPage.razor",
+      "upstreamRawSha256": "8134d1c8ff8da1eb591c9db5748f004ade4cdfbeb8ec3fc1cafbdec1adce5839",
+      "upstreamCanonicalSha256": "8134d1c8ff8da1eb591c9db5748f004ade4cdfbeb8ec3fc1cafbdec1adce5839"
+    },
+    "CompanionApp/Components/Pages/DeploymentArmTemplate.cs": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/Deployment*",
+      "upstreamRawSha256": "8e493e50d658f13a283621fabaf3414d8ce1f0eb3b47ec7d55858094c0b5562e",
+      "upstreamCanonicalSha256": "8e493e50d658f13a283621fabaf3414d8ce1f0eb3b47ec7d55858094c0b5562e"
+    },
+    "CompanionApp/Components/Pages/DeploymentBicepBundle.cs": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/Deployment*",
+      "upstreamRawSha256": "c8f37e1df1b221f67abe8fa7d1ea6590bccd9c93e89bf12da474c315cd92b1dd",
+      "upstreamCanonicalSha256": "c8f37e1df1b221f67abe8fa7d1ea6590bccd9c93e89bf12da474c315cd92b1dd"
+    },
+    "CompanionApp/Components/Pages/DeploymentSetupPage.razor": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/Deployment*",
+      "upstreamRawSha256": "c3a37db845b9c0c12ce2d709787403290e8a5e85ce56108cc804794c0bbfe23e",
+      "upstreamCanonicalSha256": "c3a37db845b9c0c12ce2d709787403290e8a5e85ce56108cc804794c0bbfe23e"
+    },
+    "CompanionApp/Components/Pages/DeploymentSetupPage.razor.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/Deployment*",
+      "upstreamRawSha256": "71f044dcbd9aeae22fcd2dd983516215bc4341c01002f2a42fbaf92919ad383a",
+      "upstreamCanonicalSha256": "71f044dcbd9aeae22fcd2dd983516215bc4341c01002f2a42fbaf92919ad383a"
+    },
+    "CompanionApp/Components/Pages/DeploymentSetupPage.razor.js": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/Deployment*",
+      "upstreamRawSha256": "65aadf026dd51382293972e886e34aa50f74a68ee7db4c5d402eb0ce4513e8fe",
+      "upstreamCanonicalSha256": "65aadf026dd51382293972e886e34aa50f74a68ee7db4c5d402eb0ce4513e8fe"
+    },
+    "CompanionApp/Components/Pages/Error.razor": {
+      "localCanonicalSha256": "0f1444d66882d1a1f11a8fd2ff2854bd74f6bdf2d45a67886b839a8a7bb38f7c",
+      "upstreamRawSha256": "0f1444d66882d1a1f11a8fd2ff2854bd74f6bdf2d45a67886b839a8a7bb38f7c",
+      "upstreamCanonicalSha256": "0f1444d66882d1a1f11a8fd2ff2854bd74f6bdf2d45a67886b839a8a7bb38f7c",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Pages/EventHubMonitorPage.razor": {
+      "localCanonicalSha256": "2ccd122d010b1223aa8977d8989d9b56f8927d7a770455496d6efafccd4b65a9",
+      "upstreamRawSha256": "2ccd122d010b1223aa8977d8989d9b56f8927d7a770455496d6efafccd4b65a9",
+      "upstreamCanonicalSha256": "2ccd122d010b1223aa8977d8989d9b56f8927d7a770455496d6efafccd4b65a9",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Pages/HistoryPage.razor": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/HistoryPage.razor",
+      "upstreamRawSha256": "9d2a590b97c8b608e2080b6bef1ba012ec2fa2f848fbf37251a2463016e1bac6",
+      "upstreamCanonicalSha256": "9d2a590b97c8b608e2080b6bef1ba012ec2fa2f848fbf37251a2463016e1bac6"
+    },
+    "CompanionApp/Components/Pages/Home.razor": {
+      "localCanonicalSha256": "4b3fda8b1cbe94ef172f3dfd567de6f65f93529f6bed87a5a1014cbc2b5467f4",
+      "upstreamRawSha256": "d946ef8d850cd9334748e02dc257552b8cccf3eaab29624999b72fc687fd143b",
+      "upstreamCanonicalSha256": "d946ef8d850cd9334748e02dc257552b8cccf3eaab29624999b72fc687fd143b",
+      "disposition": "ai4ia-patched"
+    },
+    "CompanionApp/Components/Pages/IncompletePage.razor": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/IncompletePage.razor",
+      "upstreamRawSha256": "7a621979edc50c94436edb19f99136f611cc3ed4de7b9d08aff92ce73ab6a263",
+      "upstreamCanonicalSha256": "7a621979edc50c94436edb19f99136f611cc3ed4de7b9d08aff92ce73ab6a263"
+    },
+    "CompanionApp/Components/Pages/InsightsPage.razor": {
+      "localCanonicalSha256": "d0e6747a2ccd3b7078aace42850f46880ae3b5a0d3fda962cc0d82245e29eec4",
+      "upstreamRawSha256": "d0e6747a2ccd3b7078aace42850f46880ae3b5a0d3fda962cc0d82245e29eec4",
+      "upstreamCanonicalSha256": "d0e6747a2ccd3b7078aace42850f46880ae3b5a0d3fda962cc0d82245e29eec4",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Pages/InvestigatorPage.razor": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/InvestigatorPage.razor",
+      "upstreamRawSha256": "3f120e4ba685e5e4eb327e844eb7c21979ce7d1c412a9d71bbb5a30fa78f02ad",
+      "upstreamCanonicalSha256": "3f120e4ba685e5e4eb327e844eb7c21979ce7d1c412a9d71bbb5a30fa78f02ad"
+    },
+    "CompanionApp/Components/Pages/NotFound.razor": {
+      "localCanonicalSha256": "5305508409542108057bb5e5612800856e42b115cf70bcce8f29b283c8fe587b",
+      "upstreamRawSha256": "5305508409542108057bb5e5612800856e42b115cf70bcce8f29b283c8fe587b",
+      "upstreamCanonicalSha256": "5305508409542108057bb5e5612800856e42b115cf70bcce8f29b283c8fe587b",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Pages/StressTestPage.razor": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/StressTestPage.razor",
+      "upstreamRawSha256": "e90ca568b17a36467d205813602aea33b8ca8bd961173c5c8442c7a799299cd2",
+      "upstreamCanonicalSha256": "e90ca568b17a36467d205813602aea33b8ca8bd961173c5c8442c7a799299cd2"
+    },
+    "CompanionApp/Components/Pages/TestsPage.razor": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/TestsPage.razor",
+      "upstreamRawSha256": "d97f2dc733cee19712c21e086b8acb1879072d264648439cab1cdef236d8557b",
+      "upstreamCanonicalSha256": "d97f2dc733cee19712c21e086b8acb1879072d264648439cab1cdef236d8557b"
+    },
+    "CompanionApp/Components/Pages/UrlTesterPage.razor": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/UrlTesterPage.razor",
+      "upstreamRawSha256": "b4598359520225cbc22e3eb87285573242179717bc92da1eabb4e1cd9fa8b40c",
+      "upstreamCanonicalSha256": "b4598359520225cbc22e3eb87285573242179717bc92da1eabb4e1cd9fa8b40c"
+    },
+    "CompanionApp/Components/Pages/UserPreferencesPage.razor": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Components/Pages/UserPreferencesPage.razor",
+      "upstreamRawSha256": "b6a5fa99e7505463d0b3e4d4c292458a8a974bb66f4ba384b2a5b7f3ddd94171",
+      "upstreamCanonicalSha256": "b6a5fa99e7505463d0b3e4d4c292458a8a974bb66f4ba384b2a5b7f3ddd94171"
+    },
+    "CompanionApp/Components/Routes.razor": {
+      "localCanonicalSha256": "0bb1bb97c3a145332e43cf97d9d5ba1b1c8e0848d25258a5cf4faea1595de4ec",
+      "upstreamRawSha256": "0bb1bb97c3a145332e43cf97d9d5ba1b1c8e0848d25258a5cf4faea1595de4ec",
+      "upstreamCanonicalSha256": "0bb1bb97c3a145332e43cf97d9d5ba1b1c8e0848d25258a5cf4faea1595de4ec",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Chat/ChatBubble.razor": {
+      "localCanonicalSha256": "67f84ebb0e4f0d0fe0890bc5c981568664e9c1b3dca47766f13dde04f998dc45",
+      "upstreamRawSha256": "67f84ebb0e4f0d0fe0890bc5c981568664e9c1b3dca47766f13dde04f998dc45",
+      "upstreamCanonicalSha256": "67f84ebb0e4f0d0fe0890bc5c981568664e9c1b3dca47766f13dde04f998dc45",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Chat/ChatBubble.razor.css": {
+      "localCanonicalSha256": "5bd995f8d24de9127136718b2759364a431d7f9f68e7a35fba453d2f39303a00",
+      "upstreamRawSha256": "5bd995f8d24de9127136718b2759364a431d7f9f68e7a35fba453d2f39303a00",
+      "upstreamCanonicalSha256": "5bd995f8d24de9127136718b2759364a431d7f9f68e7a35fba453d2f39303a00",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Chat/ChatConversationStore.cs": {
+      "localCanonicalSha256": "14e9a4b1939341ac7782dcdc019f34b62c5224ce5d844f0e05a2e8494dcf5e5b",
+      "upstreamRawSha256": "14e9a4b1939341ac7782dcdc019f34b62c5224ce5d844f0e05a2e8494dcf5e5b",
+      "upstreamCanonicalSha256": "14e9a4b1939341ac7782dcdc019f34b62c5224ce5d844f0e05a2e8494dcf5e5b",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Chat/ChatHistoryStore.cs": {
+      "localCanonicalSha256": "d190ee9d49f1a24f782a170869de736f19e3a9e6e5605274e9b42feb0e008219",
+      "upstreamRawSha256": "d190ee9d49f1a24f782a170869de736f19e3a9e6e5605274e9b42feb0e008219",
+      "upstreamCanonicalSha256": "d190ee9d49f1a24f782a170869de736f19e3a9e6e5605274e9b42feb0e008219",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Chat/ChatStreamParser.cs": {
+      "localCanonicalSha256": "b03bf32de2248fa730cd355b2989fac829d10f378823f46e9754880fae3b117c",
+      "upstreamRawSha256": "b03bf32de2248fa730cd355b2989fac829d10f378823f46e9754880fae3b117c",
+      "upstreamCanonicalSha256": "b03bf32de2248fa730cd355b2989fac829d10f378823f46e9754880fae3b117c",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Chat/StorageBackends.cs": {
+      "localCanonicalSha256": "3aad0c12f5fbc3b4f24e20c94dd88ddc2c3a162c121d3265b8fdf739cb1a27f9",
+      "upstreamRawSha256": "3aad0c12f5fbc3b4f24e20c94dd88ddc2c3a162c121d3265b8fdf739cb1a27f9",
+      "upstreamCanonicalSha256": "3aad0c12f5fbc3b4f24e20c94dd88ddc2c3a162c121d3265b8fdf739cb1a27f9",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/EVENTHUB_MONITOR_REQUIREMENTS.md": {
+      "localCanonicalSha256": "1e136665417e75d57b7aa56bd25db16d68266cc162bb3a786a7a59d96ac7810e",
+      "upstreamRawSha256": "1e136665417e75d57b7aa56bd25db16d68266cc162bb3a786a7a59d96ac7810e",
+      "upstreamCanonicalSha256": "1e136665417e75d57b7aa56bd25db16d68266cc162bb3a786a7a59d96ac7810e",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/EventFields.cs": {
+      "localCanonicalSha256": "1c209d003f696a2a685bf56f80cef43f2e8cdff0ecbd5d609f6f88b214f17de3",
+      "upstreamRawSha256": "1c209d003f696a2a685bf56f80cef43f2e8cdff0ecbd5d609f6f88b214f17de3",
+      "upstreamCanonicalSha256": "1c209d003f696a2a685bf56f80cef43f2e8cdff0ecbd5d609f6f88b214f17de3",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/EventHubMonitorModels.cs": {
+      "localCanonicalSha256": "33917283008405fee7f065bf5a6e83de5f4aee6abdc08bab8ac4b5330d7e9f53",
+      "upstreamRawSha256": "33917283008405fee7f065bf5a6e83de5f4aee6abdc08bab8ac4b5330d7e9f53",
+      "upstreamCanonicalSha256": "33917283008405fee7f065bf5a6e83de5f4aee6abdc08bab8ac4b5330d7e9f53",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/EventHubMonitorSampleData.cs": {
+      "localCanonicalSha256": "313174c36661561265eda33622c1d7ef1e5f4bdd69efc3ec4255bfb817386969",
+      "upstreamRawSha256": "313174c36661561265eda33622c1d7ef1e5f4bdd69efc3ec4255bfb817386969",
+      "upstreamCanonicalSha256": "313174c36661561265eda33622c1d7ef1e5f4bdd69efc3ec4255bfb817386969",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/EventHubMonitorStore.cs": {
+      "localCanonicalSha256": "a98613a0ef67c10ec6e1f1b97422ed08b70372db67febc044cca0231f229f41e",
+      "upstreamRawSha256": "a98613a0ef67c10ec6e1f1b97422ed08b70372db67febc044cca0231f229f41e",
+      "upstreamCanonicalSha256": "a98613a0ef67c10ec6e1f1b97422ed08b70372db67febc044cca0231f229f41e",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/EventHubReader.cs": {
+      "localCanonicalSha256": "1e05d3287c41ef08fcfe1b62c8d1f03c34461e21692a5f4fc84a5da4549c84c9",
+      "upstreamRawSha256": "1e05d3287c41ef08fcfe1b62c8d1f03c34461e21692a5f4fc84a5da4549c84c9",
+      "upstreamCanonicalSha256": "1e05d3287c41ef08fcfe1b62c8d1f03c34461e21692a5f4fc84a5da4549c84c9",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/EventHubRequestStatus.razor": {
+      "localCanonicalSha256": "bd7f5f49426f82c73b834320e3fb8dba5c919e5120af57facddb6ee2f74594d6",
+      "upstreamRawSha256": "bd7f5f49426f82c73b834320e3fb8dba5c919e5120af57facddb6ee2f74594d6",
+      "upstreamCanonicalSha256": "bd7f5f49426f82c73b834320e3fb8dba5c919e5120af57facddb6ee2f74594d6",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/EventHubTopFilters.razor": {
+      "localCanonicalSha256": "01c5f1bc9aa601247dd9bf98a9acc3cc900e866cf2980528a601a7537cf570a7",
+      "upstreamRawSha256": "01c5f1bc9aa601247dd9bf98a9acc3cc900e866cf2980528a601a7537cf570a7",
+      "upstreamCanonicalSha256": "01c5f1bc9aa601247dd9bf98a9acc3cc900e866cf2980528a601a7537cf570a7",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/ParsedEventRecord.cs": {
+      "localCanonicalSha256": "bc01330e8e277773d12f52e842f743611c2605492a11a4081675c980ffe6b1ab",
+      "upstreamRawSha256": "bc01330e8e277773d12f52e842f743611c2605492a11a4081675c980ffe6b1ab",
+      "upstreamCanonicalSha256": "bc01330e8e277773d12f52e842f743611c2605492a11a4081675c980ffe6b1ab",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/Pipeline/analyze/S7P-Backend_DataFlow.md": {
+      "localCanonicalSha256": "e05633ff0123a347cdbdbb89fd96382c6d0e27d6c8729df04b467081f7df468f",
+      "upstreamRawSha256": "e05633ff0123a347cdbdbb89fd96382c6d0e27d6c8729df04b467081f7df468f",
+      "upstreamCanonicalSha256": "e05633ff0123a347cdbdbb89fd96382c6d0e27d6c8729df04b467081f7df468f",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/Pipeline/analyze/event_analysis.md": {
+      "localCanonicalSha256": "4c5c9760c7106c3c8932630f582458f26c21a802e381207e4578c7625564db7f",
+      "upstreamRawSha256": "4c5c9760c7106c3c8932630f582458f26c21a802e381207e4578c7625564db7f",
+      "upstreamCanonicalSha256": "4c5c9760c7106c3c8932630f582458f26c21a802e381207e4578c7625564db7f",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/ProxyMetricsCatalog.cs": {
+      "localCanonicalSha256": "13b63a039d357b482ee697990956f426ae6a2c5d942bb14d4f4cc1708006addc",
+      "upstreamRawSha256": "13b63a039d357b482ee697990956f426ae6a2c5d942bb14d4f4cc1708006addc",
+      "upstreamCanonicalSha256": "13b63a039d357b482ee697990956f426ae6a2c5d942bb14d4f4cc1708006addc",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/EventHub/RequestPhaseView.cs": {
+      "localCanonicalSha256": "93ba9e15fb558f917058cea55594b7399b5d03b0356291b9f72e46a1833b8dfd",
+      "upstreamRawSha256": "93ba9e15fb558f917058cea55594b7399b5d03b0356291b9f72e46a1833b8dfd",
+      "upstreamCanonicalSha256": "93ba9e15fb558f917058cea55594b7399b5d03b0356291b9f72e46a1833b8dfd",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/History/HistoryEntryFormatter.cs": {
+      "localCanonicalSha256": "368bdbf60a059e15394bb4fd79adaef3b4cddcc76b2f0e9d634a942affba24fe",
+      "upstreamRawSha256": "368bdbf60a059e15394bb4fd79adaef3b4cddcc76b2f0e9d634a942affba24fe",
+      "upstreamCanonicalSha256": "368bdbf60a059e15394bb4fd79adaef3b4cddcc76b2f0e9d634a942affba24fe",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/History/HistoryTopBarSelector.razor": {
+      "localCanonicalSha256": "6f1a0ca0daaaff903888680e9008014847cc026ae0a110edb29075706a4ad8a4",
+      "upstreamRawSha256": "6f1a0ca0daaaff903888680e9008014847cc026ae0a110edb29075706a4ad8a4",
+      "upstreamCanonicalSha256": "6f1a0ca0daaaff903888680e9008014847cc026ae0a110edb29075706a4ad8a4",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/History/MultiRequestStatus.razor": {
+      "localCanonicalSha256": "cff740c66634149cccdfcd03b12fb4c16559fa55592b0f5efa73e3fb45aaf06a",
+      "upstreamRawSha256": "cff740c66634149cccdfcd03b12fb4c16559fa55592b0f5efa73e3fb45aaf06a",
+      "upstreamCanonicalSha256": "cff740c66634149cccdfcd03b12fb4c16559fa55592b0f5efa73e3fb45aaf06a",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/History/MultiRequestStatusItem.cs": {
+      "localCanonicalSha256": "24b53165076c65fec7a66ea1e66989f2135d96513bb3001eba331f4d70774299",
+      "upstreamRawSha256": "24b53165076c65fec7a66ea1e66989f2135d96513bb3001eba331f4d70774299",
+      "upstreamCanonicalSha256": "24b53165076c65fec7a66ea1e66989f2135d96513bb3001eba331f4d70774299",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/History/RequestDetailsPopup.razor": {
+      "localCanonicalSha256": "d8e67609343ebc29b3c4a0d8ece53c2c738315130b8d0efb6c9a81500a4b1177",
+      "upstreamRawSha256": "d8e67609343ebc29b3c4a0d8ece53c2c738315130b8d0efb6c9a81500a4b1177",
+      "upstreamCanonicalSha256": "d8e67609343ebc29b3c4a0d8ece53c2c738315130b8d0efb6c9a81500a4b1177",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/History/RequestHistoryPanel.razor": {
+      "localCanonicalSha256": "81da0efd139cda67482d6cad12475e4935a43cbf2bed6d98d682380092c9b9a1",
+      "upstreamRawSha256": "81da0efd139cda67482d6cad12475e4935a43cbf2bed6d98d682380092c9b9a1",
+      "upstreamCanonicalSha256": "81da0efd139cda67482d6cad12475e4935a43cbf2bed6d98d682380092c9b9a1",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/History/RequestSummaryFormatter.cs": {
+      "localCanonicalSha256": "9e47c1ca7287747c648be8a80efb454be3cf134ac4dfdf21ab9e997acd535041",
+      "upstreamRawSha256": "9e47c1ca7287747c648be8a80efb454be3cf134ac4dfdf21ab9e997acd535041",
+      "upstreamCanonicalSha256": "9e47c1ca7287747c648be8a80efb454be3cf134ac4dfdf21ab9e997acd535041",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/History/UrlTestResultPopup.razor": {
+      "localCanonicalSha256": "9a059ac9ad8338162aa9b6a34dacf54bc25f0fce31e8c732827e44ea135770ef",
+      "upstreamRawSha256": "9a059ac9ad8338162aa9b6a34dacf54bc25f0fce31e8c732827e44ea135770ef",
+      "upstreamCanonicalSha256": "9a059ac9ad8338162aa9b6a34dacf54bc25f0fce31e8c732827e44ea135770ef",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Infrastructure/BackendLogDetector.cs": {
+      "localCanonicalSha256": "771e04008af142936669e2557a02ab567d6e4b70f5eba1c3f0788e5ebe21cfd0",
+      "upstreamRawSha256": "771e04008af142936669e2557a02ab567d6e4b70f5eba1c3f0788e5ebe21cfd0",
+      "upstreamCanonicalSha256": "771e04008af142936669e2557a02ab567d6e4b70f5eba1c3f0788e5ebe21cfd0",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Infrastructure/CompanionAppHttp.cs": {
+      "localCanonicalSha256": "b8df4147fa798b127c8f059038e066bb665cc63eb07fd1c39d522760c88a47c3",
+      "upstreamRawSha256": "b8df4147fa798b127c8f059038e066bb665cc63eb07fd1c39d522760c88a47c3",
+      "upstreamCanonicalSha256": "b8df4147fa798b127c8f059038e066bb665cc63eb07fd1c39d522760c88a47c3",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Infrastructure/ProbeResult.cs": {
+      "localCanonicalSha256": "9152a24bbfda1f6f9e7bc3b85050e5f9910c6a0e7ac40465d83029342cafe49d",
+      "upstreamRawSha256": "9152a24bbfda1f6f9e7bc3b85050e5f9910c6a0e7ac40465d83029342cafe49d",
+      "upstreamCanonicalSha256": "9152a24bbfda1f6f9e7bc3b85050e5f9910c6a0e7ac40465d83029342cafe49d",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Models/ModelCatalog.cs": {
+      "localCanonicalSha256": "6b59009d65aea01d60853ac972df415b0ee388412fa317471a8e65404164da2e",
+      "upstreamRawSha256": "6b59009d65aea01d60853ac972df415b0ee388412fa317471a8e65404164da2e",
+      "upstreamCanonicalSha256": "6b59009d65aea01d60853ac972df415b0ee388412fa317471a8e65404164da2e",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Models/ModelDefaults.cs": {
+      "localCanonicalSha256": "8a81ce9b4e0c022f9b1e7440a7aff355149bcb7f0eca9faa99ec8e0b879c46ba",
+      "upstreamRawSha256": "8a81ce9b4e0c022f9b1e7440a7aff355149bcb7f0eca9faa99ec8e0b879c46ba",
+      "upstreamCanonicalSha256": "8a81ce9b4e0c022f9b1e7440a7aff355149bcb7f0eca9faa99ec8e0b879c46ba",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Models/ModelRequest.cs": {
+      "localCanonicalSha256": "60a8a133c21124c3537c3473e4d98825d9cdb0896868891cb5f14385c716579b",
+      "upstreamRawSha256": "60a8a133c21124c3537c3473e4d98825d9cdb0896868891cb5f14385c716579b",
+      "upstreamCanonicalSha256": "60a8a133c21124c3537c3473e4d98825d9cdb0896868891cb5f14385c716579b",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Models/ModelRequestParser.cs": {
+      "localCanonicalSha256": "a1d418abf0d47804fe2d71d0db4a7d1d269cb8706ccc0f1aca3f6a2b66973003",
+      "upstreamRawSha256": "a1d418abf0d47804fe2d71d0db4a7d1d269cb8706ccc0f1aca3f6a2b66973003",
+      "upstreamCanonicalSha256": "a1d418abf0d47804fe2d71d0db4a7d1d269cb8706ccc0f1aca3f6a2b66973003",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Models/MultiStepChatRequestBuilder.cs": {
+      "localCanonicalSha256": "0f30d73019ab7e0985eff6191bd4fff62915ff1dc2895005972c8721f9800145",
+      "upstreamRawSha256": "0f30d73019ab7e0985eff6191bd4fff62915ff1dc2895005972c8721f9800145",
+      "upstreamCanonicalSha256": "0f30d73019ab7e0985eff6191bd4fff62915ff1dc2895005972c8721f9800145",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Models/RequestTemplateEngine.cs": {
+      "localCanonicalSha256": "c355ec72c0a89f5f14c98c04ddbe7f399b7177d0b12a729bde4995848ea7317d",
+      "upstreamRawSha256": "c355ec72c0a89f5f14c98c04ddbe7f399b7177d0b12a729bde4995848ea7317d",
+      "upstreamCanonicalSha256": "c355ec72c0a89f5f14c98c04ddbe7f399b7177d0b12a729bde4995848ea7317d",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Models/VisionModelCatalog.cs": {
+      "localCanonicalSha256": "9f0e3470c01678edda9865c3c9a290158da0e667dd67f9fe32690aeae7749788",
+      "upstreamRawSha256": "9f0e3470c01678edda9865c3c9a290158da0e667dd67f9fe32690aeae7749788",
+      "upstreamCanonicalSha256": "9f0e3470c01678edda9865c3c9a290158da0e667dd67f9fe32690aeae7749788",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/RequestForm/AuthPanel.razor": {
+      "localCanonicalSha256": "78a0293dd9288a2bd0bee1ecb2f1cdd5b3c5d31061b9de8c58a2a6c4b626071e",
+      "upstreamRawSha256": "78a0293dd9288a2bd0bee1ecb2f1cdd5b3c5d31061b9de8c58a2a6c4b626071e",
+      "upstreamCanonicalSha256": "78a0293dd9288a2bd0bee1ecb2f1cdd5b3c5d31061b9de8c58a2a6c4b626071e",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/RequestForm/HeaderPanel.razor": {
+      "localCanonicalSha256": "8a129f62fab7ca49381749c704e10dd241049e68678ea7965c8c391369a0f129",
+      "upstreamRawSha256": "8a129f62fab7ca49381749c704e10dd241049e68678ea7965c8c391369a0f129",
+      "upstreamCanonicalSha256": "8a129f62fab7ca49381749c704e10dd241049e68678ea7965c8c391369a0f129",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/RequestForm/ModelPanel.razor": {
+      "localCanonicalSha256": "ac108876f6778b47bd903fd13fba1f423f06f2f25ec53be07d640ac2d6a584f5",
+      "upstreamRawSha256": "ac108876f6778b47bd903fd13fba1f423f06f2f25ec53be07d640ac2d6a584f5",
+      "upstreamCanonicalSha256": "ac108876f6778b47bd903fd13fba1f423f06f2f25ec53be07d640ac2d6a584f5",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/RequestForm/ModelParameters.razor": {
+      "localCanonicalSha256": "6805b5f711e1e955c0ad13a8412ec6e5e902a37d6148e4a3a4c3f4c2591153af",
+      "upstreamRawSha256": "6805b5f711e1e955c0ad13a8412ec6e5e902a37d6148e4a3a4c3f4c2591153af",
+      "upstreamCanonicalSha256": "6805b5f711e1e955c0ad13a8412ec6e5e902a37d6148e4a3a4c3f4c2591153af",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/RequestForm/RequestBodyPanel.razor": {
+      "localCanonicalSha256": "527cee3d1a5fadbba527ddd9428f46be2fd7ae56f6a3f1363e28eec25a164c7d",
+      "upstreamRawSha256": "527cee3d1a5fadbba527ddd9428f46be2fd7ae56f6a3f1363e28eec25a164c7d",
+      "upstreamCanonicalSha256": "527cee3d1a5fadbba527ddd9428f46be2fd7ae56f6a3f1363e28eec25a164c7d",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/RequestForm/ServerUrlPanel.razor": {
+      "localCanonicalSha256": "b72a834940a311b2916d5c71afb6c970af3102f938c0e4e46a1a35423b6e4593",
+      "upstreamRawSha256": "b72a834940a311b2916d5c71afb6c970af3102f938c0e4e46a1a35423b6e4593",
+      "upstreamCanonicalSha256": "b72a834940a311b2916d5c71afb6c970af3102f938c0e4e46a1a35423b6e4593",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/RequestForm/TestFormPanel.razor": {
+      "localCanonicalSha256": "583fd21c72dffbf08ff6889ff3e0f235711094ee30c9f2a3e0b9ae887cfa33b7",
+      "upstreamRawSha256": "583fd21c72dffbf08ff6889ff3e0f235711094ee30c9f2a3e0b9ae887cfa33b7",
+      "upstreamCanonicalSha256": "583fd21c72dffbf08ff6889ff3e0f235711094ee30c9f2a3e0b9ae887cfa33b7",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/RequestForm/TestFormPanel.razor.css": {
+      "localCanonicalSha256": "87873a42387cd2cacb0efff354dc9f923f7d0d7e61c36848ecbd9250186bc537",
+      "upstreamRawSha256": "87873a42387cd2cacb0efff354dc9f923f7d0d7e61c36848ecbd9250186bc537",
+      "upstreamCanonicalSha256": "87873a42387cd2cacb0efff354dc9f923f7d0d7e61c36848ecbd9250186bc537",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/RequestForm/UserPanel.razor": {
+      "localCanonicalSha256": "b15506be113f744a40a3b56f82cd25ab41a6e279b1c651f2f35e731ba65d240b",
+      "upstreamRawSha256": "b15506be113f744a40a3b56f82cd25ab41a6e279b1c651f2f35e731ba65d240b",
+      "upstreamCanonicalSha256": "b15506be113f744a40a3b56f82cd25ab41a6e279b1c651f2f35e731ba65d240b",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/ErrorCurrentSummary.razor": {
+      "localCanonicalSha256": "9b53be4a35f3922c79c282a98b09aa3322c708dbca00c7ae3d160ae0071c99fa",
+      "upstreamRawSha256": "9b53be4a35f3922c79c282a98b09aa3322c708dbca00c7ae3d160ae0071c99fa",
+      "upstreamCanonicalSha256": "9b53be4a35f3922c79c282a98b09aa3322c708dbca00c7ae3d160ae0071c99fa",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/ErrorCurrentSummary.razor.css": {
+      "localCanonicalSha256": "ef237e3710eb875b13784ff4d79d994619fafd6802b4c9304e66f19991c825a6",
+      "upstreamRawSha256": "ef237e3710eb875b13784ff4d79d994619fafd6802b4c9304e66f19991c825a6",
+      "upstreamCanonicalSha256": "ef237e3710eb875b13784ff4d79d994619fafd6802b4c9304e66f19991c825a6",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/ErrorResultPanel.razor": {
+      "localCanonicalSha256": "ebd9c8ca621edc6236f93d7dd6f67611f13bb3a402a3a6083b1b606f4d537dee",
+      "upstreamRawSha256": "ebd9c8ca621edc6236f93d7dd6f67611f13bb3a402a3a6083b1b606f4d537dee",
+      "upstreamCanonicalSha256": "ebd9c8ca621edc6236f93d7dd6f67611f13bb3a402a3a6083b1b606f4d537dee",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/ErrorResultPanel.razor.css": {
+      "localCanonicalSha256": "858e599f1bafc601201b169ec4516e50490b2211bdcfce1bfe4076431d098b95",
+      "upstreamRawSha256": "858e599f1bafc601201b169ec4516e50490b2211bdcfce1bfe4076431d098b95",
+      "upstreamCanonicalSha256": "858e599f1bafc601201b169ec4516e50490b2211bdcfce1bfe4076431d098b95",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/ErrorTimelineFormatter.cs": {
+      "localCanonicalSha256": "c40ea6b731540e9e163cd11b88d7598ede42fbab8db08a3269b967b62091744c",
+      "upstreamRawSha256": "c40ea6b731540e9e163cd11b88d7598ede42fbab8db08a3269b967b62091744c",
+      "upstreamCanonicalSha256": "c40ea6b731540e9e163cd11b88d7598ede42fbab8db08a3269b967b62091744c",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/ErrorTrendBuilder.cs": {
+      "localCanonicalSha256": "85e4ecf046799690d970a115f6a450edbbcd1cdfd17e3e0f821efb1a136f74b0",
+      "upstreamRawSha256": "85e4ecf046799690d970a115f6a450edbbcd1cdfd17e3e0f821efb1a136f74b0",
+      "upstreamCanonicalSha256": "85e4ecf046799690d970a115f6a450edbbcd1cdfd17e3e0f821efb1a136f74b0",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/ErrorTrendChart.razor": {
+      "localCanonicalSha256": "05eb6299caa1b718b77c1a076d47beb3792b1068659f7d451e4022fede825321",
+      "upstreamRawSha256": "05eb6299caa1b718b77c1a076d47beb3792b1068659f7d451e4022fede825321",
+      "upstreamCanonicalSha256": "05eb6299caa1b718b77c1a076d47beb3792b1068659f7d451e4022fede825321",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/ErrorTrendChart.razor.css": {
+      "localCanonicalSha256": "5a0f5737a448396cb029f34c2fa4340feb07d46fa78ff0b121335c825f4b506c",
+      "upstreamRawSha256": "5a0f5737a448396cb029f34c2fa4340feb07d46fa78ff0b121335c825f4b506c",
+      "upstreamCanonicalSha256": "5a0f5737a448396cb029f34c2fa4340feb07d46fa78ff0b121335c825f4b506c",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/ErrorTrendModels.cs": {
+      "localCanonicalSha256": "f3abda114ed5237ff003930eeb450649a0d6e88cb68b59663e432e76e0141931",
+      "upstreamRawSha256": "f3abda114ed5237ff003930eeb450649a0d6e88cb68b59663e432e76e0141931",
+      "upstreamCanonicalSha256": "f3abda114ed5237ff003930eeb450649a0d6e88cb68b59663e432e76e0141931",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/HtmlResponseFormatOption.razor": {
+      "localCanonicalSha256": "2949eeefa844ce231b64e6963ef722f18f0fcf3935735463cd72c2f86544994e",
+      "upstreamRawSha256": "2949eeefa844ce231b64e6963ef722f18f0fcf3935735463cd72c2f86544994e",
+      "upstreamCanonicalSha256": "2949eeefa844ce231b64e6963ef722f18f0fcf3935735463cd72c2f86544994e",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/MarkdownResponseFormatOption.razor": {
+      "localCanonicalSha256": "ccddf146cd0ae915f83a5feb943a3a455320aa0b7c44702e4f84870f6676d1df",
+      "upstreamRawSha256": "ccddf146cd0ae915f83a5feb943a3a455320aa0b7c44702e4f84870f6676d1df",
+      "upstreamCanonicalSha256": "ccddf146cd0ae915f83a5feb943a3a455320aa0b7c44702e4f84870f6676d1df",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/RawResponsePanel.razor": {
+      "localCanonicalSha256": "58fd273b2896c5fc35a88f33c5ab869beefed19d845572015562c6c63cc1e61e",
+      "upstreamRawSha256": "58fd273b2896c5fc35a88f33c5ab869beefed19d845572015562c6c63cc1e61e",
+      "upstreamCanonicalSha256": "58fd273b2896c5fc35a88f33c5ab869beefed19d845572015562c6c63cc1e61e",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/ResponseDisplayFormat.cs": {
+      "localCanonicalSha256": "44a4655a8e83e57e98cd332ccc27b5d7216ec963d236e95bb16028186666c868",
+      "upstreamRawSha256": "44a4655a8e83e57e98cd332ccc27b5d7216ec963d236e95bb16028186666c868",
+      "upstreamCanonicalSha256": "44a4655a8e83e57e98cd332ccc27b5d7216ec963d236e95bb16028186666c868",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/ResponseFormatOption.razor": {
+      "localCanonicalSha256": "92712b8ce086bbcfbaaf1442ba5919920cbff9af599ada7ab1ba4102af6fa82f",
+      "upstreamRawSha256": "92712b8ce086bbcfbaaf1442ba5919920cbff9af599ada7ab1ba4102af6fa82f",
+      "upstreamCanonicalSha256": "92712b8ce086bbcfbaaf1442ba5919920cbff9af599ada7ab1ba4102af6fa82f",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/ResponseMetricsPanel.razor": {
+      "localCanonicalSha256": "f19eaeae26801c03f7c0e3ed3eca578d04638e0364daa39f94a651523ff8b261",
+      "upstreamRawSha256": "f19eaeae26801c03f7c0e3ed3eca578d04638e0364daa39f94a651523ff8b261",
+      "upstreamCanonicalSha256": "f19eaeae26801c03f7c0e3ed3eca578d04638e0364daa39f94a651523ff8b261",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/TextResponseFormatOption.razor": {
+      "localCanonicalSha256": "0799b83522ed5e10d155de9ff6c859407e0fb5865ff3505c8085a02bdee06c2b",
+      "upstreamRawSha256": "0799b83522ed5e10d155de9ff6c859407e0fb5865ff3505c8085a02bdee06c2b",
+      "upstreamCanonicalSha256": "0799b83522ed5e10d155de9ff6c859407e0fb5865ff3505c8085a02bdee06c2b",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Response/VisibleWindowCalculator.cs": {
+      "localCanonicalSha256": "9c2b1c99c3174d6a98aa4ffd83127e527caceac41dec54bd2dd0321d07606fe5",
+      "upstreamRawSha256": "9c2b1c99c3174d6a98aa4ffd83127e527caceac41dec54bd2dd0321d07606fe5",
+      "upstreamCanonicalSha256": "9c2b1c99c3174d6a98aa4ffd83127e527caceac41dec54bd2dd0321d07606fe5",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/AppConfigurationScaffoldService.cs": {
+      "localCanonicalSha256": "8330e2ebae4cda08baac904b88dac9a0a057329f9367da2a41b7f440b3021750",
+      "upstreamRawSha256": "8330e2ebae4cda08baac904b88dac9a0a057329f9367da2a41b7f440b3021750",
+      "upstreamCanonicalSha256": "8330e2ebae4cda08baac904b88dac9a0a057329f9367da2a41b7f440b3021750",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/AuthTokenSettings.cs": {
+      "localCanonicalSha256": "c81541f7a2cc30c9fa4e9a22651c7463064473d321323260f454196e65b3f29d",
+      "upstreamRawSha256": "c81541f7a2cc30c9fa4e9a22651c7463064473d321323260f454196e65b3f29d",
+      "upstreamCanonicalSha256": "c81541f7a2cc30c9fa4e9a22651c7463064473d321323260f454196e65b3f29d",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/AutoCollapseSettings.cs": {
+      "localCanonicalSha256": "73675ed3efdbcef145b30ebae6694c043af94cd75fce1b024a04abefe126cbee",
+      "upstreamRawSha256": "73675ed3efdbcef145b30ebae6694c043af94cd75fce1b024a04abefe126cbee",
+      "upstreamCanonicalSha256": "73675ed3efdbcef145b30ebae6694c043af94cd75fce1b024a04abefe126cbee",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/CircuitBreakerEditor.razor": {
+      "localCanonicalSha256": "64399881bd6a0f0facbc540ace00d71f018fa2e01cedc1e8628ef2f92b82ebfd",
+      "upstreamRawSha256": "64399881bd6a0f0facbc540ace00d71f018fa2e01cedc1e8628ef2f92b82ebfd",
+      "upstreamCanonicalSha256": "64399881bd6a0f0facbc540ace00d71f018fa2e01cedc1e8628ef2f92b82ebfd",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/CompanionAppOptions.cs": {
+      "localCanonicalSha256": "978b8ec96b0b7d65ef43314c8907bf743f64a18c671d58e76454d655cf9d5be9",
+      "upstreamRawSha256": "978b8ec96b0b7d65ef43314c8907bf743f64a18c671d58e76454d655cf9d5be9",
+      "upstreamCanonicalSha256": "978b8ec96b0b7d65ef43314c8907bf743f64a18c671d58e76454d655cf9d5be9",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/ConfigurationExplanation.razor": {
+      "localCanonicalSha256": "0739968f6565f963851696daf48d844939c52ec7f2fe41ec24fbe103acd768db",
+      "upstreamRawSha256": "0739968f6565f963851696daf48d844939c52ec7f2fe41ec24fbe103acd768db",
+      "upstreamCanonicalSha256": "0739968f6565f963851696daf48d844939c52ec7f2fe41ec24fbe103acd768db",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/ConfigurationFields.razor": {
+      "localCanonicalSha256": "9e7789b4e048ec0172442602819aba9c3d4e1bbd9cef1add2b1cdadb6caf600e",
+      "upstreamRawSha256": "9e7789b4e048ec0172442602819aba9c3d4e1bbd9cef1add2b1cdadb6caf600e",
+      "upstreamCanonicalSha256": "9e7789b4e048ec0172442602819aba9c3d4e1bbd9cef1add2b1cdadb6caf600e",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/ConfigurationHelp.razor": {
+      "localCanonicalSha256": "a8b34928d8c136112333fdbbc8f8ceed825f70e4f5d9140db16f77ff2ff260f7",
+      "upstreamRawSha256": "a8b34928d8c136112333fdbbc8f8ceed825f70e4f5d9140db16f77ff2ff260f7",
+      "upstreamCanonicalSha256": "a8b34928d8c136112333fdbbc8f8ceed825f70e4f5d9140db16f77ff2ff260f7",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/ConversationSettings.cs": {
+      "localCanonicalSha256": "a4116583d33837e92ee757eef0f39c57e9821dbd75f3b8617d5aca6bdcc423dd",
+      "upstreamRawSha256": "a4116583d33837e92ee757eef0f39c57e9821dbd75f3b8617d5aca6bdcc423dd",
+      "upstreamCanonicalSha256": "a4116583d33837e92ee757eef0f39c57e9821dbd75f3b8617d5aca6bdcc423dd",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/EventHubMonitorOptions.cs": {
+      "localCanonicalSha256": "345cf248190faa77eacc4bca44d40326048afe0f6a1ff7281c86c8081998bebc",
+      "upstreamRawSha256": "345cf248190faa77eacc4bca44d40326048afe0f6a1ff7281c86c8081998bebc",
+      "upstreamCanonicalSha256": "345cf248190faa77eacc4bca44d40326048afe0f6a1ff7281c86c8081998bebc",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/HeaderSettings.cs": {
+      "localCanonicalSha256": "ee80e4894d6d547ec99bc938b37ae8ea0125b5cf44279a11355970515326fc39",
+      "upstreamRawSha256": "ee80e4894d6d547ec99bc938b37ae8ea0125b5cf44279a11355970515326fc39",
+      "upstreamCanonicalSha256": "ee80e4894d6d547ec99bc938b37ae8ea0125b5cf44279a11355970515326fc39",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/HealthProbeEditor.razor": {
+      "localCanonicalSha256": "0bf39c2d4adc0825a35feb8ac46113f5bc8f76b0e34e5342271c53670b415ac8",
+      "upstreamRawSha256": "0bf39c2d4adc0825a35feb8ac46113f5bc8f76b0e34e5342271c53670b415ac8",
+      "upstreamCanonicalSha256": "0bf39c2d4adc0825a35feb8ac46113f5bc8f76b0e34e5342271c53670b415ac8",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/HistorySettings.cs": {
+      "localCanonicalSha256": "266a8e261be59baf1da0be57bef29ff6d84403d8a40aa8e07b73335a8337bcd1",
+      "upstreamRawSha256": "266a8e261be59baf1da0be57bef29ff6d84403d8a40aa8e07b73335a8337bcd1",
+      "upstreamCanonicalSha256": "266a8e261be59baf1da0be57bef29ff6d84403d8a40aa8e07b73335a8337bcd1",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/HostSectionEditor.razor": {
+      "localCanonicalSha256": "096c8fde16f3d13bddd46397e60a1ed47e481c3b8c1d1ec96643db3c5ce433f3",
+      "upstreamRawSha256": "096c8fde16f3d13bddd46397e60a1ed47e481c3b8c1d1ec96643db3c5ce433f3",
+      "upstreamCanonicalSha256": "096c8fde16f3d13bddd46397e60a1ed47e481c3b8c1d1ec96643db3c5ce433f3",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/LoadBalancingEditor.razor": {
+      "localCanonicalSha256": "6ef202947bae0ba17627e387a52fd298685820f51c7532e042d6d164416f0883",
+      "upstreamRawSha256": "6ef202947bae0ba17627e387a52fd298685820f51c7532e042d6d164416f0883",
+      "upstreamCanonicalSha256": "6ef202947bae0ba17627e387a52fd298685820f51c7532e042d6d164416f0883",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/LoggingEditor.razor": {
+      "localCanonicalSha256": "bca4270f9b0bc48dbb2f2b9f797c29f914a139d7d5f8ed0895b534f6a75137bd",
+      "upstreamRawSha256": "bca4270f9b0bc48dbb2f2b9f797c29f914a139d7d5f8ed0895b534f6a75137bd",
+      "upstreamCanonicalSha256": "bca4270f9b0bc48dbb2f2b9f797c29f914a139d7d5f8ed0895b534f6a75137bd",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/ProfilesEditor.razor": {
+      "localCanonicalSha256": "4c3c8b0145b959a298417dcf026c70b33260d5224dc8072df437267e49d38ab1",
+      "upstreamRawSha256": "4c3c8b0145b959a298417dcf026c70b33260d5224dc8072df437267e49d38ab1",
+      "upstreamCanonicalSha256": "4c3c8b0145b959a298417dcf026c70b33260d5224dc8072df437267e49d38ab1",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/RequestDebugSettings.cs": {
+      "localCanonicalSha256": "f2b80ab213832de403289194283eb00047d74217114ce6a9553165cfc94ecc97",
+      "upstreamRawSha256": "f2b80ab213832de403289194283eb00047d74217114ce6a9553165cfc94ecc97",
+      "upstreamCanonicalSha256": "f2b80ab213832de403289194283eb00047d74217114ce6a9553165cfc94ecc97",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/RequestEditor.razor": {
+      "localCanonicalSha256": "951949c22a5f497c6e07fc500a298c65aaf7178ad09dcaafcab3bef9987857e3",
+      "upstreamRawSha256": "951949c22a5f497c6e07fc500a298c65aaf7178ad09dcaafcab3bef9987857e3",
+      "upstreamCanonicalSha256": "951949c22a5f497c6e07fc500a298c65aaf7178ad09dcaafcab3bef9987857e3",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/ResponseEditor.razor": {
+      "localCanonicalSha256": "c302a66300b2120aa28be7ec43b5e7dfcec8f2b0d8c3f7755deeb40d55b48d4d",
+      "upstreamRawSha256": "c302a66300b2120aa28be7ec43b5e7dfcec8f2b0d8c3f7755deeb40d55b48d4d",
+      "upstreamCanonicalSha256": "c302a66300b2120aa28be7ec43b5e7dfcec8f2b0d8c3f7755deeb40d55b48d4d",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/ServerEditor.razor": {
+      "localCanonicalSha256": "54188e0b7815152fa2be3020c1ff5155b94eac6ebcc84bd227d7bc5f178a3367",
+      "upstreamRawSha256": "54188e0b7815152fa2be3020c1ff5155b94eac6ebcc84bd227d7bc5f178a3367",
+      "upstreamCanonicalSha256": "54188e0b7815152fa2be3020c1ff5155b94eac6ebcc84bd227d7bc5f178a3367",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/UserPreferences.cs": {
+      "localCanonicalSha256": "68b637903d2b1b93edff2c208d4c61c5c8e56ba734157ee1328693e5d7c1ea3e",
+      "upstreamRawSha256": "68b637903d2b1b93edff2c208d4c61c5c8e56ba734157ee1328693e5d7c1ea3e",
+      "upstreamCanonicalSha256": "68b637903d2b1b93edff2c208d4c61c5c8e56ba734157ee1328693e5d7c1ea3e",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/UserPreferencesService.cs": {
+      "localCanonicalSha256": "12db8c5b27ed4a3b82d30ed47682d1e87058223b0305461c787e16d9a2b7bdac",
+      "upstreamRawSha256": "12db8c5b27ed4a3b82d30ed47682d1e87058223b0305461c787e16d9a2b7bdac",
+      "upstreamCanonicalSha256": "12db8c5b27ed4a3b82d30ed47682d1e87058223b0305461c787e16d9a2b7bdac",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Settings/UserSettings.cs": {
+      "localCanonicalSha256": "628c25b27aa0059402535406e44696dff66bb70ffae24814a662e614821d3430",
+      "upstreamRawSha256": "628c25b27aa0059402535406e44696dff66bb70ffae24814a662e614821d3430",
+      "upstreamCanonicalSha256": "628c25b27aa0059402535406e44696dff66bb70ffae24814a662e614821d3430",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Shell/AutoCollapseToggle.razor": {
+      "localCanonicalSha256": "34861d36a9bcf839538964aae4964dea230e2e980ec8df68b474f021448f1f8f",
+      "upstreamRawSha256": "34861d36a9bcf839538964aae4964dea230e2e980ec8df68b474f021448f1f8f",
+      "upstreamCanonicalSha256": "34861d36a9bcf839538964aae4964dea230e2e980ec8df68b474f021448f1f8f",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Shell/InspectorPageShell.razor": {
+      "localCanonicalSha256": "97991fb78a4d9b6595fef8186c6d027444f29b296ff639148de820e24966dad9",
+      "upstreamRawSha256": "97991fb78a4d9b6595fef8186c6d027444f29b296ff639148de820e24966dad9",
+      "upstreamCanonicalSha256": "97991fb78a4d9b6595fef8186c6d027444f29b296ff639148de820e24966dad9",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Shell/InspectorPageShell.razor.css": {
+      "localCanonicalSha256": "3a07c8dad2090d353ffb38dd4e218011926d7b713f2b3f335ecba1022618c9bf",
+      "upstreamRawSha256": "3a07c8dad2090d353ffb38dd4e218011926d7b713f2b3f335ecba1022618c9bf",
+      "upstreamCanonicalSha256": "3a07c8dad2090d353ffb38dd4e218011926d7b713f2b3f335ecba1022618c9bf",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Shell/PanelDisplayState.cs": {
+      "localCanonicalSha256": "7f8ce91025366a67abe3335b22aa30b5d52292c565693bab7022b2ac25d73da1",
+      "upstreamRawSha256": "7f8ce91025366a67abe3335b22aa30b5d52292c565693bab7022b2ac25d73da1",
+      "upstreamCanonicalSha256": "7f8ce91025366a67abe3335b22aa30b5d52292c565693bab7022b2ac25d73da1",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Shell/PanelDisplayStateCoordinator.cs": {
+      "localCanonicalSha256": "97d124ac4ca725fadcc0b88ac7164b13c97bf328f55e9c3172c077e034df32ea",
+      "upstreamRawSha256": "97d124ac4ca725fadcc0b88ac7164b13c97bf328f55e9c3172c077e034df32ea",
+      "upstreamCanonicalSha256": "97d124ac4ca725fadcc0b88ac7164b13c97bf328f55e9c3172c077e034df32ea",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Shell/PanelDisplayToggle.razor": {
+      "localCanonicalSha256": "b38295b55f5f128f42df11070910ef485f1d0ceef9fa2e4d49c07a9a0303e603",
+      "upstreamRawSha256": "b38295b55f5f128f42df11070910ef485f1d0ceef9fa2e4d49c07a9a0303e603",
+      "upstreamCanonicalSha256": "b38295b55f5f128f42df11070910ef485f1d0ceef9fa2e4d49c07a9a0303e603",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionCaptionResultPanel.razor": {
+      "localCanonicalSha256": "65d930f098442c47b0337b53d80474c383433ddf7f19a6ca80d493b14e28c9a9",
+      "upstreamRawSha256": "65d930f098442c47b0337b53d80474c383433ddf7f19a6ca80d493b14e28c9a9",
+      "upstreamCanonicalSha256": "65d930f098442c47b0337b53d80474c383433ddf7f19a6ca80d493b14e28c9a9",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionDenseCaptionsResultPanel.razor": {
+      "localCanonicalSha256": "6e9519e3060d2d2fbb37aa4d917891e8ba29670280ad9898de58d1b84d864fac",
+      "upstreamRawSha256": "6e9519e3060d2d2fbb37aa4d917891e8ba29670280ad9898de58d1b84d864fac",
+      "upstreamCanonicalSha256": "6e9519e3060d2d2fbb37aa4d917891e8ba29670280ad9898de58d1b84d864fac",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionMetadataResultPanel.razor": {
+      "localCanonicalSha256": "f85c2c288f4b421cdfed483a175318fdaf201f9bf290985ed62d142c618e956d",
+      "upstreamRawSha256": "f85c2c288f4b421cdfed483a175318fdaf201f9bf290985ed62d142c618e956d",
+      "upstreamCanonicalSha256": "f85c2c288f4b421cdfed483a175318fdaf201f9bf290985ed62d142c618e956d",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionObjectsResultPanel.razor": {
+      "localCanonicalSha256": "e216a0f8360312cca3ca1e4af02f045905f93d16da84ec0af913ca99fb643484",
+      "upstreamRawSha256": "e216a0f8360312cca3ca1e4af02f045905f93d16da84ec0af913ca99fb643484",
+      "upstreamCanonicalSha256": "e216a0f8360312cca3ca1e4af02f045905f93d16da84ec0af913ca99fb643484",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionPeopleResultPanel.razor": {
+      "localCanonicalSha256": "8a2e206ab605e1c1cfcbf55671b30e320d9d597f7471dccff166859919edb1d9",
+      "upstreamRawSha256": "8a2e206ab605e1c1cfcbf55671b30e320d9d597f7471dccff166859919edb1d9",
+      "upstreamCanonicalSha256": "8a2e206ab605e1c1cfcbf55671b30e320d9d597f7471dccff166859919edb1d9",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionRawResultPanel.razor": {
+      "localCanonicalSha256": "d0d4def3286cb7225d3304fd8be64cbaa2fa70ffddd5112cddf42f072a55926e",
+      "upstreamRawSha256": "d0d4def3286cb7225d3304fd8be64cbaa2fa70ffddd5112cddf42f072a55926e",
+      "upstreamCanonicalSha256": "d0d4def3286cb7225d3304fd8be64cbaa2fa70ffddd5112cddf42f072a55926e",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionReadResultPanel.razor": {
+      "localCanonicalSha256": "3103db2bd26d407195b6084f4a3b325ed43e445d91e9ee40683aa90e1abebb34",
+      "upstreamRawSha256": "3103db2bd26d407195b6084f4a3b325ed43e445d91e9ee40683aa90e1abebb34",
+      "upstreamCanonicalSha256": "3103db2bd26d407195b6084f4a3b325ed43e445d91e9ee40683aa90e1abebb34",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionResponseParser.cs": {
+      "localCanonicalSha256": "b892c0a6271d81b4688e6f9eb380993a02717916de6448ffeaf835c666198fc0",
+      "upstreamRawSha256": "b892c0a6271d81b4688e6f9eb380993a02717916de6448ffeaf835c666198fc0",
+      "upstreamCanonicalSha256": "b892c0a6271d81b4688e6f9eb380993a02717916de6448ffeaf835c666198fc0",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionResultFormatter.cs": {
+      "localCanonicalSha256": "0266fda9a97026fd0cad3d04ba6338970395a2be71afe7f80cbf819eb900e9ac",
+      "upstreamRawSha256": "0266fda9a97026fd0cad3d04ba6338970395a2be71afe7f80cbf819eb900e9ac",
+      "upstreamCanonicalSha256": "0266fda9a97026fd0cad3d04ba6338970395a2be71afe7f80cbf819eb900e9ac",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionResultPanel.razor": {
+      "localCanonicalSha256": "cf732cce62d450d7fe6970cfad8be9caa095860f17508d9c5c8c5e71e861f12b",
+      "upstreamRawSha256": "cf732cce62d450d7fe6970cfad8be9caa095860f17508d9c5c8c5e71e861f12b",
+      "upstreamCanonicalSha256": "cf732cce62d450d7fe6970cfad8be9caa095860f17508d9c5c8c5e71e861f12b",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionResultView.cs": {
+      "localCanonicalSha256": "ff83a9c81a5fcda4e4a771d542fefc1e3d4aff24a7df7ccc38b6742d27fd4cea",
+      "upstreamRawSha256": "ff83a9c81a5fcda4e4a771d542fefc1e3d4aff24a7df7ccc38b6742d27fd4cea",
+      "upstreamCanonicalSha256": "ff83a9c81a5fcda4e4a771d542fefc1e3d4aff24a7df7ccc38b6742d27fd4cea",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionSummaryResultPanel.razor": {
+      "localCanonicalSha256": "c1a72ff60f11dbb679f9b8979a8be141fbfd371fe36c0084544ea16f8e387b74",
+      "upstreamRawSha256": "c1a72ff60f11dbb679f9b8979a8be141fbfd371fe36c0084544ea16f8e387b74",
+      "upstreamCanonicalSha256": "c1a72ff60f11dbb679f9b8979a8be141fbfd371fe36c0084544ea16f8e387b74",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/Shared/Vision/VisionTagsResultPanel.razor": {
+      "localCanonicalSha256": "5d8444dedc9514bfb9dd8e82ebecc4514bc96e5df0f943ab48b55a9a23b8c0c0",
+      "upstreamRawSha256": "5d8444dedc9514bfb9dd8e82ebecc4514bc96e5df0f943ab48b55a9a23b8c0c0",
+      "upstreamCanonicalSha256": "5d8444dedc9514bfb9dd8e82ebecc4514bc96e5df0f943ab48b55a9a23b8c0c0",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Components/_Imports.razor": {
+      "localCanonicalSha256": "0bd38027380a8e00a3f9f1d68899d39e3d7f29166f46db0570cd95434977bae3",
+      "upstreamRawSha256": "0bd38027380a8e00a3f9f1d68899d39e3d7f29166f46db0570cd95434977bae3",
+      "upstreamCanonicalSha256": "0bd38027380a8e00a3f9f1d68899d39e3d7f29166f46db0570cd95434977bae3",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/Dockerfile": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Dockerfile*",
+      "upstreamRawSha256": "f15aa8438416461652b5a5fe47cd1043fadddfbeaa53fc1e4da3778eec8acdd9",
+      "upstreamCanonicalSha256": "f15aa8438416461652b5a5fe47cd1043fadddfbeaa53fc1e4da3778eec8acdd9"
+    },
+    "CompanionApp/Dockerfile.dockerignore": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Dockerfile*",
+      "upstreamRawSha256": "af61d626b74ffd00cb40acea41e206ae4fe6ce8ff16045ce83de3f6e2edbebd2",
+      "upstreamCanonicalSha256": "af61d626b74ffd00cb40acea41e206ae4fe6ce8ff16045ce83de3f6e2edbebd2"
+    },
+    "CompanionApp/Program.cs": {
+      "localCanonicalSha256": "7fd62e470302b0f0257f5a72de96d94c06c378911b5f5d78306356cf6e93de36",
+      "upstreamRawSha256": "e837b1aa48e4950186bc730eab8af5b4313ba9be542d260266d6d42aa3e3dce3",
+      "upstreamCanonicalSha256": "e837b1aa48e4950186bc730eab8af5b4313ba9be542d260266d6d42aa3e3dce3",
+      "disposition": "ai4ia-patched"
+    },
+    "CompanionApp/Properties/launchSettings.json": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/Properties/launchSettings.json",
+      "upstreamRawSha256": "10cabeb037aafc72ed8455d587caa469bdba7e82aff69dfd8e1d779205e16454",
+      "upstreamCanonicalSha256": "10cabeb037aafc72ed8455d587caa469bdba7e82aff69dfd8e1d779205e16454"
+    },
+    "CompanionApp/S7P-CircuitBreakerError_DataFlow.md": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/S7P-CircuitBreakerError_DataFlow.md",
+      "upstreamRawSha256": "dde2ccf4264512650a8f4f5bc3f8a913eec97e28101eedaeaa4085e60efb2a6c",
+      "upstreamCanonicalSha256": "dde2ccf4264512650a8f4f5bc3f8a913eec97e28101eedaeaa4085e60efb2a6c"
+    },
+    "CompanionApp/chat-models.Development.json": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/chat-models*",
+      "upstreamRawSha256": "b1ea727f8d6be2ba38802db1be724c8f10c768545228b36687042b1fe97025c5",
+      "upstreamCanonicalSha256": "b1ea727f8d6be2ba38802db1be724c8f10c768545228b36687042b1fe97025c5"
+    },
+    "CompanionApp/chat-models.json": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/chat-models*",
+      "upstreamRawSha256": "b7dc0a3aca2fdf90c94f266e1339bdc1f2319527c3bba00adb34c7f3263fbd5f",
+      "upstreamCanonicalSha256": "b7dc0a3aca2fdf90c94f266e1339bdc1f2319527c3bba00adb34c7f3263fbd5f"
+    },
+    "CompanionApp/configuration.md": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/configuration.md",
+      "upstreamRawSha256": "322d04020fcf3bbe3582f6c9d55f821f4d57e2b2d2ede00c972af87723bea72f",
+      "upstreamCanonicalSha256": "322d04020fcf3bbe3582f6c9d55f821f4d57e2b2d2ede00c972af87723bea72f"
+    },
+    "CompanionApp/data/.gitignore": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/data/.gitignore",
+      "upstreamRawSha256": "287bad6f22bffb15536a90b21696aa8b6d3df035ada653e9a730124d1ef7bc32",
+      "upstreamCanonicalSha256": "287bad6f22bffb15536a90b21696aa8b6d3df035ada653e9a730124d1ef7bc32"
+    },
+    "CompanionApp/delpoyment.md": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/delpoyment.md",
+      "upstreamRawSha256": "8720640ed8b72cf2bc2f303afc5289c83ef29611536cd39058da0b7011e7d202",
+      "upstreamCanonicalSha256": "8720640ed8b72cf2bc2f303afc5289c83ef29611536cd39058da0b7011e7d202"
+    },
+    "CompanionApp/deploy.sh": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/deploy.sh",
+      "upstreamRawSha256": "208b07209f164b739f665ffd86e8cfa543df480ef0e42e53b38266c1a075b3ae",
+      "upstreamCanonicalSha256": "208b07209f164b739f665ffd86e8cfa543df480ef0e42e53b38266c1a075b3ae"
+    },
+    "CompanionApp/deployment-cli.md": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/deployment-cli.md",
+      "upstreamRawSha256": "49f8870dcf26e90c4e076388cfb85813f676d8e76c49c3a239fd275539311ade",
+      "upstreamCanonicalSha256": "49f8870dcf26e90c4e076388cfb85813f676d8e76c49c3a239fd275539311ade"
+    },
+    "CompanionApp/event.json": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/event.json",
+      "upstreamRawSha256": "438d32835ce6477755f422cff3c98128ae87bee2c0d8eaf9db6be21d04fa0a14",
+      "upstreamCanonicalSha256": "438d32835ce6477755f422cff3c98128ae87bee2c0d8eaf9db6be21d04fa0a14"
+    },
+    "CompanionApp/image-1.png": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/image*.png",
+      "upstreamRawSha256": "3226c9e02ccf5956129057620835429cf6ab90e86691bc2fcd806572a1ab1a34",
+      "upstreamCanonicalSha256": "39d007eb4b4451bf3459e19900899f3fb7063d81626be5f1b00143e4d155b5d8"
+    },
+    "CompanionApp/image-2.png": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/image*.png",
+      "upstreamRawSha256": "45b8f71571cd5e80d2543b187d4febf5f63a91f5eb60c71a6deb826d11d278f5",
+      "upstreamCanonicalSha256": "15c1125f29a28dcfe4882f2877545a27eb919964fbd888b64c1fd9a96383c83e"
+    },
+    "CompanionApp/image-3.png": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/image*.png",
+      "upstreamRawSha256": "5200df0f4b6dc0ca41156b43718ff218f4511c0f8f5964113e459e00dbb01121",
+      "upstreamCanonicalSha256": "c112722eb286046259b2fbdbd633bb2ab74ccb1c2370c35400164468bfdb2e31"
+    },
+    "CompanionApp/image.png": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/image*.png",
+      "upstreamRawSha256": "3c40ada17f421d6170aa0e83feaeb5da16897430f3aa5529be398ab6b68f2c97",
+      "upstreamCanonicalSha256": "3558b0738e9ba1234004ac6943580ef82d4d1463e177f5b7178416d393b5baa2"
+    },
+    "CompanionApp/make-zip.sh": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/make-zip.sh",
+      "upstreamRawSha256": "d3b30e3ec8ce0f0044fef41bf0e33c16283bf56568a1401dba43245d92da18fb",
+      "upstreamCanonicalSha256": "d3b30e3ec8ce0f0044fef41bf0e33c16283bf56568a1401dba43245d92da18fb"
+    },
+    "CompanionApp/managed-identity.png": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/managed-identity.png",
+      "upstreamRawSha256": "6e85debd62e460931c47cafacfa85b722dd79a812708f13a91474833c34c827d",
+      "upstreamCanonicalSha256": "f5874823b8278f77acb55627c7f14c433b4e75cd6bdfac767b0b891d6b3af3fd"
+    },
+    "CompanionApp/packages.lock.json": {
+      "localCanonicalSha256": "174480815d5d34513ff7810c18195d88e402e62014abc8e2d032f7307ac4ea28",
+      "disposition": "ai4ia-added"
+    },
+    "CompanionApp/readme.md": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/readme.md",
+      "upstreamRawSha256": "58b0d997fa6506413986023de8985714d78f6260e34fbf3216363227706cb8d0",
+      "upstreamCanonicalSha256": "58b0d997fa6506413986023de8985714d78f6260e34fbf3216363227706cb8d0"
+    },
+    "CompanionApp/testing.md": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/testing.md",
+      "upstreamRawSha256": "c1a483a79ec15327697099d74c21d25225c37c5a1d0d096c243dcc884c74e200",
+      "upstreamCanonicalSha256": "c1a483a79ec15327697099d74c21d25225c37c5a1d0d096c243dcc884c74e200"
+    },
+    "CompanionApp/todo.md": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/todo.md",
+      "upstreamRawSha256": "47a4d377389c1d192a2b90b616ca5467ea63de37e63dcde04d230ca415def6c0",
+      "upstreamCanonicalSha256": "47a4d377389c1d192a2b90b616ca5467ea63de37e63dcde04d230ca415def6c0"
+    },
+    "CompanionApp/update_settings.sh": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/update_settings.sh",
+      "upstreamRawSha256": "b53caee75b70f1e38240c2a0b2f97da7d2762bb9df549f822692cb4b6c942f7b",
+      "upstreamCanonicalSha256": "b53caee75b70f1e38240c2a0b2f97da7d2762bb9df549f822692cb4b6c942f7b"
+    },
+    "CompanionApp/upload_zip.sh": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/upload_zip.sh",
+      "upstreamRawSha256": "5a819ca252bad5ee3456a96914b250bf0812b240530889bef65ec5561ea35e60",
+      "upstreamCanonicalSha256": "5a819ca252bad5ee3456a96914b250bf0812b240530889bef65ec5561ea35e60"
+    },
+    "CompanionApp/vision-models.json": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/vision-models*",
+      "upstreamRawSha256": "a7e33eaf0d2c8cbaeffbece853b2d0b4191499c4ff3f827cb1ee6c5d3692d2fb",
+      "upstreamCanonicalSha256": "a7e33eaf0d2c8cbaeffbece853b2d0b4191499c4ff3f827cb1ee6c5d3692d2fb"
+    },
+    "CompanionApp/wwwroot/app.css": {
+      "localCanonicalSha256": "0426a7786e7c7989c1b18792095b9b26a0ef455bc6b8e1c0ec49166056d5bf09",
+      "upstreamRawSha256": "0426a7786e7c7989c1b18792095b9b26a0ef455bc6b8e1c0ec49166056d5bf09",
+      "upstreamCanonicalSha256": "0426a7786e7c7989c1b18792095b9b26a0ef455bc6b8e1c0ec49166056d5bf09",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/wwwroot/favicon.png": {
+      "localCanonicalSha256": "5d0518a8bb09751471cbb17de6acc167b57403b9983308e2860ff27c68519637",
+      "upstreamRawSha256": "e265ac0f2dda1e5dfa65b1adf330722bb3ef7789115283604d8cd19f098f1f08",
+      "upstreamCanonicalSha256": "5d0518a8bb09751471cbb17de6acc167b57403b9983308e2860ff27c68519637",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/wwwroot/images/azure/00009-icon-service-Log-Analytics-Workspaces.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "7a244a8d7260e84be5c904185db7b04994fe6ed345e2b224163bc5f7e3d97ce0",
+      "upstreamCanonicalSha256": "7a244a8d7260e84be5c904185db7b04994fe6ed345e2b224163bc5f7e3d97ce0"
+    },
+    "CompanionApp/wwwroot/images/azure/00012-icon-service-Application-Insights.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "36c73dea8b1598fbfff84890a2b409600f1339eec8c1bf1a896439e9da8f9dca",
+      "upstreamCanonicalSha256": "36c73dea8b1598fbfff84890a2b409600f1339eec8c1bf1a896439e9da8f9dca"
+    },
+    "CompanionApp/wwwroot/images/azure/02884-icon-service-Worker-Container-App.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "b53c7e6b7af75b25c04231a7dff85074f0c32cc1c306376350c0c8df0cb64417",
+      "upstreamCanonicalSha256": "b53c7e6b7af75b25c04231a7dff85074f0c32cc1c306376350c0c8df0cb64417"
+    },
+    "CompanionApp/wwwroot/images/azure/02989-icon-service-Container-Apps-Environments.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "3cf4ba9242e31496f778a27e92c9c2b2a09664f105c58325d5e2dcb142d3c3b9",
+      "upstreamCanonicalSha256": "3cf4ba9242e31496f778a27e92c9c2b2a09664f105c58325d5e2dcb142d3c3b9"
+    },
+    "CompanionApp/wwwroot/images/azure/10007-icon-service-Resource-Groups.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "4d2b2eacb37735849d2e556074ac8564f92fada70672b40985c77ea666e82977",
+      "upstreamCanonicalSha256": "4d2b2eacb37735849d2e556074ac8564f92fada70672b40985c77ea666e82977"
+    },
+    "CompanionApp/wwwroot/images/azure/10029-icon-service-Function-Apps.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "1a6c9c108d5f63f7b78bc6fbc464059acd2eaa8c1d111e9bcd28a8b2cdf470b9",
+      "upstreamCanonicalSha256": "1a6c9c108d5f63f7b78bc6fbc464059acd2eaa8c1d111e9bcd28a8b2cdf470b9"
+    },
+    "CompanionApp/wwwroot/images/azure/10061-icon-service-Virtual-Networks.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "64a5e75ecef2f9f69067faa2eb131266cb8f2858706f8ab74bfea5ad0d98b14d",
+      "upstreamCanonicalSha256": "64a5e75ecef2f9f69067faa2eb131266cb8f2858706f8ab74bfea5ad0d98b14d"
+    },
+    "CompanionApp/wwwroot/images/azure/10064-icon-service-DNS-Zones.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "e6aaa1380e974af7d0aba1bb8380ecfab3f95182a595a28692aa3f963bcf9fac",
+      "upstreamCanonicalSha256": "e6aaa1380e974af7d0aba1bb8380ecfab3f95182a595a28692aa3f963bcf9fac"
+    },
+    "CompanionApp/wwwroot/images/azure/10086-icon-service-Storage-Accounts.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "7190d3bb14ce30ce74bd0af873915830fe821e8c5f6ef6f3149e6f7cfb2aa4f7",
+      "upstreamCanonicalSha256": "7190d3bb14ce30ce74bd0af873915830fe821e8c5f6ef6f3149e6f7cfb2aa4f7"
+    },
+    "CompanionApp/wwwroot/images/azure/10105-icon-service-Container-Registries.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "c134b0a442f203a7eeeb6f99a1f02ed34e51373d7fca59f96c9f125874c9d7d4",
+      "upstreamCanonicalSha256": "c134b0a442f203a7eeeb6f99a1f02ed34e51373d7fca59f96c9f125874c9d7d4"
+    },
+    "CompanionApp/wwwroot/images/azure/10121-icon-service-Azure-Cosmos-DB.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "b6f1f2afac15762d1de44366d34984c5a3e6e58f94d9e81407ac01565212e8e3",
+      "upstreamCanonicalSha256": "b6f1f2afac15762d1de44366d34984c5a3e6e58f94d9e81407ac01565212e8e3"
+    },
+    "CompanionApp/wwwroot/images/azure/10219-icon-service-App-Configuration.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "d39322382b9894cee4c3608e56e44217376ac8e4fa98a5d2e9c0c7ed27155e6a",
+      "upstreamCanonicalSha256": "d39322382b9894cee4c3608e56e44217376ac8e4fa98a5d2e9c0c7ed27155e6a"
+    },
+    "CompanionApp/wwwroot/images/azure/10227-icon-service-Managed-Identities.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "fa2e0fb863e81d7923b5708bed196e19310867a194d23bea96dddc42e302693c",
+      "upstreamCanonicalSha256": "fa2e0fb863e81d7923b5708bed196e19310867a194d23bea96dddc42e302693c"
+    },
+    "CompanionApp/wwwroot/images/azure/10836-icon-service-Azure-Service-Bus.svg": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "eaf42cb87aedf608f60d40b601eb86491daaa71b8eab40a935e8e7fa2e62a2cf",
+      "upstreamCanonicalSha256": "eaf42cb87aedf608f60d40b601eb86491daaa71b8eab40a935e8e7fa2e62a2cf"
+    },
+    "CompanionApp/wwwroot/images/azure/Microsoft_Terms_of_Use.pdf": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/images/azure/*",
+      "upstreamRawSha256": "983e83cef1a8f85164760b076a96df54cb50af345861cb1d8344040037d0531c",
+      "upstreamCanonicalSha256": "3e630792f76c04a3f848d920cfa156a2a8223c2e423b3a4fd8dbbbf52fb19a98"
+    },
+    "CompanionApp/wwwroot/js/chatScroll.js": {
+      "localCanonicalSha256": "8e8d1574081c74431bf70ca7c3a3374b48eaedee1abdd3df904653c35b7001dc",
+      "upstreamRawSha256": "8e8d1574081c74431bf70ca7c3a3374b48eaedee1abdd3df904653c35b7001dc",
+      "upstreamCanonicalSha256": "8e8d1574081c74431bf70ca7c3a3374b48eaedee1abdd3df904653c35b7001dc",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/wwwroot/js/userPreferences.js": {
+      "localCanonicalSha256": "56a27062f75018a22fea51f79694ece262a375860f9e1b5b8ebc8dd66c942ba6",
+      "upstreamRawSha256": "56a27062f75018a22fea51f79694ece262a375860f9e1b5b8ebc8dd66c942ba6",
+      "upstreamCanonicalSha256": "56a27062f75018a22fea51f79694ece262a375860f9e1b5b8ebc8dd66c942ba6",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-grid.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "upstreamRawSha256": "632e7f841a919a6536309d532b03f6697a133baf8e8f3acb98922c0b65b2e07f",
+      "upstreamCanonicalSha256": "632e7f841a919a6536309d532b03f6697a133baf8e8f3acb98922c0b65b2e07f"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-grid.min.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "upstreamRawSha256": "e670c73068b27d91e5dd45de3ee84b0d047d9dc3df051d4725e64b5f224d576e",
+      "upstreamCanonicalSha256": "e670c73068b27d91e5dd45de3ee84b0d047d9dc3df051d4725e64b5f224d576e"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-grid.rtl.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "upstreamRawSha256": "099c6817cce368b97256472f5420e573c09e411d70d5132bbe0631df472cf243",
+      "upstreamCanonicalSha256": "099c6817cce368b97256472f5420e573c09e411d70d5132bbe0631df472cf243"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-grid.rtl.min.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "upstreamRawSha256": "bccc5372f902e0bcbb2e2013dc6f32132f44a53afb1607b849ccd6a74effa779",
+      "upstreamCanonicalSha256": "bccc5372f902e0bcbb2e2013dc6f32132f44a53afb1607b849ccd6a74effa779"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-reboot.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "upstreamRawSha256": "968f5823cd8e174defa2376ef97391dfe0d1acb229321a7364d9876cce420cc0",
+      "upstreamCanonicalSha256": "968f5823cd8e174defa2376ef97391dfe0d1acb229321a7364d9876cce420cc0"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-reboot.min.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "upstreamRawSha256": "97cbede68a33bfde7c78c77d4c5b0f016825f4924af5829f6d54acf2672143ce",
+      "upstreamCanonicalSha256": "97cbede68a33bfde7c78c77d4c5b0f016825f4924af5829f6d54acf2672143ce"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-reboot.rtl.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "upstreamRawSha256": "57ca6c9c7a094bf30f9425d6c1cfc9ded1ada7d7378061519aab08420a67f868",
+      "upstreamCanonicalSha256": "57ca6c9c7a094bf30f9425d6c1cfc9ded1ada7d7378061519aab08420a67f868"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-reboot.rtl.min.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "upstreamRawSha256": "ffc8e1f217043052b24ba8285aa9cdbbbb7713364f0867506603bab02908f2d2",
+      "upstreamCanonicalSha256": "ffc8e1f217043052b24ba8285aa9cdbbbb7713364f0867506603bab02908f2d2"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-utilities.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "upstreamRawSha256": "d81b9b80d50f950485ff4c0b15c45743f623ce4f6fb146c301e2b640cfa1fb2a",
+      "upstreamCanonicalSha256": "d81b9b80d50f950485ff4c0b15c45743f623ce4f6fb146c301e2b640cfa1fb2a"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-utilities.min.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "upstreamRawSha256": "2b213dc5b28ef42b98c741d7a482a0b1622f5e401f213b62435ef68f6eb0991b",
+      "upstreamCanonicalSha256": "2b213dc5b28ef42b98c741d7a482a0b1622f5e401f213b62435ef68f6eb0991b"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-utilities.rtl.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "upstreamRawSha256": "1fac2405b4b08ee6b6bde2684e1268e2ecb5eb58e9f833a2653968525719eaa4",
+      "upstreamCanonicalSha256": "1fac2405b4b08ee6b6bde2684e1268e2ecb5eb58e9f833a2653968525719eaa4"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-utilities.rtl.min.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*",
+      "upstreamRawSha256": "18052e9ba163c10f07ad719aa054671d3a9040ba658d719abd3ee6057f04f6a5",
+      "upstreamCanonicalSha256": "18052e9ba163c10f07ad719aa054671d3a9040ba658d719abd3ee6057f04f6a5"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap.css",
+      "upstreamRawSha256": "18a105d7cb38e01e5ed0ca255c092992a2e211b39594a7fa57262bfc6fc4ea9c",
+      "upstreamCanonicalSha256": "18a105d7cb38e01e5ed0ca255c092992a2e211b39594a7fa57262bfc6fc4ea9c"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap.min.css": {
+      "localCanonicalSha256": "3c8f27e6009ccfd710a905e6dcf12d0ee3c6f2ac7da05b0572d3e0d12e736fc8",
+      "upstreamRawSha256": "3c8f27e6009ccfd710a905e6dcf12d0ee3c6f2ac7da05b0572d3e0d12e736fc8",
+      "upstreamCanonicalSha256": "3c8f27e6009ccfd710a905e6dcf12d0ee3c6f2ac7da05b0572d3e0d12e736fc8",
+      "disposition": "upstream-equivalent"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap.rtl.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap.rtl*",
+      "upstreamRawSha256": "8f91385c88f5a7590d9c38b4c75b5e5fd457a21d7f14d94fbc230bf589918764",
+      "upstreamCanonicalSha256": "8f91385c88f5a7590d9c38b4c75b5e5fd457a21d7f14d94fbc230bf589918764"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap.rtl.min.css": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap.rtl*",
+      "upstreamRawSha256": "879944ecd9bc4a4788a411c763137df6ca4fdd5b8614a97935982ca1c8a5ef39",
+      "upstreamCanonicalSha256": "879944ecd9bc4a4788a411c763137df6ca4fdd5b8614a97935982ca1c8a5ef39"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/js/bootstrap.bundle.js": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/js/*",
+      "upstreamRawSha256": "9a4a11a15db88d5fab08f59c1c34796b03f1f15bb3cc928dd226e1c59f7f59a3",
+      "upstreamCanonicalSha256": "9a4a11a15db88d5fab08f59c1c34796b03f1f15bb3cc928dd226e1c59f7f59a3"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/js/bootstrap.bundle.min.js": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/js/*",
+      "upstreamRawSha256": "0833b2e9c3a26c258476c46266e6877fc75218625162e0460be9a3a098a61c6c",
+      "upstreamCanonicalSha256": "0833b2e9c3a26c258476c46266e6877fc75218625162e0460be9a3a098a61c6c"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/js/bootstrap.esm.js": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/js/*",
+      "upstreamRawSha256": "7b189764d243c2e7177ee8dedc26d73dbb92ebe12bcb7cfdb0ffa9826be1f270",
+      "upstreamCanonicalSha256": "7b189764d243c2e7177ee8dedc26d73dbb92ebe12bcb7cfdb0ffa9826be1f270"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/js/bootstrap.esm.min.js": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/js/*",
+      "upstreamRawSha256": "4197454f564d765cb8ae681406d5e65c54bd054d454dafac3deea1efde2c1514",
+      "upstreamCanonicalSha256": "4197454f564d765cb8ae681406d5e65c54bd054d454dafac3deea1efde2c1514"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/js/bootstrap.js": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/js/*",
+      "upstreamRawSha256": "f945bcd36c2055f9e36926ddc321cb954ec056995bd164e83a5bcdd429f321a7",
+      "upstreamCanonicalSha256": "f945bcd36c2055f9e36926ddc321cb954ec056995bd164e83a5bcdd429f321a7"
+    },
+    "CompanionApp/wwwroot/lib/bootstrap/dist/js/bootstrap.min.js": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/wwwroot/lib/bootstrap/dist/js/*",
+      "upstreamRawSha256": "de040986d9a3ed89d5d5f9ad6d5727015e9e238c2cd13af8f1b55909386d0864",
+      "upstreamCanonicalSha256": "de040986d9a3ed89d5d5f9ad6d5727015e9e238c2cd13af8f1b55909386d0864"
+    },
+    "CompanionApp/zip-upload.png": {
+      "disposition": "ai4ia-excluded",
+      "rule": "CompanionApp/zip-upload.png",
+      "upstreamRawSha256": "928f6aadae9a0b99910dafc50e87fee3b0c804e391a812fdf60b0503c4ba791c",
+      "upstreamCanonicalSha256": "07c8298796c898e9d947ee77feffdd10cfb08e0c142976f5388f6913c72b8bdd"
+    },
     "Shared-parser/Shared-parser.csproj": {
       "localCanonicalSha256": "427a8ec24ea669bc7221d90b71bbec037ed798d7e84c09966be661ce4d3e895e",
       "upstreamRawSha256": "8d81dc6920f493e0d5a425b7f73b5808d7c24f4103cd5b443832d710d88b6591",

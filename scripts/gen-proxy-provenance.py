@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import subprocess
@@ -18,7 +19,7 @@ PROXY_ROOT = ROOT / "proxy"
 MANIFEST = PROXY_ROOT / "upstream-provenance.json"
 UPSTREAM_REPOSITORY = "https://github.com/microsoft/SimpleL7Proxy.git"
 UPSTREAM_COMMIT = "b0066b0e53f89abb5e84cfeacda2fdcaca8b081e"
-SOURCE_SCOPES = ("Shared", "Shared-parser", "SimpleL7Proxy")
+SOURCE_SCOPES = ("Shared", "Shared-parser", "SimpleL7Proxy", "CompanionApp")
 
 AI4IA_PATCH_REASONS = {
     "Shared-parser/Shared-parser.csproj": (
@@ -102,7 +103,116 @@ AI4IA_PATCH_REASONS = {
         "OpenTelemetry 1.19.1; remove unsupported Application Insights 2.x packages "
         "and declare the OpenTelemetry processor API."
     ),
+    "CompanionApp/CompanionApp.csproj": (
+        "Drop the embedded resources and content items of the excluded deployment "
+        "page and chat/vision presets."
+    ),
+    "CompanionApp/Program.cs": (
+        "Hosted mode: refuse outbound HTTP, require managed identity for Event Hubs, "
+        "drop the App Configuration editor, chat stores and preset files, never "
+        "publish fabricated sample metrics, and allow a configured key-ring path."
+    ),
+    "CompanionApp/Components/Pages/Home.razor": (
+        "Offer only the Event Hub monitor and Insights; drop the routes, links and "
+        "Investigator wizard of excluded tools."
+    ),
+    "CompanionApp/Components/Layout/NavMenu.razor": (
+        "Link only the retained Event Hub monitor and Insights pages."
+    ),
+    "CompanionApp/Ai4ia/HostedGuard.cs": (
+        "AI4IA hosted-mode guards: a refusing HttpClient and managed-identity-only Event Hubs."
+    ),
+    "CompanionApp/packages.lock.json": "AI4IA-generated NuGet lock for deterministic restore.",
 }
+
+# Upstream files deliberately not vendored, as case-sensitive fnmatch patterns ("*"
+# also crosses "/"). Each excluded file is still recorded with its upstream hash so
+# the omission is exact.
+AI4IA_EXCLUSION_REASONS = {
+    "CompanionApp/Components/Pages/AbortTestPage.razor": (
+        "Disconnect tester sends caller-directed server-side requests."
+    ),
+    "CompanionApp/Components/Pages/ChatPage.razor": (
+        "Model chat would bypass the API's admission, quota, receipts and ownership."
+    ),
+    "CompanionApp/Components/Pages/InvestigatorPage.razor": (
+        "Sends caller-chosen URLs and headers from the server: SSRF and credential forwarding."
+    ),
+    "CompanionApp/Components/Pages/StressTestPage.razor": (
+        "Generates concurrent caller-directed load and model cost from the server."
+    ),
+    "CompanionApp/Components/Pages/TestsPage.razor": (
+        "Runs caller-directed request tests from the server."
+    ),
+    "CompanionApp/Components/Pages/UrlTesterPage.razor": (
+        "Sends caller-chosen URLs and headers from the server: SSRF and credential forwarding."
+    ),
+    "CompanionApp/Components/Pages/AdminConfigurationPage.razor*": (
+        "App Configuration editor publishes with the server identity; AI4IA keeps proxy "
+        "settings in Bicep."
+    ),
+    "CompanionApp/Components/Pages/Deployment*": (
+        "Generates upstream's own deployment topology, not AI4IA's."
+    ),
+    "CompanionApp/Assets/Deployment/*": "Embedded templates of the excluded deployment page.",
+    "CompanionApp/wwwroot/images/azure/*": "Images of the excluded deployment page.",
+    "CompanionApp/Components/Pages/HistoryPage.razor": (
+        "Instance-wide chat history of the excluded chat tools."
+    ),
+    "CompanionApp/Components/Pages/UserPreferencesPage.razor": (
+        "Lets a user point history storage at arbitrary Blob or Cosmos accounts with the "
+        "server identity."
+    ),
+    "CompanionApp/Components/Pages/IncompletePage.razor": "Placeholder for unfinished upstream features.",
+    "CompanionApp/chat-models*": (
+        "Presets of the excluded chat tools; AI4IA models come from infra/models.json."
+    ),
+    "CompanionApp/vision-models*": (
+        "Presets of the excluded vision tools; AI4IA models come from infra/models.json."
+    ),
+    "CompanionApp/Dockerfile*": (
+        "Upstream image definition with floating base tags; AI4IA builds "
+        "proxy/CompanionApp.Dockerfile."
+    ),
+    "CompanionApp/deploy.sh": "Upstream operator script for its own deployment.",
+    "CompanionApp/make-zip.sh": "Upstream operator script for its own deployment.",
+    "CompanionApp/upload_zip.sh": "Upstream operator script for its own deployment.",
+    "CompanionApp/update_settings.sh": "Upstream operator script for its own deployment.",
+    "CompanionApp/Properties/launchSettings.json": "Local development launch profile.",
+    "CompanionApp/configuration.md": "Upstream documentation; proxy/README.md documents the AI4IA subset.",
+    "CompanionApp/delpoyment.md": "Upstream documentation; proxy/README.md documents the AI4IA subset.",
+    "CompanionApp/deployment-cli.md": "Upstream documentation; proxy/README.md documents the AI4IA subset.",
+    "CompanionApp/readme.md": "Upstream documentation; proxy/README.md documents the AI4IA subset.",
+    "CompanionApp/S7P-CircuitBreakerError_DataFlow.md": (
+        "Upstream documentation; proxy/README.md documents the AI4IA subset."
+    ),
+    "CompanionApp/testing.md": "Upstream documentation; proxy/README.md documents the AI4IA subset.",
+    "CompanionApp/todo.md": "Upstream documentation; proxy/README.md documents the AI4IA subset.",
+    "CompanionApp/image*.png": "Documentation screenshot.",
+    "CompanionApp/managed-identity.png": "Documentation screenshot.",
+    "CompanionApp/zip-upload.png": "Documentation screenshot.",
+    "CompanionApp/event.json": "Sample event data for local replay.",
+    "CompanionApp/data/.gitignore": "Placeholder of the excluded disk history store.",
+    "CompanionApp/wwwroot/lib/bootstrap/dist/js/*": "Bootstrap scripts the retained pages never load.",
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap-*": (
+        "Bootstrap stylesheet variants the retained pages never load."
+    ),
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap.css": (
+        "Bootstrap stylesheet variants the retained pages never load."
+    ),
+    "CompanionApp/wwwroot/lib/bootstrap/dist/css/bootstrap.rtl*": (
+        "Bootstrap stylesheet variants the retained pages never load."
+    ),
+}
+
+
+def _exclusion_rule(path: str) -> str | None:
+    """The single declared rule that excludes ``path``, if any."""
+
+    matches = [rule for rule in AI4IA_EXCLUSION_REASONS if fnmatch.fnmatchcase(path, rule)]
+    if len(matches) > 1:
+        raise ValueError(f"{path}: matched by more than one exclusion rule: {matches}")
+    return matches[0] if matches else None
 
 
 def _sha256(data: bytes) -> str:
@@ -180,9 +290,16 @@ def _validated_upstream_files(ref: str) -> dict[str, bytes]:
 def generate(upstream_ref: str) -> dict:
     upstream = _validated_upstream_files(upstream_ref)
     local = _local_files()
-    missing = sorted(set(upstream) - set(local))
+    excluded = {path: rule for path in upstream if (rule := _exclusion_rule(path)) is not None}
+    present = sorted(set(excluded).intersection(local))
+    if present:
+        raise ValueError(f"excluded upstream files are present locally: {present}")
+    missing = sorted(set(upstream) - set(local) - set(excluded))
     if missing:
         raise ValueError(f"upstream files are missing locally: {missing}")
+    unused = sorted(set(AI4IA_EXCLUSION_REASONS) - set(excluded.values()))
+    if unused:
+        raise ValueError(f"exclusion rules match no upstream file: {unused}")
 
     files: dict[str, dict[str, str]] = {}
     patch_paths: set[str] = set()
@@ -202,6 +319,13 @@ def generate(upstream_ref: str) -> dict:
                 entry["disposition"] = "ai4ia-patched"
                 patch_paths.add(path)
         files[path] = entry
+    for path, rule in excluded.items():
+        files[path] = {
+            "disposition": "ai4ia-excluded",
+            "rule": rule,
+            "upstreamRawSha256": _sha256(upstream[path]),
+            "upstreamCanonicalSha256": _canonical_sha256(upstream[path]),
+        }
 
     declared = set(AI4IA_PATCH_REASONS)
     if patch_paths != declared:
@@ -213,7 +337,7 @@ def generate(upstream_ref: str) -> dict:
 
     counts = Counter(entry["disposition"] for entry in files.values())
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "upstream": {
             "repository": UPSTREAM_REPOSITORY,
             "commit": UPSTREAM_COMMIT,
@@ -225,7 +349,11 @@ def generate(upstream_ref: str) -> dict:
             {"path": path, "reason": AI4IA_PATCH_REASONS[path]}
             for path in sorted(AI4IA_PATCH_REASONS)
         ],
-        "files": files,
+        "exclusions": [
+            {"rule": rule, "reason": AI4IA_EXCLUSION_REASONS[rule]}
+            for rule in sorted(AI4IA_EXCLUSION_REASONS)
+        ],
+        "files": dict(sorted(files.items())),
     }
 
 
@@ -246,15 +374,34 @@ def check() -> list[str]:
 
     local = _local_files()
     recorded = document.get("files") or {}
-    if set(local) != set(recorded):
+    excluded = {
+        path for path, entry in recorded.items()
+        if entry.get("disposition") == "ai4ia-excluded"
+    }
+    vendored = set(recorded) - excluded
+    if set(local) != vendored:
         errors.append(
             "manifest coverage drift: "
-            f"unrecorded={sorted(set(local) - set(recorded))}, "
-            f"missing={sorted(set(recorded) - set(local))}"
+            f"unrecorded={sorted(set(local) - vendored)}, "
+            f"missing={sorted(vendored - set(local))}"
         )
 
     measured_counts: Counter[str] = Counter()
-    for path in sorted(set(local).intersection(recorded)):
+    for path in sorted(excluded):
+        entry = recorded[path]
+        measured_counts["ai4ia-excluded"] += 1
+        if path in local:
+            errors.append(f"{path}: excluded upstream file is present locally")
+        try:
+            rule = _exclusion_rule(path)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        if rule is None or entry.get("rule") != rule:
+            errors.append(f"{path}: exclusion is not declared by the reviewed AI4IA rules")
+        if not entry.get("upstreamCanonicalSha256"):
+            errors.append(f"{path}: excluded file lacks its upstream hash")
+    for path in sorted(set(local).intersection(vendored)):
         entry = recorded[path]
         local_bytes = local[path]
         actual_hash = _canonical_sha256(local_bytes)
@@ -269,6 +416,15 @@ def check() -> list[str]:
                 )
         elif disposition not in {"ai4ia-patched", "ai4ia-added"}:
             errors.append(f"{path}: unknown disposition {disposition!r}")
+
+    exclusion_entries = document.get("exclusions") or []
+    if {entry.get("rule"): entry.get("reason") for entry in exclusion_entries} != AI4IA_EXCLUSION_REASONS:
+        errors.append("explicit exclusion list does not match the reviewed AI4IA exclusions")
+    used_rules = {recorded[path].get("rule") for path in excluded}
+    if used_rules != set(AI4IA_EXCLUSION_REASONS):
+        errors.append(
+            f"exclusion rules match no recorded file: {sorted(set(AI4IA_EXCLUSION_REASONS) - used_rules)}"
+        )
 
     patch_entries = document.get("patches") or []
     patch_paths = {entry.get("path") for entry in patch_entries}

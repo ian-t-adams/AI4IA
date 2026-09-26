@@ -25,16 +25,73 @@ class ProxyProvenanceTests(unittest.TestCase):
         self.assertEqual(
             document["counts"],
             {
-                "ai4ia-added": 5,
-                "ai4ia-patched": 18,
-                "upstream-equivalent": 168,
+                "ai4ia-added": 7,
+                "ai4ia-excluded": 95,
+                "ai4ia-patched": 22,
+                "upstream-equivalent": 292,
             },
         )
-        self.assertEqual(len(document["files"]), 191)
+        self.assertEqual(len(document["files"]), 416)
         self.assertEqual(
             {patch["path"] for patch in document["patches"]},
             set(proxy_provenance.AI4IA_PATCH_REASONS),
         )
+        self.assertEqual(
+            {entry["rule"] for entry in document["exclusions"]},
+            set(proxy_provenance.AI4IA_EXCLUSION_REASONS),
+        )
+
+    def test_excluded_upstream_file_present_locally_is_rejected(self) -> None:
+        local = proxy_provenance._local_files()
+        excluded = "CompanionApp/Components/Pages/UrlTesterPage.razor"
+        self.assertNotIn(excluded, local)
+        with mock.patch.object(
+            proxy_provenance, "_local_files", return_value={**local, excluded: b"@page \"/url-tester\"\n"},
+        ):
+            errors = proxy_provenance.check()
+        self.assertIn(f"{excluded}: excluded upstream file is present locally", errors)
+        # Control: the unmodified tree has no such error.
+        self.assertEqual(proxy_provenance.check(), [])
+
+    def test_exclusion_without_a_reviewed_rule_is_rejected(self) -> None:
+        rules = dict(proxy_provenance.AI4IA_EXCLUSION_REASONS)
+        removed = rules.pop("CompanionApp/Components/Pages/UrlTesterPage.razor")
+        self.assertTrue(removed)
+        with mock.patch.object(proxy_provenance, "AI4IA_EXCLUSION_REASONS", rules):
+            errors = proxy_provenance.check()
+        self.assertIn(
+            "CompanionApp/Components/Pages/UrlTesterPage.razor: "
+            "exclusion is not declared by the reviewed AI4IA rules",
+            errors,
+        )
+        self.assertIn(
+            "explicit exclusion list does not match the reviewed AI4IA exclusions", errors,
+        )
+
+    def test_unused_exclusion_rule_is_rejected(self) -> None:
+        rules = {**proxy_provenance.AI4IA_EXCLUSION_REASONS, "CompanionApp/no-such-file": "stale"}
+        with mock.patch.object(proxy_provenance, "AI4IA_EXCLUSION_REASONS", rules):
+            errors = proxy_provenance.check()
+        self.assertIn("exclusion rules match no recorded file: ['CompanionApp/no-such-file']", errors)
+
+    def test_generation_rejects_undeclared_missing_and_present_excluded_files(self) -> None:
+        local = proxy_provenance._local_files()
+        upstream = {path: data for path, data in local.items() if path.startswith("Shared/")}
+        with (
+            mock.patch.object(proxy_provenance, "_validated_upstream_files",
+                              return_value={**upstream, "CompanionApp/new-upstream.cs": b"x"}),
+            mock.patch.object(proxy_provenance, "_local_files", return_value=local),
+        ):
+            with self.assertRaisesRegex(ValueError, "upstream files are missing locally"):
+                proxy_provenance.generate("FETCH_HEAD")
+        present = "CompanionApp/event.json"
+        with (
+            mock.patch.object(proxy_provenance, "_validated_upstream_files",
+                              return_value={**upstream, present: b"{}"}),
+            mock.patch.object(proxy_provenance, "_local_files", return_value={**local, present: b"{}"}),
+        ):
+            with self.assertRaisesRegex(ValueError, "excluded upstream files are present locally"):
+                proxy_provenance.generate("FETCH_HEAD")
 
     def test_pin_is_shared_by_wrapper_and_documentation(self) -> None:
         pin = proxy_provenance.UPSTREAM_COMMIT
