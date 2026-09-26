@@ -20,8 +20,8 @@
     "claudeExternalEnabled": {
       "value": "${AI4IA_CLAUDE_EXTERNAL_ENABLED=false}"
     },
-    "claudeBindingJson": {
-      "value": "${AI4IA_CLAUDE_BINDING_JSON=}"
+    "claudeBindingJsonBase64": {
+      "value": "${AI4IA_CLAUDE_BINDING_JSON_B64=}"
     },
     "claudeOrganizationName": {
       "value": "${AI4IA_CLAUDE_ORGANIZATION_NAME=}"
@@ -128,8 +128,8 @@
     "proxyProfilesEnabled": {
       "value": "${AI4IA_PROXY_PROFILES_ENABLED=false}"
     },
-    "proxyProfileProjectionJson": {
-      "value": "${AI4IA_PROXY_PROFILE_PROJECTION_JSON=}"
+    "proxyProfileProjectionJsonBase64": {
+      "value": "${AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64=}"
     },
     "proxyPrioritiesEnabled": {
       "value": "${AI4IA_PROXY_PRIORITIES_ENABLED=false}"
@@ -290,8 +290,8 @@
     "groupPolicyEnabled": {
       "value": "${AI4IA_GROUP_POLICY_ENABLED=false}"
     },
-    "groupPolicyJson": {
-      "value": "${AI4IA_GROUP_POLICY_JSON=}"
+    "groupPolicyJsonBase64": {
+      "value": "${AI4IA_GROUP_POLICY_JSON_B64=}"
     },
     "assetPublishingEnabled": {
       "value": "${AI4IA_ASSET_PUBLISHING_ENABLED=false}"

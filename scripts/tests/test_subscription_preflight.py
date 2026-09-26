@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -1051,10 +1052,11 @@ class ModelPreflightLifecycleWiringTests(unittest.TestCase):
             2,
             "Windows and POSIX azd provisions must both check model availability/quota",
         )
-        self.assertIn("    windows:", preprovision)
-        self.assertIn("    posix:", preprovision)
+        # preprovision is a list: every entry carries a windows and a posix hook.
+        self.assertEqual(len(re.findall(r"(?m)^    - windows:$", preprovision)), 2)
+        self.assertEqual(len(re.findall(r"(?m)^      posix:$", preprovision)), 2)
         self.assertNotIn("--skip-quota", preprovision)
-        self.assertIn("continueOnError: false", preprovision)
+        self.assertEqual(preprovision.count("continueOnError: false"), 4)
 
     def test_preflight_script_changes_trigger_the_provisioning_workflow(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(

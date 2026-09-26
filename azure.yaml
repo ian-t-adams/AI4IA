@@ -42,34 +42,53 @@ services:
 # that provision created is missing/unhealthy, so a broken deploy can't look
 # successful. continueOnError is false on purpose. The posix branch also invokes
 # pwsh (preinstalled on the GitHub ubuntu runner) so the same checks run in CI.
+#
+# preprovision is a list on purpose. azd substitutes environment values into
+# infra/main.parameters.json unescaped, so JSON-valued variables (for example
+# AI4IA_GROUP_POLICY_JSON) reach Bicep only as <NAME>_B64 base64 transports. The
+# first entry derives them into the azd environment for a local run (in CI,
+# deploy.yml already exported them and it writes nothing). azd runs these
+# command hooks before `azd provision` resolves any parameter, and reloads its
+# environment after every entry, so the checks below and the parameter file see
+# the derived values. See docs/runbooks/deployment.md section 7.18.
 hooks:
   preprovision:
-    windows:
-      shell: pwsh
-      run: |
-        python scripts/gen-model-catalog.py --check
-        python scripts/gen-mcp-catalog.py --check
-        python scripts/gen-voice-provider-catalog.py --check
-        python scripts/gen-gateway-policy.py --check
-        python scripts/validate-feature-prereqs.py --require-deployment-attestation
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        # Requires Azure CLI credentials and verifies availability, lifecycle, and
-        # quota before azd submits ARM resources. Failure is intentionally fatal.
-        python scripts/check-model-availability.py
-      continueOnError: false
-      interactive: false
-    posix:
-      shell: sh
-      run: |
-        python3 scripts/gen-model-catalog.py --check
-        python3 scripts/gen-mcp-catalog.py --check
-        python3 scripts/gen-voice-provider-catalog.py --check
-        python3 scripts/gen-gateway-policy.py --check
-        python3 scripts/validate-feature-prereqs.py --require-deployment-attestation || exit $?
-        # Same pre-resource hard gate as Windows; quota cannot be bypassed.
-        python3 scripts/check-model-availability.py
-      continueOnError: false
-      interactive: false
+    - windows:
+        shell: pwsh
+        run: python scripts/derive-json-transport.py --azd-env; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        continueOnError: false
+        interactive: false
+      posix:
+        shell: sh
+        run: python3 scripts/derive-json-transport.py --azd-env
+        continueOnError: false
+        interactive: false
+    - windows:
+        shell: pwsh
+        run: |
+          python scripts/gen-model-catalog.py --check
+          python scripts/gen-mcp-catalog.py --check
+          python scripts/gen-voice-provider-catalog.py --check
+          python scripts/gen-gateway-policy.py --check
+          python scripts/validate-feature-prereqs.py --require-deployment-attestation
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Requires Azure CLI credentials and verifies availability, lifecycle, and
+          # quota before azd submits ARM resources. Failure is intentionally fatal.
+          python scripts/check-model-availability.py
+        continueOnError: false
+        interactive: false
+      posix:
+        shell: sh
+        run: |
+          python3 scripts/gen-model-catalog.py --check
+          python3 scripts/gen-mcp-catalog.py --check
+          python3 scripts/gen-voice-provider-catalog.py --check
+          python3 scripts/gen-gateway-policy.py --check
+          python3 scripts/validate-feature-prereqs.py --require-deployment-attestation || exit $?
+          # Same pre-resource hard gate as Windows; quota cannot be bypassed.
+          python3 scripts/check-model-availability.py
+        continueOnError: false
+        interactive: false
   postprovision:
     windows:
       shell: pwsh

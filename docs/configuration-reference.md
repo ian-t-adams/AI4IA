@@ -72,7 +72,7 @@ assignment is created.
 | Identity-only auth on Foundry | `AI4IA_FOUNDRY_DISABLE_LOCAL_AUTH` | `foundryDisableLocalAuth` | **Defaults to `true`, and leave it there.** It is what makes gateway-only model routing an IAM boundary instead of a convention: with account keys live, anything holding one can call a Foundry deployment directly and skip APIM's rate limiting, residency policy, usage metering and priority routing. Nothing in this repo needs a Foundry account key — APIM authenticates with managed identity, Content Understanding uses its narrow managed-identity role, and Voice Live/Code Interpreter reach dedicated APIM APIs. Set `false` only to recover from a proven key dependency a live deploy uncovered, and record why. |
 | Claude entitlement | `AI4IA_CLAUDE_ENABLED` | `claudeEnabled` | **Defaults to `false`.** FastAPI and APIM refuse Claude while off. Main-stack Bicep never provisions external Claude rows, even when enabled. Requires the separately provisioned target account, explicit target-specific terms, both-tenant identity/deployment readback and approved rollout. |
 | External Claude staging | `AI4IA_CLAUDE_EXTERNAL_ENABLED` | `claudeExternalEnabled` | **Defaults to `false`.** Attaches the separately approved source UAMI alongside APIM's existing system identity and configures the exact target binding. Does not create an account, application, FIC, role or target-reader identity. Staging alone does not admit model calls. |
-| Exact Claude binding | `AI4IA_CLAUDE_BINDING_JSON` | `claudeBindingJson` | Empty by default. Strict noncredential operator JSON described in the [Claude source contract](runbooks/feature-enablement.md#cross-tenant-claude-source-contract). Configuration, a hash or an operator Boolean is not proof; enabled deployments read both tenants and actual APIM state. Network mode must be explicitly `public-keyless`; this does not provide Private Link. |
+| Exact Claude binding | `AI4IA_CLAUDE_BINDING_JSON` | `claudeBindingJsonBase64` (decoded to `claudeBindingJson`) | Empty by default. Strict noncredential operator JSON described in the [Claude source contract](runbooks/feature-enablement.md#cross-tenant-claude-source-contract). Set the raw JSON; `main.parameters.json` reads its derived `AI4IA_CLAUDE_BINDING_JSON_B64` transport (see [JSON-valued variables](#json-valued-variables)). Configuration, a hash or an operator Boolean is not proof; enabled deployments read both tenants and actual APIM state. Network mode must be explicitly `public-keyless`; this does not provide Private Link. |
 | Claude legal entity | `AI4IA_CLAUDE_ORGANIZATION_NAME` | `claudeOrganizationName` | Required when `AI4IA_CLAUDE_ENABLED=true`. Legal entity sent in Anthropic `modelProviderData`; provisioning accepts the Marketplace terms on that entity's behalf. Never derive it from `AI4IA_OWNER` or use a placeholder. |
 | Claude country | `AI4IA_CLAUDE_COUNTRY_CODE` | `claudeCountryCode` | Required when Claude is enabled. Uppercase ISO-2 country code that accurately describes the organization accepting the Anthropic terms. |
 | Claude industry | `AI4IA_CLAUDE_INDUSTRY` | `claudeIndustry` | Required when Claude is enabled. Lowercase Foundry Marketplace industry value that accurately describes the organization. |
@@ -149,7 +149,7 @@ the container — those names are *outputs*, not knobs you set.
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | `AI4IA_CUSTOM_TOOLS_ENABLED`, `CUSTOM_TOOLS_ENABLED` | Profile default `true`; requires Cosmos + Key Vault and Entra auth outside local/dev. |
 | Session/run tool auto-approval | `AI4IA_TOOL_AUTO_APPROVE_ENABLED` | `toolAutoApproveEnabled` | `AI4IA_TOOL_AUTO_APPROVE_ENABLED`; availability read from the API | Default `false` in code, Bicep, and the profile. Allows explicit user consent; does not itself approve calls. Requires Entra auth and Cosmos outside local, preserves execution authorization and receipts, and creates no new Azure resources. |
 | Application group policy | `AI4IA_GROUP_POLICY_ENABLED` | `groupPolicyEnabled` | `AI4IA_GROUP_POLICY_ENABLED` | Default `false`. Applies operator mappings to already-validated Entra role/group claims. Numeric restrictions remain per-user soft limits, not a pooled quota or Azure bill cap. |
-| Operator policy mapping | `AI4IA_GROUP_POLICY_JSON` | `groupPolicyJson` | `AI4IA_GROUP_POLICY_JSON` | Empty/unconfigured by default; at most 64 KiB. Version-1 strict JSON with domain defaults, exact claim mappings, optional spend limits, and a default-empty mapped-admin ceiling. Execution-actor markers may opt into restriction-only model categories and soft limits without changing ordinary defaults; see [group policy](runbooks/feature-enablement.md#group-policy-and-reviewed-publishing). No credentials or directory lookups. |
+| Operator policy mapping | `AI4IA_GROUP_POLICY_JSON` | `groupPolicyJsonBase64` (decoded to `groupPolicyJson`) | `AI4IA_GROUP_POLICY_JSON` | Empty/unconfigured by default; at most 64 KiB. Version-1 strict JSON with domain defaults, exact claim mappings, optional spend limits, and a default-empty mapped-admin ceiling. Execution-actor markers may opt into restriction-only model categories and soft limits without changing ordinary defaults; see [group policy](runbooks/feature-enablement.md#group-policy-and-reviewed-publishing). No credentials or directory lookups. Set the raw JSON; `main.parameters.json` reads its derived `AI4IA_GROUP_POLICY_JSON_B64` transport, and the API still receives the raw value (see [JSON-valued variables](#json-valued-variables)). |
 | Reviewed asset publishing | `AI4IA_ASSET_PUBLISHING_ENABLED` | `assetPublishingEnabled` | `AI4IA_ASSET_PUBLISHING_ENABLED`; availability read from the API | Default `false`. Requires group policy, Entra, one tenant, and Cosmos outside local. Uses existing owner partitions; no migration, container, role assignment or publication is created by enabling the source gate. |
 | Resumable conversation deletion | `AI4IA_SESSION_DELETION_ENABLED`, `AI4IA_SESSION_DELETION_ROLLOUT_ID` | `sessionDeletionEnabled`, `sessionDeletionRolloutId` | Same API env names; status read from the API | Defaults `false` and empty. New conversations only; no automatic enrollment or background cleanup. Outside local requires Entra, Cosmos, an approved durable cutover/recovery record, single-write-region semantics and compatible no-TTL partitions. A flag/id is not proof that old workers drained. See the [deletion runbook](runbooks/conversation-deletion.md) before activation. |
 | Official MCP plane (APIM-fronted) | `AI4IA_ENABLE_OFFICIAL_MCP` | `enableOfficialMcp` | `AI4IA_OFFICIAL_MCP_ENABLED`, `AI4IA_OFFICIAL_MCP_GATEWAY_URL`, `AI4IA_OFFICIAL_MCP_SUBSCRIPTION_KEY` (secret) | Profile default `true`. Requires the MCP-only product/subscription on shared APIM plus at least one `infra/mcp-servers.json` entry; enabled-without-gateway config fails closed at startup. |
@@ -159,13 +159,56 @@ the container — those names are *outputs*, not knobs you set.
 | WebIQ output limits | `AI4IA_WEB_SEARCH_MAX_RESULTS`, `AI4IA_WEB_SEARCH_MAX_CONTENT_CHARS` | `webSearchMaxResults`, `webSearchMaxContentChars` | Same names, emitted only when WebIQ is enabled | Defaults 5 results per collection and 6000 characters per content field; ranges 1-50 and 1-500000, further clamped by provider and shared output limits. Five calls per turn; each complete WebIQ response is bounded to 8192 bytes, including JSON escaping and nonce fences. The additional 100000-character turn ceiling cannot widen those limits. Safe search stays strict; no automatic retries or crawl polling. |
 | Memory / semantic recall | `AI4IA_MEMORY_STORE` | `memoryStore` (default `cosmos`) | `AI4IA_MEMORY_STORE` | Use `disabled` for the migration freeze and `cosmos` after verification. Cosmos requires its endpoint/database, `EnableNoSQLVectorSearch`, the `/userId`-partitioned `memories` container, and catalog entries for the embedding and extraction models. |
 | Rolling conversation summarization | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | `autoSummarizationEnabled` | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | Profile default `true`. Off sends the full transcript and leaves manual `/summarize` working; on folds the oldest turns into a running summary once the transcript passes the model-derived threshold. |
-| Proxy application profiles | `AI4IA_PROXY_PROFILES_ENABLED`, `AI4IA_PROXY_PROFILE_PROJECTION_JSON` (secret) | `proxyProfilesEnabled`, `proxyProfileProjectionJson` | `UseProfiles`, `UserConfigRequired`, secret-mounted `file:/mnt/ai4ia-profiles/profiles.json` | **Blocked by validation while shared-key ingress is used.** Requires a verified identity-aware application header; no public/unauthenticated profile URL is permitted. |
+| Proxy application profiles | `AI4IA_PROXY_PROFILES_ENABLED`, `AI4IA_PROXY_PROFILE_PROJECTION_JSON` (secret) | `proxyProfilesEnabled`, `proxyProfileProjectionJsonBase64` (secure, decoded to `proxyProfileProjectionJson`) | `UseProfiles`, `UserConfigRequired`, secret-mounted `file:/mnt/ai4ia-profiles/profiles.json` | **Blocked by validation while shared-key ingress is used.** Requires a verified identity-aware application header; no public/unauthenticated profile URL is permitted. The secret stays raw JSON; its derived `AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64` transport is masked in the deploy log (see [JSON-valued variables](#json-valued-variables)). |
 | Proxy priority reservations | `AI4IA_PROXY_PRIORITIES_ENABLED`, `AI4IA_PROXY_PRIORITY_WORKERS` | `proxyPrioritiesEnabled`, `proxyPriorityWorkers` | `PriorityWorkers`, `PriorityKeys`, `PriorityValues`; API emits `x-S7PPriority` | Worker map must use `priority:count` pairs. Off means no reserved workers and no band header. Band is derived server-side from the authenticated principal (admins -> 1, other users -> 2); an inbound `x-S7PPriority` is never trusted. Queue fairness is per replica. Not Azure paid Priority Processing. |
 | Proxy Event Hub telemetry | `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED` | `proxyEventHubTelemetryEnabled` | Conditionally creates Event Hubs, diagnostics, proxy sender RBAC, and `EVENTHUB_*` env | Default off creates no namespace or roles and emits empty azd outputs. Metadata only: header/body logging stays disabled. Event Hub is telemetry, not the synchronous queue. |
 | CompanionApp telemetry console | `AI4IA_COMPANION_APP_ENABLED`, `AI4IA_COMPANION_APP_IMAGE`, `AI4IA_COMPANION_APP_ENTRA_CLIENT_ID`, `AI4IA_COMPANION_APP_ADMIN_GROUP_IDS`, `AI4IA_COMPANION_APP_ADMIN_PRINCIPAL_IDS`, `AI4IA_COMPANION_APP_ALLOWED_IP_RANGES`, `AI4IA_COMPANION_APP_MIN_REPLICAS` | `companionAppEnabled`, `companionAppImage`, `companionAppEntraClientId`, `companionAppAdminGroupIds`, `companionAppAdminPrincipalIds`, `companionAppAllowedIpRanges`, `companionAppMinReplicas` | Creates `ca-companion-<env>` with Easy Auth, a dedicated `id-companion-<env>` (AcrPull plus Event Hubs Data Receiver on the telemetry hub only) and a `companion` consumer group. Emits `AZURE_COMPANION_APP_URL`. | **Default `false` and unconfigured; creates nothing.** Requires proxy Event Hub telemetry, a digest from the manual `companion-image.yml` promotion (re-verified before provision), an Entra app registration and at least one admin group or principal id. Admin-only, read-only, not an azd service and never on the model path. See [the runbook](runbooks/feature-enablement.md#companionapp-telemetry-console). |
 | Proxy durable async | `AI4IA_PROXY_ASYNC_ENABLED` | `proxyAsyncEnabled` | `AsyncModeEnabled`, MI-only Blob/Service Bus config | Creates dedicated default-off AVM Storage + Service Bus resources and grants only Blob Contributor plus Service Bus Sender/Receiver to `id-proxy`. |
 | Proxy capacity | `AI4IA_PROXY_WORKERS`, `AI4IA_PROXY_MIN_REPLICAS`, `AI4IA_PROXY_MAX_REPLICAS` | `proxyWorkers`, `proxyMinReplicas`, `proxyMaxReplicas` | `Workers` + Container App scale | Minimum replicas cannot be zero on the active model path. More replicas increase capacity but split in-memory fairness state. |
 | Proxy App Configuration label | `AI4IA_PROXY_APPCONFIG_LABEL` | `proxyAppConfigLabel` | `AZURE_APP_CONFIG_LABEL`, `AZURE_APPCONFIG_ENDPOINT`, label-aware `Warm:Sentinel`, 30-second refresh | Postprovision reconciles the sentinel with Entra auth through the deployment identity's narrow store-scoped Data Owner role; the proxy remains Data Reader only. The proxy applies only `Warm:Sentinel` and two reviewed request limits from the store, each within a reviewed range (`Request:DefaultTimeout` 180,000 to 1,200,000 ms, `Request:DefaultTTLSecs` 300 to 1,200 s), at startup and on refresh. Every other key, including every `Cold:` key and the circuit-breaker settings, is refused, and its setting comes from the Container App environment. See [the key policy](../proxy/README.md#app-configuration-key-policy). |
+
+### JSON-valued variables
+
+`AI4IA_GROUP_POLICY_JSON`, `AI4IA_CLAUDE_BINDING_JSON` and the secret
+`AI4IA_PROXY_PROFILE_PROJECTION_JSON` hold JSON. Set each one to the raw JSON,
+exactly as the runtime reads it, and never set its transport yourself.
+
+azd substitutes environment values into `infra/main.parameters.json` without JSON
+escaping, so a raw value that contains `"` makes the file invalid before anything
+is provisioned (see
+[deployment §7.18](runbooks/deployment.md#718-provision-infrastructure-fails-immediately-error-unmarshalling-bicep-template-parameters)).
+The parameters file therefore reads a transport of each variable, and
+`main.bicep` decodes it with `base64ToString()`:
+
+| Setting | Raw variable (operator contract) | Transport azd reads | Bicep parameter | Decoded value reaches |
+| --- | --- | --- | --- | --- |
+| Group policy | `AI4IA_GROUP_POLICY_JSON` | `AI4IA_GROUP_POLICY_JSON_B64` | `groupPolicyJsonBase64` | API env `AI4IA_GROUP_POLICY_JSON` |
+| Claude binding | `AI4IA_CLAUDE_BINDING_JSON` | `AI4IA_CLAUDE_BINDING_JSON_B64` | `claudeBindingJsonBase64` | The APIM source identity and the gateway's external Claude routes, only while external Claude is staged |
+| Proxy profile projection | `AI4IA_PROXY_PROFILE_PROJECTION_JSON` (secret) | `AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64` (masked) | `proxyProfileProjectionJsonBase64` (secure) | The proxy's secret-mounted `profiles.json` |
+
+A transport is padded standard base64 of the raw value's UTF-8 bytes. Its
+alphabet needs no JSON, dotenv or shell escaping. An unset or empty raw variable
+gives an empty transport, which stays an empty string, so the defaults are
+unchanged.
+
+- **CI.** Before `azd provision`, `deploy.yml` runs
+  `python scripts/derive-json-transport.py --github-env`. It writes all three
+  transports to `$GITHUB_ENV` and masks the secret-derived one with
+  `::add-mask::` before writing it. The raw variables stay exported, so the
+  `fromJSON(...)` login inputs and `check-claude-binding.py` read them unchanged.
+- **Local `azd provision`.** The first `preprovision` hook entry runs
+  `python scripts/derive-json-transport.py --azd-env`. It stores each transport
+  that no longer matches its raw variable in the azd environment through a
+  private dotenv file (`azd env set --file`), never a command line. azd 1.29.0
+  runs command hooks before it resolves the parameters file and reloads its
+  environment after every hook entry, so the checks in the second entry and the
+  parameters file both see the result. Keep setting the raw variables with
+  `azd env set`.
+- **Validation.** `scripts/validate-feature-prereqs.py` decodes each transport
+  strictly and validates the decoded JSON exactly as it validated the raw value.
+  It refuses a transport that is not canonical base64 or does not decode to the
+  raw variable byte for byte, and any parameter that substitutes a raw `*_JSON`
+  variable.
 
 ### Document-library retrieval configuration and availability
 
@@ -582,7 +625,9 @@ catch: prod with dev auth, Entra without tenant/audience/client ID, Voice Live
 tools without Voice Live, Speech Voice Live enabled without Voice Live or without
 its allowlist/URL/key prerequisites, document compute without document
 understanding, broken custom-domain/cert combinations, proxy scale/priority
-errors, unsafe profile enablement, and personal ownership defaults. CI also
+errors, unsafe profile enablement, and personal ownership defaults. It also
+decodes each [JSON transport](#json-valued-variables) and refuses one that does
+not carry its raw variable exactly. CI also
 regenerates and tests the HTTP/SSE endpoint fragment and realtime routing policy
 against `infra/models.json`, and the voice provider catalog
 (`scripts/gen-voice-provider-catalog.py --check`) against

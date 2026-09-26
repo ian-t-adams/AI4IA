@@ -343,6 +343,18 @@ reach Bicep when `.github/workflows/deploy.yml` exports them and
 `infra/main.parameters.json` consumes the matching token; the configuration
 reachability test guards that contract.
 
+JSON-valued variables are the one exception to that one-to-one mapping:
+`AI4IA_GROUP_POLICY_JSON`, `AI4IA_CLAUDE_BINDING_JSON` and the secret
+`AI4IA_PROXY_PROFILE_PROJECTION_JSON`. Set each to raw JSON. azd cannot
+substitute JSON into the parameters file, so the workflow step **Derive azd
+transports for JSON-valued variables** and the first preprovision hook entry
+derive `*_JSON_B64` transports, and Bicep decodes them. Never set a transport
+yourself; the prerequisite check refuses one that does not decode to its raw
+variable exactly. To run the checks against a local azd environment without
+provisioning, use `azd hooks run preprovision`, which derives the transports
+first. See [JSON-valued variables](../configuration-reference.md#json-valued-variables)
+and [§7.18](#718-provision-infrastructure-fails-immediately-error-unmarshalling-bicep-template-parameters).
+
 #### Claude Marketplace attestation
 
 Claude is a default-off entitlement. Set `AI4IA_CLAUDE_ENABLED=true` only after
@@ -2105,6 +2117,57 @@ identity's sign-in log:
   requires assignment.
 
 Then rerun the workflow as above.
+
+### 7.18 `Provision infrastructure` fails immediately: `error unmarshalling Bicep template parameters`
+
+Symptom — **Provision infrastructure** fails within seconds of
+`Initialize bicep provider`, before any resource changes:
+
+```text
+ERROR: deployment failed: initializing provisioning manager: resolving bicep parameters file: error unmarshalling Bicep template parameters: invalid character 'v' after object key:value pair
+```
+
+The **validate deployment configuration** job passed, and so did
+`validate-feature-prereqs.py`, which reads the variable from its own environment
+and parses it directly.
+
+Cause — azd substitutes environment values into `infra/main.parameters.json` as
+raw text. For each string parameter, azd 1.29.0 marshals the entry to JSON,
+replaces each `${NAME}` token with the value unescaped, and parses the result
+again (`loadParameters` in azd's `pkg/infra/provisioning/bicep/bicep_provider.go`).
+A value containing a double quote ends the JSON string early. Deploy run
+36259812510 on 2026-09-26 was the first run with a JSON-valued variable set:
+`AI4IA_GROUP_POLICY_JSON` held valid strict version-1 policy JSON, so
+`{"value": "${AI4IA_GROUP_POLICY_JSON=}"}` became `{"value":"{"version": 1, ...}"}`.
+`AI4IA_CLAUDE_BINDING_JSON` and the secret `AI4IA_PROXY_PROFILE_PROJECTION_JSON`
+had the same latent defect. None of the three had ever been set in CI, so it
+stayed hidden.
+
+Fix — the parameters file now reads a base64 transport of each JSON-valued
+variable, and `main.bicep` decodes it. The API and proxy receive the same final
+values as before, and an unset variable still deploys an empty string. See
+[JSON-valued variables](../configuration-reference.md#json-valued-variables).
+
+1. Keep the raw JSON in the `AI4IA_GROUP_POLICY_JSON` or
+   `AI4IA_CLAUDE_BINDING_JSON` variable, or in the
+   `AI4IA_PROXY_PROFILE_PROJECTION_JSON` secret. Do not escape or encode it.
+2. Never create an `*_JSON_B64` variable or secret. **Derive azd transports for
+   JSON-valued variables** writes the transports before provisioning and masks
+   the secret-derived one, and the preprovision hook derives them for a local
+   `azd provision`.
+3. Rerun the workflow:
+
+   ```powershell
+   gh workflow run deploy.yml -f provision=true --ref main
+   ```
+
+The prerequisite check names what it refuses:
+
+| Message | Meaning | Fix |
+|---|---|---|
+| `... does not carry ...` | A transport was set by hand or is stale, usually because the check ran outside the hook | Remove the transport and run through `azd provision`, `azd hooks run preprovision` or the workflow |
+| `... is not the canonical UTF-8 base64 transport ...` | The transport was edited, wrapped or re-encoded | Same fix |
+| `... substitutes ... directly ...` | A raw `${*_JSON}` token is back in `main.parameters.json` | Read the `*_JSON_B64` transport instead; see `scripts/_json_transport.py` |
 
 ## Switching the search index tenancy model
 

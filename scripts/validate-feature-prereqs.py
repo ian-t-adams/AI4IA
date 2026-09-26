@@ -20,12 +20,14 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 from _capacity_evidence import EvidenceError
 from _claude_binding import configured_binding
+from _json_transport import TRANSPORTS, TransportError, decode
 from _production_capacity import PROFILES, bind_scope, effective_capacity, parse_policy
 
 ROOT = Path(__file__).resolve().parents[1]
 PARAMETERS_FILE = ROOT / "infra" / "main.parameters.json"
 MODELS_FILE = ROOT / "infra" / "models.json"
 PLACEHOLDER_RE = re.compile(r"^\$\{(?P<name>[A-Z0-9_]+)(?:=(?P<default>.*))?\}$")
+RAW_JSON_TOKEN_RE = re.compile(r"\$\{([A-Z0-9_]+_JSON)(?:=[^}]*)?\}")
 
 
 def parameter_value(parameters: dict[str, Any], name: str, default: Any = None) -> Any:
@@ -58,6 +60,72 @@ def text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def transported_json(parameters: dict[str, Any], errors: list[str]) -> dict[str, str]:
+    """Decode each JSON transport azd will pass; return the raw values, stripped.
+
+    azd substitutes values into main.parameters.json unescaped, so a JSON-valued
+    variable crosses it only as its base64 transport (scripts/_json_transport.py).
+    A transport resolved from the environment must decode back to the operator's
+    raw variable exactly: a missing, stale or hand-set transport would deploy
+    something other than what was configured and validated. Keys are the decoded
+    Bicep value names (groupPolicyJson, ...).
+    """
+    for name, entry in parameters.items():
+        value = entry.get("value") if isinstance(entry, dict) else None
+        for variable in RAW_JSON_TOKEN_RE.findall(value if isinstance(value, str) else ""):
+            errors.append(
+                f"{name} substitutes {variable} directly, but azd inserts values into "
+                f"main.parameters.json unescaped; read its {variable}_B64 transport instead."
+            )
+    decoded: dict[str, str] = {}
+    for transport in TRANSPORTS:
+        label = f"{transport.transport_parameter} ({transport.transport_variable})"
+        declared = parameter_value(parameters, transport.transport_parameter, "")
+        placeholder = PLACEHOLDER_RE.match(declared) if isinstance(declared, str) else None
+        if placeholder is not None and placeholder.group("name") != transport.transport_variable:
+            errors.append(f"{transport.transport_parameter} must read {transport.transport_variable}.")
+        # Exactly what azd substitutes: an empty or unset variable takes the
+        # default, and nothing is stripped.
+        carried = declared
+        if placeholder is not None:
+            carried = os.environ.get(placeholder.group("name")) or placeholder.group("default") or ""
+        if carried is None:
+            carried = ""
+        decoded[transport.parameter] = ""
+        if not isinstance(carried, str):
+            errors.append(f"{label} must be a base64 string.")
+            continue
+        limit = transport.transport_max_length
+        if limit is not None and len(carried) > limit:
+            errors.append(
+                f"{label} exceeds {limit} characters, the encoding of the "
+                f"{transport.max_bytes}-byte bound."
+            )
+        try:
+            raw = decode(carried)
+        except TransportError:
+            errors.append(
+                f"{label} is not the canonical UTF-8 base64 transport of {transport.variable}; "
+                "derive it with scripts/derive-json-transport.py."
+            )
+            continue
+        expected = os.environ.get(transport.variable, "")
+        if placeholder is not None and raw != expected:
+            if not carried:
+                problem = f"it is empty while {transport.variable} is set"
+            elif not expected:
+                problem = f"it is set while {transport.variable} is empty"
+            else:
+                problem = f"it decodes to a different value than {transport.variable}"
+            errors.append(
+                f"{transport.transport_variable} does not carry {transport.variable}: {problem}. "
+                "deploy.yml and the azd preprovision hook derive it from the raw variable; "
+                "set only the raw variable."
+            )
+        decoded[transport.parameter] = raw.strip()
+    return decoded
 
 
 GUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
@@ -130,6 +198,7 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
     errors: list[str] = []
     warnings: list[str] = []
+    json_values = transported_json(parameters, errors)
     model_capacity_profile = text(
         parameter_value(parameters, "modelCapacityProfile", "baseline")
     ).lower()
@@ -207,7 +276,7 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             **os.environ,
             "AI4IA_CLAUDE_ENABLED": str(claude_enabled).lower(),
             "AI4IA_CLAUDE_EXTERNAL_ENABLED": str(claude_external).lower(),
-            "AI4IA_CLAUDE_BINDING_JSON": text(parameter_value(parameters, "claudeBindingJson")),
+            "AI4IA_CLAUDE_BINDING_JSON": json_values["claudeBindingJson"],
         })
     except EvidenceError as exc:
         errors.append(f"Cross-tenant Claude configuration: {exc.code}.")
@@ -322,7 +391,7 @@ def main(*, require_deployment_attestation: bool = False) -> int:
 
     group_policy = truthy(parameter_value(parameters, "groupPolicyEnabled", False))
     publishing = truthy(parameter_value(parameters, "assetPublishingEnabled", False))
-    policy_json = text(parameter_value(parameters, "groupPolicyJson"))
+    policy_json = json_values["groupPolicyJson"]
     # Whether the policy composes soft spend limits (group or execution-actor).
     policy_spend = False
     if group_policy or publishing:
@@ -595,7 +664,7 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             )
 
     profiles_enabled = truthy(parameter_value(parameters, "proxyProfilesEnabled", False))
-    profile_projection = text(parameter_value(parameters, "proxyProfileProjectionJson"))
+    profile_projection = json_values["proxyProfileProjectionJson"]
     if profiles_enabled:
         if not profile_projection:
             errors.append(

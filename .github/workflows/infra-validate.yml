@@ -17,6 +17,8 @@ on:
       - "foundry/**"
       - "scripts/validate-catalog.py"
       - "scripts/validate-feature-prereqs.py"
+      - "scripts/_json_transport.py"
+      - "scripts/derive-json-transport.py"
       - "scripts/sync-model-capacity.py"
       - "scripts/_model_naming.py"
       - "scripts/_production_capacity.py"

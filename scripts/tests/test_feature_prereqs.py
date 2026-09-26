@@ -41,7 +41,11 @@ from scripts.tests._loader import load_script
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "validate-feature-prereqs.py"
+DERIVE_SCRIPT = ROOT / "scripts" / "derive-json-transport.py"
 REAL_PARAMETERS = ROOT / "infra" / "main.parameters.json"
+
+sys.path.insert(0, str(ROOT / "scripts"))
+from _json_transport import TRANSPORTS, TransportError, decode, encode  # noqa: E402
 
 # Minimum environment for a production / new-tenant standup. The committed
 # parameters file reads these through ${VAR=default} placeholders.
@@ -66,6 +70,17 @@ CLAUDE_ENV = {
 
 
 VALIDATOR = load_script("validate_feature_prereqs", SCRIPT)
+DERIVE = load_script("derive_json_transport", DERIVE_SCRIPT)
+TRANSPORT = {transport.variable: transport for transport in TRANSPORTS}
+
+
+def _transported(values: dict[str, str]) -> dict[str, str]:
+    """*values* plus the transports deploy.yml derives from its raw JSON variables."""
+    derived = {
+        TRANSPORT[name].transport_variable: encode(value)
+        for name, value in values.items() if name in TRANSPORT
+    }
+    return {**values, **derived}
 
 
 @contextmanager
@@ -82,6 +97,19 @@ def _environment(**values: str):
         for key in removed:
             if key not in effective:
                 del os.environ[key]
+        yield
+
+
+@contextmanager
+def _large_environment(**values: str):
+    """``_environment`` for values past Windows' 32,767-character putenv limit.
+
+    Only this process's own setter has that limit; a child process inherits a
+    larger variable intact, so azd and its hooks are unaffected. The validator
+    reads ``os.environ`` at call time, which a plain mapping satisfies.
+    """
+    kept = {k: v for k, v in os.environ.items() if not k.startswith(("AI4IA_", "AZURE_"))}
+    with patch.object(os, "environ", {**kept, **CLAUDE_ENV, **values}):
         yield
 
 
@@ -112,21 +140,22 @@ class GroupPolicyPrerequisiteTests(unittest.TestCase):
         parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
         self.assertEqual(parameters["groupPolicyEnabled"]["value"], "${AI4IA_GROUP_POLICY_ENABLED=false}")
         self.assertEqual(parameters["assetPublishingEnabled"]["value"], "${AI4IA_ASSET_PUBLISHING_ENABLED=false}")
-        self.assertEqual(parameters["groupPolicyJson"]["value"], "${AI4IA_GROUP_POLICY_JSON=}")
+        self.assertEqual(parameters["groupPolicyJsonBase64"]["value"], "${AI4IA_GROUP_POLICY_JSON_B64=}")
+        self.assertNotIn("groupPolicyJson", parameters)
 
     def test_same_enabled_policy_requires_entra_and_bounded_configuration(self) -> None:
         good = {
             "groupPolicyEnabled": True, "assetPublishingEnabled": True,
             "apiAuthProvider": "entra", "entraTenantId": "tenant", "entraAudience": "api://app",
-            "entraWebClientId": "web", "groupPolicyJson": '{"version":1,"domains":{}}',
+            "entraWebClientId": "web", "groupPolicyJsonBase64": encode('{"version":1,"domains":{}}'),
         }
         cases = [
             ({"apiAuthProvider": "dev"}, "require apiAuthProvider=entra"),
             ({"groupPolicyEnabled": False}, "requires groupPolicyEnabled=true"),
-            ({"groupPolicyJson": ""}, "nonempty groupPolicyJson"),
-            ({"groupPolicyJson": "not json"}, "valid JSON"),
-            ({"groupPolicyJson": '{"version":true}'}, "version-1 object"),
-            ({"groupPolicyJson": '{"version":1,"directoryLookup":true}'}, "unsupported top-level"),
+            ({"groupPolicyJsonBase64": encode("")}, "nonempty groupPolicyJson"),
+            ({"groupPolicyJsonBase64": encode("not json")}, "valid JSON"),
+            ({"groupPolicyJsonBase64": encode('{"version":true}')}, "version-1 object"),
+            ({"groupPolicyJsonBase64": encode('{"version":1,"directoryLookup":true}')}, "unsupported top-level"),
         ]
         with tempfile.TemporaryDirectory() as tmp, _environment():
             code, _, err = _run(_write_parameters(tmp, good))
@@ -155,11 +184,12 @@ class GroupPolicyPrerequisiteTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp, _environment():
             code, _, err = _run(_write_parameters(tmp, {
-                **settings, "groupPolicyJson": json.dumps(config),
+                **settings, "groupPolicyJsonBase64": encode(json.dumps(config)),
             }))
             self.assertEqual(code, 0, err)
             code, _, err = _run(_write_parameters(tmp, {
-                **settings, "groupPolicyJson": json.dumps({**config, "callerProfile": "monitor-canary"}),
+                **settings,
+                "groupPolicyJsonBase64": encode(json.dumps({**config, "callerProfile": "monitor-canary"})),
             }))
             self.assertEqual(code, 1)
             self.assertIn("unsupported top-level", err)
@@ -403,9 +433,12 @@ class CommittedParametersTests(unittest.TestCase):
             ("true", no_spend, False), ("false", soft_spend, False),
         ):
             with self.subTest(hard=hard, config=config), _environment(
-                **PROD_ENV, AI4IA_HARD_QUOTA_ENABLED=hard,
-                AI4IA_HARD_QUOTA_ROLLOUT_ID="reviewed-request-count-1",
-                AI4IA_GROUP_POLICY_ENABLED="true", AI4IA_GROUP_POLICY_JSON=json.dumps(config),
+                **_transported({
+                    **PROD_ENV, "AI4IA_HARD_QUOTA_ENABLED": hard,
+                    "AI4IA_HARD_QUOTA_ROLLOUT_ID": "reviewed-request-count-1",
+                    "AI4IA_GROUP_POLICY_ENABLED": "true",
+                    "AI4IA_GROUP_POLICY_JSON": json.dumps(config),
+                })
             ):
                 code, out, err = _run(REAL_PARAMETERS)
                 self.assertEqual(code, 0, err)
@@ -473,7 +506,9 @@ class DocumentSearchPrerequisiteTests(unittest.TestCase):
             self.skipTest(f"{shell} is not installed")
         source = (ROOT / "azure.yaml").read_text(encoding="utf-8")
         preprovision = source.split("  preprovision:\n", 1)[1].split("  postprovision:\n", 1)[0]
-        hooks = re.findall(r"      run: \|\n((?:        .*\n|\n)+)", preprovision)
+        # preprovision is a list; the checks are the windows/posix pair of its
+        # second entry (the first derives the JSON transports, see below).
+        hooks = re.findall(r"        run: \|\n((?:          .*\n|\n)+)", preprovision)
         self.assertEqual(len(hooks), 2)
         hook = textwrap.dedent(hooks[hook_index])
         for code in (0, 17):
@@ -678,7 +713,7 @@ class ClaudeMarketplaceAttestationTests(unittest.TestCase):
     def test_explicit_attestation_values_pass(self) -> None:
         from scripts.tests._claude_fixture import binding, environment
 
-        with _environment(**{**PROD_ENV, **environment(binding()), **CLAUDE_ENV}):
+        with _environment(**_transported({**PROD_ENV, **environment(binding()), **CLAUDE_ENV})):
             code, _, err = _run(
                 REAL_PARAMETERS, require_deployment_attestation=True
             )
@@ -1008,11 +1043,13 @@ class FeaturePrerequisiteTests(unittest.TestCase):
                 "owner": "operator",
                 "apimPublisherEmail": "ops@contoso.test",
                 "proxyProfilesEnabled": True,
-                "proxyProfileProjectionJson": '[{"appId":"app-a"}]',
+                "proxyProfileProjectionJsonBase64": encode('[{"appId":"app-a"}]'),
             }
         )
         self.assertEqual(result, 1)
         self.assertIn("verified identity-aware application header", output)
+        # The projection itself decoded and validated: only the edge blocks.
+        self.assertNotIn("proxyProfileProjectionJson", output)
 
     def test_tool_auto_approval_requires_entra_only_when_enabled(self) -> None:
         parameters: dict[str, object] = {
@@ -1111,10 +1148,10 @@ class FeaturePrerequisiteTests(unittest.TestCase):
     def test_environment_overrides_parameter_placeholder_defaults(self) -> None:
         with patch.dict(
             "os.environ",
-            {
+            _transported({
                 "AI4IA_PROXY_PROFILES_ENABLED": "true",
                 "AI4IA_PROXY_PROFILE_PROJECTION_JSON": '[{"appId":"app-a"}]',
-            },
+            }),
             clear=False,
         ):
             result, output = self.run_validator(
@@ -1122,11 +1159,12 @@ class FeaturePrerequisiteTests(unittest.TestCase):
                     "owner": "operator",
                     "apimPublisherEmail": "ops@contoso.test",
                     "proxyProfilesEnabled": "${AI4IA_PROXY_PROFILES_ENABLED=false}",
-                    "proxyProfileProjectionJson": "${AI4IA_PROXY_PROFILE_PROJECTION_JSON=}",
+                    "proxyProfileProjectionJsonBase64": "${AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64=}",
                 }
             )
         self.assertEqual(result, 1)
         self.assertIn("verified identity-aware application header", output)
+        self.assertNotIn("proxyProfileProjectionJson", output)
 
     def test_private_data_tier_requires_vnet_isolation(self) -> None:
         result, output = self.run_validator(
@@ -1231,6 +1269,480 @@ class FeaturePrerequisiteTests(unittest.TestCase):
         )
         self.assertEqual(result, 1)
         self.assertIn("speechVoiceLiveManagedIdentityAudience must not be blanked out", output)
+
+
+# The incident value's shape (deploy run 36259812510): strict version-1 JSON with
+# quotes, spaces and nesting. Synthetic identifiers only.
+INCIDENT_POLICY = json.dumps({
+    "version": 1,
+    "canaryActor": {
+        "tenantId": "00000000-0000-4000-8000-000000000001",
+        "subject": "00000000-0000-4000-8000-000000000002",
+        "restrictions": {
+            "models": ["chat", "chat-fast"],
+            "spend": {"requestsPerMinute": 2, "costPerDayMicroUsd": 100000},
+        },
+    },
+})
+# Everything the substitution could misread: quotes, backslashes, newlines, a
+# JSON-hostile separator, multi-byte text and an azd-looking token.
+AWKWARD_JSON = json.dumps(
+    {
+        "quote": '"', "backslash": "\\", "newline": "a\nb", "separator": "\u2028",
+        "unicode": "Zürich 東京 🚀", "token": "${AI4IA_OWNER}", "html": "<&>",
+    },
+    ensure_ascii=False, indent=2,
+)
+SECRET_PROJECTION = '[{"appId": "app-a", "label": "synthetic \\"secret\\" projection"}]'
+RAW_JSON = {
+    "AI4IA_GROUP_POLICY_JSON": INCIDENT_POLICY,
+    "AI4IA_CLAUDE_BINDING_JSON": AWKWARD_JSON,
+    "AI4IA_PROXY_PROFILE_PROJECTION_JSON": SECRET_PROJECTION,
+}
+AZD_TOKEN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(=([^}]*))?\}")
+
+
+def _azd_resolve(parameters_text: str, env: dict[str, str]) -> dict[str, Any]:
+    """Resolve string parameters the way azd 1.29.0 does.
+
+    ``loadParameters`` (cli/azd/pkg/infra/provisioning/bicep/bicep_provider.go)
+    marshals each parameter entry to compact JSON, runs drone/envsubst over that
+    text, where an empty or unset variable takes the ``=default``, and unmarshals
+    the result. The value is inserted verbatim: that is the incident.
+    """
+    resolved: dict[str, Any] = {}
+    for name, entry in json.loads(parameters_text)["parameters"].items():
+        marshaled = json.dumps(entry, separators=(",", ":"))
+
+        def substitute(match: re.Match[str]) -> str:
+            value = env.get(match.group(1), "")
+            return value if value or match.group(2) is None else match.group(3)
+
+        resolved[name] = json.loads(AZD_TOKEN.sub(substitute, marshaled))
+    return resolved
+
+
+def _pre_fix_parameters_text() -> str:
+    """The committed parameters with each transport put back in its old raw form."""
+    document = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))
+    parameters = document["parameters"]
+    for transport in TRANSPORTS:
+        del parameters[transport.transport_parameter]
+        parameters[transport.parameter] = {"value": "${" + transport.variable + "=}"}
+    return json.dumps(document, indent=2)
+
+
+def _policy_of_size(size: int, filler: str = " ") -> str:
+    """A version-1 policy of exactly *size* UTF-8 bytes.
+
+    A space pads JSON whitespace; a multi-byte *filler* pads a string value, so
+    the byte bound differs from the character count.
+    """
+    if filler == " ":
+        head, tail = '{"version": 1, "domains": {}', "}"
+    else:
+        head, tail = '{"version": 1, "canaryActor": {"subject": "', '"}}'
+    room = size - len((head + tail).encode("utf-8"))
+    width = len(filler.encode("utf-8"))
+    policy = head + filler * (room // width) + "x" * (room % width) + tail
+    assert len(policy.encode("utf-8")) == size, (size, len(policy.encode("utf-8")))
+    json.loads(policy)
+    return policy
+
+
+class AzdParameterSubstitutionRegressionTests(unittest.TestCase):
+    """JSON-valued variables must survive azd's unescaped parameter substitution."""
+
+    def test_incident_values_cross_azd_through_their_transports(self) -> None:
+        resolved = _azd_resolve(
+            REAL_PARAMETERS.read_text(encoding="utf-8"), _transported(RAW_JSON)
+        )
+        for transport in TRANSPORTS:
+            with self.subTest(variable=transport.variable):
+                carried = resolved[transport.transport_parameter]["value"]
+                self.assertEqual(decode(carried), RAW_JSON[transport.variable])
+                self.assertNotIn(transport.parameter, resolved)
+
+    def test_the_pre_fix_raw_form_fails_the_same_substitution(self) -> None:
+        old = _pre_fix_parameters_text()
+        # Control: the emulation parses the old form while no value has a quote.
+        self.assertEqual(_azd_resolve(old, {})["groupPolicyJson"]["value"], "")
+        self.assertEqual(
+            _azd_resolve(old, {"AI4IA_GROUP_POLICY_JSON": "unquoted"})["groupPolicyJson"]["value"],
+            "unquoted",
+        )
+        # Each raw JSON value then breaks it, as azd's json.Unmarshal did.
+        for name, value in RAW_JSON.items():
+            with self.subTest(variable=name), self.assertRaises(json.JSONDecodeError):
+                _azd_resolve(old, {name: value})
+
+    def test_unset_and_empty_variables_keep_the_empty_default(self) -> None:
+        text = REAL_PARAMETERS.read_text(encoding="utf-8")
+        for env in ({}, {transport.transport_variable: "" for transport in TRANSPORTS}):
+            resolved = _azd_resolve(text, env)
+            for transport in TRANSPORTS:
+                with self.subTest(env=bool(env), variable=transport.variable):
+                    self.assertEqual(resolved[transport.transport_parameter]["value"], "")
+        self.assertEqual(decode(""), "")
+
+    def test_a_value_at_the_policy_bound_crosses_azd(self) -> None:
+        for filler in (" ", "東"):
+            policy = _policy_of_size(65536, filler)
+            resolved = _azd_resolve(
+                REAL_PARAMETERS.read_text(encoding="utf-8"),
+                _transported({"AI4IA_GROUP_POLICY_JSON": policy}),
+            )
+            self.assertEqual(decode(resolved["groupPolicyJsonBase64"]["value"]), policy)
+
+    def test_transports_are_string_parameters_so_azd_takes_this_path(self) -> None:
+        # azd parses object/array parameters differently; the emulation above
+        # models the string path only.
+        bicep = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
+        for transport in TRANSPORTS:
+            with self.subTest(parameter=transport.transport_parameter):
+                self.assertRegex(bicep, rf"(?m)^param {transport.transport_parameter} string = ''$")
+                self.assertNotRegex(bicep, rf"(?m)^param {transport.parameter}\b")
+
+
+class JsonTransportCodecTests(unittest.TestCase):
+    def test_values_round_trip_exactly_in_a_substitution_safe_alphabet(self) -> None:
+        for raw in ("", "{}", " \t", INCIDENT_POLICY, AWKWARD_JSON, SECRET_PROJECTION, "\u2028", "🚀"):
+            with self.subTest(raw=raw[:24]):
+                carried = encode(raw)
+                self.assertEqual(decode(carried), raw)
+                self.assertRegex(carried, r"^[A-Za-z0-9+/]*={0,2}$")
+                self.assertEqual(json.loads(f'"{carried}"'), carried)
+        self.assertEqual(encode(""), "")
+
+    def test_values_near_the_64_kib_policy_bound(self) -> None:
+        policy = TRANSPORT["AI4IA_GROUP_POLICY_JSON"]
+        self.assertEqual((policy.max_bytes, policy.transport_max_length), (65536, 87384))
+        for filler in (" ", "東"):
+            for size in (65535, 65536, 65537, 65539):
+                with self.subTest(filler=filler, size=size):
+                    raw = _policy_of_size(size, filler)
+                    carried = encode(raw)
+                    self.assertEqual(decode(carried), raw)
+                    # The encoding of 65536 bytes fits the ARM @maxLength; 65539 does not.
+                    self.assertEqual(len(carried) <= policy.transport_max_length, size < 65539)
+
+    def test_decode_accepts_only_the_canonical_spelling(self) -> None:
+        # Controls: the canonical form of each payload decodes.
+        self.assertEqual(decode("fn5+"), "~~~")
+        self.assertEqual(decode("QQ=="), "A")
+        self.assertEqual(decode(encode(INCIDENT_POLICY)), INCIDENT_POLICY)
+        canonical = encode(INCIDENT_POLICY)
+        for label, value in (
+            ("trailing newline", canonical + "\n"),
+            ("leading space", " " + canonical),
+            ("missing padding", "QQ"),
+            ("extra padding", "QQ==="),
+            ("url-safe alphabet", "fn5-"),
+            ("nonzero padding bits", "QR=="),
+            ("raw JSON", INCIDENT_POLICY),
+            ("non-ASCII", "ü"),
+            ("invalid UTF-8", "//4="),
+        ):
+            with self.subTest(label), self.assertRaises(TransportError):
+                decode(value)
+
+    def test_undecodable_environment_text_is_refused_not_rewritten(self) -> None:
+        with self.assertRaises(TransportError):
+            encode("\ud800")
+
+
+class DeriveJsonTransportTests(unittest.TestCase):
+    """scripts/derive-json-transport.py, the only writer of transports."""
+
+    def run_github_env(self, values: dict[str, str]) -> tuple[subprocess.CompletedProcess[str], str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "github-env"
+            target.write_text("", encoding="utf-8")
+            env = {
+                key: value for key, value in os.environ.items()
+                if not key.startswith(("AI4IA_", "GITHUB_"))
+            }
+            env.update(values, GITHUB_ENV=str(target))
+            result = subprocess.run(
+                [sys.executable, str(DERIVE_SCRIPT), "--github-env"],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=60,
+            )
+            return result, target.read_text(encoding="utf-8")
+
+    def test_github_env_masks_the_secret_and_writes_every_transport(self) -> None:
+        result, written = self.run_github_env(RAW_JSON)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = dict(line.split("=", 1) for line in written.splitlines())
+        self.assertEqual(set(lines), {transport.transport_variable for transport in TRANSPORTS})
+        for transport in TRANSPORTS:
+            self.assertEqual(decode(lines[transport.transport_variable]), RAW_JSON[transport.variable])
+        masked = lines["AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64"]
+        self.assertTrue(masked)  # control: there is a secret-derived value to mask
+        self.assertEqual(result.stdout.splitlines()[0], f"::add-mask::{masked}")
+        self.assertEqual(result.stdout.count(masked), 1)
+        self.assertNotIn(masked, result.stderr)
+        for transport in TRANSPORTS:
+            if not transport.secret:
+                self.assertNotIn(lines[transport.transport_variable], result.stdout)
+            self.assertNotIn(RAW_JSON[transport.variable], result.stdout + result.stderr)
+
+    def test_the_mask_is_emitted_before_the_secret_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "github-env"
+            target.write_text("", encoding="utf-8")
+            seen: list[str] = []
+
+            class Recorder(StringIO):
+                def write(self, text: str) -> int:
+                    if text.startswith("::add-mask::"):
+                        seen.append(target.read_text(encoding="utf-8"))
+                    return super().write(text)
+
+            code = DERIVE.github_env({**RAW_JSON, "GITHUB_ENV": str(target)}, Recorder())
+            self.assertEqual(code, 0)
+            self.assertEqual(seen, [""])
+            self.assertIn(encode(SECRET_PROJECTION), target.read_text(encoding="utf-8"))
+
+    def test_unset_variables_derive_empty_transports_and_no_mask(self) -> None:
+        result, written = self.run_github_env({})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            written, "".join(f"{transport.transport_variable}=\n" for transport in TRANSPORTS)
+        )
+        self.assertNotIn("::add-mask::", result.stdout)
+
+    def test_github_env_refuses_without_a_target_or_with_undecodable_text(self) -> None:
+        with redirect_stderr(StringIO()):
+            self.assertEqual(DERIVE.github_env(RAW_JSON, StringIO()), 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "github-env"
+            target.write_text("", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                DERIVE.github_env(
+                    {"AI4IA_GROUP_POLICY_JSON": "\ud800", "GITHUB_ENV": str(target)}, StringIO()
+                )
+            self.assertEqual(target.read_text(encoding="utf-8"), "")
+
+    def run_azd_env(
+        self, environ: dict[str, str], *, returncode: int = 0, azd: str | None = "/opt/azd/bin/azd",
+    ) -> tuple[int, list[tuple[list[str], str, str]], str, str]:
+        calls: list[tuple[list[str], str, str]] = []
+
+        def run(command: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+            self.assertFalse(check)
+            path = command[command.index("--file") + 1]
+            calls.append((command, Path(path).read_text(encoding="utf-8"), path))
+            return subprocess.CompletedProcess(command, returncode)
+
+        out, err = StringIO(), StringIO()
+        with redirect_stderr(err):
+            code = DERIVE.azd_env(
+                environ, out, run=run, which=lambda name: azd if name == "azd" else None
+            )
+        return code, calls, out.getvalue(), err.getvalue()
+
+    def test_azd_env_stores_stale_transports_through_a_private_file(self) -> None:
+        code, calls, out, err = self.run_azd_env({**RAW_JSON, "AZURE_ENV_NAME": "fixture-env"})
+        self.assertEqual(code, 0, err)
+        ((command, content, path),) = calls
+        self.assertEqual(
+            command,
+            ["/opt/azd/bin/azd", "env", "set", "--file", path, "--environment", "fixture-env"],
+        )
+        expected = {t.transport_variable: encode(RAW_JSON[t.variable]) for t in TRANSPORTS}
+        self.assertEqual(content, "".join(f"{name}='{value}'\n" for name, value in expected.items()))
+        self.assertFalse(Path(path).exists())
+        for value in expected.values():
+            self.assertNotIn(value, " ".join(command) + out + err)
+
+    def test_azd_env_writes_nothing_when_every_transport_is_current(self) -> None:
+        code, calls, out, _ = self.run_azd_env(_transported(RAW_JSON))
+        self.assertEqual((code, calls), (0, []))
+        self.assertIn("current", out)
+        # Control: the identical environment with one stale transport stores it alone.
+        stale = {**_transported(RAW_JSON), "AI4IA_GROUP_POLICY_JSON": INCIDENT_POLICY + " "}
+        code, calls, _, _ = self.run_azd_env(stale)
+        self.assertEqual(code, 0)
+        ((_, content, _),) = calls
+        self.assertEqual(content, f"AI4IA_GROUP_POLICY_JSON_B64='{encode(INCIDENT_POLICY + ' ')}'\n")
+
+    def test_azd_env_clears_the_transport_of_a_removed_raw_variable(self) -> None:
+        code, calls, _, _ = self.run_azd_env({"AI4IA_GROUP_POLICY_JSON_B64": encode(INCIDENT_POLICY)})
+        self.assertEqual(code, 0)
+        ((command, content, _),) = calls
+        self.assertEqual(content, "AI4IA_GROUP_POLICY_JSON_B64=''\n")
+        self.assertNotIn("--environment", command)
+
+    def test_azd_env_failures_are_fatal_and_leave_no_file(self) -> None:
+        code, calls, _, err = self.run_azd_env(RAW_JSON, returncode=3)
+        self.assertEqual(code, 1)
+        self.assertIn("exited 3", err)
+        self.assertFalse(Path(calls[0][2]).exists())
+        code, calls, _, err = self.run_azd_env(RAW_JSON, azd=None)
+        self.assertEqual((code, calls), (1, []))
+        self.assertIn("not on PATH", err)
+
+    def preprovision_entries(self) -> list[str]:
+        source = (ROOT / "azure.yaml").read_text(encoding="utf-8")
+        preprovision = source.split("  preprovision:\n", 1)[1].split("  postprovision:\n", 1)[0]
+        return re.split(r"(?m)^    - ", preprovision)[1:]
+
+    def test_the_first_preprovision_entry_derives_before_any_check(self) -> None:
+        # azd reloads its environment after each entry, so only a SEPARATE earlier
+        # entry lets the validator and the parameter file see derived values.
+        entries = self.preprovision_entries()
+        self.assertEqual(len(entries), 2)
+        derive, checks = entries
+        self.assertTrue(derive.startswith("windows:\n"), derive)
+        self.assertIn("\n      posix:\n", derive)
+        self.assertEqual(re.findall(r"(?m)^\s+run: (.*)$", derive), [
+            "python scripts/derive-json-transport.py --azd-env; "
+            "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+            "python3 scripts/derive-json-transport.py --azd-env",
+        ])
+        self.assertEqual(derive.count("continueOnError: false"), 2)
+        self.assertNotIn("derive-json-transport", checks)
+        self.assertEqual(checks.count("validate-feature-prereqs.py --require-deployment-attestation"), 2)
+
+    def _assert_derive_hook_exit(self, shell: str, index: int, stub: str) -> None:
+        executable = shutil.which(shell)
+        if executable is None:
+            self.skipTest(f"{shell} is not installed")
+        line = re.findall(r"(?m)^\s+run: (.*)$", self.preprovision_entries()[0])[index]
+        flags = ["-NoProfile", "-NonInteractive", "-Command"] if shell == "pwsh" else ["-c"]
+        for code in (0, 17):
+            with self.subTest(shell=shell, exit_code=code):
+                result = subprocess.run(
+                    [executable, *flags, stub + "\n" + line], cwd=ROOT, capture_output=True, text=True,
+                    env={**os.environ, "TEST_DERIVE_EXIT_CODE": str(code)}, timeout=30,
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertIn("REACHED_DERIVE", result.stdout)
+
+    def test_windows_derive_hook_fails_the_provision_when_derivation_fails(self) -> None:
+        self._assert_derive_hook_exit("pwsh", 0, r"""
+function python {
+    if ($args[0] -eq 'scripts/derive-json-transport.py' -and $args[1] -eq '--azd-env') {
+        Write-Output 'REACHED_DERIVE'
+    }
+    $global:LASTEXITCODE = [int]$env:TEST_DERIVE_EXIT_CODE
+}
+""")
+
+    def test_posix_derive_hook_fails_the_provision_when_derivation_fails(self) -> None:
+        self._assert_derive_hook_exit("sh", 1, r"""
+python3() {
+    if [ "$1" = "scripts/derive-json-transport.py" ] && [ "$2" = "--azd-env" ]; then
+        printf '%s\n' 'REACHED_DERIVE'
+    fi
+    return "$TEST_DERIVE_EXIT_CODE"
+}
+""")
+
+
+class JsonTransportValidationTests(unittest.TestCase):
+    """validate-feature-prereqs.py checks the transport azd will actually pass."""
+
+    def transport_errors(self, parameters: dict[str, Any], env: dict[str, str]) -> list[str]:
+        errors: list[str] = []
+        with _environment(**env):
+            decoded = VALIDATOR.transported_json(parameters, errors)
+        self.assertEqual(set(decoded), {transport.parameter for transport in TRANSPORTS})
+        return errors
+
+    def committed(self) -> dict[str, Any]:
+        return json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+
+    def test_committed_parameters_read_only_transports(self) -> None:
+        parameters = self.committed()
+        for transport in TRANSPORTS:
+            with self.subTest(variable=transport.variable):
+                self.assertEqual(
+                    parameters[transport.transport_parameter]["value"],
+                    "${" + transport.transport_variable + "=}",
+                )
+                self.assertNotIn(transport.parameter, parameters)
+        self.assertNotRegex(REAL_PARAMETERS.read_text(encoding="utf-8"), r"\$\{[A-Z0-9_]+_JSON[=}]")
+        self.assertEqual(self.transport_errors(parameters, {}), [])
+
+    def test_each_transport_must_carry_its_raw_variable_exactly(self) -> None:
+        parameters = self.committed()
+        for transport in TRANSPORTS:
+            raw, name, carried = RAW_JSON[transport.variable], transport.variable, transport.transport_variable
+            for env, expected in (
+                ({name: raw, carried: encode(raw)}, None),  # control: derived by the workflow/hook
+                ({}, None),
+                ({name: raw}, "is empty while"),
+                ({carried: encode(raw)}, "is set while"),
+                ({name: raw, carried: encode(raw + " ")}, "different value"),
+                ({name: raw, carried: " " + encode(raw)}, "not the canonical"),
+                ({name: raw, carried: raw}, "not the canonical"),
+            ):
+                with self.subTest(variable=name, env=sorted(env), expected=expected):
+                    errors = self.transport_errors(parameters, env)
+                    if expected is None:
+                        self.assertEqual(errors, [])
+                    else:
+                        self.assertEqual(len(errors), 1, errors)
+                        self.assertIn(expected, errors[0])
+                        self.assertIn(carried, errors[0])
+                        self.assertNotIn(raw, errors[0])
+
+    def test_raw_json_substitution_and_misnamed_transports_are_refused(self) -> None:
+        old = json.loads(_pre_fix_parameters_text())["parameters"]
+        errors = self.transport_errors(old, {})
+        self.assertEqual(len(errors), len(TRANSPORTS), errors)
+        for transport in TRANSPORTS:
+            self.assertTrue(any(f"substitutes {transport.variable} directly" in e for e in errors))
+        misnamed = {**self.committed(), "groupPolicyJsonBase64": {"value": "${AI4IA_OTHER_B64=}"}}
+        self.assertEqual(
+            self.transport_errors(misnamed, {}),
+            ["groupPolicyJsonBase64 must read AI4IA_GROUP_POLICY_JSON_B64."],
+        )
+
+    def test_group_policy_is_validated_after_decoding_at_the_64_kib_bound(self) -> None:
+        enabled = {**PROD_ENV, "AI4IA_GROUP_POLICY_ENABLED": "true"}
+        for size, messages in (
+            (65536, []),
+            (65537, ["bounded, nonempty groupPolicyJson"]),
+            (65539, ["bounded, nonempty groupPolicyJson", "exceeds 87384 characters"]),
+        ):
+            for filler in (" ", "東"):
+                with self.subTest(size=size, filler=filler), _large_environment(
+                    **_transported({**enabled, "AI4IA_GROUP_POLICY_JSON": _policy_of_size(size, filler)})
+                ):
+                    code, _, err = _run(REAL_PARAMETERS)
+                    self.assertEqual(code, 1 if messages else 0, err)
+                    for message in messages:
+                        self.assertIn(message, err)
+
+    def test_decoded_group_policy_is_validated_like_the_raw_value(self) -> None:
+        enabled = {**PROD_ENV, "AI4IA_GROUP_POLICY_ENABLED": "true"}
+        for policy, expected in (
+            (INCIDENT_POLICY, None),
+            ("not json", "valid JSON"),
+            ('{"version":true}', "version-1 object"),
+            ('{"version":1,"directoryLookup":true}', "unsupported top-level"),
+        ):
+            with self.subTest(policy=policy), _environment(
+                **_transported({**enabled, "AI4IA_GROUP_POLICY_JSON": policy})
+            ):
+                code, _, err = _run(REAL_PARAMETERS)
+                self.assertEqual(code, 0 if expected is None else 1, err)
+                if expected:
+                    self.assertIn(expected, err)
+
+    def test_the_secret_projection_never_reaches_validator_output(self) -> None:
+        stale = {
+            "AI4IA_PROXY_PROFILE_PROJECTION_JSON": SECRET_PROJECTION,
+            "AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64": encode(SECRET_PROJECTION + " "),
+        }
+        with _environment(**stale):
+            code, out, err = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 1)
+        self.assertIn("AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64 does not carry", err)
+        for value in (*stale.values(), encode(SECRET_PROJECTION)):
+            self.assertNotIn(value, out + err)
 
 
 if __name__ == "__main__":

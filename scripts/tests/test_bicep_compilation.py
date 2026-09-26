@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts._json_transport import TRANSPORTS
 from scripts.tests._production_fixture import production_document
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -126,13 +127,59 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
     def test_claude_entitlement_defaults_off(self) -> None:
         self.assertFalse(self.template["parameters"]["claudeEnabled"]["defaultValue"])
         self.assertFalse(self.template["parameters"]["claudeExternalEnabled"]["defaultValue"])
-        self.assertEqual(self.template["parameters"]["claudeBindingJson"]["defaultValue"], "")
+        self.assertEqual(self.template["parameters"]["claudeBindingJsonBase64"]["defaultValue"], "")
         self.assertIn("deployableCatalog", self.template["variables"])
         self.assertIn(
             "__bicep.deploymentTarget",
             json.dumps(self.template["variables"]["deployableCatalog"]),
         )
         self.assertIn("not(equals(lambdaVariables('model').format, 'Anthropic'))", self.template["variables"]["deployableCatalog"])
+
+    def test_json_transports_decode_into_the_values_consumers_received_before(self) -> None:
+        """azd substitutes parameter values unescaped, so JSON arrives as base64.
+
+        main.bicep decodes each transport once. The API environment value, the
+        proxy's secret file and the parsed Claude binding keep the expressions
+        they had when these were raw string parameters, and empty stays empty.
+        """
+        parameters, variables = self.template["parameters"], self.template["variables"]
+        for transport in TRANSPORTS:
+            with self.subTest(parameter=transport.transport_parameter):
+                spec = parameters[transport.transport_parameter]
+                self.assertEqual(spec["type"], "securestring" if transport.secret else "string")
+                self.assertEqual(spec["defaultValue"], "")
+                self.assertEqual(spec.get("maxLength"), transport.transport_max_length)
+                self.assertNotIn(transport.parameter, parameters)
+        decoded = "[if(empty(parameters('{0}')), '', base64ToString(parameters('{0}')))]"
+
+        self.assertEqual(variables["groupPolicyJson"], decoded.format("groupPolicyJsonBase64"))
+        api = self.template["resources"]["api"]["properties"]
+        self.assertEqual(api["parameters"]["groupPolicyJson"], {"value": "[variables('groupPolicyJson')]"})
+        self.assertEqual(api["template"]["parameters"]["groupPolicyJson"]["maxLength"], 65536)
+        self.assertIn(
+            {"name": "AI4IA_GROUP_POLICY_JSON", "value": "[parameters('groupPolicyJson')]"},
+            api["template"]["variables"]["groupPolicyEnv"],
+        )
+
+        self.assertEqual(variables["claudeBindingJson"], decoded.format("claudeBindingJsonBase64"))
+        self.assertEqual(
+            variables["claudeBinding"],
+            "[if(parameters('claudeExternalEnabled'), json(variables('claudeBindingJson')), createObject())]",
+        )
+
+        # The secret is decoded inline, never held in a named variable.
+        self.assertNotIn("proxyProfileProjectionJson", variables)
+        gateway = self.template["resources"]["gateway"]["properties"]
+        self.assertEqual(
+            gateway["parameters"]["proxyProfileProjectionJson"],
+            "[if(empty(parameters('proxyProfileProjectionJsonBase64')), createObject('value', ''), "
+            "createObject('value', base64ToString(parameters('proxyProfileProjectionJsonBase64'))))]",
+        )
+        self.assertEqual(gateway["template"]["parameters"]["proxyProfileProjectionJson"]["type"], "securestring")
+        self.assertIn(
+            "createObject('name', 'profile-projection-json', 'value', parameters('proxyProfileProjectionJson'))",
+            json.dumps(gateway["template"]["resources"]),
+        )
 
     def test_claude_operator_units_compile_default_off_without_application_or_key_resources(self) -> None:
         for filename, gate, allowed in (

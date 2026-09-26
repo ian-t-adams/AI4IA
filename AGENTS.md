@@ -1352,6 +1352,13 @@ selection require separate approval. See the
 - Add a default-off `Settings` field in `app/api/src/ai4ia_api/config.py` and
   fail-closed prerequisite checks in `validate_runtime`.
 - Wire Bicep parameters, azd/CI variables, and Container App env values in `infra`.
+- azd substitutes values into `infra/main.parameters.json` unescaped, so a raw
+  JSON value breaks provisioning (deploy run 36259812510). A JSON-valued variable
+  keeps its raw operator name but joins `TRANSPORTS` in `scripts/_json_transport.py`:
+  the parameters file reads its `<NAME>_B64` transport, `main.bicep` decodes it
+  with `base64ToString()`, and deploy.yml plus the preprovision hook derive it
+  (`scripts/derive-json-transport.py`), masking a secret-derived value first.
+  Never add a `${*_JSON}` token; the prerequisite validator refuses one.
 - Document the flag in `docs/configuration-reference.md` and
   `docs/runbooks/feature-enablement.md`.
 - If the web needs visibility, expose server-read env in the Next.js runtime

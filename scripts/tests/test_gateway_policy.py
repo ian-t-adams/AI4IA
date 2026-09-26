@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 from xml.etree import ElementTree
 
+from scripts._json_transport import TRANSPORTS
 from scripts.tests._loader import load_script
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1446,7 +1447,17 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertGreater(
             len(tokens - azd_native), 25, "parameter token scan looks vacuous"
         )
-        missing = sorted(tokens - azd_native - exported)
+        # azd substitutes values unescaped, so a JSON-valued variable is read
+        # through a base64 transport. The deploy job derives the transport at run
+        # time from the raw variable, which is what must be exported.
+        transports = {t.transport_variable: t.variable for t in TRANSPORTS}
+        self.assertEqual(tokens & set(transports), set(transports))
+        self.assertIn(
+            "run: python scripts/derive-json-transport.py --github-env",
+            workflow[steps_start:],
+        )
+        derived = {transports[token] for token in tokens & set(transports)}
+        missing = sorted((tokens - azd_native - set(transports) - exported) | (derived - exported))
         self.assertEqual(
             missing,
             [],
