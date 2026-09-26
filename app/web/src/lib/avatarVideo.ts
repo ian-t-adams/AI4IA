@@ -41,7 +41,9 @@ interface Box {
   body: number;
 }
 
-type BoxScan = { boxes: Box[]; complete: boolean };
+// ``complete`` is false when the range ends inside a box; ``malformed`` marks a
+// box size that can't be read (smaller than its header, or beyond 32 bits).
+type BoxScan = { boxes: Box[]; complete: boolean; malformed: boolean };
 
 function fourcc(view: DataView, offset: number): string {
   return String.fromCharCode(
@@ -59,23 +61,23 @@ function readBoxes(view: DataView, start: number, end: number): BoxScan {
   const boxes: Box[] = [];
   let offset = start;
   while (offset < end) {
-    if (offset + 8 > end) return { boxes, complete: false };
+    if (offset + 8 > end) return { boxes, complete: false, malformed: false };
     let size = view.getUint32(offset);
     let header = 8;
     if (size === 1) {
-      if (offset + 16 > end) return { boxes, complete: false };
-      if (view.getUint32(offset + 8) !== 0) return { boxes, complete: true };
+      if (offset + 16 > end) return { boxes, complete: false, malformed: false };
+      if (view.getUint32(offset + 8) !== 0) return { boxes, complete: true, malformed: true };
       size = view.getUint32(offset + 12);
       header = 16;
     } else if (size === 0) {
       size = end - offset;
     }
-    if (size < header) return { boxes, complete: true };
-    if (offset + size > end) return { boxes, complete: false };
+    if (size < header) return { boxes, complete: true, malformed: true };
+    if (offset + size > end) return { boxes, complete: false, malformed: false };
     boxes.push({ type: fourcc(view, offset + 4), start: offset, end: offset + size, body: offset + header });
     offset += size;
   }
-  return { boxes, complete: true };
+  return { boxes, complete: true, malformed: false };
 }
 
 function child(view: DataView, parent: Box, type: string, skip = 0): Box | undefined {
@@ -158,14 +160,15 @@ export function parseInitSegment(bytes: Uint8Array): InitSegmentParse {
     if (bytes.byteLength >= 8 && fourcc(view, 4) !== "ftyp") return { status: "invalid" };
     return bytes.byteLength > MAX_AVATAR_INIT_BYTES ? { status: "invalid" } : { status: "incomplete" };
   }
-  if (first.type !== "ftyp") return { status: "invalid" };
+  if (first.type !== "ftyp" || scan.malformed) return { status: "invalid" };
   const moov = scan.boxes.find((box) => box.type === "moov");
   if (!moov) {
+    // More top-level boxes may still arrive: a delta can end exactly after ftyp.
+    // Only media before the moov, or an init that outgrows its bound, is invalid.
     if (scan.boxes.some((box) => box.type === "moof" || box.type === "mdat")) {
       return { status: "invalid" };
     }
-    if (scan.complete || bytes.byteLength > MAX_AVATAR_INIT_BYTES) return { status: "invalid" };
-    return { status: "incomplete" };
+    return bytes.byteLength > MAX_AVATAR_INIT_BYTES ? { status: "invalid" } : { status: "incomplete" };
   }
   let video: string | null = null;
   let audio: string | null = null;
@@ -244,6 +247,49 @@ export function browserAvatarVideoEnvironment(): AvatarVideoEnvironment | null {
     createObjectURL: (source) => URL.createObjectURL(source as unknown as MediaSource),
     revokeObjectURL: (url) => URL.revokeObjectURL(url),
   };
+}
+
+type ExitableDocument = Document & {
+  exitPictureInPicture?: () => Promise<void>;
+  pictureInPictureElement?: Element | null;
+};
+
+// Some engines return nothing, or throw, instead of a promise.
+function quietly(run: (() => Promise<void> | void) | undefined): void {
+  try {
+    const result = run?.();
+    if (result && typeof (result as Promise<void>).catch === "function") {
+      (result as Promise<void>).catch(() => {});
+    }
+  } catch {
+    /* not supported here */
+  }
+}
+
+/**
+ * Keep the avatar video inside its stage, where the AI-generated label is
+ * drawn. Picture-in-picture, fullscreen, remote playback and the context menu
+ * are disabled, and entering either mode anyway exits it at once.
+ */
+export function hardenAvatarVideoElement(element: HTMLVideoElement): void {
+  const doc = element.ownerDocument as ExitableDocument;
+  element.controls = false;
+  element.setAttribute("disablepictureinpicture", "");
+  element.setAttribute("disableremoteplayback", "");
+  element.setAttribute("controlslist", "nofullscreen noremoteplayback nodownload");
+  const media = element as HTMLVideoElement & {
+    disablePictureInPicture?: boolean;
+    disableRemotePlayback?: boolean;
+  };
+  media.disablePictureInPicture = true;
+  media.disableRemotePlayback = true;
+  element.addEventListener("contextmenu", (event) => event.preventDefault());
+  element.addEventListener("enterpictureinpicture", () => {
+    if (doc.pictureInPictureElement === element) quietly(doc.exitPictureInPicture?.bind(doc));
+  });
+  element.addEventListener("fullscreenchange", () => {
+    if (doc.fullscreenElement === element) quietly(doc.exitFullscreen?.bind(doc));
+  });
 }
 
 /** Whether this browser can play the Voice Live avatar stream at all. */

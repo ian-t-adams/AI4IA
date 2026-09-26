@@ -185,7 +185,12 @@ describe("parseInitSegment", () => {
     expect(parseInitSegment(init.slice(0, init.length - 10))).toEqual({ status: "incomplete" });
     expect(parseInitSegment(mediaFragment(1))).toEqual({ status: "invalid" });
     const ftypOnly = init.slice(0, new DataView(init.buffer).getUint32(0));
+    // A delta may end exactly after ftyp: that is an incomplete init, not an invalid one.
+    expect(parseInitSegment(ftypOnly)).toEqual({ status: "incomplete" });
+    // Controls: media before the moov, or a box whose size can't be read, is invalid.
     expect(parseInitSegment(concatBytes(ftypOnly, mediaFragment(1)))).toEqual({ status: "invalid" });
+    expect(parseInitSegment(concatBytes(ftypOnly, new Uint8Array([0, 0, 0, 4, 0x66, 0x72, 0x65, 0x65]))))
+      .toEqual({ status: "invalid" });
   });
 });
 
@@ -229,6 +234,22 @@ describe("AvatarVideoPlayer", () => {
     expect(buffer.appended.map((data) => fragmentSequence(data))).toEqual([null, 1]);
     buffer.finish();
     expect(player.backlog).toEqual({ chunks: 0, bytes: 0 });
+  });
+
+  it("plays an init segment split exactly after ftyp", () => {
+    const { player, source, failures } = openPlayer();
+    const init = initSegment();
+    const ftypEnd = new DataView(init.buffer).getUint32(0);
+    player.push(toBase64(init.slice(0, ftypEnd)));
+    expect(failures).toEqual([]);
+    expect(source.types).toEqual([]);
+    player.push(toBase64(init.slice(ftypEnd)));
+    player.push(toBase64(mediaFragment(1)));
+    const buffer = source.buffers[0];
+    buffer.finish();
+    expect(failures).toEqual([]);
+    expect(source.types).toEqual([AVATAR_FALLBACK_MIME]);
+    expect(buffer.appended).toEqual([init, mediaFragment(1)]);
   });
 
   it("collects an init segment split across deltas before choosing a codec", () => {

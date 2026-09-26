@@ -14,7 +14,7 @@ import {
   DEFAULT_VOICE_SETTINGS,
   type LiveAvatarSelection,
 } from "./voiceLive";
-import { AVATAR_FALLBACK_MIME } from "./avatarVideo";
+import { AVATAR_FALLBACK_MIME, AvatarVideoPlayer } from "./avatarVideo";
 import { initSegment, mediaFragment, toBase64 } from "../../test-fixtures/avatarFmp4";
 
 const auth = vi.hoisted(() => ({
@@ -1655,11 +1655,15 @@ describe("useVoiceLive live photo avatar", () => {
     Reflect.deleteProperty(window, "MediaSource");
   });
 
-  async function startSpeech(avatar: LiveAvatarSelection | null, onError = vi.fn()) {
+  async function startSpeech(
+    avatar: LiveAvatarSelection | null,
+    onError = vi.fn(),
+    speechSettings = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  ) {
     const hook = renderHook(() =>
       useVoiceLive(
         CONFIG, "speech_voice_live", null, null, "ignored", onError, null, [],
-        DEFAULT_VOICE_SETTINGS, DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, false, null, avatar,
+        DEFAULT_VOICE_SETTINGS, speechSettings, false, null, avatar,
       ),
     );
     act(() => {
@@ -1682,6 +1686,9 @@ describe("useVoiceLive live photo avatar", () => {
     const avatar = result.current.avatar;
     expect(avatar?.element).toBeInstanceOf(HTMLVideoElement);
     expect(avatar?.element).toHaveAttribute("aria-label", "AI-generated avatar video");
+    // The label is drawn by the stage, so the video can never leave it.
+    expect(avatar?.element).toHaveAttribute("disablepictureinpicture");
+    expect(avatar?.element?.getAttribute("controlslist")).toContain("nofullscreen");
     expect(avatar?.element?.muted).toBe(false); // the avatar's speech plays from the video
     expect(avatar?.label).toBe("AI-generated");
     expect(HTMLMediaElement.prototype.play).toHaveBeenCalled(); // primed in the click
@@ -1703,6 +1710,59 @@ describe("useVoiceLive live photo avatar", () => {
     expect(result.current.speaking).toBe(true); // the video is still speaking
     act(() => emit({ type: "session.avatar.switch_to_idle" }));
     expect(result.current.speaking).toBe(false);
+  });
+
+  it("primes avatar playback inside the start gesture, before anything is awaited", () => {
+    const hook = renderHook(() =>
+      useVoiceLive(
+        CONFIG, "speech_voice_live", null, null, "ignored", vi.fn(), null, [],
+        DEFAULT_VOICE_SETTINGS, DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, false, null, AVATAR,
+      ),
+    );
+    act(() => {
+      hook.result.current.start();
+    });
+    // Nothing has been awaited yet, so this play() is still inside the click.
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it("stays voice only when the player cannot start, and never names the avatar", async () => {
+    class ThrowingMediaSource {
+      static isTypeSupported() {
+        return true;
+      }
+      constructor() {
+        throw new Error("MediaSource unavailable");
+      }
+    }
+    Object.defineProperty(window, "MediaSource", { configurable: true, value: ThrowingMediaSource });
+    const { result, socket, emit, context } = await startSpeech(AVATAR);
+    expect(new URL(socket.url).searchParams.has("avatar")).toBe(false);
+    expect(result.current.avatar?.unsupported).toBe(true);
+    expect(result.current.avatar?.element).toBeNull();
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      emit({ type: "response.audio.delta", response_id: "r1", delta: "AQACAA==" });
+    });
+    expect(context.createBuffer).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["on", true],
+    ["off", false],
+  ])("jumps the avatar to the live edge on barge-in only with interruption %s", async (_label, interrupt) => {
+    const jump = vi.spyOn(AvatarVideoPlayer.prototype, "jumpToLiveEdge");
+    const { emit } = await startSpeech(AVATAR, vi.fn(), {
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      interruptResponse: interrupt,
+    });
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      emit({ type: "input_audio_buffer.speech_started", item_id: "u1" });
+    });
+    // With interruption off the avatar keeps talking, so its speech is never skipped.
+    expect(jump).toHaveBeenCalledTimes(interrupt ? 1 : 0);
   });
 
   it("keeps the PCM path for a voice-only session (control)", async () => {

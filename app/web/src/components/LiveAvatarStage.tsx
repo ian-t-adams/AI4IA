@@ -32,6 +32,29 @@ function clock(seconds: number): string {
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+// What the live region says. It changes only when a warning appears and when
+// about ten seconds remain, never on every tick of the visible countdown.
+const FINAL_SECONDS = 10;
+
+export function countdownAnnouncement(idleLeft: number | null, capLeft: number | null): string {
+  const parts: string[] = [];
+  if (idleLeft !== null) {
+    parts.push(
+      idleLeft <= FINAL_SECONDS
+        ? "About ten seconds until the avatar session ends. Keep talking to continue."
+        : "Nobody has spoken for a while. The avatar session ends soon unless you keep talking.",
+    );
+  }
+  if (capLeft !== null && capLeft <= CAP_NOTICE_SECONDS) {
+    parts.push(
+      capLeft <= FINAL_SECONDS
+        ? "About ten seconds until the avatar session reaches its time limit."
+        : "The avatar session reaches its time limit in about a minute.",
+    );
+  }
+  return parts.join(" ");
+}
+
 const BUTTON_STYLE: React.CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: 8,
@@ -172,17 +195,23 @@ function ActiveLiveAvatarStage({
             A synthetic, AI-generated likeness speaks the replies. Avatar time is billed while the
             session is connected, even when nobody is talking.
           </span>
+          {/* The visible countdowns tick every second, so they are timers, which
+              screen readers don't announce; the status region below speaks only
+              at a couple of thresholds. */}
           {idleLeft !== null && (
-            <span role="status" style={{ color: "var(--warn)" }}>
+            <span role="timer" aria-live="off" style={{ color: "var(--warn)" }}>
               Nobody has spoken for a while. The session ends in {clock(idleLeft)} unless you keep
               talking.
             </span>
           )}
           {showCap && (
-            <span role="status" style={{ color: "var(--warn)" }}>
+            <span role="timer" aria-live="off" style={{ color: "var(--warn)" }}>
               The session reaches its time limit in {clock(capLeft)}.
             </span>
           )}
+          <span className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+            {countdownAnnouncement(idleLeft, capLeft)}
+          </span>
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           {avatar.playbackBlocked && (

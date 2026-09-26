@@ -22,6 +22,7 @@ import { getApiAccessToken, isEntraEnabled } from "./auth";
 import {
   AvatarVideoPlayer,
   browserAvatarVideoEnvironment,
+  hardenAvatarVideoElement,
   supportsAvatarVideo,
   type AvatarVideoFailure,
 } from "./avatarVideo";
@@ -734,6 +735,7 @@ export function avatarErrorMessage(value: unknown): string | null {
     case "cost_unknown_under_cap":
       return "Live avatar time can't be priced while your usage has a spending cap, so the avatar can't start.";
     case "avatar_frame_too_large":
+    case "avatar_stream_refused":
       return "The avatar video stream failed, so the session ended.";
     case "avatar_connect_refused":
       return "This session doesn't accept WebRTC avatar connections.";
@@ -1071,6 +1073,7 @@ export function useVoiceLive(
           element.setAttribute("aria-label", `${avatarSelection.label} avatar video`);
           element.style.cssText =
             "display:block;width:100%;height:100%;object-fit:cover;background:var(--bg-sidebar)";
+          hardenAvatarVideoElement(element);
           const player = new AvatarVideoPlayer(element, env, {
             liveEdgeSeconds: PLAYBACK_BUFFER_MS[settingsRef.current.playbackProfile] / 1000,
             onFailure: (reason) => {
@@ -1356,12 +1359,13 @@ export function useVoiceLive(
         node.onended = () => session.scheduled.delete(node);
       };
 
-      const bargeIn = () => {
+      // Returns whether the reply was interrupted (Speech can turn that off).
+      const bargeIn = (): boolean => {
         if (
           providerIdRef.current === "speech_voice_live" &&
           !speechSettingsRef.current.interruptResponse
         ) {
-          return;
+          return false;
         }
         const playedMs =
           responseAudioStartTime === null
@@ -1408,6 +1412,7 @@ export function useVoiceLive(
             );
           }
         }
+        return true;
       };
 
       // --- live timeline state (per session; closed over by the event handler) ---
@@ -1653,9 +1658,9 @@ export function useVoiceLive(
             break;
           }
           case "input_audio_buffer.speech_started": {
-            bargeIn();
-            // Skip whatever speech the avatar had buffered.
-            avatarPlayerForSession?.jumpToLiveEdge();
+            // Skip whatever speech the avatar had buffered, but only when the
+            // reply is actually interrupted; otherwise the avatar keeps talking.
+            if (bargeIn()) avatarPlayerForSession?.jumpToLiveEdge();
             // A new user turn supersedes the last tool hint, closes the assistant
             // turn, and stops playback/indicators.
             if (mountedRef.current) {

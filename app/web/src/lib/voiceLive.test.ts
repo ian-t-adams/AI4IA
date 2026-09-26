@@ -316,6 +316,10 @@ describe("avatarErrorMessage", () => {
       .toMatch(/no longer exists/);
     expect(avatarErrorMessage({ type: "avatar_error", code: "cost_unknown_under_cap" }))
       .toMatch(/spending cap/);
+    expect(avatarErrorMessage({ type: "avatar_error", code: "avatar_stream_refused" }))
+      .toBe("The avatar video stream failed, so the session ended.");
+    expect(avatarErrorMessage({ type: "avatar_error", code: "avatar_unavailable", reason: "policy_denied" }))
+      .toBe("Live avatars aren't permitted for your account.");
     expect(avatarErrorMessage({ type: "invalid_request_error", code: "avatar_unavailable" })).toBeNull();
     expect(avatarErrorMessage(null)).toBeNull();
   });
