@@ -241,6 +241,110 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertIn("listSecrets(", secrets)
         self.assertNotIn("proxy-apim-attempts-v1-key", json.dumps(api_module))
 
+    def test_photo_avatar_gateway_is_default_off_exact_and_proxy_scoped(self) -> None:
+        flag = "photoAvatarsEnabled"
+        self.assertIs(self.template["parameters"][flag]["defaultValue"], False)
+        for limit in ("photoAvatarMaxPerUser", "photoAvatarMaxCreationsPerDay"):
+            parameter = self.template["parameters"][limit]
+            self.assertEqual(
+                (parameter["defaultValue"], parameter["minValue"], parameter["maxValue"]), (5, 1, 50),
+            )
+        gateway_module = self.template["resources"]["gateway"]["properties"]
+        self.assertEqual(gateway_module["parameters"][flag]["value"], f"[parameters('{flag}')]")
+        gateway = gateway_module["template"]
+        self.assertIs(gateway["parameters"][flag]["defaultValue"], False)
+        resources = gateway["resources"]
+        expected = {
+            "photoAvatarProjectValue": "Microsoft.ApiManagement/service/namedValues",
+            "sharedPhotoAvatarApi": "Microsoft.ApiManagement/service/apis",
+            "sharedPhotoAvatarOperations": "Microsoft.ApiManagement/service/apis/operations",
+            "sharedPhotoAvatarApiPolicy": "Microsoft.ApiManagement/service/apis/policies",
+            "sharedProxyPhotoAvatarSubscription": "Microsoft.ApiManagement/service/subscriptions",
+        }
+        gated = {name for name, value in resources.items() if flag in value.get("condition", "")}
+        self.assertEqual(gated, set(expected))
+        for name, kind in expected.items():
+            self.assertEqual(resources[name]["type"], kind)
+            self.assertEqual(resources[name]["condition"], f"[parameters('{flag}')]")
+        api = resources["sharedPhotoAvatarApi"]["properties"]
+        self.assertEqual(api["path"], "ai4ia-photo-avatars-v1")
+        self.assertIs(api["subscriptionRequired"], True)
+        self.assertEqual(api["protocols"], ["https"])
+        self.assertEqual(gateway["variables"]["photoAvatarOperations"], [
+            {"name": "photo-avatar-features", "method": "GET", "path": "/features", "avatar": False},
+            {"name": "photo-avatar-project-read", "method": "GET", "path": "/project", "avatar": False},
+            {"name": "photo-avatar-project-create", "method": "PUT", "path": "/project", "avatar": False},
+            {"name": "photo-avatar-create", "method": "PUT", "path": "/photoavatars/{avatarId}", "avatar": True},
+            {"name": "photo-avatar-read", "method": "GET", "path": "/photoavatars/{avatarId}", "avatar": True},
+            {"name": "photo-avatar-delete", "method": "DELETE", "path": "/photoavatars/{avatarId}", "avatar": True},
+        ])
+        operation = resources["sharedPhotoAvatarOperations"]
+        self.assertEqual(operation["copy"]["count"], "[length(variables('photoAvatarOperations'))]")
+        self.assertNotIn("*", json.dumps(gateway["variables"]["photoAvatarOperations"]))
+        policy = resources["sharedPhotoAvatarApiPolicy"]["properties"]["value"]
+        self.assertIn("'__AI4IA_PHOTO_AVATAR_SUBSCRIPTION_ID__', variables('proxyPhotoAvatarSubscriptionName')", policy)
+        subscription = resources["sharedProxyPhotoAvatarSubscription"]
+        self.assertIn("ai4ia-photo-avatars-v1", subscription["properties"]["scope"])
+        self.assertIs(subscription["properties"]["allowTracing"], False)
+        self.assertNotEqual(
+            subscription["properties"]["scope"], resources["sharedProxyModelSubscription"]["properties"]["scope"],
+        )
+        self.assertIn("sharedPhotoAvatarApiPolicy", json.dumps(subscription["dependsOn"]))
+        # The proxy holds the only key, under a named host that survives an absent Host2.
+        host_env = gateway["variables"]["hostEnv"]
+        self.assertIn(f"if(parameters('{flag}')", host_env)
+        self.assertIn("'Host-photoavatars'", host_env)
+        self.assertIn("path=/ai4ia-photo-avatars-v1;stripprefix=false", host_env)
+        self.assertRegex(host_env, r"'Host-photoavatars', 'value', format\('[^']*probe=/;[^']*retryafter=false'")
+        self.assertNotIn("'Host3'", host_env)
+        secrets = resources["proxyApp"]["properties"]["configuration"]["secrets"]
+        self.assertIn("proxy-apim-photo-avatars-key", secrets)
+        api_module = json.dumps(self.template["resources"]["api"])
+        self.assertNotIn("proxy-apim-photo-avatars-key", api_module)
+        self.assertNotIn("photoAvatarSubscription", api_module)
+        # The home account and project come from the catalog, never a literal.
+        self.assertIn(".photoAvatars.homeRegion", self.template["variables"]["photoAvatarHomeRegion"])
+        self.assertIn("variables('photoAvatarHomeRegion')", self.template["variables"]["photoAvatarIndex"])
+        self.assertIn(
+            "variables('photoAvatarIndex')", gateway_module["parameters"]["photoAvatarProjectName"]["value"],
+        )
+
+    def test_photo_avatar_storage_and_api_settings_follow_the_flag(self) -> None:
+        data_module = self.template["resources"]["data"]["properties"]
+        self.assertEqual(
+            data_module["parameters"]["deployPhotoAvatarStorage"]["value"], "[parameters('photoAvatarsEnabled')]",
+        )
+        data = data_module["template"]
+
+        def one(kind: str, marker: str) -> dict:
+            (match,) = [r for r in data["resources"] if r["type"] == kind and marker in r["name"]]
+            return match
+
+        container = one("Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers", "'photoAvatars'")
+        self.assertEqual(container["condition"], "[parameters('deployPhotoAvatarStorage')]")
+        resource = container["properties"]["resource"]
+        self.assertEqual(resource["partitionKey"]["paths"], ["/userId"])
+        self.assertEqual(resource["defaultTtl"], -1)
+        blob = one(
+            "Microsoft.Storage/storageAccounts/blobServices/containers", "parameters('photoAvatarBlobContainer')",
+        )
+        self.assertEqual(blob["condition"], "[parameters('deployPhotoAvatarStorage')]")
+        self.assertEqual(blob["properties"]["publicAccess"], "None")
+        self.assertIn("parameters('deployPhotoAvatarStorage')", data["variables"]["deployMediaStorage"])
+        api = self.template["resources"]["api"]["properties"]["template"]
+        env = api["variables"]["photoAvatarEnv"]
+        self.assertIn(
+            "createObject('name', 'AI4IA_PHOTO_AVATARS_ENABLED', 'value', string(parameters('photoAvatarsEnabled')))",
+            env,
+        )
+        self.assertIn("if(parameters('photoAvatarsEnabled')", env)
+        for name in (
+            "AI4IA_PHOTO_AVATAR_BLOB_ACCOUNT_URL", "AI4IA_PHOTO_AVATAR_BLOB_CONTAINER",
+            "AI4IA_PHOTO_AVATAR_MAX_PER_USER", "AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY",
+        ):
+            self.assertIn(name, env)
+        self.assertIn("variables('photoAvatarEnv')", api["variables"]["apiEnv"])
+
     def _companion(self) -> tuple[dict, dict[str, list[dict]]]:
         module = self.template["resources"]["companion"]
         resources = module["properties"]["template"]["resources"]
@@ -369,11 +473,14 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertEqual(set(apis.values()), {
             "openai", "openai/realtime", "openai/v1/realtime",
             "code-interpreter", "speech/voice-live/realtime", "ai4ia-attempts-v1",
+            "ai4ia-photo-avatars-v1",
         })
         for name, path in apis.items():
             self.assertTrue(path and "*" not in path)
             if name != "sharedAttemptsApi":
                 self.assertFalse("ai4ia-attempts-v1/openai/responses".startswith(path + "/"))
+            if name != "sharedPhotoAvatarApi":
+                self.assertFalse("ai4ia-photo-avatars-v1/photoavatars".startswith(path + "/"))
         wildcard = resources["sharedModelOperations"]
         self.assertEqual(wildcard["properties"]["urlTemplate"], "/{*path}")
         self.assertNotIn("ai4ia-attempts-v1", wildcard["name"])

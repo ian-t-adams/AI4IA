@@ -17,7 +17,7 @@ import pytest
 from ai4ia_api.auth.base import AuthenticatedUser
 from ai4ia_api.catalog import load_catalog
 from ai4ia_api.entitlements.memory_store import InMemoryEntitlementStore
-from ai4ia_api.entitlements.models import Entitlement
+from ai4ia_api.entitlements.models import Entitlement, EntitlementLimits
 from ai4ia_api.entitlements.service import EntitlementService
 from ai4ia_api.library.blob_store import InMemoryBlobStore
 from ai4ia_api.photo_avatars import live
@@ -92,7 +92,11 @@ class Rig:
         gateway = PhotoAvatarGateway(self.settings, http_client=httpx.AsyncClient(
             transport=httpx.MockTransport(self.provider), follow_redirects=False,
         ))
-        entitlements = EntitlementService(InMemoryEntitlementStore(), CountingReader(), Entitlement.unlimited())
+        entitlements = EntitlementService(
+            InMemoryEntitlementStore(), CountingReader(), Entitlement.unlimited(),
+            enabled=self.settings.entitlements_enabled,
+        )
+        self.entitlements = entitlements
         usage = UsageService(InMemoryUsageRepository(), load_pricing(), enabled=True)
         self.policy = policy or PolicyService(self.settings, catalog=load_catalog(), entitlements=entitlements)
         self.store = PhotoAvatarStore(self.records)
@@ -393,6 +397,58 @@ async def test_malformed_ids_never_reach_the_store():
     # Control: a well-formed id is looked up.
     await rig.service.resolve_live_avatar(person("alice"), RECORD_ID)
     assert seen == [RECORD_ID]
+
+
+@pytest.mark.parametrize("limits", [
+    {"costPerDayMicroUsd": 5_000_000},
+    {"costPerMonthMicroUsd": 50_000_000},
+])
+async def test_cost_capped_reports_an_owner_cost_cap_and_its_absence(limits):
+    rig = Rig()
+    state = SimpleNamespace(settings=rig.settings, photo_avatars=rig.service)
+    alice = person("alice")
+    # Uncapped: the unlimited default carries no cost limit.
+    assert await rig.service.cost_capped("alice") is False
+    assert await live.live_cost_capped(state, alice) is False
+    # Capped: the same owner and call once a cost limit exists.
+    await rig.entitlements.set("alice", EntitlementLimits(**limits), updated_by=None)
+    assert await rig.service.cost_capped("alice") is True
+    assert await live.live_cost_capped(state, alice) is True
+    # A cap on one owner does not cap another.
+    assert await live.live_cost_capped(state, person("bob")) is False
+
+
+async def test_cost_capped_is_creations_rule_for_soft_enforcement_and_policy_spend():
+    # With soft enforcement off, a stored cost limit does not count.
+    off = Rig(entitlements_enabled=False)
+    await off.entitlements.set("alice", EntitlementLimits(costPerDayMicroUsd=1), updated_by=None)
+    assert await off.service.cost_capped("alice") is False
+    # A group-policy spend cap counts for the bound caller (control: no spend cap).
+    for spend, capped in (({"costPerDayMicroUsd": 1_000_000}, True), ({"requestsPerMinute": 60}, False)):
+        policy = group_policy({**pilot(["use"]), "spend": {"default": spend}})
+        rig = Rig(policy=policy)
+        member = claims_user(groups=[GROUP])
+        bind_authenticated(policy, member)
+        assert await rig.service.cost_capped(member.internal_user_id) is capped
+        # A binding for a different actor cannot describe this owner: fail closed.
+        assert await rig.service.cost_capped("someone-else") is True
+        clear_policy_context()
+
+
+async def test_live_cost_capped_reports_a_disabled_feature():
+    for state in (SimpleNamespace(settings=make_settings()), SimpleNamespace()):
+        with pytest.raises(LiveAvatarError) as caught:
+            await live.live_cost_capped(state, person("alice"))
+        assert (caught.value.code, caught.value.reason) == ("photo_avatars_unavailable", "disabled")
+    # A service left behind after the flag turns off is refused by the entry point
+    # itself, while the same service answers once the flag is on.
+    rig = Rig()
+    left_behind = SimpleNamespace(settings=make_settings(), photo_avatars=rig.service)
+    with pytest.raises(LiveAvatarError) as caught:
+        await live.live_cost_capped(left_behind, person("alice"))
+    assert caught.value.reason == "disabled"
+    enabled = SimpleNamespace(settings=rig.settings, photo_avatars=rig.service)
+    assert await live.live_cost_capped(enabled, person("alice")) is False
 
 
 def test_error_codes_are_the_published_set():

@@ -1,11 +1,16 @@
 # Custom photo avatars: design and phased plan
 
-> **Status (2026-09-25): planned, not implemented.** AI4IA has no avatar code,
-> catalog entry, APIM operation, role assignment, flag or storage. This page
-> records verified platform behavior and the phased plan. Nothing here is enabled.
-> Activation waits on three things: the Limited Access approval for custom text to
-> speech avatar, re-approval under [RAI review trigger 3](rai-decision-record.md#review-triggers),
-> and the [owner decisions](#owner-decisions) below.
+> **Status (2026-09-26): Phase 1 backend implemented, default-off.** The API
+> (`app/api/src/ai4ia_api/photo_avatars/`), the catalog block, the generated
+> exact-operation APIM policy, the flag-gated infrastructure and the tests are in
+> the repository. Nothing is enabled. Creation also refuses at runtime until the
+> home account reports the Limited Access capability. Activation still waits on
+> three things: the Limited Access approval for custom text to speech avatar,
+> re-approval under [RAI review trigger 3](rai-decision-record.md#review-triggers),
+> and the enablement checks in
+> [the runbook](runbooks/feature-enablement.md#custom-photo-avatars). Phase 2 (real-time
+> conversation) is in progress. Phase 3 (rendered videos) is deferred until the
+> registered use case is confirmed.
 
 ## Requirement and scope
 
@@ -394,6 +399,98 @@ applies the same check again when a create runs. `/config` also returns the limi
 and current usage, attribute options, the attestation text, the disclosure label,
 the per-avatar price estimate, and the report reasons with Microsoft's report link.
 
+A `PhotoAvatar` also carries `needsReverification`. It is set when a live session
+reported that the avatar failed verification, and `usable` stays false until a
+later status read re-verifies the avatar.
+
+#### Phase 1 implementation decisions
+
+- **Gateway.** A separate, flag-gated APIM API, `ai4ia-photo-avatars-v1`, has six
+  exact operations: the features read, the avatar project read and create, and the
+  avatar create, read and delete. It has no list operation and no wildcard.
+  `scripts/gen-voice-provider-catalog.py` renders its policy,
+  `infra/policies/photo-avatars.xml`, from the catalog, and
+  `scripts/gen-gateway-policy.py` validates it. The policy:
+  - binds the API-scoped proxy subscription;
+  - admits only AI4IA-issued avatar ids (`ai4ia-` plus 20 hex characters), no
+    caller query string and, for create, a JSON object of catalog-enumerated
+    properties up to 16 KiB;
+  - re-serializes that validated body and owns the avatar project body;
+  - pins the provider paths and api-version;
+  - strips caller and proxy headers before managed-identity authentication, and
+    forwards exactly once.
+- **Proxy.** A named proxy host, `Host-photoavatars`, not `Host3`, because the proxy
+  stops reading numbered hosts at the first gap and `Host2` is conditional. Its
+  exact non-stripping path makes it the only candidate for avatar requests.
+  FastAPI reuses its existing proxy-ingress credential.
+- **No create retry.** The create is one admitted PUT with an `S7PTTL`, so a queued
+  request can't be sent late. FastAPI never resends it:
+  - an accepted create is billed;
+  - a definite rejection (400, 401, 403, 404, 409, 413, 415, 422 or 429) fails without
+    a charge;
+  - anything else becomes `confirming`. A status read settles it: the provider's
+    state is adopted, or the record fails as `not_created` only after the proxy
+    time to live plus a four-minute margin.
+- **Avatar project.** It is created lazily and idempotently at runtime, through the
+  same gateway: a GET, then a PUT only on 404. This reuses APIM's existing
+  Cognitive Services User role, needs no deploy-identity role, and never replaces an
+  existing project. It is the one unmetered provider write. An AST inventory test
+  pins the adapter's writes: the admitted create, this setup call and the delete.
+- **Ids.** Record ids are opaque 32-character hex strings. Provider ids are
+  `ai4ia-` plus 20 hex characters: generated on the server, never accepted from or
+  returned to clients, and shorter than the receipt redactor's 32-character
+  threshold.
+- **Capability.** The probe reads the account's features through the gateway, 5
+  seconds at most, and caches the result for 60 seconds (15 seconds after an error).
+  Only exact membership of the catalog's `requiredFeature` counts. An error, a
+  timeout or an unexpected shape reads as unknown, and all of them refuse creation.
+- **Availability.** One predicate checks flag, storage, residency, policy and
+  capability, in that order. `/config`, each record's `usable` flag and the create
+  path share it, and the live resolver re-runs it with `avatar.use` enforced.
+- **Limits.** An owner-partition ledger in the `photoAvatars` container holds the
+  current record ids and the rolling creation and report times. A create is
+  reserved in the same Cosmos batch as its ledger update, so the limits hold under
+  concurrent requests.
+- **Pilot access.** A group-policy `avatars` domain with two actions: `create`,
+  which is consumption, and `use`. Owner reads, status, deletion and reports need
+  no grant.
+- **Metering.** One usage row per dispatched create, under a deterministic id:
+  `photo-avatar-create-<record id>`. An accepted create records a known $2
+  estimate; an unknown outcome records cost-unknown, never free. Hard admission
+  covers creation as a request-only surface.
+- **Preview.** The one direct egress. The catalog names one exact provider storage
+  host. The fetch pins the checked public address, refuses redirects, streams under
+  a byte cap and requires a PNG within the catalog's dimension bound. It drives the
+  pinned transport directly, because the HTTP client logs full request URLs and
+  this one carries the SAS signature.
+- **Live sessions.** `photo_avatars/live.py` gives the Phase 2 relay
+  `resolve_live_avatar(state, user, record_id)`. The returned `LiveAvatarGrant` is
+  the only way the provider id leaves the package. Refusals carry stable codes.
+  `mark_live_avatar_verification_failed` records a Voice Live verification failure:
+  live use is refused until, after a five-minute cooldown, a fresh provider read
+  still finds the avatar `Succeeded`.
+
+#### Read-only observations, 2026-09-26
+
+A read-only pass against the test resources, GET requests only, confirmed the
+shapes the adapter's synthetic fixtures use:
+
+- The features read returns a JSON array of strings. It did not contain
+  `CustomAvatar`, because the registration is pending.
+- An unknown avatar or project returns `404 {"error":{"code":"NotFound"}}`.
+- **Avatar ids are scoped to the account, not the avatar project.** A read
+  through a different project's path returned an existing avatar. So the
+  project segment is not an isolation boundary, and that is why APIM accepts only
+  AI4IA-issued ids.
+- `promptImageUri` is a user-delegation SAS on a provider storage account named
+  for its region. A fetch returned `application/octet-stream`: a 1024×1024 RGB
+  PNG, about 1.3 MB. A tampered signature returned 403.
+
+The catalog's eastus2 preview host follows the observed naming for westus2. The
+account name resolves in DNS, and a one-character variant does not. It has not yet
+been seen as an issued preview host, so confirming it is an enablement check. If
+the host is wrong, the fetch fails closed with `preview_rejected`.
+
 #### Phase 1 web experience
 
 The gallery is `app/web/src/components/PhotoAvatarsPanel.tsx`, with its client in
@@ -510,6 +607,32 @@ Each of these needs its own review:
 10. **Retention.** Avatars last until their owner deletes them. Offboarding also
     deletes the provider avatars. Rendered videos expire.
 11. **Phase 3.** Decide in or out, after the use-case check.
+
+For the Phase 1 implementation, the coordinator adopted the recommended defaults
+on 2026-09-25:
+
+- decision 1: default-off, with the fail-closed capability check;
+- decision 4: previews only for now;
+- decision 5: the eastus2 home account, set in the catalog;
+- decision 6: no new role assignment, with a live check at enablement;
+- decision 7: an optional group-policy pilot restriction;
+- decision 8: caps on avatars per user and creations per day, standard avatars only;
+- decision 10: owner-driven, idempotent deletion.
+
+Decision 2 keeps AI4IA's annotate-only posture, which means deterministic product
+constraints instead of classifier blocking:
+
+- a bounded prompt;
+- validated attributes;
+- a required attestation that the character is fictional, an adult and not
+  modeled on a real person;
+- a recorded provider outcome;
+- AI-generated disclosure metadata;
+- a report path.
+
+The trigger-3 re-approval itself is still outstanding. Decisions 3, 9 and 11 belong
+to later phases. No offboarding path exists in the repository yet; the runbook
+records the operator cleanup until one does.
 
 ## Risks
 
