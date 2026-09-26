@@ -1288,9 +1288,13 @@ class ResolutionTransitionTests(unittest.TestCase):
 
     def test_legacy_states_parse_and_only_resolved_states_carry_a_resolution(self):
         legacy = previous_state().document()
-        del legacy["resolution"]
+        # Non-resolved states keep the previous schema's exact key set, so the
+        # previous parser still reads them after a revert.
+        self.assertNotIn("resolution", legacy)
+        self.assertEqual(set(legacy), set(State.__dataclass_fields__) - {"resolution"})
         State.parse(legacy)
         valid = resolved_state().document()
+        self.assertIn("resolution", valid)
         mutations = {
             "resolved without a resolution": lambda value: value.update(resolution=None),
             "resolved but blocked": lambda value: value.update(blocked=True),

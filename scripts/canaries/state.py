@@ -66,6 +66,10 @@ class State:
 
     def document(self) -> dict[str, Any]:
         data = asdict(self)
+        if data["resolution"] is None:
+            # Keep every non-resolved state readable by the previous schema, so a
+            # revert of this code cannot block a chain that never resolved.
+            del data["resolution"]
         self.parse(data)
         return data
 
