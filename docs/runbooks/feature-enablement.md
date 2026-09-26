@@ -279,12 +279,24 @@ by the normal application runtime or by this source change:
    No password/certificate credential or system-MI substitution is accepted.
    Graph creation/consent is an operator step, never a deployment script fallback.
 3. Provision that application's service principal in the target tenant after
-   the required consent is approved. Separately approve a **distinct target-reader
-   identity and main-ref GitHub OIDC trust**. It must not be the runtime application,
+   the required consent is approved. A target-tenant member without a directory
+   role cannot create a service principal for an application registered in
+   another tenant. A user-consent policy limited to verified publishers
+   (`microsoft-user-default-low`) also keeps an unverified external application
+   off the consent path. So an Application Administrator or Cloud Application
+   Administrator must run `az ad sp create --id <application-client-id>` or grant
+   admin consent. Subscription Owner is not a directory role and does not help.
+   Separately approve a **distinct target-reader identity** whose GitHub OIDC
+   trust matches the subject `deploy.yml` presents. The job runs under the
+   `production` environment, so with the default subject template the subject is
+   `repo:<owner>/<repo>:environment:production`. A `ref:refs/heads/main` subject
+   alone fails the reader login. The reader must not be the runtime application,
    UAMI or existing source deployment identity. The readers need the exact app,
-   FIC and SP metadata reads plus scoped ARM reads used below. Missing Graph
-   access is an explicit blocker; do not automatically add broad directory
-   permissions to work around it.
+   FIC and SP metadata reads plus scoped ARM reads used below. A workload identity
+   gets those Graph reads only through an admin-consented application permission,
+   which is another target-tenant administrator action. Missing Graph access is an
+   explicit blocker; do not automatically add broad directory permissions to work
+   around it.
 4. Prepare an empty dedicated target resource group and the planned binding.
    Run the target preflight below under its isolated reader profile. It reads
    exact version/SKU offerings, their **offered `usageName`** counter, raw remaining
