@@ -64,13 +64,32 @@ describe("hardenAvatarVideoElement", () => {
   it("tolerates engines without a promise-returning exit", () => {
     const video = document.createElement("video");
     hardenAvatarVideoElement(video);
-    Object.defineProperty(document, "exitFullscreen", {
-      configurable: true,
-      value: () => {
+    // jsdom reports a listener's exception to window "error" rather than
+    // throwing it from dispatchEvent, so the test listens there.
+    const escaped: unknown[] = [];
+    const onError = (event: ErrorEvent) => {
+      escaped.push(event.error);
+      event.preventDefault();
+    };
+    window.addEventListener("error", onError);
+    try {
+      // Control: a listener that throws is observed.
+      const control = document.createElement("video");
+      control.addEventListener("fullscreenchange", () => {
+        throw new Error("control");
+      });
+      control.dispatchEvent(new Event("fullscreenchange"));
+      expect(escaped).toHaveLength(1);
+      const exitFullscreen = vi.fn(() => {
         throw new Error("not supported");
-      },
-    });
-    stubDocument("fullscreenElement", video);
-    expect(() => video.dispatchEvent(new Event("fullscreenchange"))).not.toThrow();
+      });
+      Object.defineProperty(document, "exitFullscreen", { configurable: true, value: exitFullscreen });
+      stubDocument("fullscreenElement", video);
+      video.dispatchEvent(new Event("fullscreenchange"));
+      expect(exitFullscreen).toHaveBeenCalledTimes(1);
+      expect(escaped).toHaveLength(1);
+    } finally {
+      window.removeEventListener("error", onError);
+    }
   });
 });
