@@ -310,6 +310,8 @@ export class AvatarVideoPlayer {
   private objectUrl: string | null = null;
   private opened = false;
   private started = false;
+  // Set by a NotAllowedError: only resume(), from a user gesture, retries play().
+  private playbackBlocked = false;
   private failure: AvatarVideoFailure | null = null;
   private destroyed = false;
   private readonly maxQueuedChunks: number;
@@ -396,6 +398,7 @@ export class AvatarVideoPlayer {
 
   /** Retry playback after the browser blocked autoplay with sound. */
   resume(): void {
+    this.playbackBlocked = false;
     this.requestPlay();
   }
 
@@ -567,12 +570,17 @@ export class AvatarVideoPlayer {
   }
 
   private requestPlay(): void {
+    // Every completed append asks a paused element to play. Once the browser has
+    // refused sound without a gesture, asking again only repeats the refusal.
+    if (this.playbackBlocked || this.destroyed) return;
     try {
       const result = this.video.play();
       if (result && typeof (result as Promise<void>).catch === "function") {
         (result as Promise<void>).catch((error: unknown) => {
           const name = (error as { name?: unknown } | null)?.name;
-          if (name === "NotAllowedError") this.options.onPlaybackBlocked?.();
+          if (name !== "NotAllowedError" || this.playbackBlocked || this.destroyed) return;
+          this.playbackBlocked = true;
+          this.options.onPlaybackBlocked?.();
         });
       }
     } catch {

@@ -1039,10 +1039,15 @@ export function useVoiceLive(
       cleaned: false,
     };
     pendingRef.current = pending;
+    // Transcript and response events arrive many times a second; a patch that
+    // changes nothing keeps the same view so the stage does not re-render.
     const patchAvatar = (patch: Partial<LiveAvatarView>) => {
-      if (mountedRef.current) {
-        setAvatarView((prev) => (prev ? { ...prev, ...patch } : prev));
-      }
+      if (!mountedRef.current) return;
+      setAvatarView((prev) => {
+        if (!prev) return prev;
+        const keys = Object.keys(patch) as (keyof LiveAvatarView)[];
+        return keys.some((key) => prev[key] !== patch[key]) ? { ...prev, ...patch } : prev;
+      });
     };
     // Set once the session exists; the player may fail before that.
     const avatarEvents: { onFailure?: (reason: AvatarVideoFailure) => void } = {};

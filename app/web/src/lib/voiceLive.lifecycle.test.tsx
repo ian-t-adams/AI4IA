@@ -1746,6 +1746,10 @@ describe("useVoiceLive live photo avatar", () => {
     expect(result.current.avatar?.idleEndsAt).not.toBeNull(); // idle video is not conversation
     act(() => emit({ type: "input_audio_buffer.speech_started" }));
     expect(result.current.avatar?.idleEndsAt).toBeNull();
+    // A conversation event that changes nothing keeps the same view object.
+    const settled = result.current.avatar;
+    act(() => emit({ type: "response.audio_transcript.delta", delta: "Hi" }));
+    expect(result.current.avatar).toBe(settled);
     act(() => {
       emit({ type: "ai4ia.avatar.session_ended", reason: "idle_timeout" });
       socket.onclose?.({ code: 1000, reason: "" });

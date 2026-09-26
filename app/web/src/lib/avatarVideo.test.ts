@@ -353,6 +353,37 @@ describe("AvatarVideoPlayer", () => {
     expect(source.buffers[0].appended).toHaveLength(1);
   });
 
+  it("stops retrying blocked autoplay until the user resumes it", async () => {
+    const video = new FakeVideo();
+    const blocked = Object.assign(new Error("autoplay"), { name: "NotAllowedError" });
+    video.play = vi.fn(() => Promise.reject(blocked));
+    const onPlaybackBlocked = vi.fn();
+    const { env, sources } = environment();
+    const player = new AvatarVideoPlayer(video, env, { onPlaybackBlocked });
+    player.prime();
+    sources[0].open();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onPlaybackBlocked).toHaveBeenCalledTimes(1);
+    player.push(toBase64(initSegment()));
+    const buffer = sources[0].buffers[0];
+    buffer.ranges = [[0, 1]];
+    buffer.finish(); // appends complete while the element is still paused
+    player.push(toBase64(mediaFragment(1)));
+    buffer.finish();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(video.play).toHaveBeenCalledTimes(1);
+    expect(onPlaybackBlocked).toHaveBeenCalledTimes(1);
+    video.play = vi.fn(() => Promise.resolve());
+    player.resume();
+    expect(video.play).toHaveBeenCalledTimes(1);
+    // Control: once resumed, a paused element is asked to play after each append.
+    player.push(toBase64(mediaFragment(2)));
+    buffer.finish();
+    expect(video.play).toHaveBeenCalledTimes(2);
+  });
+
   it("asks the caller for a gesture when autoplay with sound is blocked", async () => {
     const video = new FakeVideo();
     const blocked = Object.assign(new Error("autoplay"), { name: "NotAllowedError" });
