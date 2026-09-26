@@ -58,6 +58,8 @@ import {
   type VoicePreferences,
 } from "@/lib/voicePreferences";
 import { LibraryPanel } from "./LibraryPanel";
+import { PhotoAvatarsPanel } from "./PhotoAvatarsPanel";
+import { usePhotoAvatarsEnabled } from "./usePhotoAvatarsEnabled";
 import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import type { CitationTarget } from "./Markdown";
@@ -203,12 +205,15 @@ export function ChatApp() {
     settingsOpen,
     studioOpen,
     libraryOpen,
+    photoAvatarsOpen,
     openSettings,
     closeSettings,
     openStudio,
     closeStudio,
     openLibrary,
     closeLibrary,
+    openPhotoAvatars,
+    closePhotoAvatars,
     mobileSidebar,
     drawerInspector,
     mobileSidebarOpen,
@@ -223,6 +228,9 @@ export function ChatApp() {
   // session-scoped local-extract path, so the doc is parsed, surfaced to the
   // agent (retrieval tiers + fetch_document) and runnable via run_code.
   const libraryEnabled = libraryConfig.enabled;
+  // Photo avatars follow the server's own /config (default off, and only for
+  // the current owner). Visibility only: the API enforces the gate itself.
+  const photoAvatarsEnabled = usePhotoAvatarsEnabled(owner.key);
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -2878,6 +2886,7 @@ export function ChatApp() {
           onOpenSettings={openSettings}
           onOpenStudio={openStudio}
           onOpenLibrary={libraryEnabled ? openLibrary : undefined}
+          onOpenPhotoAvatars={photoAvatarsEnabled ? openPhotoAvatars : undefined}
           onBeforeSignOut={prepareSignOut}
           onCollapse={toggleLeftPanel}
           openerRef={sidebarReturnFocusRef}
@@ -3160,6 +3169,10 @@ export function ChatApp() {
       )}
       {libraryOpen && libraryEnabled && (
         <LibraryPanel onClose={closeLibrary} />
+      )}
+      {photoAvatarsOpen && photoAvatarsEnabled && owner.key !== null && (
+        // Keyed by owner so an account switch never shows another owner's avatars.
+        <PhotoAvatarsPanel key={owner.key} onClose={closePhotoAvatars} />
       )}
       {citationTarget && libraryEnabled && (
         <MediaPlayer
