@@ -32,6 +32,7 @@ on:
       - "app/web/**"
       - "app/api/**"
       - "proxy/**"
+      - "scripts/check-image-ownership.py"
       - "scripts/tests/test_dockerignore_context.py"
       - "scripts/tests/test_base_image_pins.py"
       - ".github/workflows/docker-build.yml"
@@ -262,6 +263,17 @@ jobs:
             exit 1
           fi
 
+      - name: Verify CompanionApp application files are root-owned
+        run: |
+          set -euo pipefail
+          # The chiseled runtime has no shell, so read the final owners and modes
+          # from the exported filesystem: the app user must not be able to replace
+          # the application, and the key ring is its only owned path.
+          container="$(docker create ai4ia-companion:ci)"
+          trap 'docker rm --force "${container}" >/dev/null' EXIT
+          docker export "${container}" | python3 scripts/check-image-ownership.py \
+            --root-owned app --owned var/lib/companion/keys=1654
+
       - name: Smoke test - CompanionApp starts and admits only the allow-listed admin
         run: |
           set -euo pipefail
@@ -311,21 +323,38 @@ jobs:
           expect 404 /url-tester "${admin}"
           expect 403 / ""
           expect 403 /eventhub "33333333-3333-3333-3333-333333333333"
-          # Blazor is interactive only if the fingerprinted script the page references
-          # is actually published and served from the image.
+          # Blazor is interactive only if the script the page references is actually
+          # published and served from the image. Status alone is not enough: a
+          # fallback page could answer 200 with HTML.
           page="$(curl --silent --fail --header "X-MS-CLIENT-PRINCIPAL-ID: ${admin}" http://127.0.0.1:18080/)"
           script="$(grep -oE '_framework/blazor\.web[^"]*\.js' <<< "${page}" | head -n 1 || true)"
           if [[ -z "${script}" ]]; then
             echo "::error::The CompanionApp page references no Blazor script."
             exit 1
           fi
-          expect 200 "/${script}" "${admin}"
-          if ! curl --silent --fail --header "X-MS-CLIENT-PRINCIPAL-ID: ${admin}" \
-            "http://127.0.0.1:18080/${script}" | grep -q 'Blazor'; then
-            echo "::error::/${script} is not the Blazor script."
+          content_type_of() {
+            curl --silent --output /dev/null --write-out '%{content_type}' \
+              --header "X-MS-CLIENT-PRINCIPAL-ID: ${admin}" "http://127.0.0.1:18080$1" || true
+          }
+          for path in "/${script}" /_framework/blazor.web.js; do
+            expect 200 "${path}" "${admin}"
+            content_type="$(content_type_of "${path}")"
+            if [[ "${content_type}" != *javascript* ]]; then
+              echo "::error::GET ${path} returned content type '${content_type}', expected JavaScript."
+              exit 1
+            fi
+            if ! curl --silent --fail --header "X-MS-CLIENT-PRINCIPAL-ID: ${admin}" \
+              "http://127.0.0.1:18080${path}" | grep -q 'Blazor'; then
+              echo "::error::${path} is not the Blazor script."
+              exit 1
+            fi
+          done
+          # Controls: an absent script is an HTML 404, and the real one still needs the admin.
+          expect 404 /_framework/blazor.missing.js "${admin}"
+          if [[ "$(content_type_of /_framework/blazor.missing.js)" == *javascript* ]]; then
+            echo "::error::A missing script was served as JavaScript; the content-type check is vacuous."
             exit 1
           fi
-          expect 404 /_framework/blazor.missing.js "${admin}"
           expect 403 "/${script}" ""
 
       - name: Scan final CompanionApp image for HIGH/CRITICAL vulnerabilities

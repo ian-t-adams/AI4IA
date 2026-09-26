@@ -28,8 +28,8 @@ class ProxyProvenanceTests(unittest.TestCase):
             {
                 "ai4ia-added": 7,
                 "ai4ia-excluded": 95,
-                "ai4ia-patched": 22,
-                "upstream-equivalent": 292,
+                "ai4ia-patched": 23,
+                "upstream-equivalent": 291,
             },
         )
         self.assertEqual(len(document["files"]), 416)

@@ -14,8 +14,8 @@
   "counts": {
     "ai4ia-added": 7,
     "ai4ia-excluded": 95,
-    "ai4ia-patched": 22,
-    "upstream-equivalent": 292
+    "ai4ia-patched": 23,
+    "upstream-equivalent": 291
   },
   "patches": [
     {
@@ -33,6 +33,10 @@
     {
       "path": "CompanionApp/Components/Pages/Home.razor",
       "reason": "Offer only the Event Hub monitor and Insights; drop the routes, links and Investigator wizard of excluded tools."
+    },
+    {
+      "path": "CompanionApp/Components/Shared/EventHub/EventHubReader.cs",
+      "reason": "Serialize the pipeline across the concurrent partition readers, whose shared request dictionaries upstream mutated without a lock, and drop the unbounded incomplete.json writer of raw event JSON for the excluded /incomplete page."
     },
     {
       "path": "CompanionApp/Program.cs",
@@ -651,10 +655,10 @@
       "disposition": "upstream-equivalent"
     },
     "CompanionApp/Components/Shared/EventHub/EventHubReader.cs": {
-      "localCanonicalSha256": "1e05d3287c41ef08fcfe1b62c8d1f03c34461e21692a5f4fc84a5da4549c84c9",
+      "localCanonicalSha256": "1571b3904a4b600e190b06396a3cfb529fa80e2da2caa10a422ddb694bce1128",
       "upstreamRawSha256": "1e05d3287c41ef08fcfe1b62c8d1f03c34461e21692a5f4fc84a5da4549c84c9",
       "upstreamCanonicalSha256": "1e05d3287c41ef08fcfe1b62c8d1f03c34461e21692a5f4fc84a5da4549c84c9",
-      "disposition": "upstream-equivalent"
+      "disposition": "ai4ia-patched"
     },
     "CompanionApp/Components/Shared/EventHub/EventHubRequestStatus.razor": {
       "localCanonicalSha256": "bd7f5f49426f82c73b834320e3fb8dba5c919e5120af57facddb6ee2f74594d6",

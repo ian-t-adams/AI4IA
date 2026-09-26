@@ -17,9 +17,11 @@ on:
 
 permissions: {}
 
-# Serialized with deploy.yml so a promotion never races a provision.
+# Its own group: a promotion only pushes a new repository digest and attestations
+# and never provisions or deploys, so it must not share deploy.yml's
+# deploy-production group, where a new dispatch would replace a queued deploy.
 concurrency:
-  group: deploy-production
+  group: companion-image-production
   cancel-in-progress: false
 
 jobs:

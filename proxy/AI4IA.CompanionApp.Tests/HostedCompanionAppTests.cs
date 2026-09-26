@@ -8,7 +8,11 @@ using CompanionApp.Components;
 using CompanionApp.Components.Shared;
 using CompanionApp.Components.Shared.EventHub;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.StaticAssets;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -50,6 +54,46 @@ public sealed class HostedCompanionAppTests
         CollectionAssert.AreEquivalent(AllowedRoutes, routes.ToArray());
         foreach (string excluded in ExcludedRoutes)
             Assert.IsFalse(routes.Contains(excluded), excluded);
+    }
+
+    // Every endpoint the deployed (Production) host maps, other than static files. A new
+    // minimal-API or framework endpoint fails here until it is reviewed against the boundary.
+    private static readonly string[] MappedEndpoints =
+    [
+        "/", "/explore", "/eventhub", "/insights", "/Error", "/not-found",
+        "/_framework/opaque-redirect", "/_blazor", "/_blazor/negotiate", "/_blazor/disconnect/",
+        "/_blazor/initializers/",
+    ];
+
+    [TestMethod]
+    public async Task TheHostMapsOnlyTheTelemetryPagesTheBlazorCircuitAndStaticFiles()
+    {
+        using var scope = StartupEnvironment.Default();
+        // The test host runs from build output, whose static-assets manifest turns on a
+        // development fallback ({**path:file}) that serves any wwwroot file. The published
+        // image's manifest does not, so pin the published behavior.
+        await using var factory = new WebApplicationFactory<App>()
+            .WithWebHostBuilder(builder => builder
+                .UseEnvironment("Production")
+                .UseSetting("ReloadStaticAssetsAtRuntime", "false"));
+        using var client = factory.CreateClient();
+        var endpoints = factory.Services.GetRequiredService<EndpointDataSource>().Endpoints;
+        var staticFiles = endpoints.Where(endpoint => endpoint.Metadata.GetMetadata<StaticAssetDescriptor>() is not null).ToArray();
+        var mapped = endpoints.Except(staticFiles)
+            .Select(endpoint => (endpoint as RouteEndpoint)?.RoutePattern.RawText ?? $"(non-route) {endpoint.DisplayName}")
+            .ToArray();
+        CollectionAssert.AreEquivalent(MappedEndpoints, mapped, "mapped: " + string.Join(", ", mapped));
+        // Every page route is an endpoint here too, so the inventory is not vacuous.
+        CollectionAssert.IsSubsetOf(AllowedRoutes, mapped);
+        // Static files are read-only GET/HEAD endpoints, and they include the Blazor script.
+        Assert.IsTrue(staticFiles.Length > 0);
+        foreach (var file in staticFiles)
+        {
+            var methods = file.Metadata.GetMetadata<IHttpMethodMetadata>()?.HttpMethods ?? [];
+            CollectionAssert.IsSubsetOf(methods.ToArray(), new[] { "GET", "HEAD" }, file.DisplayName);
+        }
+        Assert.IsTrue(staticFiles.Any(file => (file as RouteEndpoint)?.RoutePattern.RawText == "_framework/blazor.web.js"),
+            "the Blazor script is not a static asset");
     }
 
     [TestMethod]

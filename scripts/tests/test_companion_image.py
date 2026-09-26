@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[2]
 VERIFIER = ROOT / "scripts" / "verify-companion-image.py"
 PROMOTION = ROOT / ".github" / "workflows" / "companion-image.yml"
 DEPLOY = ROOT / ".github" / "workflows" / "deploy.yml"
+DOCKER_BUILD = ROOT / ".github" / "workflows" / "docker-build.yml"
+DOCKERFILE = ROOT / "proxy" / "CompanionApp.Dockerfile"
 AZURE_YAML = ROOT / "azure.yaml"
 
 companion = load_script("verify_companion_image", VERIFIER)
@@ -258,12 +260,20 @@ class WorkflowContractTests(unittest.TestCase):
         self.promotion = yaml.safe_load(PROMOTION.read_text(encoding="utf-8"))
         self.deploy = yaml.safe_load(DEPLOY.read_text(encoding="utf-8"))
 
-    def test_promotion_is_manual_main_only_and_serialized_with_deploy(self) -> None:
+    def test_promotion_is_manual_main_only_and_never_displaces_a_deploy(self) -> None:
         triggers = self.promotion.get("on", self.promotion.get(True))
         self.assertEqual(set(triggers), {"workflow_dispatch"})
         self.assertFalse(triggers["workflow_dispatch"], "promotion takes no caller inputs")
         self.assertEqual(self.promotion["permissions"], {})
-        self.assertEqual(self.promotion["concurrency"], self.deploy["concurrency"])
+        # A shared group lets a new dispatch replace a queued deploy.yml run, so a
+        # merged change would silently never deploy. deploy.yml keeps its own group.
+        self.assertEqual(self.deploy["concurrency"], {"group": "deploy-production", "cancel-in-progress": False})
+        self.assertEqual(
+            self.promotion["concurrency"], {"group": "companion-image-production", "cancel-in-progress": False},
+        )
+        self.assertNotEqual(self.promotion["concurrency"]["group"], self.deploy["concurrency"]["group"])
+        for job in self.promotion["jobs"].values():
+            self.assertNotIn("concurrency", job)
         (job,) = self.promotion["jobs"].values()
         self.assertEqual(job["if"], "${{ github.ref == 'refs/heads/main' }}")
         self.assertEqual(job["environment"], "production")
@@ -352,6 +362,49 @@ class WorkflowContractTests(unittest.TestCase):
         deploy = next(s for s in self.deploy["jobs"]["deploy"]["steps"] if s.get("id") == "deploy")
         self.assertEqual(len(re.findall(r"\bazd deploy \w+ --from-package", deploy["run"])), 3)
         self.assertNotIn("companion", deploy["run"])
+
+
+class ImageFilesystemContractTests(unittest.TestCase):
+    """The final stage's ownership rules, and the CI check that proves them on the built image."""
+
+    def final_stage(self) -> list[str]:
+        lines = [
+            line.strip() for line in DOCKERFILE.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        start = max(index for index, line in enumerate(lines) if line.startswith("FROM "))
+        return lines[start + 1:]
+
+    def test_the_application_is_laid_down_as_root_and_runs_as_the_app_user(self) -> None:
+        stage = self.final_stage()
+        # The chiseled base defaults to the app user, and WORKDIR creates /app as the current user.
+        self.assertEqual(stage[:2], ["USER 0", "WORKDIR /app"])
+        self.assertEqual([line for line in stage if line.startswith("USER ")], ["USER 0", "USER 1654"])
+        run_as_app = stage.index("USER 1654")
+        copies = [index for index, line in enumerate(stage) if line.startswith("COPY ")]
+        self.assertTrue(copies and max(copies) < run_as_app, "every COPY runs as root")
+        self.assertEqual(
+            [stage[index] for index in copies if "--chown" in stage[index]],
+            ["COPY --from=build-env --chown=1654:1654 /app/state/keys /var/lib/companion/keys"],
+        )
+        self.assertEqual(stage[-1], 'ENTRYPOINT ["dotnet", "CompanionApp.dll"]')
+
+    def test_the_image_job_checks_the_exported_filesystem_and_the_served_script(self) -> None:
+        steps = yaml.safe_load(DOCKER_BUILD.read_text(encoding="utf-8"))["jobs"]["api"]["steps"]
+        names = [step.get("name") for step in steps]
+        check = names.index("Verify CompanionApp application files are root-owned")
+        self.assertGreater(check, names.index("Build CompanionApp image (proxy/CompanionApp.Dockerfile)"))
+        self.assertLess(check, names.index("Scan final CompanionApp image for HIGH/CRITICAL vulnerabilities"))
+        run = steps[check]["run"]
+        self.assertIn("set -euo pipefail", run)
+        self.assertRegex(run, r"docker export \S+ \| python3 scripts/check-image-ownership\.py")
+        self.assertIn("--root-owned app --owned var/lib/companion/keys=1654", run)
+        smoke = steps[names.index("Smoke test - CompanionApp starts and admits only the allow-listed admin")]["run"]
+        for fragment in ("%{content_type}", "*javascript*", '"/${script}" /_framework/blazor.web.js',
+                         "expect 404 /_framework/blazor.missing.js"):
+            self.assertIn(fragment, smoke)
+        for step in (steps[check], steps[names.index("Smoke test - CompanionApp starts and admits only the allow-listed admin")]):
+            self.assertNotIn("continue-on-error", step)
 
 
 if __name__ == "__main__":

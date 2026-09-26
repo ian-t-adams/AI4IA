@@ -121,6 +121,11 @@ AI4IA_PATCH_REASONS = {
     "CompanionApp/Components/Layout/NavMenu.razor": (
         "Link only the retained Event Hub monitor and Insights pages."
     ),
+    "CompanionApp/Components/Shared/EventHub/EventHubReader.cs": (
+        "Serialize the pipeline across the concurrent partition readers, whose shared "
+        "request dictionaries upstream mutated without a lock, and drop the unbounded "
+        "incomplete.json writer of raw event JSON for the excluded /incomplete page."
+    ),
     "CompanionApp/Ai4ia/HostedGuard.cs": (
         "AI4IA hosted-mode guards: the admin allow-list gate, a refusing HttpClient and "
         "managed-identity-only Event Hubs."

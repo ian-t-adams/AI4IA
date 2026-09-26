@@ -31,8 +31,8 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
 
 ### Intentional source deviation
 
-Twenty-two upstream files carry AI4IA security, correctness, dependency, or
-telemetry patches over the audited pin; four of them are the CompanionApp
+Twenty-three upstream files carry AI4IA security, correctness, dependency, or
+telemetry patches over the audited pin; five of them are the CompanionApp
 hosted-mode patches described in its section below. Seven additional files are
 AI4IA-owned. The complete machine-readable list and reason for every deviation
 lives in `upstream-provenance.json`; the behaviorally important proxy groups are:
@@ -122,8 +122,8 @@ bytes never gate CI. `scripts/tests/test_proxy_provenance.py` fails for an
 added, deleted, or semantically changed file that is not represented exactly.
 The current measured breakdown is:
 
-- **292 files** are content-equivalent to upstream after CRLF/LF canonicalization.
-- **22 files** contain the documented AI4IA source patches.
+- **291 files** are content-equivalent to upstream after CRLF/LF canonicalization.
+- **23 files** contain the documented AI4IA source patches.
 - **7 files** are AI4IA additions: `Config/SecretComparer.cs`,
   `Proxy/NoReplayAttempt.cs`, `CompanionApp/Ai4ia/HostedGuard.cs`, plus four
   `packages.lock.json` files used by the runtime project graphs.
@@ -334,6 +334,13 @@ The operator procedure is in
     lacks, and only at the SDK's own bundled patch. That would make a locked
     restore depend on layering and on the SDK version.
   - `Home.razor` and `NavMenu.razor` link only the retained pages.
+  - `EventHubReader.cs` has two changes:
+    - It serializes the pipeline. Upstream reads every partition concurrently and
+      mutates shared request dictionaries without a lock, so a four-partition hub
+      corrupted them and dropped events.
+    - It no longer appends the raw JSON of unlabeled backend attempts to an unbounded
+      `incomplete.json`. That JSON carries user id, path and backend hosts, and only
+      the excluded `/incomplete` page read it.
   - The AI4IA-owned guard is `Ai4ia/HostedGuard.cs`.
   - `AI4IA.CompanionApp.Tests` drives the real host. Each of these checks runs
     against a control:
@@ -344,8 +351,11 @@ The operator procedure is in
     - the empty startup catalog;
     - the refused shared-access secrets.
 - **Image:** `CompanionApp.Dockerfile` reuses this proxy's digest-pinned bases, its
-  locked restore and the build context's recursive `**/.env*` exclusion. It runs as
-  the non-root app user; the only writable path is the ephemeral key ring.
+  locked restore and the build context's recursive `**/.env*` exclusion. It lays the
+  application down as root and runs as the non-root app user. The only path the app
+  user owns is the ephemeral key ring. The PR image job proves this on the built
+  image by exporting its filesystem, because the chiseled runtime has no shell, and
+  checking it with `scripts/check-image-ownership.py`.
 - **Not an azd service:** the manual `companion-image.yml` workflow promotes an
   attested digest, and deploy.yml re-verifies that digest before provisioning.
 

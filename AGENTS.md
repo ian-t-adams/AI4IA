@@ -471,8 +471,17 @@ docker buildx build --file proxy/CompanionApp.Dockerfile --load proxy
 
 The proxy's NuGet restore runs in locked mode, and the final image is blocked on
 HIGH/CRITICAL findings under the exact-CVE `proxy/.trivyignore` policy. The
-CompanionApp image shares that context, those pinned bases and that policy. The job
-retains SPDX SBOMs and unsigned build metadata. These load-only PR artifacts are
+CompanionApp image shares that context, those pinned bases and that policy. Its
+runtime smoke test requires the served Blazor script as JavaScript, with a missing-
+script control. The job also exports the image's filesystem and runs
+`scripts/check-image-ownership.py`: the application tree must be root-owned and
+not group/other-writable, and the key ring must be the only app-user-owned path.
+The Web SDK only implicitly references `Microsoft.AspNetCore.App.Internal.Assets`
+when `.razor` files exist at restore time, and only at its own bundled patch. So
+the CompanionApp project references it explicitly at the runtime base image's
+ASP.NET patch. Keep those two in step, and never replace the explicit reference
+with a non-locked or `--force-evaluate` restore. The job retains SPDX SBOMs and
+unsigned build metadata. These load-only PR artifacts are
 never signed or substituted for the production images built by `deploy.yml`.
 
 The `dockerignore-context` job builds throwaway probe images from each
@@ -724,6 +733,7 @@ python3 -m unittest scripts.tests.test_base_image_drift
 python3 -m unittest scripts.tests.test_immutable_image_promotion
 python3 -m unittest scripts.tests.test_image_provenance
 python3 -m unittest scripts.tests.test_companion_image           # CompanionApp promotion + pre-provision attestation gate
+python3 -m unittest scripts.tests.test_image_ownership           # exported-filesystem owner/mode checks for the image job
 ```
 
 `test_custom_domain_preflight`, `test_pages_status_refresh`,
@@ -841,7 +851,7 @@ dotnet build   proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration 
 dotnet test    proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-build --no-restore --nologo -- --minimum-expected-tests 40
 dotnet restore proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --locked-mode
 dotnet build   proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --configuration Release --no-restore
-dotnet test    proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --configuration Release --no-build --no-restore --nologo -- --minimum-expected-tests 13
+dotnet test    proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --configuration Release --no-build --no-restore --nologo -- --minimum-expected-tests 17
 ```
 
 `AI4IA.CompanionApp.Tests` drives the real vendored CompanionApp host. Each of these checks runs against a control:
@@ -849,10 +859,15 @@ dotnet test    proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --
 - only an allow-listed admin principal or group passes the in-app gate, which reads the principal Container Apps authentication injects;
 - an empty or malformed admin list refuses startup;
 - the compiled routes match the route allowlist, and every excluded upstream tool route returns 404;
+- the Production host maps no endpoint beyond the telemetry pages, the Blazor circuit and read-only static files;
 - the outbound `HttpClient` refuses before it connects;
 - the startup metrics catalog is empty;
-- Event Hubs shared-access secrets refuse startup. A
-new upstream CompanionApp page is not vendored until it is reviewed against that
+- Event Hubs shared-access secrets refuse startup;
+- the real four-partition `ConsumeAsync` fan-out never runs two pipeline executions at once
+  (a probe holds one open while the others deliver), against a single-partition control;
+- unlabeled backend attempts are processed but nothing is written beside the binary.
+
+A new upstream CompanionApp page is not vendored until it is reviewed against that
 boundary. Exclusions are hash-bound `ai4ia-excluded` provenance rules, never an
 unrecorded omission.
 

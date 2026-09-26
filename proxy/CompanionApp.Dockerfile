@@ -30,10 +30,14 @@ WORKDIR /app/CompanionApp
 RUN dotnet publish -c Release -o /app/out --no-restore && mkdir -p /app/state/keys
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:9651fa59abcdf177c30392cb44a820605ca5d618429ab37acbf6e7c644510b02
+# The chiseled base's default user is the app user (1654). WORKDIR would create /app
+# owned by that user, letting the app replace its own binaries, so the application
+# tree is laid down as root. The ownership is checked from the exported image in CI.
+USER 0
 WORKDIR /app
 COPY --from=build-env /app/out .
 # The only writable path is the ephemeral Data Protection key ring of the single
-# replica; application files stay root-owned.
+# replica; application files and their directory stay root-owned.
 COPY --from=build-env --chown=1654:1654 /app/state/keys /var/lib/companion/keys
 
 # Container Apps terminates TLS, so honor its forwarded scheme and client address.

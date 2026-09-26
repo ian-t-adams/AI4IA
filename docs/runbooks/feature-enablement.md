@@ -1005,11 +1005,13 @@ Storage, Cosmos or App Configuration access.
   `/0` range is refused. Without one, Easy Auth plus the admin policy is the
   boundary. The app scales to at most one replica, with sticky sessions for Blazor
   circuits.
-- **State.** The feed is held in memory. Nothing is persisted, and no chat history
-  exists because no page writes it. The ASP.NET Data Protection key ring lives in
-  the container and is lost with the revision, which only signs users out. With
-  `AI4IA_COMPANION_APP_MIN_REPLICAS=0` the console scales to zero, and after idle
-  it starts empty from the latest events.
+- **State.** The feed is held in memory, and the console writes no telemetry or
+  chat history to disk. Upstream's raw-event `incomplete.json` writer is removed.
+  The application files are root-owned, so the app user cannot modify them. The
+  only path the app user can write is the ASP.NET Data Protection key ring. It
+  lives in the container and is lost with the revision, which only signs users
+  out. With `AI4IA_COMPANION_APP_MIN_REPLICAS=0` the console scales to zero, and
+  after idle it starts empty from the latest events.
 
 **Cost.** Enabling the console needs `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED=true`,
 which provisions a paid Event Hubs Standard namespace. It also adds one small
@@ -1024,7 +1026,8 @@ Instead:
    `<acr>.azurecr.io/ai4ia/companion-<env>`, gates it on HIGH/CRITICAL findings,
    attests SLSA provenance and an SPDX SBOM, verifies them, and prints the digest
    reference in its summary. It uses the `production` environment and the existing
-   deploy identity, and is serialized with deploy.yml.
+   deploy identity. It runs in its own concurrency group, because sharing
+   deploy.yml's group would let a dispatch replace a queued deploy.
 2. Set the `AI4IA_COMPANION_APP_IMAGE` repository variable to that
    `...@sha256:<digest>` reference.
 3. Run deploy.yml. Before provisioning, `scripts/verify-companion-image.py`
