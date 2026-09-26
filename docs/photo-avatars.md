@@ -394,6 +394,40 @@ applies the same check again when a create runs. `/config` also returns the limi
 and current usage, attribute options, the attestation text, the disclosure label,
 the per-avatar price estimate, and the report reasons with Microsoft's report link.
 
+#### Phase 1 web experience
+
+The gallery is `app/web/src/components/PhotoAvatarsPanel.tsx`, with its client in
+`app/web/src/lib/photoAvatars.ts`. Like the API it is default-off. The sidebar
+shows a **Photo avatars** entry only while `GET /api/photo-avatars/config` reports
+`enabled` for the signed-in owner, and a failed read hides it. No web environment
+variable or Bicep change is involved. This is visibility only: every route re-checks
+the gate, and enabling the flag outside local development still waits for the
+Limited Access approval.
+
+- **Create.** A name and a description, counted against `promptMaxChars`. Style, age,
+  gender and ethnicity are optional and start unspecified. The three attestation
+  statements appear as `/config` words them, and Create stays disabled until each is
+  confirmed. The request sends the attestation `version` from `/config`. The form shows
+  the per-avatar estimate, or "unknown" when there is no price, and the current
+  limits. A create whose outcome is unknown is never repeated; the gallery re-reads
+  the list instead.
+- **Status.** Pending records poll `GET /{id}` with backoff from 2 to 15 seconds, for
+  at most three minutes and never while the tab is hidden. Polling stops on `ready`,
+  on `failed`, or when the gallery closes.
+- **Preview.** The bytes come only from the record's own
+  `/api/photo-avatars/<id>/preview`, fetched through `apiFetch` into a `blob:` URL.
+  Any other `preview.url` gets no image and no request. Every preview carries the
+  `disclosure.label` badge. `app/web/src/components/PhotoAvatarPreview.tsx` packages
+  this for later surfaces.
+- **Report a problem.** The server's reasons, optional details bounded by
+  `detailsMaxChars`, and a link to `feedback.microsoftReportUrl`. This is the feedback
+  channel the Limited Access terms require.
+- **Delete.** An inline confirmation, then optimistic removal. `avatar_confirming`
+  puts the avatar back and disables Delete for its `Retry-After`.
+- **Unavailable states.** Each `reason` and refusal code has its own explanation,
+  including a pending Limited Access approval (`capability_unavailable`). Existing
+  avatars stay listed while creation is unavailable.
+
 ### Phase 2: real-time conversation
 
 - **Server-owned avatar.** This works on the Speech Voice Live provider only.

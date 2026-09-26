@@ -259,6 +259,26 @@ conversations and stay viewable.
 **Cost estimate unavailable** is not free. Published estimates can differ from
 Azure billing, especially for provider-specific media meters.
 
+## Photo avatars
+
+Photo avatars are off by default. An operator can turn them on only after
+Microsoft approves the deployment's Limited Access registration for custom
+avatars; until then the sidebar shows no **Photo avatars** entry. See
+[custom photo avatars](photo-avatars.md) for the design and its boundaries.
+
+When they are on, **Photo avatars** in the sidebar opens your gallery. Describe a
+fictional adult and give the avatar a name. Style, age, gender, and ethnicity are
+optional and start unspecified. Before creating, you confirm that the character is
+fictional, an adult, and not modeled on a real or identifiable person. Each
+creation is billed and counts toward your avatar and 24-hour limits, which the form
+shows along with the estimated cost.
+
+Generation typically takes under a minute, and the gallery shows its progress while
+it is open. Every preview is labelled **AI-generated**. **Report** records a problem
+with an avatar and links to Microsoft's abuse report form. **Delete** asks first,
+then removes the avatar and its preview. Right after a creation it may ask you to
+wait a few seconds.
+
 ## Memory
 
 Memory can carry personal context between conversations. In **Context > Memory**,
@@ -423,6 +443,7 @@ still apply and modality coverage remains incomplete.
 | Voice fails before connecting | Microphone permission, sign-in, API URL, and allowed Origin |
 | Voice settings seem unchanged | Stop and reconnect; settings affect the next connection |
 | Speech is not offered | The operator's provider allowlist and Speech feature gate |
+| Photo avatars are missing | They are off by default and need Microsoft's Limited Access approval |
 | Search or another tool fails | Its visible error/approval state; an enabled gate does not prove upstream entitlement |
 | An admin panel is unavailable | Resource wiring, API identity permissions, and source freshness |
 
