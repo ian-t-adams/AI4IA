@@ -39,6 +39,7 @@ feature posture.
 | Rolling conversation summarization | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | none | `autoSummarizationEnabled` | None beyond the active chat model — once the transcript exceeds the model-derived threshold, older turns fold into a running summary while the full transcript stays in storage/scrollback. Off leaves the manual `/summarize` command working but never auto-injects a summary |
 | Image generation | `AI4IA_IMAGE_GENERATION_ENABLED` | server-advertised imagery controls | `imageGenerationEnabled` | Image-capable deployment and durable media Blob storage outside local; storage presence alone does not enable generation |
 | Video generation | `AI4IA_VIDEO_GENERATION_ENABLED` | server-advertised tools and inline artifacts | `videoGenerationEnabled` | A runtime-enabled video deployment and durable media Blob storage outside local. Advertisement and execution check the gate, the store and model availability together. Sora 2 is runtime-disabled ahead of its 2026-10-15 retirement, so the tool stays hidden. Keep the flag on: it also delivers the Blob settings that serve existing clips (see [Sora 2 runtime retirement](deployment.md#sora-2-runtime-retirement)) |
+| Custom photo avatars | `AI4IA_PHOTO_AVATARS_ENABLED` (+ per-user limits) | availability from `GET /api/photo-avatars/config` | `photoAvatarsEnabled`, `photoAvatarMaxPerUser`, `photoAvatarMaxCreationsPerDay` | Default `false`. Entra, Cosmos, durable Blob and metering outside local. Creation also needs the home account to report the Limited Access capability at runtime. The approval, the RAI re-approval and the live checks come first: see [below](#custom-photo-avatars) |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
 | Official MCP plane | `AI4IA_OFFICIAL_MCP_ENABLED` | none | `enableOfficialMcp` | MCP-only product/subscription on the shared active Basic v2 APIM + ≥1 server in `infra/mcp-servers.json`; gateway URL + key auto-wired |
 | Foundry toolbox (bridge) | consumed via the official MCP plane (no dedicated flag) | none | `enableFoundryToolbox` (+ `enableOfficialMcp`) | Provisioned toolbox in the default Foundry project + a `foundry-toolbox` entry in `infra/mcp-servers.json`; grants APIM MI the project "Foundry User" role. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
@@ -1218,6 +1219,96 @@ on the answer. The collapsed **Memories supplied** view provides focused owner
 navigation and identifies unrecorded or bounded evidence without backfilling old
 answers. Disabling/deleting memories does not erase historical messages/receipts.
 See [Memory architecture](../memory.md).
+
+### Custom photo avatars
+
+Photo avatars generated from a text description are implemented and
+default-off. The design, the provider contract and the risks are in
+[`../photo-avatars.md`](../photo-avatars.md). Turning the flag on is not
+approval to create avatars: the prerequisites below are held outside the
+repository, and creation stays refused until the home account itself reports
+the Limited Access capability.
+
+**Prerequisites, before any enablement:**
+
+1. **Limited Access approval** for custom text to speech avatar, for the
+   subscription that owns the home account, and a registered use case that
+   covers AI-generated characters. Keep the approval evidence with the change
+   record, never in the repository.
+2. **Responsible AI re-approval.** A new modality (synthetic likeness) is a
+   trigger-3 change under the [decision record](../rai-decision-record.md). The
+   existing annotate-only decision does not cover it until the owner re-approves.
+3. **A named owner for the report queue.** Reports land in the owner-partitioned
+   `photoAvatars` container, and each one emits a content-free
+   `photo_avatar_report` event. Someone must review them and, where the Limited
+   Access terms require it, forward them to Microsoft at the report link the API
+   returns.
+
+**Enable:**
+
+```text
+photoAvatarsEnabled=true
+photoAvatarMaxPerUser=5            # optional; 1-50
+photoAvatarMaxCreationsPerDay=5    # optional; 1-50
+```
+
+`azd provision` then creates:
+
+- the `photoAvatars` Cosmos container (`/userId`, per-item TTL for reports only);
+- an `avatars` container on the shared generated-media account;
+- the `ai4ia-photo-avatars-v1` APIM API with its six exact operations and generated
+  policy, the `photo-avatar-project` named value and an API-scoped subscription;
+- the `Host-photoavatars` proxy host holding that subscription's key.
+
+No role assignment is added: APIM's system identity already has Cognitive
+Services User on every regional account. Outside local, startup refuses unless
+Entra, Cosmos, durable HTTPS Blob and usage metering are configured, and unless
+the residency policy is one the catalog home region satisfies.
+
+To limit creation to a pilot group, add an `avatars` domain to the group policy.
+Owners outside the group can still list, view, delete and report the avatars they
+already have; only creation (`create`) and previews (`use`) need a grant:
+
+```json
+{"version": 1, "domains": {"avatars": {
+  "default": {"allow": []},
+  "mappings": [{"claim": "groups", "value": "<pilot group object id>", "allow": ["create", "use"]}]
+}}}
+```
+
+**Live checks at enablement.** Run each one once, as a pilot user, and record
+the outcome:
+
+1. `GET /api/photo-avatars/config` reports `reason: available`, which means the
+   features read returned the catalog's feature name. `capability_unavailable`
+   means the approval has not reached the account; stop.
+2. Create one avatar. The provider must accept the create, and status must reach
+   `ready` with a stored preview. This also proves that APIM's Cognitive
+   Services User role can read and create the avatar project and create, read and
+   delete avatars. A 403 on any of those stops enablement; a scoped Speech role on
+   the home account is a separate owner approval.
+3. If the preview fails with `preview_rejected`, the provider issued the link from
+   a host other than the catalog's `preview.host`. Confirm the new host with a
+   read-only observation, and change the catalog through review.
+4. Delete the avatar, and confirm the record, the Blob preview and the provider
+   avatar are all gone.
+5. Confirm the usage ledger holds one known $2 estimate for the create.
+
+**Limits and cost.** Each dispatched create is metered once at the catalog
+price; an outcome that is still unknown is recorded as cost-unknown, never as
+free. A daily creation is spent when the create is dispatched, even if the
+provider later rejects it or the avatar is deleted. Creation refuses under any
+cost cap if the price is missing. Hard admission covers avatar creation as a
+request-only surface; token and dollar caps refuse it.
+
+**Degradation and rollback.** If the capability disappears, creation refuses and
+existing avatars stay visible and deletable, with `usable: false`. Nothing is
+deleted automatically. To roll back, delete any avatars that should not be kept,
+then set `photoAvatarsEnabled=false`. The API is removed, but the Cosmos and Blob
+containers keep their data until an operator removes them. No user-data deletion
+or offboarding path exists yet; until one does, remove a departing user's avatars
+through the API or by an operator delete of the provider avatar, the preview and
+the records in that user's partition.
 
 ### Custom MCP tools
 

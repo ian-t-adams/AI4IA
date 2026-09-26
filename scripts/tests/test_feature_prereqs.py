@@ -199,6 +199,43 @@ class WorkflowAutomationPrerequisites(unittest.TestCase):
                 self.assertEqual(code, 0, err)
 
 
+class PhotoAvatarPrerequisiteTests(unittest.TestCase):
+    def test_committed_feature_is_default_off_with_conservative_limits(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        self.assertEqual(parameters["photoAvatarsEnabled"]["value"], "${AI4IA_PHOTO_AVATARS_ENABLED=false}")
+        self.assertEqual(parameters["photoAvatarMaxPerUser"]["value"], "${AI4IA_PHOTO_AVATAR_MAX_PER_USER=5}")
+        self.assertEqual(
+            parameters["photoAvatarMaxCreationsPerDay"]["value"],
+            "${AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY=5}",
+        )
+
+    def test_enabled_feature_requires_entra_and_warns_about_live_prerequisites(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _environment(**PROD_ENV):
+            code, out, err = _run(_write_parameters(tmp, {"photoAvatarsEnabled": True}))
+            self.assertEqual(code, 0, err)
+            self.assertIn("CustomAvatar Limited Access capability", out + err)
+            code, _, err = _run(_write_parameters(tmp, {"photoAvatarsEnabled": False}))
+            self.assertEqual(code, 0, err)
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            code, _, err = _run(_write_parameters(tmp, {"photoAvatarsEnabled": True}))
+            self.assertEqual(code, 1)
+            self.assertIn("photoAvatarsEnabled=true requires apiAuthProvider=entra", err)
+            # Control: the same dev configuration with the feature off passes.
+            code, _, err = _run(_write_parameters(tmp, {"photoAvatarsEnabled": False}))
+            self.assertEqual(code, 0, err)
+
+    def test_limits_are_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            for name in ("photoAvatarMaxPerUser", "photoAvatarMaxCreationsPerDay"):
+                for bad in (0, 51, "five"):
+                    with self.subTest(name=name, value=bad):
+                        code, _, err = _run(_write_parameters(tmp, {name: bad}))
+                        self.assertEqual(code, 1)
+                        self.assertIn(f"{name} must be an integer from 1 to 50", err)
+                code, _, err = _run(_write_parameters(tmp, {name: 50}))
+                self.assertEqual(code, 0, err)
+
+
 class StagedRealtimeTests(unittest.TestCase):
     def test_ga_staging_and_selection_require_their_parent_gate(self) -> None:
         cases = (

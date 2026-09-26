@@ -739,17 +739,29 @@ class PhotoAvatarService:
             reason=availability.reason,
         )
 
+    async def cost_capped(self, owner_id: str) -> bool:
+        """Whether ``owner_id``'s effective limits carry a cost cap right now.
+
+        Creation's exact rule, public for the live relay: combined with a
+        meter's price, an unknown price must refuse under a cap. It may raise
+        ``PolicyError`` like any execution-time policy check.
+        """
+        return await self._cost_capped(owner_id)
+
     async def _cost_capped(self, owner: str) -> bool:
         """Whether a cost limit is enforced for ``owner`` right now.
 
         Soft limits (entitlements and group-policy spend) only count when
         enforcement is on; hard admission refuses an unbounded dollar meter at
-        dispatch on its own.
+        dispatch on its own. A policy binding for a different actor says nothing
+        about ``owner``'s limits, so it is treated as capped (fail closed).
         """
         if not self._entitlements.enabled:
             return False
         binding = current_binding()
         if binding is not None and binding.service.enabled:
+            if binding.owner_id != owner:
+                return True
             limits = (await binding.resolve()).limits
         else:
             limits = await self._entitlements.get_effective(owner)

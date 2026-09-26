@@ -208,6 +208,19 @@ param imageGenerationEnabled bool = false
 @description('Enable the agent-callable generate_video tool. Default OFF. When on, a videos container is provisioned on the shared generated-media account and any agent may attach generate_video; produced clips persist durably and serve through an authenticated endpoint.')
 param videoGenerationEnabled bool = false
 
+@description('Enable custom photo avatars generated from a text description. Default OFF. When on: a photoAvatars Cosmos container, an avatars container on the shared generated-media account, and the exact-operation photo avatar APIM API with its proxy host. Creation additionally requires the Limited Access capability at runtime; see docs/photo-avatars.md.')
+param photoAvatarsEnabled bool = false
+
+@description('Most photo avatars one user may hold at once. Enforced by the API ledger.')
+@minValue(1)
+@maxValue(50)
+param photoAvatarMaxPerUser int = 5
+
+@description('Most photo avatar creations one user may dispatch in a rolling 24 hours. Enforced by the API ledger.')
+@minValue(1)
+@maxValue(50)
+param photoAvatarMaxCreationsPerDay int = 5
+
 @description('Provision an Azure AI Search service (for indexing/retrieval). Default OFF: nothing is created. When on, the api identity gets data-plane RBAC (Index Data Contributor + Service Contributor) and AI4IA_SEARCH_ENDPOINT is emitted to the api.')
 param searchEnabled bool = false
 
@@ -576,6 +589,9 @@ module data 'modules/data.bicep' = {
     // Generated-video container on the same shared media account;
     // gated on the video-generation flag — default OFF.
     deployVideoStorage: videoGenerationEnabled
+    // Photo avatar records (Cosmos) and previews (shared media account);
+    // gated on the photo avatar flag — default OFF.
+    deployPhotoAvatarStorage: photoAvatarsEnabled
     // Network-isolation mode: lock the data tier to private-only.
     dataPublicNetworkAccess: dataTierPrivate ? 'Disabled' : 'Enabled'
   }
@@ -807,6 +823,11 @@ var speechVoiceLiveRegionName = 'eastus2'
 var speechVoiceLiveIndex = filter(range(0, length(regionList)), i => regionNames[i] == speechVoiceLiveRegionName)[0]
 var speechVoiceLiveAccountName = foundry[speechVoiceLiveIndex].outputs.accountName
 var speechVoiceLiveAccountEndpoint = foundry[speechVoiceLiveIndex].outputs.endpoint
+// Photo avatars live in the catalog home account (infra/voice-providers.json
+// photoAvatars.homeRegion, validated against infra/models.json by the
+// generator), in the Foundry project this template creates in that account.
+var photoAvatarHomeRegion = loadJsonContent('voice-providers.json').photoAvatars.homeRegion
+var photoAvatarIndex = filter(range(0, length(regionList)), i => regionNames[i] == photoAvatarHomeRegion)[0]
 var effectiveCuBaseUrl = !empty(cuBaseUrl) ? cuBaseUrl : primaryFoundryEndpoint
 var effectiveCodeInterpreterModel = !empty(codeInterpreterModel) ? codeInterpreterModel : 'gpt-5.4-mini-${subscriptionToken}-${location}-glbl'
 
@@ -912,6 +933,9 @@ module gateway 'modules/gateway.bicep' = {
     speechVoiceLiveManagedIdentityAudience: speechVoiceLiveManagedIdentityAudience
     codeInterpreterEnabled: documentComputeEnabled || inlineDocumentComputeEnabled
     codeInterpreterModel: effectiveCodeInterpreterModel
+    photoAvatarsEnabled: photoAvatarsEnabled
+    photoAvatarAccountEndpoint: foundry[photoAvatarIndex].outputs.endpoint
+    photoAvatarProjectName: foundry[photoAvatarIndex].outputs.projectName
   }
 }
 
@@ -1137,6 +1161,11 @@ module api 'modules/api.bicep' = {
     videoGenerationEnabled: videoGenerationEnabled
     videoBlobAccountUrl: data.outputs.videoBlobAccountUrl
     videoBlobContainer: data.outputs.videoBlobContainerName
+    photoAvatarsEnabled: photoAvatarsEnabled
+    photoAvatarBlobAccountUrl: data.outputs.photoAvatarBlobAccountUrl
+    photoAvatarBlobContainer: data.outputs.photoAvatarBlobContainerName
+    photoAvatarMaxPerUser: photoAvatarMaxPerUser
+    photoAvatarMaxCreationsPerDay: photoAvatarMaxCreationsPerDay
     // Azure AI Search (for indexing/retrieval). The endpoint is emitted to the api
     // env only when the service is provisioned (searchEnabled); the api reaches it
     // via managed identity (no keys). Empty string when off -> env var not set.

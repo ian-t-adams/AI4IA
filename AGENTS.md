@@ -47,7 +47,12 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    stateful sandbox calls take FastAPI → Code Interpreter APIM → Foundry because
    they are not compatible catalog deployments. Direct calls are reserved for
    non-model control/data planes such as Content Understanding, WebIQ grounding,
-   Azure Monitor, Key Vault, Blob, Cosmos, and Azure AI Search.
+   Azure Monitor, Key Vault, Blob, Cosmos, and Azure AI Search. Photo avatar
+   calls use the proxy → exact photo-avatar APIM API; their one direct exception
+   is a single bounded fetch of the provider-issued preview SAS link into AI4IA
+   Blob (HTTPS, catalog host only, pinned public IP, no redirects, size/PNG
+   checks), and the link is never stored, logged or returned
+   (`photo_avatars/preview.py`).
 2. **Catalog-driven models.** Do not hardcode deployment names or model lists.
    `infra/models.json` is the source of truth; generated runtime catalog data must
    match it. `runtimeEnabled` is a strict optional Boolean, default true: false
