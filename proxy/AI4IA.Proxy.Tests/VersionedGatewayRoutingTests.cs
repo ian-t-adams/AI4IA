@@ -135,6 +135,41 @@ public sealed class VersionedGatewayRoutingTests
         Assert.AreEqual(1, provider.Requests.Count);
     }
 
+    // APIM supplies context.Api.Path as "/ai4ia-attempts-v1"; the membership guard trims
+    // slashes, then compares exactly. Only the path varies between these rows.
+    [DataTestMethod]
+    [DataRow("/ai4ia-attempts-v1", true)]
+    [DataRow("ai4ia-attempts-v1", true)]
+    [DataRow("/openai", false)]
+    [DataRow("/ai4ia-attempts-v10", false)]
+    [DataRow("/ai4ia-attempts-v1/x", false)]
+    [DataRow("", false)]
+    [DataRow(null, false)]
+    public async Task VersionedApiPathGuardAdmitsApimsLeadingSlashFormAndStaysExact(string? apiPath, bool admitted)
+    {
+        await using var provider = new WireServer(_ => Task.FromResult(new WireReply(200)));
+        var policy = new ApimPolicyHarness(Signed(NoReplayWorkerTests.BoundedPath), provider);
+        policy.Context.Api.Path = apiPath;
+        await policy.Run();
+        Assert.AreEqual(admitted ? "deployments/fixture-text/chat/completions" : "",
+            policy.Context.Variables["attemptsV1Path"]);
+        Assert.AreEqual(admitted ? 1 : 0, provider.Requests.Count);
+        Assert.AreEqual(admitted ? 1 : 0, policy.Sends);
+        Assert.AreEqual(admitted ? 200 : 400, policy.Context.Response.StatusCode);
+        if (!admitted)
+            Assert.AreEqual("{\"error\":{\"code\":\"invalid_versioned_attempt_route\"}}",
+                policy.Context.Response.Body.As<string>());
+    }
+
+    [TestMethod]
+    public void TheHarnessSuppliesApimsLeadingSlashApiPathForEachModelApi()
+    {
+        Assert.AreEqual("/ai4ia-attempts-v1",
+            new ApimPolicyHarness(Signed(NoReplayWorkerTests.BoundedPath)).Context.Api.Path);
+        Assert.AreEqual("/openai", new ApimPolicyHarness(Signed(NoReplayWorkerTests.Path)).Context.Api.Path);
+        Assert.AreEqual("/openai", new ApimContext().Api.Path);
+    }
+
     [TestMethod]
     public async Task IsolatedApiCannotInheritAnUncontrolledMeteredSend()
     {

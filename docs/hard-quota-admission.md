@@ -150,7 +150,9 @@ The normal model wildcard is a child of the **legacy `openai` API only**.
 
 The generated versioned API validates its exact path/method/model and authenticated
 subscription membership even when **both markers are absent**, then runs the
-shared byte/HMAC check before catalog initialization. It deliberately omits
+shared byte/HMAC check before catalog initialization. Its API check trims slashes
+from `context.Api.Path`, which APIM supplies with a leading slash
+(`/ai4ia-attempts-v1`), before the exact comparison. It deliberately omits
 `<base/>` in **every section**: a guard before inheritance cannot bound an
 inherited paid `send-request` or `forward-request`. This isolated API retains
 the owned subscription authentication, catalog/residency, priority, circuit,

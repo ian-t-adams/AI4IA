@@ -176,7 +176,7 @@ public sealed class PhotoAvatarApimTests
             {
                 "subscription" => p => p.Context.Subscription!.Id = "ai4ia-proxy-models",
                 "no-subscription" => p => p.Context.Subscription = null,
-                "api-path" => p => p.Context.Api.Path = "openai",
+                "api-path" => p => p.Context.Api.Path = ApimPolicyHarness.RuntimeApiPath("openai"),
                 _ => null,
             } : null;
             var match = MatchOperation(method, path);
@@ -212,6 +212,40 @@ public sealed class PhotoAvatarApimTests
         if (defect == "body-on-project-create")
             Assert.AreEqual("{\"kind\":\"PhotoAvatar\",\"foundryProjectName\":\"fixture-project\"}",
                 Encoding.UTF8.GetString(acceptedSent.Single().Body));
+    }
+
+    // APIM supplies context.Api.Path as "/ai4ia-photo-avatars-v1". A slashless-only
+    // comparison refused every call in production with the policy's own 49-byte 400
+    // body. The guard trims slashes, then compares exactly; only the path varies here.
+    [DataTestMethod]
+    [DataRow("/ai4ia-photo-avatars-v1", true)]
+    [DataRow("ai4ia-photo-avatars-v1", true)]
+    [DataRow("/openai", false)]
+    [DataRow("/ai4ia-photo-avatars-v10", false)]
+    [DataRow("/ai4ia-photo-avatars-v1/x", false)]
+    [DataRow("", false)]
+    [DataRow(null, false)]
+    public async Task TheApiPathGuardAdmitsApimsLeadingSlashFormAndStaysExact(string? apiPath, bool admitted)
+    {
+        var (policy, sent) = await Send(Caller("GET", Prefix + "/features"), p => p.Context.Api.Path = apiPath);
+        string body = Encoding.UTF8.GetString(policy.Context.Response.Body.Bytes);
+        Assert.AreEqual(admitted ? "photo-avatar-features" : "", policy.Context.Variables["photoAvatarOperation"]);
+        Assert.AreEqual(admitted ? 1 : 0, sent.Count, body);
+        Assert.AreEqual(admitted ? 1 : 0, policy.Sends);
+        Assert.AreEqual(admitted ? 1 : 0, policy.Identities.Count);
+        Assert.AreEqual(admitted ? 200 : 400, policy.Context.Response.StatusCode);
+        if (admitted)
+            Assert.AreEqual("/customavatar/features/?" + ApiVersion, sent.Single().Path);
+        else
+            Assert.AreEqual("{\"error\":{\"code\":\"invalid_photo_avatar_request\"}}", body);
+    }
+
+    [TestMethod]
+    public async Task TheHarnessSuppliesApimsLeadingSlashApiPath()
+    {
+        var (policy, sent) = await Send(Caller("GET", Prefix + "/features"));
+        Assert.AreEqual("/ai4ia-photo-avatars-v1", policy.Context.Api.Path);
+        Assert.AreEqual(1, sent.Count);
     }
 
     [TestMethod]

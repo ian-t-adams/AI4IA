@@ -2,9 +2,12 @@
   <!-- This API is a mandatory membership boundary, never an optional header
        selector. Authentication and the shared byte/HMAC check precede catalog
        initialization. This API has no base inheritance. The subscription ID is bound by
-       gateway.bicep to the distinct API-scoped subscription, not a caller. -->
+       gateway.bicep to the distinct API-scoped subscription, not a caller.
+       APIM supplies context.Api.Path with a leading slash, so the guard trims slashes
+       before its exact comparison. OriginalUrl.Path is the caller's full path, leading
+       slash and API suffix included; Subscription.Id is the subscription name. -->
   <set-variable name="attemptsV1Path" value="@{
-    if (context.Api.Path != &quot;ai4ia-attempts-v1&quot; ||
+    if ((context.Api.Path ?? &quot;&quot;).Trim('/') != &quot;ai4ia-attempts-v1&quot; ||
         context.Subscription == null ||
         context.Subscription.Id != &quot;__AI4IA_ATTEMPTS_SUBSCRIPTION_ID__&quot; ||
         context.Request.Method != &quot;POST&quot;) { return &quot;&quot;; }

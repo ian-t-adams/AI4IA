@@ -903,6 +903,15 @@ Every forward buffers the request body: a `noReplay` request still makes exactly
 one attempt because the retry condition excludes it and the claim check refuses
 a second forward, not because its body is unbuffered.
 
+APIM supplies `context.Api.Path` with a leading slash (`/ai4ia-photo-avatars-v1`),
+although the API's ARM `path` has none. On 2026-09-26 a slashless comparison
+refused every photo avatar call in production while the harness, which supplied
+the slashless form, stayed green. Isolated API guards compare
+`(context.Api.Path ?? "").Trim('/')` exactly as their first statement, the
+generators' validators require that statement, and the harness supplies
+`"/" + path` for every API it models. `OriginalUrl.Path` is the caller's full path
+(leading slash and API suffix) and `Subscription.Id` is the subscription name.
+
 Throttle-failover controls drive the generated two-region GlobalStandard row. A
 429/5xx must mark the failed backend's `throttleId` (endpoint + region label +
 deployment) in the `throttleState` its expression returns and caches, so the retry
