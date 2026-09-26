@@ -327,7 +327,12 @@ The operator procedure is in
     metrics, so nothing appears until real events arrive. It also lets the Data
     Protection key ring live outside the content root.
   - `CompanionApp.csproj` drops the embedded resources and content items of the
-    excluded pages.
+    excluded pages. It also references `Microsoft.AspNetCore.App.Internal.Assets`
+    explicitly, at the runtime image's ASP.NET patch, because that package serves
+    `_framework/blazor.web.js`. The Web SDK would otherwise add it implicitly, but
+    only when `.razor` files exist at restore time, which the Docker restore layer
+    lacks, and only at the SDK's own bundled patch. That would make a locked
+    restore depend on layering and on the SDK version.
   - `Home.razor` and `NavMenu.razor` link only the retained pages.
   - The AI4IA-owned guard is `Ai4ia/HostedGuard.cs`.
   - `AI4IA.CompanionApp.Tests` drives the real host. Each of these checks runs

@@ -24,7 +24,7 @@
     },
     {
       "path": "CompanionApp/CompanionApp.csproj",
-      "reason": "Drop the embedded resources and content items of the excluded deployment page and chat/vision presets."
+      "reason": "Drop the embedded resources and content items of the excluded deployment page and chat/vision presets, and reference the Blazor script asset package explicitly so locked restore does not depend on restore layering or SDK patch."
     },
     {
       "path": "CompanionApp/Components/Layout/NavMenu.razor",
@@ -399,7 +399,7 @@
       "upstreamCanonicalSha256": "b1a07dc4771bc2aeff6b561fcc215c0a6007b597fcfe47190fffef70b2bd277a"
     },
     "CompanionApp/CompanionApp.csproj": {
-      "localCanonicalSha256": "d2dd09808678b955da53b095e6d3ee9d16a03145532dbd2ca9773a427a12e4f9",
+      "localCanonicalSha256": "25405973424bc456f561ab276e5fdfeff295b47bd86dfc6d626903fc35e3d3af",
       "upstreamRawSha256": "5ab7d47c9825fe112bbcc486724c5d8ef49a87e548f8e4caf20e233832b49c15",
       "upstreamCanonicalSha256": "5ab7d47c9825fe112bbcc486724c5d8ef49a87e548f8e4caf20e233832b49c15",
       "disposition": "ai4ia-patched"
