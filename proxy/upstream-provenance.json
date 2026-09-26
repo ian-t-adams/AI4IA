@@ -12,10 +12,10 @@
     "CompanionApp"
   ],
   "counts": {
-    "ai4ia-added": 7,
+    "ai4ia-added": 8,
     "ai4ia-excluded": 95,
-    "ai4ia-patched": 23,
-    "upstream-equivalent": 291
+    "ai4ia-patched": 24,
+    "upstream-equivalent": 290
   },
   "patches": [
     {
@@ -65,6 +65,14 @@
     {
       "path": "SimpleL7Proxy/Async/BlobStorage/BlobWorkerPump.cs",
       "reason": "Document Application Insights 3.x metric emission accurately."
+    },
+    {
+      "path": "SimpleL7Proxy/Config/AppConfigKeyPolicy.cs",
+      "reason": "AI4IA default-deny App Configuration key policy: only Warm:Sentinel and the reviewed request limits, within reviewed ranges, may be applied."
+    },
+    {
+      "path": "SimpleL7Proxy/Config/AppConfigService.cs",
+      "reason": "Apply AI4IA's default-deny key and value policy before any downloaded key is resolved, log refused key names without values, and accept a test client and control policy through an internal constructor."
     },
     {
       "path": "SimpleL7Proxy/Config/ConfigFactory.cs",
@@ -2124,11 +2132,15 @@
       "upstreamCanonicalSha256": "b3a9e8801916c6a0b428753b2246d26b4022c598450be7b60c5d9cd23818c88b",
       "disposition": "upstream-equivalent"
     },
+    "SimpleL7Proxy/Config/AppConfigKeyPolicy.cs": {
+      "localCanonicalSha256": "f9e99b2fba7911e96a826a83366a17a87019e4876d1e2a190867bd43b41a17e6",
+      "disposition": "ai4ia-added"
+    },
     "SimpleL7Proxy/Config/AppConfigService.cs": {
-      "localCanonicalSha256": "762fb5e732990bc78c0d67f8c0649e660e4b98f082ae541a4c219519663025d6",
+      "localCanonicalSha256": "d4b300d44ff03461bf559ed1dc8324711a4b4a53338c64f90b962117c7794a2c",
       "upstreamRawSha256": "762fb5e732990bc78c0d67f8c0649e660e4b98f082ae541a4c219519663025d6",
       "upstreamCanonicalSha256": "762fb5e732990bc78c0d67f8c0649e660e4b98f082ae541a4c219519663025d6",
-      "disposition": "upstream-equivalent"
+      "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Config/ConfigChange.cs": {
       "localCanonicalSha256": "f02abf2b05882fea6149f241e2b44e4229c892419ab5de703bb60b22d29ab7b4",

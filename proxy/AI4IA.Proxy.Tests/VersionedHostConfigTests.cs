@@ -119,7 +119,7 @@ public sealed class VersionedHostConfigTests
     // Capture the production loader's HostConfigs and use real categorization,
     // without activating circuits or background services. The test invokes the
     // actual probe method separately against loopback with synthetic keys.
-    private sealed class CapturedHosts : IHostHealthCollection
+    internal sealed class CapturedHosts : IHostHealthCollection
     {
         private readonly List<HostConfig> _configs = [];
         public HostCollectionSnapshot Current { get; private set; } = HostCollectionSnapshot.Empty;

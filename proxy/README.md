@@ -31,12 +31,17 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
 
 ### Intentional source deviation
 
-Twenty-three upstream files carry AI4IA security, correctness, dependency, or
+Twenty-four upstream files carry AI4IA security, correctness, dependency, or
 telemetry patches over the audited pin; five of them are the CompanionApp
-hosted-mode patches described in its section below. Seven additional files are
+hosted-mode patches described in its section below. Eight additional files are
 AI4IA-owned. The complete machine-readable list and reason for every deviation
 lives in `upstream-provenance.json`; the behaviorally important proxy groups are:
 
+- `SimpleL7Proxy/Config/AppConfigService.cs` applies the AI4IA-owned default-deny
+  `Config/AppConfigKeyPolicy.cs` to every key it downloads, before the key is resolved. App
+  Configuration can set only the refresh sentinel and two reviewed request limits, each within
+  a reviewed range; everything else keeps its environment value. See
+  [App Configuration key policy](#app-configuration-key-policy).
 - `SimpleL7Proxy/Config/IncomingAuthValidator.cs` trims the `header=` value of `ValidateAuthConfig`
   and defaults it to `S7P-KEY` for the actual key lookup. Upstream now assigns the raw header, so
   AI4IA's `Ocp-Apim-Subscription-Key` ingress no longer depends on this line alone, but the
@@ -115,25 +120,26 @@ after line-ending normalization.
 Re-evaluate and drop the OAuth part of the `IncomingAuthValidator.cs` patch when
 refreshing to an upstream commit that verifies inbound JWT signatures.
 
-**Provenance validation (2026-09-25):** `upstream-provenance.json` records the
+**Provenance validation (2026-09-26):** `upstream-provenance.json` records the
 canonical LF SHA-256 of every upstream and local file plus the explicit AI4IA
 patch list. Raw upstream hashes remain as evidence, but checkout-specific local
 bytes never gate CI. `scripts/tests/test_proxy_provenance.py` fails for an
 added, deleted, or semantically changed file that is not represented exactly.
 The current measured breakdown is:
 
-- **291 files** are content-equivalent to upstream after CRLF/LF canonicalization.
-- **23 files** contain the documented AI4IA source patches.
-- **7 files** are AI4IA additions: `Config/SecretComparer.cs`,
-  `Proxy/NoReplayAttempt.cs`, `CompanionApp/Ai4ia/HostedGuard.cs`, plus four
-  `packages.lock.json` files used by the runtime project graphs.
+- **290 files** are content-equivalent to upstream after CRLF/LF canonicalization.
+- **24 files** contain the documented AI4IA source patches.
+- **8 files** are AI4IA additions: `Config/SecretComparer.cs`,
+  `Config/AppConfigKeyPolicy.cs`, `Proxy/NoReplayAttempt.cs`,
+  `CompanionApp/Ai4ia/HostedGuard.cs`, plus four `packages.lock.json` files used by
+  the runtime project graphs.
 - **95 upstream files** are deliberately not vendored (`ai4ia-excluded`). Each is
   recorded with its upstream hash under one declared exclusion rule and reason.
   Generation and `--check` fail if an excluded file appears locally, an
   unexcluded upstream file is missing, or a rule matches nothing.
 
-The upstream tree has 409 files; the local scoped tree has 321, and the manifest
-records all 416 paths. Regenerate only after fetching and reviewing the pinned
+The upstream tree has 409 files; the local scoped tree has 322, and the manifest
+records all 417 paths. Regenerate only after fetching and reviewing the pinned
 upstream commit:
 
 ```powershell
@@ -146,8 +152,8 @@ python scripts/gen-proxy-provenance.py --check
 refresh from `d9eb1d1f…` absorbed 249 upstream commits and 74 changed files in
 the three vendored projects. `Shared/` did not change. Thirteen of the previously
 patched files changed upstream and were merged by hand. Upstream now ships the
-failed App Configuration download guard itself, so `Config/AppConfigService.cs`
-is upstream-equivalent again.
+failed App Configuration download guard itself, so AI4IA no longer patches that
+guard; `Config/AppConfigService.cs` is patched again only for the key policy.
 
 ### Upstream behavior absorbed at this pin
 
@@ -207,10 +213,12 @@ AI4IA does about each:
 The generated APIM policies remain derived from upstream's APIM Policy v3.0 at the
 previous pin. They are a separate artifact from this source vendoring.
 Regenerate the manifest whenever the pin, explicit patch list, or vendored file
-contents change. For runtime dependency updates, first refresh the complete graph
-with `dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --force-evaluate`
-from the repository root and commit every changed lockfile. A referenced project's
-updated lock does not automatically refresh the top-level test project's lock.
+contents change. For runtime dependency updates, first refresh both complete graphs
+from the repository root, with
+`dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --force-evaluate` and
+`dotnet restore proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --force-evaluate`,
+and commit every changed lockfile. A referenced project's updated lock does not
+automatically refresh either top-level test project's lock.
 
 To refresh the vendored copy, check out the audited upstream commit and mirror the four project
 directories from upstream `src/` (excluding `bin/`/`obj/`). For `CompanionApp/`, copy only files
@@ -218,6 +226,31 @@ that no `AI4IA_EXCLUSION_REASONS` rule in `scripts/gen-proxy-provenance.py` matc
 new upstream pages against the hosted-mode boundary before vendoring them. Keep this README and
 the AI4IA Dockerfiles, reapply/test the documented source patches, verify every other source file
 is byte-for-byte identical to upstream, and update both pin references.
+
+### Recorded upstream findings (not patched)
+
+- **Replica and revision are swapped in telemetry.** `ApplyConfigPlugin` in
+  `Config/ConfigParser.cs` stores the plugin's `InstanceID` (`CONTAINER_APP_REVISION`) as
+  `ReplicaName` and its `ConfigInstanceID` (`CONTAINER_APP_REPLICA_NAME`) as `Revision`. The
+  plugin only became live at this pin, when upstream fixed a typo in the default
+  `EnvPluginClass` type name. Since then the startup banner and every proxy event's
+  `Replica` dimension (`Events/CommonEventHeaders.cs`) carry the revision name, so replicas
+  of one revision cannot be told apart in telemetry. Request-ID prefixes are unaffected:
+  they are built from the host name before the plugin runs.
+- **Upstream's CompanionApp references a moved file.** At this pin, upstream's
+  `CompanionApp.csproj` and CompanionApp `Dockerfile` still reference
+  `deployment/deploy.parameters.example.sh`, which upstream commit `714b39f` moved to
+  `deployment/interactive/`. AI4IA's vendored csproj does not embed that resource, and
+  AI4IA builds its own `CompanionApp.Dockerfile`.
+- **Circuit-breaker settings do not refresh live.** `Backend/CircuitBreaker.cs` copies
+  `CBErrorThreshold` and `CBTimeslice` only in its constructor. A warm refresh changes the
+  option but not a running breaker, so the value applies only to breakers built later, at a
+  restart or scale-out. At a threshold of 1 or less, `GetBackpressureDelay()` reports
+  backpressure with no failure recorded, and `server.cs` then answers every request with 429
+  before authentication. The key policy refuses both keys.
+- **A large default TTL expires every request.** `RequestData.CalculateExpiration` computes
+  `DefaultTTLSecs * 1000` as an `int`. Above 2,147,483 seconds it overflows and every
+  deadline is in the past. The key policy accepts at most 1,200 seconds.
 
 ## Runtime shape
 
@@ -279,17 +312,9 @@ every edge.
 
 ## Optional controls
 
-- App Configuration is read with `id-proxy`; warm profile, priority, and header
-  policy values refresh without a revision. Event Hub and async settings are cold.
-- **App Configuration write access is proxy administration.** Warm and Cold keys
-  can replace the backend hosts and their keys. They can add `Path_*` routes with
-  their own `maxattempts` and iteration mode, and name `AuthProviders` types that
-  the proxy loads by reflection. They can also change inbound authentication and
-  the strip and disallowed header lists. AI4IA seeds only `Warm:Sentinel`, so every
-  proxy setting stays in the Container App environment. The proxy identity holds
-  only App Configuration Data Reader. Only the OIDC deployment identity holds
-  Data Owner, which `postprovision.ps1` uses to reconcile that sentinel. Never grant
-  a write role to a runtime identity.
+- App Configuration is read with `id-proxy` for the sentinel-driven warm refresh, restricted
+  by the [App Configuration key policy](#app-configuration-key-policy). Every other proxy
+  setting, including Event Hub and async settings, comes from the Container App environment.
 - Event Hub export is default-off and emits routing/status/latency metadata with
   request/response header logging disabled. It is not a work queue.
 - Durable async is default-off and provisions dedicated MI-only Blob + Service Bus
@@ -298,6 +323,72 @@ every edge.
   supported source is the secret-mounted local snapshot. Validation blocks
   enablement until the edge derives a verified app identity; the proxy never
   reads Cosmos directly.
+
+## App Configuration key policy
+
+Upstream applies every downloaded `Warm:` and `Cold:` key, and an App Configuration value
+overrides the Container App environment. Write access to the store would therefore be proxy
+administration. A single write could:
+
+- turn off inbound authentication (`Warm:Profiles:Auth:Config` set to
+  `enabled=false;mode=none`), or add a second ingress key (`Profiles:Auth:Key2`);
+- point `Host1` somewhere else. The replacement inherits the environment's `Host1-api-key`,
+  the proxy's APIM model key;
+- add `Path_*` routes with their own attempts and iteration mode, or name `AuthProviders`
+  types that the proxy loads by reflection;
+- rewrite the header strip, disallow and logging lists.
+
+AI4IA authors all of that in `gateway.bicep`. The AI4IA-owned `Config/AppConfigKeyPolicy.cs`
+is default-deny. `Config/AppConfigService.cs` applies it to every key and value it downloads,
+at startup and on each warm refresh, before the key is resolved. Only these keys apply, and
+each limit only within its range:
+
+| App Configuration key | Proxy setting | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `Warm:Sentinel` | `Sentinel` | Any | A change triggers the warm refresh |
+| `Warm:Request:DefaultTimeout` | `Timeout` | `180000` to `1200000` | Milliseconds a backend attempt may wait for response headers |
+| `Warm:Request:DefaultTTLSecs` | `DefaultTTLSecs` | `300` to `1200` | Seconds a request may spend queued and retried, from enqueue |
+
+- Every other key keeps its environment value. That includes every `Cold:` key and any
+  other prefix, all backend host and route keys, inbound authentication, the header and
+  logging policy, the circuit-breaker settings, `LoadBalancing:*`, profiles, async,
+  `Server:*` and unknown keys. `UseOAuth` and `OAuthAudience` are read only from the
+  environment.
+- A limit accepts only plain digits inside its range. Signs, spaces, decimals and the
+  loader's arithmetic expressions are refused rather than interpreted. A refused value keeps
+  the current setting: the environment value at startup, or the last accepted value on a
+  refresh.
+- The ranges follow from the deployed values. A backend attempt may wait for response headers
+  until the earlier of the TTL deadline and now plus `Timeout`; the limit does not cover
+  reading a streamed body. The API gives up on a proxied call after at most 180 seconds
+  without a response (`gateway_image_timeout_seconds`), so the timeout floor never abandons a
+  call the API is still waiting for. Bicep sets neither limit, so the deployed values are the
+  proxy defaults: a 20-minute timeout and a 300-second TTL. App Configuration can shorten the
+  timeout or lengthen the TTL, but neither beyond 20 minutes.
+- The circuit-breaker settings are refused. A breaker reads them only when it is built, so a
+  warm write does nothing until the next restart or scale-out. It then reaches the parent
+  breaker, which gates all ingress before authentication: at `CBErrorThreshold=1`, every
+  request gets 429 with no failure recorded. See
+  [Recorded upstream findings](#recorded-upstream-findings-not-patched).
+- Each download logs at most two warnings, one for refused keys and one for refused values.
+  Each names at most 20 keys, each bounded and made printable. Values are never logged,
+  because a refused value can be a credential.
+- A store that holds only refused keys behaves like an empty store.
+- Matching is exact: `Warm:` plus a reviewed key path, compared case-insensitively like the
+  rest of the loader.
+- Changing the allowlist or a range is a reviewed code change.
+  `scripts/tests/test_proxy_delivery_contracts.py` fails if a reviewed key is also authored in
+  `gateway.bicep`, so App Configuration can never override a Bicep setting. It also fails if
+  the timeout floor drops below one of the API's gateway timeouts, or infra overrides one.
+- The only writer today is `postprovision.ps1`, which reconciles `Warm:Sentinel=ready`
+  through the OIDC deployment identity. That identity is the only one with App Configuration
+  Data Owner; the proxy identity has only Data Reader. Never grant a write role to a runtime
+  identity.
+- `AI4IA.Proxy.Tests/AppConfigKeyPolicyTests.cs` and
+  `IngressWorkerPolicyTests.AppConfigurationCannotTurnOffInboundAuthentication` drive the
+  real download, bootstrap merge, backend registration, warm refresh and listener. Each
+  refusal is paired with a control that runs the same write through upstream's download and
+  shows it applying.
 
 ## CompanionApp telemetry console (optional)
 
