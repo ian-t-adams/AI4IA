@@ -161,9 +161,9 @@ dev = [
 # pytest.importorskip; NOT installed in the runtime container (the app never imports these
 # SDKs at runtime -- only the operator-invoked provisioning scripts do). Operators installing
 # it standalone at provisioning time: uv pip install -e "app/api[foundry]"
-# azure-ai-projects is pinned EXACTLY to 2.6.1, not just floored at it: this whole extra's
+# azure-ai-projects is pinned EXACTLY to 2.7.0, not just floored at it: this whole extra's
 # provisioner (scripts/provision-foundry-toolbox.py) and its test suite
-# (tests/test_foundry_toolbox.py) are reflection-verified, field-by-field, against 2.6.1's actual
+# (tests/test_foundry_toolbox.py) are reflection-verified, field-by-field, against 2.7.0's actual
 # *ToolboxTool model classes and constructor signatures (CodeInterpreterToolboxTool,
 # OpenApiToolboxTool, MCPToolboxTool, AzureAISearchToolboxTool, ...). Those shapes have already
 # changed across releases (the toolbox model classes plainly do not exist in 2.2.0, and 2.4.0 added a
@@ -172,7 +172,10 @@ dev = [
 # and WebIQPreviewToolboxTool are explicitly excluded with exact field inventories pending
 # capability/governance review; web_search.external_web_access is modeled as an optional Boolean.
 # SDK 2.6.1 fixes Agent Insights polling only; toolbox models, serialization, and Skills
-# operations are byte-identical to 2.6.0. The supported/excluded inventories are unchanged.
+# operations are byte-identical to 2.6.0. SDK 2.7.0 adds preview voice agents and other agent
+# surfaces; the 16 toolbox classes and the toolbox/Skills operations the provisioner calls are
+# unchanged, and its optional `voice` extra is not selected. The supported/excluded inventories
+# are unchanged.
 # A floating floor would
 # let a bare `pip install .[foundry]` -- which is exactly what
 # both CI (.github/workflows/app-ci.yml) and operators (see docs/foundry-toolbox.md) run -- silently
@@ -185,7 +188,7 @@ dev = [
 # jsonschema backs scripts/provision-foundry-toolbox.py's strict manifest-schema validation,
 # which --create requires before constructing any SDK model.
 foundry = [
-    "azure-ai-projects==2.6.1",
+    "azure-ai-projects==2.7.0",
     "azure-identity>=1.17",
     "jsonschema>=4.18",
 ]

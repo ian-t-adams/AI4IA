@@ -74,7 +74,7 @@ window.AI4IA_REQUIREMENTS = {
         ["webiq", "Official WebIQ auth/transport for eleven fixed v3 search/retrieval routes (Bicep default off; showcase profile on; endpoint entitlements still required)"],
       ],
       dev: ["pytest / pytest-asyncio / anyio", "ruff (lint)", "pyright (type gate, basic mode)"],
-      extra: "foundry extra (azure-ai-projects==2.4.0, azure-identity, jsonschema) — provisioning-only; installed by app-ci and foundry-assets, never by the runtime image",
+      extra: "foundry extra (azure-ai-projects==2.7.0, azure-identity, jsonschema) — provisioning-only; installed by app-ci and foundry-assets, never by the runtime image",
     },
     web: {
       runtime: "Node.js >=22.22.2 <23 (container image pinned to node:22-alpine by digest)",

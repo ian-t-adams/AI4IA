@@ -1007,6 +1007,11 @@ must remain rejected by both the manifest and adapter.
 The exact-pin and reflected parity gates require the installed SDK, not a skip.
 Compare its imported source version as well as distribution metadata, lockfile,
 and every shipped manifest/schema; keep the two missing-SDK install hints aligned.
+The same gate requires the provisioner hints, `foundry/README.md`, the toolbox
+runbook and the portal requirements page to cite the pin as `azure-ai-projects==`,
+and confines the installed RECORD to `azure/ai/projects/` and the SDK's
+dist-info: a regular top-level `scripts` package would shadow this repository's
+namespace `scripts` package in the api job.
 Review patch-release wheel/source changes even when reflected fields are unchanged.
 The gate installers are pinned by `UV_VERSION`
 in `app-ci.yml` (also the API Dockerfile's build-only installer) and

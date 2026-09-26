@@ -43,7 +43,7 @@ owner approval before merge.
 | Network egress controls | Public preview, hosted agents | Egress enforced in the application | Not applicable |
 | APIM AI Gateway tier and Admin Connected Models | Preview expected October 2026 | Existing APIM behind SimpleL7Proxy | Re-evaluate when published |
 | run-assert-eval skill | Open source | Not integrated | Not adopted |
-| azure-ai-projects 2.7.0 | Released 2026-09-18 | Pinned at 2.6.1 | Reflection gate now ignores the non-toolbox `VoiceAgentToolboxTool`; upgrade through the normal SDK review |
+| azure-ai-projects 2.7.0 | Released 2026-09-18 | Pinned at 2.7.0 after the SDK review | Toolbox and Skills contracts unchanged; voice agents and `invoke_latest_toolbox_mcp()` not adopted |
 
 ## Models
 
@@ -453,8 +453,9 @@ Run against that wheel, the previous name-based reflection gate in
 Reflection now follows the SDK's `ToolboxTool` hierarchy, which selects the same
 16 classes on 2.6.1 and 2.7.0 and passes on both. Paired controls prove that a
 same-named class outside the hierarchy is ignored and that a `ToolboxTool`
-subclass fails parity whatever its name. The SDK stays pinned at 2.6.1; the
-upgrade still needs its exact-pin, manifest-version and wheel/source review.
+subclass fails parity whatever its name. The exact-pin, manifest-version and
+wheel/source review then moved the pin to 2.7.0; its findings are in the
+[toolbox runbook](foundry-toolbox.md#deliberately-unsupported-sdk-toolbox-types).
 Nothing else in this evaluation depends on 2.7.0.
 
 ## Sources
