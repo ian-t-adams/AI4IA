@@ -144,6 +144,7 @@ the container — those names are *outputs*, not knobs you set.
 | Durable workflow execution | `AI4IA_ENABLE_DURABLE_WORKFLOWS` | `enableDurableWorkflows`, `durableTaskSkuName`, `durableWorkflowTimeoutSeconds` | `AI4IA_DURABLE_WORKFLOWS_ENABLED`, `AI4IA_DURABLE_TASK_ENDPOINT`, `AI4IA_DURABLE_TASK_HUB_NAME`, `AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS` (default 1800) | **Provisions a paid Azure resource** (Durable Task Scheduler + task hub), so enabling it needs an approved deploy; the azd token is retained for per-environment opt-out. Requires `AI4IA_SESSION_STORE=cosmos` — durability without shared storage is theatre, since a resumed orchestration on another replica must see the same session state. Both the endpoint and hub name are required outside `local`; `validate_runtime` fails closed if either is missing. When off, `POST /api/workflows/{name}/run` with `"durable": true` returns **422**, never a silent synchronous fallback. |
 | Image generation | `AI4IA_IMAGE_GENERATION_ENABLED` | `imageGenerationEnabled` | `AI4IA_IMAGE_GENERATION_ENABLED` plus `AI4IA_IMAGE_BLOB_ACCOUNT_URL` when provisioned | Raw API/module default `false`; profile default `true`. The Boolean gates advertisement and generation, independently of storage presence. Enabled nonlocal generation requires durable media storage. |
 | Video generation | `AI4IA_VIDEO_GENERATION_ENABLED` | `videoGenerationEnabled` | `AI4IA_VIDEO_GENERATION_ENABLED` plus `AI4IA_VIDEO_BLOB_ACCOUNT_URL` when provisioned | Raw API/module default `false`; profile default `true`. Generation is explicitly gated and requires durable storage outside local. Sora 2 uses the governed v1 create/status/content contract; supported lengths are 4, 8, or 12 seconds. `generate_video` is advertised only while a runtime-enabled `video` catalog model exists. Sora 2 is runtime-disabled ahead of its 2026-10-15 retirement, so the tool is hidden. Keep the flag on: `AI4IA_VIDEO_BLOB_ACCOUNT_URL` is emitted only while it is on, and existing clips are served from that store. |
+| Custom photo avatars | `AI4IA_PHOTO_AVATARS_ENABLED`, `AI4IA_PHOTO_AVATAR_MAX_PER_USER`, `AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY` | `photoAvatarsEnabled`, `photoAvatarMaxPerUser`, `photoAvatarMaxCreationsPerDay` | `AI4IA_PHOTO_AVATARS_ENABLED` always; `AI4IA_PHOTO_AVATAR_BLOB_ACCOUNT_URL`, `AI4IA_PHOTO_AVATAR_BLOB_CONTAINER` and both limits only while on | **Default `false` in code, Bicep and the profile; limits default 5 and 5 (range 1-50).** Enabling creates a `photoAvatars` Cosmos container, an `avatars` container on the shared generated-media account, the exact-operation `ai4ia-photo-avatars-v1` APIM API with its API-scoped proxy key and a dedicated proxy host. Outside local it requires Entra, Cosmos, durable HTTPS Blob and usage metering; startup also refuses a residency policy the catalog home region cannot meet. Creation stays refused until the home account reports the Limited Access feature named in the catalog. The approval, the RAI re-approval and the live checks are enablement prerequisites, not settings: see [the runbook](runbooks/feature-enablement.md#custom-photo-avatars) and [the design](photo-avatars.md). |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | `AI4IA_CUSTOM_TOOLS_ENABLED`, `CUSTOM_TOOLS_ENABLED` | Profile default `true`; requires Cosmos + Key Vault and Entra auth outside local/dev. |
 | Session/run tool auto-approval | `AI4IA_TOOL_AUTO_APPROVE_ENABLED` | `toolAutoApproveEnabled` | `AI4IA_TOOL_AUTO_APPROVE_ENABLED`; availability read from the API | Default `false` in code, Bicep, and the profile. Allows explicit user consent; does not itself approve calls. Requires Entra auth and Cosmos outside local, preserves execution authorization and receipts, and creates no new Azure resources. |
 | Application group policy | `AI4IA_GROUP_POLICY_ENABLED` | `groupPolicyEnabled` | `AI4IA_GROUP_POLICY_ENABLED` | Default `false`. Applies operator mappings to already-validated Entra role/group claims. Numeric restrictions remain per-user soft limits, not a pooled quota or Azure bill cap. |
@@ -286,6 +287,22 @@ and `AI4IA_CODE_INTERPRETER_API_KEY`. The APIM API accepts only
 requires the configured model, `store=false`, and exactly one
 `code_interpreter` tool. Startup refuses a direct Foundry hostname, a non-APIM
 path, bearer auth, a missing key, or a key reused by another gateway plane.
+
+Custom photo avatars (default off) add no FastAPI credential. FastAPI calls
+`https://<proxy>/ai4ia-photo-avatars-v1/...` with its existing proxy-ingress key.
+A dedicated, flag-gated proxy host (`Host-photoavatars`: exact non-stripping path,
+`retryafter=false`, its own API-scoped `Ocp-Apim-Subscription-Key`) is the only
+candidate for that path, so the catch-all model host is never tried. It is a named
+host because the proxy stops reading numbered `HostN` entries at the first gap,
+and `Host2` is itself conditional. The generated `photo-avatars.xml` policy admits
+six exact operations: the features read, the avatar project read and create, and
+the avatar create, read and delete. It accepts only AI4IA-issued avatar ids, an
+empty caller query and, for create, a bounded JSON object of catalog-enumerated
+properties. APIM owns the provider paths, the api-version and the project body.
+It authenticates with its system identity for `https://cognitiveservices.azure.com`
+and forwards once, with no retry. The only direct fetch is the one-time copy of
+the provider-issued preview link into AI4IA Blob, described in
+[photo-avatars.md](photo-avatars.md).
 
 The APIM plane is the shared `apim-mcp-*` Basic v2 service (capacity 1), and it is
 now the only APIM service in the environment; the prior Consumption APIM and all of

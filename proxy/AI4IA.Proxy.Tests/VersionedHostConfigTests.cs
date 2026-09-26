@@ -109,7 +109,7 @@ public sealed class VersionedHostConfigTests
 
     private static string SourceFile([CallerFilePath] string path = "") => path;
 
-    private static bool IsHostSetting(string key) =>
+    internal static bool IsHostSetting(string key) =>
         key.StartsWith("Host", StringComparison.OrdinalIgnoreCase) ||
         key.StartsWith("Probe", StringComparison.OrdinalIgnoreCase) ||
         key.StartsWith("IP", StringComparison.OrdinalIgnoreCase) ||

@@ -182,6 +182,15 @@
     "videoGenerationEnabled": {
       "value": "${AI4IA_VIDEO_GENERATION_ENABLED=true}"
     },
+    "photoAvatarsEnabled": {
+      "value": "${AI4IA_PHOTO_AVATARS_ENABLED=false}"
+    },
+    "photoAvatarMaxPerUser": {
+      "value": "${AI4IA_PHOTO_AVATAR_MAX_PER_USER=5}"
+    },
+    "photoAvatarMaxCreationsPerDay": {
+      "value": "${AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY=5}"
+    },
     "documentUnderstandingEnabled": {
       "value": "${AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=true}"
     },

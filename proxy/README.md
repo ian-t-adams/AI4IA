@@ -269,6 +269,14 @@ is byte-for-byte identical to upstream, and update both pin references.
   `host=<apim-gateway>;mode=apim;probe=/openai/status;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=false`.
   The APIM subscription key is a Container App secret exposed only through `Host1-api-key`; it is
   never embedded in `Host1`.
+- Separately scoped APIM APIs get their own specific-path hosts. A request whose path matches a
+  specific host goes only to the matching specific hosts, never to the catch-all `Host1`. Numbered
+  `HostN` entries are read only until the first gap, so an optional host that could follow an
+  absent conditional `Host2` must be **named** (`Host-<name>` plus `Host-<name>-api-key`), which
+  the loader reads from the environment separately. The default-off photo avatar surface uses
+  `Host-photoavatars` (`path=/ai4ia-photo-avatars-v1;stripprefix=false;retryafter=false`, its own
+  API-scoped key) for this reason; with `MaxAttempts=1`, single-pass iteration and no
+  `S7PREQUEUE`, a create is sent at most once.
 - APIM's system identity, not the proxy identity, holds Cognitive Services data-plane roles on
   Foundry. This makes APIM the only model-backend trust boundary for normal proxy traffic.
 

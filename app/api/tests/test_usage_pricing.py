@@ -310,3 +310,54 @@ def test_packaged_pricing_rates_are_positive_and_sane() -> None:
         assert entry["perPageUsd"] > 0, (
             f"{name} has a non-positive per-page rate"
         )
+    for name, entry in raw["avatarModels"].items():
+        assert entry["basis"] == "avatar", f"{name} must use the per-avatar basis"
+        assert entry["perAvatarUsd"] > 0, f"{name} has a non-positive per-avatar rate"
+
+
+def test_the_catalog_photo_avatar_meter_is_priced_and_sourced() -> None:
+    """Creating an avatar is billable; its meter must not ship unpriced.
+
+    An unpriced meter would record every creation as cost-unknown and refuse
+    creation for anyone under a cost cap, so the catalog's billing id and the
+    price book move together.
+    """
+    catalog = json.loads(
+        (Path(__file__).resolve().parents[3] / "infra" / "voice-providers.json").read_text(
+            encoding="utf-8"
+        )
+    )["photoAvatars"]
+    raw = json.loads(
+        (Path(__file__).resolve().parents[1] / "src" / "ai4ia_api" / "data" / "pricing.json")
+        .read_text(encoding="utf-8")
+    )
+    assert catalog["billingModelId"] in raw["avatarModels"]
+    assert "azure.microsoft.com/pricing/details/cognitive-services/speech-services" in raw["_avatarSource"]
+    estimate = load_pricing().estimate_avatar(catalog["billingModelId"])
+    assert estimate.known is True
+    assert estimate.micro_usd == 2_000_000
+    assert estimate.billing_unit == "avatar" and estimate.billable_units == 1.0
+    assert estimate.version == raw["version"]
+
+
+def test_avatar_estimates_are_unknown_rather_than_free_without_a_valid_rate() -> None:
+    priced = PricingBook(
+        {}, currency="USD", version="v1",
+        avatar_rates={"avatar": {"basis": "avatar", "perAvatarUsd": 2.0}},
+    )
+    assert priced.estimate_avatar("avatar", count=2).micro_usd == 4_000_000
+    for book, model, count in (
+        (priced, "missing", 1),
+        (priced, "avatar", 0),
+        (PricingBook({}, currency="USD", version="v1", avatar_rates={
+            "avatar": {"basis": "image", "perAvatarUsd": 2.0},
+        }), "avatar", 1),
+        (PricingBook({}, currency="USD", version="v1", avatar_rates={
+            "avatar": {"basis": "avatar", "perAvatarUsd": 0},
+        }), "avatar", 1),
+        (PricingBook({}, currency="USD", version="v1", avatar_rates={
+            "avatar": {"basis": "avatar", "perAvatarUsd": "NaN"},
+        }), "avatar", 1),
+    ):
+        estimate = book.estimate_avatar(model, count=count)
+        assert estimate.known is False and estimate.micro_usd is None
