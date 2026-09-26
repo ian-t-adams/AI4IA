@@ -241,6 +241,34 @@ class PricingBook:
             version=self._version,
         )
 
+    def estimate_avatar_seconds(self, model_id: str, *, seconds: int) -> OperationCostEstimate:
+        """Live avatar time billed per second from a per-minute list price.
+
+        An absent or malformed rate, or a non-positive whole-second count, is
+        unknown, never free.
+        """
+        rate = self._avatar_rates.get(model_id)
+        if (
+            rate is None or type(seconds) is not int or seconds <= 0
+            or rate.get("basis") != "second"
+        ):
+            return self._unknown_operation()
+        try:
+            per_minute = _decimal(rate["perMinuteUsd"])
+        except (InvalidOperation, KeyError, TypeError, ValueError):
+            return self._unknown_operation()
+        if not per_minute.is_finite() or per_minute <= 0:
+            return self._unknown_operation()
+        return OperationCostEstimate(
+            micro_usd=_to_micro_usd(per_minute * Decimal(seconds) / Decimal(60)),
+            known=True,
+            pricing_basis="second",
+            billable_units=float(seconds),
+            billing_unit="second",
+            currency=self._currency,
+            version=self._version,
+        )
+
     def _unknown_operation(self) -> OperationCostEstimate:
         return OperationCostEstimate(
             micro_usd=None,

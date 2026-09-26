@@ -289,6 +289,16 @@ param photoAvatarMaxPerUser int = 5
 @maxValue(50)
 param photoAvatarMaxCreationsPerDay int = 5
 
+@description('Longest live photo avatar session, in minutes.')
+@minValue(1)
+@maxValue(60)
+param photoAvatarLiveMaxMinutesPerSession int = 10
+
+@description('Seconds without conversation before the relay ends a live photo avatar session.')
+@minValue(30)
+@maxValue(900)
+param photoAvatarLiveIdleTimeoutSeconds int = 120
+
 @description('Azure AI Search endpoint (e.g. https://<svc>.search.windows.net). Empty unless a search service is provisioned; when set, emitted as AI4IA_SEARCH_ENDPOINT so the api can index/query via managed identity.')
 param searchEndpoint string = ''
 
@@ -828,6 +838,14 @@ var photoAvatarEnv = concat([
   {
     name: 'AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY'
     value: string(photoAvatarMaxCreationsPerDay)
+  }
+  {
+    name: 'AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION'
+    value: string(photoAvatarLiveMaxMinutesPerSession)
+  }
+  {
+    name: 'AI4IA_PHOTO_AVATAR_LIVE_IDLE_TIMEOUT_SECONDS'
+    value: string(photoAvatarLiveIdleTimeoutSeconds)
   }
 ] : [])
 

@@ -81,6 +81,7 @@ function makeController(
     turns: [],
     listening: false,
     speaking: false,
+    avatar: null,
     start: mocks.start,
     stop: mocks.stop,
     toggle: mocks.toggle,
@@ -500,6 +501,7 @@ describe("inline Voice Live chat", () => {
       DEFAULT_VOICE_SETTINGS,
       expect.any(Object),
       false,
+      null,
       null,
     );
   });

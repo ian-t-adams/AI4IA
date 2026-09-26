@@ -519,6 +519,13 @@ class Settings(BaseSettings):
     # create in the rolling 24 hours counts toward the second.
     photo_avatar_max_per_user: int = 5
     photo_avatar_max_creations_per_day: int = 5
+    # Phase 2 live sessions: an owned avatar on the Speech Voice Live relay, its
+    # video streamed over the same governed WebSocket. Avatar time is billed per
+    # second while connected, idle included, so every avatar session is capped
+    # (together with realtime_max_session_seconds) and ends after this much
+    # time without conversational activity (mic audio and idle video never count).
+    photo_avatar_live_max_minutes_per_session: int = 10
+    photo_avatar_live_idle_timeout_seconds: int = 120
 
     # --- Retrieval consumer: how the ready library surfaces in chat.
     # Tier 1 (always-injected summary cards) + Tier 2 (top-k RAG chunks) are bounded
@@ -1185,6 +1192,18 @@ class Settings(BaseSettings):
         ):
             if not 1 <= value <= 50:
                 raise RuntimeError(f"{name} must be between 1 and 50.")
+        for name, value, low, high in (
+            (
+                "AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION",
+                self.photo_avatar_live_max_minutes_per_session, 1, 60,
+            ),
+            (
+                "AI4IA_PHOTO_AVATAR_LIVE_IDLE_TIMEOUT_SECONDS",
+                self.photo_avatar_live_idle_timeout_seconds, 30, 900,
+            ),
+        ):
+            if not low <= value <= high:
+                raise RuntimeError(f"{name} must be between {low} and {high}.")
         from .photo_avatars.catalog import load_photo_avatar_catalog
 
         try:

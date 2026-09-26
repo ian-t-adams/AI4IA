@@ -635,6 +635,7 @@ def _validate_photo_avatars(
             "projectSuffix",
             "baseModel",
             "billingModelId",
+            "liveBillingModelId",
             "promptMaxChars",
             "attributes",
             "preview",
@@ -687,6 +688,12 @@ def _validate_photo_avatars(
     )
     text_matches("baseModel", r"[a-z][a-z0-9.-]{1,31}")
     text_matches("billingModelId", r"[a-z][a-z0-9-]{1,62}")
+    text_matches("liveBillingModelId", r"[a-z][a-z0-9-]{1,62}")
+    _require(
+        errors,
+        block.get("liveBillingModelId") != block.get("billingModelId"),
+        f"{label}.liveBillingModelId must name a meter distinct from billingModelId",
+    )
     prompt_max = block.get("promptMaxChars")
     _require(
         errors,

@@ -39,7 +39,7 @@ feature posture.
 | Rolling conversation summarization | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | none | `autoSummarizationEnabled` | None beyond the active chat model — once the transcript exceeds the model-derived threshold, older turns fold into a running summary while the full transcript stays in storage/scrollback. Off leaves the manual `/summarize` command working but never auto-injects a summary |
 | Image generation | `AI4IA_IMAGE_GENERATION_ENABLED` | server-advertised imagery controls | `imageGenerationEnabled` | Image-capable deployment and durable media Blob storage outside local; storage presence alone does not enable generation |
 | Video generation | `AI4IA_VIDEO_GENERATION_ENABLED` | server-advertised tools and inline artifacts | `videoGenerationEnabled` | A runtime-enabled video deployment and durable media Blob storage outside local. Advertisement and execution check the gate, the store and model availability together. Sora 2 is runtime-disabled ahead of its 2026-10-15 retirement, so the tool stays hidden. Keep the flag on: it also delivers the Blob settings that serve existing clips (see [Sora 2 runtime retirement](deployment.md#sora-2-runtime-retirement)) |
-| Custom photo avatars | `AI4IA_PHOTO_AVATARS_ENABLED` (+ per-user limits) | availability from `GET /api/photo-avatars/config` | `photoAvatarsEnabled`, `photoAvatarMaxPerUser`, `photoAvatarMaxCreationsPerDay` | Default `false`. Entra, Cosmos, durable Blob and metering outside local. Creation also needs the home account to report the Limited Access capability at runtime. The approval, the RAI re-approval and the live checks come first: see [below](#custom-photo-avatars) |
+| Custom photo avatars | `AI4IA_PHOTO_AVATARS_ENABLED` (+ per-user and live-session limits) | availability from `GET /api/photo-avatars/config` | `photoAvatarsEnabled`, `photoAvatarMaxPerUser`, `photoAvatarMaxCreationsPerDay`, `photoAvatarLiveMaxMinutesPerSession`, `photoAvatarLiveIdleTimeoutSeconds` | Default `false`. Entra, Cosmos, durable Blob and metering outside local. Creation also needs the home account to report the Limited Access capability at runtime. Live avatar sessions also need Speech Voice Live. The approval, the RAI re-approval and the live checks come first: see [below](#custom-photo-avatars) |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
 | Official MCP plane | `AI4IA_OFFICIAL_MCP_ENABLED` | none | `enableOfficialMcp` | MCP-only product/subscription on the shared active Basic v2 APIM + ≥1 server in `infra/mcp-servers.json`; gateway URL + key auto-wired |
 | Foundry toolbox (bridge) | consumed via the official MCP plane (no dedicated flag) | none | `enableFoundryToolbox` (+ `enableOfficialMcp`) | Provisioned toolbox in the default Foundry project + a `foundry-toolbox` entry in `infra/mcp-servers.json`; grants APIM MI the project "Foundry User" role. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
@@ -1256,6 +1256,8 @@ the Limited Access capability.
 photoAvatarsEnabled=true
 photoAvatarMaxPerUser=5            # optional; 1-50
 photoAvatarMaxCreationsPerDay=5    # optional; 1-50
+photoAvatarLiveMaxMinutesPerSession=10   # optional; 1-60, live avatar sessions
+photoAvatarLiveIdleTimeoutSeconds=120    # optional; 30-900, live avatar sessions
 ```
 
 `azd provision` then creates:
@@ -1304,6 +1306,17 @@ the outcome:
 4. Delete the avatar, and confirm the record, the Blob preview and the provider
    avatar are all gone.
 5. Confirm the usage ledger holds one known $2 estimate for the create.
+6. **Live avatar (Phase 2).** This needs Speech Voice Live enabled. In the Speech
+   voice settings, pick the ready avatar and start a signed-in session against
+   the direct API Container App socket.
+   - The avatar must appear and speak within a few seconds, with the
+     `AI-generated` label visible.
+   - The `voice_live_completion` log must show `avatar.confirmed=true` and no
+     provider id.
+   - The usage ledger must hold one `photo_avatar_live` row whose `billableUnits`
+     match the connected seconds at $0.60 per minute.
+   - Then stay silent past the idle timeout and confirm the session ends with the
+     idle notice. This is the first proof through AI4IA's own APIM path.
 
 **Limits and cost.** Each dispatched create is metered once at the catalog
 price; an outcome that is still unknown is recorded as cost-unknown, never as
@@ -1311,6 +1324,17 @@ free. A daily creation is spent when the create is dispatched, even if the
 provider later rejects it or the avatar is deleted. Creation refuses under any
 cost cap if the price is missing. Hard admission covers avatar creation as a
 request-only surface; token and dollar caps refuse it.
+
+Live avatar time (Phase 2) bills per second at $0.60 per minute while the session
+is connected, idle included.
+- Each session is capped by the smaller of `realtime_max_session_seconds` and
+  `photoAvatarLiveMaxMinutesPerSession`, and ends after
+  `photoAvatarLiveIdleTimeoutSeconds` without conversation.
+- It is admitted on its own request-only `avatar_live` surface, which requires the
+  `avatar.use` grant, before the voice session's own admission.
+- An unpriced live meter refuses under any cost cap.
+- Media stays on the existing Voice Live WebSocket (`output_protocol: websocket`):
+  there is no WebRTC, no TURN and no new network path to allow.
 
 **Changing the home account.** Each avatar exists only in the account that
 created it, and each record keeps that home region. After the catalog's

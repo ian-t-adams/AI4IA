@@ -78,6 +78,7 @@ def test_meter_coverage_is_explicit_and_shipping_gateway_has_no_attempt_envelope
     assert set(COVERAGE) == {
         "chat", "embedding", "image", "video", "transcription", "speech",
         "realtime", "compute", "document", "web_search", "mcp", "external_tool", "avatar",
+        "avatar_live",
     }
     body = {"messages": [{"role": "user", "content": "text"}]}
     unknown = reservation_bounds(

@@ -42,6 +42,9 @@ CODE_INTERPRETER_PROVIDER = "azure_openai_code_interpreter"
 #: still count as cost-unknown rather than as known free work.
 PHOTO_AVATAR_PROVIDER = "azure_speech_photo_avatar"
 PHOTO_AVATAR_TARGET = "photo_avatar"
+#: Live avatar time on the Speech Voice Live relay: the same provider identity,
+#: its own target so rollups separate per-avatar creation from per-second use.
+PHOTO_AVATAR_LIVE_TARGET = "photo_avatar_live"
 
 
 def cost_bearing_attempt(rec: "UsageRollupSource") -> bool:
@@ -266,6 +269,9 @@ class UsageRecord(BaseModel):
     billingUnit: str | None = None
     imageSize: str | None = None
     imageQuality: str | None = None
+    # A short, non-secret reference to the owned resource a row meters, such as
+    # a live avatar's 8-character record-id prefix. Never a provider id.
+    resourceRef: str | None = Field(default=None, max_length=16)
 
     # Cost stored as integer micro-USD to avoid float drift in accumulated
     # totals; ``estCostUsd`` is a display convenience derived from it.

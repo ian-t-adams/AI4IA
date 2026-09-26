@@ -259,3 +259,52 @@ describe("VoiceSettingsPanel", () => {
     expect(onVoiceChange).toHaveBeenCalledWith("marin");
   });
 });
+
+
+describe("VoiceSettingsPanel live avatar picker", () => {
+  const CHOICES = [
+    { id: "0123456789abcdef0123456789abcdef", displayName: "Host A" },
+    { id: "fedcba9876543210fedcba9876543210", displayName: "Host B" },
+  ];
+  const speech = {
+    provider: "speech_voice_live" as const,
+    activeProvider: voiceProviderCatalog.providers[1],
+  };
+
+  it("offers owned avatars for Speech and reports the pick", async () => {
+    const onAvatarChange = vi.fn();
+    const { user } = setup({ ...speech, avatarChoices: CHOICES, avatarId: null, onAvatarChange });
+    const picker = screen.getByRole("combobox", { name: "Avatar" });
+    expect(within(picker).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "None (voice only)", "Host A", "Host B",
+    ]);
+    expect(picker).toHaveValue("");
+    expect(picker).toHaveAccessibleDescription(/AI-generated avatar speaks the replies/);
+    await user.selectOptions(picker, "Host B");
+    expect(onAvatarChange).toHaveBeenLastCalledWith(CHOICES[1].id);
+    await user.selectOptions(picker, "None (voice only)");
+    expect(onAvatarChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it.each([
+    ["no usable avatars", { ...speech, avatarChoices: [] }],
+    ["no avatar choices at all", { ...speech, avatarChoices: undefined }],
+    ["the Azure OpenAI provider", { avatarChoices: CHOICES }],
+  ])("stays hidden with %s", (_label, overrides) => {
+    setup(overrides);
+    expect(screen.queryByRole("combobox", { name: "Avatar" })).toBeNull();
+  });
+
+  it("never shows a stale pick and explains an unsupported browser", () => {
+    const { rerender } = setup({
+      ...speech, avatarChoices: CHOICES, avatarId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      onAvatarChange: vi.fn(),
+    });
+    const picker = screen.getByRole("combobox", { name: "Avatar" });
+    expect(picker).toHaveValue("");
+    rerender({ ...speech, avatarChoices: CHOICES, avatarId: CHOICES[0].id, avatarVideoSupported: false });
+    expect(picker).toBeDisabled();
+    expect(picker).toHaveValue("");
+    expect(picker).toHaveAccessibleDescription(/can't play avatar video/);
+  });
+});

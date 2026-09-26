@@ -191,6 +191,12 @@
     "photoAvatarMaxCreationsPerDay": {
       "value": "${AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY=5}"
     },
+    "photoAvatarLiveMaxMinutesPerSession": {
+      "value": "${AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION=10}"
+    },
+    "photoAvatarLiveIdleTimeoutSeconds": {
+      "value": "${AI4IA_PHOTO_AVATAR_LIVE_IDLE_TIMEOUT_SECONDS=120}"
+    },
     "documentUnderstandingEnabled": {
       "value": "${AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=true}"
     },

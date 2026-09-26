@@ -47,6 +47,7 @@ per-operation replay identity and outcome recovery are implemented.
 | WebIQ search, browse and the other enabled endpoints | `WebSearchClient._call` around SDK/transport execution | Request only; unknown service/downstream meters refused under token/dollar caps |
 | BYO and official MCP tool calls and resource reads, including skill loads | `_call_with` / `_read_resource_with`, including handshake | Request only; unknown remote meters refused under token/dollar caps |
 | Azure OpenAI realtime and Speech Voice Live | Shared `run_relay` boundary before `connector.connect` | One application session-open attempt; no token/dollar bound for the live session |
+| Live photo avatar time on Speech Voice Live | `run_relay`'s `avatar_live` surface (`avatar.use`), before the unchanged realtime admission and `connector.connect` | One request per avatar session; the per-second avatar dollar meter is unbounded, so token/dollar caps refuse it |
 | Custom photo avatar creation | `PhotoAvatarGateway.create_avatar`, avatar surface | Request only, one single-attempt create; the per-avatar dollar meter is refused under token/dollar caps. Status reads, the free avatar-project setup and deletes are not reservations |
 | Durable workflow activities, including previously queued work | Worker `_execute_step`, before execution | Refused in hard mode; no dependence on an HTTP ContextVar surviving a thread or replay |
 

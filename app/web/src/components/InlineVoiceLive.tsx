@@ -17,6 +17,8 @@ import {
   DEFAULT_VOICE_SETTINGS,
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   useVoiceLive,
+  type LiveAvatarSelection,
+  type LiveAvatarView,
   type LiveTurn,
   type SpeechVoiceLiveSettings,
   type VoiceProviderId,
@@ -48,6 +50,8 @@ interface InlineVoiceLiveOptions {
   settings?: VoiceSessionSettings;
   speechSettings?: SpeechVoiceLiveSettings;
   tools?: boolean;
+  // The owned photo avatar picked for Speech Voice Live, or null for voice only.
+  avatar?: LiveAvatarSelection | null;
   // Existing chat at the moment Voice Live starts. Binding this without
   // calling ensureSession avoids empty-chat creation while ensuring a later
   // finalized turn cannot drift into a different chat after navigation.
@@ -98,6 +102,8 @@ export interface InlineVoiceLiveState {
   // Existing chat captured when this Voice Live cycle started. Null means the
   // cycle began in an empty chat and may bind lazily when its first turn saves.
   boundSessionId: string | null;
+  // The live photo avatar for the current or last session, or null (voice only).
+  avatar: LiveAvatarView | null;
   start: () => void;
   stop: () => void;
   retryPersistence: () => void;
@@ -209,6 +215,7 @@ export function useInlineVoiceLive({
   settings = DEFAULT_VOICE_SETTINGS,
   speechSettings = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   tools = false,
+  avatar = null,
   activeSessionId = null,
   ensureSession,
   abandonPendingSessionCreation,
@@ -234,6 +241,7 @@ export function useInlineVoiceLive({
     speechSettings,
     tools,
     activeSessionId,
+    avatar,
   );
   const startLive = live.start;
   const stopLive = live.stop;
@@ -609,6 +617,7 @@ export function useInlineVoiceLive({
     hasUnsavedTurns,
     exitLocked: hasUnsavedTurns,
     boundSessionId,
+    avatar: live.avatar,
     start,
     stop,
     retryPersistence: () => void persist(),

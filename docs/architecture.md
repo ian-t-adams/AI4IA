@@ -149,6 +149,9 @@ APIM API/key, and East US 2 backend. Settings apply on the next connection.
 Finalized turns join the same conversation; a persistence failure cannot keep
 the microphone running.
 Turn-based transcription and text-to-speech remain ordinary gateway HTTP calls.
+A live photo avatar (default-off) rides the same Speech socket: the relay injects the
+owner's resolved avatar with `output_protocol: websocket`, so its video arrives as
+bounded `response.video.delta` frames on that socket, never over WebRTC.
 
 GA Realtime is staged separately from selection: `AI4IA_REALTIME_GA_ENABLED`
 defaults off, while `AI4IA_REALTIME_PROTOCOL` stays `preview`. A gated second

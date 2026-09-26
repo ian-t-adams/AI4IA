@@ -478,6 +478,13 @@ def main(*, require_deployment_attestation: bool = False) -> int:
         raw_limit = text(parameter_value(parameters, name, 5))
         if not raw_limit.isdigit() or not 1 <= int(raw_limit) <= 50:
             errors.append(f"{name} must be an integer from 1 to 50.")
+    for name, default, low, high in (
+        ("photoAvatarLiveMaxMinutesPerSession", 10, 1, 60),
+        ("photoAvatarLiveIdleTimeoutSeconds", 120, 30, 900),
+    ):
+        raw_limit = text(parameter_value(parameters, name, default))
+        if not raw_limit.isdigit() or not low <= int(raw_limit) <= high:
+            errors.append(f"{name} must be an integer from {low} to {high}.")
     if photo_avatars_enabled:
         if text(parameter_value(parameters, "apiAuthProvider", "dev")).lower() != "entra":
             errors.append("photoAvatarsEnabled=true requires apiAuthProvider=entra.")

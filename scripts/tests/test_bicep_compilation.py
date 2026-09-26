@@ -249,6 +249,14 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             self.assertEqual(
                 (parameter["defaultValue"], parameter["minValue"], parameter["maxValue"]), (5, 1, 50),
             )
+        for limit, bounds in (
+            ("photoAvatarLiveMaxMinutesPerSession", (10, 1, 60)),
+            ("photoAvatarLiveIdleTimeoutSeconds", (120, 30, 900)),
+        ):
+            parameter = self.template["parameters"][limit]
+            self.assertEqual(
+                (parameter["defaultValue"], parameter["minValue"], parameter["maxValue"]), bounds,
+            )
         gateway_module = self.template["resources"]["gateway"]["properties"]
         self.assertEqual(gateway_module["parameters"][flag]["value"], f"[parameters('{flag}')]")
         gateway = gateway_module["template"]
@@ -341,6 +349,8 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         for name in (
             "AI4IA_PHOTO_AVATAR_BLOB_ACCOUNT_URL", "AI4IA_PHOTO_AVATAR_BLOB_CONTAINER",
             "AI4IA_PHOTO_AVATAR_MAX_PER_USER", "AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY",
+            "AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION",
+            "AI4IA_PHOTO_AVATAR_LIVE_IDLE_TIMEOUT_SECONDS",
         ):
             self.assertIn(name, env)
         self.assertIn("variables('photoAvatarEnv')", api["variables"]["apiEnv"])

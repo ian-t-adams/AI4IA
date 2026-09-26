@@ -221,6 +221,16 @@ param photoAvatarMaxPerUser int = 5
 @maxValue(50)
 param photoAvatarMaxCreationsPerDay int = 5
 
+@description('Longest live photo avatar session, in minutes, on Speech Voice Live. realtime_max_session_seconds tightens it further when set. Avatar time bills while connected.')
+@minValue(1)
+@maxValue(60)
+param photoAvatarLiveMaxMinutesPerSession int = 10
+
+@description('Seconds without conversation (microphone audio and idle video never count) after which the relay ends a live photo avatar session.')
+@minValue(30)
+@maxValue(900)
+param photoAvatarLiveIdleTimeoutSeconds int = 120
+
 @description('Provision an Azure AI Search service (for indexing/retrieval). Default OFF: nothing is created. When on, the api identity gets data-plane RBAC (Index Data Contributor + Service Contributor) and AI4IA_SEARCH_ENDPOINT is emitted to the api.')
 param searchEnabled bool = false
 
@@ -1166,6 +1176,8 @@ module api 'modules/api.bicep' = {
     photoAvatarBlobContainer: data.outputs.photoAvatarBlobContainerName
     photoAvatarMaxPerUser: photoAvatarMaxPerUser
     photoAvatarMaxCreationsPerDay: photoAvatarMaxCreationsPerDay
+    photoAvatarLiveMaxMinutesPerSession: photoAvatarLiveMaxMinutesPerSession
+    photoAvatarLiveIdleTimeoutSeconds: photoAvatarLiveIdleTimeoutSeconds
     // Azure AI Search (for indexing/retrieval). The endpoint is emitted to the api
     // env only when the service is provisioned (searchEnabled); the api reaches it
     // via managed identity (no keys). Empty string when off -> env var not set.

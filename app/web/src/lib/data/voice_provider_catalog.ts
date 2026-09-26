@@ -235,6 +235,7 @@ export const voiceProviderCatalog = {
     "projectSuffix": "_PhotoAvatar",
     "baseModel": "vasa-1",
     "billingModelId": "photo-avatar-standard",
+    "liveBillingModelId": "photo-avatar-realtime-standard",
     "promptMaxChars": 1000,
     "attributes": {
       "gender": [

@@ -310,9 +310,13 @@ def test_packaged_pricing_rates_are_positive_and_sane() -> None:
         assert entry["perPageUsd"] > 0, (
             f"{name} has a non-positive per-page rate"
         )
+    rate_fields = {"avatar": "perAvatarUsd", "second": "perMinuteUsd"}
     for name, entry in raw["avatarModels"].items():
-        assert entry["basis"] == "avatar", f"{name} must use the per-avatar basis"
-        assert entry["perAvatarUsd"] > 0, f"{name} has a non-positive per-avatar rate"
+        assert entry["basis"] in rate_fields, f"{name} has an unknown avatar billing basis"
+        assert set(entry) == {"basis", rate_fields[entry["basis"]]}, (
+            f"{name} must carry exactly the rate its basis prices"
+        )
+        assert entry[rate_fields[entry["basis"]]] > 0, f"{name} has a non-positive avatar rate"
 
 
 def test_the_catalog_photo_avatar_meter_is_priced_and_sourced() -> None:
@@ -360,4 +364,64 @@ def test_avatar_estimates_are_unknown_rather_than_free_without_a_valid_rate() ->
         }), "avatar", 1),
     ):
         estimate = book.estimate_avatar(model, count=count)
+        assert estimate.known is False and estimate.micro_usd is None
+
+
+def test_the_catalog_live_avatar_meter_is_priced_per_second_and_sourced() -> None:
+    """Live avatar time is billed per second; its meter must not ship unpriced.
+
+    An unpriced live meter would record every session as cost-unknown and
+    refuse live avatars for anyone under a cost cap.
+    """
+    catalog = json.loads(
+        (Path(__file__).resolve().parents[3] / "infra" / "voice-providers.json").read_text(
+            encoding="utf-8"
+        )
+    )["photoAvatars"]
+    raw = json.loads(
+        (Path(__file__).resolve().parents[1] / "src" / "ai4ia_api" / "data" / "pricing.json")
+        .read_text(encoding="utf-8")
+    )
+    live = catalog["liveBillingModelId"]
+    assert live != catalog["billingModelId"]
+    assert raw["avatarModels"][live] == {"basis": "second", "perMinuteUsd": 0.6}
+    assert "billed per second" in raw["_avatarSource"]
+    book = load_pricing()
+    one_second = book.estimate_avatar_seconds(live, seconds=1)
+    assert one_second.known is True and one_second.micro_usd == 10_000
+    assert one_second.billing_unit == "second" and one_second.pricing_basis == "second"
+    minute = book.estimate_avatar_seconds(live, seconds=61)
+    assert minute.micro_usd == 610_000 and minute.billable_units == 61.0
+    assert minute.version == raw["version"]
+    # The live meter is not a per-avatar meter, and creation's is not per second.
+    assert book.estimate_avatar(live).known is False
+    assert book.estimate_avatar_seconds(catalog["billingModelId"], seconds=1).known is False
+
+
+def test_live_avatar_second_estimates_are_unknown_rather_than_free_without_a_valid_rate() -> None:
+    priced = PricingBook(
+        {}, currency="USD", version="v1",
+        avatar_rates={"live": {"basis": "second", "perMinuteUsd": 0.6}},
+    )
+    assert priced.estimate_avatar_seconds("live", seconds=90).micro_usd == 900_000
+    for book, model, seconds in (
+        (priced, "missing", 1),
+        (priced, "live", 0),
+        (priced, "live", -5),
+        (priced, "live", 1.5),
+        (priced, "live", True),
+        (PricingBook({}, currency="USD", version="v1", avatar_rates={
+            "live": {"basis": "avatar", "perMinuteUsd": 0.6},
+        }), "live", 1),
+        (PricingBook({}, currency="USD", version="v1", avatar_rates={
+            "live": {"basis": "second", "perMinuteUsd": 0},
+        }), "live", 1),
+        (PricingBook({}, currency="USD", version="v1", avatar_rates={
+            "live": {"basis": "second", "perMinuteUsd": "Infinity"},
+        }), "live", 1),
+        (PricingBook({}, currency="USD", version="v1", avatar_rates={
+            "live": {"basis": "second", "perAvatarUsd": 0.6},
+        }), "live", 1),
+    ):
+        estimate = book.estimate_avatar_seconds(model, seconds=seconds)  # type: ignore[arg-type]
         assert estimate.known is False and estimate.micro_usd is None

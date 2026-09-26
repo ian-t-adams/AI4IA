@@ -1460,6 +1460,58 @@ claim, default cutover or legacy removal. Follow the approved
 [activation/rollback procedure](docs/runbooks/feature-enablement.md#staged-ga-realtime).
 Issue #413 stays open for its remaining live/model/TTS acceptance criteria.
 
+## Live photo avatars on Speech Voice Live
+
+Live avatars reuse the relay → APIM Voice Live WebSocket path. They need no
+rule-1 exception. `output_protocol: websocket` is mandatory: never enable
+WebRTC, forward ICE/TURN credentials or SDP, or open a browser media plane without
+a new owner-approved exception.
+
+- **Selection.** Only `?avatar=<own 32-hex record id>` on the Speech provider. The
+  relay calls layer 1's `resolve_live_avatar` on every connection, before
+  admission or connect. Never cache a grant or add a parallel ownership,
+  readiness or policy check.
+- **Home region.** It must equal the managed model's region, so the session targets
+  the account that owns the avatar.
+- **Server-owned block.** The relay injects the avatar block itself, last in the
+  rewrite chain: `photo-avatar`, the catalog base model, the provider id,
+  `customized`, `websocket`. No client avatar field or provider id may reach it.
+- **Client events.** Client `session.avatar.*` events are refused on every
+  provider.
+- **Video.** `response.video.delta` is forwarded verbatim. Every upstream text
+  frame is bounded at 256 KiB before it is parsed, and an upstream binary frame ends
+  the avatar session. Video is never logged, receipted, parsed beyond its type, or
+  copied into telemetry.
+- **Provider id.** It is scrubbed from the `session.updated` echo, every other
+  frame, and upstream close reasons and error messages before they are forwarded,
+  inspected or logged. The completion log and event scrub it again as a backstop.
+  Evidence and usage carry only the
+  8-character record prefix (`resourceRef`); the receipt redactor would mask a
+  full id anyway.
+- **Admission and caps.**
+  - Live time is the `avatar_live` hard-quota surface (`avatar.use`), admitted
+    before the unchanged `realtime` admission.
+  - The per-send guard re-checks `avatar.use`, and the idle watchdog re-runs it
+    every 15 seconds so silence can't outlast a revocation.
+  - Avatar sessions bill while idle, so they are always capped by the smaller of
+    `realtime_max_session_seconds` and the live minutes setting, and they end at
+    the idle timeout. Microphone audio, video and the guard-exempt output stop
+    events (`OUTPUT_STOP_EVENT_TYPES`) are not activity.
+  - The countdown holds while the avatar speaks (`switch_to_speaking` until
+    `switch_to_idle`), for at most five minutes.
+- **Meter.** Server-measured from avatar confirmation to close, in whole seconds,
+  through the catalog's `liveBillingModelId` (`basis: second`,
+  `estimate_avatar_seconds`). An unconfirmed avatar records no row. An unknown
+  price refuses under layer 1's `live_cost_capped` rule, never free.
+- **Verification failure.** `avatar_verification_failed` becomes a stable client
+  error and calls `mark_live_avatar_verification_failed` once. Do not
+  auto-reconnect around the re-verification cooldown.
+- **Web.** Avatar mode plays no PCM, because the speech is inside the video. The
+  MediaSource player appends strictly in order through its bounded queue, and
+  fails the avatar rather than dropping a fragment. An unsupported browser stays
+  voice only before connecting. The `AI-generated` disclosure label stays visible
+  for the whole session.
+
 ## Group policy and publication source contract
 
 - `policy` is the shared default-off application restriction layer; only

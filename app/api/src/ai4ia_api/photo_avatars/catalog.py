@@ -58,6 +58,8 @@ class PhotoAvatarCatalog(_Frozen):
     projectSuffix: Literal["_PhotoAvatar"]
     baseModel: str = Field(pattern=r"^[a-z][a-z0-9.-]{1,31}$")
     billingModelId: str = Field(pattern=r"^[a-z][a-z0-9-]{1,62}$")
+    # The per-second price-book meter for live Voice Live sessions (Phase 2).
+    liveBillingModelId: str = Field(pattern=r"^[a-z][a-z0-9-]{1,62}$")
     promptMaxChars: int = Field(ge=1, le=4000)
     attributes: PhotoAvatarAttributeCatalog
     preview: PhotoAvatarPreviewCatalog
