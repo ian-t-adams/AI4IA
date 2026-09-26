@@ -272,7 +272,9 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
     def test_companion_console_identity_is_read_only_and_hub_scoped(self) -> None:
         _, by_type = self._companion()
         roles = by_type["Microsoft.Authorization/roleAssignments"]
-        scopes = {role["properties"]["roleDefinitionId"]: role["scope"] for role in roles}
+        # An assignment without an explicit scope lands on the resource group.
+        scopes = {role["properties"]["roleDefinitionId"]: role.get("scope", "<resource group>") for role in roles}
+        self.assertEqual(len(scopes), len(roles), "duplicate role definitions")
         module_vars = self.template["resources"]["companion"]["properties"]["template"]["variables"]
         self.assertEqual(module_vars["acrPullRoleId"], "7f951dda-4ed3-4680-a7ca-43fe172d538d")
         self.assertEqual(module_vars["eventHubsDataReceiverRoleId"], "a638d3c7-ab3a-418d-83e6-5f17a39d4fde")
