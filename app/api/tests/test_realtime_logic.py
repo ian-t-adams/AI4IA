@@ -1970,6 +1970,30 @@ def test_relay_scrubs_the_provider_id_from_close_reasons_and_errors(kind, with_a
 
 
 @pytest.mark.parametrize("with_avatar", [True, False])
+def test_relay_reads_protocol_error_metadata_only_from_the_scrubbed_frame(with_avatar):
+    # The completion log scrubs again as a backstop, so this checks the outcome
+    # itself: the relay must inspect the scrubbed frame, not the raw one.
+    error = json.dumps({"type": "error", "error": {
+        "type": "invalid_request_error", "code": "invalid_value",
+        "message": f"avatar {AVATAR_PROVIDER_ID} is not ready",
+    }})
+    outcome = asyncio.run(relay(
+        _RelayClient(),
+        _RelayUpstream([UpstreamMessage("text", text=error), UpstreamMessage("close", close_code=1000)]),
+        max_seconds=1, bridge=_relay_bridge(), avatar=_live_avatar() if with_avatar else None,
+    ))
+    protocol_error = outcome.metadata.protocol_error
+    assert protocol_error is not None and protocol_error.code == "invalid_value"
+    assert protocol_error.message is not None
+    if with_avatar:
+        assert AVATAR_PROVIDER_ID not in protocol_error.message
+        assert "[avatar]" in protocol_error.message
+    else:
+        # Control: outside avatar sessions the same message reaches the metadata.
+        assert AVATAR_PROVIDER_ID in protocol_error.message
+
+
+@pytest.mark.parametrize("with_avatar", [True, False])
 def test_completion_log_and_event_never_carry_the_provider_id_in_any_field(monkeypatch, with_avatar):
     from ai4ia_api.routers import realtime as realtime_router
 
