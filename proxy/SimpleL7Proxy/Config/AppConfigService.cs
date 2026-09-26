@@ -45,6 +45,11 @@ public class AppConfigService : BackgroundService
     private ProxyConfig _options = null!;
     public static ProxyConfig DEFAULT_OPTIONS { get; set; } = null!;
 
+    // AI4IA: default-deny policy over downloaded keys. Production always composes
+    // AppConfigKeyPolicy.Default; see AppConfigKeyPolicy for the reviewed keys.
+    private readonly IAppConfigKeyPolicy _keyPolicy;
+    internal IAppConfigKeyPolicy KeyPolicy => _keyPolicy;
+
     public String Status()
     {
         if (_lastRefreshTime == DateTime.MinValue)
@@ -68,6 +73,20 @@ public class AppConfigService : BackgroundService
         _labelFilter = string.IsNullOrEmpty(labelFilter) || labelFilter == "\\0" || labelFilter == "\0"
             ? null
             : labelFilter;
+        _keyPolicy = AppConfigKeyPolicy.Default;
+    }
+
+    // AI4IA: tests supply a client over a fake transport and a control policy.
+    internal AppConfigService(
+        ILogger<AppConfigService> logger,
+        ProxyConfig backendOptions,
+        DefaultCredential defaultCredential,
+        ConfigurationClient client,
+        IAppConfigKeyPolicy keyPolicy)
+        : this(logger, backendOptions, defaultCredential)
+    {
+        _cachedClient = client;
+        _keyPolicy = keyPolicy;
     }
 
     /// <summary>
@@ -162,6 +181,9 @@ public class AppConfigService : BackgroundService
         }
     }
 
+    // AI4IA: one refresh cycle exactly as the loop runs it, for tests.
+    internal Task RefreshNowAsync(CancellationToken ct) => ProcessRefreshAsync(ct);
+
     private async Task ProcessRefreshAsync(CancellationToken ct)
     {
         var sentinel = await ReadSentinelAsync(ct);
@@ -246,11 +268,22 @@ public class AppConfigService : BackgroundService
 
             var warm = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var cold = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var refused = new List<string>();
+            var refusedValues = new List<string>();
 
             var selector = new SettingSelector { KeyFilter = "*", LabelFilter = _labelFilter };
             foreach (var setting in client.GetConfigurationSettings(selector))
             {
                 var (key, value) = (setting.Key, setting.Value ?? "");
+
+                // AI4IA: default-deny. Anything but Warm:Sentinel and the reviewed request limits,
+                // with values in their reviewed ranges, keeps its current value.
+                var decision = _keyPolicy.Evaluate(key, value);
+                if (decision != AppConfigKeyDecision.Allowed)
+                {
+                    (decision == AppConfigKeyDecision.ValueOutOfRange ? refusedValues : refused).Add(key);
+                    continue;
+                }
 
                 if (key.Length < 6) continue;
 
@@ -271,6 +304,21 @@ public class AppConfigService : BackgroundService
                 }
 
                 target[resolvedKey] = value;
+            }
+
+            if (refused.Count > 0)
+            {
+                // Key names only: a refused value can be a credential.
+                _logger.LogWarning(
+                    "[CONFIGS] App Configuration key policy refused {Count} key(s); only Warm:Sentinel and the reviewed request limits apply: {Keys}",
+                    refused.Count, AppConfigKeyPolicy.DescribeKeys(refused));
+            }
+
+            if (refusedValues.Count > 0)
+            {
+                _logger.LogWarning(
+                    "[CONFIGS] App Configuration key policy refused {Count} value(s) outside the reviewed range; the current setting stays: {Keys}",
+                    refusedValues.Count, AppConfigKeyPolicy.DescribeKeys(refusedValues));
             }
             
 

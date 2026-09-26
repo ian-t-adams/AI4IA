@@ -28,6 +28,11 @@ CONFIG_FACTORY = (
 APP_CONFIG_SERVICE = (
     ROOT / "proxy" / "SimpleL7Proxy" / "Config" / "AppConfigService.cs"
 )
+APP_CONFIG_KEY_POLICY = (
+    ROOT / "proxy" / "SimpleL7Proxy" / "Config" / "AppConfigKeyPolicy.cs"
+)
+PROXY_CONFIG = ROOT / "proxy" / "SimpleL7Proxy" / "Config" / "ProxyConfig.cs"
+API_CONFIG = ROOT / "app" / "api" / "src" / "ai4ia_api" / "config.py"
 
 
 class ProxyTelemetryContracts(unittest.TestCase):
@@ -109,6 +114,113 @@ class ProxyRuntimeContracts(unittest.TestCase):
             dereference,
             "a transient App Configuration failure must return before result.Value",
         )
+
+
+class AppConfigurationKeyPolicyContracts(unittest.TestCase):
+    """App Configuration may set only settings that gateway.bicep does not author.
+
+    The proxy's behavior under the policy is tested in AI4IA.Proxy.Tests. This binds the
+    reviewed allowlist to the authored proxy environment, so a Bicep setting can never be
+    overridden from App Configuration, even when someone later authors a reviewed key. It
+    also binds the request-timeout floor to the API's own per-call waits.
+    """
+
+    @staticmethod
+    def _reviewed_key_paths() -> list[str]:
+        source = APP_CONFIG_KEY_POLICY.read_text(encoding="utf-8")
+        start = source.index("Reviewed =")
+        return re.findall(r'\(\s*"([^"]+)"\s*,', source[start : source.index("];", start)])
+
+    @staticmethod
+    def _policy_constant(name: str) -> int:
+        match = re.search(
+            rf"internal const int {name} = ([\d_]+);",
+            APP_CONFIG_KEY_POLICY.read_text(encoding="utf-8"),
+        )
+        if match is None:
+            raise AssertionError(f"AppConfigKeyPolicy.cs declares no {name}")
+        return int(match[1].replace("_", ""))
+
+    @staticmethod
+    def _config_names(key_path: str) -> set[str]:
+        match = re.search(
+            r'\[ConfigOption\("' + re.escape(key_path) + r'"(?P<rest>[^\]]*)\)\]\s*'
+            r"public\s+\S+\s+(?P<property>\w+)",
+            PROXY_CONFIG.read_text(encoding="utf-8"),
+        )
+        if match is None:
+            raise AssertionError(f"ProxyConfig.cs declares no [ConfigOption] for {key_path}")
+        explicit = re.search(r'ConfigName\s*=\s*"([^"]+)"', match["rest"])
+        return {match["property"]} | ({explicit[1]} if explicit else set())
+
+    @staticmethod
+    def _authored_proxy_environment() -> set[str]:
+        gateway = GATEWAY.read_text(encoding="utf-8")
+        start = gateway.index("// ---------------- SimpleL7Proxy Container App")
+        end = gateway.index("var proxySecrets", start)
+        return set(re.findall(r"name:\s*'([^']+)'", gateway[start:end]))
+
+    def test_no_bicep_authored_proxy_setting_is_app_configuration_writable(self) -> None:
+        key_paths = self._reviewed_key_paths()
+        self.assertEqual(
+            key_paths,
+            ["Sentinel", "Request:DefaultTimeout", "Request:DefaultTTLSecs"],
+        )
+        # The proxy reads its environment case-insensitively.
+        authored = {name.lower() for name in self._authored_proxy_environment()}
+        self.assertTrue(
+            {
+                "host1",
+                "host1-api-key",
+                "validateauthconfig",
+                "validateauthkey1",
+                "maxattempts",
+                "disallowedheaders",
+                "striprequestheaders",
+            }
+            <= authored,
+            f"the authored proxy environment was not found: {sorted(authored)}",
+        )
+        for key_path in key_paths:
+            names = {name.lower() for name in self._config_names(key_path)}
+            self.assertFalse(
+                names & authored,
+                f"{key_path} is authored in gateway.bicep, so App Configuration could override it",
+            )
+
+    def test_request_timeout_floor_covers_every_proxied_api_wait(self) -> None:
+        # The proxy gives each backend attempt at most this long to return response headers.
+        # The API waits for each proxied call with one of these per-call timeouts.
+        waits = {
+            name: float(value)
+            for name, value in re.findall(
+                r"^\s+(gateway_(?:\w+_)?timeout_seconds): float = ([\d.]+)\s*$",
+                API_CONFIG.read_text(encoding="utf-8"),
+                re.MULTILINE,
+            )
+        }
+        self.assertLessEqual(
+            {
+                "gateway_timeout_seconds",
+                "gateway_image_timeout_seconds",
+                "gateway_video_timeout_seconds",
+                "gateway_audio_timeout_seconds",
+            },
+            set(waits),
+            f"the API's gateway timeouts were not found: {sorted(waits)}",
+        )
+        self.assertGreaterEqual(
+            self._policy_constant("MinTimeoutMs"),
+            1000 * max(waits.values()),
+            "App Configuration could make the proxy abandon a call the API still waits for",
+        )
+        # Those defaults are the deployed values: no infra file sets one. The control shows the
+        # scan reads the API's authored environment, where such a name would appear.
+        authored = "\n".join(
+            path.read_text(encoding="utf-8") for path in sorted((ROOT / "infra").rglob("*.bicep"))
+        )
+        self.assertIn("'AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS'", authored)
+        self.assertNotRegex(authored, r"(?i)AI4IA_GATEWAY_\w*TIMEOUT")
 
 
 class ProxySupplyChainContracts(unittest.TestCase):
