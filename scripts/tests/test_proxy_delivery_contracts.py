@@ -121,6 +121,8 @@ class ProxySupplyChainContracts(unittest.TestCase):
         self.assertTrue(
             {
                 "SimpleL7Proxy/build.sh",
+                "SimpleL7Proxy/appconfig-start.sh",
+                "SimpleL7Proxy/update-packages.sh",
                 "SimpleL7Proxy/Dockerfile",
                 "SimpleL7Proxy/sample-deployment.yaml",
                 "SimpleL7Proxy/scratch",

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -49,7 +50,10 @@ public sealed class NoReplayWorkerTests
             await using var second = new WireServer(_ => Task.FromResult(new WireReply(200)));
             await using var first = new WireServer(_ => Task.FromResult(new WireReply(
                 status, Location: second.Url + Path)));
-            await using var fixture = await WorkerFixture.Create([first, second], bounded, shared: shared);
+            // Upstream now treats 404/412 as acceptable by default; clear that list so
+            // every row still proves ordinary failover happens and bounded work stops.
+            await using var fixture = await WorkerFixture.Create(
+                [first, second], bounded, shared: shared, acceptableStatusCodes: [200]);
             using var result = await fixture.Send();
             Assert.AreEqual(bounded ? status : 200, (int)result.StatusCode,
                 System.Text.Json.JsonSerializer.Serialize(fixture.Request.incompleteRequests));
@@ -152,7 +156,7 @@ public sealed class NoReplayWorkerTests
             request.setBody(Encoding.UTF8.GetBytes("""{"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"web_search"}]}"""));
         if (defect == "multimodal")
             request.setBody(Encoding.UTF8.GetBytes("""{"messages":[{"role":"user","content":[{"type":"image","source":{"url":"https://example.test"}}]}]}"""));
-        request.Headers[NoReplayAttempt.RequestHeader] = Header(request.BodyBytes ?? Body);
+        request.Headers[NoReplayAttempt.RequestHeader] = Header(request.BodyBytes?.ToArray() ?? Body);
         if (defect == "version")
             request.Headers[NoReplayAttempt.RequestHeader] = "unknown.1";
         if (defect == "hash")
@@ -276,6 +280,99 @@ public sealed class NoReplayWorkerTests
         }
     }
 
+    [DataTestMethod]
+    [DataRow(404)]
+    [DataRow(412)]
+    public async Task UpstreamAcceptableStatusesReturnTheBackendResponseWithoutFailover(int status)
+    {
+        foreach (bool upstreamDefaults in new[] { true, false })
+        {
+            await using var second = new WireServer(_ => Task.FromResult(new WireReply(200)));
+            await using var first = new WireServer(_ => Task.FromResult(new WireReply(status)));
+            await using var fixture = await WorkerFixture.Create(
+                [first, second], false, acceptableStatusCodes: upstreamDefaults ? null : [200]);
+            using var result = await fixture.Send();
+            // The default list returns the backend's own response; the control proves the
+            // same fixture fails over once the status is no longer acceptable.
+            Assert.AreEqual(upstreamDefaults ? status : 200, (int)result.StatusCode);
+            Assert.AreEqual(1, first.Requests.Count);
+            Assert.AreEqual(upstreamDefaults ? 0 : 1, second.Requests.Count);
+        }
+    }
+
+    [TestMethod]
+    public async Task OpenCircuitRequeuesOrdinaryWorkButRefusesTheBoundedAttempt()
+    {
+        foreach (bool bounded in new[] { false, true })
+        {
+            await using var server = new WireServer(_ => Task.FromResult(new WireReply(200)));
+            await using var fixture = await WorkerFixture.Create([server], bounded, circuit: () => new OpenCircuit());
+            if (bounded)
+            {
+                // No requeue authority: refused as an ordinary proxy error, never a requeue.
+                var error = await Assert.ThrowsExceptionAsync<ProxyErrorException>(() => fixture.Send());
+                StringAssert.Contains(error.Message, "cannot be persisted or requeued");
+                Assert.IsFalse(fixture.Request.NoReplay!.Claimed);
+            }
+            else
+            {
+                using var requeue = await Assert.ThrowsExceptionAsync<S7PRequeueException>(() => fixture.Send());
+                Assert.IsTrue(requeue.RetryAfter > 0);
+            }
+            Assert.AreEqual(0, server.Requests.Count);
+            Assert.AreEqual(0, fixture.Queue.thrdSafeCount);
+        }
+        // Control: the same bounded request sends once when the circuit is closed.
+        await using var closed = new WireServer(_ => Task.FromResult(new WireReply(200)));
+        await using var control = await WorkerFixture.Create([closed], true);
+        using var sent = await control.Send();
+        Assert.AreEqual(HttpStatusCode.OK, sent.StatusCode);
+        Assert.AreEqual(1, closed.Requests.Count);
+    }
+
+    [DataTestMethod]
+    [DataRow("S7P-Model-Override", "fixture-other")]
+    [DataRow("S7PDEBUGBODY", "true")]
+    [DataRow("S7P-Iterator", "MultiPass")]
+    public async Task BoundedRequestRefusesUpstreamCallerControls(string header, string value)
+    {
+        await using var server = new WireServer(_ => Task.FromResult(new WireReply(200)));
+        await using var fixture = await WorkerFixture.Create([server], false, versioned: true);
+        fixture.Request.Headers[NoReplayAttempt.RequestHeader] = Header(Body);
+        fixture.Request.Headers[header] = value;
+        var error = Assert.ThrowsException<ProxyErrorException>(() =>
+            NoReplayAttempt.BindAuthenticated(fixture.Request, true, fixture.Options));
+        StringAssert.Contains(error.Message, "Unsupported bounded gateway request");
+        Assert.AreEqual(0, server.Requests.Count);
+        // Control: the identical binding without the caller control is accepted and sends.
+        await using var control = await WorkerFixture.Create([server], false, versioned: true);
+        control.Request.Headers[NoReplayAttempt.RequestHeader] = Header(Body);
+        NoReplayAttempt.BindAuthenticated(control.Request, true, control.Options);
+        using var sent = await control.Send();
+        Assert.AreEqual(HttpStatusCode.OK, sent.StatusCode);
+        Assert.AreEqual(1, server.Requests.Count);
+    }
+
+    [TestMethod]
+    public async Task ModelOverrideHeaderRewritesTheForwardedBodyUnlessItIsStripped()
+    {
+        foreach (bool present in new[] { true, false })
+        {
+            await using var server = new WireServer(_ => Task.FromResult(new WireReply(200)));
+            await using var fixture = await WorkerFixture.Create([server], false);
+            if (present)
+                fixture.Request.Headers["S7P-Model-Override"] = "fixture-override";
+            using var result = await fixture.Send();
+            var sent = server.Requests.Single();
+            // The control proves the upstream header rewrites the admitted model; the gateway's
+            // DisallowedHeaders policy therefore removes it before the worker reads it.
+            Assert.AreEqual(present, Encoding.UTF8.GetString(sent.Body).Contains("fixture-override"));
+            Assert.AreEqual(present ? "fixture-override" : "fixture-text", sent.Headers["x-LLMModel"]);
+            if (!present)
+                CollectionAssert.AreEqual(Body, sent.Body);
+        }
+    }
+
     internal static string Header(byte[] body) =>
         $"{NoReplayAttempt.Version}.{new string('a', 32)}.{Convert.ToHexStringLower(SHA256.HashData(body))}";
 
@@ -288,17 +385,25 @@ public sealed class NoReplayWorkerTests
         Assert.AreEqual(expected, request.Headers[NoReplayAttempt.ProofHeader]);
     }
 
-    private static void SetCircuit(HostConfig config) =>
+    private static void SetCircuit(HostConfig config, ICircuitBreaker? circuit = null) =>
         typeof(HostConfig).GetField("_circuitBreaker", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(config, new HealthyCircuit());
+            .SetValue(config, circuit ?? new HealthyCircuit());
 
-    private sealed class HealthyCircuit : ICircuitBreaker
+    private class HealthyCircuit : ICircuitBreaker
     {
         public string ID { get; set; } = "fixture";
-        public void TrackStatus(int code, bool wasFailure, string state) { }
-        public Task<bool> CheckFailedStatusAsync(bool nosleep = false) => Task.FromResult(false);
+        public bool TrackRetryAfter { get; set; }
+        public void TrackStatus(int code, bool wasFailure, string state, HttpResponseHeaders? responseHeaders = null) { }
+        public int GetBackpressureDelay() => 0;
+        public virtual int GetMsToNextRetry() => 0;
         public void Deregister() { }
         public string GetCircuitBreakerStatusString() => "closed";
+    }
+
+    // Every matching host blocked: the upstream iterator requeues before any attempt.
+    private sealed class OpenCircuit : HealthyCircuit
+    {
+        public override int GetMsToNextRetry() => 60_000;
     }
 
     internal sealed class FixtureHost(HostConfig config) : BaseHostHealth(config, NullLogger.Instance)
@@ -316,7 +421,7 @@ public sealed class NoReplayWorkerTests
         public List<BaseHostHealth> GetCatchAllHosts() => hosts.Where(h => h.Config.PartialPath == "/").ToList();
         public int ActiveHostCount() => hosts.Count;
         public string HostStatus => "healthy";
-        public Task<bool> CheckFailedStatusAsync(bool nosleep = false) => Task.FromResult(false);
+        public int EMSGetBackpressureDelay() => 0;
         public Task WaitForStartupAsync() => Task.CompletedTask;
         public Task Stop() => Task.CompletedTask;
     }
@@ -362,7 +467,8 @@ public sealed class NoReplayWorkerTests
         internal static async Task<WorkerFixture> Create(
             WireServer[] servers, bool bounded, int timeout = 3000, bool shared = true,
             CancellationToken cancellation = default, bool? versioned = null,
-            bool legacyHost = false, bool staged = true)
+            bool legacyHost = false, bool staged = true, int[]? acceptableStatusCodes = null,
+            Func<ICircuitBreaker>? circuit = null)
         {
             var f = new WorkerFixture();
             f.Options.Client = new HttpClient(new SocketsHttpHandler { UseProxy = false });
@@ -372,6 +478,8 @@ public sealed class NoReplayWorkerTests
             f.Options.UseProfiles = false;
             f.Options.Timeout = timeout;
             f.Options.TrackWorkers = false;
+            if (acceptableStatusCodes is not null)
+                f.Options.AcceptableStatusCodes = acceptableStatusCodes;
             typeof(HealthCheckService).GetField("_options", BindingFlags.NonPublic | BindingFlags.Static)!
                 .SetValue(null, f.Options);
             f.Options.StripRequestHeaders = ["S7P-KEY"];
@@ -382,12 +490,12 @@ public sealed class NoReplayWorkerTests
                     ? $"path={NoReplayAttempt.RoutePrefix};stripprefix=false;retryafter=false;api-key={Key}"
                     : $"retryafter=true;api-key={LegacyKey}";
                 var config = new HostConfig($"host={server.Url};mode=apim;api-key-header=Ocp-Apim-Subscription-Key;{routing}");
-                SetCircuit(config);
+                SetCircuit(config, circuit?.Invoke());
                 f.Hosts.Add(new FixtureHost(config));
                 if (legacyHost && route && staged)
                 {
                     var legacy = new HostConfig($"host={server.Url};mode=apim;api-key-header=Ocp-Apim-Subscription-Key;api-key={LegacyKey}");
-                    SetCircuit(legacy);
+                    SetCircuit(legacy, circuit?.Invoke());
                     f.Hosts.Add(new FixtureHost(legacy));
                 }
             }

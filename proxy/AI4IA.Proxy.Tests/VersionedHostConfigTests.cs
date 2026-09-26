@@ -125,6 +125,8 @@ public sealed class VersionedHostConfigTests
         public HostCollectionSnapshot Current { get; private set; } = HostCollectionSnapshot.Empty;
         public void StageHost(HostConfig config) => _configs.Add(config);
         public void Activate() => Current = HostCollectionSnapshot.Build(_configs, NullLogger.Instance);
+        public void ReplaceConfiguration(IEnumerable<HostConfig> configs, IEnumerable<PathRouteDefinition> routes) =>
+            Current = HostCollectionSnapshot.Build(configs, routes, NullLogger.Instance);
         public void LoadFromConfig(IEnumerable<HostConfig> configs) => throw new AssertFailedException("Unexpected reload.");
         public BaseHostHealth AddHost(HostConfig config) => throw new AssertFailedException("Unexpected host add.");
         public bool RemoveHost(Guid id) => throw new AssertFailedException("Unexpected host removal.");

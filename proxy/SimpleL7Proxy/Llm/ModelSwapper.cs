@@ -1,0 +1,258 @@
+using System.Buffers;
+using System.Text;
+using System.Text.Json;
+
+namespace SimpleL7Proxy.Llm;
+
+public class ModelSwapper
+{
+    private readonly ILogger<ModelSwapper> _logger;
+
+    public ModelSwapper(ILogger<ModelSwapper> logger)
+    {
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Walks a JSON request body to capture the top-level "model" property and count whitespace-delimited
+    /// words in its other string values. When <paramref name="modelOverride"/> is provided it wins over the
+    /// body value, and a second pass rewrites the body so the backend receives the overridden model (adding
+    /// it when absent). The <see cref="Utf8JsonWriter"/> is only allocated when an override is present, so
+    /// the common detect-only path stays allocation-free. On malformed JSON, sets a sentinel value only
+    /// when no model has been captured yet.
+    /// </summary>
+    /// <returns>The request body bytes, rewritten when an override was applied; otherwise the original bytes.</returns>
+    public static ReadOnlyMemory<byte> ValidateModel(RequestData request, ReadOnlyMemory<byte> bodyBytes, string? modelOverride = null)
+    {
+        bool hasOverride = !string.IsNullOrWhiteSpace(modelOverride);
+        request.WordCount = 0;
+        System.Buffers.ArrayBufferWriter<byte>? buffer = null;
+        Utf8JsonWriter? writer = null;
+
+        try
+        {
+            var reader = new Utf8JsonReader(bodyBytes.Span, isFinalBlock: true, state: default);
+
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+            {
+                return bodyBytes;
+            }
+
+            string? sourceModel = null;
+            int wordCount = 0;
+            while (reader.Read() && !(reader.TokenType == JsonTokenType.EndObject && reader.CurrentDepth == 0))
+            {
+                if (reader.CurrentDepth == 1
+                    && reader.TokenType == JsonTokenType.PropertyName
+                    && reader.ValueTextEquals("model"u8))
+                {
+                    if (reader.Read())
+                    {
+                        if (reader.TokenType == JsonTokenType.String && sourceModel == null)
+                        {
+                            sourceModel = reader.GetString();
+                            if (!hasOverride && !string.IsNullOrWhiteSpace(sourceModel))
+                            {
+                                request.Model = sourceModel;
+                            }
+                        }
+
+                        reader.Skip();
+                    }
+
+                    continue;
+                }
+
+                if (reader.TokenType == JsonTokenType.String)
+                {
+                    wordCount += CountWords(ref reader);
+                }
+            }
+
+            request.WordCount = wordCount;
+
+            if (!hasOverride)
+            {
+                return bodyBytes;
+            }
+
+            request.Model = modelOverride!;
+            reader = new Utf8JsonReader(bodyBytes.Span, isFinalBlock: true, state: default);
+            reader.Read();
+
+            buffer = new System.Buffers.ArrayBufferWriter<byte>(bodyBytes.Length + modelOverride!.Length + 16);
+            writer = new Utf8JsonWriter(buffer, new JsonWriterOptions
+            {
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            });
+            writer.WriteStartObject();
+
+            var (fieldsToRemove, fieldsToRename) = hasOverride && !string.IsNullOrWhiteSpace(sourceModel)
+                ? ModelMap.Get(sourceModel, modelOverride!)
+                : (FieldRemovalMap.Empty, FieldRenameMap.Empty);
+
+            bool handledModel = false;
+            while (reader.Read() && !(reader.TokenType == JsonTokenType.EndObject && reader.CurrentDepth == 0))
+            {
+                if (reader.CurrentDepth == 1 && reader.TokenType == JsonTokenType.PropertyName)
+                {
+                    if (reader.ValueTextEquals("model"u8))
+                    {
+                        if (writer != null)
+                        {
+                            writer.WriteString("model", modelOverride);
+                            handledModel = true;
+                            reader.Read();
+                            reader.Skip();
+                            continue;
+                        }
+
+                        if (reader.Read() && reader.TokenType == JsonTokenType.String)
+                        {
+                            var model = reader.GetString();
+                            if (!string.IsNullOrWhiteSpace(model))
+                            {
+                                request.Model = model;
+                            }
+                        }
+                        break;
+                    }
+
+                    if (writer != null)
+                    {
+                        string propertyName = reader.GetString()!;
+                        if (fieldsToRemove.Contains(propertyName))
+                        {
+                            reader.Read();
+                            reader.Skip();
+                            continue;
+                        }
+
+                        writer.WritePropertyName(fieldsToRename.GetValueOrDefault(propertyName, propertyName));
+                        continue;
+                    }
+
+                    reader.Read();
+                    reader.Skip();
+                    continue;
+                }
+
+                if (writer != null)
+                {
+                    switch (reader.TokenType)
+                    {
+                        case JsonTokenType.StartObject: writer.WriteStartObject(); break;
+                        case JsonTokenType.EndObject: writer.WriteEndObject(); break;
+                        case JsonTokenType.StartArray: writer.WriteStartArray(); break;
+                        case JsonTokenType.EndArray: writer.WriteEndArray(); break;
+                        case JsonTokenType.PropertyName: writer.WritePropertyName(reader.GetString()!); break;
+                        case JsonTokenType.String: writer.WriteStringValue(reader.GetString()); break;
+                        case JsonTokenType.Number: writer.WriteRawValue(reader.ValueSpan, skipInputValidation: true); break;
+                        case JsonTokenType.True: writer.WriteBooleanValue(true); break;
+                        case JsonTokenType.False: writer.WriteBooleanValue(false); break;
+                        case JsonTokenType.Null: writer.WriteNullValue(); break;
+                    }
+                }
+            }
+
+            if (writer != null)
+            {
+                if (!handledModel)
+                {
+                    writer.WriteString("model", modelOverride);
+                }
+
+                writer.WriteEndObject();
+                writer.Flush();
+
+                var rewritten = buffer!.WrittenMemory;
+                request.setBody(rewritten);
+                return rewritten;
+            }
+        }
+        catch (JsonException)
+        {
+            if (!hasOverride && string.IsNullOrEmpty(request.Model))
+            {
+                request.Model = "Error parsing model";
+            }
+        }
+        finally
+        {
+            writer?.Dispose();
+        }
+
+        return bodyBytes;
+    }
+
+    private static int CountWords(ref Utf8JsonReader reader)
+    {
+        if (!reader.ValueIsEscaped)
+        {
+            return CountWords(reader.ValueSpan);
+        }
+
+        int maximumLength = reader.ValueSpan.Length;
+        if (maximumLength <= 256)
+        {
+            Span<byte> unescaped = stackalloc byte[maximumLength];
+            int bytesWritten = reader.CopyString(unescaped);
+            return CountWords(unescaped[..bytesWritten]);
+        }
+
+        byte[] rentedBuffer = ArrayPool<byte>.Shared.Rent(maximumLength);
+        try
+        {
+            int bytesWritten = reader.CopyString(rentedBuffer);
+            return CountWords(rentedBuffer.AsSpan(0, bytesWritten));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rentedBuffer);
+        }
+    }
+
+    private static int CountWords(ReadOnlySpan<byte> utf8Text)
+    {
+        int wordCount = 0;
+        bool inWord = false;
+        int offset = 0;
+
+        while (offset < utf8Text.Length)
+        {
+            byte current = utf8Text[offset];
+            bool isWhiteSpace;
+            int bytesConsumed;
+
+            if (current <= 0x7F)
+            {
+                isWhiteSpace = current is 0x09 or 0x0A or 0x0B or 0x0C or 0x0D or 0x20;
+                bytesConsumed = 1;
+            }
+            else if (Rune.DecodeFromUtf8(utf8Text[offset..], out Rune rune, out bytesConsumed) == OperationStatus.Done)
+            {
+                isWhiteSpace = Rune.IsWhiteSpace(rune);
+            }
+            else
+            {
+                isWhiteSpace = false;
+                bytesConsumed = 1;
+            }
+
+            if (isWhiteSpace)
+            {
+                inWord = false;
+            }
+            else if (!inWord)
+            {
+                wordCount++;
+                inWord = true;
+            }
+
+            offset += bytesConsumed;
+        }
+
+        return wordCount;
+    }
+
+}

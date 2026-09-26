@@ -172,6 +172,7 @@ public class AppConfigService : BackgroundService
             _lastSentinel ?? "(none)", sentinel ?? "(none)");
 
         var result = await Task.Run(DownloadConfig, ct);
+
         if (result == null)
             return;
 

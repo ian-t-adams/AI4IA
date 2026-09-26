@@ -17,6 +17,8 @@ public sealed class NoReplayAttempt
     public const string ProofHeader = "x-ai4ia-proxy-attempt";
     public const string AckHeader = "x-ai4ia-attempt-ack";
     public const int MaxBodyBytes = 1024 * 1024;
+    // Upstream caller controls that rewrite the body/model, log the body, or change iteration.
+    internal static readonly string[] UnsupportedControlHeaders = ["S7P-Model-Override", "S7PDEBUGBODY", "S7P-Iterator"];
     private readonly string _nonce;
     private readonly string _bodyHash;
     private readonly string _ingressPath;
@@ -60,7 +62,8 @@ public sealed class NoReplayAttempt
         ValidateState(request);
         if (request.Headers[options.AsyncClientRequestHeader] is not null ||
             request.Headers["S7PType"] is not null || request.Headers["Guid"] is not null ||
-            request.Headers["S7PDEBUG"] is not null || options.IgnoreSSLCert)
+            request.Headers["S7PDEBUG"] is not null || UnsupportedControlHeaders.Any(h => request.Headers[h] is not null) ||
+            options.IgnoreSSLCert)
             throw Refused("Unsupported bounded gateway request.");
         // Never forward an ingress claim as a proxy attestation.
         request.Headers.Remove(RequestHeader);
@@ -89,12 +92,12 @@ public sealed class NoReplayAttempt
             throw Refused("Gateway attempt cannot be persisted or requeued.");
     }
 
-    public void Claim(RequestData request, HttpRequestMessage outgoing, byte[] body, HostConfig host)
+    public void Claim(RequestData request, HttpRequestMessage outgoing, ReadOnlyMemory<byte> body, HostConfig host)
     {
         ValidateState(request);
         if (request.Path != _ingressPath || request.Method != "POST" || !IsExactOperation(request.Path) ||
             body.Length > MaxBodyBytes ||
-            Convert.ToHexStringLower(SHA256.HashData(body)) != _bodyHash ||
+            Convert.ToHexStringLower(SHA256.HashData(body.Span)) != _bodyHash ||
             host.DirectMode || host.AuthMode != AuthModeEnum.ApiKey ||
             !string.Equals(host.ApiKeyHeader, "Ocp-Apim-Subscription-Key", StringComparison.OrdinalIgnoreCase) ||
             string.IsNullOrEmpty(host.ApiKey) || outgoing.RequestUri is null ||
@@ -146,7 +149,7 @@ public sealed class NoReplayAttempt
         DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact,
     };
 
-    private static void ValidatePayload(byte[] body, RequestData request)
+    private static void ValidatePayload(ReadOnlyMemory<byte> body, RequestData request)
     {
         try
         {

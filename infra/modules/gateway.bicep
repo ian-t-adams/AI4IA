@@ -912,10 +912,13 @@ resource sharedApimSpeechVoiceLiveFoundryUser 'Microsoft.Authorization/roleAssig
 }
 
 // ---------------- SimpleL7Proxy Container App ----------------
+// retryafter=false on every host keeps one tracked 5xx that carries APIM's
+// retry-after-ms from blocking the single catch-all host, and with it every model,
+// until that deadline. The flag was inert before the b0066b0e refresh.
 var hostEnv = concat([
   {
     name: 'Host1'
-    value: 'host=${sharedApimGatewayUrl};mode=apim;probe=/openai/status;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=true'
+    value: 'host=${sharedApimGatewayUrl};mode=apim;probe=/openai/status;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=false'
   }
   {
     name: 'Host1-api-key'
@@ -965,6 +968,15 @@ var staticEnv = [
     value: string([
       'backendLog'
       'X-Policy-LastError'
+    ])
+  }
+  // Removed after authentication and before the worker reads them: a caller must not
+  // rewrite the admitted model or make the proxy log the request body.
+  {
+    name: 'DisallowedHeaders'
+    value: string([
+      'S7P-Model-Override'
+      'S7PDEBUGBODY'
     ])
   }
   { name: 'LogAllRequestHeaders', value: 'false' }
