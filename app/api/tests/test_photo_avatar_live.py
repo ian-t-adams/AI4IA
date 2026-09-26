@@ -371,6 +371,27 @@ async def test_the_app_state_entry_points_report_a_disabled_feature():
         await live.resolve_live_avatar(off, user, RECORD_ID)
 
 
+async def test_malformed_ids_never_reach_the_store():
+    """Cosmos rejects some id characters with an error, not a 404; shape-check first."""
+    rig = Rig()
+    await rig.seed()
+    seen: list[str] = []
+    stored_get = rig.store.get
+
+    async def spying_get(owner, record_id):
+        seen.append(record_id)
+        return await stored_get(owner, record_id)
+
+    rig.store.get = spying_get  # type: ignore[method-assign]
+    for bad in ("not-a-record-id", "a/b", "?#", RECORD_ID.upper(), PROVIDER_ID, ""):
+        assert (await refusal(rig, person("alice"), bad)).code == "not_found"
+        assert await rig.service.mark_live_avatar_verification_failed(person("alice"), bad) is False
+    assert seen == []
+    # Control: a well-formed id is looked up.
+    await rig.service.resolve_live_avatar(person("alice"), RECORD_ID)
+    assert seen == [RECORD_ID]
+
+
 def test_error_codes_are_the_published_set():
     assert LIVE_AVATAR_ERROR_CODES == {
         "not_found", "avatar_not_ready", "avatar_needs_reverification", "avatar_home_changed",
