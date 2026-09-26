@@ -2022,7 +2022,7 @@ assertion is short-lived. The model-deployment and Content Understanding gates a
 App Configuration was the only data plane the CLI was asked for. Once a slow
 provision pushed that first request past the assertion's lifetime, every retry
 failed the same way. In the failed release the first request came about
-14.5 minutes after login; the previous release passed after about 5.5 minutes,
+14.4 minutes after login; the previous release passed after about 5.5 minutes,
 which is why the path looked healthy.
 
 Fix — the gate now mints a token with
@@ -2050,6 +2050,61 @@ fails:
 The gate reports only an attempt count on purpose. It never prints the token, the
 `Authorization` header, a response body or exception text, so the sign-in log is
 where the cause shows up.
+
+#### The same expiry later in the job: `Preflight the post-deploy canary token` fails
+
+Symptom — provisioning and every postprovision gate pass, including the sentinel,
+but **Preflight the post-deploy canary token** fails with its error
+`The deploy identity could not obtain an access token for the API audience`,
+although nothing about the API app registration changed. Nothing rolls back,
+because the preflight runs before any revision changes.
+
+Cause — the same one-time assertion. Both canary token steps asked the Azure CLI
+for a token for the API audience, a resource it had not cached. These are the
+Azure CLI's token requests for a new resource on the deploy runs, in minutes after
+the job's single `azure/login`:
+
+| Minutes after login | Request | Result |
+|---|---|---|
+| +7.7 | Canary preflight (previous run) | Issued |
+| +8.6 | Canary token (previous run) | Issued |
+| +8.6 | `az acr login` in the image build | Issued |
+| +11.1 | Canary preflight | `AADSTS700024` |
+| +14.4 | App Configuration sentinel (the failure above) | `AADSTS700024` |
+
+So the CLI's assertion lasts about 10 minutes. After that, every CLI token for a
+resource it has not cached fails. Azure Resource Manager calls keep working only
+because that token was cached at login, and it lasts about 60 to 90 minutes.
+
+Fix — two changes in `deploy.yml`:
+
+1. **Refresh the Azure CLI login after provisioning** runs directly after
+   **Provision infrastructure**. It is the same pinned `azure/login` step, with the
+   same identity and inputs, so it adds no permission. It restarts the 10-minute
+   window before the legacy-role check and the image build's `az acr login`. It has
+   no `if:`, so it also runs when a manual run skips provisioning, and it never runs
+   after a failed step.
+2. Both canary token steps ask `azd auth token --scope "${AI4IA_ENTRA_AUDIENCE}/.default"`
+   first, and use the Azure CLI only when azd returns no token. That is the scope
+   the CLI derives from `--resource`. Only a single line without whitespace counts
+   as a token. The error messages, the `::add-mask::` handling and the rollback
+   exclusions are unchanged.
+
+The refresh restarts the window; it does not remove it. A new step, hook or script
+that needs a token for a resource the CLI has not cached must use `azd auth token`
+the same way, as the postprovision helpers and both canary token steps do.
+
+If the preflight still fails, read the API-audience token requests in the deploy
+identity's sign-in log:
+
+- `AADSTS700024` means the request came from the Azure CLI fallback, so
+  `azd auth token` failed first. Confirm the job still runs
+  `azd auth login --federated-credential-provider github` with `id-token: write`.
+- Any other failure is the grant itself. The API app registration needs a service
+  principal in this tenant, and an app role for the deploy identity if the app
+  requires assignment.
+
+Then rerun the workflow as above.
 
 ## Switching the search index tenancy model
 

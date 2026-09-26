@@ -747,6 +747,27 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
         run: azd provision --no-prompt --no-state
 
+      # `azure/login` hands the Azure CLI one GitHub OIDC assertion, and the CLI
+      # presents it again whenever it needs a token for a resource it has not
+      # cached. Entra stops accepting that assertion about 10 minutes after login:
+      # on the deploy runs, new-resource CLI tokens worked at +8.6 minutes and
+      # failed with AADSTS700024 at +11.1 and +14.4. Provisioning alone can take
+      # longer than that, so log the CLI in again before any later step can need
+      # a new token (the legacy-role check, the image build's `az acr login`).
+      # This restarts the window rather than removing it, which is why the canary
+      # token steps below prefer azd (docs/runbooks/deployment.md section 7.17).
+      #
+      # Same pinned action, identity and inputs as the first login; no new
+      # permission. No `if:` on purpose: it also runs on a manual run that skipped
+      # provisioning, which still builds images before the canary, but never after
+      # a failed step.
+      - name: Refresh the Azure CLI login after provisioning
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
       # Preserve the endpoint produced by THIS successful provision for the
       # workflow_run consumer. A GitHub variable can fall back across scopes and
       # therefore cannot prove which deployment it names.
@@ -1115,7 +1136,27 @@ jobs:
             echo "::error::AI4IA_ENTRA_AUDIENCE is empty, so there is no API audience to request a token for and the post-deploy canary cannot run. A deploy that silently skips its own end-to-end proof is the failure mode this gate exists to remove. Set the variable (docs/runbooks/greenfield-standup.md section 4), or set AI4IA_DEPLOY_VERIFY_CANARY=false to skip the canary deliberately and visibly."
             exit 1
           fi
-          if ! az account get-access-token --resource "$AI4IA_ENTRA_AUDIENCE" --query accessToken -o tsv >/dev/null 2>&1; then
+          # azd first: its GitHub federated credential fetches a new OIDC
+          # assertion for every token. The Azure CLI still presents the one it got
+          # at login, which Entra rejects after about 10 minutes (AADSTS700024),
+          # so it is only the fallback. Both request the same scope, because az
+          # turns `--resource X` into `X/.default`. Only one whitespace-free line
+          # counts as a token. Keep this function identical in the token step.
+          api_token() {
+            local token
+            if token="$(azd auth token --scope "${AI4IA_ENTRA_AUDIENCE}/.default" 2>/dev/null)" &&
+              [[ "$token" =~ ^[^[:space:]]+$ ]]; then
+              printf '%s' "$token"
+              return 0
+            fi
+            if token="$(az account get-access-token --resource "$AI4IA_ENTRA_AUDIENCE" --query accessToken -o tsv 2>/dev/null)" &&
+              [[ "$token" =~ ^[^[:space:]]+$ ]]; then
+              printf '%s' "$token"
+              return 0
+            fi
+            return 1
+          }
+          if ! api_token >/dev/null; then
             echo "::error::The deploy identity could not obtain an access token for the API audience in AI4IA_ENTRA_AUDIENCE, so the post-deploy canary could not run. The API app registration needs a service principal in this tenant (scripts/provision-entra-apps.ps1 runs 'az ad sp create'), and if that app requires assignment, the deploy identity needs an app role on it. Fix the grant, or set AI4IA_DEPLOY_VERIFY_CANARY=false to ship without end-to-end proof."
             exit 1
           fi
@@ -1176,9 +1217,26 @@ jobs:
             echo "Canary disabled; no token needed."
             exit 0
           fi
+          # The same acquisition as the preflight, and it matters more here: this
+          # step runs after the image build and rollout, long after the Azure CLI's
+          # login-time assertion has expired. Keep this function identical.
+          api_token() {
+            local token
+            if token="$(azd auth token --scope "${AI4IA_ENTRA_AUDIENCE}/.default" 2>/dev/null)" &&
+              [[ "$token" =~ ^[^[:space:]]+$ ]]; then
+              printf '%s' "$token"
+              return 0
+            fi
+            if token="$(az account get-access-token --resource "$AI4IA_ENTRA_AUDIENCE" --query accessToken -o tsv 2>/dev/null)" &&
+              [[ "$token" =~ ^[^[:space:]]+$ ]]; then
+              printf '%s' "$token"
+              return 0
+            fi
+            return 1
+          }
           token=""
           for _ in 1 2 3; do
-            if token="$(az account get-access-token --resource "$AI4IA_ENTRA_AUDIENCE" --query accessToken -o tsv 2>/dev/null)" && [ -n "$token" ]; then
+            if token="$(api_token)"; then
               break
             fi
             token=""

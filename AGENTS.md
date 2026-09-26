@@ -545,6 +545,16 @@ reconciliation after application rollback. Keep the supported `--no-state`
 option, not state-file deletion or an unsupported `--force` substitute. The
 explicit manual `provision=false` opt-out remains unchanged.
 
+The job's Azure CLI holds one GitHub OIDC assertion from `azure/login`, and Entra
+rejects it about 10 minutes later (`AADSTS700024`). From then on the CLI can use
+only tokens it already cached, such as ARM. `deploy.yml` therefore repeats the
+identical pinned login, with the same inputs and no `if:`, directly after
+provisioning. The postprovision data-plane helpers and both canary token steps ask
+`azd auth token --scope <resource>/.default` first, because azd's GitHub federated
+credential fetches a new assertion for every token. A new late-job step, hook or
+script that needs a token for a resource the CLI has not cached must do the same.
+`test_gating_workflows.py` and `test_post_deploy_verify.py` guard the workflow half.
+
 Rollback state is captured **before `azd provision`**, not merely before
 application deployment: all three Bicep app modules use a quickstart placeholder
 image for greenfield creation, so an infrastructure reconciliation can create a
