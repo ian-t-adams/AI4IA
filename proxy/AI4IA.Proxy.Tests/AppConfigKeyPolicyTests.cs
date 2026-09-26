@@ -129,7 +129,7 @@ public sealed class AppConfigKeyPolicyTests
         var deployed = new ProxyConfig();
         Assert.AreEqual(deployed.Timeout, AppConfigKeyPolicy.MaxTimeoutMs);
         Assert.AreEqual(deployed.DefaultTTLSecs, AppConfigKeyPolicy.MinTtlSecs);
-        Assert.AreEqual(deployed.Timeout, AppConfigKeyPolicy.MaxTtlSecs * 1000);
+        Assert.AreEqual((long)deployed.Timeout, AppConfigKeyPolicy.MaxTtlSecs * 1000L);
         Assert.IsTrue(AppConfigKeyPolicy.MinTimeoutMs < AppConfigKeyPolicy.MaxTimeoutMs);
 
         // Writing back the deployed values is always accepted.
