@@ -315,15 +315,21 @@ class VoiceProviderCatalogTests(unittest.TestCase):
         self.assert_generator_rejects(missing)
 
     def test_generator_binds_home_region_and_zone_to_the_model_catalog(self) -> None:
-        # Shape-valid values the schema cannot judge: only models.json can.
-        for label, change in {
-            "region outside the catalog": lambda b: b.update({"homeRegion": "westus2"}),
-            "zone mismatch": lambda b: b.update({"homeDataZone": "EU"}),
-        }.items():
+        # Shape-valid values the schema cannot judge: only models.json can, and
+        # each has its own message, so neither check hides behind the other.
+        for label, change, message in (
+            ("region outside the catalog", lambda b: b.update({"homeRegion": "westus2"}),
+             "homeRegion must be a region in infra/models.json (got 'westus2')"),
+            ("zone mismatch", lambda b: b.update({"homeDataZone": "EU"}),
+             "homeDataZone must equal the models.json dataZone of 'eastus2' ('US')"),
+        ):
             with self.subTest(label=label):
                 mutated = self._mutated_avatars(change)
                 jsonschema.validate(mutated, self.schema)
-                self.assert_generator_rejects(mutated)
+                with self.assertRaises(SystemExit) as refused:
+                    self.gen.build_catalog(mutated)
+                self.assertIn(message, str(refused.exception))
+                self.assertEqual(str(refused.exception).count("photoAvatars.home"), 1)
         # Control: a real catalog region with its own zone is accepted.
         moved = self._mutated_avatars(
             lambda b: b.update({"homeRegion": "swedencentral", "homeDataZone": "EU"})

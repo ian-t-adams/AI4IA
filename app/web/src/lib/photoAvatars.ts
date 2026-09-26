@@ -116,6 +116,12 @@ export interface PhotoAvatar {
   cost: PhotoAvatarCost;
   usable: boolean;
   reported: boolean;
+  /**
+   * A live session reported that this avatar failed verification. While true,
+   * `usable` is false; a status read after the server's cooldown re-checks it
+   * with the provider. Optional so a payload without it still reads as false.
+   */
+  needsReverification?: boolean;
   createdAt: string;
   updatedAt: string;
   readyAt: string | null;
@@ -328,6 +334,33 @@ async function jsonOrThrow<T>(resp: Response): Promise<T> {
   return (await resp.json()) as T;
 }
 
+// Create refusals the API raises before anything reaches the provider (the
+// service's create path, up to and including a dispatch that was never sent).
+// Any other 5xx can follow a provider accept: the API's generic handlers answer
+// a failed Cosmos write with 503 `service_unavailable` or 500 `internal_error`,
+// and the same-origin proxy answers a dropped upstream with a code-less 502.
+export const PHOTO_AVATAR_DEFINITE_CREATE_REFUSALS: ReadonlySet<string> = new Set([
+  "photo_avatars_unavailable",
+  "cost_unknown_under_cap",
+  "avatar_project_unavailable",
+  "photo_avatar_gateway_unavailable",
+  "hard_quota_refused",
+  "policy_unavailable",
+  "entitlements_unavailable",
+]);
+
+/**
+ * Whether a failed create may still have created, and billed, an avatar. A 4xx
+ * is a definite refusal, and so is a 5xx carrying one of the codes above.
+ * Anything else is unknown and must never be re-sent blindly: a network failure,
+ * an unreadable reply, or a 5xx with no code or a generic one.
+ */
+export function isUncertainCreateOutcome(error: unknown): boolean {
+  if (!(error instanceof PhotoAvatarApiError)) return true;
+  if (error.status >= 400 && error.status < 500) return false;
+  return error.code === null || !PHOTO_AVATAR_DEFINITE_CREATE_REFUSALS.has(error.code);
+}
+
 function isPhotoAvatarRecord(value: unknown): value is PhotoAvatar {
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<PhotoAvatar>;
@@ -439,6 +472,12 @@ export interface PhotoAvatarDraft {
   /** "" (or absent) means unspecified. */
   attributes: Partial<Record<PhotoAvatarAttributeKey, string>>;
   attested: Partial<Record<string, boolean>>;
+  /**
+   * The attestation version the ticks were given against. When it differs from
+   * the version /config now publishes, the ticks count as unticked: consent to
+   * wording the user never saw is no consent.
+   */
+  attestedVersion?: string;
 }
 
 export type PhotoAvatarDraftIssue =
@@ -498,7 +537,12 @@ export function validatePhotoAvatarDraft(
   if (!attestationRecognized(attestation)) {
     return { request: null, issues: [...issues, "attestationUnrecognized"] };
   }
-  if (!attestation.statements.every((statement) => draft.attested[statement.id] === true)) {
+  const currentTicks =
+    draft.attestedVersion === undefined || draft.attestedVersion === attestation.version;
+  if (
+    !currentTicks ||
+    !attestation.statements.every((statement) => draft.attested[statement.id] === true)
+  ) {
     issues.push("attestation");
   }
   if (issues.length > 0) return { request: null, issues };
@@ -529,6 +573,13 @@ export function isPendingPhotoAvatar(avatar: Pick<PhotoAvatar, "status">): boole
   return PENDING.has(avatar.status);
 }
 
+/** Ready, but live use is refused until the server re-verifies it. */
+export function isReverifyingPhotoAvatar(
+  avatar: Pick<PhotoAvatar, "status" | "needsReverification">,
+): boolean {
+  return avatar.status === "ready" && avatar.needsReverification === true;
+}
+
 export function isKnownPhotoAvatarStatus(status: string): status is PhotoAvatarStatus {
   return (PHOTO_AVATAR_STATUSES as readonly string[]).includes(status);
 }
@@ -542,6 +593,12 @@ export function photoAvatarPollDelay(attempt: number): number {
   const index = Math.min(Math.max(0, attempt), PHOTO_AVATAR_POLL_DELAYS_MS.length - 1);
   return PHOTO_AVATAR_POLL_DELAYS_MS[index];
 }
+
+// Only a status read re-verifies a flagged avatar, and the server does it at
+// most once per five-minute cooldown. So a flagged record is read at once, then
+// once a minute, for a little longer than one cooldown.
+export const PHOTO_AVATAR_REVERIFY_POLL_MS = 60_000;
+export const PHOTO_AVATAR_REVERIFY_BUDGET_MS = 6 * 60_000;
 
 /** Keeps the newer of two copies of a record, so a late read never regresses it. */
 export function newerPhotoAvatar(current: PhotoAvatar, incoming: PhotoAvatar): PhotoAvatar {
@@ -564,6 +621,21 @@ export const PHOTO_AVATAR_STATUS_TEXT: Record<PhotoAvatarStatus, string> = {
 
 export function photoAvatarStatusText(status: string): string {
   return isKnownPhotoAvatarStatus(status) ? PHOTO_AVATAR_STATUS_TEXT[status] : "Status unknown";
+}
+
+export const PHOTO_AVATAR_REVERIFYING_TEXT = "Re-verifying…";
+
+/**
+ * The status to show for one record: "Re-verifying…" for a ready avatar that is
+ * waiting on re-verification, "No longer available" for one that failed after
+ * it had been ready, and the plain status text otherwise.
+ */
+export function photoAvatarDisplayStatus(
+  avatar: Pick<PhotoAvatar, "status" | "needsReverification" | "readyAt">,
+): string {
+  if (isReverifyingPhotoAvatar(avatar)) return PHOTO_AVATAR_REVERIFYING_TEXT;
+  if (avatar.status === "failed" && avatar.readyAt) return "No longer available";
+  return photoAvatarStatusText(avatar.status);
 }
 
 export const PHOTO_AVATAR_UNAVAILABLE_TEXT: Record<

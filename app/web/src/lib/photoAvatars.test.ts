@@ -1,15 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  PHOTO_AVATAR_DEFINITE_CREATE_REFUSALS,
   PHOTO_AVATAR_POLL_BUDGET_MS,
+  PHOTO_AVATAR_REVERIFYING_TEXT,
   PhotoAvatarApiError,
   createPhotoAvatar,
   deletePhotoAvatar,
   fetchPhotoAvatarPreview,
   getPhotoAvatar,
+  isReverifyingPhotoAvatar,
+  isUncertainCreateOutcome,
   listPhotoAvatars,
   newerPhotoAvatar,
   parseRetryAfter,
+  photoAvatarDisplayStatus,
   photoAvatarErrorMessage,
   photoAvatarPollDelay,
   photoAvatarPreviewPath,
@@ -192,6 +197,16 @@ describe("the attestation gate", () => {
     expect(validatePhotoAvatarDraft(next, draft()).request?.attestation.version).toBe("server-v9");
   });
 
+  it("does not count ticks given against an older attestation version", () => {
+    const stale = validatePhotoAvatarDraft(config(), draft({ attestedVersion: "fixture-attestation-6" }));
+    expect(stale.request).toBeNull();
+    expect(stale.issues).toContain("attestation");
+    // Controls: ticks for the current version, and a caller that sends no version.
+    expect(validatePhotoAvatarDraft(config(), draft({ attestedVersion: "fixture-attestation-7" })).request)
+      .not.toBeNull();
+    expect(validatePhotoAvatarDraft(config(), draft()).request).not.toBeNull();
+  });
+
   it.each([
     ["an extra statement", [...config().attestation!.statements, { id: "consent", text: "New." }]],
     ["a missing statement", config().attestation!.statements.slice(0, 2)],
@@ -299,6 +314,36 @@ describe("HTTP helpers", () => {
 });
 
 describe("Retry-After and messages", () => {
+  it("treats only definite refusals as a create that surely did not happen", () => {
+    const refusal = (status: number, code: string | null) =>
+      new PhotoAvatarApiError({ status, code, detail: "Refused." });
+    // Unknown: nothing proves the avatar was not created (and billed).
+    for (const error of [
+      new TypeError("Failed to fetch"),
+      new SyntaxError("Unexpected end of JSON input"),
+      refusal(502, null),
+      refusal(503, "service_unavailable"),
+      refusal(500, "internal_error"),
+      refusal(502, "bad_gateway"),
+      refusal(504, "gateway_timeout"),
+      refusal(599, "server_error"),
+      refusal(503, "a_future_code"),
+      refusal(302, null),
+    ]) {
+      expect(isUncertainCreateOutcome(error), String(error)).toBe(true);
+    }
+    // Definite: refused before anything reached the provider.
+    for (const code of PHOTO_AVATAR_DEFINITE_CREATE_REFUSALS) {
+      expect(isUncertainCreateOutcome(refusal(503, code)), code).toBe(false);
+    }
+    for (const [status, code] of [
+      [409, "avatar_limit_reached"], [429, "daily_creation_limit"], [422, "validation_error"],
+      [403, "policy_denied"], [404, "photo_avatars_disabled"], [429, null],
+    ] as const) {
+      expect(isUncertainCreateOutcome(refusal(status, code)), `${status} ${code}`).toBe(false);
+    }
+  });
+
   it("parses delta-seconds and HTTP dates, bounding both", () => {
     const now = Date.parse("2026-09-26T12:00:00Z");
     expect(parseRetryAfter("7", now)).toBe(7);
@@ -350,6 +395,22 @@ describe("Retry-After and messages", () => {
 });
 
 describe("polling and merging", () => {
+  it("treats only a ready avatar with the flag as re-verifying", () => {
+    expect(isReverifyingPhotoAvatar(avatar({ needsReverification: true, usable: false }))).toBe(true);
+    // Controls: the same record without the flag, or with it on a non-ready status.
+    expect(isReverifyingPhotoAvatar(avatar({ needsReverification: false }))).toBe(false);
+    expect(isReverifyingPhotoAvatar(avatar({ needsReverification: undefined }))).toBe(false);
+    expect(isReverifyingPhotoAvatar(avatar({ status: "generating", needsReverification: true }))).toBe(false);
+  });
+
+  it("names the displayed status for re-verification and for a failure after ready", () => {
+    expect(photoAvatarDisplayStatus(avatar({ needsReverification: true }))).toBe(PHOTO_AVATAR_REVERIFYING_TEXT);
+    expect(photoAvatarDisplayStatus(avatar())).toBe("Ready");
+    expect(photoAvatarDisplayStatus(avatar({ status: "failed" }))).toBe("No longer available");
+    expect(photoAvatarDisplayStatus(avatar({ status: "failed", readyAt: null }))).toBe("Couldn't create");
+    expect(photoAvatarDisplayStatus(avatar({ status: "generating", readyAt: null }))).toBe("Generating…");
+  });
+
   it("backs off to a ceiling within a bounded budget", () => {
     const delays = Array.from({ length: 12 }, (_value, attempt) => photoAvatarPollDelay(attempt));
     expect(delays.slice(0, 3)).toEqual([2_000, 3_000, 5_000]);
