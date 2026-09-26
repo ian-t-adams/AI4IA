@@ -373,6 +373,26 @@ public sealed class NoReplayWorkerTests
         }
     }
 
+    [DataTestMethod]
+    [DataRow("MultiPass", null, 1)]  // the authored MaxAttempts
+    [DataRow("MultiPass", 2, 2)]     // control: the caller-selected MultiPass path is entered
+    [DataRow("SinglePass", 2, 1)]    // control: the extra send needs MultiPass, not the budget alone
+    public async Task CallerSelectedIterationIsBoundedByTheAuthoredMaxAttempts(string mode, int? budget, int sends)
+    {
+        await using var server = new WireServer(_ => Task.FromResult(new WireReply(500)));
+        await using var fixture = await WorkerFixture.Create([server], false);
+        fixture.Options.MaxAttempts = budget ?? GatewayUpstreamPolicyTests.AuthoredMaxAttempts();
+        // The listener maps a valid S7P-Iterator header onto RequestData.IterationMode
+        // before authentication; the worker sees only the mapped mode.
+        fixture.Request.Headers["S7P-Iterator"] = mode;
+        fixture.Request.IterationMode = Enum.Parse<IterationModeEnum>(mode);
+        using var result = await fixture.Send();
+        // One catch-all host: MultiPass reuses it lap after lap until the budget is spent.
+        Assert.AreEqual(sends, server.Requests.Count);
+        Assert.AreEqual(mode == "MultiPass" ? 412 : 500, (int)result.StatusCode);
+        Assert.AreEqual(sends, fixture.Request.LifetimeBackendAttempts);
+    }
+
     internal static string Header(byte[] body) =>
         $"{NoReplayAttempt.Version}.{new string('a', 32)}.{Convert.ToHexStringLower(SHA256.HashData(body))}";
 
