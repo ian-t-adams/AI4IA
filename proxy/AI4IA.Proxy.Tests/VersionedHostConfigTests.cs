@@ -109,7 +109,7 @@ public sealed class VersionedHostConfigTests
 
     private static string SourceFile([CallerFilePath] string path = "") => path;
 
-    private static bool IsHostSetting(string key) =>
+    internal static bool IsHostSetting(string key) =>
         key.StartsWith("Host", StringComparison.OrdinalIgnoreCase) ||
         key.StartsWith("Probe", StringComparison.OrdinalIgnoreCase) ||
         key.StartsWith("IP", StringComparison.OrdinalIgnoreCase) ||
@@ -119,7 +119,7 @@ public sealed class VersionedHostConfigTests
     // Capture the production loader's HostConfigs and use real categorization,
     // without activating circuits or background services. The test invokes the
     // actual probe method separately against loopback with synthetic keys.
-    private sealed class CapturedHosts : IHostHealthCollection
+    internal sealed class CapturedHosts : IHostHealthCollection
     {
         private readonly List<HostConfig> _configs = [];
         public HostCollectionSnapshot Current { get; private set; } = HostCollectionSnapshot.Empty;

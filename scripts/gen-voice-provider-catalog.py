@@ -661,17 +661,23 @@ def _validate_photo_avatars(
         )
     text_matches("homeRegion", r"[a-z][a-z0-9]{1,30}")
     home = block.get("homeRegion")
+    zone = block.get("homeDataZone")
+    _require(errors, zone in {"US", "EU"}, f"{label}.homeDataZone must be US or EU")
+    # Membership and zone agreement are separate checks with separate messages:
+    # only a catalog region has a dataZone to agree with.
+    in_catalog = isinstance(home, str) and home in regions
     _require(
         errors,
-        isinstance(home, str) and home in regions,
+        in_catalog,
         f"{label}.homeRegion must be a region in infra/models.json (got {home!r})",
     )
-    expected_zone = (regions.get(home) or {}).get("dataZone") if isinstance(home, str) else None
-    _require(
-        errors,
-        block.get("homeDataZone") in {"US", "EU"} and block.get("homeDataZone") == expected_zone,
-        f"{label}.homeDataZone must equal the models.json dataZone of {home!r} ({expected_zone!r})",
-    )
+    if in_catalog:
+        expected_zone = (regions.get(home) or {}).get("dataZone")
+        _require(
+            errors,
+            zone == expected_zone,
+            f"{label}.homeDataZone must equal the models.json dataZone of {home!r} ({expected_zone!r})",
+        )
     text_matches("apiVersion", r"[0-9]{4}-[0-9]{2}-[0-9]{2}(-preview)?")
     text_matches("requiredFeature", r"[A-Za-z][A-Za-z0-9]{1,63}")
     _require(

@@ -85,7 +85,7 @@ def test_issued_ids_are_opaque_short_and_inside_both_patterns():
 
 
 @pytest.mark.parametrize("value", [
-    "demo-ai-host", "ai4ia-0123456789abcdef012", "ai4ia-0123456789ABCDEF0123",
+    "sample-foreign-avatar", "ai4ia-0123456789abcdef012", "ai4ia-0123456789ABCDEF0123",
     "ai4ia-0123456789abcdef01234", "../ai4ia-0123456789abcdef0123", "ai4ia-0123456789abcdef012/",
 ])
 def test_foreign_or_malformed_ids_are_not_addressable(value):
