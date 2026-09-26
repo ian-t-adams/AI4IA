@@ -349,6 +349,51 @@ approved exceptions, and the prices are sourced.
     control;
   - an unpriced, capped path refuses, and a priced one succeeds.
 
+#### Phase 1 HTTP contract
+
+Router `app/api/src/ai4ia_api/routers/photo_avatars.py`; models in
+`app/api/src/ai4ia_api/photo_avatars/models.py`. Every route needs an authenticated
+user, and every route except `/config` answers 404 `photo_avatars_disabled` while the
+flag is off. Errors use the shared body `{"detail", "code", "correlation_id"}`, plus
+`reason` on 503 unavailability and `Retry-After` where noted.
+
+| Route | Success | Refusals (`code`) |
+| --- | --- | --- |
+| `GET /api/photo-avatars/config` | 200 `PhotoAvatarConfig`, always; only `enabled`, `available`, `reason` and `canCreate` are set while off | none |
+| `GET /api/photo-avatars` | 200 `{"avatars": [...]}`, the caller's records, newest first, read from Cosmos only | `photo_avatars_disabled` |
+| `POST /api/photo-avatars` | 202 `PhotoAvatar` whenever a record was created; its `status` carries the outcome | 422 `validation_error`, `invalid_photo_avatar_request`, `attestation_outdated`; 409 `avatar_limit_reached`; 429 `daily_creation_limit` with `Retry-After`; 403/429 entitlement refusals; 403 `policy_denied`; 503 `photo_avatars_unavailable` with `reason`; 503 `cost_unknown_under_cap`; `hard_quota_refused` |
+| `GET /api/photo-avatars/{id}` | 200 `PhotoAvatar`, reconciled with at most one rate-limited provider read | 404 `not_found` |
+| `GET /api/photo-avatars/{id}/preview` | 200 `image/png`, private caching, `X-AI4IA-Synthetic-Media: ai-generated` | 404 `not_found`; 403 `policy_denied` |
+| `DELETE /api/photo-avatars/{id}` | 204; repeating it, or an unknown id, is also 204 | 409 `avatar_confirming` with `Retry-After`; 502 `provider_delete_failed` (the record stays `deleting`, and repeating the call finishes it) |
+| `POST /api/photo-avatars/{id}/reports` | 202 `{"id", "avatarId", "reason", "createdAt"}` | 404 `not_found`; 422; 429 `report_limit` |
+
+`{id}` is an opaque 32-character lowercase hex record id; any other shape is 404.
+The provider's avatar id never appears in a request or a response.
+
+The create body is `displayName` (1-60 characters, shown only in AI4IA), `prompt`,
+the optional `gender`, `age`, `ethnicity` and `style` values listed by `/config`,
+and an `attestation` whose `version` matches `/config` and whose `fictional`,
+`adult` and `notRealPerson` are all `true`.
+
+A `PhotoAvatar` carries `id`, `displayName`, `prompt`, `attributes`, `status`,
+`failure`, `preview`, `disclosure` (`aiGenerated: true` and a label), `cost` (the
+estimate recorded at dispatch, never repriced), `usable`, `reported`, `createdAt`,
+`updatedAt` and `readyAt`. Its `status` is one of:
+
+- `creating`: reserved, and the provider outcome isn't recorded yet;
+- `generating`: accepted and still being generated;
+- `confirming`: the create outcome is unknown, and a status read reconciles it;
+- `ready`: the preview is stored;
+- `failed`: terminal, with a `failure.code`;
+- `deleting`: deletion started.
+
+`PhotoAvatarConfig.reason` is one of `available`, `disabled`, `storage_unavailable`,
+`residency_unsupported`, `policy_denied`, `policy_unavailable`,
+`capability_unavailable` or `capability_unknown`. It is for display only; the server
+applies the same check again when a create runs. `/config` also returns the limits
+and current usage, attribute options, the attestation text, the disclosure label,
+the per-avatar price estimate, and the report reasons with Microsoft's report link.
+
 ### Phase 2: real-time conversation
 
 - **Server-owned avatar.** This works on the Speech Voice Live provider only.

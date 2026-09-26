@@ -503,6 +503,23 @@ class Settings(BaseSettings):
     video_blob_account_url: str | None = None
     video_blob_container: str = "videos"
 
+    # --- Custom photo avatars (Phase 1, default OFF) ---
+    # Create, status, preview, list, delete and report for avatars generated
+    # from a text description. The home account, api-version, attribute enums
+    # and the Limited Access feature name come from the ``photoAvatars`` block
+    # of the voice catalog (docs/photo-avatars.md). While off, every route
+    # except ``GET /api/photo-avatars/config`` answers 404 and nothing is built.
+    photo_avatars_enabled: bool = False
+    # Durable preview images under ``{userId}/avatars/{recordId}.png``, reached
+    # only through the authenticated preview route. Required outside local.
+    photo_avatar_blob_account_url: str | None = None
+    photo_avatar_blob_container: str = "avatars"
+    # Strict per-user limits, enforced by the owner-partition ledger (1-50 each).
+    # Current records of any status count toward the first; every dispatched
+    # create in the rolling 24 hours counts toward the second.
+    photo_avatar_max_per_user: int = 5
+    photo_avatar_max_creations_per_day: int = 5
+
     # --- Retrieval consumer: how the ready library surfaces in chat.
     # Tier 1 (always-injected summary cards) + Tier 2 (top-k RAG chunks) are bounded
     # so the library context can never crowd out the conversation. Tier 3 is the

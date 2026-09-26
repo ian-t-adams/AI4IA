@@ -35,6 +35,7 @@ from .hard_quota.factory import build_admission_binding
 from .hard_quota.models import QuotaError
 from .policy.models import PolicyError
 from .policy.service import PolicyService
+from .photo_avatars.models import PhotoAvatarError
 from .publishing.models import PublicationError
 from .publishing.service import PublicationService
 from .images.artifacts import ImageArtifactStore, build_image_blob_store
@@ -80,6 +81,7 @@ from .routers import library as library_router
 from .routers import mcp_servers as mcp_servers_router
 from .routers import memories as memories_router
 from .routers import official_mcp_servers as official_mcp_servers_router
+from .routers import photo_avatars as photo_avatars_router
 from .routers import realtime as realtime_router
 from .routers import sessions as sessions_router
 from .routers import tools as tools_router
@@ -357,6 +359,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # shared-instance rationale as images; durable AzureBlobStore when
         # video_blob_account_url is set, else an in-memory store.
         app.state.video_artifacts = VideoArtifactStore(build_video_blob_store(settings))
+        # Custom photo avatars (default OFF). None while the flag is off, so every
+        # route except /config answers 404 and no provider client, store or Blob
+        # container is constructed.
+        app.state.photo_avatars = None
         # Durable store for over-cap ``process_document`` results.
         # Same shared-instance rationale as images/video; reuses the document
         # library's blob account (document_blob_account_url) when configured, else
@@ -472,6 +478,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ("document_library", "close", "document library"),
                 ("image_artifacts", "close", "image artifact store"),
                 ("video_artifacts", "close", "video artifact store"),
+                ("photo_avatars", "close", "photo avatar service"),
                 ("document_artifacts", "close", "document artifact store"),
                 ("inline_attachment_store", "close", "inline attachment store"),
             ):
@@ -510,6 +517,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(AutomationError)
     async def _automation_refused(_request: Request, exc: AutomationError):
         return error_response(status_code=exc.status, detail=exc.detail, code=exc.code)
+
+    @app.exception_handler(PhotoAvatarError)
+    async def _photo_avatar_refused(_request: Request, exc: PhotoAvatarError):
+        return error_response(
+            status_code=exc.status, detail=exc.detail, code=exc.code,
+            headers=(
+                {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
+            ),
+            **({"reason": exc.reason} if exc.reason is not None else {}),
+        )
 
     @app.exception_handler(PolicyError)
     async def _policy_refused(_request: Request, exc: PolicyError):
@@ -642,6 +659,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(images_router.router)
     app.include_router(inspector_router.router)
     app.include_router(videos_router.router)
+    app.include_router(photo_avatars_router.router)
     app.include_router(docprocessing_router.router)
     app.include_router(library_router.router)
     app.include_router(voice_router.router)
