@@ -7,7 +7,9 @@
 > deployment. Claude Opus 5.5 is incompatible with AI4IA's thinking-disabled
 > Claude profile, and no Claude model is activated yet. The Agent Service
 > features target Foundry prompt and hosted agents, which AI4IA deliberately
-> does not use as its runtime.
+> does not use as its runtime. The custom photo avatar requirement added on
+> 2026-09-25 follows the same rule: it is a
+> [plan](photo-avatars.md), with no resource, role, flag or code.
 
 AI4IA's FastAPI runtime owns agents, tools, approvals, receipts, memory and
 scheduling. Foundry supplies model deployments behind SimpleL7Proxy → APIM,
@@ -26,6 +28,7 @@ owner approval before merge.
 | Claude Opus 5.5 | GA, Hosted on Azure | Capacity deployed in the dedicated Claude account; not cataloged. Opus 5 and Sonnet 5 are deployed but not activated | Live check confirmed disabled thinking returns 400; needs the adaptive profile, and activation waits on target-tenant admin actions |
 | Voice agents in Agent Service | Public preview | Voice Live through the FastAPI relay → APIM, two providers | Not adopted; needs a new provider design |
 | Voice-agent observability | Public preview | Applies only to Foundry voice agents | Not applicable |
+| Custom photo avatars from a description (owner requirement, 2026-09-25) | Limited Access; creation REST surface undocumented | No avatar support. The Speech Voice Live relay drops a client `avatar` field, and the web voice client is audio only | [Phased plan](photo-avatars.md); activation waits on the Limited Access approval and RAI re-approval |
 | Long-running resilience | Public preview, hosted agents | Resumable workflows on the Durable Task Scheduler worker | Not applicable |
 | Agent Framework updates | Announced | No Agent Framework dependency | Not applicable |
 | Foundry dev pack | Public preview | Optional operator toolchain | No repository requirement changes |
@@ -265,6 +268,39 @@ exclusion of telephony and channel publishing, and
 [review trigger 3](rai-decision-record.md#review-triggers) for a new provider.
 Voice-agent observability covers only Foundry voice agents.
 
+### Custom photo avatars
+
+The owner added this requirement on 2026-09-25: generate photo avatars from a
+text description, and talk to them. It was verified in code against test
+resources:
+
+- **Creation** takes about 30-45 seconds and produces a 1024×1024 portrait.
+- **Batch talking-head video** takes about 20 seconds for a 10-second clip.
+- **Voice Live** accepts a custom photo avatar and negotiates WebRTC. The media
+  stream itself is not tested yet.
+
+The creation REST surface is the Foundry portal's own endpoint, and it isn't
+publicly documented. Custom text to speech avatar is Limited Access, and AI4IA's
+registration is pending.
+
+AI4IA has no avatar support today. The Speech Voice Live relay rebuilds
+`session.update` and drops any client `avatar` field, and the web voice client
+uses only WebSocket audio. The [photo avatar plan](photo-avatars.md) phases the
+work:
+
+1. decisions and spikes;
+2. create, preview, list and delete;
+3. real-time conversation;
+4. optionally, rendered videos.
+
+It needs two owner-approved exceptions to the gateway rule:
+
+- WebRTC media that flows directly between the browser and Microsoft's media relay;
+- a bounded fetch of provider-issued artifact links.
+
+It also needs re-approval under
+[review trigger 3](rai-decision-record.md#review-triggers).
+
 ## Long-running work and developer tooling
 
 - **Long-running resilience** keeps a hosted agent's response alive across
@@ -439,3 +475,6 @@ Checked 2026-09-24:
 - [Routines GA](https://devblogs.microsoft.com/foundry/from-chatbots-to-automated-assistants-routines-in-microsoft-foundry-are-now-generally-available/)
 - [Insights in Foundry](https://techcommunity.microsoft.com/blog/azure-ai-foundry-blog/insights-in-foundry-turns-agent-traces-into-action/4559634)
 - [azure-ai-projects 2.7.0 release](https://pypi.org/project/azure-ai-projects/2.7.0/)
+
+The photo avatar sources, checked 2026-09-25, are listed in
+[the plan](photo-avatars.md#sources).
