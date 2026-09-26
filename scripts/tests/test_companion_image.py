@@ -299,6 +299,11 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/verify-companion-image.py", verify)
         self.assertIn("--expect-source-commit", verify)
         self.assertIn("--expect-run-invocation", verify)
+        # Every step blocks: a failed scan, attestation or verification stops promotion.
+        self.assertNotIn("continue-on-error", job)
+        for step in steps:
+            self.assertNotIn("continue-on-error", step, step["name"])
+            self.assertNotIn("|| true", step.get("run", ""), step["name"])
         for step in steps:
             self.assertNotIn("azd deploy", step.get("run", ""))
             self.assertNotIn("containerapp update", step.get("run", ""))
@@ -321,6 +326,11 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertGreater(gate, names.index(earlier))
         step = steps[gate]
         self.assertEqual(step["if"], "${{ github.event_name != 'workflow_dispatch' || inputs.provision }}")
+        # Blocking: a failed verification must stop the job before provisioning.
+        self.assertNotIn("continue-on-error", step)
+        self.assertNotIn("continue-on-error", self.deploy["jobs"]["deploy"])
+        self.assertNotIn("|| true", step["run"])
+        self.assertIn("set -euo pipefail", step["run"])
         self.assertIn("scripts/verify-companion-image.py", step["run"])
         self.assertIn('--image "${AI4IA_COMPANION_APP_IMAGE:-}"', step["run"])
         self.assertEqual(step["env"], {"GH_TOKEN": "${{ github.token }}"})
