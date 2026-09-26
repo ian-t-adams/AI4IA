@@ -39,7 +39,10 @@
 
     5. App Configuration sentinel (HARD GATE). Reconciles Warm:Sentinel through
        the signed-in deployment identity after ARM role creation, with bounded
-       retries for data-plane RBAC propagation.
+       retries for data-plane RBAC propagation. Each attempt PUTs the key through
+       the data-plane REST API with a freshly minted Entra token from
+       `azd auth token` (falls back to `az account get-access-token`); the store
+       has local authentication disabled, so no access key is ever involved.
 
     6. Content Understanding defaults (HARD GATE WHEN ENABLED). Consumes explicit
        primary account/region/endpoint/deployment outputs from Bicep and PATCHes
@@ -219,13 +222,78 @@ function Get-CognitiveServicesToken {
   return $null
 }
 
-function Invoke-AppConfigSet {
+function Get-AppConfigurationToken {
+  param([Parameter(Mandatory)][ValidateRange(1, 300)][int]$TimeoutSec)
+
+  # https://appconfig.azure.com is App Configuration's documented Microsoft Entra
+  # audience for the global Azure cloud. Prefer azd: its GitHub federated
+  # credential fetches a new OIDC assertion for every token it mints. The Azure
+  # CLI holds the single assertion `azure/login` handed it, so once that expires
+  # it cannot mint a token for a resource it has not already cached, and every
+  # request fails with AADSTS700024. The CLI stays as the local fallback. Both
+  # commands share one timeout budget.
+  $startedAt = Get-MonotonicTime
+  $result = Invoke-NativeWithTimeout -Command 'azd' -Arguments @(
+    'auth', 'token', '--scope', 'https://appconfig.azure.com/.default'
+  ) -TimeoutSec $TimeoutSec
+  if ($result.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($result.Output)) {
+    return $result.Output.Trim()
+  }
+
+  $remaining = $TimeoutSec - ((Get-MonotonicTime) - $startedAt)
+  if ($remaining -lt 1) { return $null }
+  $fallbackTimeout = [Math]::Max(1, [Math]::Floor($remaining))
+  $result = Invoke-NativeWithTimeout -Command 'az' -Arguments @(
+    'account', 'get-access-token',
+    '--resource', 'https://appconfig.azure.com',
+    '--query', 'accessToken',
+    '--output', 'tsv'
+  ) -TimeoutSec $fallbackTimeout
+  if ($result.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($result.Output)) {
+    return $result.Output.Trim()
+  }
+  return $null
+}
+
+function Invoke-AppConfigKeyValuePut {
   param(
-    [Parameter(Mandatory)][string[]]$Arguments,
+    [Parameter(Mandatory)][uri]$Uri,
+    [Parameter(Mandatory)][string]$Token,
+    [Parameter(Mandatory)][string]$Body,
     [Parameter(Mandatory)][ValidateRange(1, 300)][int]$TimeoutSec
   )
-  $result = Invoke-NativeWithTimeout -Command 'az' -Arguments $Arguments -TimeoutSec $TimeoutSec
-  return [int]$result.ExitCode
+
+  # One bounded PUT that returns only the HTTP status code, or 0 when no response
+  # arrived. Redirects are not followed and the response body is never read, so
+  # neither the token nor anything the service sends back can reach the log.
+  try { Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue } catch { Write-Verbose 'System.Net.Http already available.' }
+  $handler = [System.Net.Http.HttpClientHandler]::new()
+  $handler.AllowAutoRedirect = $false
+  $client = [System.Net.Http.HttpClient]::new($handler)
+  $request = $null
+  $response = $null
+  try {
+    $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Put, $Uri)
+    $request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Token)
+    $request.Headers.Accept.ParseAdd('application/vnd.microsoft.appconfig.kv+json')
+    $request.Headers.Accept.ParseAdd('application/problem+json')
+    $request.Content = [System.Net.Http.StringContent]::new($Body)
+    $request.Content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new(
+      'application/vnd.microsoft.appconfig.kv+json'
+    )
+    $response = $client.SendAsync(
+      $request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
+    ).GetAwaiter().GetResult()
+    return [int]$response.StatusCode
+  } catch {
+    Write-Verbose 'App Configuration data-plane request did not complete.'
+    return 0
+  } finally {
+    if ($null -ne $response) { $response.Dispose() }
+    if ($null -ne $request) { $request.Dispose() }
+    $client.Dispose()
+  }
 }
 
 function Invoke-HttpProbe {
@@ -456,6 +524,18 @@ function Register-AppConfigurationSentinel {
     return
   }
 
+  # The bearer token only ever travels to the store's own https origin.
+  $store = $null
+  $isStoreOrigin = [uri]::TryCreate($endpoint.Trim(), [UriKind]::Absolute, [ref]$store) -and
+    $store.Scheme -eq 'https' -and
+    [string]::IsNullOrEmpty($store.UserInfo) -and
+    $store.PathAndQuery -eq '/' -and
+    [string]::IsNullOrEmpty($store.Fragment)
+  if (-not $isStoreOrigin) {
+    Add-Result -Name 'App Configuration sentinel' -Status 'FAIL' -Detail 'AZURE_APP_CONFIG_ENDPOINT must be an https origin without a path, query, fragment or credentials'
+    return
+  }
+
   # The narrow Data Owner role is granted to the OIDC deployment principal.
   # A workstation user running a break-glass local provision is a different
   # identity; do not wait 15 minutes on a role it was never granted. Greenfield
@@ -473,18 +553,14 @@ function Register-AppConfigurationSentinel {
     $label = Get-EnvValue 'AI4IA_PROXY_APPCONFIG_LABEL'
   }
 
-  $arguments = @(
-    'appconfig', 'kv', 'set',
-    '--endpoint', $endpoint,
-    '--key', 'Warm:Sentinel',
-    '--value', 'ready',
-    '--auth-mode', 'login',
-    '--yes',
-    '--output', 'none'
-  )
+  # The documented data-plane "Set key" operation: PUT /kv/{key}, where omitting
+  # `label` targets the unlabeled key-value. 2023-11-01 is a GA version of it.
+  $query = 'api-version=2023-11-01'
   if (-not [string]::IsNullOrWhiteSpace($label)) {
-    $arguments += @('--label', $label)
+    $query = "label=$([uri]::EscapeDataString($label))&$query"
   }
+  $uri = '{0}/kv/{1}?{2}' -f $store.GetLeftPart([UriPartial]::Authority), [uri]::EscapeDataString('Warm:Sentinel'), $query
+  $body = '{"value":"ready"}'
 
   # Azure documents that a new data-plane role assignment can take up to
   # 15 minutes to propagate. Ordinary deploys complete on the first attempt;
@@ -498,17 +574,24 @@ function Register-AppConfigurationSentinel {
     $remaining = $budgetSeconds - ((Get-MonotonicTime) - $startedAt)
     if ($remaining -lt 1) { break }
     $attempt++
-    $commandTimeout = [Math]::Max(1, [Math]::Min(60, [Math]::Floor($remaining)))
     try {
-      $exitCode = Invoke-AppConfigSet -Arguments $arguments -TimeoutSec $commandTimeout
-      if ($exitCode -eq 0) {
-        $scope = if ([string]::IsNullOrWhiteSpace($label)) { 'unlabeled' } else { 'configured label' }
-        Add-Result -Name 'App Configuration sentinel' -Status 'PASS' -Detail "Warm:Sentinel=ready ($scope)"
-        return
+      # A fresh token on every attempt, so neither a slow provision nor the RBAC
+      # wait can leave this gate holding a credential that has since expired.
+      $tokenTimeout = [Math]::Max(1, [Math]::Min(60, [Math]::Floor($remaining)))
+      $token = Get-AppConfigurationToken -TimeoutSec $tokenTimeout
+      $remaining = $budgetSeconds - ((Get-MonotonicTime) - $startedAt)
+      if (-not [string]::IsNullOrWhiteSpace($token) -and $remaining -ge 1) {
+        $requestTimeout = [Math]::Max(1, [Math]::Min(60, [Math]::Floor($remaining)))
+        $status = [int](Invoke-AppConfigKeyValuePut -Uri $uri -Token $token -Body $body -TimeoutSec $requestTimeout)
+        if ($status -ge 200 -and $status -le 299) {
+          $scope = if ([string]::IsNullOrWhiteSpace($label)) { 'unlabeled' } else { 'configured label' }
+          Add-Result -Name 'App Configuration sentinel' -Status 'PASS' -Detail "Warm:Sentinel=ready ($scope)"
+          return
+        }
       }
     } catch {
-      # Retry below. Deliberately do not echo the exception or command arguments.
-      Write-Verbose 'App Configuration data-plane set attempt failed; retrying without emitting CLI details.'
+      # Retry below. Deliberately do not echo the exception, token or response.
+      Write-Verbose 'App Configuration data-plane set attempt failed; retrying without emitting request details.'
     }
     $remaining = $budgetSeconds - ((Get-MonotonicTime) - $startedAt)
     if ($remaining -lt 1) { break }

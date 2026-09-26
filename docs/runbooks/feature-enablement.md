@@ -874,7 +874,10 @@ application -> SimpleL7Proxy -> APIM -> catalog-selected Foundry deployment
 App Configuration is always connected with the proxy managed identity. The
 postprovision hook reconciles the label-aware `Warm:Sentinel` through the OIDC
 deployment identity using Entra authentication and its store-scoped App Configuration
-Data Owner role. The proxy keeps only Data Reader; the web and API have no App
+Data Owner role: every attempt PUTs the key through the data-plane REST API with a
+fresh `azd auth token` for the documented `https://appconfig.azure.com` audience
+(see [deployment §7.17](./deployment.md#717-app-configuration-sentinel-fails-after-a-long-provision-aadsts700024)).
+The proxy keeps only Data Reader; the web and API have no App
 Configuration data role. This avoids local credentials and the same-deployment ARM
 pass-through RBAC race while keeping bootstrap and refresh real. The proxy applies
 only `Warm:Sentinel` and two reviewed request limits from the store, each within a
