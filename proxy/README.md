@@ -155,8 +155,10 @@ AI4IA does about each:
   `x-LLMModel` routing header, and `S7PDEBUGBODY` logs the full request body. The
   authored `DisallowedHeaders` policy removes both after authentication and
   before the worker reads them. `S7P-Iterator` is parsed before that policy runs.
-  It selects `SinglePass` or `MultiPass`, and with `MaxAttempts=1` it can only
-  reduce attempts. The API never sends any of the three, and a bounded request
+  It selects `SinglePass` or `MultiPass`. `MultiPass` reuses the single catch-all
+  host lap after lap, up to `MaxAttempts`, so the authored `MaxAttempts=1` keeps it
+  at one send (`CallerSelectedIterationIsBoundedByTheAuthoredMaxAttempts`). The API
+  never sends any of the three, and a bounded request
   refuses all three. The pre-existing `S7PDEBUG` also logs captured response lines
   now; the API never sends it either.
 - **Iteration and retries.** Iterators were rewritten. The default `SinglePass`
@@ -262,6 +264,15 @@ every edge.
 
 - App Configuration is read with `id-proxy`; warm profile, priority, and header
   policy values refresh without a revision. Event Hub and async settings are cold.
+- **App Configuration write access is proxy administration.** Warm and Cold keys
+  can replace the backend hosts and their keys. They can add `Path_*` routes with
+  their own `maxattempts` and iteration mode, and name `AuthProviders` types that
+  the proxy loads by reflection. They can also change inbound authentication and
+  the strip and disallowed header lists. AI4IA seeds only `Warm:Sentinel`, so every
+  proxy setting stays in the Container App environment. The proxy identity holds
+  only App Configuration Data Reader. Only the OIDC deployment identity holds
+  Data Owner, which `postprovision.ps1` uses to reconcile that sentinel. Never grant
+  a write role to a runtime identity.
 - Event Hub export is default-off and emits routing/status/latency metadata with
   request/response header logging disabled. It is not a work queue.
 - Durable async is default-off and provisions dedicated MI-only Blob + Service Bus

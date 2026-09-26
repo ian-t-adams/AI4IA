@@ -70,6 +70,21 @@ public sealed class GatewayUpstreamPolicyTests
         }
     }
 
+    [TestMethod]
+    public void AuthoredMaxAttemptsReachesTheMultiPassBudget()
+    {
+        Assert.AreEqual(1, AuthoredMaxAttempts());
+        // Control: upstream's default MultiPass budget is larger, so the authored value matters.
+        Assert.AreEqual(10, new ProxyConfig().MaxAttempts);
+    }
+
+    internal static int AuthoredMaxAttempts()
+    {
+        var match = Regex.Match(GatewaySource(), @"\{\s*name:\s*'MaxAttempts',\s*value:\s*'(?<value>[^']+)'\s*\}");
+        Assert.IsTrue(match.Success, "gateway.bicep must author MaxAttempts for the proxy");
+        return ConfigParser.ApplyEnv(new() { ["MaxAttempts"] = match.Groups["value"].Value }, new ProxyConfig()).MaxAttempts;
+    }
+
     private static Dictionary<string, string> AuthoredHosts()
     {
         var matches = Regex.Matches(GatewaySource(), @"name:\s*'(Host[12])'\s+value:\s*'([^']+)'");
