@@ -50,6 +50,10 @@ internal sealed class ApimPolicyHarness
     internal readonly List<(string Resource, string? Client)> Identities = [];
     internal readonly List<(string Url, string Body)> Exchanges = [];
     internal Dictionary<string, object> Cache = new();
+    internal XElement? PolicyProjection;
+    internal IReadOnlyDictionary<string, XElement>? GeneratedCatalog;
+    internal Func<string, ApimContext, object>? ExpressionEvaluator;
+    internal readonly List<string> VisitedFragments = [];
     private string _phase = "";
     private string _backend = "";
     private string _path = "";
@@ -115,7 +119,12 @@ internal sealed class ApimPolicyHarness
 
     internal async Task Run(Action<ApimContext>? beforeBackend = null)
     {
-        var policy = _photoAvatar ? PhotoAvatarPolicy : _versioned ? VersionedPolicy : LegacyPolicy;
+        var policy = PolicyProjection ?? (_photoAvatar ? PhotoAvatarPolicy : _versioned ? VersionedPolicy : LegacyPolicy);
+        if (GeneratedCatalog is not null)
+        {
+            Context.Variables.Remove("selectedBackends");
+            Context.Variables.Remove("listBackends");
+        }
         try
         {
             foreach (string phase in new[] { "inbound", "backend", "outbound" })
@@ -138,7 +147,7 @@ internal sealed class ApimPolicyHarness
         }
     }
 
-    internal object Eval(string expression) => Evaluator.Value(expression, Context);
+    internal object Eval(string expression) => (ExpressionEvaluator ?? Evaluator.Value)(expression, Context);
     private string Text(string expression) => expression.StartsWith('@') ? Eval(expression).ToString()! :
         Regex.Replace(expression, @"\{\{([\w-]+)\}\}", match => Context.NamedValues[match.Groups[1].Value]);
     private bool Condition(XElement node) => (bool)Eval(node.Attribute("condition")!.Value);
@@ -160,9 +169,16 @@ internal sealed class ApimPolicyHarness
                 break;
             case "include-fragment":
                 string fragment = node.Attribute("fragment-id")!.Value;
+                VisitedFragments.Add(fragment);
                 string? section = Sections.FirstOrDefault(s => fragment == $"simplel7proxy_{s}_32");
                 if (section is not null) await Execute(Policies[section]);
                 else if (fragment == "claude_auth_v1") await Execute(ClaudeEnabled ? ClaudeAuth : ClaudeDisabled);
+                else if (GeneratedCatalog is not null)
+                {
+                    if (!GeneratedCatalog.TryGetValue(fragment, out var generated))
+                        throw new AssertFailedException($"Missing generated fragment: {fragment}");
+                    await Execute(generated);
+                }
                 else if (UseCatalog && fragment == "endpoint_selection_setup_32") await Execute(Setup);
                 else if (UseCatalog && CatalogPolicies.TryGetValue(fragment, out var catalog)) await Execute(catalog);
                 else if (fragment != "endpoint_selection_setup_32" &&
@@ -315,10 +331,13 @@ internal sealed class ApimPolicyHarness
         }
     }
 
-    private static Func<string, ApimContext, object> Compile()
+    private static Func<string, ApimContext, object> Compile() => CompilePolicies([]);
+
+    internal static Func<string, ApimContext, object> CompilePolicies(IEnumerable<XElement> additional)
     {
         var expressions = Policies.Values.Concat(CatalogPolicies.Values)
-            .Concat([VersionedPolicy, Setup, ClaudeAuth, ClaudeDisabled, PhotoAvatarPolicy]).SelectMany(p => p.DescendantsAndSelf())
+            .Concat([VersionedPolicy, Setup, ClaudeAuth, ClaudeDisabled, PhotoAvatarPolicy]).Concat(additional)
+            .SelectMany(p => p.DescendantsAndSelf())
             .SelectMany(n => n.Attributes().Select(a => a.Value).Concat(n.HasElements ? [] : new[] { n.Value }))
             .Where(v => v.StartsWith("@(") || v.StartsWith("@{")).Distinct().ToArray();
         string scratch = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ai4ia-policy-" + Guid.NewGuid().ToString("N"));
@@ -349,7 +368,7 @@ internal sealed class ApimPolicyHarness
             }
             source.AppendLine("}");
             string input = System.IO.Path.Combine(scratch, "Policy.cs");
-            string output = System.IO.Path.Combine(scratch, "Policy.dll");
+            string output = System.IO.Path.Combine(scratch, System.IO.Path.GetFileName(scratch) + ".dll");
             File.WriteAllText(input, source.ToString());
             string root = Directory.GetParent(RuntimeEnvironment.GetRuntimeDirectory().TrimEnd(System.IO.Path.DirectorySeparatorChar))!.Parent!.Parent!.FullName;
             string compiler = Directory.EnumerateDirectories(System.IO.Path.Combine(root, "sdk"))
@@ -444,11 +463,18 @@ public sealed class ApimUrl
 {
     public string Path { get; }
     public string QueryString { get; }
+    public Dictionary<string, string[]> Query { get; }
     public ApimUrl(string path)
     {
         var parts = path.Split('?', 2);
         Path = parts[0];
         QueryString = parts.Length == 1 ? "" : parts[1];
+        Query = QueryString.Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Select(pair => pair.Split('=', 2))
+            .GroupBy(pair => Uri.UnescapeDataString(pair[0]), StringComparer.Ordinal)
+            .ToDictionary(group => group.Key,
+                group => group.Select(pair => pair.Length == 1 ? "" : Uri.UnescapeDataString(pair[1])).ToArray(),
+                StringComparer.Ordinal);
     }
 }
 public sealed class ApimRequest

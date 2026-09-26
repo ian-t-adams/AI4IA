@@ -29,6 +29,8 @@ def test_client_protocol_fixtures(protocol, case):
     rewritten = rewrite_openai_client_frame(
         frame, protocol=protocol, deployment=FIXTURES["deployment"]
     )
+    if case["application"]["type"] == "session.update":
+        assert "truncation" not in json.loads(rewritten)["session"]
     if protocol == RealtimeProtocol.preview:
         assert rewritten == frame
     else:
@@ -192,11 +194,9 @@ def test_registered_but_unoffered_tool_has_an_offered_execution_control(protocol
     bridge.tools = [tool for tool in bridge.tools if tool["name"] == "calculator"]
     execute = AsyncMock(wraps=bridge.executor.execute)
     monkeypatch.setattr(bridge.executor, "execute", execute)
+    fixture = next(case["application"] for case in FIXTURES["server"] if case["name"] == "function-call-done")
     for name in ("get_current_time", "calculator"):
-        frame = json.dumps({
-            "type": "response.function_call_arguments.done", "call_id": "call_1",
-            "name": name, "arguments": '{"expression":"2+3"}',
-        })
+        frame = json.dumps({**fixture, "name": name})
         if protocol == RealtimeProtocol.ga:
             frame = rewrite_ga_upstream_frame(frame)
         result = anyio.run(bridge.handle_upstream_frame, frame)

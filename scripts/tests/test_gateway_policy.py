@@ -25,6 +25,52 @@ docs_generator = load_script(
 
 
 class GatewayPolicyTests(unittest.TestCase):
+    def test_rt2_is_routable_and_explicitly_disabled_inventory_is_never_served(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        retained = next(m for m in models["catalog"] if m["name"] == "gpt-realtime-2")
+        self.assertNotIn("runtimeEnabled", retained)
+        self.assertNotIn("requiredRealtimeProtocol", retained)
+        inventory = load_script("voice_migration_inventory", ROOT / "scripts/check-model-availability.py")
+        before = inventory.catalog_requirements(models)
+        name = next(
+            row["deploymentName"] for row in before["eastus2"] if row["name"] == retained["name"]
+        )
+        for enabled in (True, False, True):
+            if not enabled:
+                retained["runtimeEnabled"] = False
+            else:
+                retained.pop("runtimeEnabled", None)
+            self.assertEqual(
+                name in "\n".join(gateway_generator.render_catalog(models)[0]), enabled,
+            )
+            for ga in (False, True):
+                self.assertEqual(
+                    name in gateway_generator.generate_realtime_policy(models, ga=ga), enabled,
+                )
+            # The runtime marker cannot drop desired inventory or free allocation.
+            self.assertEqual(inventory.catalog_requirements(models), before)
+
+    def test_required_ga_protocol_excludes_only_the_preview_route(self) -> None:
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        required = [m for m in models["catalog"] if m.get("requiredRealtimeProtocol") == "ga"]
+        self.assertTrue(required)
+        for model in required:
+            deployment = model["deployments"][0]
+            name = gateway_generator.deployment_name(
+                model=model["name"], subscription_token=models["naming"]["subscriptionToken"],
+                region=deployment["region"], sku=deployment["sku"],
+                sku_short=models["naming"]["skuShort"],
+            )
+            self.assertNotIn(name, gateway_generator.generate_realtime_policy(models))
+            self.assertIn(name, gateway_generator.generate_realtime_policy(models, ga=True))
+            # Flip only the requirement: the identical deployment must appear.
+            del model["requiredRealtimeProtocol"]
+            self.assertIn(name, gateway_generator.generate_realtime_policy(models))
+            model["requiredRealtimeProtocol"] = "ga"
+
+        for ga in (False, True):
+            self.assertIn("gpt-realtime-2-", gateway_generator.generate_realtime_policy(models, ga=ga))
+
     # APIM's policy schema types these forward-request attributes as literal
     # xs:boolean values. Deployment validation rejects expressions there, even
     # though the offline harness can evaluate them.
@@ -86,7 +132,8 @@ class GatewayPolicyTests(unittest.TestCase):
                 model=model["name"], subscription_token=naming["subscriptionToken"],
                 region=deployment["region"], sku=deployment["sku"], sku_short=naming["skuShort"],
             ): f"{{{{foundry-{deployment['region']}-realtime-wss-endpoint}}}}/openai/v1/realtime"
-            for model in models["catalog"] if model["category"] == "realtime"
+            for model in models["catalog"]
+            if model["category"] == "realtime" and model.get("runtimeEnabled", True)
             for deployment in model["deployments"]
         }
         self.assertGreater(len(expected), 1)
@@ -1058,7 +1105,7 @@ class GatewayPolicyTests(unittest.TestCase):
                         malformed, "malformed-interpolation.xml"
                     )
 
-    def test_every_catalog_deployment_is_allowlisted(self) -> None:
+    def test_only_runtime_enabled_catalog_deployments_are_allowlisted(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
         fragment = "\n".join(
             path.read_text(encoding="utf-8")
@@ -1479,28 +1526,35 @@ class GatewayPolicyTests(unittest.TestCase):
                         f"{header} must be suppressed for pre-routing failures",
                     )
 
-    def test_every_realtime_deployment_has_a_catalog_route(self) -> None:
+    def test_every_realtime_deployment_has_only_compatible_catalog_routes(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
-        policy = (ROOT / "infra/policies/realtime-routing.xml").read_text(
-            encoding="utf-8"
-        )
         naming = models["naming"]
-        for model in models["catalog"]:
-            if model["category"] != "realtime":
-                continue
-            for deployment in model["deployments"]:
-                name = gateway_generator.deployment_name(
-                    model=model["name"],
-                    subscription_token=naming["subscriptionToken"],
-                    region=deployment["region"],
-                    sku=deployment["sku"],
-                    sku_short=naming["skuShort"],
-                )
-                self.assertIn(name, policy)
-                self.assertIn(
-                    f"{{{{foundry-{deployment['region']}-realtime-wss-endpoint}}}}/openai/realtime",
-                    policy,
-                )
+        for protocol in ("preview", "ga"):
+            filename = "realtime-ga-routing.xml" if protocol == "ga" else "realtime-routing.xml"
+            policy = (ROOT / "infra/policies" / filename).read_text(encoding="utf-8")
+            path = "/openai/v1/realtime" if protocol == "ga" else "/openai/realtime"
+            for model in models["catalog"]:
+                if model["category"] != "realtime":
+                    continue
+                for deployment in model["deployments"]:
+                    name = gateway_generator.deployment_name(
+                        model=model["name"],
+                        subscription_token=naming["subscriptionToken"],
+                        region=deployment["region"],
+                        sku=deployment["sku"],
+                        sku_short=naming["skuShort"],
+                    )
+                    if (
+                        not model.get("runtimeEnabled", True)
+                        or model.get("requiredRealtimeProtocol") not in (None, protocol)
+                    ):
+                        self.assertNotIn(name, policy)
+                    else:
+                        self.assertIn(name, policy)
+                        self.assertIn(
+                            f"{{{{foundry-{deployment['region']}-realtime-wss-endpoint}}}}{path}",
+                            policy,
+                        )
 
     def test_topology_is_proxy_then_apim_then_foundry(self) -> None:
         gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")

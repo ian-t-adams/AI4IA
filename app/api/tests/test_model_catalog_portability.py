@@ -83,6 +83,90 @@ def test_checked_in_models_json_declares_both_tokens():
     assert naming["foundryToken"] == "aiforia"
 
 
+def test_required_realtime_protocol_survives_generator_and_dev_fallback():
+    from ai4ia_api.catalog import ModelCatalog, _transform_infra_models
+
+    source = _synthetic_models("tenant")
+    source["catalog"][0].update(category="realtime", requiredRealtimeProtocol="ga")
+    for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
+        entry = ModelCatalog.model_validate(raw).models[0]
+        assert entry.requiredRealtimeProtocol == "ga"
+        assert not entry.supports_realtime_protocol("preview")
+        assert entry.supports_realtime_protocol("ga")
+
+    del source["catalog"][0]["requiredRealtimeProtocol"]
+    for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
+        entry = ModelCatalog.model_validate(raw).models[0]
+        assert entry.supports_realtime_protocol("preview")
+        assert entry.supports_realtime_protocol("ga")
+
+
+def test_schema_limits_required_realtime_protocol_to_realtime_rows():
+    import jsonschema
+    import pytest
+
+    schema = json.loads((_REPO_ROOT / "infra" / "models.schema.json").read_text(encoding="utf-8"))
+    validator = jsonschema.Draft7Validator(schema)
+    source = _synthetic_models("tenant")
+    row = source["catalog"][0]
+    row.update(category="realtime", requiredRealtimeProtocol="ga")
+    validator.validate(source)
+    # Flip only the category: the identical requirement must now be refused.
+    row["category"] = "chat"
+    with pytest.raises(jsonschema.ValidationError, match="'realtime' was expected"):
+        validator.validate(source)
+    # Without the requirement the same chat row is valid again.
+    del row["requiredRealtimeProtocol"]
+    validator.validate(source)
+
+
+def test_runtime_disable_survives_generator_and_dev_fallback():
+    from ai4ia_api.catalog import ModelCatalog, _transform_infra_models
+
+    source = _synthetic_models("tenant")
+    source["catalog"][0]["runtimeEnabled"] = False
+    for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
+        catalog = ModelCatalog.model_validate(raw)
+        assert catalog.models[0].runtimeEnabled is False
+        assert catalog.get("gpt-x") is catalog.models[0]
+        assert not catalog.available(catalog.models[0])
+        assert catalog.resolve_deployment("gpt-x") is None
+    del source["catalog"][0]["runtimeEnabled"]
+    for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
+        catalog = ModelCatalog.model_validate(raw)
+        assert catalog.get("gpt-x").runtimeEnabled is True
+        assert catalog.resolve_deployment("gpt-x") is not None
+
+
+def test_realtime_and_external_profiles_survive_the_same_catalog_roundtrip():
+    from ai4ia_api.catalog import ModelCatalog, _transform_infra_models
+
+    source = json.loads(_MODELS.read_text(encoding="utf-8"))
+    models = source["catalog"]
+    assert any(m.get("deploymentTarget") == "external-claude" for m in models)
+    assert any(m.get("requiredRealtimeProtocol") == "ga" for m in models)
+    retained = next(m for m in models if m["name"] == "gpt-realtime-2")
+    assert retained.get("runtimeEnabled", True) is True
+    for enabled in (True, False):
+        if not enabled:
+            retained["runtimeEnabled"] = False
+        for raw in (_load_gen().build_catalog(source), _transform_infra_models(source)):
+            catalog = ModelCatalog.model_validate(raw)
+            restored = ModelCatalog.model_validate(catalog.model_dump())
+            for declared, entry in zip(models, restored.models, strict=True):
+                assert entry.id == declared["name"]
+                assert entry.runtimeEnabled is declared.get("runtimeEnabled", True)
+                assert entry.requiredRealtimeProtocol == declared.get("requiredRealtimeProtocol")
+                assert entry.deploymentTarget == declared.get("deploymentTarget", "source")
+                assert entry.anthropicThinking == declared.get("anthropicThinking")
+                assert entry.samplingSupported is declared.get("samplingSupported")
+                if entry.deploymentTarget == "external-claude":
+                    entry.require_external_profile()
+                assert restored.get(entry.id) is entry
+                assert bool(restored.eligible_options(entry, policy_filter=False)) is entry.runtimeEnabled
+            assert restored.get(retained["name"]).runtimeEnabled is enabled
+
+
 def test_runtime_disable_survives_generator_and_dev_fallback_without_routing():
     from ai4ia_api.catalog import ModelCatalog, _transform_infra_models
 

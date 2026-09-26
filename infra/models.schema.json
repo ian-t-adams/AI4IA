@@ -44,7 +44,7 @@
           "runtimeEnabled": {
             "type": "boolean",
             "default": true,
-            "description": "False keeps this row's deployments in desired infrastructure, quota and retirement inventory, but removes the model from runtime availability, selection and generated HTTP gateway routes. It is not physical deletion or free quota; deployment removal is a separate operator-approved cleanup."
+            "description": "False keeps this row's deployments and historical metadata in desired infrastructure, quota and retirement inventory, but leaves it with no eligible runtime options or generated HTTP/realtime routes. It is not physical deletion or free quota; deployment removal is a separate operator-approved cleanup."
           },
           "api": {
             "type": "string",
@@ -60,6 +60,10 @@
           "anthropicThinking": {
             "enum": ["disabled", "adaptive"],
             "description": "Explicit external-Claude profile. disabled sends thinking disabled and supports the governed text/tool loop. adaptive omits thinking (provider adaptive thinking), is text-only (toolCalling false) and never captures or replays signed thinking blocks."
+          },
+          "requiredRealtimeProtocol": {
+            "const": "ga",
+            "description": "Only advertise and route this realtime model on the server-selected GA protocol. Omitted on existing models whose legacy compatibility is retained; never selects or enables a protocol."
           },
           "contextWindow": { "type": "integer", "minimum": 1 },
           "maxOutputTokens": { "type": "integer", "minimum": 1 },
@@ -158,7 +162,14 @@
               "items": { "enum": ["low", "medium", "high"] }
             }
           }
-        }
+        },
+        "allOf": [
+          {
+            "description": "A protocol requirement is realtime-only metadata.",
+            "if": { "required": ["requiredRealtimeProtocol"] },
+            "then": { "properties": { "category": { "const": "realtime" } } }
+          }
+        ]
       }
     }
   },

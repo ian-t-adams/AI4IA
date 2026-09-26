@@ -17,6 +17,7 @@ afterEach(() => {
 const MODELS = [
   { id: "gpt-realtime", displayName: "GPT Realtime" },
   { id: "gpt-realtime-mini", displayName: "GPT Realtime Mini" },
+  { id: "gpt-realtime-2", displayName: "GPT Realtime 2" },
 ];
 
 const PROVIDERS = voiceProviderCatalog.providers.map(
@@ -73,6 +74,33 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
 }
 
 describe("VoiceSettingsPanel", () => {
+  it.each(["preview", "ga"] as const)("keeps RT2 selectable under the %s selector", async (protocol) => {
+    const { user, rerender, onModelChange } = setup({ openaiRealtimeProtocol: protocol });
+    const model = screen.getByRole("combobox", { name: "Realtime model" });
+    await user.selectOptions(model, "gpt-realtime-2");
+    expect(onModelChange).toHaveBeenCalledWith("gpt-realtime-2");
+    rerender({ explicitModel: "gpt-realtime-2" });
+    expect(model).toHaveValue("gpt-realtime-2");
+    expect(model).not.toHaveAttribute("aria-invalid");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps an unavailable saved model visible and requires an explicit replacement", async () => {
+    const { user, rerender, onModelChange } = setup({ explicitModel: "unavailable-realtime" });
+    const model = screen.getByRole("combobox", { name: "Realtime model" });
+    expect(model).toHaveValue("unavailable-realtime");
+    expect(model).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose an available model or Default");
+    expect(onModelChange).not.toHaveBeenCalled();
+
+    await user.selectOptions(model, "gpt-realtime-mini");
+    expect(onModelChange).toHaveBeenCalledWith("gpt-realtime-mini");
+    rerender({ explicitModel: "gpt-realtime-mini" });
+    expect(model).toHaveValue("gpt-realtime-mini");
+    expect(model).not.toHaveAttribute("aria-invalid");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("discloses GA temperature limits without changing saved preview or Speech settings", async () => {
     const { user, rerender, onSettingsChange } = setup({
       settings: { ...DEFAULT_VOICE_SETTINGS, temperature: 0.8 },
@@ -132,6 +160,7 @@ describe("VoiceSettingsPanel", () => {
       "Default (GPT Realtime)",
       "GPT Realtime",
       "GPT Realtime Mini",
+      "GPT Realtime 2",
     ]);
   });
 

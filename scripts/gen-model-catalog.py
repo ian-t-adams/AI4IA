@@ -67,6 +67,7 @@ def build_catalog(models: dict) -> dict:
                 **({} if runtime_enabled(model) else {"runtimeEnabled": False}),
                 "format": model["format"],
                 "api": model.get("api", "chat"),
+                "requiredRealtimeProtocol": model.get("requiredRealtimeProtocol"),
                 "contextWindow": model.get("contextWindow"),
                 "maxOutputTokens": model.get("maxOutputTokens"),
                 "toolCalling": model.get("toolCalling"),

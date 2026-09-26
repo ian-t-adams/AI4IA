@@ -53,6 +53,28 @@ describe("voice audio transport", () => {
 });
 
 describe("realtimeModels", () => {
+  it("offers GA-only models only with the server-selected GA protocol", () => {
+    const models = [
+      { id: "gpt-realtime-2", category: "realtime" },
+      { id: "gpt-realtime-1.5", category: "realtime", requiredRealtimeProtocol: "ga" as const },
+      { id: "gpt-realtime-2.1", category: "realtime", requiredRealtimeProtocol: "ga" as const },
+      { id: "gpt-realtime-2.1-mini", category: "realtime", requiredRealtimeProtocol: "ga" as const },
+      { id: "disabled", category: "realtime", runtimeEnabled: false },
+    ];
+    expect(realtimeModels(models).map((m) => m.id)).toEqual(["gpt-realtime-2"]);
+    expect(realtimeModels(models, "preview").map((m) => m.id)).toEqual(["gpt-realtime-2"]);
+    const gaModels = ["gpt-realtime-2", "gpt-realtime-1.5", "gpt-realtime-2.1", "gpt-realtime-2.1-mini"];
+    expect(realtimeModels(models, "ga").map((m) => m.id)).toEqual(gaModels);
+    models[4].runtimeEnabled = true;
+    expect(realtimeModels(models, "ga").map((m) => m.id)).toEqual([...gaModels, "disabled"]);
+    for (const model of models.slice(1, 4)) {
+      model.runtimeEnabled = false;
+      expect(realtimeModels(models, "ga").map((m) => m.id)).not.toContain(model.id);
+      model.runtimeEnabled = true;
+      expect(realtimeModels(models, "ga").map((m) => m.id)).toContain(model.id);
+    }
+  });
+
   it("keeps only realtime-category models", () => {
     const models = [
       { id: "gpt-realtime", category: "realtime" },

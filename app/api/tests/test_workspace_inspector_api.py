@@ -135,6 +135,30 @@ class CrudMemory:
         return True
 
 
+def test_inspector_retains_disabled_model_metadata_while_catalog_refuses_selection():
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        app.state.catalog = app.state.policy.catalog = app.state.catalog.model_copy(deep=True)
+        entry = app.state.catalog.get("gpt-6-sol")
+        assert entry is not None and entry.contextWindow and entry.maxOutputTokens
+        created = client.post("/api/sessions", json={"model": entry.id})
+        assert created.status_code == 201, created.text
+        session_id = created.json()["id"]
+        for enabled in (True, False, True):
+            entry.runtimeEnabled = enabled
+            inspector = client.get(f"/api/sessions/{session_id}/inspector")
+            assert inspector.status_code == 200, inspector.text
+            assert inspector.json()["model"] == {
+                "id": entry.id, "displayName": entry.displayName,
+                "contextWindow": entry.contextWindow, "maxOutputTokens": entry.maxOutputTokens,
+            }
+            offered = client.get("/api/models")
+            assert offered.status_code == 200, offered.text
+            assert (entry.id in {row["id"] for row in offered.json()["models"]}) is enabled
+            assert (app.state.catalog.resolve_deployment(entry.id) is not None) is enabled
+            assert client.get(f"/api/sessions/{session_id}").json()["model"] == entry.id
+
+
 def test_session_policy_and_inspector_are_server_owned():
     app = create_app(make_settings())
     with TestClient(app) as client:

@@ -748,9 +748,10 @@ the environment — the prior Consumption service has been deleted.
 ### Staged GA Realtime
 
 **Source-ready is not activation.** The GA adapter and conditional APIM objects
-ship with `realtimeGaEnabled=false` and `realtimeProtocol=preview`. Model catalog
-versions, capacities, deployment counts, the default realtime model and TTS are
-unchanged. All live work below requires separate approval under
+ship with `realtimeGaEnabled=false` and `realtimeProtocol=preview`. The default
+realtime model is unchanged. The separate [model migration](#ga-voice-model-migration)
+below prepares desired inventory changes; it does not activate these flags or
+prove a deployed model version. All live work requires separate approval under
 [`deploy-with-an-agent.md`](../deploy-with-an-agent.md).
 
 The separate [continuous application canary](deployment.md#continuous-application-canaries)
@@ -795,13 +796,259 @@ reallocating capacity are separate approval decisions, not automatic rollback.
 
 Issue [#413](https://github.com/ian-t-adams/AI4IA/issues/413) remains open until
 approved live protocol canaries, cutover/rollback evidence, the realtime-model
-lifecycle decision and the separately validated GA TTS migration are delivered.
-In particular, the TTS GA version cannot assume spare overlap capacity, and
-contradictory public versus subscription realtime-version observations must not
-be silently reconciled by editing the catalog. Regenerate projections only with
-an approved catalog change. The
+lifecycle decision and any approved legacy cleanup are delivered. The GA TTS
+item was completed separately by [#492](https://github.com/ian-t-adams/AI4IA/pull/492):
+the existing mini-TTS deployment is version `2025-12-15`, and an authenticated
+application speech request returned structurally valid PCM/WAV. This does not
+prove audio quality or GA realtime acceptance. Contradictory public versus
+subscription realtime-version observations must not be silently reconciled
+into a new retirement date. The
 [configuration reference](../configuration-reference.md#staged-ga-realtime-protocol)
 documents the exact wire boundary and prerequisites.
+
+### GA voice model migration
+
+**Phase 1 approved for merge (owner, 2026-09-26).** This is phase-1 source for
+[#413](https://github.com/ian-t-adams/AI4IA/issues/413). Merging it to main
+provisions the three GA-only deployments below through deploy.yml's
+`azd provision`. It is not a live realtime canary result, a GA protocol cutover,
+or completed cleanup: keep `AI4IA_REALTIME_PROTOCOL=preview` until a separately
+approved cutover, so preview users see no new model. The TTS upgrade
+already shipped in #492; this candidate preserves it rather than scheduling it
+again. It also preserves the retired-model removals and default-off external
+Claude integration from current main.
+
+| Desired entry | Phase-1 source posture |
+| --- | --- |
+| `gpt-realtime-2` / `2026-05-06` | Remains selectable on preview and GA with `runtimeEnabled` (default true) and `requiredRealtimeProtocol` omitted. Preserve eastus2 / GlobalStandard / baseline 10, maximum 10 and existing pool metadata until the authoritative subscription inference deprecation `2026-10-31T00:00:00Z`; the separately approved follow-up below is mandatory. |
+| `gpt-realtime-1.5` / `2026-02-23` | Added only in the old model's eastus2 footprint, GlobalStandard baseline 10. `requiredRealtimeProtocol=ga`; no unverified maximum, pool, additional region or production-profile values. The maximum profile uses the existing portable-baseline fallback, not a new quota assertion. |
+| `gpt-realtime-2.1` and `gpt-realtime-2.1-mini` / `2026-07-07` | Two additional GA-only choices, each eastus2 GlobalStandard baseline 10 with no maximum, pool, extra region or production-profile values. Full 2.1 is the subscription-verified successor to RT2, not an in-place version upgrade. |
+| `gpt-4o-mini-tts` / `2025-12-15` | Already deployed and structurally validated by #492. Preserve the same eastus2 name, SKU, baseline 10, maximum 600 and pool metadata; no additional upgrade, overlap deployment or capacity change. |
+| Existing `gpt-realtime`, `gpt-realtime-mini`, `tts-hd` | Unchanged models, versions, footprints and defaults. Speech Voice Live keeps its independent supported managed-model subset; it does not acquire Realtime 1.5, 2.1 or 2.1-mini. |
+
+**RT2 owner decision, 2026-09-23:** preserve user choice rather than runtime-disable
+the existing deployment from a public reference date. The authoritative
+subscription `models/list` observation in
+[retirement report run 35722868193](https://github.com/ian-t-adams/AI4IA/actions/runs/35722868193)
+is dated `2026-09-22T11:42:21Z`. Its inventory covered 90 deployments with zero
+unknown and zero omitted; for RT2 `2026-05-06`, eastus2 GlobalStandard, it records
+Preview, deployed Succeeded without drift, and both `skus[].deprecationDate` and
+`deprecation.inference` at `2026-10-31T00:00:00Z`. That is dated subscription
+evidence, not a fresh inference test or a claim about this candidate's inventory.
+The public August 31 reference file/table remains unchanged and separately labeled.
+
+**Required retirement follow-up:** RT2 remains selectable until that authoritative
+inference deadline. From `2026-10-24T00:00:00Z`, the existing seven-day retirement
+policy treats new/changed targets as unsafe; exact Succeeded reconciles only warn.
+A separately approved change must set RT2 `runtimeEnabled=false`, and must be
+**merged and deployed before
+`2026-10-31T00:00:00Z`**. This source change introduces no automatic runtime date
+cutoff. Phase 2 resource/desired-row removal still needs its own approval.
+
+**Successor evidence, 2026-09-23 approximately 12:55 UTC:** the owner supplied
+read-only subscription model lists for eastus2 and swedencentral. Both
+`gpt-realtime-2.1` and `gpt-realtime-2.1-mini` `2026-07-07` are
+GenerallyAvailable with inference through `2027-07-31T00:00:00Z`. Full 2.1 offers
+GlobalStandard and DataZoneStandard; mini offers GlobalStandard only. Each
+GlobalStandard counter reads 0/10 in both regions. Equal counters do not prove
+independent quota pools or permit duplicate regional allocations; this source
+chooses only the approved eastus2 portable baseline, not a maximum or Data Zone.
+
+**Fresh provisioning evidence, 2026-09-26 at 16:31 UTC (read-only):** the eastus2
+subscription model list offers all three additions at their catalog versions as
+GenerallyAvailable GlobalStandard models. Their deprecation dates are
+`2027-08-24T00:00:00Z` for 1.5 and `2027-07-31T00:00:00Z` for 2.1 and 2.1-mini.
+Each `OpenAI.GlobalStandard.<model>` counter reads 0/10 in eastus2 and
+swedencentral. Whether a counter is regional or subscription-wide, each single
+10-unit deployment fits and leaves zero headroom. The preprovision preflight,
+`scripts/check-model-availability.py` with the maximum capacity profile,
+reported no blocking problem in any catalog region.
+
+Those lists offer RT2 only as `2026-05-06`, with the October 31 inference date:
+there is **no in-place newer RT2 version**. `gpt-realtime-2.1` is the verified
+successor. They also offer `gpt-realtime-mini` `2025-10-06` with inference through
+`2027-04-06T00:00:00Z`, later than the catalog's `2025-12-15` version
+(`2026-12-15T00:00:00Z`). Record that discrepancy without changing the existing
+mini pin or treating it as an approved downgrade.
+
+The [Learn audio-model table](https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#audio-models)
+identifies both 2.1 models as minor RT2 updates with improved silence/noise
+handling. Its public preview label differs from the subscription GA observation;
+keep those evidence scopes distinct. Its 32,000-input/4,096-output limits also
+differ from the broader 2.x overview's 256,000-token context. The new catalog
+entries therefore mirror the existing realtime metadata rather than asserting
+an uncertain context cap or adding a new reasoning-effort/image-input surface.
+
+The [public GA supported-model list](https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets#supported-models)
+names RT2 `2026-05-07`, not this subscription's `2026-05-06`; do not upgrade or
+alias that version. The [2.x preview overview](https://learn.microsoft.com/azure/foundry/openai/concepts/realtime-2)
+describes reasoning effort, multiple output items and `phase`, stricter instruction
+following, and lack of `session.update.truncation` support. The application does
+not generate that property; the adapter preserves unrelated explicitly supplied
+fields rather than imposing a new model-specific configuration policy. Item phases,
+audio and tool events remain observable through the existing protocol boundary.
+These source controls do not prove live GA/2.x acceptance or enable a new effort UI.
+
+`runtimeEnabled` is an optional strict Boolean, default true. False means
+**operator-disabled for runtime**, not a claim that the provider has retired it.
+The row still participates in Bicep desired inventory, allocation/quota and
+retirement reporting. `Test-ModelDeployments` keeps its exact inventory check:
+there is no stale-name exemption. Phase 1 retains RT2 alongside the three
+GA-only additions; phase 2 removes the old resource and desired row together through a
+separate reviewed change. Omitting a desired row while retaining its resource
+would fail that postprovision check, not constitute completed migration.
+
+The runtime catalog, dev fallback, model/tool lookups, `/api/models`, voice
+selector and generated gateway routes enforce these fields. Saved Realtime 2
+choices remain valid under the current owner decision. An explicitly
+runtime-disabled choice, or a GA-only choice after preview rollback, stays visible
+as unavailable and requires an available model or Default. No persisted
+conversation/model version is rewritten, and there is no automatic substitution
+or protocol downgrade. Unavailable new connections are denied before provider
+egress. Already accepted connections are not replayed or migrated.
+
+**Required rollout order (separate approvals):**
+
+1. Revalidate exact AIServices model/version/SKU offerings, lifecycle evidence,
+   current quota counters, live allocations and the selected capacity profile.
+   Regenerate any capacity evidence against this exact catalog hash; do not reuse
+   an earlier hash or change the operator's profile. Historical September 10
+   capacity observations are not current allocation approval, cross-region pool
+   identity, TPM or overlap headroom. The September 23 observations are also dated,
+   not reusable provisioning authority for Realtime 1.5, 2.1 or 2.1-mini.
+2. Read back the staged GA APIM API, policy, scoped subscription and API-secret
+   wiring on the **pre-migration desired catalog**, leaving production
+   `realtimeProtocol=preview`. Use the existing `gpt-realtime` on an approved
+   isolated GA API revision to establish the protocol baseline described above.
+   A deployment whose GA infrastructure is not yet staged needs separate staging
+   approval first. Do not run this candidate's full provision before approving
+   its new realtime allocation. RT2 remains selectable; the TTS row is unchanged
+   from the accepted #492 release and needs no second migration.
+3. After that evidence and explicit owner approval, reconcile the phase-1 desired
+   inventory, retaining Realtime 2 while provisioning the approved GA-only additions and preserving
+   the accepted TTS deployment. Read back exact resource IDs, names, versions, SKU/capacity,
+   provisioning state and active image references. Confirm Realtime 2 retains its
+   exact desired version/allocation and both preview/GA serving routes, without
+   enabling the server's GA selector.
+   None of these management-plane observations prove inference.
+4. On the approved isolated GA revision, exercise each newly approved model
+   through the app relay and GA APIM route. Exercise audio/transcripts, tools and
+   denial, session ownership, interruption/truncation and cleanup, alongside
+   unchanged preview and Speech controls. The separate
+   [speech output canary](#speech-output-canary) can recheck the unchanged speech
+   path only under fresh explicit approval, not by replaying #492's consumed
+   allowance. Bind results to the exact catalog,
+   deployed version readbacks and application image, not the requested model ID
+   alone.
+5. Only after accepted results and a separate cutover decision, select `ga` on the
+   intended production API revision. Keep the existing `gpt-realtime` default;
+   Realtime 1.5, 2.1 and 2.1-mini become available explicit choices, not a bulk preference
+   migration. Retain the preview route/key and known-good application image for
+   the recorded rollback window.
+6. **Phase 2 requires another approval.** Inventory the exact retained Realtime 2
+   deployment resource ID, subscription, resource group, account, model/version
+   and remaining connections. After live acceptance, prepare the reviewed
+   desired-row removal and authorize deletion of that exact obsolete resource.
+   Coordinate the source/removal window so an old desired template cannot
+   recreate it. No wildcard cleanup, automatic deletion, quota reclamation from
+   catalog absence, or issue closure before evidenced cleanup.
+
+**Rollback boundaries:** preview selection can use the retained compatible
+`gpt-realtime`/mini models and currently selectable RT2, not the GA-only additions.
+The same RT2 retirement deadline applies during rollback; after the required
+follow-up, do not restore a disabled or expired target. End affected connections
+and establish a new one, without replaying a possibly accepted frame.
+Do not roll back the already accepted TTS upgrade as part of realtime
+rollback. Any later TTS version change is a separately approved operation:
+an advertised preview version does not prove an in-place downgrade, immediate
+availability or zero interruption. Do not assume spare capacity at a full counter.
+
+The [generated public retirement references](../region-capability-matrix.md#public-voice-model-retirement-references)
+come from the same typed evidence file as the source checks, not a manually merged
+retirement date. The [official GA model list](https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets#supported-models)
+identifies Realtime 1.5 / `2026-02-23`; the
+[retirement schedule](https://learn.microsoft.com/azure/foundry/openai/concepts/model-retirement-schedule)
+identifies the TTS / `2025-12-15` GA version. TTS keeps the existing
+deployment-qualified native `/audio/speech` request through
+`SimpleL7Proxy -> APIM -> Foundry`, including the current audio API version and
+JSON `model`, `input`, `voice`, `response_format` fields. Its delivered change was
+a model-version upgrade, not a rewrite to a different speech protocol.
+
+`pricing.json` keeps the [Realtime 1.5 OpenAI modality schedule](https://developers.openai.com/api/docs/models/gpt-realtime-1.5)
+unchanged as reference-only data. The two 2.1 rows use verified public
+[Azure Retail Prices API](https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview)
+meters observed September 23, effective July 1, 2026. Filter `serviceName`
+`Foundry Models`, `productName` `Azure OpenAI Media`, `armRegionName` `eastus2`,
+and `priceType` `Consumption`; select each exact model's `Gl 1M Tokens` meter,
+not its `DZ` counterpart. The recorded primary, tier-zero meters use `1M` units
+and USD, with exact meter IDs retained alongside the following rates:
+
+| Model | Text input / cached / output | Audio input / cached / output | Image input / cached |
+| --- | --- | --- | --- |
+| `gpt-realtime-2.1` | 4 / 0.4 / 24 | 32 / 0.4 / 64 | 5 / 0.5 |
+| `gpt-realtime-2.1-mini` | 0.6 / 0.06 / 2.4 | 10 / 0.3 / 20 | 0.8 / 0.08 |
+
+All values are USD per million tokens of the named modality. Mini meters were
+verified independently; no full-model rate was copied or guessed. Published
+mini `DZ` prices do not prove a subscription DataZoneStandard offering.
+`retailPricesVerified=true` records public price evidence, while
+`azureBillingVerified=false` and `runtimeEstimate=unknown` retain the distinction
+from actual billed usage. The reconciled compact price version is
+`2026-09-26-voice-avatar-opus55`: it combines these realtime references with
+main's GPT-6 Sol/Luna and GPT-5.5 rates, photo avatar meters, Claude Opus 5.5
+rates and Claude Sonnet 5 Data Zone rate. Every input numeric rate, the old 1.5
+reference and historical receipts are unchanged.
+
+These remain `referenceModalityModels`, never flat `models` estimates. Text,
+cached text, audio, cached audio and image rates are not interchangeable. The
+current ledger lacks complete modality/cache accounting and a bounded session
+envelope, so mixed realtime cost remains unknown; TTS usage is also unknown.
+Image prices do not enable an image-input surface. Token/dollar-capped paths
+still refuse unsupported bounds; do not weaken admission to obtain a canary result.
+
+### Speech output canary
+
+`scripts/speech-canary.py` is separate from the audio-free WebSocket setup canary.
+It requires a checkout and the existing API `aiohttp` dependency. Inspect the
+catalog target without credentials or requests:
+
+```powershell
+python scripts\speech-canary.py `
+  --url https://<approved-api-host>/api/voice/speech `
+  --model gpt-4o-mini-tts --region eastus2
+```
+
+The default emits `outcome=not_run` and exits 2. **Only after approval**, supply an
+existing Entra bearer token through the explicitly named environment variable
+(not a command-line token, URL query, azd value, file or committed setting) and
+add `--execute --token-env <approved-token-variable>`. It makes exactly one
+billable app request using fixed synthetic text, `alloy` and WAV; it never
+acquires credentials, calls APIM/Foundry directly, plays or saves audio, changes
+resources, or retries.
+
+Use a separately authorized speech caller, not the continuous monitor's
+sentinel-chat actor or its setup-only realtime actor. Their fixed request
+profiles reject REST speech even when a broader model category is allowed.
+`--execute` grants no API permission and does not relax that boundary. This
+command reuses the published canary contracts for strict, bounded catalog/report
+JSON; it does not join the scheduled monitor or inherit its actor authority.
+
+The request deadline is at most 30 seconds and the outer worker deadline is at
+most 35 seconds, including DNS/shutdown. Responses are bounded to 1,000,000 bytes,
+64 headers/8 KiB, and 32 RIFF chunks. Success requires HTTP 200, `audio/wav`,
+the requested `X-Model`, no compressed payload, consistent lengths, and 16-bit
+mono/stereo PCM at 8-48 kHz spanning 100 ms to 15 seconds. Invalid structure,
+header/type mismatches, redirects, errors, truncation, oversized or missing audio
+fail closed. Ambient proxy credentials, cookies and redirects are disabled.
+
+Exit 0 means only that this structural audio check succeeded. Every other outcome
+exits 2; a timed-out/failed request may still have been accepted and billed, so
+review it before any new approved invocation. Output contains bounded metadata,
+the source catalog hash and `modelVersionEvidence=declared-only`, not audio, text,
+tokens, headers or exception bodies. It is not intelligibility evaluation or
+proof of the live deployed version; correlate the approved app call and exact
+version readback separately. CI uses synthetic bytes/transports only and never
+executes this command against a live service.
 
 ### Speech Voice Live (second voice provider)
 

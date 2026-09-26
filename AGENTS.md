@@ -58,13 +58,16 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    match it. `runtimeEnabled` is a strict optional Boolean, default true: false
    retains the row's desired deployments, capacity and retirement inventory but
    leaves it with no eligible options, so listings, deployment resolution and
-   capability availability exclude it and generated HTTP gateway routes omit it.
+   capability availability exclude it. `get()` and `for_deployment()` retain
+   historical metadata; a lookup is not runtime admission. New selections must
+   use `available`, `eligible_options` or `resolve_deployment`, whose shared
+   eligibility gate refuses disabled rows even without actor filtering.
+   Generated HTTP, preview/GA realtime routes, default realtime selection and
+   voice-provider projections all honor disablement.
    Never interpret runtime disablement as physical deletion or free quota. Every
    seam offering a capability backed by such a model shares one availability
    predicate and still re-checks at execution (video:
-   `app/api/src/ai4ia_api/videos/availability.py`). Realtime routes, default
-   realtime selection and voice-provider projections do not honor it yet; extend
-   them before runtime-disabling a realtime model.
+   `app/api/src/ai4ia_api/videos/availability.py`).
 3. **Server-authoritative feature gates.** The web app may hide UI, but the API
    and startup validation must enforce feature posture. Never gate only in React.
 4. **Cosmos is canonical.** Sessions, messages, usage, user agents/workflows, MCP
@@ -123,6 +126,9 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    before the provider await through the shared pricing helper. Missing usage or
    prices remain unknown, and receipt reads never reprice history. New evidence
    must still fit the 32 KiB receipt budget under escaped durable serialization.
+   Price-document versions must survive the actual receipt identifier/redaction
+   path unchanged. Keep them compact and public; never weaken credential
+   redaction to preserve an overlong, token-shaped version identifier.
 8. **Hard admission is a separate, default-off source contract.** Do not turn
    soft ledger checks into a distributed quota or bootstrap an admissible empty
    hard balance for an existing owner. Metered egress goes through the shared owner
@@ -598,7 +604,9 @@ four requests/60 seconds and 8 KiB per response. No accepted request, 404, unkno
 upload or exhausted budget can pass cleanup. Public responses hide protocol and
 generation: keep server fencing and actual API/shared-fixture parity tests, not
 invented fields. Creation stays single-attempt and existing chat retries stay
-unchanged; cleanup never adds model calls, enrollment, a sweep or rollout authority.
+unchanged. Runtime-disabled desired models remain excluded from both post-deploy
+and scheduled canary selection; cleanup never adds model calls, enrollment, a sweep
+or rollout authority.
 Retain actual stdlib framing controls, not only transport-interface fakes:
 `HTTPResponse.read1` can close the last socket reference on a complete body.
 Content-Length, chunked and EOF completion must still reject truncation/overflow
@@ -713,6 +721,8 @@ keeps endpoint and authentication configuration in the Foundry project connectio
 
 ```powershell
 python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/redaction rules
+python3 -m unittest scripts.tests.test_speech_canary scripts.tests.test_voice_migration_docs
+python3 scripts/gen-voice-migration-docs.py --check              # public dates, never live proof
 python3 -m unittest scripts.tests.test_application_canary       # offline continuous monitor/state/identity controls
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
 python3 -m unittest scripts.tests.test_model_retirement         # dates, read-only reports and activation contracts
@@ -892,9 +902,13 @@ pair a passing test with an intentional failing test and zero discovery.
 No-replay tests drive public proxy sends and compile the actual APIM fragment
 expressions with the installed SDK compiler against offline context projections
 and loopback providers. They are not an Azure policy compiler or live capability
-proof. Generated backend fragments omit only parser-identified XML comment nodes
-to fit the unchanged 48 KiB compiler ceiling; authored comments and C# bytes stay
-intact.
+proof. The generated-catalog routing controls also invoke the stdlib Python
+generator with synthetic model variants, execute its catalog fragments through
+both HTTP policy chains, and evaluate its preview/GA handshake conditions.
+Retain their disabled/enabled and protocol controls: a preselected fake backend
+does not prove the generated runtime gate. Generated backend fragments omit only
+parser-identified XML comment nodes to fit the unchanged 48 KiB compiler ceiling;
+authored comments and C# bytes stay intact.
 APIM's policy schema types `forward-request` `buffer-request-body`,
 `buffer-response` and `fail-on-error-status-code` as literal booleans. Since
 2026-09-25, deployment validation has rejected expressions there, even though
@@ -1485,10 +1499,61 @@ covers both generated Realtime policies; `test_realtime_protocol.py`,
 Keep shared browser fixtures inside the web Docker build context.
 Run the targeted browser lifecycle/settings tests when changing that boundary.
 
-This is source staging only: no model/version/capacity or TTS change, live success
-claim, default cutover or legacy removal. Follow the approved
+The phase-1 voice migration keeps `gpt-realtime-2` selectable on preview and GA:
+omit `runtimeEnabled` (default true) and `requiredRealtimeProtocol`, preserving
+version `2026-05-06`, eastus2 and its existing capacity/pool metadata. The owner's
+2026-09-23 choice uses the subscription inference deprecation
+`2026-10-31T00:00:00Z`, observed in retirement report run `35722868193` at
+`2026-09-22T11:42:21Z`, not the separately labeled public August reference.
+From `2026-10-24T00:00:00Z`, the existing seven-day policy treats new/changed
+targets as unsafe; exact Succeeded reconciles only warn. A separately approved
+follow-up must runtime-disable RT2 and must merge and deploy before
+`2026-10-31T00:00:00Z`. The supplied September 23 subscription model-list evidence
+offers no later RT2 version: `gpt-realtime-2.1` is the verified successor, a
+different model ID, not an alias for the unoffered public `2026-05-07`.
+No automatic runtime date cutoff is introduced.
+
+Phase 1 adds GA-only `gpt-realtime-1.5` (`2026-02-23`), `gpt-realtime-2.1` and
+`gpt-realtime-2.1-mini` (both `2026-07-07`), each only in eastus2 GlobalStandard at
+portable baseline 10 without a guessed maximum/pool. The supplied September 23
+observations report both successors GenerallyAvailable through July 31, 2027;
+equal 0/10 regional quota counters are not independent-pool or allocation proof.
+Keep the existing realtime metadata shape: conflicting public context limits do
+not authorize an invented cap or a new effort/image-input surface.
+Retain the already shipped mini-TTS `2025-12-15` without changing its name or
+capacities. The GA TTS upgrade and structural app speech acceptance were delivered
+by #492; do not repeat them as unfinished work.
+`requiredRealtimeProtocol=ga` survives generated/dev catalogs and excludes the
+additions from preview advertisement and execution. Keep this and
+`runtimeEnabled` in publication/source comparisons; a saved unavailable model
+choice must fail explicitly, not alias another model. Speech's curated managed
+subset does not inherit these additions. The older `gpt-realtime-mini` version
+observation is report-only; do not change its `2025-12-15` catalog pin.
+Actor category reductions intersect these runtime/protocol gates, including on
+fresh and cached bindings. An entirely unrunnable catalog must not turn a failed
+policy binding into healthy empty inventory or prevent canonical owner cleanup.
+External Claude profiles retain their required metadata alongside these gates.
+Deployment-profile lookup keeps disabled metadata for fail-closed adaptation;
+both Claude HTTP and SSE construction refuse a runtime-disabled profile before
+egress, rather than dropping it and restoring provider defaults.
+
+The owner approved phase 1 for merge on 2026-09-26. A merge to main runs
+deploy.yml's `azd provision`, which creates the three GA-only deployments; it is
+still no live success claim, protocol/default cutover or physical legacy removal.
+Keep `AI4IA_REALTIME_PROTOCOL=preview` until a separately approved GA cutover:
+under preview the additions stay unlisted and refused.
+The strict desired-inventory check stays intact through coexistence; phase 2
+requires separately approved exact-resource and desired-row removal after live
+acceptance. The separate opt-in `scripts/speech-canary.py` checks bounded PCM/WAV
+through the app API, never directly through the model gateway, and its metadata
+cannot prove a deployed version or intelligibility. OpenAI references and sourced
+Azure retail modality meters stay in `referenceModalityModels`: verified public
+rates do not establish complete mixed usage, actual billed cost or a dollar cap.
+Preserve per-model/region/SKU/meter evidence and unknown runtime estimates. New
+price versions must remain compact and pass the actual receipt redaction path.
+Follow the approved
 [activation/rollback procedure](docs/runbooks/feature-enablement.md#staged-ga-realtime).
-Issue #413 stays open for its remaining live/model/TTS acceptance criteria.
+Issue #413 stays open for its realtime/model/cutover and approved cleanup criteria.
 
 ## Live photo avatars on Speech Voice Live
 
