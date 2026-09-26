@@ -181,5 +181,23 @@ class DockerignoreContextTests(unittest.TestCase):
         self._assert_recursive_dotenv_handling(ROOT / "proxy" / ".dockerignore")
 
 
+class CompanionBuildContextTests(unittest.TestCase):
+    """The CompanionApp image shares proxy/.dockerignore, which the probe above exercises."""
+
+    def test_companion_image_uses_the_probed_proxy_dockerignore(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "docker-build.yml").read_text(encoding="utf-8")
+        self.assertRegex(
+            workflow,
+            r"context: proxy\n\s+file: proxy/CompanionApp\.Dockerfile\n",
+            "the CompanionApp image must build from the proxy context",
+        )
+        # BuildKit prefers <Dockerfile>.dockerignore over the context's file.
+        self.assertFalse((ROOT / "proxy" / "CompanionApp.Dockerfile.dockerignore").exists())
+        self.assertFalse((ROOT / "proxy" / "CompanionApp" / "Dockerfile.dockerignore").exists())
+        patterns = (ROOT / "proxy" / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        self.assertIn("**/.env*", patterns)
+        self.assertIn("!**/.env.example", patterns)
+
+
 if __name__ == "__main__":
     unittest.main()
