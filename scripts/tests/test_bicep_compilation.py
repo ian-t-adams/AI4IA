@@ -233,13 +233,27 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertIn(f"if(parameters('{flag}')", host_env)
         self.assertIn("path=/ai4ia-attempts-v1;stripprefix=false", host_env)
         self.assertIn("mode=apim;probe=/;processor=OpenAI", host_env)
-        self.assertIn("retryafter=false", host_env)
+        self.assertRegex(host_env, r"'Host2', 'value', format\('[^']*;retryafter=false'")
         self.assertIn("Host2-api-key", host_env)
         secrets = resources["proxyApp"]["properties"]["configuration"]["secrets"]
         self.assertIn(f"if(parameters('{flag}')", secrets)
         self.assertIn("proxy-apim-attempts-v1-key", secrets)
         self.assertIn("listSecrets(", secrets)
         self.assertNotIn("proxy-apim-attempts-v1-key", json.dumps(api_module))
+
+    def test_proxy_hosts_and_header_policy_keep_upstream_caller_controls_off(self) -> None:
+        gateway = self.template["resources"]["gateway"]["properties"]["template"]
+        host_env = gateway["variables"]["hostEnv"]
+        # Since the b0066b0e refresh, retryafter=true lets one tracked 5xx carrying
+        # APIM's retry-after-ms block the only catch-all host, and every model with it.
+        self.assertRegex(host_env, r"'Host1', 'value', format\('[^']*;retryafter=false'")
+        self.assertNotIn("retryafter=true", host_env)
+        static_env = json.dumps(gateway["variables"]["staticEnv"])
+        self.assertIn(
+            '"name": "DisallowedHeaders", "value": '
+            "\"[string(createArray('S7P-Model-Override', 'S7PDEBUGBODY', 'S7PDEBUGSTREAM'))]\"",
+            static_env,
+        )
 
     def test_versioned_prefix_cannot_resolve_to_any_legacy_gateway_api(self) -> None:
         resources = self.template["resources"]["gateway"]["properties"]["template"]["resources"]

@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "upstream": {
     "repository": "https://github.com/microsoft/SimpleL7Proxy.git",
-    "commit": "d9eb1d1fa42820792a9699bfc253562fba07d977",
+    "commit": "b0066b0e53f89abb5e84cfeacda2fdcaca8b081e",
     "sourceRoot": "src"
   },
   "sourceScopes": [
@@ -12,8 +12,8 @@
   ],
   "counts": {
     "ai4ia-added": 5,
-    "ai4ia-patched": 19,
-    "upstream-equivalent": 155
+    "ai4ia-patched": 18,
+    "upstream-equivalent": 168
   },
   "patches": [
     {
@@ -37,10 +37,6 @@
       "reason": "Document Application Insights 3.x metric emission accurately."
     },
     {
-      "path": "SimpleL7Proxy/Config/AppConfigService.cs",
-      "reason": "Keep a failed App Configuration download from dereferencing a null result and spinning the refresh loop without its normal interval."
-    },
-    {
       "path": "SimpleL7Proxy/Config/ConfigFactory.cs",
       "reason": "Redact declared secrets and remove warm-reload value logging."
     },
@@ -50,7 +46,7 @@
     },
     {
       "path": "SimpleL7Proxy/Config/IncomingAuthValidator.cs",
-      "reason": "Honor the configured key header and fail closed for unsigned OAuth modes."
+      "reason": "Trim and default the configured key header over upstream's raw assignment and fail closed for unsigned OAuth modes."
     },
     {
       "path": "SimpleL7Proxy/Config/ProxyConfig.cs",
@@ -78,7 +74,7 @@
     },
     {
       "path": "SimpleL7Proxy/Proxy/NoReplayAttempt.cs",
-      "reason": "AI4IA authenticated one-attempt binding, exact byte/model/path HMAC, mandatory versioned route and non-stripping scoped-host membership, pre-send claim, unsupported-shape refusal and nonredirecting HTTP/1.1 transport."
+      "reason": "AI4IA authenticated one-attempt binding, exact byte/model/path HMAC, mandatory versioned route and non-stripping scoped-host membership, pre-send claim, unsupported-shape and upstream caller-control refusal, and nonredirecting HTTP/1.1 transport."
     },
     {
       "path": "SimpleL7Proxy/Proxy/ProxyData.cs",
@@ -90,7 +86,7 @@
     },
     {
       "path": "SimpleL7Proxy/Proxy/ProxyWorker.cs",
-      "reason": "Fence bounded sends, host fallback, requeue and recovery; retain one-use HTTP clients through streaming; construct portable diagnostic URIs from the same destination builder as the transport."
+      "reason": "Fence bounded sends, host fallback, requeue and recovery, including the iterator's all-open-circuit requeue; retain one-use HTTP clients through streaming; construct portable diagnostic URIs from the same destination builder as the transport."
     },
     {
       "path": "SimpleL7Proxy/Proxy/RequeueDelayWorker.cs",
@@ -121,15 +117,15 @@
       "disposition": "ai4ia-patched"
     },
     "Shared-parser/StreamProcessor/AllUsageProcessor.cs": {
-      "localCanonicalSha256": "33bcdb488e9238f6a44b5320aefbe0cf72abb077cfd25a7f3dfb2a4998f9ff97",
-      "upstreamRawSha256": "33bcdb488e9238f6a44b5320aefbe0cf72abb077cfd25a7f3dfb2a4998f9ff97",
-      "upstreamCanonicalSha256": "33bcdb488e9238f6a44b5320aefbe0cf72abb077cfd25a7f3dfb2a4998f9ff97",
+      "localCanonicalSha256": "4396308a590da7a7c04655e6910297e561e39328c138e94450e761127b165f24",
+      "upstreamRawSha256": "4396308a590da7a7c04655e6910297e561e39328c138e94450e761127b165f24",
+      "upstreamCanonicalSha256": "4396308a590da7a7c04655e6910297e561e39328c138e94450e761127b165f24",
       "disposition": "upstream-equivalent"
     },
     "Shared-parser/StreamProcessor/BaseStreamProcessor.cs": {
-      "localCanonicalSha256": "b3828043734ee5b1627f25d0be7eaf1937754b195b2dc91b12a1300ff1e6ffd1",
-      "upstreamRawSha256": "b3828043734ee5b1627f25d0be7eaf1937754b195b2dc91b12a1300ff1e6ffd1",
-      "upstreamCanonicalSha256": "b3828043734ee5b1627f25d0be7eaf1937754b195b2dc91b12a1300ff1e6ffd1",
+      "localCanonicalSha256": "1fd3a229b44ce250fdd32d266cacd8eb3af7c4f95e99d7250b997262eeb510b5",
+      "upstreamRawSha256": "1fd3a229b44ce250fdd32d266cacd8eb3af7c4f95e99d7250b997262eeb510b5",
+      "upstreamCanonicalSha256": "1fd3a229b44ce250fdd32d266cacd8eb3af7c4f95e99d7250b997262eeb510b5",
       "disposition": "upstream-equivalent"
     },
     "Shared-parser/StreamProcessor/CompleteAllUsageProcessor.cs": {
@@ -139,21 +135,21 @@
       "disposition": "upstream-equivalent"
     },
     "Shared-parser/StreamProcessor/DefaultStreamProcessor.cs": {
-      "localCanonicalSha256": "0b26dc5e682fd1b613f79bbb16f536d2821380582dff3a6a91004907f8b7a3a6",
-      "upstreamRawSha256": "0b26dc5e682fd1b613f79bbb16f536d2821380582dff3a6a91004907f8b7a3a6",
-      "upstreamCanonicalSha256": "0b26dc5e682fd1b613f79bbb16f536d2821380582dff3a6a91004907f8b7a3a6",
+      "localCanonicalSha256": "f8ae968329b760a98cd89bfebd9719f7fb47f835f59695288b0d831b57e71099",
+      "upstreamRawSha256": "f8ae968329b760a98cd89bfebd9719f7fb47f835f59695288b0d831b57e71099",
+      "upstreamCanonicalSha256": "f8ae968329b760a98cd89bfebd9719f7fb47f835f59695288b0d831b57e71099",
       "disposition": "upstream-equivalent"
     },
     "Shared-parser/StreamProcessor/IStreamProcessor.cs": {
-      "localCanonicalSha256": "9e73bfdbacf51ae06171450f395a17bf4d3a6e7f40962e56c2aaee10c047351b",
-      "upstreamRawSha256": "9e73bfdbacf51ae06171450f395a17bf4d3a6e7f40962e56c2aaee10c047351b",
-      "upstreamCanonicalSha256": "9e73bfdbacf51ae06171450f395a17bf4d3a6e7f40962e56c2aaee10c047351b",
+      "localCanonicalSha256": "ebe043d1a4e770204cd4bbdbef955939cbcede01aea96775afb271a6f1eb783b",
+      "upstreamRawSha256": "ebe043d1a4e770204cd4bbdbef955939cbcede01aea96775afb271a6f1eb783b",
+      "upstreamCanonicalSha256": "ebe043d1a4e770204cd4bbdbef955939cbcede01aea96775afb271a6f1eb783b",
       "disposition": "upstream-equivalent"
     },
     "Shared-parser/StreamProcessor/JsonStreamProcessor.cs": {
-      "localCanonicalSha256": "be95effe170003bef6e5171516d3cd9683bc1be9e29ea28e13fd576be1c5cbba",
-      "upstreamRawSha256": "78799dbb7cdc570eceea8c7340d136cad660ec2ef1542daf56a942a404e4dfbe",
-      "upstreamCanonicalSha256": "78799dbb7cdc570eceea8c7340d136cad660ec2ef1542daf56a942a404e4dfbe",
+      "localCanonicalSha256": "41f26049c9834c2050b1cc371fb120c6f2eb446ee96c4508abcf17f05a107a7f",
+      "upstreamRawSha256": "298b0c622dd770c7f5e1296d166b3cb8705eb72af47cc23144e5d4dd5fb4548a",
+      "upstreamCanonicalSha256": "298b0c622dd770c7f5e1296d166b3cb8705eb72af47cc23144e5d4dd5fb4548a",
       "disposition": "ai4ia-patched"
     },
     "Shared-parser/StreamProcessor/MultiAllUsageProcessor.cs": {
@@ -357,15 +353,15 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Async/Jobs/AsyncRequestHydrator.cs": {
-      "localCanonicalSha256": "b50f6409719098f0ad03ebd9072994b7dad094a80e2bdc84d91b84a6ac26bff3",
-      "upstreamRawSha256": "b50f6409719098f0ad03ebd9072994b7dad094a80e2bdc84d91b84a6ac26bff3",
-      "upstreamCanonicalSha256": "b50f6409719098f0ad03ebd9072994b7dad094a80e2bdc84d91b84a6ac26bff3",
+      "localCanonicalSha256": "3e2a0d206095a155ab085beab525387639906f474419b9b88584ed94cb5ade30",
+      "upstreamRawSha256": "3e2a0d206095a155ab085beab525387639906f474419b9b88584ed94cb5ade30",
+      "upstreamCanonicalSha256": "3e2a0d206095a155ab085beab525387639906f474419b9b88584ed94cb5ade30",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Async/Jobs/AsyncRequestStatus.cs": {
-      "localCanonicalSha256": "544ee2f352aef415e2bc23335e9fa213e231d31f5af695cd6f8ec97564286fd8",
-      "upstreamRawSha256": "544ee2f352aef415e2bc23335e9fa213e231d31f5af695cd6f8ec97564286fd8",
-      "upstreamCanonicalSha256": "544ee2f352aef415e2bc23335e9fa213e231d31f5af695cd6f8ec97564286fd8",
+      "localCanonicalSha256": "9f96fa6c708f6832668b8b1b8191283b25e8df3813ce4bf32f11a393b803f192",
+      "upstreamRawSha256": "9f96fa6c708f6832668b8b1b8191283b25e8df3813ce4bf32f11a393b803f192",
+      "upstreamCanonicalSha256": "9f96fa6c708f6832668b8b1b8191283b25e8df3813ce4bf32f11a393b803f192",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Async/Jobs/IAsyncFeeder.cs": {
@@ -440,46 +436,52 @@
       "upstreamCanonicalSha256": "40c5043e608177ff5b0d7c1a5753bcc7aee198c984c824237e796a1bde69d6ee",
       "disposition": "upstream-equivalent"
     },
-    "SimpleL7Proxy/Backend/BackendTokenProvider.cs": {
-      "localCanonicalSha256": "f4e22b905a6ee5f501f364feb44710eb028b75c85315b0bfff473dd843b6a3d7",
-      "upstreamRawSha256": "f4e22b905a6ee5f501f364feb44710eb028b75c85315b0bfff473dd843b6a3d7",
-      "upstreamCanonicalSha256": "f4e22b905a6ee5f501f364feb44710eb028b75c85315b0bfff473dd843b6a3d7",
+    "SimpleL7Proxy/Auth/AzureProvider.cs": {
+      "localCanonicalSha256": "2db6d556a6532fd61ff9509edc6133b23d74f0b872684acac9e5bde3f41ab551",
+      "upstreamRawSha256": "2db6d556a6532fd61ff9509edc6133b23d74f0b872684acac9e5bde3f41ab551",
+      "upstreamCanonicalSha256": "2db6d556a6532fd61ff9509edc6133b23d74f0b872684acac9e5bde3f41ab551",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/Auth/IBackendTokenProvider.cs": {
+      "localCanonicalSha256": "e7740c5a9f7baf2d36b6221099636bbd3720628d2451bdede54ec3d0f53120fe",
+      "upstreamRawSha256": "e7740c5a9f7baf2d36b6221099636bbd3720628d2451bdede54ec3d0f53120fe",
+      "upstreamCanonicalSha256": "e7740c5a9f7baf2d36b6221099636bbd3720628d2451bdede54ec3d0f53120fe",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/BaseHostHealth.cs": {
-      "localCanonicalSha256": "4da4c2a9bf98687b7f3e2d540fa811cbbac569ce89ad9b5402fd0370e76f723e",
-      "upstreamRawSha256": "4da4c2a9bf98687b7f3e2d540fa811cbbac569ce89ad9b5402fd0370e76f723e",
-      "upstreamCanonicalSha256": "4da4c2a9bf98687b7f3e2d540fa811cbbac569ce89ad9b5402fd0370e76f723e",
+      "localCanonicalSha256": "41c7f690725c896cc6cbdaf487d5e2df87f2bfcf5cc9def695e2cdbf341aa6e4",
+      "upstreamRawSha256": "41c7f690725c896cc6cbdaf487d5e2df87f2bfcf5cc9def695e2cdbf341aa6e4",
+      "upstreamCanonicalSha256": "41c7f690725c896cc6cbdaf487d5e2df87f2bfcf5cc9def695e2cdbf341aa6e4",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/CircuitBreaker.cs": {
-      "localCanonicalSha256": "5d613c42ba3439c27ea8d579c5de386f99dc11bb5b7fe07cebc5d522e4cc07d2",
-      "upstreamRawSha256": "5d613c42ba3439c27ea8d579c5de386f99dc11bb5b7fe07cebc5d522e4cc07d2",
-      "upstreamCanonicalSha256": "5d613c42ba3439c27ea8d579c5de386f99dc11bb5b7fe07cebc5d522e4cc07d2",
+      "localCanonicalSha256": "b9feaa05a3301ccee9ef12cabcd9d446176f5664e8ba8634b4eafd5810aedbb3",
+      "upstreamRawSha256": "b9feaa05a3301ccee9ef12cabcd9d446176f5664e8ba8634b4eafd5810aedbb3",
+      "upstreamCanonicalSha256": "b9feaa05a3301ccee9ef12cabcd9d446176f5664e8ba8634b4eafd5810aedbb3",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/EndpointMonitorService.cs": {
-      "localCanonicalSha256": "3f3ce0746472d2d088e03d317d952fcdc09da6a40b5fa49ac0b261c9acbd47de",
-      "upstreamRawSha256": "3f3ce0746472d2d088e03d317d952fcdc09da6a40b5fa49ac0b261c9acbd47de",
-      "upstreamCanonicalSha256": "3f3ce0746472d2d088e03d317d952fcdc09da6a40b5fa49ac0b261c9acbd47de",
+      "localCanonicalSha256": "49f58fe429895990da8182fa3059897daa7e0f56a5a501b904ceaf83be5deea6",
+      "upstreamRawSha256": "49f58fe429895990da8182fa3059897daa7e0f56a5a501b904ceaf83be5deea6",
+      "upstreamCanonicalSha256": "49f58fe429895990da8182fa3059897daa7e0f56a5a501b904ceaf83be5deea6",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/HostCollectionManager.cs": {
-      "localCanonicalSha256": "516b09916da1aeeb29140cfdbd4de94be4367809cbff4d1cd4916a92bdf4a2ef",
-      "upstreamRawSha256": "94fe9093df9f1430b2aec1fd3a117dc252525bffc0a1e62d56e63afde7673f47",
-      "upstreamCanonicalSha256": "516b09916da1aeeb29140cfdbd4de94be4367809cbff4d1cd4916a92bdf4a2ef",
+      "localCanonicalSha256": "9ab9d0cb441af298cd4296a91dc0ee61587bb8e4bddc528390ba1829192faaf6",
+      "upstreamRawSha256": "9ab9d0cb441af298cd4296a91dc0ee61587bb8e4bddc528390ba1829192faaf6",
+      "upstreamCanonicalSha256": "9ab9d0cb441af298cd4296a91dc0ee61587bb8e4bddc528390ba1829192faaf6",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/HostCollectionSnapshot.cs": {
-      "localCanonicalSha256": "7203914955691617f46c8406df51f3e5b35dd54e5e399048ffb68afa1ad93cc9",
-      "upstreamRawSha256": "7203914955691617f46c8406df51f3e5b35dd54e5e399048ffb68afa1ad93cc9",
-      "upstreamCanonicalSha256": "7203914955691617f46c8406df51f3e5b35dd54e5e399048ffb68afa1ad93cc9",
+      "localCanonicalSha256": "090eaada6683e3b83320f019a11987ce58c5aef2bdb840b30277e4be49c61f6c",
+      "upstreamRawSha256": "090eaada6683e3b83320f019a11987ce58c5aef2bdb840b30277e4be49c61f6c",
+      "upstreamCanonicalSha256": "090eaada6683e3b83320f019a11987ce58c5aef2bdb840b30277e4be49c61f6c",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/HostConfig.cs": {
-      "localCanonicalSha256": "e0356c2c86a6f2c3c599b1ecb19ace9c608a1627db6124f6fc934b1b5b1c4866",
-      "upstreamRawSha256": "e0356c2c86a6f2c3c599b1ecb19ace9c608a1627db6124f6fc934b1b5b1c4866",
-      "upstreamCanonicalSha256": "e0356c2c86a6f2c3c599b1ecb19ace9c608a1627db6124f6fc934b1b5b1c4866",
+      "localCanonicalSha256": "19ece16c94e9a20b9fe61056abdd54ed92cbd49602714b766133a30171b4a264",
+      "upstreamRawSha256": "19ece16c94e9a20b9fe61056abdd54ed92cbd49602714b766133a30171b4a264",
+      "upstreamCanonicalSha256": "19ece16c94e9a20b9fe61056abdd54ed92cbd49602714b766133a30171b4a264",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/HostConfigDisabledException.cs": {
@@ -489,51 +491,39 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/ICircuitBreaker.cs": {
-      "localCanonicalSha256": "c4cd475323c7c9a0c15a1093825160deb8ded723a7945527751caf1a084d480b",
-      "upstreamRawSha256": "c4cd475323c7c9a0c15a1093825160deb8ded723a7945527751caf1a084d480b",
-      "upstreamCanonicalSha256": "c4cd475323c7c9a0c15a1093825160deb8ded723a7945527751caf1a084d480b",
+      "localCanonicalSha256": "47ec4b2022431b98f1db3ab68c99b3d4314886ec7e39f06a2304c033a63737ee",
+      "upstreamRawSha256": "47ec4b2022431b98f1db3ab68c99b3d4314886ec7e39f06a2304c033a63737ee",
+      "upstreamCanonicalSha256": "47ec4b2022431b98f1db3ab68c99b3d4314886ec7e39f06a2304c033a63737ee",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/IEndpointMonitorService.cs": {
-      "localCanonicalSha256": "35a131394b20204bc15ce8a1603c3a3d2ce4e4e08310a82c5dc163053c35b181",
-      "upstreamRawSha256": "35a131394b20204bc15ce8a1603c3a3d2ce4e4e08310a82c5dc163053c35b181",
-      "upstreamCanonicalSha256": "35a131394b20204bc15ce8a1603c3a3d2ce4e4e08310a82c5dc163053c35b181",
+      "localCanonicalSha256": "21542f2bcc03aebac76b0e702bd3e885c27ee8b25828a745135e5fe4e426d288",
+      "upstreamRawSha256": "21542f2bcc03aebac76b0e702bd3e885c27ee8b25828a745135e5fe4e426d288",
+      "upstreamCanonicalSha256": "21542f2bcc03aebac76b0e702bd3e885c27ee8b25828a745135e5fe4e426d288",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/IHostHealthCollection.cs": {
-      "localCanonicalSha256": "4e3ba6659a1e63c06cb3676059a0f14eeb4ee91bd87934ababc88ea9adde4930",
-      "upstreamRawSha256": "4e3ba6659a1e63c06cb3676059a0f14eeb4ee91bd87934ababc88ea9adde4930",
-      "upstreamCanonicalSha256": "4e3ba6659a1e63c06cb3676059a0f14eeb4ee91bd87934ababc88ea9adde4930",
+      "localCanonicalSha256": "44ce9d12cd3ca9bca34b82f4487bace261f3ce4d9a29768bcf9609cd71ebb65c",
+      "upstreamRawSha256": "44ce9d12cd3ca9bca34b82f4487bace261f3ce4d9a29768bcf9609cd71ebb65c",
+      "upstreamCanonicalSha256": "44ce9d12cd3ca9bca34b82f4487bace261f3ce4d9a29768bcf9609cd71ebb65c",
       "disposition": "upstream-equivalent"
     },
-    "SimpleL7Proxy/Backend/Iterators/EmptyBackendHostIterator.cs": {
-      "localCanonicalSha256": "b2c5b4cc66e1d875724a2f86e9ad1c899437830c3868508c30299e4ee7d08318",
-      "upstreamRawSha256": "b2c5b4cc66e1d875724a2f86e9ad1c899437830c3868508c30299e4ee7d08318",
-      "upstreamCanonicalSha256": "b2c5b4cc66e1d875724a2f86e9ad1c899437830c3868508c30299e4ee7d08318",
-      "disposition": "upstream-equivalent"
-    },
-    "SimpleL7Proxy/Backend/Iterators/HostIterator.cs": {
-      "localCanonicalSha256": "6350a66ac45711b2947c1a3c5a65e7c4e725470c00052eb34f26e5b96bdd4593",
-      "upstreamRawSha256": "6350a66ac45711b2947c1a3c5a65e7c4e725470c00052eb34f26e5b96bdd4593",
-      "upstreamCanonicalSha256": "6350a66ac45711b2947c1a3c5a65e7c4e725470c00052eb34f26e5b96bdd4593",
+    "SimpleL7Proxy/Backend/Iterators/BaseIterator.cs": {
+      "localCanonicalSha256": "2ae5b05209d045190d62fac33510af18ae8b5061eeec68496b9c4df1e777e3d1",
+      "upstreamRawSha256": "2ae5b05209d045190d62fac33510af18ae8b5061eeec68496b9c4df1e777e3d1",
+      "upstreamCanonicalSha256": "2ae5b05209d045190d62fac33510af18ae8b5061eeec68496b9c4df1e777e3d1",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/Iterators/IHostIterator.cs": {
-      "localCanonicalSha256": "fdfba85281acd802a62951bacf4ebcb0c5c97cbd1de07a8501f06115795eb272",
-      "upstreamRawSha256": "fdfba85281acd802a62951bacf4ebcb0c5c97cbd1de07a8501f06115795eb272",
-      "upstreamCanonicalSha256": "fdfba85281acd802a62951bacf4ebcb0c5c97cbd1de07a8501f06115795eb272",
-      "disposition": "upstream-equivalent"
-    },
-    "SimpleL7Proxy/Backend/Iterators/ISharedHostIterator.cs": {
-      "localCanonicalSha256": "bd284684008e3483cb35de0ed82a970afd0264d4bd18dfb57e24a058024a95f5",
-      "upstreamRawSha256": "bd284684008e3483cb35de0ed82a970afd0264d4bd18dfb57e24a058024a95f5",
-      "upstreamCanonicalSha256": "bd284684008e3483cb35de0ed82a970afd0264d4bd18dfb57e24a058024a95f5",
+      "localCanonicalSha256": "8b53f560b472092a34c6ca556e0e9460baa96e71a0856f03f4130f7e611c08c2",
+      "upstreamRawSha256": "8b53f560b472092a34c6ca556e0e9460baa96e71a0856f03f4130f7e611c08c2",
+      "upstreamCanonicalSha256": "8b53f560b472092a34c6ca556e0e9460baa96e71a0856f03f4130f7e611c08c2",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/Iterators/ISharedIteratorRegistry.cs": {
-      "localCanonicalSha256": "8bb497def7e9ae0b885aaeb7b059eb7db45a4d1955c0f7496ebb9026ef915daa",
-      "upstreamRawSha256": "8bb497def7e9ae0b885aaeb7b059eb7db45a4d1955c0f7496ebb9026ef915daa",
-      "upstreamCanonicalSha256": "8bb497def7e9ae0b885aaeb7b059eb7db45a4d1955c0f7496ebb9026ef915daa",
+      "localCanonicalSha256": "9e2814c2f448f5ac6fc64ffe5017c1f6c9e13acc7cc8f86ea08081ba77f9626d",
+      "upstreamRawSha256": "9e2814c2f448f5ac6fc64ffe5017c1f6c9e13acc7cc8f86ea08081ba77f9626d",
+      "upstreamCanonicalSha256": "9e2814c2f448f5ac6fc64ffe5017c1f6c9e13acc7cc8f86ea08081ba77f9626d",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/Iterators/IterationModeEnum.cs": {
@@ -542,40 +532,34 @@
       "upstreamCanonicalSha256": "f924225e4c16516ef328c2d843a8558bc77f998443cb98101810630b931574b2",
       "disposition": "upstream-equivalent"
     },
+    "SimpleL7Proxy/Backend/Iterators/IterationState.cs": {
+      "localCanonicalSha256": "1d363f99f26a8a9b203fad2a8d4d8fdf92e688f4140d8358532c2c682341b443",
+      "upstreamRawSha256": "1d363f99f26a8a9b203fad2a8d4d8fdf92e688f4140d8358532c2c682341b443",
+      "upstreamCanonicalSha256": "1d363f99f26a8a9b203fad2a8d4d8fdf92e688f4140d8358532c2c682341b443",
+      "disposition": "upstream-equivalent"
+    },
     "SimpleL7Proxy/Backend/Iterators/IteratorFactory.cs": {
-      "localCanonicalSha256": "1721da44efed0fbbf8c81185638a962a8e6b414232cd90b8266e3a0de8907b64",
-      "upstreamRawSha256": "1721da44efed0fbbf8c81185638a962a8e6b414232cd90b8266e3a0de8907b64",
-      "upstreamCanonicalSha256": "1721da44efed0fbbf8c81185638a962a8e6b414232cd90b8266e3a0de8907b64",
+      "localCanonicalSha256": "0b489f1cb82a7167cb454ed9c21fab2f4c77a8eeb920770cb871e266bb51df24",
+      "upstreamRawSha256": "0b489f1cb82a7167cb454ed9c21fab2f4c77a8eeb920770cb871e266bb51df24",
+      "upstreamCanonicalSha256": "0b489f1cb82a7167cb454ed9c21fab2f4c77a8eeb920770cb871e266bb51df24",
       "disposition": "upstream-equivalent"
     },
-    "SimpleL7Proxy/Backend/Iterators/LatencyHostIterator.cs": {
-      "localCanonicalSha256": "461510c91c6bd360904381a25926aeddc740e4407388f24bce6b340add68157d",
-      "upstreamRawSha256": "461510c91c6bd360904381a25926aeddc740e4407388f24bce6b340add68157d",
-      "upstreamCanonicalSha256": "461510c91c6bd360904381a25926aeddc740e4407388f24bce6b340add68157d",
-      "disposition": "upstream-equivalent"
-    },
-    "SimpleL7Proxy/Backend/Iterators/RandomHostIterator.cs": {
-      "localCanonicalSha256": "d901a49264f5d8497852b69360f65a03fa43c52b4dd97c7cbe412d770211a6fa",
-      "upstreamRawSha256": "d901a49264f5d8497852b69360f65a03fa43c52b4dd97c7cbe412d770211a6fa",
-      "upstreamCanonicalSha256": "d901a49264f5d8497852b69360f65a03fa43c52b4dd97c7cbe412d770211a6fa",
-      "disposition": "upstream-equivalent"
-    },
-    "SimpleL7Proxy/Backend/Iterators/RoundRobinHostIterator.cs": {
-      "localCanonicalSha256": "7361bcf2b67489c64ecafa1cc1a949c697fa7426aadb23f05f31fdebc8a9b21f",
-      "upstreamRawSha256": "7361bcf2b67489c64ecafa1cc1a949c697fa7426aadb23f05f31fdebc8a9b21f",
-      "upstreamCanonicalSha256": "7361bcf2b67489c64ecafa1cc1a949c697fa7426aadb23f05f31fdebc8a9b21f",
+    "SimpleL7Proxy/Backend/Iterators/PerRequestHostIterator.cs": {
+      "localCanonicalSha256": "16d733d52d509918a825985fe605ab27c2eb9b17707802a09f60072833f5541d",
+      "upstreamRawSha256": "16d733d52d509918a825985fe605ab27c2eb9b17707802a09f60072833f5541d",
+      "upstreamCanonicalSha256": "16d733d52d509918a825985fe605ab27c2eb9b17707802a09f60072833f5541d",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/Iterators/SharedHostIterator.cs": {
-      "localCanonicalSha256": "765d0010cf2bd60e8ddc314962efe15f519b56b7d55dc71ac74b3fd03a171383",
-      "upstreamRawSha256": "765d0010cf2bd60e8ddc314962efe15f519b56b7d55dc71ac74b3fd03a171383",
-      "upstreamCanonicalSha256": "765d0010cf2bd60e8ddc314962efe15f519b56b7d55dc71ac74b3fd03a171383",
+      "localCanonicalSha256": "67717e467b50cc77d84643dbacd6a40942bce5d0a63f1c533f0be7388adc707a",
+      "upstreamRawSha256": "67717e467b50cc77d84643dbacd6a40942bce5d0a63f1c533f0be7388adc707a",
+      "upstreamCanonicalSha256": "67717e467b50cc77d84643dbacd6a40942bce5d0a63f1c533f0be7388adc707a",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/Iterators/SharedIteratorRegistry.cs": {
-      "localCanonicalSha256": "0815c8677a84e68eab3428f82122dbb821e6492cb8e4fdc61a0c205109ff40b3",
-      "upstreamRawSha256": "0815c8677a84e68eab3428f82122dbb821e6492cb8e4fdc61a0c205109ff40b3",
-      "upstreamCanonicalSha256": "0815c8677a84e68eab3428f82122dbb821e6492cb8e4fdc61a0c205109ff40b3",
+      "localCanonicalSha256": "b46126cd971cfb0b6908d0b5eea53bbc9fc85fe10decfdcbcdd0f7abc77c5134",
+      "upstreamRawSha256": "b46126cd971cfb0b6908d0b5eea53bbc9fc85fe10decfdcbcdd0f7abc77c5134",
+      "upstreamCanonicalSha256": "b46126cd971cfb0b6908d0b5eea53bbc9fc85fe10decfdcbcdd0f7abc77c5134",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/NonProbableHostHealth.cs": {
@@ -585,15 +569,21 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/ParsedConfig.cs": {
-      "localCanonicalSha256": "1d95a0f451928267ec71648e551b72ebcd2fdd25f08324849cf5172fdc0b38a5",
-      "upstreamRawSha256": "1d95a0f451928267ec71648e551b72ebcd2fdd25f08324849cf5172fdc0b38a5",
-      "upstreamCanonicalSha256": "1d95a0f451928267ec71648e551b72ebcd2fdd25f08324849cf5172fdc0b38a5",
+      "localCanonicalSha256": "bafb98a84fd3f9df03f933446ded02c55442b2e6d416e0710e5b92f0c61e1ad8",
+      "upstreamRawSha256": "bafb98a84fd3f9df03f933446ded02c55442b2e6d416e0710e5b92f0c61e1ad8",
+      "upstreamCanonicalSha256": "bafb98a84fd3f9df03f933446ded02c55442b2e6d416e0710e5b92f0c61e1ad8",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/PathMatchResult.cs": {
       "localCanonicalSha256": "a52888dce4609d6ced587983eefe78e8e4dc9a662da87cfdb4b170a93a0b6cec",
       "upstreamRawSha256": "a52888dce4609d6ced587983eefe78e8e4dc9a662da87cfdb4b170a93a0b6cec",
       "upstreamCanonicalSha256": "a52888dce4609d6ced587983eefe78e8e4dc9a662da87cfdb4b170a93a0b6cec",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/Backend/PathRoute.cs": {
+      "localCanonicalSha256": "400d1f0f63da783e0159ec3d9c9303865e346f8aa8e27391c9e970ad4360b9d9",
+      "upstreamRawSha256": "400d1f0f63da783e0159ec3d9c9303865e346f8aa8e27391c9e970ad4360b9d9",
+      "upstreamCanonicalSha256": "400d1f0f63da783e0159ec3d9c9303865e346f8aa8e27391c9e970ad4360b9d9",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Backend/ProbableHostHealth.cs": {
@@ -609,10 +599,10 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Config/AppConfigService.cs": {
-      "localCanonicalSha256": "4fa50467a11fb304f0fb173cf02d1cef708782f9fa8523279c2c9b957ef3825b",
-      "upstreamRawSha256": "826647bdcb1ff48b4ca5d1ae26b76764d6c01dc6caa45595c336cf786fc2f803",
-      "upstreamCanonicalSha256": "826647bdcb1ff48b4ca5d1ae26b76764d6c01dc6caa45595c336cf786fc2f803",
-      "disposition": "ai4ia-patched"
+      "localCanonicalSha256": "762fb5e732990bc78c0d67f8c0649e660e4b98f082ae541a4c219519663025d6",
+      "upstreamRawSha256": "762fb5e732990bc78c0d67f8c0649e660e4b98f082ae541a4c219519663025d6",
+      "upstreamCanonicalSha256": "762fb5e732990bc78c0d67f8c0649e660e4b98f082ae541a4c219519663025d6",
+      "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Config/ConfigChange.cs": {
       "localCanonicalSha256": "f02abf2b05882fea6149f241e2b44e4229c892419ab5de703bb60b22d29ab7b4",
@@ -627,9 +617,9 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Config/ConfigFactory.cs": {
-      "localCanonicalSha256": "25b4307b566309683ebbf0c4d8c37de4e4b95d1a02afc12e02f7b315ee23b8dc",
-      "upstreamRawSha256": "3fbb160f2f751ac9204a418951717d99bc4eacb0551867f28aaef716b8a7366b",
-      "upstreamCanonicalSha256": "3fbb160f2f751ac9204a418951717d99bc4eacb0551867f28aaef716b8a7366b",
+      "localCanonicalSha256": "8933c64bae04f5c61a72c7499ada27945ad70f8379f09fe063a9c01588a85a20",
+      "upstreamRawSha256": "8b6176a906b116b730fd264c120b23a5c84af37a67d51b24feb7c09f6891d3f7",
+      "upstreamCanonicalSha256": "8b6176a906b116b730fd264c120b23a5c84af37a67d51b24feb7c09f6891d3f7",
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Config/ConfigMetadata.cs": {
@@ -639,9 +629,9 @@
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Config/ConfigParser.cs": {
-      "localCanonicalSha256": "a36373c152f935a965b76e3f41b34ffa07502004f39859b0b61d05c657a8df04",
-      "upstreamRawSha256": "a36373c152f935a965b76e3f41b34ffa07502004f39859b0b61d05c657a8df04",
-      "upstreamCanonicalSha256": "a36373c152f935a965b76e3f41b34ffa07502004f39859b0b61d05c657a8df04",
+      "localCanonicalSha256": "c6de5b2b7474be37014d3a7e000b0dc3a98c1459b009cef75a90e1abea2cf912",
+      "upstreamRawSha256": "c6de5b2b7474be37014d3a7e000b0dc3a98c1459b009cef75a90e1abea2cf912",
+      "upstreamCanonicalSha256": "c6de5b2b7474be37014d3a7e000b0dc3a98c1459b009cef75a90e1abea2cf912",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Config/DefaultCredential.cs": {
@@ -663,15 +653,15 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Config/IncomingAuthValidator.cs": {
-      "localCanonicalSha256": "6efa9d00d9e8276384c668c46e886bd9da1b25b71997383c91d4fe35e12ead69",
-      "upstreamRawSha256": "f0b981454305283c8241b1fc0666c271a46e0289e735e31ccde506ee2290dae4",
-      "upstreamCanonicalSha256": "f0b981454305283c8241b1fc0666c271a46e0289e735e31ccde506ee2290dae4",
+      "localCanonicalSha256": "6dfaa5e947ea108728d9445a757bb1cde4a67966cdb8849bde52262a77cc1f82",
+      "upstreamRawSha256": "1e68a5bd37b573cdc2f0c4c856c2fe546ed57bda6bf397cc109dd21b2ce3b2dd",
+      "upstreamCanonicalSha256": "1e68a5bd37b573cdc2f0c4c856c2fe546ed57bda6bf397cc109dd21b2ce3b2dd",
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Config/ProxyConfig.cs": {
-      "localCanonicalSha256": "b6e92fe37746780947038d3e77326d700f0837f226e1f828aa245cf7d9191b9f",
-      "upstreamRawSha256": "9dcccbef80d6b6b120360b63a2bc3a708cdd6b30d9a336e77cfd35c0510ed7b6",
-      "upstreamCanonicalSha256": "9dcccbef80d6b6b120360b63a2bc3a708cdd6b30d9a336e77cfd35c0510ed7b6",
+      "localCanonicalSha256": "e59b02e4b4e7de6f92b26121a35275b72bf108154994cb2611eeb05266701318",
+      "upstreamRawSha256": "382c8c979388f24ee11f592cfb2b40c4e8854d92a60d2803db36ce0dfdb0c632",
+      "upstreamCanonicalSha256": "382c8c979388f24ee11f592cfb2b40c4e8854d92a60d2803db36ce0dfdb0c632",
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Config/SecretComparer.cs": {
@@ -679,15 +669,15 @@
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/Constants.cs": {
-      "localCanonicalSha256": "b544aa9d16e2dfc91465b026bbd5064340efd46687e17b581d1516ca5e1e8f6a",
-      "upstreamRawSha256": "636485e8d67895b043e343fc5bde1cddde1d11bf8659e4d19e2d726e5e08d5dd",
-      "upstreamCanonicalSha256": "b544aa9d16e2dfc91465b026bbd5064340efd46687e17b581d1516ca5e1e8f6a",
+      "localCanonicalSha256": "9310be5eaeb349861c82facd5a1d7d031662d2579a2d674b106a0625eece1a91",
+      "upstreamRawSha256": "c87bf271765d19d19e1fe1cf66a507212db52b486839ad56d9d9abfdeaf836e2",
+      "upstreamCanonicalSha256": "9310be5eaeb349861c82facd5a1d7d031662d2579a2d674b106a0625eece1a91",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/CoordinatedShutdownService.cs": {
-      "localCanonicalSha256": "8f0a2a56c81656639e2219df0f529b30ee431ad19120c6ee617749a218c3e732",
-      "upstreamRawSha256": "3e4081a5df820538763ba338b49d2ba881a2a48486faf9b1fb8a44275e96906a",
-      "upstreamCanonicalSha256": "8f0a2a56c81656639e2219df0f529b30ee431ad19120c6ee617749a218c3e732",
+      "localCanonicalSha256": "ec1679b9007a010c837354e9385ab40ff9ae42df1492503a013b409ce88c5aa0",
+      "upstreamRawSha256": "b51a2dafee4761365e3525fac6507c9a0074f2826f87975f97c2e0084c228ae1",
+      "upstreamCanonicalSha256": "ec1679b9007a010c837354e9385ab40ff9ae42df1492503a013b409ce88c5aa0",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/CustomConsoleFormatter.cs": {
@@ -721,15 +711,15 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/DTO/RequestDataDtoV1.cs": {
-      "localCanonicalSha256": "fefae210aa5fd39a4f59f8e137f7fe1e2986add442d4347ffa3a03b88b19e1ba",
-      "upstreamRawSha256": "9bd79ef0466984a6f51e12449f75b827f534cfb297363a9c818fed5acf6b9a18",
-      "upstreamCanonicalSha256": "9bd79ef0466984a6f51e12449f75b827f534cfb297363a9c818fed5acf6b9a18",
+      "localCanonicalSha256": "5960d40e4a408ecca13677d4a701ac8ddaf84a24c27f2a8de29d7baa8a3c6759",
+      "upstreamRawSha256": "c9c777398365216dcb87f92b650787e9dd8fcf475bb813e6c191f21d1101d10a",
+      "upstreamCanonicalSha256": "c9c777398365216dcb87f92b650787e9dd8fcf475bb813e6c191f21d1101d10a",
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/DTO/RequestSerializerService.cs": {
-      "localCanonicalSha256": "6bc77ad50ded8027fa134c634d29fe3396d9e99d03e3b47316d84524a522e51e",
-      "upstreamRawSha256": "6bc77ad50ded8027fa134c634d29fe3396d9e99d03e3b47316d84524a522e51e",
-      "upstreamCanonicalSha256": "6bc77ad50ded8027fa134c634d29fe3396d9e99d03e3b47316d84524a522e51e",
+      "localCanonicalSha256": "bdaa62aa04604e20f554a0540d9e21a04eae62a15862697563b172e7619931cd",
+      "upstreamRawSha256": "bdaa62aa04604e20f554a0540d9e21a04eae62a15862697563b172e7619931cd",
+      "upstreamCanonicalSha256": "bdaa62aa04604e20f554a0540d9e21a04eae62a15862697563b172e7619931cd",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Dockerfile": {
@@ -757,9 +747,9 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Events/EventDataBuilder.cs": {
-      "localCanonicalSha256": "b3d0948de12fed99fab57ed9a731297c5577a08917b75d20bc5cf9922da8bf08",
-      "upstreamRawSha256": "b3d0948de12fed99fab57ed9a731297c5577a08917b75d20bc5cf9922da8bf08",
-      "upstreamCanonicalSha256": "b3d0948de12fed99fab57ed9a731297c5577a08917b75d20bc5cf9922da8bf08",
+      "localCanonicalSha256": "2f794aa6f27438d1b9b51a1e086a76761a9b14f9cfd811a61902cceb7e902a2a",
+      "upstreamRawSha256": "2f794aa6f27438d1b9b51a1e086a76761a9b14f9cfd811a61902cceb7e902a2a",
+      "upstreamCanonicalSha256": "2f794aa6f27438d1b9b51a1e086a76761a9b14f9cfd811a61902cceb7e902a2a",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Events/EventHubBatchTransport.cs": {
@@ -799,9 +789,9 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Events/LogFileEventClient.cs": {
-      "localCanonicalSha256": "395788d8ac0aaae8a720779d81b04e4eb31f7a4d450500da1b5675eabed2c4d1",
-      "upstreamRawSha256": "561e4402fa74b92484301c485f21a8c5497f7db7d82f996a835ff246d61a71bd",
-      "upstreamCanonicalSha256": "395788d8ac0aaae8a720779d81b04e4eb31f7a4d450500da1b5675eabed2c4d1",
+      "localCanonicalSha256": "14d1a0ce23c6bdd82a923e710ca3214b8d67afa4d2770236464bd3da548aa6b7",
+      "upstreamRawSha256": "268483f0b8db7e52f99032eb63672a1c109f690d7918a7b460773f0e54124ef0",
+      "upstreamCanonicalSha256": "14d1a0ce23c6bdd82a923e710ca3214b8d67afa4d2770236464bd3da548aa6b7",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Events/LogTargetAttr.cs": {
@@ -823,15 +813,39 @@
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/HealthCheckService.cs": {
-      "localCanonicalSha256": "da7ff23e9ff71a27db354fb1d9a5d9652e9ee4c6a840052f59f448b120a12452",
-      "upstreamRawSha256": "da7ff23e9ff71a27db354fb1d9a5d9652e9ee4c6a840052f59f448b120a12452",
-      "upstreamCanonicalSha256": "da7ff23e9ff71a27db354fb1d9a5d9652e9ee4c6a840052f59f448b120a12452",
+      "localCanonicalSha256": "4bcc3c61ecf2bd4a66ac2527be706db05df384236fdfd559e66411fef3842ed3",
+      "upstreamRawSha256": "4bcc3c61ecf2bd4a66ac2527be706db05df384236fdfd559e66411fef3842ed3",
+      "upstreamCanonicalSha256": "4bcc3c61ecf2bd4a66ac2527be706db05df384236fdfd559e66411fef3842ed3",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/IShutdownParticipant.cs": {
       "localCanonicalSha256": "2ea72a15f45e55b58a091c30ae02f8669330757818a4528f7d461668e14d4380",
       "upstreamRawSha256": "2ea72a15f45e55b58a091c30ae02f8669330757818a4528f7d461668e14d4380",
       "upstreamCanonicalSha256": "2ea72a15f45e55b58a091c30ae02f8669330757818a4528f7d461668e14d4380",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/Llm/FieldRemovalMap.cs": {
+      "localCanonicalSha256": "30df441dbba4f8efcdc1889d687d508b23a41ac15b916832770e6242f7cf65bf",
+      "upstreamRawSha256": "30df441dbba4f8efcdc1889d687d508b23a41ac15b916832770e6242f7cf65bf",
+      "upstreamCanonicalSha256": "30df441dbba4f8efcdc1889d687d508b23a41ac15b916832770e6242f7cf65bf",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/Llm/FieldRenameMap.cs": {
+      "localCanonicalSha256": "bf6c41f11cc1358d3d57f36cfbf8d27ad4a0a3cd3ef1e8d7283b94197cb73fd7",
+      "upstreamRawSha256": "bf6c41f11cc1358d3d57f36cfbf8d27ad4a0a3cd3ef1e8d7283b94197cb73fd7",
+      "upstreamCanonicalSha256": "bf6c41f11cc1358d3d57f36cfbf8d27ad4a0a3cd3ef1e8d7283b94197cb73fd7",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/Llm/ModelMap.cs": {
+      "localCanonicalSha256": "1297373433a1fcec2c6ceaf515c2049a072f81bc15798cc383c80091aaccb2f2",
+      "upstreamRawSha256": "1297373433a1fcec2c6ceaf515c2049a072f81bc15798cc383c80091aaccb2f2",
+      "upstreamCanonicalSha256": "1297373433a1fcec2c6ceaf515c2049a072f81bc15798cc383c80091aaccb2f2",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/Llm/ModelSwapper.cs": {
+      "localCanonicalSha256": "b49eb51aa1c5ba6fc678aca78794d065f9398eb61750d20d8b39ee5daa227e15",
+      "upstreamRawSha256": "b49eb51aa1c5ba6fc678aca78794d065f9398eb61750d20d8b39ee5daa227e15",
+      "upstreamCanonicalSha256": "b49eb51aa1c5ba6fc678aca78794d065f9398eb61750d20d8b39ee5daa227e15",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Messaging/BatchMessagePump.cs": {
@@ -883,9 +897,9 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Program.cs": {
-      "localCanonicalSha256": "0f84d443914282e401717411cfe8e640eb0ebb99e02d64e5a568e2a11d357cc2",
-      "upstreamRawSha256": "a2e76d37da9a7d1b88a4d4b893b27d9edf1f6dfbd1c78b7a7aa9e5b2a4d0505e",
-      "upstreamCanonicalSha256": "a2e76d37da9a7d1b88a4d4b893b27d9edf1f6dfbd1c78b7a7aa9e5b2a4d0505e",
+      "localCanonicalSha256": "302f51473241ccda4d2b40c6d29bbc79868874a364b5301c67ac8bb85145d94d",
+      "upstreamRawSha256": "ab02204a7f42311fff1170396b0f384fec7d694ef21435024cd6e7115a612f59",
+      "upstreamCanonicalSha256": "ab02204a7f42311fff1170396b0f384fec7d694ef21435024cd6e7115a612f59",
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Proxy/AsyncWorker.cs": {
@@ -913,7 +927,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Proxy/NoReplayAttempt.cs": {
-      "localCanonicalSha256": "dd97b659097191edc16e6b54ba215d62dfd40bf28090bb44a118bbe59b1ada03",
+      "localCanonicalSha256": "862dc2dfd670bac919365614beeebc2dbedf025b43d535206c05c7db7d39255e",
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/Proxy/ObjectLifecycle.md": {
@@ -935,28 +949,34 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Proxy/ProxyHelperUtils.cs": {
-      "localCanonicalSha256": "c1d86a6b6b73e927288253927bf089640220bf302f6599c16cf6bf67803886b1",
-      "upstreamRawSha256": "1c02af21ad72744227510b82730ada68bef0c587637b624123258db3dd8cb389",
-      "upstreamCanonicalSha256": "1c02af21ad72744227510b82730ada68bef0c587637b624123258db3dd8cb389",
+      "localCanonicalSha256": "2c5ace25ac140d9956efe4d3528f2c31cb67adf51219c6242e3b78bada0ea354",
+      "upstreamRawSha256": "0dbefef68fbed34c79075c16f5d49e8b0343dda81b84e6e61fa4c536577d4738",
+      "upstreamCanonicalSha256": "0dbefef68fbed34c79075c16f5d49e8b0343dda81b84e6e61fa4c536577d4738",
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Proxy/ProxyWorker.cs": {
-      "localCanonicalSha256": "eb5d0c3c5364d6d66c68a96b173ddf32fb760c1bf533729a567b763347ca9eaa",
-      "upstreamRawSha256": "566e7408f1893cb78a01062084cefcbfb6189f0e5a83dee8c147c37cea9df14f",
-      "upstreamCanonicalSha256": "566e7408f1893cb78a01062084cefcbfb6189f0e5a83dee8c147c37cea9df14f",
+      "localCanonicalSha256": "83e94b4564171c1ecdfd53838a5da9e20c1c4bd70d20f864ae8c7e259210cc6d",
+      "upstreamRawSha256": "31574654659d567d1962fa2876b1f0afe3712c77c68752fff7cad7950c602de8",
+      "upstreamCanonicalSha256": "31574654659d567d1962fa2876b1f0afe3712c77c68752fff7cad7950c602de8",
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Proxy/RequestLifecycleManager.cs": {
-      "localCanonicalSha256": "e7ab1834b5e0481bb75dc07ab6ae64023c23b0168459c496d4d42ca95fc6483a",
-      "upstreamRawSha256": "e7ab1834b5e0481bb75dc07ab6ae64023c23b0168459c496d4d42ca95fc6483a",
-      "upstreamCanonicalSha256": "e7ab1834b5e0481bb75dc07ab6ae64023c23b0168459c496d4d42ca95fc6483a",
+      "localCanonicalSha256": "b17ad5b6b9e04d93a34632acd8fe6f274a35207aec3077a892d0a8af5bfa240c",
+      "upstreamRawSha256": "b17ad5b6b9e04d93a34632acd8fe6f274a35207aec3077a892d0a8af5bfa240c",
+      "upstreamCanonicalSha256": "b17ad5b6b9e04d93a34632acd8fe6f274a35207aec3077a892d0a8af5bfa240c",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Proxy/RequeueDelayWorker.cs": {
-      "localCanonicalSha256": "61d47d44459dc38828e21d0ce2d4ce563f6e1b3e2ca5dfba66a4c4d3c3724aa9",
-      "upstreamRawSha256": "e45288be4e563a18f6044d0414c99ee8f951ed65d358e019d71e5ce90b3a3876",
-      "upstreamCanonicalSha256": "e45288be4e563a18f6044d0414c99ee8f951ed65d358e019d71e5ce90b3a3876",
+      "localCanonicalSha256": "22716bc56a54e465e2fccb03b9a6025bee9a45101bf22616dfee03784853c203",
+      "upstreamRawSha256": "f97542ecb8db497bd8b755cecb2ba5de378882c95fa218cbd9acb2de872c0005",
+      "upstreamCanonicalSha256": "f97542ecb8db497bd8b755cecb2ba5de378882c95fa218cbd9acb2de872c0005",
       "disposition": "ai4ia-patched"
+    },
+    "SimpleL7Proxy/Proxy/S7PClientReadException.cs": {
+      "localCanonicalSha256": "2098a93e9325cc52a3aad2254e10cb79fdb7d65a306ade92874eaa4886a71b0e",
+      "upstreamRawSha256": "2098a93e9325cc52a3aad2254e10cb79fdb7d65a306ade92874eaa4886a71b0e",
+      "upstreamCanonicalSha256": "2098a93e9325cc52a3aad2254e10cb79fdb7d65a306ade92874eaa4886a71b0e",
+      "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Proxy/S7PRequeueException.cs": {
       "localCanonicalSha256": "eaea8cb27b7f6a4501900cb149e4e065fc1a92175eb2a0b61a0e8ba78349b27a",
@@ -995,9 +1015,9 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Queue/ConcurrentPriQueue.cs": {
-      "localCanonicalSha256": "321b9e121d08e6352430042ab0983a0baf19807a1999516c9f424addaee2c1a5",
-      "upstreamRawSha256": "a20d9b65f837074113beab7ac3813fbfd7cefb46390419101b958106569a84e2",
-      "upstreamCanonicalSha256": "321b9e121d08e6352430042ab0983a0baf19807a1999516c9f424addaee2c1a5",
+      "localCanonicalSha256": "9d94c4a04adc143c903295dd75cdbfb6d8b8b7215150ef78d49950c2b39e99e6",
+      "upstreamRawSha256": "1d06b906c54b3e2abd0234c855838810644ef12b765449110ac03c98266fd4cc",
+      "upstreamCanonicalSha256": "9d94c4a04adc143c903295dd75cdbfb6d8b8b7215150ef78d49950c2b39e99e6",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Queue/ConcurrentSignal.cs": {
@@ -1025,9 +1045,9 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Queue/PriorityQueueItem.cs": {
-      "localCanonicalSha256": "29bed1304d20ea8ec076eef5100d3ea9294f793e8b6a841af63e68f664b74ddd",
-      "upstreamRawSha256": "29bed1304d20ea8ec076eef5100d3ea9294f793e8b6a841af63e68f664b74ddd",
-      "upstreamCanonicalSha256": "29bed1304d20ea8ec076eef5100d3ea9294f793e8b6a841af63e68f664b74ddd",
+      "localCanonicalSha256": "55e385297fd93a7210d5bf996eebd0d8d2fbd4bf167f9f6c913e84ac56a93681",
+      "upstreamRawSha256": "55e385297fd93a7210d5bf996eebd0d8d2fbd4bf167f9f6c913e84ac56a93681",
+      "upstreamCanonicalSha256": "55e385297fd93a7210d5bf996eebd0d8d2fbd4bf167f9f6c913e84ac56a93681",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Queue/PriorityQueueItemComparer.cs.txt": {
@@ -1049,15 +1069,15 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/ReadinessRegistry.cs": {
-      "localCanonicalSha256": "15897886aeb971027d2c11afa9f2497dab61bfc2adcbe217c17d33bea85bd749",
-      "upstreamRawSha256": "15897886aeb971027d2c11afa9f2497dab61bfc2adcbe217c17d33bea85bd749",
-      "upstreamCanonicalSha256": "15897886aeb971027d2c11afa9f2497dab61bfc2adcbe217c17d33bea85bd749",
+      "localCanonicalSha256": "90999e4af733aabb61c5befae579d952da6977d2e26cb5eed88718d466779be5",
+      "upstreamRawSha256": "90999e4af733aabb61c5befae579d952da6977d2e26cb5eed88718d466779be5",
+      "upstreamCanonicalSha256": "90999e4af733aabb61c5befae579d952da6977d2e26cb5eed88718d466779be5",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/RequestData.cs": {
-      "localCanonicalSha256": "8b4895c352ee5f2916156a4275ce83d11861c42df863f825d3838110036e6bf6",
-      "upstreamRawSha256": "36b2c96f343a08a822dc503dcc6a8b6d3fecef4e39f95df8e1746dde686fa77e",
-      "upstreamCanonicalSha256": "05ec58ba7c31d9355ce7f376cf1fc204703e7375034ec6fc9b8f46f06e61e6b0",
+      "localCanonicalSha256": "a8ce08f481991e68be82be956368278ad71a9d6b4575272e4d96593464b5b3aa",
+      "upstreamRawSha256": "a6a7448c99103f0edf1cf2f860f7af64eb19421e8a2b500a49ec55c93da91c03",
+      "upstreamCanonicalSha256": "c5fef3dbc173f99c531301f17f014ef69d905b895eebdde0be7503f0e8c250e3",
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/RequestType.cs": {
@@ -1066,10 +1086,40 @@
       "upstreamCanonicalSha256": "2417258bd02cbba33ae4118e6c10cf3a59df4a6109ab2e2a0c921817d2ceb4b1",
       "disposition": "upstream-equivalent"
     },
+    "SimpleL7Proxy/Rules/RuleConfig.cs": {
+      "localCanonicalSha256": "784b942ba155b9f0f9976725eb2337961f32b2befcf4271549115ba5b39f2376",
+      "upstreamRawSha256": "784b942ba155b9f0f9976725eb2337961f32b2befcf4271549115ba5b39f2376",
+      "upstreamCanonicalSha256": "784b942ba155b9f0f9976725eb2337961f32b2befcf4271549115ba5b39f2376",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/Rules/RuleConfigParser.cs": {
+      "localCanonicalSha256": "a3fbe6f1a23b210d9b88e86792862d56c08d60aa26bd0132576db5f1dec719aa",
+      "upstreamRawSha256": "a3fbe6f1a23b210d9b88e86792862d56c08d60aa26bd0132576db5f1dec719aa",
+      "upstreamCanonicalSha256": "a3fbe6f1a23b210d9b88e86792862d56c08d60aa26bd0132576db5f1dec719aa",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/Rules/RuleHash.cs": {
+      "localCanonicalSha256": "8dd67e952a662b1904f3759af91bd9cf17a7db5b7e6061dbeffdff3282bce0fa",
+      "upstreamRawSha256": "8dd67e952a662b1904f3759af91bd9cf17a7db5b7e6061dbeffdff3282bce0fa",
+      "upstreamCanonicalSha256": "8dd67e952a662b1904f3759af91bd9cf17a7db5b7e6061dbeffdff3282bce0fa",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/Rules/RuleProcessor.cs": {
+      "localCanonicalSha256": "33e062d503ab823dbb5af1dba75bbb4b1fb566b351ac8316956b3522f644a78d",
+      "upstreamRawSha256": "33e062d503ab823dbb5af1dba75bbb4b1fb566b351ac8316956b3522f644a78d",
+      "upstreamCanonicalSha256": "33e062d503ab823dbb5af1dba75bbb4b1fb566b351ac8316956b3522f644a78d",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/Rules/RuleSample.cs": {
+      "localCanonicalSha256": "b8a37f471efed7ff0108331810c8f6d1d8adaa53cf5eeb5f0dc21e055ca25c72",
+      "upstreamRawSha256": "b8a37f471efed7ff0108331810c8f6d1d8adaa53cf5eeb5f0dc21e055ca25c72",
+      "upstreamCanonicalSha256": "b8a37f471efed7ff0108331810c8f6d1d8adaa53cf5eeb5f0dc21e055ca25c72",
+      "disposition": "upstream-equivalent"
+    },
     "SimpleL7Proxy/SimpleL7Proxy.csproj": {
-      "localCanonicalSha256": "d922a1c2ab1d97027291ccfb8927f6add11290e42ebba90be382768a78411514",
-      "upstreamRawSha256": "1c488f90e1c719e91427e54aabfae0be42f990ec12d3067ad28c3c37d06de571",
-      "upstreamCanonicalSha256": "1c488f90e1c719e91427e54aabfae0be42f990ec12d3067ad28c3c37d06de571",
+      "localCanonicalSha256": "56b310b1103fd9e1c78fa8942efb9d00bbdc6f3b9e28c6454c03dfbcac8c2962",
+      "upstreamRawSha256": "7c636c17cd56878968f04b86b95a855771a2555ebc446b7f1556ddd5ca23c19d",
+      "upstreamCanonicalSha256": "7c636c17cd56878968f04b86b95a855771a2555ebc446b7f1556ddd5ca23c19d",
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/User/AsyncClientInfo.cs": {
@@ -1091,9 +1141,15 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/User/IUserProfileService.cs": {
-      "localCanonicalSha256": "3ff4d738a258dde3621e146b768109d957b93486092e64689128b53031989e93",
-      "upstreamRawSha256": "c9462560beb1c8e1492ec7a3f3e80a6ca035751e7726002d90e72f5441d2eb48",
-      "upstreamCanonicalSha256": "3ff4d738a258dde3621e146b768109d957b93486092e64689128b53031989e93",
+      "localCanonicalSha256": "69a75dca5cc2488d8c50437e774db350284d4be147a9a6a11d9099562f389bad",
+      "upstreamRawSha256": "eea54f02bfd78d49855fac88a497a32dc555506fd6c185eb2fecde6ab3d72bd7",
+      "upstreamCanonicalSha256": "69a75dca5cc2488d8c50437e774db350284d4be147a9a6a11d9099562f389bad",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/User/ProfileEnricher.cs": {
+      "localCanonicalSha256": "af36683f40d5fb209583c78fea3ba5e0a8c3a41557c8bbe24931d5a3e395ad2b",
+      "upstreamRawSha256": "af36683f40d5fb209583c78fea3ba5e0a8c3a41557c8bbe24931d5a3e395ad2b",
+      "upstreamCanonicalSha256": "af36683f40d5fb209583c78fea3ba5e0a8c3a41557c8bbe24931d5a3e395ad2b",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/User/UserPriority.cs": {
@@ -1103,9 +1159,15 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/User/UserProfile.cs": {
-      "localCanonicalSha256": "8fbaecbc0772413ae41f4abd2cc069aaaa188910efafc9d5bc6f16cbacbf7e3c",
-      "upstreamRawSha256": "04130bfa16d2bf78068304c4936a27f55338bd2811e8554781425405d04159e7",
-      "upstreamCanonicalSha256": "8fbaecbc0772413ae41f4abd2cc069aaaa188910efafc9d5bc6f16cbacbf7e3c",
+      "localCanonicalSha256": "d62e92fe691d1294a677d3e047033dedb64938c024f60f2ba275ce40e66dc678",
+      "upstreamRawSha256": "ce71c3ef4771b2d513952d26b3edee575963d098e91cb70b1ba140ecfec59683",
+      "upstreamCanonicalSha256": "d62e92fe691d1294a677d3e047033dedb64938c024f60f2ba275ce40e66dc678",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/appconfig-start.sh": {
+      "localCanonicalSha256": "2e578f6c04e3937e32bbc4bb40fc194375f49c72615877833ac02663ad9c7266",
+      "upstreamRawSha256": "2e578f6c04e3937e32bbc4bb40fc194375f49c72615877833ac02663ad9c7266",
+      "upstreamCanonicalSha256": "2e578f6c04e3937e32bbc4bb40fc194375f49c72615877833ac02663ad9c7266",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/auth.json": {
@@ -1115,15 +1177,15 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/build.sh": {
-      "localCanonicalSha256": "ae86941b30e6167162285324c7747fd76461a2d98fd344b74c0f92e0d7c55e10",
-      "upstreamRawSha256": "ae86941b30e6167162285324c7747fd76461a2d98fd344b74c0f92e0d7c55e10",
-      "upstreamCanonicalSha256": "ae86941b30e6167162285324c7747fd76461a2d98fd344b74c0f92e0d7c55e10",
+      "localCanonicalSha256": "731348af57cc616cff7d7b60b70e49d8b41fd7e8deaf1435822fecb0e8096f69",
+      "upstreamRawSha256": "731348af57cc616cff7d7b60b70e49d8b41fd7e8deaf1435822fecb0e8096f69",
+      "upstreamCanonicalSha256": "731348af57cc616cff7d7b60b70e49d8b41fd7e8deaf1435822fecb0e8096f69",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/config.json": {
-      "localCanonicalSha256": "df9799cb8199f9ca16ba9feb1b95388ec085812b7a64f2ec60dd342393d77413",
-      "upstreamRawSha256": "8f6147b1de9c00a5e535143afefd65d8d3a8cdc63fc55bb758e9ea7b06ad1062",
-      "upstreamCanonicalSha256": "df9799cb8199f9ca16ba9feb1b95388ec085812b7a64f2ec60dd342393d77413",
+      "localCanonicalSha256": "964d6a3710fc732022324cf13d39b34375d9368b20304b455d57f562bb7f9ffc",
+      "upstreamRawSha256": "96a5b9506d90792c02cc0d90629b281e7d4eb1f27d732ea4c86b07434055901d",
+      "upstreamCanonicalSha256": "964d6a3710fc732022324cf13d39b34375d9368b20304b455d57f562bb7f9ffc",
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/global.json": {
@@ -1149,9 +1211,9 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/server.cs": {
-      "localCanonicalSha256": "39bdfd9a05e2f69f8a86ebb6ba73a2f275105b5f321451745524d4f4f86d7015",
-      "upstreamRawSha256": "4487ecd7fd5777bed9cc7ce91c3b18596e306f5e6559aad4890df864fa6d64ce",
-      "upstreamCanonicalSha256": "4487ecd7fd5777bed9cc7ce91c3b18596e306f5e6559aad4890df864fa6d64ce",
+      "localCanonicalSha256": "28cfc090165d343964e6809201cacfb2782a6c95f94e3142dd09b0e04b0bed46",
+      "upstreamRawSha256": "a7e272ea50390c6ec275b27e2686cf3246a0823448de20a9d660d2536cac997a",
+      "upstreamCanonicalSha256": "a7e272ea50390c6ec275b27e2686cf3246a0823448de20a9d660d2536cac997a",
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/templates/notauthorized.json": {
@@ -1176,6 +1238,12 @@
       "localCanonicalSha256": "6b5c79492d9f7706d50648ace134af25a59a1d42672564527ee8e7978a6e30dc",
       "upstreamRawSha256": "6b5c79492d9f7706d50648ace134af25a59a1d42672564527ee8e7978a6e30dc",
       "upstreamCanonicalSha256": "6b5c79492d9f7706d50648ace134af25a59a1d42672564527ee8e7978a6e30dc",
+      "disposition": "upstream-equivalent"
+    },
+    "SimpleL7Proxy/update-packages.sh": {
+      "localCanonicalSha256": "f76d59526103e5fa865f87b1989bd27f512d27ebfbd6f6d631db17f7237ae759",
+      "upstreamRawSha256": "f76d59526103e5fa865f87b1989bd27f512d27ebfbd6f6d631db17f7237ae759",
+      "upstreamCanonicalSha256": "f76d59526103e5fa865f87b1989bd27f512d27ebfbd6f6d631db17f7237ae759",
       "disposition": "upstream-equivalent"
     }
   }

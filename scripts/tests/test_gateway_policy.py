@@ -2404,7 +2404,7 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertNotIn("telemetrySenderPrincipalIds", main)
 
     def test_proxy_pin_is_consistent(self) -> None:
-        pin = "d9eb1d1fa42820792a9699bfc253562fba07d977"
+        pin = "b0066b0e53f89abb5e84cfeacda2fdcaca8b081e"
         self.assertIn(pin, (ROOT / "proxy/README.md").read_text(encoding="utf-8"))
         self.assertIn(pin, (ROOT / "proxy/Dockerfile").read_text(encoding="utf-8"))
 

@@ -26,11 +26,11 @@ class ProxyProvenanceTests(unittest.TestCase):
             document["counts"],
             {
                 "ai4ia-added": 5,
-                "ai4ia-patched": 19,
-                "upstream-equivalent": 155,
+                "ai4ia-patched": 18,
+                "upstream-equivalent": 168,
             },
         )
-        self.assertEqual(len(document["files"]), 179)
+        self.assertEqual(len(document["files"]), 191)
         self.assertEqual(
             {patch["path"] for patch in document["patches"]},
             set(proxy_provenance.AI4IA_PATCH_REASONS),

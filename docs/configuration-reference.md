@@ -509,8 +509,9 @@ keys, raw frames, audio, transcripts, prompts/history, and tool arguments/result
 
 APIM owns bounded immediate backend attempts. When all compatible regions are
 throttled it returns `429`, `S7PREQUEUE: true`, and `retry-after-ms`.
-SimpleL7Proxy uses `MaxAttempts=1` per dispatch and owns delayed requeue, avoiding
-retry multiplication.
+SimpleL7Proxy makes one attempt per dispatch against its single catch-all host
+(`SinglePass`, with `MaxAttempts=1` bounding `MultiPass`) and owns delayed
+requeue, avoiding retry multiplication.
 
 ### Multi-application onboarding status
 

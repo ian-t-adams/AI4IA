@@ -4,7 +4,7 @@ AI4IA depends on third-party open-source software through its application packag
 
 ## Vendored SimpleL7Proxy
 
-The `proxy/` tree vendors source from [`microsoft/SimpleL7Proxy`](https://github.com/microsoft/SimpleL7Proxy), pinned in `proxy/README.md` and `proxy/Dockerfile` to commit `d9eb1d1fa42820792a9699bfc253562fba07d977`.
+The `proxy/` tree vendors source from [`microsoft/SimpleL7Proxy`](https://github.com/microsoft/SimpleL7Proxy), pinned in `proxy/README.md` and `proxy/Dockerfile` to commit `b0066b0e53f89abb5e84cfeacda2fdcaca8b081e`.
 
 Vendored directories:
 
@@ -19,7 +19,7 @@ upstream-equivalent, AI4IA-patched, and AI4IA-added file. See `proxy/README.md`
 for the audited pin, current drift assessment, patch rationale, and regeneration
 procedure; do not copy counts into this notice because the manifest owns them.
 The AI4IA one-attempt transport, authenticated request binding and replay fences
-are local adaptations over that unchanged pin, documented in the same inventory.
+are local adaptations over that pin, documented in the same inventory.
 
 ## Application dependencies
 
