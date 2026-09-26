@@ -71,6 +71,8 @@ REALTIME_GA_OUTPUT_PATH = ROOT / "infra" / "policies" / "realtime-ga-routing.xml
 # Generated from infra/voice-providers.json by gen-voice-provider-catalog.py,
 # then independently validated here with the other gateway policies.
 SPEECH_VOICE_LIVE_POLICY_PATH = ROOT / "infra" / "policies" / "speech-voice-live.xml"
+PHOTO_AVATAR_POLICY_PATH = ROOT / "infra" / "policies" / "photo-avatars.xml"
+VOICE_PROVIDERS_PATH = ROOT / "infra" / "voice-providers.json"
 CODE_INTERPRETER_POLICY_PATH = (
     ROOT / "infra" / "policies" / "code-interpreter-routing.xml"
 )
@@ -1335,6 +1337,184 @@ def validate_code_interpreter_policy(policy: str, source: str) -> None:
         raise ValueError(f"{source}: backend must use one 240-second forward-request")
 
 
+PHOTO_AVATAR_REQUIRED_STRIPS = frozenset({
+    "Ocp-Apim-Subscription-Key", "api-key", "Authorization", "S7P-KEY", "S7PTTL",
+    "S7PTimeout", "x-S7PPriority", "X-AI4IA-App-Id", "X-AI4IA-User-Id", "X-UserProfile",
+    "x-LLMModel", "x-PolicyCycleCounter", "x-LifetimePolicyCycleCounter",
+})
+PHOTO_AVATAR_EXPECTED_OPERATIONS = (
+    ("photo-avatar-features", "GET", "/features"),
+    ("photo-avatar-project-read", "GET", "/project"),
+    ("photo-avatar-project-create", "PUT", "/project"),
+    ("photo-avatar-create", "PUT", "/photoavatars"),
+    ("photo-avatar-read", "GET", "/photoavatars"),
+    ("photo-avatar-delete", "DELETE", "/photoavatars"),
+)
+
+
+def validate_photo_avatar_policy(
+    policy: str, source: str, catalog: dict[str, Any] | None = None,
+) -> None:
+    """Pin the photo avatar API to exact operations, one MI backend and one send.
+
+    ``catalog`` is the ``photoAvatars`` block; it defaults to
+    ``infra/voice-providers.json`` so the check follows the same source the
+    generator renders from, while the invariants below stay hard-coded.
+    """
+    block = catalog if catalog is not None else json.loads(
+        VOICE_PROVIDERS_PATH.read_text(encoding="utf-8")
+    )["photoAvatars"]
+    root = ElementTree.fromstring(policy)
+    allowed = {
+        "policies", "inbound", "backend", "outbound", "on-error", "set-variable",
+        "choose", "when", "otherwise", "return-response", "set-status", "set-header",
+        "value", "set-body", "rewrite-uri", "set-backend-service", "set-query-parameter",
+        "authentication-managed-identity", "forward-request",
+    }
+    if root.findall(".//base"):
+        raise ValueError(f"{source}: the isolated photo avatar API must not inherit base policies")
+    if root.findall(".//retry"):
+        raise ValueError(f"{source}: the photo avatar API must never retry a provider call")
+    unsupported = sorted({element.tag for element in root.iter()} - allowed)
+    if unsupported:
+        raise ValueError(f"{source}: unsupported photo avatar policy element(s): {unsupported}")
+    if len(policy.encode("utf-8")) > APIM_API_POLICY_MAX_BYTES:
+        raise ValueError(f"{source}: exceeds {APIM_API_POLICY_MAX_BYTES} bytes")
+    lowered = policy.lower()
+    hits = [token for token in ("openai", "include-fragment", "send-request", "proxy-models") if token in lowered]
+    if hits:
+        raise ValueError(f"{source}: must not reference {hits}")
+
+    inbound = root.find("./inbound")
+    if inbound is None or root.find("./backend") is None or root.find("./outbound") is None:
+        raise ValueError(f"{source}: expected inbound, backend and outbound sections")
+    children = list(inbound)
+    if not children or children[0].tag != "set-variable" or children[0].get("name") != "photoAvatarOperation":
+        raise ValueError(f"{source}: the operation validation must be the first inbound policy")
+    validation = children[0].get("value", "")
+    required = [
+        'context.Api.Path != "ai4ia-photo-avatars-v1"',
+        "context.Subscription == null",
+        'context.Subscription.Id != "__AI4IA_PHOTO_AVATAR_SUBSCRIPTION_ID__"',
+        "string.IsNullOrEmpty(query)",
+        r'@"\A/ai4ia-photo-avatars-v1/(features|project|photoavatars/(ai4ia-[0-9a-f]{20}))\z"',
+        'context.Request.MatchedParameters["avatarId"] != match.Groups[2].Value',
+        'context.Request.Method + " " + route != expected',
+        'return bytes.Length == 0 ? operation : "";',
+        "bytes.Length > 16384",
+        "body.Properties().Count() != 1",
+        "prompt.Type != JTokenType.String",
+        f"text.Length > {block['promptMaxChars']}",
+        "!allowed.Contains(item.Value.Value<string>())",
+    ]
+    for name in ("gender", "age", "ethnicity", "style"):
+        values = ", ".join(f'"{value}"' for value in block["attributes"][name])
+        required.append(f'item.Name == "{name}" ? new string[] {{ {values} }}')
+    missing = [snippet for snippet in required if snippet not in validation]
+    if missing:
+        raise ValueError(f"{source}: operation validation is missing required checks: {missing}")
+    operations = tuple(
+        (name, method, route) for name, method, route in re.findall(
+            r'operation == "([^"]+)" \? "([A-Z]+) (/[a-z]+)"', validation,
+        )
+    )
+    if operations != PHOTO_AVATAR_EXPECTED_OPERATIONS:
+        raise ValueError(f"{source}: operation inventory must be exactly {PHOTO_AVATAR_EXPECTED_OPERATIONS}")
+
+    gate = children[1] if len(children) > 1 else None
+    rejection = gate.find("./when/return-response/set-status") if gate is not None else None
+    if (
+        gate is None or gate.tag != "choose"
+        or 'string.IsNullOrEmpty((string)context.Variables["photoAvatarOperation"])'
+        not in (gate.find("./when").get("condition", "") if gate.find("./when") is not None else "")
+        or rejection is None or rejection.get("code") != "400"
+    ):
+        raise ValueError(f"{source}: an invalid request must be refused with 400 before any rewrite")
+
+    api_version = block["apiVersion"]
+    project = f"/CustomAvatar/projects/{{{{photo-avatar-project}}}}{block['projectSuffix']}"
+    expected_templates = {
+        f"/customavatar/features/?api-version={api_version}",
+        f"{project}?api-version={api_version}",
+        f"{project}/photoavatars/{{avatarId}}?api-version={api_version}",
+    }
+    rewrites = root.findall(".//rewrite-uri")
+    if (
+        len(rewrites) != 5
+        or {element.get("template") for element in rewrites} != expected_templates
+        or any(element.get("copy-unmatched-params") != "false" for element in rewrites)
+    ):
+        raise ValueError(
+            f"{source}: provider paths must be the exact catalog templates without caller query parameters"
+        )
+    bodies = [element.text or "" for element in root.findall("./inbound/choose/when/set-body")]
+    project_body = '{"kind":"PhotoAvatar","foundryProjectName":"{{photo-avatar-project}}"}'
+    if project_body not in bodies or not any(
+        'new JProperty("properties", canonical)' in body for body in bodies
+    ):
+        raise ValueError(
+            f"{source}: APIM must own the avatar project body and re-serialize the validated create body"
+        )
+
+    backends = root.findall(".//set-backend-service")
+    expected_backend = f"{{{{foundry-{block['homeRegion']}-endpoint}}}}"
+    if len(backends) != 1 or backends[0] not in children or backends[0].get("base-url") != expected_backend:
+        raise ValueError(f"{source}: backend must be exactly {expected_backend}")
+    identities = root.findall(".//authentication-managed-identity")
+    if (
+        len(identities) != 1 or identities[0] not in children
+        or identities[0].get("resource") != "https://cognitiveservices.azure.com"
+        or identities[0].get("client-id") is not None
+    ):
+        raise ValueError(
+            f"{source}: expected one direct inbound system-identity policy for https://cognitiveservices.azure.com"
+        )
+    identity_index = children.index(identities[0])
+    strips = {
+        element.get("name"): children.index(element)
+        for element in children
+        if element.tag == "set-header" and element.get("exists-action") == "delete"
+    }
+    missing_strips = sorted(PHOTO_AVATAR_REQUIRED_STRIPS - set(strips))
+    if missing_strips:
+        raise ValueError(f"{source}: must strip caller/internal headers before the backend: {missing_strips}")
+    query_strips = [
+        children.index(element) for element in children
+        if element.tag == "set-query-parameter" and element.get("name") == "subscription-key"
+        and element.get("exists-action") == "delete"
+    ]
+    if len(query_strips) != 1 or any(
+        index > identity_index
+        for index in [*query_strips, *(strips[name] for name in PHOTO_AVATAR_REQUIRED_STRIPS)]
+    ):
+        raise ValueError(f"{source}: caller credentials must be stripped before managed-identity authentication")
+
+    forwards = root.findall(".//forward-request")
+    if len(forwards) != 1 or root.find("./backend/forward-request") is not forwards[0]:
+        raise ValueError(f"{source}: expected exactly one backend forward-request")
+    forward = forwards[0]
+    timeout = forward.get("timeout", "")
+    if (
+        forward.get("follow-redirects") != "false"
+        or forward.get("buffer-request-body") != "true"
+        or forward.get("fail-on-error-status-code") != "false"
+        or not timeout.isdigit() or not 1 <= int(timeout) <= 60
+    ):
+        raise ValueError(
+            f"{source}: forward-request must not follow redirects, must buffer the request and "
+            "surface provider statuses within 60 seconds"
+        )
+    requeue = [
+        element for element in root.findall("./outbound/set-header")
+        if element.get("name") == "S7PREQUEUE" and element.get("exists-action") == "delete"
+    ]
+    if not requeue:
+        raise ValueError(f"{source}: outbound must delete S7PREQUEUE so the proxy never requeues")
+    error_status = root.find("./on-error/return-response/set-status")
+    if error_status is None or error_status.get("code") != "502":
+        raise ValueError(f"{source}: on-error must return a bounded 502")
+
+
 def main() -> int:
     parser = build_parser(__doc__)
     args = parser.parse_args()
@@ -1388,6 +1568,13 @@ def main() -> int:
         validate_code_interpreter_policy(
             code_interpreter_policy,
             str(CODE_INTERPRETER_POLICY_PATH.relative_to(ROOT)),
+        )
+        photo_avatar_policy = PHOTO_AVATAR_POLICY_PATH.read_text(encoding="utf-8")
+        validate_policy_expressions(
+            photo_avatar_policy, str(PHOTO_AVATAR_POLICY_PATH.relative_to(ROOT)),
+        )
+        validate_photo_avatar_policy(
+            photo_avatar_policy, str(PHOTO_AVATAR_POLICY_PATH.relative_to(ROOT)),
         )
         if max(len(content.encode("utf-8")) for content in (
             priority_generated, generate_attempts_policy(priority_generated),

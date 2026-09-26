@@ -37,6 +37,7 @@ from ..model_traits import (
 from ..safety import MessageSafety, parse_safety
 from .anthropic import (
     ANTHROPIC_API,
+    MAX_TOKENS_STOP,
     AnthropicStreamState,
     anthropic_json_to_chat,
     build_anthropic_payload,
@@ -1612,6 +1613,8 @@ class ModelGatewayClient:
                             raw=event.raw,
                             usage=event.usage,
                             done=event.done,
+                            incomplete=event.incomplete,
+                            incompleteReason=MAX_TOKENS_STOP if event.incomplete else None,
                         )
                         admission.report(chunk.usage, complete=chunk.done)
                         yield chunk
@@ -1628,6 +1631,8 @@ class ModelGatewayClient:
                             raw=event.raw,
                             usage=event.usage,
                             done=event.done,
+                            incomplete=event.incomplete,
+                            incompleteReason=MAX_TOKENS_STOP if event.incomplete else None,
                         )
         except httpx.HTTPError as exc:
             raise ModelGatewayError(502, _STREAM_FAILED) from exc

@@ -23,6 +23,11 @@ internal sealed class ApimPolicyHarness
         s => s, s => LoadPolicy(System.IO.Path.Combine(PolicyDirectory, $"simplel7proxy_{s}_32.xml")));
     private static readonly XElement VersionedPolicy = LoadPolicy(
         System.IO.Path.Combine(PolicyDirectory, "attempts-v1-policy.xml"));
+    // Generated from the photoAvatars catalog by gen-voice-provider-catalog.py.
+    internal static readonly XElement PhotoAvatarPolicy = LoadPolicy(
+        System.IO.Path.Combine(PolicyDirectory, "photo-avatars.xml"));
+    internal const string PhotoAvatarApiPath = "ai4ia-photo-avatars-v1";
+    internal const string PhotoAvatarSubscription = "__AI4IA_PHOTO_AVATAR_SUBSCRIPTION_ID__";
     private static readonly XElement LegacyPolicy = LoadPolicy(
         System.IO.Path.Combine(PolicyDirectory, "simplel7proxy-priority-policy.xml"));
     internal static readonly XElement ClaudeAuth = LoadPolicy(System.IO.Path.Combine(PolicyDirectory, "claude-federated-auth.xml"));
@@ -49,6 +54,30 @@ internal sealed class ApimPolicyHarness
     private string _backend = "";
     private string _path = "";
     private readonly bool _versioned;
+    private readonly bool _photoAvatar;
+
+    // The photo avatar API: APIM matches the operation (id + template parameters)
+    // before any policy runs; the test supplies that match from the Bicep inventory.
+    internal ApimPolicyHarness(
+        WireRequest request, string operationId, IReadOnlyDictionary<string, string> matched, WireServer home)
+    {
+        _photoAvatar = true;
+        Context.Api.Path = PhotoAvatarApiPath;
+        Context.Subscription!.Id = PhotoAvatarSubscription;
+        Context.Subscription.PrimaryKey = "photo-avatar-fixture-key";
+        Context.Operation.Id = operationId;
+        Context.Operation.Method = request.Method;
+        Context.Request.Headers = new(request.Headers.ToDictionary(p => p.Key, p => new[] { p.Value }), StringComparer.OrdinalIgnoreCase);
+        Context.Request.Body = new ApimBody(request.Body);
+        Context.Request.Method = request.Method;
+        Context.Request.OriginalUrl = new ApimUrl(request.Path);
+        Context.Request.Url = new ApimUrl(request.Path);
+        foreach (var pair in matched)
+            Context.Request.MatchedParameters[pair.Key] = pair.Value;
+        Context.NamedValues["photo-avatar-project"] = "fixture-project";
+        Context.NamedValues["foundry-eastus2-endpoint"] = home.Url;
+        _path = request.Path;
+    }
 
     internal ApimPolicyHarness(WireRequest request, params WireServer[] servers)
     {
@@ -86,13 +115,14 @@ internal sealed class ApimPolicyHarness
 
     internal async Task Run(Action<ApimContext>? beforeBackend = null)
     {
+        var policy = _photoAvatar ? PhotoAvatarPolicy : _versioned ? VersionedPolicy : LegacyPolicy;
         try
         {
             foreach (string phase in new[] { "inbound", "backend", "outbound" })
             {
                 _phase = phase;
                 if (phase == "backend") beforeBackend?.Invoke(Context);
-                await Children((_versioned ? VersionedPolicy : LegacyPolicy).Element(phase)!);
+                await Children(policy.Element(phase)!);
             }
         }
         catch (PolicyReturn) { }
@@ -102,7 +132,7 @@ internal sealed class ApimPolicyHarness
             _phase = "on_error";
             try
             {
-                await Children((_versioned ? VersionedPolicy : LegacyPolicy).Element("on-error")!);
+                await Children(policy.Element("on-error")!);
             }
             catch (PolicyReturn) { }
         }
@@ -182,7 +212,8 @@ internal sealed class ApimPolicyHarness
                     }
                     Assert.IsTrue(new Uri(address).IsLoopback, "The offline harness may only contact its loopback provider.");
                     var url = address + "/" + _path.TrimStart('/');
-                    using var request = new HttpRequestMessage(HttpMethod.Post, url);
+                    // APIM forwards the request's own method; model policies only ever see POST.
+                    using var request = new HttpRequestMessage(new HttpMethod(Context.Request.Method), url);
                     request.Content = new ByteArrayContent(Context.Request.Body.Bytes);
                     // APIM forwards the caller's Content-Type (a multipart boundary
                     // included) with the unparsed body; project that, not a default.
@@ -203,7 +234,14 @@ internal sealed class ApimPolicyHarness
                 _backend = Text(node.Attribute("base-url")!.Value);
                 break;
             case "rewrite-uri":
-                _path = Text(node.Attribute("template")!.Value);
+                string template = node.Attribute("template")!.Value;
+                _path = Text(template);
+                // A literal template's {name} segments are the operation's matched
+                // template parameters; an unmatched one fails rather than leaking through.
+                if (!template.StartsWith('@'))
+                    _path = Regex.Replace(_path, @"(?<!\{)\{([A-Za-z]\w*)\}(?!\})",
+                        match => Context.Request.MatchedParameters.TryGetValue(match.Groups[1].Value, out var bound)
+                            ? bound : throw new AssertFailedException($"Unmatched template parameter: {match.Value}"));
                 break;
             case "set-header":
                 var headers = _phase.StartsWith("inbound") || _phase == "backend"
@@ -231,8 +269,13 @@ internal sealed class ApimPolicyHarness
                 string? identity = node.Attribute("client-id")?.Value;
                 Identities.Add((resource, identity is null ? null : Text(identity)));
                 if (FailIdentity) throw new PolicyFault();
-                Context.Variables[node.Attribute("output-token-variable-name")!.Value] =
-                    identity is null ? "offline-identity" : "offline-source-assertion-never-forward";
+                string? tokenVariable = node.Attribute("output-token-variable-name")?.Value;
+                if (tokenVariable is null)
+                    // Without an output variable APIM sets the backend Authorization header.
+                    Context.Request.Headers["Authorization"] = [identity is null ? "Bearer offline-identity" : "Bearer offline-user-assigned"];
+                else
+                    Context.Variables[tokenVariable] =
+                        identity is null ? "offline-identity" : "offline-source-assertion-never-forward";
                 break;
             case "send-request":
                 Assert.AreEqual("new", node.Attribute("mode")!.Value);
@@ -275,7 +318,7 @@ internal sealed class ApimPolicyHarness
     private static Func<string, ApimContext, object> Compile()
     {
         var expressions = Policies.Values.Concat(CatalogPolicies.Values)
-            .Concat([VersionedPolicy, Setup, ClaudeAuth, ClaudeDisabled]).SelectMany(p => p.DescendantsAndSelf())
+            .Concat([VersionedPolicy, Setup, ClaudeAuth, ClaudeDisabled, PhotoAvatarPolicy]).SelectMany(p => p.DescendantsAndSelf())
             .SelectMany(n => n.Attributes().Select(a => a.Value).Concat(n.HasElements ? [] : new[] { n.Value }))
             .Where(v => v.StartsWith("@(") || v.StartsWith("@{")).Distinct().ToArray();
         string scratch = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ai4ia-policy-" + Guid.NewGuid().ToString("N"));
@@ -371,6 +414,7 @@ public sealed class ApimContext
     public ApimSubscription? Subscription { get; set; } = new();
     public ApimError LastError { get; } = new();
     public ApimApi Api { get; } = new();
+    public ApimOperation Operation { get; } = new();
     public Guid RequestId { get; } = Guid.NewGuid();
     public TimeSpan Elapsed => TimeSpan.FromMilliseconds(10);
 }
@@ -378,6 +422,12 @@ public sealed class ApimApi
 {
     public string Id => "fixture";
     public string Path { get; set; } = "openai";
+}
+public sealed class ApimOperation
+{
+    // The operation resource name APIM matched (not its display name).
+    public string Id { get; set; } = "";
+    public string Method { get; set; } = "POST";
 }
 public sealed class ApimSubscription
 {

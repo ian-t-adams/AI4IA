@@ -92,7 +92,7 @@ public class StreamProcessorFlushTests
         // MultiLineAllUsageProcessor is the processor APIM actually names.
         var processor = new MultiLineAllUsageProcessor();
 
-        await processor.CopyToAsync(SseContent(events: 6), output);
+        await processor.CopyToAsync(SseContent(events: 6), output, debug: false);
 
         // 6 events + the [DONE] line. Without a per-line flush the whole body
         // (well under 4 KiB) left the writer in ONE write at disposal.
@@ -108,7 +108,7 @@ public class StreamProcessorFlushTests
         var output = new RecordingStream();
         var processor = new MultiLineAllUsageProcessor();
 
-        await processor.CopyToAsync(SseContent(events: 6), output);
+        await processor.CopyToAsync(SseContent(events: 6), output, debug: false);
 
         // The first write must carry roughly one event, not the whole response:
         // that is the difference between first-token latency and all-at-once.
@@ -125,7 +125,7 @@ public class StreamProcessorFlushTests
         var output = new RecordingStream();
         var processor = new MultiLineAllUsageProcessor();
 
-        await processor.CopyToAsync(SseContent(events: 3), output);
+        await processor.CopyToAsync(SseContent(events: 3), output, debug: false);
 
         var lines = output.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(l => l.TrimEnd('\r'))

@@ -1,5 +1,3 @@
-using SimpleL7Proxy.Backend.Iterators;
-
 namespace SimpleL7Proxy.Backend;
 
 /// <summary>
@@ -13,13 +11,13 @@ public interface IEndpointMonitorService
   // BackendType BackendKind { get; }
   string HostStatus { get; }
   // void TrackStatus(int code, bool wasException);
-  Task<bool> CheckFailedStatusAsync(bool nosleep=false);
+  int EMSGetBackpressureDelay();
   // string OAuth2Token();
   Task WaitForStartupAsync();
   Task Stop();
   List<BaseHostHealth> GetSpecificPathHosts();
   List<BaseHostHealth> GetCatchAllHosts();
-  //IHostIterator GetHostIterator(string loadBalanceMode, IterationModeEnum mode = IterationModeEnum.SinglePass, int maxRetries = 1, string fullURL = "/");
+  PathRouteMatch? MatchRoute(string requestPath) => null;
 }
 
 public enum BackendType
@@ -27,4 +25,3 @@ public enum BackendType
   DirectBackend,
   APIMBackend
 }
-

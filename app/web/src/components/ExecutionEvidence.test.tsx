@@ -101,3 +101,50 @@ it("uses the same recorded controls and cost in delegated and workflow step rece
   expect(screen.getAllByText("Estimated $0.0080")).toHaveLength(2);
   expect(screen.getAllByText("delegation defaults (no parent overrides)")).toHaveLength(2);
 });
+
+
+it("shows live avatar evidence with its record prefix, seconds and per-second estimate", async () => {
+  render(<ExecutionReceiptPanel receipt={receipt({
+    runtime: { modelId: "gpt-realtime", api: "speech" },
+    notes: ["avatar_media_not_recorded"],
+    avatar: {
+      recordRef: "0123abcd", baseModel: "vasa-1", outputProtocol: "websocket", confirmed: true,
+      billableSeconds: 95, videoFrames: 2375, endReason: "idle_timeout",
+      cost: {
+        known: true, estCostMicroUsd: 950_000, currency: "USD", priceVersion: "v-live",
+        billingModelId: "photo-avatar-realtime-standard", basis: "second",
+      },
+    },
+  })} />);
+  await userEvent.click(screen.getByText(/Execution receipt/));
+  await userEvent.click(screen.getByText("Live avatar"));
+  expect(screen.getByText("Record 0123abcd · vasa-1")).toBeVisible();
+  expect(screen.getByText("95 seconds, from confirmation to close")).toBeVisible();
+  expect(screen.getByText("$0.95 USD at price version v-live")).toBeVisible();
+  expect(screen.getByText("idle timeout")).toBeVisible();
+});
+
+it("labels an unconfirmed or unpriced avatar honestly and omits the section otherwise", async () => {
+  const { rerender } = render(<ExecutionReceiptPanel receipt={receipt({
+    avatar: {
+      recordRef: "0123abcd", outputProtocol: "websocket", confirmed: false,
+      billableSeconds: 0, videoFrames: 0, cost: null,
+    },
+  })} />);
+  await userEvent.click(screen.getByText(/Execution receipt/));
+  await userEvent.click(screen.getByText("Live avatar"));
+  expect(screen.getByText("Never confirmed by the avatar service, so not metered")).toBeVisible();
+  rerender(<ExecutionReceiptPanel receipt={receipt({
+    avatar: {
+      recordRef: "0123abcd", outputProtocol: "websocket", confirmed: true,
+      billableSeconds: 1, videoFrames: 25,
+      cost: {
+        known: false, estCostMicroUsd: null, currency: "USD", priceVersion: null,
+        billingModelId: "photo-avatar-realtime-standard", basis: "second",
+      },
+    },
+  })} />);
+  expect(screen.getByText("Unknown (no price recorded)")).toBeVisible();
+  rerender(<ExecutionReceiptPanel receipt={receipt()} />);
+  expect(screen.queryByText("Live avatar")).toBeNull();
+});

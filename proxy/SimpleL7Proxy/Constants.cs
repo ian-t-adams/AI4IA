@@ -11,13 +11,19 @@ public static class Constants
     public const string Shutdown = "/shutdown"; // Signal to unwedge workers and shut down gracefully
     public const string ForceGC = "/forcegc"; // Signal to force garbage collection
     public const string Latency = "latency";
+    public const string TimeToFirstByte = "timetofirstbyte";
     public const string RoundRobin = "roundrobin";
+    public const string PriorityGroup = "prioritygroup";
     public const string Random = "random";
     public const string Server = "simplel7proxy";
+    public const string S7PHash = "S7PHash";
 
-    public const string VERSION = "2.2.15";
+    public const string VERSION = "2.3.0";
 
     public const int AnyPriority = -1;
+
+    // Fixed jitter (ms) added to Retry-After/Retry-After-Ms derived deadlines.
+    public const int RetryAfterJitterMaxMs = 250;
 
     /// <summary>
     /// An array of probe route constants used for health checks and readiness checks.

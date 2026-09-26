@@ -251,12 +251,20 @@ class BaseImagePinTests(unittest.TestCase):
 
         self.assertEqual(
             self.built,
-            {"app/web/Dockerfile", "app/api/Dockerfile", "proxy/Dockerfile"},
+            {
+                "app/web/Dockerfile",
+                "app/api/Dockerfile",
+                "proxy/Dockerfile",
+                # The optional CompanionApp console is not an azd service, but its
+                # PR build keeps the same pinned-base guarantee as the proxy.
+                "proxy/CompanionApp.Dockerfile",
+            },
         )
 
     def test_proxy_pins_are_verified_as_multi_platform_indexes(self) -> None:
         workflow = DOCKER_BUILD.read_text(encoding="utf-8")
         self.assertIn("Verify proxy bases are multi-platform index digests", workflow)
+        self.assertIn("Verify CompanionApp bases are multi-platform index digests", workflow)
         self.assertIn("docker buildx imagetools inspect", workflow)
         self.assertIn("application/vnd.oci.image.index.v1+json", workflow)
         self.assertIn(

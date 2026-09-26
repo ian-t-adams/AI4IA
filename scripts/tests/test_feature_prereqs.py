@@ -199,6 +199,66 @@ class WorkflowAutomationPrerequisites(unittest.TestCase):
                 self.assertEqual(code, 0, err)
 
 
+class PhotoAvatarPrerequisiteTests(unittest.TestCase):
+    def test_committed_feature_is_default_off_with_conservative_limits(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        self.assertEqual(parameters["photoAvatarsEnabled"]["value"], "${AI4IA_PHOTO_AVATARS_ENABLED=false}")
+        self.assertEqual(parameters["photoAvatarMaxPerUser"]["value"], "${AI4IA_PHOTO_AVATAR_MAX_PER_USER=5}")
+        self.assertEqual(
+            parameters["photoAvatarMaxCreationsPerDay"]["value"],
+            "${AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY=5}",
+        )
+        self.assertEqual(
+            parameters["photoAvatarLiveMaxMinutesPerSession"]["value"],
+            "${AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION=10}",
+        )
+        self.assertEqual(
+            parameters["photoAvatarLiveIdleTimeoutSeconds"]["value"],
+            "${AI4IA_PHOTO_AVATAR_LIVE_IDLE_TIMEOUT_SECONDS=120}",
+        )
+
+    def test_enabled_feature_requires_entra_and_warns_about_live_prerequisites(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _environment(**PROD_ENV):
+            code, out, err = _run(_write_parameters(tmp, {"photoAvatarsEnabled": True}))
+            self.assertEqual(code, 0, err)
+            self.assertIn("CustomAvatar Limited Access capability", out + err)
+            code, _, err = _run(_write_parameters(tmp, {"photoAvatarsEnabled": False}))
+            self.assertEqual(code, 0, err)
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            code, _, err = _run(_write_parameters(tmp, {"photoAvatarsEnabled": True}))
+            self.assertEqual(code, 1)
+            self.assertIn("photoAvatarsEnabled=true requires apiAuthProvider=entra", err)
+            # Control: the same dev configuration with the feature off passes.
+            code, _, err = _run(_write_parameters(tmp, {"photoAvatarsEnabled": False}))
+            self.assertEqual(code, 0, err)
+
+    def test_limits_are_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            for name in ("photoAvatarMaxPerUser", "photoAvatarMaxCreationsPerDay"):
+                for bad in (0, 51, "five"):
+                    with self.subTest(name=name, value=bad):
+                        code, _, err = _run(_write_parameters(tmp, {name: bad}))
+                        self.assertEqual(code, 1)
+                        self.assertIn(f"{name} must be an integer from 1 to 50", err)
+                code, _, err = _run(_write_parameters(tmp, {name: 50}))
+                self.assertEqual(code, 0, err)
+
+    def test_live_session_limits_are_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            for name, low, high in (
+                ("photoAvatarLiveMaxMinutesPerSession", 1, 60),
+                ("photoAvatarLiveIdleTimeoutSeconds", 30, 900),
+            ):
+                for bad in (low - 1, high + 1, "ten"):
+                    with self.subTest(name=name, value=bad):
+                        code, _, err = _run(_write_parameters(tmp, {name: bad}))
+                        self.assertEqual(code, 1)
+                        self.assertIn(f"{name} must be an integer from {low} to {high}", err)
+                for good in (low, high):
+                    code, _, err = _run(_write_parameters(tmp, {name: good}))
+                    self.assertEqual(code, 0, err)
+
+
 class StagedRealtimeTests(unittest.TestCase):
     def test_ga_staging_and_selection_require_their_parent_gate(self) -> None:
         cases = (
@@ -233,6 +293,64 @@ class StagedRealtimeTests(unittest.TestCase):
                     "realtimeGaEnabled": True, "realtimeProtocol": protocol,
                 }))
                 self.assertEqual(code, 0, err)
+
+
+COMPANION_IMAGE = "crfixture.azurecr.io/ai4ia/companion-ai4ia-fixture@sha256:" + "a" * 64
+COMPANION_READY = {
+    "companionAppEnabled": True,
+    "proxyEventHubTelemetryEnabled": True,
+    "companionAppImage": COMPANION_IMAGE,
+    "companionAppEntraClientId": "22222222-2222-2222-2222-222222222222",
+    "companionAppAdminGroupIds": "33333333-3333-3333-3333-333333333333",
+}
+
+
+class CompanionAppPrerequisiteTests(unittest.TestCase):
+    def test_committed_console_is_default_off(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        self.assertEqual(
+            parameters["companionAppEnabled"]["value"], "${AI4IA_COMPANION_APP_ENABLED=false}",
+        )
+        self.assertEqual(parameters["companionAppImage"]["value"], "${AI4IA_COMPANION_APP_IMAGE=}")
+        # Control: a disabled console ignores even a nonsensical image.
+        with tempfile.TemporaryDirectory() as tmp, _environment(AZURE_ENV_NAME="ai4ia-fixture"):
+            code, _, err = _run(_write_parameters(tmp, {"companionAppImage": "nginx:latest"}))
+            self.assertEqual(code, 0, err)
+
+    def test_every_prerequisite_fails_closed_and_the_complete_set_passes(self) -> None:
+        cases = (
+            ({"proxyEventHubTelemetryEnabled": False}, "requires proxyEventHubTelemetryEnabled=true"),
+            ({"companionAppImage": ""}, "requires companionAppImage as a digest reference"),
+            ({"companionAppImage": "crfixture.azurecr.io/ai4ia/companion-ai4ia-fixture:latest"},
+             "requires companionAppImage as a digest reference"),
+            ({"companionAppImage": "docker.io/ai4ia/companion-ai4ia-fixture@sha256:" + "a" * 64},
+             "requires companionAppImage as a digest reference"),
+            ({"companionAppImage": "crfixture.azurecr.io/ai4ia/companion-other@sha256:" + "a" * 64},
+             "must come from this environment's companion repository"),
+            ({"companionAppEntraClientId": ""}, "requires companionAppEntraClientId"),
+            ({"companionAppAdminGroupIds": ""}, "requires at least one admin group or principal id"),
+            ({"companionAppAdminGroupIds": "admins"}, "must be Entra object id GUIDs"),
+            ({"companionAppAllowedIpRanges": "0.0.0.0/0"}, "must not allow every address"),
+            ({"companionAppAllowedIpRanges": "10.0.0.0/33"}, "must be an IPv4 CIDR"),
+            ({"companionAppMinReplicas": "2"}, "companionAppMinReplicas must be 0 or 1"),
+        )
+        with tempfile.TemporaryDirectory() as tmp, _environment(AZURE_ENV_NAME="ai4ia-fixture"):
+            # Control: the complete prerequisite set validates.
+            code, _, err = _run(_write_parameters(tmp, COMPANION_READY))
+            self.assertEqual(code, 0, err)
+            code, _, err = _run(_write_parameters(tmp, {
+                **COMPANION_READY,
+                "companionAppAdminGroupIds": "",
+                "companionAppAdminPrincipalIds": "44444444-4444-4444-4444-444444444444",
+                "companionAppAllowedIpRanges": "203.0.113.0/24, 198.51.100.7/32",
+                "companionAppMinReplicas": "1",
+            }))
+            self.assertEqual(code, 0, err)
+            for override, message in cases:
+                with self.subTest(override=override):
+                    code, _, err = _run(_write_parameters(tmp, {**COMPANION_READY, **override}))
+                    self.assertEqual(code, 1)
+                    self.assertIn(message, err)
 
 
 class CommittedParametersTests(unittest.TestCase):

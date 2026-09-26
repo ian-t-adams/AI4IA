@@ -172,9 +172,11 @@ class SummarizationService:
         prior_summary: str | None,
         api: str = "chat",
         correlation_id: str | None = None,
+        require_text: bool = False,
     ) -> str:
         """Call the model to (re)generate the running summary. Raises on gateway
-        error; callers decide how to degrade."""
+        error; callers decide how to degrade. ``require_text`` refuses an empty
+        reply instead of returning the prior summary."""
         messages = self._build_messages(to_fold, prior_summary)
         result = await gateway.complete(
             deployment=deployment,
@@ -186,6 +188,8 @@ class SummarizationService:
         if result.get("_responses_status") == "incomplete":
             raise RuntimeError("summarization returned an incomplete response")
         text = _extract_text(result)
+        if not text and require_text:
+            raise RuntimeError("summarization returned no text")
         # Never let an empty model reply silently erase a good prior summary.
         if not text and prior_summary:
             return prior_summary.strip()
@@ -296,6 +300,8 @@ class SummarizationService:
         if assembled > threshold and len(live) > self._recent_turns:
             keep = live[-self._recent_turns :]
             to_fold = live[: -self._recent_turns]
+            # An empty fold would still advance summarizedThroughMessageId and drop
+            # those turns from every later prompt, so it fails soft to full history.
             summary = await self._generate(
                 gateway=gateway,
                 deployment=deployment,
@@ -303,6 +309,7 @@ class SummarizationService:
                 prior_summary=summary,
                 api=api,
                 correlation_id=correlation_id,
+                require_text=True,
             )
             committed = await repo.commit_summary_if_version(
                 user_id,

@@ -340,6 +340,7 @@ class DeployWorkflowOperationalScriptTriggers(unittest.TestCase):
                 "scripts/postprovision.ps1",
                 "scripts/post-deploy-verify.py",
                 "scripts/verify-image-provenance.py",
+                "scripts/verify-companion-image.py",
                 "scripts/_image_refs.py",
                 "scripts/check-resource-providers.py",
                 "scripts/check-model-availability.py",
@@ -404,6 +405,125 @@ class ClaudeWorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(routed["if"], reader["if"])
         self.assertEqual(routed["run"], "python scripts/check-claude-binding.py --routed")
         self.assertNotIn("provision", routed["if"])
+
+
+FIRST_CLI_LOGIN = "Log in to Azure CLI (OIDC)"
+CLI_LOGIN_REFRESH = "Refresh the Azure CLI login after provisioning"
+REVIEWED_AZURE_LOGIN = "azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906"
+SOURCE_IDENTITY_INPUTS = {
+    "client-id": "${{ env.AZURE_CLIENT_ID }}",
+    "tenant-id": "${{ env.AZURE_TENANT_ID }}",
+    "subscription-id": "${{ env.AZURE_SUBSCRIPTION_ID }}",
+}
+
+
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+class DeployCliLoginRefreshTests(unittest.TestCase):
+    """The Azure CLI's login-time OIDC assertion does not outlive provisioning.
+
+    `azure/login` gives the CLI one GitHub OIDC assertion, and Entra rejects it
+    about ten minutes later (AADSTS700024). From then on every CLI token for a
+    resource the CLI has not cached fails. A deploy run passed provisioning and
+    the postprovision gates, then failed its canary preflight 11.1 minutes after
+    login. The refresh restarts that window before any later step can need a
+    new token.
+    """
+
+    def setUp(self) -> None:
+        document = yaml.safe_load(DEPLOY_WORKFLOW.read_text(encoding="utf-8"))
+        self.steps = document["jobs"]["deploy"]["steps"]
+
+    @staticmethod
+    def assert_refresh_contract(steps: list[dict]) -> None:
+        names = [step.get("name") for step in steps]
+        positions = [index for index, name in enumerate(names) if name == CLI_LOGIN_REFRESH]
+        _require(len(positions) == 1, f"expected one {CLI_LOGIN_REFRESH!r} step, found {len(positions)}")
+        (position,) = positions
+        refresh = steps[position]
+        first = steps[names.index(FIRST_CLI_LOGIN)]
+        # The identical reviewed action and identity: no new pin, input or grant.
+        _require(first.get("uses") == REVIEWED_AZURE_LOGIN, f"first login uses {first.get('uses')!r}")
+        _require(refresh.get("uses") == first["uses"], f"refresh uses {refresh.get('uses')!r}")
+        _require(first.get("with") == SOURCE_IDENTITY_INPUTS, f"first login inputs {first.get('with')!r}")
+        _require(refresh.get("with") == first["with"], f"refresh inputs {refresh.get('with')!r}")
+        # Nothing else: no `if:` (neither an always() that outlives a failure nor
+        # a provision-only gate), no separate CLI profile, no error suppression.
+        _require(set(refresh) == {"name", "uses", "with"}, f"refresh keys {sorted(refresh)}")
+        _require(
+            position > 0 and names[position - 1] == "Provision infrastructure",
+            f"refresh follows {names[position - 1]!r}, not provisioning",
+        )
+        build = next(
+            (index for index, name in enumerate(names)
+             if str(name).startswith("Build and push service images")),
+            None,
+        )
+        _require(build is not None and position < build, "refresh must precede the image build")
+
+    def test_the_cli_login_is_refreshed_right_after_provisioning(self) -> None:
+        self.assert_refresh_contract(self.steps)
+
+    def test_the_contract_rejects_each_way_the_refresh_can_regress(self) -> None:
+        def at(steps: list[dict], name: str) -> int:
+            return next(index for index, step in enumerate(steps) if step.get("name") == name)
+
+        def move_after(target: str):
+            def change(steps: list[dict]) -> None:
+                step = steps.pop(at(steps, CLI_LOGIN_REFRESH))
+                steps.insert(at(steps, target) + 1, step)
+            return change
+
+        def edit(**fields: object):
+            def change(steps: list[dict]) -> None:
+                steps[at(steps, CLI_LOGIN_REFRESH)].update(deepcopy(fields))
+            return change
+
+        def edit_inputs(change_inputs):
+            def change(steps: list[dict]) -> None:
+                change_inputs(steps[at(steps, CLI_LOGIN_REFRESH)]["with"])
+            return change
+
+        def remove(steps: list[dict]) -> None:
+            steps.pop(at(steps, CLI_LOGIN_REFRESH))
+
+        def duplicate(steps: list[dict]) -> None:
+            index = at(steps, CLI_LOGIN_REFRESH)
+            steps.insert(index + 1, deepcopy(steps[index]))
+
+        def edit_both_logins(steps: list[dict]) -> None:
+            for name in (FIRST_CLI_LOGIN, CLI_LOGIN_REFRESH):
+                steps[at(steps, name)]["with"]["client-id"] = "${{ vars.OTHER_CLIENT_ID }}"
+
+        mutations = {
+            "removed": remove,
+            "duplicated": duplicate,
+            "moved after the image build": move_after("Build and push service images, recording their digests"),
+            "moved after the legacy-role check": move_after("Verify legacy API inference roles are revoked"),
+            "moved before provisioning": move_after("Capture pre-provision revisions (rollback target)"),
+            "floating tag": edit(uses="azure/login@v3"),
+            "different pinned commit": edit(uses="azure/login@" + "0" * 40),
+            "different client": edit_inputs(lambda inputs: inputs.update({"client-id": "${{ vars.OTHER_CLIENT_ID }}"})),
+            "extra input": edit_inputs(lambda inputs: inputs.update({"allow-no-subscriptions": True})),
+            "missing input": edit_inputs(lambda inputs: inputs.pop("subscription-id")),
+            "both logins changed together": edit_both_logins,
+            "runs after a failure": edit(**{"if": "${{ always() }}"}),
+            "skipped without provisioning": edit(**{"if": "${{ steps.provision.outcome == 'success' }}"}),
+            "separate CLI profile": edit(env={"AZURE_CONFIG_DIR": "${{ runner.temp }}/refresh"}),
+            "suppressed failure": edit(**{"continue-on-error": True}),
+        }
+        # Control: the identical copy, before any mutation, satisfies the contract.
+        self.assert_refresh_contract(deepcopy(self.steps))
+        for name, change in mutations.items():
+            with self.subTest(mutation=name):
+                steps = deepcopy(self.steps)
+                change(steps)
+                with self.assertRaises(AssertionError):
+                    self.assert_refresh_contract(steps)
+
 
 class WorkflowCheckoutCredentialTests(unittest.TestCase):
     def test_checkouts_do_not_retain_tokens_for_later_steps(self) -> None:

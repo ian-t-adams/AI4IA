@@ -31,6 +31,8 @@ verify Pillow's output. Its hues were cross-checked against Pillow and agree to
 
 from __future__ import annotations
 
+import hashlib
+import json
 import pathlib
 import re
 import struct
@@ -70,11 +72,15 @@ EXPECTED_ICOS = {
     "assets/branding/ai4ia-icon.ico": ({16, 32, 48, 256}, 64),
 }
 
-# Tracked rasters that are deliberately not brand assets (documentation
-# screenshots and the like). Empty today; adding an image to the repo should be a
-# conscious choice between "this is brand artwork the generator owns" and "this is
-# not", which is exactly what the completeness test forces.
-NON_BRAND_RASTERS: set[str] = set()
+# Tracked rasters that are deliberately not brand assets. Adding an image to the
+# repo should be a conscious choice between "this is brand artwork the generator
+# owns" and "this is not", which is exactly what the completeness test forces.
+NON_BRAND_RASTERS: set[str] = {
+    # Vendored upstream SimpleL7Proxy CompanionApp icon, linked by its App.razor.
+    # It is upstream's artwork, not AI4IA's, and stays byte-identical to the pin
+    # through proxy/upstream-provenance.json; see VendoredRasterTests.
+    "proxy/CompanionApp/wwwroot/favicon.png",
+}
 
 # The brand is orange over near-black; the previous mark was azure at 201 degrees.
 # Measured rather than guessed: every current asset and every ICO entry scores a
@@ -160,11 +166,29 @@ class BrandAssetCoverageTests(unittest.TestCase):
 
     def test_expectations_do_not_name_missing_files(self) -> None:
         """A typo in a path would otherwise make its checks silently vacuous."""
-        for relative in (*EXPECTED_PNGS, *EXPECTED_ICOS):
+        for relative in (*EXPECTED_PNGS, *EXPECTED_ICOS, *NON_BRAND_RASTERS):
             with self.subTest(asset=relative):
                 self.assertTrue(
                     (ROOT / relative).is_file(),
                     f"{relative} is missing -- run `python scripts/gen-brand-assets.py`",
+                )
+
+
+class VendoredRasterTests(unittest.TestCase):
+    """A non-brand exemption may only cover unmodified vendored upstream bytes."""
+
+    def test_every_exemption_is_an_unmodified_vendored_file(self) -> None:
+        manifest = json.loads((ROOT / "proxy" / "upstream-provenance.json").read_text(encoding="utf-8"))
+        for relative in sorted(NON_BRAND_RASTERS):
+            with self.subTest(asset=relative):
+                self.assertTrue(relative.startswith("proxy/"), "only vendored proxy rasters are exempt")
+                entry = manifest["files"].get(relative.removeprefix("proxy/"))
+                self.assertIsNotNone(entry, "the exempt raster is not a recorded vendored file")
+                self.assertEqual(entry["disposition"], "upstream-equivalent")
+                self.assertEqual(
+                    hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(),
+                    entry["upstreamRawSha256"],
+                    "the exempt raster no longer matches the pinned upstream bytes",
                 )
 
 

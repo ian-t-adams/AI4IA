@@ -588,7 +588,7 @@ def _project_client(project_endpoint: str) -> Any:
     except ImportError as exc:  # pragma: no cover - exercised only on live provisioning
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.6.1 azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.7.0 azure-identity'
         ) from exc
     return AIProjectClient(endpoint=project_endpoint, credential=DefaultAzureCredential())
 
@@ -599,7 +599,7 @@ def _sdk_models() -> Any:
     except ImportError as exc:  # pragma: no cover - exercised only without provisioning extra
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.6.1 azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.7.0 azure-identity'
         ) from exc
     return models
 

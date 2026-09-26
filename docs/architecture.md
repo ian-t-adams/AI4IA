@@ -44,7 +44,7 @@ its SVG; rendering does not send the architecture to an external drawing service
 | Azure AI Search | Hybrid keyword/vector document retrieval and semantic reranking | An index can be rebuilt; authorization must still filter every query |
 | Durable Task Scheduler | Persistent orchestration state for opted-in workflows | Work can survive an API restart; scheduling does not make external effects exactly-once |
 | Entra ID, managed identities, and Key Vault | User authentication, service permissions, durable MCP secrets | End-user identity and application identity are distinct; RBAC does not replace user-level ownership checks |
-| App Configuration | Warm proxy configuration and sentinel-driven refresh | Only supported warm settings change without a revision; it is not a second authority for all application features |
+| App Configuration | Sentinel-driven refresh of two reviewed proxy request limits | Only `Warm:Sentinel` and the reviewed request timeout and TTL, within reviewed ranges, apply. Every other proxy setting comes from the Container App environment, and the store is not a second authority for application features |
 | Application Insights, Log Analytics, Azure Monitor | Correlation, operational signals, fixed admin queries | Metadata-only telemetry is distinct from owner-visible execution receipts |
 
 WebIQ is a separate, feature-gated grounding service. Content Understanding is a
@@ -130,8 +130,9 @@ Retry ownership is deliberately split:
 | FastAPI | User-visible outcome, governance, and usage accounting | Infinite retries hidden from the caller |
 
 When all eligible backends throttle, APIM returns the `429` / `S7PREQUEUE` /
-`retry-after-ms` contract. Proxy `MaxAttempts=1` avoids multiplying APIM's
-immediate attempts. See the [proxy integration](../proxy/README.md).
+`retry-after-ms` contract. The proxy makes one attempt per dispatch against its
+single catch-all host, so it does not multiply APIM's immediate attempts. See the
+[proxy integration](../proxy/README.md).
 
 ### Realtime and voice lifecycle
 
@@ -148,6 +149,9 @@ APIM API/key, and East US 2 backend. Settings apply on the next connection.
 Finalized turns join the same conversation; a persistence failure cannot keep
 the microphone running.
 Turn-based transcription and text-to-speech remain ordinary gateway HTTP calls.
+A live photo avatar (default-off) rides the same Speech socket: the relay injects the
+owner's resolved avatar with `output_protocol: websocket`, so its video arrives as
+bounded `response.video.delta` frames on that socket, never over WebRTC.
 
 GA Realtime is staged separately from selection: `AI4IA_REALTIME_GA_ENABLED`
 defaults off, while `AI4IA_REALTIME_PROTOCOL` stays `preview`. A gated second

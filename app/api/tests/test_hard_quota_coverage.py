@@ -35,11 +35,50 @@ def test_every_gateway_post_and_stream_uses_the_guarded_transport_seams():
         )
 
 
+def _client_write_sites(path: Path, class_name: str) -> dict[tuple[str, str], ast.AST]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
+    sites: dict[tuple[str, str], ast.AST] = {}
+    for method in cls.body:
+        if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(method):
+            if (
+                isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "_client"
+                and node.func.attr in {"post", "put", "patch", "delete", "request", "send", "stream"}
+            ):
+                sites[(method.name, node.func.attr)] = method
+    return sites
+
+
+def test_photo_avatar_writes_are_the_admitted_create_plus_pinned_setup_and_cleanup():
+    """The only metered avatar write is admitted; no other write can appear silently."""
+    sites = _client_write_sites(ROOT / "photo_avatars" / "provider.py", "PhotoAvatarGateway")
+    assert set(sites) == {
+        ("create_avatar", "put"),  # metered: one admitted, single-attempt create
+        ("create_project", "put"),  # free avatar container, only after a 404 read
+        ("delete_avatar", "delete"),  # cleanup stays available under any cap
+    }
+
+    def admits(method: ast.AST) -> bool:
+        return any(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "admitted_dispatch" for node in ast.walk(method)
+        )
+
+    assert admits(sites[("create_avatar", "put")])
+    assert not admits(sites[("create_project", "put")])
+    assert not admits(sites[("delete_avatar", "delete")])
+
+
 def test_meter_coverage_is_explicit_and_shipping_gateway_has_no_attempt_envelope():
     h = Harness()
     assert set(COVERAGE) == {
         "chat", "embedding", "image", "video", "transcription", "speech",
-        "realtime", "compute", "document", "web_search", "mcp", "external_tool",
+        "realtime", "compute", "document", "web_search", "mcp", "external_tool", "avatar",
+        "avatar_live",
     }
     body = {"messages": [{"role": "user", "content": "text"}]}
     unknown = reservation_bounds(

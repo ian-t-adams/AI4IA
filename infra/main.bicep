@@ -210,6 +210,29 @@ param imageEditingEnabled bool = false
 @description('Enable the agent-callable generate_video tool. Default OFF. When on, a videos container is provisioned on the shared generated-media account and any agent may attach generate_video; produced clips persist durably and serve through an authenticated endpoint.')
 param videoGenerationEnabled bool = false
 
+@description('Enable custom photo avatars generated from a text description. Default OFF. When on: a photoAvatars Cosmos container, an avatars container on the shared generated-media account, and the exact-operation photo avatar APIM API with its proxy host. Creation additionally requires the Limited Access capability at runtime; see docs/photo-avatars.md.')
+param photoAvatarsEnabled bool = false
+
+@description('Most photo avatars one user may hold at once. Enforced by the API ledger.')
+@minValue(1)
+@maxValue(50)
+param photoAvatarMaxPerUser int = 5
+
+@description('Most photo avatar creations one user may dispatch in a rolling 24 hours. Enforced by the API ledger.')
+@minValue(1)
+@maxValue(50)
+param photoAvatarMaxCreationsPerDay int = 5
+
+@description('Longest live photo avatar session, in minutes, on Speech Voice Live. realtime_max_session_seconds tightens it further when set. Avatar time bills while connected.')
+@minValue(1)
+@maxValue(60)
+param photoAvatarLiveMaxMinutesPerSession int = 10
+
+@description('Seconds without conversation (microphone audio and idle video never count) after which the relay ends a live photo avatar session.')
+@minValue(30)
+@maxValue(900)
+param photoAvatarLiveIdleTimeoutSeconds int = 120
+
 @description('Provision an Azure AI Search service (for indexing/retrieval). Default OFF: nothing is created. When on, the api identity gets data-plane RBAC (Index Data Contributor + Service Contributor) and AI4IA_SEARCH_ENDPOINT is emitted to the api.')
 param searchEnabled bool = false
 
@@ -315,6 +338,28 @@ param proxyPriorityWorkers string = ''
 
 @description('Enable metadata-only SimpleL7Proxy Event Hub telemetry. Default OFF.')
 param proxyEventHubTelemetryEnabled bool = false
+
+@description('Deploy the optional admin-only CompanionApp telemetry console. Default OFF; requires proxy Event Hub telemetry, an attested digest-pinned image, an Entra app registration and at least one admin group or principal.')
+param companionAppEnabled bool = false
+
+@description('Digest-pinned CompanionApp image in this environment registry, produced and attested by .github/workflows/companion-image.yml.')
+param companionAppImage string = ''
+
+@description('Client id of the Entra app registration used for CompanionApp sign-in.')
+param companionAppEntraClientId string = ''
+
+@description('Comma-separated Entra group object ids whose members may use CompanionApp.')
+param companionAppAdminGroupIds string = ''
+
+@description('Comma-separated Entra user or service principal object ids that may use CompanionApp.')
+param companionAppAdminPrincipalIds string = ''
+
+@description('Optional comma-separated admin CIDR ranges allowed to reach CompanionApp ingress.')
+param companionAppAllowedIpRanges string = ''
+
+@description('CompanionApp minimum replicas: 0 scales to zero, 1 keeps the in-memory feed collecting.')
+@allowed([0, 1])
+param companionAppMinReplicas int = 0
 
 @description('Enable durable proxy async processing backed by dedicated Blob + Service Bus resources. Default OFF.')
 param proxyAsyncEnabled bool = false
@@ -556,6 +601,9 @@ module data 'modules/data.bicep' = {
     // Generated-video container on the same shared media account;
     // gated on the video-generation flag — default OFF.
     deployVideoStorage: videoGenerationEnabled
+    // Photo avatar records (Cosmos) and previews (shared media account);
+    // gated on the photo avatar flag — default OFF.
+    deployPhotoAvatarStorage: photoAvatarsEnabled
     // Network-isolation mode: lock the data tier to private-only.
     dataPublicNetworkAccess: dataTierPrivate ? 'Disabled' : 'Enabled'
   }
@@ -689,6 +737,40 @@ module eventhubs 'modules/eventhubs.bicep' = if (proxyEventHubTelemetryEnabled) 
   }
 }
 
+// --- Optional admin-only CompanionApp telemetry console (default OFF) ---
+// Not an azd service: the digest comes from the attested companion-image
+// workflow. Fail closed: without the telemetry feed, a digest-pinned image, a
+// sign-in app registration and a non-empty admin set, nothing is created, so an
+// empty Easy Auth allow-list can never admit every tenant user.
+var companionAdminGroupIds = filter(map(split(companionAppAdminGroupIds, ','), id => trim(id)), id => !empty(id))
+var companionAdminPrincipalIds = filter(map(split(companionAppAdminPrincipalIds, ','), id => trim(id)), id => !empty(id))
+var companionAllowedIpRanges = filter(map(split(companionAppAllowedIpRanges, ','), range => trim(range)), range => !empty(range))
+var companionAppDeployable = companionAppEnabled && proxyEventHubTelemetryEnabled && contains(companionAppImage, '@sha256:') && !empty(companionAppEntraClientId) && length(concat(companionAdminGroupIds, companionAdminPrincipalIds)) > 0
+
+module companion 'modules/companion.bicep' = if (companionAppDeployable) {
+  name: 'companion'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    environmentName: environmentName
+    containerEnvId: platform.outputs.containerEnvId
+    acrName: platform.outputs.acrName
+    acrLoginServer: platform.outputs.acrLoginServer
+    image: companionAppImage
+    #disable-next-line BCP318
+    eventHubNamespaceName: eventhubs.outputs.namespaceName
+    #disable-next-line BCP318
+    eventHubName: eventhubs.outputs.telemetryHubName
+    entraTenantId: empty(entraTenantId) ? tenant().tenantId : entraTenantId
+    entraClientId: companionAppEntraClientId
+    adminGroupIds: companionAdminGroupIds
+    adminPrincipalIds: companionAdminPrincipalIds
+    allowedIpRanges: companionAllowedIpRanges
+    minReplicas: companionAppMinReplicas
+  }
+}
+
 // Durable async is separate from the in-memory synchronous proxy queue. The
 // module is declared unconditionally but creates no resources unless enabled.
 module proxyasync 'modules/proxyasync.bicep' = {
@@ -753,6 +835,11 @@ var speechVoiceLiveRegionName = 'eastus2'
 var speechVoiceLiveIndex = filter(range(0, length(regionList)), i => regionNames[i] == speechVoiceLiveRegionName)[0]
 var speechVoiceLiveAccountName = foundry[speechVoiceLiveIndex].outputs.accountName
 var speechVoiceLiveAccountEndpoint = foundry[speechVoiceLiveIndex].outputs.endpoint
+// Photo avatars live in the catalog home account (infra/voice-providers.json
+// photoAvatars.homeRegion, validated against infra/models.json by the
+// generator), in the Foundry project this template creates in that account.
+var photoAvatarHomeRegion = loadJsonContent('voice-providers.json').photoAvatars.homeRegion
+var photoAvatarIndex = filter(range(0, length(regionList)), i => regionNames[i] == photoAvatarHomeRegion)[0]
 var effectiveCuBaseUrl = !empty(cuBaseUrl) ? cuBaseUrl : primaryFoundryEndpoint
 var effectiveCodeInterpreterModel = !empty(codeInterpreterModel) ? codeInterpreterModel : 'gpt-5.4-mini-${subscriptionToken}-${location}-glbl'
 
@@ -858,6 +945,9 @@ module gateway 'modules/gateway.bicep' = {
     speechVoiceLiveManagedIdentityAudience: speechVoiceLiveManagedIdentityAudience
     codeInterpreterEnabled: documentComputeEnabled || inlineDocumentComputeEnabled
     codeInterpreterModel: effectiveCodeInterpreterModel
+    photoAvatarsEnabled: photoAvatarsEnabled
+    photoAvatarAccountEndpoint: foundry[photoAvatarIndex].outputs.endpoint
+    photoAvatarProjectName: foundry[photoAvatarIndex].outputs.projectName
   }
 }
 
@@ -1084,6 +1174,13 @@ module api 'modules/api.bicep' = {
     videoGenerationEnabled: videoGenerationEnabled
     videoBlobAccountUrl: data.outputs.videoBlobAccountUrl
     videoBlobContainer: data.outputs.videoBlobContainerName
+    photoAvatarsEnabled: photoAvatarsEnabled
+    photoAvatarBlobAccountUrl: data.outputs.photoAvatarBlobAccountUrl
+    photoAvatarBlobContainer: data.outputs.photoAvatarBlobContainerName
+    photoAvatarMaxPerUser: photoAvatarMaxPerUser
+    photoAvatarMaxCreationsPerDay: photoAvatarMaxCreationsPerDay
+    photoAvatarLiveMaxMinutesPerSession: photoAvatarLiveMaxMinutesPerSession
+    photoAvatarLiveIdleTimeoutSeconds: photoAvatarLiveIdleTimeoutSeconds
     // Azure AI Search (for indexing/retrieval). The endpoint is emitted to the api
     // env only when the service is provisioned (searchEnabled); the api reaches it
     // via managed identity (no keys). Empty string when off -> env var not set.
@@ -1264,6 +1361,8 @@ output AZURE_API_URL string = api.outputs.apiUrl
 output AZURE_API_APP_NAME string = api.outputs.apiAppName
 output AZURE_WEB_URL string = web.outputs.webUrl
 output AZURE_WEB_APP_NAME string = web.outputs.webAppName
+#disable-next-line BCP318
+output AZURE_COMPANION_APP_URL string = companionAppDeployable ? 'https://${companion.outputs.fqdn}' : ''
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
 output AZURE_FOUNDRY_ENDPOINTS array = [for (r, i) in regionList: {
   region: r.name

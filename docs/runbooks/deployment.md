@@ -445,6 +445,16 @@ The App Configuration sentinel is owned by the OIDC deployment identity. A local
 for the signed-in human. Use the workflow for greenfield setup or any repair that
 must reconcile the sentinel.
 
+The hook writes the sentinel with a `PUT /kv/Warm:Sentinel` to the store's
+data-plane REST API. Each attempt first mints a Microsoft Entra token with
+`azd auth token` for App Configuration's documented global-cloud audience,
+`https://appconfig.azure.com`. In the workflow that token comes from azd's GitHub
+federated credential, which fetches a fresh OIDC assertion for every token, so the
+gate does not depend on how long `azd provision` ran. The Azure CLI
+(`az account get-access-token`) is only a fallback for local runs where azd has no
+credential. See [§7.17](#717-app-configuration-sentinel-fails-after-a-long-provision-aadsts700024)
+for the failure this replaced.
+
 This local path rebuilds and has no automatic post-deploy rollback. Prefer the
 workflow when the goal is a production release with recorded digest evidence.
 Validate potentially destructive infrastructure changes in an isolated
@@ -1988,6 +1998,113 @@ stored: `store` has been dropped from the request body.
 continuity. Request `include: ["reasoning.encrypted_content"]` and pass the
 encrypted reasoning items forward — that is the stateless-mode equivalent and
 keeps the content in the app's control.
+
+### 7.17 `App Configuration sentinel` fails after a long provision (`AADSTS700024`)
+
+Symptom — **Provision infrastructure** finishes the ARM deployment, then the
+postprovision smoke gate reports:
+
+```text
+[FAIL] App Configuration sentinel - Entra-authenticated set failed within the 900-second budget after 29 attempt(s)
+```
+
+Every other gate passes, and the workflow rolls back to the captured revisions.
+The deploy identity's Microsoft Entra sign-in log shows every token request for
+**Azure App Configuration** failing with
+`AADSTS700024: Client assertion is not within its valid time range`, while
+Azure Resource Manager and Cognitive Services tokens are still issued.
+
+Cause — the gate used to write the key with the Azure CLI (`--auth-mode login`).
+`azure/login` hands the CLI one GitHub OIDC assertion at login, and the CLI keeps
+presenting it whenever it needs a token for a resource it has not cached yet. The
+assertion is short-lived. The model-deployment and Content Understanding gates ask
+`azd auth token` for their ARM and Cognitive Services tokens, so they kept working;
+App Configuration was the only data plane the CLI was asked for. Once a slow
+provision pushed that first request past the assertion's lifetime, every retry
+failed the same way. In the failed release the first request came about
+14.4 minutes after login; the previous release passed after about 5.5 minutes,
+which is why the path looked healthy.
+
+Fix — the gate now mints a token with
+`azd auth token --scope https://appconfig.azure.com/.default` on every attempt and
+sets the key through the data-plane REST API. azd's GitHub federated credential
+fetches a new OIDC assertion for each token, so provisioning time no longer
+matters, and no workflow, identity, role or secret changed. If the gate still
+fails:
+
+1. Read the App Configuration token requests in the sign-in log.
+   - `AADSTS700024` again means the token came from the Azure CLI fallback, so
+     `azd auth token` failed. Confirm the job still runs
+     `azd auth login --federated-credential-provider github` with
+     `id-token: write`.
+   - Issued tokens mean the write itself failed. Confirm the deploy principal
+     still holds **App Configuration Data Owner** on the store, since a new
+     assignment can take up to 15 minutes to propagate, and that `Warm:Sentinel`
+     is not locked.
+2. Rerun the workflow:
+
+   ```powershell
+   gh workflow run deploy.yml -f provision=true --ref main
+   ```
+
+The gate reports only an attempt count on purpose. It never prints the token, the
+`Authorization` header, a response body or exception text, so the sign-in log is
+where the cause shows up.
+
+#### The same expiry later in the job: `Preflight the post-deploy canary token` fails
+
+Symptom — provisioning and every postprovision gate pass, including the sentinel,
+but **Preflight the post-deploy canary token** fails with its error
+`The deploy identity could not obtain an access token for the API audience`,
+although nothing about the API app registration changed. Nothing rolls back,
+because the preflight runs before any revision changes.
+
+Cause — the same one-time assertion. Both canary token steps asked the Azure CLI
+for a token for the API audience, a resource it had not cached. These are the
+Azure CLI's token requests for a new resource on the deploy runs, in minutes after
+the job's single `azure/login`:
+
+| Minutes after login | Request | Result |
+|---|---|---|
+| +7.7 | Canary preflight (previous run) | Issued |
+| +8.6 | Canary token (previous run) | Issued |
+| +8.6 | `az acr login` in the image build | Issued |
+| +11.1 | Canary preflight | `AADSTS700024` |
+| +14.4 | App Configuration sentinel (the failure above) | `AADSTS700024` |
+
+So the CLI's assertion lasts about 10 minutes. After that, every CLI token for a
+resource it has not cached fails. Azure Resource Manager calls keep working only
+because that token was cached at login, and it lasts about 60 to 90 minutes.
+
+Fix — two changes in `deploy.yml`:
+
+1. **Refresh the Azure CLI login after provisioning** runs directly after
+   **Provision infrastructure**. It is the same pinned `azure/login` step, with the
+   same identity and inputs, so it adds no permission. It restarts the 10-minute
+   window before the legacy-role check and the image build's `az acr login`. It has
+   no `if:`, so it also runs when a manual run skips provisioning, and it never runs
+   after a failed step.
+2. Both canary token steps ask `azd auth token --scope "${AI4IA_ENTRA_AUDIENCE}/.default"`
+   first, and use the Azure CLI only when azd returns no token. That is the scope
+   the CLI derives from `--resource`. Only a single line without whitespace counts
+   as a token. The error messages, the `::add-mask::` handling and the rollback
+   exclusions are unchanged.
+
+The refresh restarts the window; it does not remove it. A new step, hook or script
+that needs a token for a resource the CLI has not cached must use `azd auth token`
+the same way, as the postprovision helpers and both canary token steps do.
+
+If the preflight still fails, read the API-audience token requests in the deploy
+identity's sign-in log:
+
+- `AADSTS700024` means the request came from the Azure CLI fallback, so
+  `azd auth token` failed first. Confirm the job still runs
+  `azd auth login --federated-credential-provider github` with `id-token: write`.
+- Any other failure is the grant itself. The API app registration needs a service
+  principal in this tenant, and an app role for the deploy identity if the app
+  requires assignment.
+
+Then rerun the workflow as above.
 
 ## Switching the search index tenancy model
 

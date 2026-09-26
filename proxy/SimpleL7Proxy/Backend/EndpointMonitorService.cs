@@ -5,6 +5,7 @@ using Azure.Core;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 using System.Threading;
 using System.Collections.Concurrent;
 
@@ -42,7 +43,7 @@ public class EndpointMonitorService : BackgroundService, IEndpointMonitorService
   private CancellationTokenSource _cancellationTokenSource;
   private CancellationToken _cancellationToken;
 
-  public Task<bool> CheckFailedStatusAsync(bool nosleep=false) => _circuitBreaker.CheckFailedStatusAsync(nosleep);
+  public int EMSGetBackpressureDelay() => _circuitBreaker.GetBackpressureDelay();
 
   private readonly IEventClient _eventClient;
   private readonly ISharedIteratorRegistry? _sharedIteratorRegistry;
@@ -53,12 +54,13 @@ public class EndpointMonitorService : BackgroundService, IEndpointMonitorService
   private readonly ProxyEvent _probeEvent = new ProxyEvent(6);  // ProxyHost, Backend-Host, Port, Path, Code, Latency/Timeout
 
 
-  CancellationTokenSource workerCancelTokenSource = new CancellationTokenSource();
+  //CancellationTokenSource workerCancelTokenSource = new CancellationTokenSource();
   private readonly ILogger<EndpointMonitorService> _logger;
   private static readonly ProxyEvent staticEvent = new ProxyEvent() { Type = EventType.Backend };
   //public Backends(List<BackendHost> hosts, HttpClient client, int interval, int successRate)
   public EndpointMonitorService(
       IOptions<ProxyConfig> options,
+      [FromKeyedServices(nameof(EndpointMonitorService))]
       ICircuitBreaker circuitBreaker,
       IHostHealthCollection backendHostCollection, //
       IHostApplicationLifetime appLifetime,               //
@@ -133,6 +135,10 @@ public class EndpointMonitorService : BackgroundService, IEndpointMonitorService
   public List<BaseHostHealth> GetCatchAllHosts()
   {
     return _backendHostCollection.Current.CatchAllHosts;
+  }
+  public PathRouteMatch? MatchRoute(string requestPath)
+  {
+    return _backendHostCollection.Current.MatchRoute(requestPath);
   }
   public Task WaitForStartupAsync()
   {
@@ -387,7 +393,7 @@ public class EndpointMonitorService : BackgroundService, IEndpointMonitorService
             .Where(h => h.SuccessRate() >= _successRate)
             .Select(h =>
             {
-              h.CalculatedAverageLatency = h.AverageLatency();
+              h.AverageLatencyMs = h.AverageLatency();
               return h;
             })
             .ToList();
@@ -400,12 +406,16 @@ public class EndpointMonitorService : BackgroundService, IEndpointMonitorService
     if (hostsChanged)
     {
       InvalidateIteratorCache();
-      _lastLatencyOrder = newActiveHosts.OrderBy(h => h.CalculatedAverageLatency).Select(h => h.guid).ToList();
+      _lastLatencyOrder = newActiveHosts.OrderBy(h => h.AverageLatencyMs).Select(h => h.guid).ToList();
     }
-    else if (string.Equals(_options.LoadBalanceMode, Constants.Latency, StringComparison.OrdinalIgnoreCase))
+    else if (string.Equals(_options.LoadBalanceMode, Constants.Latency, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(_options.LoadBalanceMode, Constants.TimeToFirstByte, StringComparison.OrdinalIgnoreCase))
     {
-      // Only invalidate shared iterators when the latency-based ordering actually changed
-      var newOrder = newActiveHosts.OrderBy(h => h.CalculatedAverageLatency).Select(h => h.guid).ToList();
+      // Only invalidate shared iterators when the ordering actually changed for latency- or TTFB-based selection
+      var newOrder = string.Equals(_options.LoadBalanceMode, Constants.TimeToFirstByte, StringComparison.OrdinalIgnoreCase)
+          ? newActiveHosts.OrderBy(h => h.TimeToFirstByteMs).Select(h => h.guid).ToList()
+          : newActiveHosts.OrderBy(h => h.AverageLatencyMs).Select(h => h.guid).ToList();
+
       if (!newOrder.SequenceEqual(_lastLatencyOrder))
       {
         _sharedIteratorRegistry?.InvalidateAll();
@@ -502,29 +512,8 @@ public class EndpointMonitorService : BackgroundService, IEndpointMonitorService
 
 
 
-  // public IHostIterator GetHostIterator(
-  //     string loadBalanceMode,
-  //     IterationModeEnum mode = IterationModeEnum.SinglePass,
-  //     int maxRetries = 1,
-  //     string fullURL = "/")
-  // {
-  //   // Use the appropriate factory method based on iteration mode
-  //   if (mode == IterationModeEnum.SinglePass)
-  //   {
-  //     return IteratorFactory.CreateSinglePassIterator(this, loadBalanceMode, fullURL);
-  //   }
-  //   else
-  //   {
-  //     return IteratorFactory.CreateMultiPassIterator(this, loadBalanceMode, maxRetries, fullURL);
-  //   }
-  // }
-
-  // Add method to invalidate iterator cache when hosts change
   private void InvalidateIteratorCache()
   {
-    IteratorFactory.InvalidateCache();
-    
-    // Also invalidate shared iterators so they get fresh latency ordering
     _sharedIteratorRegistry?.InvalidateAll();
   }
 

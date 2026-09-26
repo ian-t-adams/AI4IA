@@ -23,6 +23,9 @@ from ai4ia_api.hard_quota.dispatch import AdmissionController, admission_scope
 from ai4ia_api.hard_quota.models import QuotaError
 from ai4ia_api.hard_quota.store import LocalReservationStore
 from ai4ia_api.model_evidence import ModelCallRecorder
+from ai4ia_api.photo_avatars.provider import (
+    PhotoAvatarGateway, build_create_body, new_provider_avatar_id,
+)
 from ai4ia_api.usage.pricing import PriceRate, PricingBook
 from ai4ia_api.websearch.client import WebSearchClient
 from tests.conftest import make_settings
@@ -98,6 +101,7 @@ CASES = [
     "chat", "responses", "anthropic", "chat-stream", "responses-stream", "anthropic-stream",
     "embedding", "image", "image-edit", "video", "speech", "transcription", "ocr",
     "cu-submit", "cu-inline", "compute", "compute-upload", "webiq", "mcp-tool", "mcp-resource",
+    "photo-avatar-create",
 ]
 # A minimal PNG signature + IHDR is enough: the gateway sends the bytes, it never
 # decodes them. The admission descriptor carries only their digest and length.
@@ -175,6 +179,7 @@ async def outbound(request, harness):
         cu = ContentUnderstandingClient(harness.settings, http_client=http)
         compute = CodeInterpreterClient(harness.settings, http_client=http)
         mcp = HttpxMcpConnector(client=http, hard_quota_enabled=harness.settings.hard_quota_enabled)
+        avatars = PhotoAvatarGateway(harness.settings, http_client=http)
 
         class WebTransport:
             async def request(self, **kwargs):
@@ -232,6 +237,12 @@ async def outbound(request, harness):
                 return await mcp.call_tool(
                     endpoint="https://mcp.test", auth=McpAuth(), tool="fixture", arguments={},
                 )
+            if case == "photo-avatar-create":
+                outcome = await avatars.create_avatar(
+                    new_provider_avatar_id(), build_create_body("hello", {}),
+                )
+                assert outcome.kind == "accepted"
+                return outcome
             return await mcp.read_resource(
                 endpoint="https://mcp.test", auth=McpAuth(), uri="skill://fixture",
             )

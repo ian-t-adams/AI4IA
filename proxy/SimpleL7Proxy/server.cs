@@ -11,6 +11,7 @@ using System.Net;
 using System.Text.Json;
 using System.Threading;
 using SimpleL7Proxy.Backend;
+using SimpleL7Proxy.Backend.Iterators;
 using SimpleL7Proxy.Async.BlobStorage;
 using SimpleL7Proxy.Config;
 using SimpleL7Proxy.User;
@@ -19,7 +20,7 @@ using SimpleL7Proxy.Queue;
 using SimpleL7Proxy.Proxy;
 using SimpleL7Proxy.Plugin;
 using SimpleL7Proxy.Async.ServiceBus;
-using System.Text;
+using SimpleL7Proxy.Rules;
 using System.Runtime.CompilerServices;
 
 using Shared.HealthProbe;
@@ -55,6 +56,7 @@ public class Server : BackgroundService, IConfigChangeSubscriber
 
     private readonly IUserPriorityService _userPriority;
     private readonly IUserProfileService _userProfile;
+    private readonly ProfileEnricher _profileEnricher;
     private CancellationTokenSource? _cancellationTokenSource;
     private CancellationTokenSource? _probesCts; // Controls when probe serving finally stops
     private readonly IConcurrentPriQueue<RequestData> _requestsQueue;// = new ConcurrentPriQueue<RequestData>();
@@ -77,6 +79,7 @@ public class Server : BackgroundService, IConfigChangeSubscriber
     // Precomputed frozen collections for O(1) hot-path lookups, recomputed on config change
     private volatile FrozenSet<string> _disallowedHeaders = null!;
     private volatile FrozenDictionary<string, int> _priorityKeyToValue = null!;
+    private volatile IterationModeEnum _defaultIterationMode;
 
     // Precomputed validation rules to avoid dictionary iteration and string ops per request
     private readonly record struct ValidateHeaderRule(string SourceHeader, string AllowedValuesHeader, string DisplayName);
@@ -89,6 +92,7 @@ public class Server : BackgroundService, IConfigChangeSubscriber
         IHostApplicationLifetime appLifetime,
         IUserPriorityService userPriority,
         IUserProfileService userProfile,
+        ProfileEnricher profileEnricher,
         //IServiceBusRequestService serviceBusRequestService,
         IEventClient? eventHubClient,
         IEndpointMonitorService backends,
@@ -103,6 +107,7 @@ public class Server : BackgroundService, IConfigChangeSubscriber
         ArgumentNullException.ThrowIfNull(backends, nameof(backends));
         ArgumentNullException.ThrowIfNull(userPriority, nameof(userPriority));
         ArgumentNullException.ThrowIfNull(userProfile, nameof(userProfile));
+        ArgumentNullException.ThrowIfNull(profileEnricher, nameof(profileEnricher));
         ArgumentNullException.ThrowIfNull(logger, nameof(logger));
         ArgumentNullException.ThrowIfNull(appLifetime, nameof(appLifetime));
         ArgumentNullException.ThrowIfNull(requestsQueue, nameof(requestsQueue));
@@ -117,6 +122,7 @@ public class Server : BackgroundService, IConfigChangeSubscriber
         _eventHubClient = eventHubClient;
         _userPriority = userPriority;
         _userProfile = userProfile;
+        _profileEnricher = profileEnricher;
         _logger = logger;
         _blobWriter = blobWriter;
         _healthService = healthService;
@@ -146,6 +152,7 @@ public class Server : BackgroundService, IConfigChangeSubscriber
             options => options.TimeoutHeader,
             options => options.DefaultTTLSecs,
             options => options.TTLHeader,
+            options => options.IterationMode,
             options => options.MaxQueueLength,
             options => options.PollInterval
             ]);
@@ -176,6 +183,7 @@ public class Server : BackgroundService, IConfigChangeSubscriber
     public void InitVars()
     {
         // Recompute frozen sets from updated options
+        _defaultIterationMode = _options.IterationMode;
         _disallowedHeaders = _options.DisallowedHeaders.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
         _priorityKeyToValue = _options.PriorityKeys
             .Zip(_options.PriorityValues)
@@ -339,7 +347,6 @@ public class Server : BackgroundService, IConfigChangeSubscriber
         ArgumentNullException.ThrowIfNull(_options, nameof(_options));
 
         long counter = 0;
-        bool doUserProfile = _options.UseProfiles;
         // Only enable async mode if configured AND blob storage is available (not using NullBlobWriter)
         bool doAsync = _options.AsyncModeEnabled && !(_blobWriter is NullBlobWriter);
         int maxEvents = _options.MaxUndrainedEvents;
@@ -422,8 +429,16 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                     //delayCts.Cancel();
                     var rd = new RequestData(lc, requestId)
                     {
-                        Guid = requestGuid
+                        Guid = requestGuid,
+                        IterationMode = _defaultIterationMode
                     };
+
+                    var iterationModeHeader = rd.Headers["S7P-Iterator"].AsSpan().Trim();
+                    if (Enum.TryParse(iterationModeHeader, true, out IterationModeEnum iterationMode) &&
+                        iterationMode is IterationModeEnum.SinglePass or IterationModeEnum.MultiPass)
+                    {
+                        rd.IterationMode = iterationMode;
+                    }
 
                     ed = rd.EventData;
                     ed["Date"] = DateTime.UtcNow.ToString("o");
@@ -433,6 +448,8 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                     ed["Path"] = rd.Path ?? "N/A";
                     ed["RequestHost"] = rd.Headers["Host"] ?? "N/A";
                     ed["RequestUserAgent"] = rd.Headers["User-Agent"] ?? "N/A";
+
+                    rd.S7PHash = CalculateS7PHash(lc.Request, ed["RequestUserAgent"]);
 
                     // Give plugins an early chance to enrich RequestData and decide whether
                     // request processing should continue.
@@ -456,13 +473,17 @@ public class Server : BackgroundService, IConfigChangeSubscriber
 
                     if (!notEnqued && !_isShuttingDown)
                     {
+                        int backpressureDelay = _backends.EMSGetBackpressureDelay();
                         int eventCount = _probeServer.EventCount;
-                        if (eventCount > halfMaxEvents)
-                        {
-                            int ticks = eventCount / 100;
 
+                        // combined pressure ratings
+                        int delayTicks = (eventCount > halfMaxEvents ? eventCount / 100 : 0)
+                            + (backpressureDelay > 0 ? backpressureDelay / 100 : 0);
+
+                        if (delayTicks > 0)
+                        {
                             // add a delay in case the number of events is high
-                            for (int i = 0; i < ticks; i++)
+                            for (int i = 0; i < delayTicks; i++)
                                 await ptimer.WaitForNextTickAsync(cancellationToken);
                         }
 
@@ -474,7 +495,7 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                             retrymsg = ed["Message"] = "Max Events Exceeds Threshold";
                             logmsg = "MAX EVENTS  => 429:";
                         }
-                        else if (await _backends.CheckFailedStatusAsync())
+                        else if (backpressureDelay > 0)
                         // Check circuit breaker status and enqueue the request
                         {
                             notEnqued = true;
@@ -584,53 +605,16 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                                     rd.Headers.Remove(header);
                                 }
 
-                                rd.UserID = "";
                                 // Normalize path once: ensure non-empty and starts with '/'
                                 if (string.IsNullOrEmpty(rd.Path))
                                     rd.Path = "/";
                                 else if (!rd.Path.StartsWith('/'))
                                     rd.Path = "/" + rd.Path;
                                 rd.Headers["S7Path"] = rd.Path; // Copy path
-                                // Lookup the user profile and add the headers to the request
-                                if (doUserProfile)
+                                var matchedProfileRules = _profileEnricher.Enrich(rd);
+                                if (matchedProfileRules.Length > 0 && rd.Debug)
                                 {
-                                    var requestUser = rd.Headers[_options.UserProfileHeader];
-                                    if (!string.IsNullOrEmpty(requestUser))
-                                    {
-                                        rd.profileUserId = requestUser;
-                                        (var headers, var isSoftDeleted, var isStale) = _userProfile.GetUserProfile(requestUser);
-
-                                        if (headers != null && headers.Count > 0)
-                                        {
-                                            foreach (var header in headers)
-                                            {
-                                                if (!header.Key.StartsWith("internal-"))
-                                                {
-                                                    rd.Headers.Set(header.Key, header.Value);
-                                                    if (rd.Debug)
-                                                        _logger.LogInformation("Add Header: {Header} = {Value}", header.Key, header.Value);
-                                                }
-                                            }
-                                        }
-                                        else
-                                        {
-                                            if (rd.Debug)
-                                                _logger.LogInformation("User profile for {User} not found.", requestUser);
-                                            throw new ProxyErrorException(
-                                                ProxyErrorException.ErrorType.UnknownProfile,
-                                                HttpStatusCode.Forbidden,
-                                                "User profile not found: " + requestUser
-                                            );
-                                        }
-                                    }
-                                    else if (_options.UserConfigRequired)
-                                    {
-                                        throw new ProxyErrorException(
-                                            ProxyErrorException.ErrorType.UnknownProfile,
-                                            HttpStatusCode.Forbidden,
-                                            "User profile not found: " + requestUser
-                                        );
-                                    }
+                                    ed["S7P-MatchedRules"] = string.Join(",", matchedProfileRules);
                                 }
 
                                 // Check for any required headers
@@ -691,20 +675,6 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                                     }
                                     if (rd.Debug)
                                         _logger.LogInformation("Validation check passed for all headers.");
-                                }
-
-                                // Determine priority boost based on the UserID 
-                                if (_options.UniqueUserHeaders.Count > 0)
-                                {
-                                    foreach (var header in _options.UniqueUserHeaders)
-                                    {
-                                        rd.UserID += rd.Headers[header] ?? "";
-                                    }
-                                }
-
-                                if (String.IsNullOrEmpty(rd.UserID))
-                                {
-                                    rd.UserID = "defaultUser";
                                 }
 
                                 ed["UserID"] = rd.UserID;
@@ -960,6 +930,24 @@ public class Server : BackgroundService, IConfigChangeSubscriber
         }
 
         _staticEvent.WriteOutput("[SHUTDOWN] ✓");
+    }
+
+    private static short CalculateS7PHash(HttpListenerRequest request, string? userAgent)
+    {
+        var frontDoorClientIp = !string.IsNullOrWhiteSpace(request.Headers["X-Azure-FDID"])
+            ? request.Headers["X-Azure-ClientIP"]?
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .LastOrDefault()
+            : null;
+        var forwardedClientIp = request.Headers["X-Forwarded-For"]?
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .LastOrDefault();
+        var clientIp = frontDoorClientIp
+            ?? forwardedClientIp
+            ?? request.RemoteEndPoint?.Address.ToString()
+            ?? string.Empty;
+
+        return RuleHash.CalculateBucket(userAgent.AsSpan(), clientIp.AsSpan());
     }
 
     private (bool isValid, string message) ValidateAuthKey(string? incomingKey, string message)

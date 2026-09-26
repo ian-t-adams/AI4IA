@@ -154,6 +154,41 @@ async def test_external_claude_profile_is_bound_by_real_publication_and_consent(
     await publication._check_compilation(author, version)
 
 
+async def test_adaptive_claude_profile_is_bound_by_real_publication_and_consent(publication):
+    from ai4ia_api.agents.consent_service import environment_hash
+    from ai4ia_api.catalog import load_catalog
+    from ai4ia_api.publishing.models import PublicationVersion
+
+    state = publication.state
+    state.catalog = load_catalog().model_copy(deep=True)
+    state.policy.catalog = state.catalog
+    state.settings.claude_enabled = True
+    state.settings.claude_external_enabled = True
+    model = next(entry for entry in state.catalog.models if entry.anthropicThinking == "adaptive")
+    author = await actor(publication, "adaptive-author", "Author")
+    source = await state.agent_service.create(
+        author.owner_id, UserAgentCreate(name="adaptive-helper", systemPrompt="Synthetic.", tools=[]),
+        reserved_names=set(),
+    )
+    await publication.submit(author, "agent", source.name, PublicationSubmit(
+        expectedRevision=source.revision,
+        audience={"visibility": "shared", "acl": ["consumer@example.com"]},
+        modelIds=[model.id], modes=["chat"], reviewConsent=True,
+    ))
+    rows = await publication._store("agent").query(RecordQuery(PUBLICATION_VERSION_KIND, owner_id=author.owner_id))
+    version = PublicationVersion.model_validate(rows[0].body)
+    assert version.profiles["chat"].environmentDigest == environment_hash(state)
+    await publication._check_compilation(author, version)
+    for field, changed in (("anthropicThinking", "disabled"), ("toolCalling", True)):
+        original = getattr(model, field)
+        setattr(model, field, changed)
+        assert version.profiles["chat"].environmentDigest != environment_hash(state), field
+        with pytest.raises(PublicationError, match="contract_changed"):
+            await publication._check_compilation(author, version)
+        setattr(model, field, original)
+        await publication._check_compilation(author, version)
+
+
 async def test_author_role_and_unsolicited_private_review_do_not_grant_access(publication):
     author, head, version = await submit(publication)
     with pytest.raises(PublicationError):

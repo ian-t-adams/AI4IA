@@ -203,9 +203,10 @@ fix only protects revisions running an image built after it.
 the same place the old one was.
 
 In practice, the exposure is often narrower than it looks:
-`EVENT_LOGGERS` is commonly unset, so the event goes to the default **file** client
-(`eventslog.json`) inside the container, which is ephemeral and dies with the
-revision. Even so, search the workspace table to confirm — **do not use**
+on the earlier proxy pin, an unset `EVENT_LOGGERS` sent the event to the default
+**file** client (`eventslog.json`) inside the container, which is ephemeral and
+dies with the revision. Since the `b0066b0e` refresh, an unset `EVENT_LOGGERS`
+means `none`. Even so, search the workspace table to confirm — **do not use**
 `az monitor app-insights query` with the classic `traces`/`customEvents` names
 here: this is a workspace-based component, and that command returns an empty
 result set rather than an error — a false all-clear documented in

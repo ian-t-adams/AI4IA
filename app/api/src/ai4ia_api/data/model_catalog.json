@@ -1703,6 +1703,45 @@
           "deploymentName": "claude-sonnet-5-slurmfactory-eastus2-dz"
         }
       ]
+    },
+    {
+      "id": "claude-opus-5-5",
+      "displayName": "Claude Opus 5.5",
+      "category": "reasoning",
+      "format": "Anthropic",
+      "api": "anthropic",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "toolCalling": false,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "deploymentTarget": "external-claude",
+      "samplingSupported": false,
+      "anthropicThinking": "adaptive",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2",
+          "deploymentName": "claude-opus-5-5-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2",
+          "deploymentName": "claude-opus-5-5-slurmfactory-eastus2-dz"
+        }
+      ]
     }
   ]
 }
