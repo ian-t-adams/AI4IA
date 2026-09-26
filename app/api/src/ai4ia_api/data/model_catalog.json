@@ -903,6 +903,7 @@
       ],
       "imageSizes": null,
       "imageQualities": null,
+      "imageEditing": true,
       "reasoningEffort": null,
       "options": [
         {
@@ -949,6 +950,7 @@
       ],
       "imageSizes": null,
       "imageQualities": null,
+      "imageEditing": true,
       "reasoningEffort": null,
       "options": [
         {
@@ -981,6 +983,7 @@
       ],
       "imageSizes": null,
       "imageQualities": null,
+      "imageEditing": true,
       "reasoningEffort": null,
       "options": [
         {
@@ -1006,6 +1009,8 @@
       ],
       "imageSizes": null,
       "imageQualities": null,
+      "imageEditing": true,
+      "imageEditingDefault": true,
       "reasoningEffort": null,
       "options": [
         {
@@ -1031,6 +1036,7 @@
       ],
       "imageSizes": null,
       "imageQualities": null,
+      "imageEditing": true,
       "reasoningEffort": null,
       "options": [
         {

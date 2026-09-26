@@ -47,6 +47,7 @@ export interface CapabilityChip {
 // workflow step. Keep in step with that docstring.
 export const NOT_IN_WORKFLOW_STEPS = new Set([
   "generate_image",
+  "edit_image",
   "generate_video",
   "process_document",
   "analyze_attachment",

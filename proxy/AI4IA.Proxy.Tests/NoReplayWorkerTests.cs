@@ -474,7 +474,8 @@ public sealed class NoReplayWorkerTests
             WireServer[] servers, bool bounded, int timeout = 3000, bool shared = true,
             CancellationToken cancellation = default, bool? versioned = null,
             bool legacyHost = false, bool staged = true, int[]? acceptableStatusCodes = null,
-            Func<ICircuitBreaker>? circuit = null)
+            Func<ICircuitBreaker>? circuit = null,
+            string? path = null, byte[]? body = null, string? contentType = null)
         {
             var f = new WorkerFixture();
             f.Options.Client = new HttpClient(new SocketsHttpHandler { UseProxy = false });
@@ -527,8 +528,11 @@ public sealed class NoReplayWorkerTests
             f._ingress = new HttpListener();
             f._ingress.Prefixes.Add($"http://127.0.0.1:{port}/");
             f._ingress.Start();
+            var content = new ByteArrayContent(body ?? Body);
+            if (contentType is not null)
+                content.Headers.TryAddWithoutValidation("Content-Type", contentType);
             f._incoming = f._caller.PostAsync(
-                $"http://127.0.0.1:{port}{(route ? BoundedPath : Path)}", new ByteArrayContent(Body));
+                $"http://127.0.0.1:{port}{path ?? (route ? BoundedPath : Path)}", content);
             var incoming = await f._ingress.GetContextAsync().WaitAsync(TimeSpan.FromSeconds(5));
             f.Request = new RequestData(incoming, "fixture")
             {

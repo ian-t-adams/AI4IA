@@ -183,6 +183,11 @@ export interface MessageAttachment {
   error?: string | null;
   durationSeconds?: number | null;
   filename?: string | null;
+  // Edited-image provenance (server-recorded): the source kind and id, and
+  // whether a region mask limited the edit.
+  sourceKind?: "generated" | "library" | string | null;
+  sourceId?: string | null;
+  masked?: boolean | null;
 }
 
 // A redacted, user-facing entry in an assistant turn's activity trace: which tool
@@ -807,6 +812,11 @@ export interface ImageModelOption {
   dataZones: string[];
   residencies: string[];
   prices: ImagePriceOption[];
+  // The catalog declares image editing for this model.
+  editing?: boolean;
+  // What an edit on this model accepts; `sizes`/`qualities` describe generation.
+  editSizes?: string[] | null;
+  editQualities?: string[] | null;
 }
 
 export interface ImageOptionsResponse {
@@ -816,6 +826,39 @@ export interface ImageOptionsResponse {
   currency: string;
   priceVersion: string | null;
   models: ImageModelOption[];
+  // Server-authoritative editing availability. The browser only hides UI from
+  // it; the edit endpoint re-checks on every request.
+  editingEnabled?: boolean;
+  defaultEditModel?: string | null;
+}
+
+// --- Image editing ---
+
+export interface ImageEditSource {
+  kind: "generated" | "library";
+  id: string;
+}
+
+// A rectangle as fractions (0..1) of the source image, from its top-left.
+export interface ImageEditRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ImageEditRequest {
+  sessionId: string;
+  source: ImageEditSource;
+  prompt: string;
+  model?: string;
+  size?: string;
+  quality?: string;
+  region?: ImageEditRegion;
+}
+
+export interface ImageEditResponse {
+  messages: Message[];
 }
 
 // --- Document upload ---

@@ -500,6 +500,12 @@ def main(*, require_deployment_attestation: bool = False) -> int:
         parameter_value(parameters, "documentUnderstandingEnabled", False)
     ):
         errors.append("documentComputeEnabled=true requires documentUnderstandingEnabled=true.")
+    if truthy(parameter_value(parameters, "imageEditingEnabled", False)) and not truthy(
+        parameter_value(parameters, "imageGenerationEnabled", False)
+    ):
+        # The API refuses to start in this combination: edits read and store
+        # generated-image artifacts, whose durable storage ships with generation.
+        errors.append("imageEditingEnabled=true requires imageGenerationEnabled=true.")
     cu_enabled = truthy(
         parameter_value(parameters, "documentUnderstandingEnabled", False)
     )

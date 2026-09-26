@@ -106,7 +106,10 @@ from ..agents.tool_exec import (
 from ..agents.tools import ToolRegistry
 from ..entitlements.service import EntitlementService
 from ..images.artifacts import ImageArtifactStore
+from ..images.availability import NO_IMAGE_EDIT_MODEL_DETAIL, image_editing_availability
 from ..images.capability import GENERATE_IMAGE_TOOL_NAME, build_image_capability
+from ..images.edit_capability import EDIT_IMAGE_TOOL_NAME, build_image_edit_capability
+from ..images.editing import ImageEditService
 from ..images.service import ImageGenerationService
 from ..videos.artifacts import VideoArtifactStore
 from ..videos.availability import NO_VIDEO_MODEL_DETAIL, video_generation_availability
@@ -652,6 +655,12 @@ _TOOL_AGENT_PROMPTS: dict[str, str] = {
         "tool to create an image from their request, then briefly describe what "
         "you produced. Do not ask clarifying questions unless the request is empty."
     ),
+    EDIT_IMAGE_TOOL_NAME: (
+        "The user invoked the image editor directly. Call the edit_image tool once "
+        "to edit the most recent image in this conversation, or the image or library "
+        "document they name, exactly as they ask, then briefly confirm the requested "
+        "change. Do not ask clarifying questions unless the request is empty."
+    ),
     GENERATE_VIDEO_TOOL_NAME: (
         "The user invoked the video generator directly. Call the generate_video "
         "tool to create a short video from their request, then briefly describe "
@@ -690,6 +699,10 @@ _TOOL_COMMAND_USAGE: dict[str, str] = {
     GENERATE_IMAGE_TOOL_NAME: (
         "Usage: /generate_image <description> — e.g. /generate_image a red bicycle "
         "on a beach at sunset"
+    ),
+    EDIT_IMAGE_TOOL_NAME: (
+        "Usage: /edit_image <what to change> — edits the latest image in this "
+        "conversation, e.g. /edit_image make the sky a warm sunset"
     ),
     GENERATE_VIDEO_TOOL_NAME: (
         "Usage: /generate_video <description> — e.g. /generate_video a timelapse of "
@@ -737,6 +750,13 @@ def _capability_tool_available(
         return web_search is not None
     if name == GENERATE_IMAGE_TOOL_NAME:
         return settings.image_generation_enabled and image_artifacts is not None
+    if name == EDIT_IMAGE_TOOL_NAME:
+        return image_editing_availability(
+            editing_enabled=settings.image_editing_enabled,
+            generation_enabled=settings.image_generation_enabled,
+            artifact_store=image_artifacts,
+            catalog=catalog,
+        ) == "available"
     if name == GENERATE_VIDEO_TOOL_NAME:
         return video_generation_availability(
             enabled=settings.video_generation_enabled,
@@ -942,6 +962,15 @@ async def chat(
                 # Enabled but with nothing routable (e.g. a retired model with no
                 # successor): say so rather than implying it is coming "yet".
                 unavailable_reply = f"/{capability_tool} is unavailable. {NO_VIDEO_MODEL_DETAIL}"
+            if capability_tool == EDIT_IMAGE_TOOL_NAME and image_editing_availability(
+                editing_enabled=request.app.state.settings.image_editing_enabled,
+                generation_enabled=request.app.state.settings.image_generation_enabled,
+                artifact_store=image_artifacts,
+                catalog=catalog,
+            ) == "no_model":
+                unavailable_reply = (
+                    f"/{capability_tool} is unavailable. {NO_IMAGE_EDIT_MODEL_DETAIL}"
+                )
             return await _local_reply(
                 repo=repo,
                 session=session,
@@ -1946,6 +1975,31 @@ async def chat(
                 extra_handlers = {**extra_handlers, **i_handlers}
             except Exception:  # noqa: BLE001 - image tool must never break a turn
                 logger.warning("image capability build failed", exc_info=True)
+        # When the agent attaches ``edit_image``, inject the synthetic image-edit
+        # capability. It shares ``image_sink`` with the generator, so an edit can
+        # target an image produced earlier in this same turn, and its builder and
+        # handler both ask the shared availability predicate.
+        if EDIT_IMAGE_TOOL_NAME in agent.tools and image_artifacts is not None:
+            try:
+                edit_service = ImageEditService(
+                    settings=request.app.state.settings, catalog=catalog, gateway=gateway
+                )
+                e_tools, e_handlers = build_image_edit_capability(
+                    edit_service=edit_service,
+                    artifact_store=image_artifacts,
+                    entitlements=entitlements,
+                    metering=metering,
+                    catalog=catalog,
+                    user_id=user.internal_user_id,
+                    session_id=body.sessionId,
+                    sink=image_sink,
+                    repo=repo,
+                    retrieval=retrieval,
+                )
+                extra_tools = [*extra_tools, *e_tools]
+                extra_handlers = {**extra_handlers, **e_handlers}
+            except Exception:  # noqa: BLE001 - image tool must never break a turn
+                logger.warning("image edit capability build failed", exc_info=True)
         # When the agent attaches the ``generate_video`` tool, inject
         # the synthetic video-generation (Sora) capability — same closure-bound
         # pattern as the image tool. Produced clips are collected in

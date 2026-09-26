@@ -470,6 +470,12 @@ def _default_images_path(style: GatewayProviderStyle) -> str:
     return "/images/generations"
 
 
+def _default_image_edits_path(style: GatewayProviderStyle) -> str:
+    if style == GatewayProviderStyle.azure_openai_native:
+        return "/deployments/{deployment}/images/edits"
+    return "/images/edits"
+
+
 def _default_speech_path(style: GatewayProviderStyle) -> str:
     if style == GatewayProviderStyle.azure_openai_native:
         return "/deployments/{deployment}/audio/speech"
@@ -497,10 +503,12 @@ class ModelGatewayClient:
         self._chat_path = settings.gateway_chat_path or _default_chat_path(self._style)
         self._embeddings_path = _default_embeddings_path(self._style)
         self._images_path = _default_images_path(self._style)
+        self._image_edits_path = _default_image_edits_path(self._style)
         self._speech_path = _default_speech_path(self._style)
         self._transcription_path = _default_transcription_path(self._style)
         self._stream_include_usage = settings.gateway_stream_include_usage
         self._image_api_version = settings.gateway_image_api_version
+        self._image_edit_api_version = settings.gateway_image_edit_api_version
         self._image_timeout = settings.gateway_image_timeout_seconds
         self._video_api_version = settings.gateway_video_api_version
         self._video_timeout = settings.gateway_video_timeout_seconds
@@ -900,6 +908,85 @@ class ModelGatewayClient:
             resp = await self._post(
                 client, surface="image", deployment=deployment, payload=req.json,
                 url=req.url, headers=req.headers, json=req.json, timeout=self._image_timeout
+            )
+            if resp.status_code >= 400:
+                raise ModelGatewayError(resp.status_code, resp.text)
+            return resp.json()
+        finally:
+            if owned:
+                await client.aclose()
+
+    def image_edit_url(self, deployment: str) -> str:
+        """The image-edit endpoint URL (path + edit api-version for native)."""
+        path = self._image_edits_path.format(deployment=deployment)
+        url = f"{self._base}{path if path.startswith('/') else '/' + path}"
+        if self._style == GatewayProviderStyle.azure_openai_native:
+            url = f"{url}?api-version={self._image_edit_api_version}"
+        return url
+
+    async def edit_image(
+        self,
+        *,
+        deployment: str,
+        prompt: str,
+        image: bytes,
+        image_content_type: str,
+        mask: bytes | None = None,
+        size: str | None = None,
+        quality: str | None = None,
+        n: int = 1,
+        api: str = "chat",
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit one image through the Azure OpenAI ``images/edits`` operation.
+
+        The request is multipart/form-data (the provider rejects JSON): the source
+        ``image`` file, an optional PNG ``mask`` whose alpha-zero pixels mark the
+        region to change, and the text fields. The bytes cross the governed
+        gateway unparsed; the shared admission seam sees a digest descriptor of
+        the files, never the files themselves. Returns the parsed provider JSON
+        (``{data: [{b64_json}], usage, ...}``). Uses the longer image timeout.
+        """
+        if api != "chat":
+            raise ValueError("Image edits use the Azure OpenAI image surface only.")
+        if image_content_type not in {"image/png", "image/jpeg"}:
+            raise ValueError("Image edits accept only PNG or JPEG sources.")
+        url = self.image_edit_url(deployment)
+        data: dict[str, str] = {"prompt": prompt, "n": str(n)}
+        if size:
+            data["size"] = size
+        if quality:
+            data["quality"] = quality
+        if self._style != GatewayProviderStyle.azure_openai_native:
+            data["model"] = deployment
+        extension = "png" if image_content_type == "image/png" else "jpg"
+        files: list[tuple[str, tuple[str, bytes, str]]] = [
+            ("image", (f"image.{extension}", image, image_content_type)),
+        ]
+        if mask is not None:
+            files.append(("mask", ("mask.png", mask, "image/png")))
+        payload: dict[str, Any] = {
+            "operation": "images/edits",
+            **{key: value for key, value in data.items() if key != "model"},
+            "image": {
+                "sha256": hashlib.sha256(image).hexdigest(),
+                "bytes": len(image),
+                "contentType": image_content_type,
+            },
+            "mask": (
+                {"sha256": hashlib.sha256(mask).hexdigest(), "bytes": len(mask)}
+                if mask is not None else None
+            ),
+        }
+        headers = self._auth_headers_multipart(correlation_id)
+        if self._http is not None:
+            client, owned = self._http, False
+        else:
+            client, owned = httpx.AsyncClient(timeout=self._image_timeout), True
+        try:
+            resp = await self._post(
+                client, url, surface="image", deployment=deployment, payload=payload,
+                headers=headers, data=data, files=files, timeout=self._image_timeout,
             )
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)

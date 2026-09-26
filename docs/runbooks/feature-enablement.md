@@ -38,6 +38,7 @@ feature posture.
 | Memory / semantic recall | `AI4IA_MEMORY_STORE=cosmos` | inspector create/edit/delete controls | `memoryStore` | Cosmos endpoint/database, vector capability/container, and catalog-resolved embedding/extraction models |
 | Rolling conversation summarization | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | none | `autoSummarizationEnabled` | None beyond the active chat model — once the transcript exceeds the model-derived threshold, older turns fold into a running summary while the full transcript stays in storage/scrollback. Off leaves the manual `/summarize` command working but never auto-injects a summary |
 | Image generation | `AI4IA_IMAGE_GENERATION_ENABLED` | server-advertised imagery controls | `imageGenerationEnabled` | Image-capable deployment and durable media Blob storage outside local; storage presence alone does not enable generation |
+| Image editing | `AI4IA_IMAGE_EDITING_ENABLED` | server-advertised `editingEnabled` from `/api/images/options` | `imageEditingEnabled` | Default `false`. Requires image generation (startup and preprovision refuse otherwise) and its durable storage. Advertisement and execution check both flags, the store and a runtime-enabled `imageEditing` catalog model together. See [Image editing](#image-editing) |
 | Video generation | `AI4IA_VIDEO_GENERATION_ENABLED` | server-advertised tools and inline artifacts | `videoGenerationEnabled` | A runtime-enabled video deployment and durable media Blob storage outside local. Advertisement and execution check the gate, the store and model availability together. Sora 2 is runtime-disabled ahead of its 2026-10-15 retirement, so the tool stays hidden. Keep the flag on: it also delivers the Blob settings that serve existing clips (see [Sora 2 runtime retirement](deployment.md#sora-2-runtime-retirement)) |
 | Custom photo avatars | `AI4IA_PHOTO_AVATARS_ENABLED` (+ per-user and live-session limits) | availability from `GET /api/photo-avatars/config` | `photoAvatarsEnabled`, `photoAvatarMaxPerUser`, `photoAvatarMaxCreationsPerDay`, `photoAvatarLiveMaxMinutesPerSession`, `photoAvatarLiveIdleTimeoutSeconds` | Default `false`. Entra, Cosmos, durable Blob and metering outside local. Creation also needs the home account to report the Limited Access capability at runtime. Live avatar sessions also need Speech Voice Live. The approval, the RAI re-approval and the live checks come first: see [below](#custom-photo-avatars) |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
@@ -1232,6 +1233,71 @@ summary, not the token totals, to see how much sandbox was consumed.
 Enforcement requires the usage ledger: `AI4IA_ENTITLEMENTS_ENABLED=true` with
 `AI4IA_USAGE_METERING_ENABLED=false` is refused at startup, so a limit you set
 can never silently fail to apply for lack of a ledger.
+
+### Image editing
+
+`AI4IA_IMAGE_EDITING_ENABLED` (Bicep `imageEditingEnabled`, azd/CI
+`AI4IA_IMAGE_EDITING_ENABLED`) turns on the `edit_image` chat tool, the
+`/edit_image` command, `POST /api/images/edits` and the **Edit** buttons on
+conversation images and owned library images. It is `false` in code, Bicep and
+the checked-in profile. It requires `AI4IA_IMAGE_GENERATION_ENABLED`, because
+edits read and write the same durable image artifact store; the API refuses to
+start, and preprovision validation fails, when editing is on without generation.
+
+What it does and does not change:
+
+- **Models are catalog-owned.** Only rows declaring `imageEditing` in
+  `infra/models.json` can edit: `gpt-image-1-mini`, `gpt-image-1.5`,
+  `gpt-image-2`, `gpt-image-2.5-flare` and `gpt-image-2.5-sunburst`.
+  `imageEditingDefault` marks Sunburst as the preferred default; when it is not
+  routable the first routable editing model is used, and an explicitly chosen
+  model is never substituted. A runtime-disabled row is not offered.
+  `/api/images/options` advertises each editing model's `editSizes` and
+  `editQualities`, the exact lists the endpoint and tool validate; an omitted
+  value defaults to `auto` where the model allows it.
+- **The gateway route is generated.** Every image row carries an APIM
+  operation allowlist: `images/generations`, plus `images/edits` only for
+  `imageEditing` rows. Any other operation returns `404 operation_not_allowed`
+  before a rewrite, body parse or send. The multipart body is forwarded unparsed
+  through SimpleL7Proxy and APIM to the deployment-scoped
+  `images/edits?api-version=2025-04-01-preview` operation. The allowlist ships
+  with the policy regardless of the flag.
+- **Sources are owned, never fetched.** An edit reads an image attachment from
+  the same conversation, or the caller's own ready PNG/JPEG library image inside
+  that conversation's library selection. Shared and tenant-public documents,
+  WebP/GIF/TIFF, sources above 20 MB, and region edits of EXIF-rotated photos
+  are refused before any provider call.
+- **Accounting is unchanged.** Edits meter as one image request, remain
+  cost-unknown (no Azure per-edit price is mapped), count as one request on the
+  hard-admission `image` surface, and refuse token or dollar caps there.
+
+Enable it:
+
+```bash
+gh variable set AI4IA_IMAGE_EDITING_ENABLED --body true   # then run deploy.yml
+```
+
+Verify after the deploy, with an authenticated user in a disposable
+conversation:
+
+1. `GET /api/images/options` returns `editingEnabled: true`,
+   `defaultEditModel: "gpt-image-2.5-sunburst"`, and `editSizes` starting
+   with `auto` on each editing model.
+2. Generate an image, choose **Edit**, and submit a whole-image edit. A second
+   image appears with "edited from an earlier image", and its receipt names the
+   Sunburst deployment and `api: images/edits`.
+3. Repeat with **Selected region**. A region edit exercises the mask path.
+4. Confirm the gateway accepts the multipart request on
+   `2025-04-01-preview`. A provider 404 or 400 naming the API version means the
+   configured `AI4IA_GATEWAY_IMAGE_EDIT_API_VERSION` must change; nothing is
+   retried automatically.
+
+Sunburst has one eastus2 GlobalStandard deployment at capacity 2, so 429s are
+expected under load; users can choose another editing model.
+
+Roll back by setting the variable to `false` and redeploying. Edited images stay
+in their conversations and remain viewable, because serving artifacts is not
+gated by the flag.
 
 ### Memory
 

@@ -188,6 +188,60 @@ describe("LibraryPanel delete", () => {
   });
 });
 
+describe("LibraryPanel image editing", () => {
+  const PHOTO: LibraryDocument = {
+    ...DOC, id: "photo1", filename: "photo.png", contentType: "image/png", modality: "image",
+  };
+
+  it("offers Edit on an owned, ready PNG or JPEG image only when the handler is passed", async () => {
+    const onEditImage = vi.fn();
+    const jpeg = { ...PHOTO, id: "photo2", filename: "photo.jpg", contentType: "image/jpeg" };
+    mocks.listLibraryDocuments.mockResolvedValue([PHOTO, jpeg]);
+    const user = userEvent.setup();
+    const { unmount } = render(<LibraryPanel onClose={vi.fn()} />);
+    await screen.findByRole("button", { name: "Permanently delete photo.png" });
+    expect(screen.queryByRole("button", { name: /Edit image/ })).toBeNull();
+    unmount();
+
+    render(<LibraryPanel onClose={vi.fn()} onEditImage={onEditImage} editImageScope={null} />);
+    await user.click(await screen.findByRole("button", { name: "Edit image photo.png" }));
+    expect(onEditImage).toHaveBeenCalledWith(expect.objectContaining({ id: "photo1" }));
+    expect(screen.getByRole("button", { name: "Edit image photo.jpg" })).toBeInTheDocument();
+  });
+
+  it.each([
+    { name: "a PDF", doc: { ...DOC } },
+    { name: "a WebP image", doc: { ...PHOTO, contentType: "image/webp" } },
+    { name: "a GIF image", doc: { ...PHOTO, contentType: "image/gif" } },
+    { name: "an image still analyzing", doc: { ...PHOTO, status: "analyzing" as const } },
+  ])("does not offer Edit for $name", async ({ doc }) => {
+    mocks.listLibraryDocuments.mockResolvedValue([doc]);
+    render(<LibraryPanel onClose={vi.fn()} onEditImage={vi.fn()} editImageScope={null} />);
+    await screen.findByRole("button", { name: `Permanently delete ${doc.filename}` });
+    expect(screen.queryByRole("button", { name: /Edit image/ })).toBeNull();
+  });
+
+  it("follows the active conversation's library selection", async () => {
+    mocks.listLibraryDocuments.mockResolvedValue([PHOTO]);
+    const { unmount } = render(
+      <LibraryPanel onClose={vi.fn()} onEditImage={vi.fn()} editImageScope={["other"]} />,
+    );
+    await screen.findByRole("button", { name: "Permanently delete photo.png" });
+    expect(screen.queryByRole("button", { name: "Edit image photo.png" })).toBeNull();
+    unmount();
+    render(<LibraryPanel onClose={vi.fn()} onEditImage={vi.fn()} editImageScope={["photo1"]} />);
+    expect(await screen.findByRole("button", { name: "Edit image photo.png" })).toBeInTheDocument();
+  });
+
+  it("never offers Edit for a document shared by someone else", async () => {
+    mocks.listLibraryDocuments.mockResolvedValue([]);
+    mocks.listSharedWithMe.mockResolvedValue([{ ...PHOTO, id: "theirs", filename: "theirs.png" }]);
+    render(<LibraryPanel onClose={vi.fn()} onEditImage={vi.fn()} editImageScope={null} />);
+    await screen.findByText("theirs.png");
+    expect(screen.queryByRole("button", { name: /Edit image/ })).toBeNull();
+  });
+});
+
 describe("LibraryPanel uploads and polling", () => {
   it("gives the file picker an accessible name", async () => {
     render(<LibraryPanel onClose={vi.fn()} />);

@@ -7,6 +7,9 @@ Checks that the data-driven catalog cannot silently drop deployments:
   * generated deployment names (model + region + skuShort) are unique
   * no duplicate (model, region) pairs
   * ``runtimeEnabled``, when present, is a strict Boolean
+  * ``imageEditing`` / ``imageEditingDefault``, when present, are strict
+    Booleans on Azure OpenAI image rows only, and at most one row is the
+    default editing model
 
 Exit non-zero on any violation. Safe to run locally or in CI.
 """
@@ -19,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _capacity_evidence import EvidenceError
 from _production_capacity import parse_policy
-from _model_targets import model_target, runtime_enabled
+from _model_targets import image_editing, image_editing_default, model_target, runtime_enabled
 
 HERE = Path(__file__).resolve().parent
 MODELS = HERE.parent / "infra" / "models.json"
@@ -44,6 +47,7 @@ def main() -> int:
     except EvidenceError as exc:
         errors.append(f"production capacity policy: {exc.code}")
 
+    editing_defaults: list[str] = []
     for model in data["catalog"]:
         name = model["name"]
         try:
@@ -52,6 +56,12 @@ def main() -> int:
             errors.append(f"{name}: {exc}")
         try:
             runtime_enabled(model)
+        except ValueError as exc:
+            errors.append(f"{name}: {exc}")
+        try:
+            image_editing(model)
+            if image_editing_default(model):
+                editing_defaults.append(name)
         except ValueError as exc:
             errors.append(f"{name}: {exc}")
         thinking = model.get("anthropicThinking")
@@ -120,6 +130,12 @@ def main() -> int:
                     f"{name}: maxCapacity and maxCapacityPool must be supplied "
                     f"together in {region}/{sku}"
                 )
+
+    if len(editing_defaults) > 1:
+        errors.append(
+            "imageEditingDefault may mark at most one model; found "
+            f"{', '.join(editing_defaults)}"
+        )
 
     deployments = sum(len(m["deployments"]) for m in data["catalog"])
     if errors:

@@ -35,6 +35,9 @@ const mocks = vi.hoisted(() => ({
   updateMemory: vi.fn(),
   deleteMemory: vi.fn(),
   appendVoiceTurns: vi.fn(),
+  getImageOptions: vi.fn(async () => ({
+    maxSelectedModels: 3, currency: "USD", priceVersion: null, models: [],
+  })),
   voiceOptions: null as null | {
     persistConversation: (
       sessionId: string,

@@ -258,7 +258,14 @@ function SourcesPanel({
 // Renders one tool-generated image. The bytes live behind an authenticated
 // endpoint (a direct image element would not carry the bearer token), so we fetch
 // the blob, wrap it in an object URL, and revoke it on unmount to avoid leaks.
-function ImageAttachmentView({ attachment }: { attachment: MessageAttachment }) {
+// ``onEdit`` is passed only while the server reports image editing available.
+function ImageAttachmentView({
+  attachment,
+  onEdit,
+}: {
+  attachment: MessageAttachment;
+  onEdit?: (attachment: MessageAttachment) => void;
+}) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -328,6 +335,12 @@ function ImageAttachmentView({ attachment }: { attachment: MessageAttachment }) 
       >
         {caption}
         {[
+          attachment.sourceKind
+            ? attachment.sourceKind === "library" && attachment.filename
+              ? `edited from ${attachment.filename}`
+              : "edited from an earlier image"
+            : null,
+          attachment.masked ? "selected region" : null,
           attachment.model,
           attachment.size,
           attachment.quality && attachment.quality !== "auto"
@@ -353,6 +366,17 @@ function ImageAttachmentView({ attachment }: { attachment: MessageAttachment }) 
           .map((part) => ` · ${part}`)
           .join("")}
       </figcaption>
+      {onEdit && url ? (
+        <div className="generated-image-actions">
+          <button
+            type="button"
+            onClick={() => onEdit(attachment)}
+            aria-label={`Edit image: ${caption}`}
+          >
+            Edit
+          </button>
+        </div>
+      ) : null}
     </figure>
   );
 }
@@ -568,12 +592,14 @@ function Bubble({
   onToggleSpeak,
   onCitation,
   onInspectMemory,
+  onEditImage,
 }: {
   msg: DisplayMessage;
   speechState: SpeechState;
   onToggleSpeak: (id: string, text: string) => void;
   onCitation?: (target: CitationTarget) => void;
   onInspectMemory?: (memoryId: string | null) => void;
+  onEditImage?: (attachment: MessageAttachment) => void;
 }) {
   const receiptRef = useRef<HTMLDivElement>(null);
   const isUser = msg.role === "user";
@@ -712,7 +738,10 @@ function Bubble({
               .map((attachment) => (
                 <li key={attachment.id}>
                   {attachment.kind === "image" ? (
-                    <ImageAttachmentView attachment={attachment} />
+                    <ImageAttachmentView
+                      attachment={attachment}
+                      onEdit={msg.pending ? undefined : onEditImage}
+                    />
                   ) : (
                     <ImageFailureView attachment={attachment} />
                   )}
@@ -784,12 +813,15 @@ export function MessageList({
   onError,
   onCitation,
   onInspectMemory,
+  onEditImage,
 }: {
   messages: DisplayMessage[];
   conversationId?: string | null;
   onError?: (message: string) => void;
   onCitation?: (target: CitationTarget) => void;
   onInspectMemory?: (memoryId: string | null) => void;
+  /** Present only while the server reports image editing available. */
+  onEditImage?: (attachment: MessageAttachment) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -920,6 +952,7 @@ export function MessageList({
               onToggleSpeak={playback.toggle}
               onCitation={onCitation}
               onInspectMemory={onInspectMemory}
+              onEditImage={onEditImage}
             />
           ))
         )}

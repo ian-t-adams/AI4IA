@@ -638,6 +638,63 @@ class DocumentRetrievalService:
         modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
         return modality in ("audio", "video")
 
+    async def read_owned_image(
+        self, user_id: str, document_id: str, *, max_bytes: int
+    ) -> dict:
+        """Read an OWNED, ready image document's original bytes for image editing.
+
+        Deliberately narrower than :meth:`read_raw`: the lookup is the caller's own
+        partition only, so a document shared with them (or tenant-public) never
+        resolves here -- editing derives a new artifact from the source, and only
+        its owner may do that. The ``document.read`` policy applies, the manifest
+        size is checked before any blob read, and the read bytes are re-checked.
+        Returns ``{"document_id","filename","content_type","data","size"}`` or
+        ``{"error": ..., "status": <http status>}`` (never an existence leak)."""
+        await require_policy(PolicyRequest("document.read"), owner_id=user_id)
+        document_id = (document_id or "").strip()
+        if not document_id:
+            return {"error": "document_id is required.", "status": 422}
+        try:
+            doc = await self._library.get_document(user_id, document_id)
+        except DocumentNotFoundError:
+            return {"error": "No owned image document found with that id.", "status": 404}
+        except Exception:  # noqa: BLE001 - degrade, never propagate
+            logger.warning(
+                "owned image load failed user=%s id=%s", user_id, document_id, exc_info=True
+            )
+            return {"error": "Could not read that document right now.", "status": 503}
+        if doc.userId != user_id:
+            return {"error": "No owned image document found with that id.", "status": 404}
+        safe_name = _one_line(doc.filename, _LABEL_LIMIT) or "document"
+        if doc.status != DocumentStatus.ready:
+            return {"error": f"'{safe_name}' is not ready yet.", "status": 409}
+        modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
+        if modality != Modality.image.value:
+            return {"error": f"'{safe_name}' is not an image.", "status": 422}
+        cap = max(1, int(max_bytes))
+        if doc.size > cap:
+            return {"error": f"'{safe_name}' is too large to edit.", "status": 413}
+        if not doc.rawPath:
+            return {"error": f"No original image available for '{safe_name}'.", "status": 404}
+        try:
+            data = await self._blob.get(doc.rawPath)
+        except BlobNotFoundError:
+            return {"error": f"No original image available for '{safe_name}'.", "status": 404}
+        except Exception:  # noqa: BLE001 - degrade, never propagate
+            logger.warning(
+                "owned image blob read failed user=%s id=%s", user_id, doc.id, exc_info=True
+            )
+            return {"error": "Could not read that document right now.", "status": 503}
+        if len(data) > cap:
+            return {"error": f"'{safe_name}' is too large to edit.", "status": 413}
+        return {
+            "document_id": doc.id,
+            "filename": safe_name,
+            "content_type": doc.contentType or "application/octet-stream",
+            "data": data,
+            "size": len(data),
+        }
+
     async def read_media_timeline(
         self, user_id: str, document_id: str, *, email: str | None = None
     ) -> dict:
