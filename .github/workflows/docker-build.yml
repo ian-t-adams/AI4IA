@@ -311,6 +311,22 @@ jobs:
           expect 404 /url-tester "${admin}"
           expect 403 / ""
           expect 403 /eventhub "33333333-3333-3333-3333-333333333333"
+          # Blazor is interactive only if the fingerprinted script the page references
+          # is actually published and served from the image.
+          page="$(curl --silent --fail --header "X-MS-CLIENT-PRINCIPAL-ID: ${admin}" http://127.0.0.1:18080/)"
+          script="$(grep -oE '_framework/blazor\.web[^"]*\.js' <<< "${page}" | head -n 1 || true)"
+          if [[ -z "${script}" ]]; then
+            echo "::error::The CompanionApp page references no Blazor script."
+            exit 1
+          fi
+          expect 200 "/${script}" "${admin}"
+          if ! curl --silent --fail --header "X-MS-CLIENT-PRINCIPAL-ID: ${admin}" \
+            "http://127.0.0.1:18080/${script}" | grep -q 'Blazor'; then
+            echo "::error::/${script} is not the Blazor script."
+            exit 1
+          fi
+          expect 404 /_framework/blazor.missing.js "${admin}"
+          expect 403 "/${script}" ""
 
       - name: Scan final CompanionApp image for HIGH/CRITICAL vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
