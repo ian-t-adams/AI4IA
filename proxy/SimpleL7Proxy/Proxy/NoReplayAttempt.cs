@@ -17,8 +17,9 @@ public sealed class NoReplayAttempt
     public const string ProofHeader = "x-ai4ia-proxy-attempt";
     public const string AckHeader = "x-ai4ia-attempt-ack";
     public const int MaxBodyBytes = 1024 * 1024;
-    // Upstream caller controls that rewrite the body/model, log the body, or change iteration.
-    internal static readonly string[] UnsupportedControlHeaders = ["S7P-Model-Override", "S7PDEBUGBODY", "S7P-Iterator"];
+    // Upstream caller controls that rewrite the body/model, log the body or response, or change iteration.
+    internal static readonly string[] UnsupportedControlHeaders =
+        ["S7P-Model-Override", "S7PDEBUGBODY", "S7PDEBUGSTREAM", "S7P-Iterator"];
     private readonly string _nonce;
     private readonly string _bodyHash;
     private readonly string _ingressPath;

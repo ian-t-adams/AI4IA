@@ -251,7 +251,7 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         static_env = json.dumps(gateway["variables"]["staticEnv"])
         self.assertIn(
             '"name": "DisallowedHeaders", "value": '
-            "\"[string(createArray('S7P-Model-Override', 'S7PDEBUGBODY'))]\"",
+            "\"[string(createArray('S7P-Model-Override', 'S7PDEBUGBODY', 'S7PDEBUGSTREAM'))]\"",
             static_env,
         )
 

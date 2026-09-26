@@ -971,12 +971,13 @@ var staticEnv = [
     ])
   }
   // Removed after authentication and before the worker reads them: a caller must not
-  // rewrite the admitted model or make the proxy log the request body.
+  // rewrite the admitted model or make the proxy log the request body or response lines.
   {
     name: 'DisallowedHeaders'
     value: string([
       'S7P-Model-Override'
       'S7PDEBUGBODY'
+      'S7PDEBUGSTREAM'
     ])
   }
   { name: 'LogAllRequestHeaders', value: 'false' }

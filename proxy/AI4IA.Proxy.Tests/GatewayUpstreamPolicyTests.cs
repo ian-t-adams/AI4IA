@@ -20,7 +20,17 @@ public sealed class GatewayUpstreamPolicyTests
     private const string LoopbackGateway = "http://127.0.0.1:9";
 
     [TestMethod]
-    public void AuthoredDisallowedHeadersStripUpstreamCallerControls()
+    public void AuthoredDisallowedHeadersParseToEveryUpstreamCallerControl()
+    {
+        // The behavioral controls, the header surviving to the worker without this policy,
+        // run through the real listener and worker in IngressWorkerPolicyTests.
+        var configured = AuthoredDisallowedHeaders();
+        foreach (string header in new[] { "S7P-Model-Override", "S7PDEBUGBODY", "S7PDEBUGSTREAM" })
+            Assert.IsTrue(configured.Contains(header, StringComparer.OrdinalIgnoreCase), header);
+    }
+
+    /// <summary>The authored gateway.bicep DisallowedHeaders, as the proxy's parser reads them.</summary>
+    internal static List<string> AuthoredDisallowedHeaders()
     {
         var match = Regex.Match(GatewaySource(),
             @"name:\s*'DisallowedHeaders'\s+value:\s*string\(\[(?<items>[^\]]*)\]\)");
@@ -29,13 +39,7 @@ public sealed class GatewayUpstreamPolicyTests
             .Select(item => item.Groups[1].Value).ToArray();
         // Bicep's string([...]) renders a JSON array, which is what the proxy receives.
         string rendered = "[" + string.Join(",", authored.Select(item => $"\"{item}\"")) + "]";
-        var configured = ConfigParser.ApplyEnv(new() { ["DisallowedHeaders"] = rendered }, new ProxyConfig());
-        foreach (string header in new[] { "S7P-Model-Override", "S7PDEBUGBODY" })
-        {
-            Assert.IsTrue(configured.DisallowedHeaders.Contains(header, StringComparer.OrdinalIgnoreCase), header);
-            // Control: without the authored policy upstream strips nothing.
-            Assert.IsFalse(new ProxyConfig().DisallowedHeaders.Contains(header, StringComparer.OrdinalIgnoreCase), header);
-        }
+        return ConfigParser.ApplyEnv(new() { ["DisallowedHeaders"] = rendered }, new ProxyConfig()).DisallowedHeaders;
     }
 
     [DataTestMethod]
