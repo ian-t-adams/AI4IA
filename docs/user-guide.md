@@ -274,7 +274,9 @@ creation is billed and counts toward your avatar and 24-hour limits, which the f
 shows along with the estimated cost.
 
 Generation typically takes under a minute, and the gallery shows its progress while
-it is open. Every preview is labelled **AI-generated**. **Report** records a problem
+it is open. Every preview is labelled **AI-generated**. An avatar marked
+**Re-verifying…** can't be used in a live session until the avatar service confirms
+it again; its preview and **Delete** still work. **Report** records a problem
 with an avatar and links to Microsoft's abuse report form. **Delete** asks first,
 then removes the avatar and its preview. Right after a creation it may ask you to
 wait a few seconds.

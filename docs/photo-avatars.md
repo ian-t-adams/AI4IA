@@ -413,7 +413,10 @@ Limited Access approval.
   the list instead.
 - **Status.** Pending records poll `GET /{id}` with backoff from 2 to 15 seconds, for
   at most three minutes and never while the tab is hidden. Polling stops on `ready`,
-  on `failed`, or when the gallery closes.
+  on `failed`, or when the gallery closes. A ready record with `needsReverification`
+  shows **Re-verifying…**, and its preview, Report and Delete stay available. Only a
+  status read lets the server re-check it after its cooldown, so the gallery reads it
+  at once and then once a minute, for six minutes.
 - **Preview.** The bytes come only from the record's own
   `/api/photo-avatars/<id>/preview`, fetched through `apiFetch` into a `blob:` URL.
   Any other `preview.url` gets no image and no request. Every preview carries the
