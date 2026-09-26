@@ -986,7 +986,9 @@ Storage, Cosmos or App Configuration access.
   or unlisted gets an empty 403 before any page, asset or Blazor circuit runs.
   Group admission requires the app registration to emit **security group claims**;
   a user whose token overflows to group overage is refused, which fails closed.
-  Principal ids need no group claim.
+  Principal ids need no group claim. The check is defense in depth behind Easy
+  Auth: it trusts only headers the platform injects on the ingress path and does
+  not authenticate anyone by itself.
 - **Fail-closed.** An empty admin list would admit every user in the tenant. The
   preprovision validator refuses that configuration. Bicep independently creates
   nothing unless every prerequisite holds, and the app refuses to start with an
@@ -1033,7 +1035,9 @@ Instead:
 
 Every pull request also builds and scans the image in the `api image` job.
 
-**Enable.**
+**Enable.** The image lives in this environment's registry, so enable the console
+only after the environment has been provisioned once. On a greenfield standup,
+the pre-provision gate stops the run because the registry does not exist yet.
 
 1. Enable proxy telemetry: `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED=true`.
 2. Register an Entra app for sign-in. Its redirect URI is

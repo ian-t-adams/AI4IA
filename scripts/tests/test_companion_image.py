@@ -299,6 +299,8 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/verify-companion-image.py", verify)
         self.assertIn("--expect-source-commit", verify)
         self.assertIn("--expect-run-invocation", verify)
+        # The same job's build step logged in to ACR before the verifier reads the manifest.
+        self.assertIn("az acr login", build)
         # Every step blocks: a failed scan, attestation or verification stops promotion.
         self.assertNotIn("continue-on-error", job)
         for step in steps:
@@ -333,6 +335,8 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("set -euo pipefail", step["run"])
         self.assertIn("scripts/verify-companion-image.py", step["run"])
         self.assertIn('--image "${AI4IA_COMPANION_APP_IMAGE:-}"', step["run"])
+        # The verifier resolves the manifest from ACR, so it must log in first.
+        self.assertLess(step["run"].index("az acr login"), step["run"].index("--enabled true"))
         self.assertEqual(step["env"], {"GH_TOKEN": "${{ github.token }}"})
         env = self.deploy["jobs"]["deploy"]["env"]
         for name in (

@@ -634,6 +634,9 @@ jobs:
             echo "::error::Expected exactly one container registry in $rg for the CompanionApp image."
             exit 1
           fi
+          # gh reads the image manifest from the registry through the docker
+          # keychain; the image push step's login comes later in this job.
+          az acr login --name "${registry%%.*}"
           python scripts/verify-companion-image.py --enabled true \
             --image "${AI4IA_COMPANION_APP_IMAGE:-}" --registry "$registry" \
             --environment "$AZURE_ENV_NAME"
