@@ -470,6 +470,25 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             "leave it at its documented default unless a live-validated override is available."
         )
 
+    # Custom photo avatars: default-off, and creation still refuses at runtime
+    # until the account reports the Limited Access capability. These checks catch
+    # a contradictory deployment at plan time; the API enforces the same posture.
+    photo_avatars_enabled = truthy(parameter_value(parameters, "photoAvatarsEnabled", False))
+    for name in ("photoAvatarMaxPerUser", "photoAvatarMaxCreationsPerDay"):
+        raw_limit = text(parameter_value(parameters, name, 5))
+        if not raw_limit.isdigit() or not 1 <= int(raw_limit) <= 50:
+            errors.append(f"{name} must be an integer from 1 to 50.")
+    if photo_avatars_enabled:
+        if text(parameter_value(parameters, "apiAuthProvider", "dev")).lower() != "entra":
+            errors.append("photoAvatarsEnabled=true requires apiAuthProvider=entra.")
+        warnings.append(
+            "photoAvatarsEnabled provisions a Cosmos container, a Blob container and the "
+            "exact-operation photo avatar APIM API. Creation stays refused until the home "
+            "account reports the CustomAvatar Limited Access capability; the RAI trigger-3 "
+            "re-approval and the enablement checks in docs/runbooks/feature-enablement.md "
+            "remain prerequisites."
+        )
+
     if truthy(parameter_value(parameters, "documentComputeEnabled", False)) and not truthy(
         parameter_value(parameters, "documentUnderstandingEnabled", False)
     ):

@@ -8,8 +8,9 @@
 > Claude profile, and no Claude model is activated yet. The Agent Service
 > features target Foundry prompt and hosted agents, which AI4IA deliberately
 > does not use as its runtime. The custom photo avatar requirement added on
-> 2026-09-25 follows the same rule: it is a
-> [plan](photo-avatars.md), with no resource, role, flag or code.
+> 2026-09-25 follows the same rule: its Phase 1 backend is implemented behind a
+> default-off flag and a fail-closed Limited Access check, and nothing is enabled
+> (see the [design](photo-avatars.md)).
 
 AI4IA's FastAPI runtime owns agents, tools, approvals, receipts, memory and
 scheduling. Foundry supplies model deployments behind SimpleL7Proxy → APIM,
@@ -28,7 +29,7 @@ owner approval before merge.
 | Claude Opus 5.5 | GA, Hosted on Azure | Capacity deployed in the dedicated Claude account; not cataloged. Opus 5 and Sonnet 5 are deployed but not activated | Live check confirmed disabled thinking returns 400; needs the adaptive profile, and activation waits on target-tenant admin actions |
 | Voice agents in Agent Service | Public preview | Voice Live through the FastAPI relay → APIM, two providers | Not adopted; needs a new provider design |
 | Voice-agent observability | Public preview | Applies only to Foundry voice agents | Not applicable |
-| Custom photo avatars from a description (owner requirement, 2026-09-25) | Limited Access; creation REST surface undocumented | No avatar support. The Speech Voice Live relay drops a client `avatar` field, and the web voice client is audio only | [Phased plan](photo-avatars.md); activation waits on the Limited Access approval and RAI re-approval |
+| Custom photo avatars from a description (owner requirement, 2026-09-25) | Limited Access; creation REST surface undocumented | Phase 1 backend implemented default-off: create, status, preview, list, delete and report through an exact-operation APIM API, with a fail-closed capability check. Real-time avatar sessions are in progress | [Design](photo-avatars.md); activation waits on the Limited Access approval and RAI re-approval |
 | Long-running resilience | Public preview, hosted agents | Resumable workflows on the Durable Task Scheduler worker | Not applicable |
 | Agent Framework updates | Announced | No Agent Framework dependency | Not applicable |
 | Foundry dev pack | Public preview | Optional operator toolchain | No repository requirement changes |
@@ -283,10 +284,12 @@ The creation REST surface is the Foundry portal's own endpoint, and it isn't
 publicly documented. Custom text to speech avatar is Limited Access, and AI4IA's
 registration is pending.
 
-AI4IA has no avatar support today. The Speech Voice Live relay rebuilds
+The Phase 1 backend is now implemented behind a default-off flag: create,
+status, preview, list, delete and report, through an exact-operation APIM API,
+with a fail-closed capability check. The Speech Voice Live relay still rebuilds
 `session.update` and drops any client `avatar` field, and the web voice client
-uses only WebSocket audio. The [photo avatar plan](photo-avatars.md) phases the
-work:
+still uses only WebSocket audio; real-time avatar sessions are the next phase.
+The [photo avatar design](photo-avatars.md) phases the work:
 
 1. decisions and spikes;
 2. create, preview, list and delete;
