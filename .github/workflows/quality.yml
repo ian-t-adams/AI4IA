@@ -472,3 +472,11 @@ jobs:
           # rebuild, and the P1-6 capture/preflight/deploy/verify/rollback
           # ordering still holds.
           python3 -m unittest scripts.tests.test_immutable_image_promotion scripts.tests.test_image_provenance
+
+      - name: Run CompanionApp image promotion tests
+        run: |
+          set -euo pipefail
+          # The optional console is not an azd service. Its manual promotion and
+          # deploy.yml's pre-provision attestation gate are covered with the pinned
+          # GitHub CLI stubbed; no registry, network or credential is used.
+          python3 -m unittest scripts.tests.test_companion_image

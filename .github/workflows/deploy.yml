@@ -49,6 +49,7 @@ on:
       - "scripts/post-deploy-verify.py"
       - "scripts/_canary_contract.py"
       - "scripts/verify-image-provenance.py"
+      - "scripts/verify-companion-image.py"
       - "scripts/_image_refs.py"
       - "scripts/check-resource-providers.py"
       - "scripts/check-model-availability.py"
@@ -308,6 +309,16 @@ jobs:
       AI4IA_PROXY_PRIORITIES_ENABLED: ${{ vars.AI4IA_PROXY_PRIORITIES_ENABLED }}
       AI4IA_PROXY_PRIORITY_WORKERS: ${{ vars.AI4IA_PROXY_PRIORITY_WORKERS }}
       AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED: ${{ vars.AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED }}
+      # Optional admin-only CompanionApp telemetry console (default off). Not an
+      # azd service: the image digest comes from companion-image.yml, and the
+      # attestation gate below re-verifies it before provisioning.
+      AI4IA_COMPANION_APP_ENABLED: ${{ vars.AI4IA_COMPANION_APP_ENABLED }}
+      AI4IA_COMPANION_APP_IMAGE: ${{ vars.AI4IA_COMPANION_APP_IMAGE }}
+      AI4IA_COMPANION_APP_ENTRA_CLIENT_ID: ${{ vars.AI4IA_COMPANION_APP_ENTRA_CLIENT_ID }}
+      AI4IA_COMPANION_APP_ADMIN_GROUP_IDS: ${{ vars.AI4IA_COMPANION_APP_ADMIN_GROUP_IDS }}
+      AI4IA_COMPANION_APP_ADMIN_PRINCIPAL_IDS: ${{ vars.AI4IA_COMPANION_APP_ADMIN_PRINCIPAL_IDS }}
+      AI4IA_COMPANION_APP_ALLOWED_IP_RANGES: ${{ vars.AI4IA_COMPANION_APP_ALLOWED_IP_RANGES }}
+      AI4IA_COMPANION_APP_MIN_REPLICAS: ${{ vars.AI4IA_COMPANION_APP_MIN_REPLICAS }}
       AI4IA_PROXY_ASYNC_ENABLED: ${{ vars.AI4IA_PROXY_ASYNC_ENABLED }}
       AI4IA_PROXY_WORKERS: ${{ vars.AI4IA_PROXY_WORKERS }}
       AI4IA_PROXY_MIN_REPLICAS: ${{ vars.AI4IA_PROXY_MIN_REPLICAS }}
@@ -599,6 +610,33 @@ jobs:
       - name: Preflight resource provider registration
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
         run: python scripts/check-resource-providers.py --register
+
+      # The optional CompanionApp is not an azd service, so the web/api/proxy
+      # proofs below never cover it. Bicep references its digest DURING
+      # provisioning, so its attestations are re-verified before provision may
+      # run. A disabled console references no image and this step is a no-op.
+      - name: Verify the CompanionApp image attestations before provisioning
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          companion="${AI4IA_COMPANION_APP_ENABLED:-false}"
+          if [ "${companion,,}" != "true" ]; then
+            python scripts/verify-companion-image.py --enabled "$companion"
+            exit 0
+          fi
+          # Must match infra/main.bicep's `rg-${workload}-${environmentName}`.
+          rg="rg-${AI4IA_WORKLOAD:-ai4ia}-${AZURE_ENV_NAME}"
+          registry="$(az acr list -g "$rg" --query "[].loginServer" -o tsv)"
+          if [ "$(printf '%s\n' "$registry" | grep -c .)" -ne 1 ]; then
+            echo "::error::Expected exactly one container registry in $rg for the CompanionApp image."
+            exit 1
+          fi
+          python scripts/verify-companion-image.py --enabled true \
+            --image "${AI4IA_COMPANION_APP_IMAGE:-}" --registry "$registry" \
+            --environment "$AZURE_ENV_NAME"
 
       # Protect existing bindings and register first-time hostnames before ARM
       # creates their certificates. Failed reads are never evidence of absence.

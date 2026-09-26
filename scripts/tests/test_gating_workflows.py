@@ -340,6 +340,7 @@ class DeployWorkflowOperationalScriptTriggers(unittest.TestCase):
                 "scripts/postprovision.ps1",
                 "scripts/post-deploy-verify.py",
                 "scripts/verify-image-provenance.py",
+                "scripts/verify-companion-image.py",
                 "scripts/_image_refs.py",
                 "scripts/check-resource-providers.py",
                 "scripts/check-model-availability.py",
