@@ -9,8 +9,9 @@
 > re-approval under [RAI review trigger 3](rai-decision-record.md#review-triggers),
 > and the enablement checks in
 > [the runbook](runbooks/feature-enablement.md#custom-photo-avatars). Phase 2 (real-time
-> conversation) is in progress. Phase 3 (rendered videos) is deferred until the
-> registered use case is confirmed.
+> conversation) is implemented in source on the existing Voice Live WebSocket. It adds
+> no new gate: it inherits photo avatars, Speech Voice Live and the capability. Phase 3
+> (rendered videos) is deferred until the registered use case is confirmed.
 
 ## Requirement and scope
 
@@ -46,8 +47,35 @@ with local auth disabled. Resource identifiers are deliberately left out.
 | --- | --- |
 | Create from description | Four avatars reached `Succeeded` in about 30-45 seconds each. Each produced a 1024×1024 PNG at `promptImageUri`, a SAS link that expires in about 12 hours. |
 | Batch talking-head video | About 20 seconds per job for a roughly 10-second clip: 512×512, h264 + AAC, 25 fps, with lip-sync and head movement. |
-| Voice Live session | `session.update` with a custom photo avatar returned `session.updated` with WebRTC ICE servers and `output_protocol: webrtc`. An unknown avatar name was refused with `avatar_verification_failed`. The WebRTC media stream itself is **not tested yet**. |
+| Voice Live session | With the default `output_protocol: webrtc`, `session.update` with a custom photo avatar returned WebRTC ICE servers; AI4IA does not use that mode. With `output_protocol: websocket` at the pinned `2026-04-10` (spike and live check, 2026-09-26), `session.updated` lists the `avatar` modality, echoes the avatar block with `ice_servers: null`, and the avatar streams on the same WebSocket as `response.video.delta`. An unknown avatar name is refused with `avatar_verification_failed` before any `session.updated`. |
 | Non-human prompt | A cartoon dog was accepted and animated, but the animation model humanized it. Stylized 3D humans render well; realistic humans look best. |
+
+**WebSocket avatar media (2026-09-26).** Measured with AI4IA's own relay logic
+against the test resources, in two bounded sessions:
+
+- **Stream format.** Each `response.video.delta` carries base64 fragmented MP4: an
+  `ftyp`+`moov` init segment in the first delta, then `moof`/`mdat` fragments.
+  - Video: H.264 High level 3.0 (`avc1.64001E`), 512×512 at 25 fps.
+  - Audio: AAC-LC 16 kHz mono (`mp4a.40.2`), inside the same stream. There is no
+    `response.audio.delta`.
+- **Frame size.** The largest whole frame was 24,841 characters. The relay bounds
+  frames at 256 KiB.
+- **Idle streaming.** Video starts as soon as `session.updated` confirms the avatar,
+  before any response, and idle frames keep streaming until the session closes:
+  25 fps at about 566 kbps.
+- **Speaking markers.** `session.avatar.switch_to_speaking` and
+  `session.avatar.switch_to_idle` bracket speech. `response.done` arrives while the
+  avatar is still speaking its buffered video.
+- **Interruption.**
+  - `response.cancel` during speech ended the response (`cancelled`) in about 0.1
+    seconds, and the avatar was idle in about 0.2 seconds.
+  - `output_audio_buffer.clear` answered `output_audio_buffer.cleared` in about 0.1
+    seconds, with the same effect.
+- **Provider id in the echo.** The `session.updated` echo includes the avatar's
+  `character`, which is the provider id, so the relay scrubs it.
+- **Browser playback.** Chromium played the captured deltas through AI4IA's
+  MediaSource player at 512×512, using the codec string derived from the stream's
+  own `avcC` box.
 
 Findings that shape the design:
 
@@ -143,22 +171,22 @@ Voice Live session update, on the existing `/voice-live/realtime` surface:
   "session": {
     "modalities": ["text", "audio"],
     "voice": { "name": "en-US-AvaMultilingualNeural", "type": "azure-standard" },
-    "avatar": { "type": "photo-avatar", "model": "vasa-1", "character": "{avatarId}", "customized": true }
+    "avatar": {
+      "type": "photo-avatar", "model": "vasa-1", "character": "{avatarId}",
+      "customized": true, "output_protocol": "websocket"
+    }
   }
 }
 ```
 
-The WebRTC handshake then runs:
+With `output_protocol: websocket` there is no handshake. The service streams the
+avatar on the same WebSocket as `response.video.delta` events. The default `webrtc`
+mode instead returns ICE servers with TURN credentials and needs
+`session.avatar.connect` with an SDP offer; AI4IA does not use it.
 
-1. The client takes the ICE servers from `session.updated`.
-2. It creates a browser peer connection and sends `session.avatar.connect` with
-   `client_sdp`.
-3. The service replies with `session.avatar.connecting`, and the client applies
-   its `server_sdp`.
-
-The avatar component (`type`, `model`, `character`, `customized`, `ice_servers`) is
-documented in the `2026-04-10` reference, which AI4IA pins today, and in
-`2026-07-15`. The lab test used `2026-07-15`.
+The avatar component (`type`, `model`, `character`, `customized`, `output_protocol`,
+`ice_servers`) is documented in the `2026-04-10` reference, which AI4IA pins, and in
+`2026-07-15`. The WebSocket measurements above used `2026-04-10`.
 
 **Regions.** Custom photo avatar creation, real-time avatar and batch avatar are
 all available in:
@@ -229,34 +257,38 @@ here.
 | Avatar records | Cosmos is canonical, per user (rule 4) | A user-owned record maps the owner to an opaque provider id, the prompt, attributes, state and artifact ids. The provider namespace is shared by every user, so AI4IA never lists it to users and never accepts a client-supplied provider id. |
 | Feature gate | Server-authoritative (rule 3) | A default-off setting with fail-closed `validate_runtime` prerequisites, Bicep and azd wiring, prerequisite validation and a group-policy restriction. The web app hides the UI but never enforces. |
 | Home account, base model and API versions | Catalog-driven (rule 2) | One catalog-owned avatar block, preferably next to the Speech Voice Live provider in `infra/voice-providers.json`, with its generator and `--check`. No account, region, model or version is hardcoded. |
-| Real-time session | Existing relay → APIM path (rule 1) | The existing `/api/voice/live` relay, on the Speech Voice Live provider only. |
-| Real-time media | New exception to rule 1 | WebRTC media flows directly between the browser and Microsoft's media relay. This needs owner approval and an `AGENTS.md` amendment before Phase 2. |
-| Cost | Owner admission (rule 8) | Priced per avatar and per minute. Admission happens before any provider spend. Unpriced paths stay cost-unknown and refuse under caps, and accepted but unrecoverable work is never refunded. |
-| Evidence | Receipts; no secret sprawl (rules 6 and 7) | Record a bounded prompt, attributes, the outcome and cost evidence. Record avatar ids as short prefixes, because the receipt redactor in `app/api/src/ai4ia_api/agents/tools.py` masks tokens of 32 or more characters. Never record ICE credentials or SDP. |
+| Real-time session | Existing relay → APIM path (rule 1) | The existing `/api/voice/live` relay, on the Speech Voice Live provider only. The browser names an owned record; the relay resolves it and injects the server-owned avatar block. |
+| Real-time media | Existing relay → APIM path (rule 1); no exception | `output_protocol: websocket`: the avatar's video and speech arrive as `response.video.delta` frames on the same governed WebSocket, FastAPI relay → APIM Voice Live API → Foundry. Frames are bounded and never logged or stored. There is no WebRTC, no ICE or TURN credential and no browser media plane. |
+| Cost | Owner admission (rule 8) | Priced per avatar, and per second of live avatar time at $0.60 per minute. Admission happens before any provider spend. Unpriced paths stay cost-unknown and refuse under caps, and accepted but unrecoverable work is never refunded. |
+| Evidence | Receipts; no secret sprawl (rules 6 and 7) | Record a bounded prompt, attributes, the outcome and cost evidence. Record avatar ids as short prefixes, because the receipt redactor in `app/api/src/ai4ia_api/agents/tools.py` masks tokens of 32 or more characters. Never record video frames or the provider id. |
 
 ## Current seams the phases change
 
-- **The relay, `app/api/src/ai4ia_api/routers/realtime.py`:**
+- **The relay, `app/api/src/ai4ia_api/routers/realtime.py`, with its pure avatar
+  helpers in `app/api/src/ai4ia_api/realtime_avatar.py`:**
   - `normalize_speech_client_frame()` rebuilds `session.update` for Speech Voice
-    Live and keeps only server-owned and bounded fields. So a client `avatar`
-    object is dropped today. Keep it that way: the relay must inject the avatar
-    block itself.
-  - There is no client event allowlist, so `session.avatar.connect` passes through
-    today. Phase 2 adds explicit handling.
-  - `session.updated` and `session.avatar.connecting` are forwarded unchanged, and
-    frames are not logged. The TURN credentials in the ICE servers must stay out of
-    logs, receipts and telemetry.
-  - Provider error frames keep a bounded `code`, so `avatar_verification_failed`
-    can be mapped.
-  - Realtime usage is recorded as one call with unknown usage, capped by
-    `realtime_max_session_seconds`. There is no duration meter.
+    Live and keeps only server-owned and bounded fields, so a client `avatar`
+    object is dropped. Phase 2 keeps that and injects the avatar block itself, last
+    in the rewrite chain.
+  - Before Phase 2 there was no client event allowlist, so `session.avatar.connect`
+    passed through. The relay now refuses every client `session.avatar.*` event on
+    every provider.
+  - Server frames are forwarded without being logged. In an avatar session the
+    relay scrubs the provider id from the `session.updated` echo and every other
+    non-video frame, and bounds `response.video.delta` frames.
+  - Provider error frames keep a bounded `code`, and `avatar_verification_failed`
+    becomes a stable client error.
+  - Realtime usage is one call with unknown usage, capped by
+    `realtime_max_session_seconds`. An avatar session adds its own per-second meter
+    row.
 - **The voice catalog.** `infra/voice-providers.json` pins Speech Voice Live to
   `/voice-live/realtime` at `2026-04-10`, which documents the photo avatar
   component.
-- **The web client.** `app/web/src/lib/voiceLive.ts` is WebSocket and audio only,
-  with no `RTCPeerConnection` or video element. The Content Security Policy in
-  `app/web/src/proxy.ts` sets no `connect-src` or `default-src`, so it doesn't
-  block WebRTC, and `img-src` allows `self`, `data:` and `blob:`.
+- **The web client.** `app/web/src/lib/voiceLive.ts` was WebSocket and audio only.
+  In an avatar session it now feeds `response.video.delta` to the MediaSource player
+  in `app/web/src/lib/avatarVideo.ts` and plays no PCM. The Content Security Policy
+  in `app/web/src/proxy.ts` sets no `media-src` or `default-src`, so the player's
+  `blob:` MediaSource URL needs no policy change. There is no `RTCPeerConnection`.
 - **Video generation.** The pattern for async provider jobs is in
   `app/api/src/ai4ia_api/videos/service.py`,
   `app/api/src/ai4ia_api/videos/artifacts.py` and
@@ -290,15 +322,12 @@ This phase makes no user-visible change and provisions nothing.
   covers abuse cases, disclosure, the feedback channel, escalation and the prompt
   posture.
 - **Use case.** Confirm that the registered use case covers each phase.
-- **WebRTC spike.** Run the media path end to end with the Voice Live avatar
-  sample, against the chosen home account at AI4IA's pinned `2026-04-10`. It
-  should:
-  - measure start-up latency;
-  - confirm which audio travels over WebRTC and which events stay on the
-    WebSocket;
-  - confirm that interruption works and that the catalog's default voice pairs
-    with a photo avatar;
-  - check TURN reachability from the networks users are on.
+- **Media spike (done 2026-09-26).** At AI4IA's pinned `2026-04-10`, with the
+  catalog's default DragonHD voice, `output_protocol: websocket` delivers the avatar
+  on the existing WebSocket (see
+  [WebSocket avatar media](#verified-behavior-2026-09-25)). That keeps media on the
+  relay → APIM path, so no media-plane exception and no TURN reachability check
+  are needed. WebRTC stays untested and unused.
 - **Authorization check.** Confirm whether a principal holding only Cognitive
   Services User can call the avatar create, status, delete and batch operations.
   Grant a Speech role scoped to the home account only if that check fails.
@@ -527,35 +556,111 @@ Limited Access approval.
 
 ### Phase 2: real-time conversation
 
-- **Server-owned avatar.** This works on the Speech Voice Live provider only.
-  When the browser opens `/api/voice/live`, it names one of its own avatar
-  records. The relay:
-  - re-checks ownership, state, flag and capability at connect time;
-  - keeps dropping any client `avatar` field;
-  - injects the server-owned avatar block, with the catalog base model and a
-    catalog voice.
-- **Handshake.** The relay accepts `session.avatar.connect` only when it
-  configured an avatar for the session. SDP size and the number of attempts are
-  bounded, and the event is refused otherwise. ICE servers and
-  `session.avatar.connecting` are forwarded without being logged.
-- **Web.** A peer connection built from the ICE servers, a video element, and a
-  persistent AI-generated label. The client falls back to audio only if WebRTC
-  fails.
-- **Cost.** A per-minute avatar meter, measured by the server from avatar
-  connection to close. It is capped by `realtime_max_session_seconds` and by an
-  avatar-minute limit.
-- **Errors.** `avatar_verification_failed` maps to "avatar unavailable", and the
-  record is marked for re-verification.
-- **Contract.** The `AGENTS.md` exception for the media plane lands before or
-  with this phase.
-- **Tests.** Extend `app/api/tests/test_realtime_logic.py`,
-  `app/api/tests/test_realtime_api.py` and
-  `app/api/tests/test_realtime_staged_api.py`:
-  - client avatar injection is dropped, paired with server injection;
-  - connect is refused without a configured avatar, paired with an allowed one;
-  - ownership is re-checked at connect;
-  - no credential or SDP reaches the logs, checked with a positive capture
-    control.
+Implemented in source. It works on the Speech Voice Live provider only, and every
+avatar byte stays on the existing governed path: browser → FastAPI
+`/api/voice/live` → APIM Voice Live WebSocket API → Foundry.
+
+- **Selection.** The browser adds `?avatar=<record id>`, one of its own 32-hex
+  record ids. A query parameter is known at the handshake, so resolution, refusal
+  and admission all happen before any upstream connection. It matches the other
+  server-validated selectors (`provider`, `model`, `session`, `agent`, `tools`), and
+  the id is an opaque, owner-scoped record id, never the provider id.
+  - A wrong provider or a malformed id is denied before the socket is accepted.
+  - The setup canary actor may never name an avatar.
+- **Connect-time checks, on every connection.**
+  - Layer 1's `resolve_live_avatar` re-checks ownership, readiness, pending
+    re-verification, the home account and the availability predicate. That
+    predicate covers the flag, storage, residency, the `avatar.use` policy and
+    the capability. Grants are never cached.
+  - The relay also requires the Voice Live target region to equal the avatar's
+    home region, so the session targets the account that owns the avatar.
+  - An unknown live price under a cost cap refuses (`cost_unknown_under_cap`), using
+    layer 1's `live_cost_capped` rule.
+  - A refusal sends one bounded error and closes with 1008:
+    `{"type":"error","error":{"type":"avatar_error","code":"avatar_unavailable","reason":…}}`.
+    The reason is allowlisted, and `retry_after_seconds` appears only with
+    `needs_reverification`. Nothing is opened upstream and nothing is metered.
+- **Server-owned block.** The relay injects
+  `{"type":"photo-avatar","model":<catalog base model>,"character":<provider id>,"customized":true,"output_protocol":"websocket"}`
+  into every rebuilt `session.update`, after Speech normalization and the
+  tool/persona bridge, with the normalizer's catalog voice.
+  - No client avatar field survives, including `video`, a background `image_url`
+    and `output_audit_audio`.
+  - Neither does any client provider id.
+- **No WebRTC.** Every client `session.avatar.*` event, including
+  `session.avatar.connect`, is refused on every provider: one bounded error, then a
+  1008 close. `output_audio_buffer.clear` passes and, like `response.cancel`,
+  needs no fresh policy grant.
+- **Video forwarding.** `response.video.delta` frames of at most 256 KiB are
+  forwarded verbatim. An oversized frame ends the session with a bounded error and
+  a 1009 close.
+  - Video is never parsed beyond its event type, logged, receipted or copied into
+    telemetry.
+  - The provider id is scrubbed from the `session.updated` echo and every other
+    frame before it is forwarded or read for log metadata.
+- **Confirmation and errors.**
+  - The avatar is confirmed by `session.updated` listing the `avatar` modality, or
+    by the first video frame. A `session.updated` that drops a requested avatar
+    ends the session, because a client with PCM disabled would otherwise hear
+    nothing.
+  - `avatar_verification_failed` becomes `avatar_unavailable` /
+    `verification_failed`, and `mark_live_avatar_verification_failed` marks the
+    record once.
+- **Idle and session caps.** Avatar time bills while idle, so:
+  - every avatar session is capped by the smaller of
+    `realtime_max_session_seconds` and `AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION`
+    (default 10);
+  - it ends after `AI4IA_PHOTO_AVATAR_LIVE_IDLE_TIMEOUT_SECONDS` (default 120)
+    without conversation. Microphone audio and idle video never count as
+    conversation.
+  - The relay sends `ai4ia.avatar.session` with the limits,
+    `ai4ia.avatar.idle_warning` shortly before an idle end, and
+    `ai4ia.avatar.session_ended` for an idle or cap end.
+- **Admission.** Live avatar time is its own hard-quota surface, `avatar_live`,
+  which requires `avatar.use`. It is admitted before the unchanged `realtime`
+  session admission and before `connector.connect`. The request-count scope
+  counts each, and USD caps refuse as for every surface.
+  - In an avatar session the per-send policy guard also re-checks `avatar.use`, so
+    a revocation stops the next send.
+- **Meter.** Server-measured from avatar confirmation to relay close, in whole
+  seconds, rounded up. It is priced at $0.60 per minute billed per second through
+  the catalog's `liveBillingModelId` (`photo-avatar-realtime-standard`) in
+  `app/api/src/ai4ia_api/data/pricing.json`.
+  - The usage row uses provider `azure_speech_photo_avatar`, target
+    `photo_avatar_live` and unit `second`, and carries the 8-character record
+    prefix in `resourceRef`.
+  - An avatar that is never confirmed records no avatar row.
+- **Evidence.**
+  - The completion log and custom event carry counts only: the record prefix,
+    confirmation, billable seconds, cost, video frame counts and sizes, and the end
+    reason.
+  - A chat-bound session (`?session=`) also gets one `fromCommand` message,
+    "Avatar voice session ended.", whose execution receipt carries runtime, tools,
+    unknown voice usage and `avatar` evidence.
+- **Web.**
+  - **Picker.** The Speech voice settings offer an avatar picker only while
+    `/api/photo-avatars/config` is enabled and available and the owner has
+    `usable` avatars.
+  - **Player.** `app/web/src/lib/avatarVideo.ts` derives the codec from the
+    stream's `avcC` box, falling back to `avc1.64001E, mp4a.40.2`. It appends
+    strictly in order through one bounded queue, evicts played media and chases
+    the live edge.
+  - **Audio.** Avatar mode plays no PCM. The video is primed in the start gesture
+    and is also the speaker.
+  - **Fallback.** Without MediaSource or the codec, the session stays voice only.
+  - **Stage.** `app/web/src/components/LiveAvatarStage.tsx` keeps the
+    `AI-generated` label visible, counts down the idle and session limits, and
+    offers **End session**.
+  - **Barge-in.** Barge-in relies on server VAD `interrupt_response` and jumps the
+    player to the live edge. There is no manual truncate, because avatar mode has
+    no PCM timeline.
+- **Tests.** Paired and mutation-proven, in `app/api/tests/test_realtime_logic.py`,
+  `app/api/tests/test_realtime_api.py` (with layer 1's real service) and
+  `app/api/tests/test_realtime_staged_api.py`, plus vitest tests on synthetic
+  fragmented MP4.
+- **Not yet proven live:** a server-VAD barge-in with spoken input, echo
+  cancellation through the video element's speaker, and the path through AI4IA's
+  own APIM. The enablement canary covers the last one.
 
 ### Phase 3 (optional): rendered talking-head videos
 
@@ -588,11 +693,14 @@ Each of these needs its own review:
    Access approval. Recommended: yes. Live calls always sit behind the capability
    check, and tests use fakes.
 2. **RAI.** Re-approve under trigger 3 and choose the avatar prompt posture.
-3. **Media-plane exception.** Allow WebRTC media directly between the browser and
-   Microsoft's media relay for Phase 2.
+3. **Real-time media.** Resolved without an exception: `output_protocol: websocket`
+   keeps the avatar's video and speech on the existing relay → APIM WebSocket path.
+   WebRTC would need its own media-plane exception, TURN credentials and review,
+   and is not planned.
 4. **Artifact fetch.** Allow the bounded fetch of provider-issued Blob SAS links
    for previews and rendered videos. This is recommended over
-   `destinationContainerUrl`.
+   `destinationContainerUrl`. It stays the only direct egress: live avatar media
+   arrives on the governed WebSocket and needs no fetch.
 5. **Home account.** The eastus2 regional account, which the catalog already uses
    for Speech Voice Live and which supports every avatar feature. Add an EU home
    in swedencentral only if residency requires it. Each avatar stays bound to its
@@ -630,8 +738,12 @@ constraints instead of classifier blocking:
 - AI-generated disclosure metadata;
 - a report path.
 
-The trigger-3 re-approval itself is still outstanding. Decisions 3, 9 and 11 belong
-to later phases. No offboarding path exists in the repository yet; the runbook
+For Phase 2, decision 3 is resolved by the WebSocket output, decision 8 adds the
+per-session minute cap and idle timeout, and decision 9 is enforced by the Speech
+normalizer, which accepts only the catalog's Azure standard voices.
+
+The trigger-3 re-approval itself is still outstanding. Decision 11 belongs to a
+later phase. No offboarding path exists in the repository yet; the runbook
 records the operator cleanup until one does.
 
 ## Risks
@@ -641,8 +753,18 @@ records the operator cleanup until one does.
   should watch for a documented version.
 - **Access enforcement.** Enforcement of the access gate can change at any time.
   Fail-closed capability checks and graceful degradation handle that.
-- **WebRTC.** The media path is untested, and corporate networks may block TURN.
-  Phase 0 tests it end to end, and the client falls back to audio only.
+- **Idle cost and bandwidth.** Avatar video streams at about 566 kbps, and bills,
+  for the whole connected session, idle included. The idle timeout, the
+  per-session cap, admission and the explicit end control bound it. No
+  cross-replica cap limits concurrent avatar sessions per user.
+- **Browser support.** MediaSource or the stream's codecs may be missing, for
+  example on older mobile browsers. Those sessions fall back to voice only before
+  connecting.
+- **Provider id in echoes.** Voice Live echoes the avatar's `character`; the relay
+  scrubs every non-video frame. A future event that carried the id inside video
+  data would need a new rule.
+- **Echo cancellation.** Server echo cancellation now has to cope with speech
+  played by a buffered video element. This is untested live; headphones avoid it.
 - **Cross-user access.** `avatar_verification_failed` checks only that an avatar
   exists on the resource, not who owns it. AI4IA's owner-scoped records are the
   only boundary between users.

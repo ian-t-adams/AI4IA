@@ -37,6 +37,17 @@ def test_a_complete_deployed_configuration_validates():
     make_settings(**PROD_READY).validate_runtime()
 
 
+def test_live_session_limits_default_bounded_and_accept_their_edges():
+    settings = make_settings()
+    assert settings.photo_avatar_live_max_minutes_per_session == 10
+    assert settings.photo_avatar_live_idle_timeout_seconds == 120
+    for minutes, idle in ((1, 30), (60, 900)):
+        make_settings(**{
+            **PROD_READY, "photo_avatar_live_max_minutes_per_session": minutes,
+            "photo_avatar_live_idle_timeout_seconds": idle,
+        }).validate_runtime()
+
+
 @pytest.mark.parametrize("override, message", [
     ({"photo_avatar_blob_account_url": None}, "PHOTO_AVATAR_BLOB_ACCOUNT_URL"),
     ({"photo_avatar_blob_account_url": "http://media.blob.core.windows.net"}, "PHOTO_AVATAR_BLOB_ACCOUNT_URL"),
@@ -45,6 +56,10 @@ def test_a_complete_deployed_configuration_validates():
     ({"usage_metering_enabled": False, "entitlements_enabled": False}, "usage metering"),
     ({"photo_avatar_max_per_user": 0}, "MAX_PER_USER"),
     ({"photo_avatar_max_creations_per_day": 51}, "MAX_CREATIONS_PER_DAY"),
+    ({"photo_avatar_live_max_minutes_per_session": 0}, "LIVE_MAX_MINUTES_PER_SESSION"),
+    ({"photo_avatar_live_max_minutes_per_session": 61}, "LIVE_MAX_MINUTES_PER_SESSION"),
+    ({"photo_avatar_live_idle_timeout_seconds": 29}, "LIVE_IDLE_TIMEOUT_SECONDS"),
+    ({"photo_avatar_live_idle_timeout_seconds": 901}, "LIVE_IDLE_TIMEOUT_SECONDS"),
     ({"data_residency": "eu"}, "processes avatars in eastus2"),
 ])
 def test_each_missing_prerequisite_refuses_startup_only_while_enabled(override, message):

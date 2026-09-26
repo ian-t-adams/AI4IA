@@ -208,6 +208,14 @@ class PhotoAvatarPrerequisiteTests(unittest.TestCase):
             parameters["photoAvatarMaxCreationsPerDay"]["value"],
             "${AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY=5}",
         )
+        self.assertEqual(
+            parameters["photoAvatarLiveMaxMinutesPerSession"]["value"],
+            "${AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION=10}",
+        )
+        self.assertEqual(
+            parameters["photoAvatarLiveIdleTimeoutSeconds"]["value"],
+            "${AI4IA_PHOTO_AVATAR_LIVE_IDLE_TIMEOUT_SECONDS=120}",
+        )
 
     def test_enabled_feature_requires_entra_and_warns_about_live_prerequisites(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, _environment(**PROD_ENV):
@@ -234,6 +242,21 @@ class PhotoAvatarPrerequisiteTests(unittest.TestCase):
                         self.assertIn(f"{name} must be an integer from 1 to 50", err)
                 code, _, err = _run(_write_parameters(tmp, {name: 50}))
                 self.assertEqual(code, 0, err)
+
+    def test_live_session_limits_are_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            for name, low, high in (
+                ("photoAvatarLiveMaxMinutesPerSession", 1, 60),
+                ("photoAvatarLiveIdleTimeoutSeconds", 30, 900),
+            ):
+                for bad in (low - 1, high + 1, "ten"):
+                    with self.subTest(name=name, value=bad):
+                        code, _, err = _run(_write_parameters(tmp, {name: bad}))
+                        self.assertEqual(code, 1)
+                        self.assertIn(f"{name} must be an integer from {low} to {high}", err)
+                for good in (low, high):
+                    code, _, err = _run(_write_parameters(tmp, {name: good}))
+                    self.assertEqual(code, 0, err)
 
 
 class StagedRealtimeTests(unittest.TestCase):
