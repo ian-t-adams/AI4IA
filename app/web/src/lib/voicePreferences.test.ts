@@ -57,8 +57,19 @@ describe("normalizeVoicePreferences", () => {
         language: "en-US",
       },
       speech: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      speechAvatarId: "0123456789abcdef0123456789abcdef",
     };
     expect(normalizeVoicePreferences(valid)).toEqual(valid);
+  });
+
+  it("keeps only a well-formed photo avatar record id", () => {
+    for (const bad of ["ai4ia-0123456789abcdef0123", "0123", "../x", 42, {}, ""]) {
+      expect(normalizeVoicePreferences({ speechAvatarId: bad }).speechAvatarId).toBeNull();
+    }
+    expect(
+      normalizeVoicePreferences({ speechAvatarId: "fedcba9876543210fedcba9876543210" })
+        .speechAvatarId,
+    ).toBe("fedcba9876543210fedcba9876543210");
   });
 
   it("migrates legacy v1 data into the v4 shape and drops instructions", () => {
@@ -93,6 +104,7 @@ describe("normalizeVoicePreferences", () => {
         language: "en",
       },
       speech: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      speechAvatarId: null,
     });
   });
 

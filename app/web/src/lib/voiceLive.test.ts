@@ -8,6 +8,7 @@ import {
   DEFAULT_PLAYBACK_PROFILE,
   microphoneConstraints,
   PLAYBACK_BUFFER_MS,
+  avatarErrorMessage,
   buildInitialVoiceFrames,
   buildVoiceLiveWebSocketUrl,
   isVadType,
@@ -284,6 +285,39 @@ describe("buildVoiceLiveWebSocketUrl", () => {
         tools: true,
       }),
     ).toBe("wss://api.example.test/api/voice/live?provider=speech_voice_live&model=gpt-realtime&agent=analyst&tools=1");
+  });
+
+  it("names a photo avatar only for Speech and only as a well-formed record id", () => {
+    const base = "wss://api.example.test/api/voice/live";
+    const id = "0123456789abcdef0123456789abcdef";
+    expect(buildVoiceLiveWebSocketUrl(base, { providerId: "speech_voice_live", avatar: id })).toBe(
+      `${base}?provider=speech_voice_live&avatar=${id}`,
+    );
+    for (const input of [
+      { providerId: "azure_openai" as const, avatar: id },
+      { providerId: "speech_voice_live" as const, avatar: "ai4ia-0123456789abcdef0123" },
+      { providerId: "speech_voice_live" as const, avatar: "../other" },
+      { providerId: "speech_voice_live" as const, avatar: null },
+    ]) {
+      expect(buildVoiceLiveWebSocketUrl(base, input)).not.toContain("avatar=");
+    }
+  });
+});
+
+describe("avatarErrorMessage", () => {
+  it("explains bounded relay avatar errors and ignores every other error", () => {
+    expect(
+      avatarErrorMessage({
+        type: "avatar_error", code: "avatar_unavailable", reason: "needs_reverification",
+        retry_after_seconds: 300,
+      }),
+    ).toBe("The avatar service couldn't verify this avatar. Try again in 5 minutes.");
+    expect(avatarErrorMessage({ type: "avatar_error", code: "avatar_unavailable", reason: "not_found" }))
+      .toMatch(/no longer exists/);
+    expect(avatarErrorMessage({ type: "avatar_error", code: "cost_unknown_under_cap" }))
+      .toMatch(/spending cap/);
+    expect(avatarErrorMessage({ type: "invalid_request_error", code: "avatar_unavailable" })).toBeNull();
+    expect(avatarErrorMessage(null)).toBeNull();
   });
 });
 

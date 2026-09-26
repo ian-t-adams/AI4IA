@@ -12,7 +12,10 @@ import {
 import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   DEFAULT_VOICE_SETTINGS,
+  type LiveAvatarSelection,
 } from "./voiceLive";
+import { AVATAR_FALLBACK_MIME } from "./avatarVideo";
+import { initSegment, mediaFragment, toBase64 } from "../../test-fixtures/avatarFmp4";
 
 const auth = vi.hoisted(() => ({
   getToken: vi.fn<() => Promise<string | null>>(),
@@ -1577,5 +1580,203 @@ describe("useVoiceLive lifecycle", () => {
     // fire) can never touch React state on an unmounted hook.
     expect(track.listenerCount("ended")).toBe(0);
     expect(track.listenerCount("mute")).toBe(0);
+  });
+});
+
+
+// --------------------------------------------------------------------------
+// Live photo avatar mode (Speech Voice Live, video over the governed socket).
+// --------------------------------------------------------------------------
+
+class FakeAvatarSourceBuffer {
+  updating = false;
+  appended: Uint8Array[] = [];
+  buffered = { length: 0, start: () => 0, end: () => 0 };
+  addEventListener = vi.fn();
+  removeEventListener = vi.fn();
+  appendBuffer(data: Uint8Array) {
+    this.updating = true;
+    this.appended.push(data);
+  }
+  remove = vi.fn();
+}
+
+class FakeAvatarMediaSource {
+  static instances: FakeAvatarMediaSource[] = [];
+  static supported = (type: string) => type.startsWith("video/mp4");
+  static isTypeSupported(type: string) {
+    return FakeAvatarMediaSource.supported(type);
+  }
+  readyState = "closed";
+  types: string[] = [];
+  buffers: FakeAvatarSourceBuffer[] = [];
+  private listeners: (() => void)[] = [];
+  endOfStream = vi.fn();
+  constructor() {
+    FakeAvatarMediaSource.instances.push(this);
+  }
+  addSourceBuffer(type: string) {
+    this.types.push(type);
+    const buffer = new FakeAvatarSourceBuffer();
+    this.buffers.push(buffer);
+    return buffer;
+  }
+  addEventListener(_type: string, listener: () => void) {
+    this.listeners.push(listener);
+  }
+  open() {
+    this.readyState = "open";
+    for (const listener of this.listeners) listener();
+  }
+}
+
+const AVATAR: LiveAvatarSelection = { id: "0123456789abcdef0123456789abcdef", label: "AI-generated" };
+
+describe("useVoiceLive live photo avatar", () => {
+  beforeEach(() => {
+    FakeAvatarMediaSource.instances = [];
+    FakeAvatarMediaSource.supported = (type: string) => type.startsWith("video/mp4");
+    Object.defineProperty(window, "MediaSource", { configurable: true, value: FakeAvatarMediaSource });
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    auth.getToken.mockResolvedValue("token");
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
+      },
+    });
+  });
+
+  afterEach(() => {
+    // Unmount (and destroy the player) while the media-element stubs are still in place.
+    cleanup();
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(window, "MediaSource");
+  });
+
+  async function startSpeech(avatar: LiveAvatarSelection | null, onError = vi.fn()) {
+    const hook = renderHook(() =>
+      useVoiceLive(
+        CONFIG, "speech_voice_live", null, null, "ignored", onError, null, [],
+        DEFAULT_VOICE_SETTINGS, DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, false, null, avatar,
+      ),
+    );
+    act(() => {
+      hook.result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    const emit = (event: object) =>
+      socket.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
+    act(() => {
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onopen?.();
+    });
+    return { ...hook, socket, emit, onError, context: FakeAudioContext.instances[0] };
+  }
+
+  it("asks the relay for the avatar, plays its video and never plays PCM", async () => {
+    const { result, socket, emit, context } = await startSpeech(AVATAR);
+    expect(new URL(socket.url).searchParams.get("avatar")).toBe(AVATAR.id);
+    const avatar = result.current.avatar;
+    expect(avatar?.element).toBeInstanceOf(HTMLVideoElement);
+    expect(avatar?.element).toHaveAttribute("aria-label", "AI-generated avatar video");
+    expect(avatar?.element?.muted).toBe(false); // the avatar's speech plays from the video
+    expect(avatar?.label).toBe("AI-generated");
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalled(); // primed in the click
+    const source = FakeAvatarMediaSource.instances[0];
+    act(() => {
+      source.open();
+      emit({ type: "response.created", response: { id: "r1" } });
+      emit({ type: "response.audio.delta", response_id: "r1", delta: "AQACAA==" });
+      emit({ type: "response.video.delta", delta: toBase64(initSegment()) });
+    });
+    expect(context.createBuffer).not.toHaveBeenCalled();
+    expect(source.types).toEqual([AVATAR_FALLBACK_MIME]);
+    expect(source.buffers[0].appended).toEqual([initSegment()]);
+
+    act(() => emit({ type: "session.avatar.switch_to_speaking" }));
+    expect(result.current.speaking).toBe(true);
+    expect(result.current.avatar?.speaking).toBe(true);
+    act(() => emit({ type: "response.done", response: { id: "r1" } }));
+    expect(result.current.speaking).toBe(true); // the video is still speaking
+    act(() => emit({ type: "session.avatar.switch_to_idle" }));
+    expect(result.current.speaking).toBe(false);
+  });
+
+  it("keeps the PCM path for a voice-only session (control)", async () => {
+    const { result, socket, emit, context } = await startSpeech(null);
+    expect(new URL(socket.url).searchParams.has("avatar")).toBe(false);
+    expect(result.current.avatar).toBeNull();
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      emit({ type: "response.audio.delta", response_id: "r1", delta: "AQACAA==" });
+    });
+    expect(context.createBuffer).toHaveBeenCalledTimes(1);
+    expect(FakeAvatarMediaSource.instances).toHaveLength(0);
+  });
+
+  it.each([
+    ["no MediaSource", () => Reflect.deleteProperty(window, "MediaSource")],
+    ["an unsupported codec", () => {
+      FakeAvatarMediaSource.supported = () => false;
+    }],
+  ])("falls back to voice only with %s", async (_label, arrange) => {
+    arrange();
+    const { result, socket, emit, context } = await startSpeech(AVATAR);
+    expect(new URL(socket.url).searchParams.has("avatar")).toBe(false);
+    expect(result.current.avatar?.unsupported).toBe(true);
+    expect(result.current.avatar?.element).toBeNull();
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      emit({ type: "response.audio.delta", response_id: "r1", delta: "AQACAA==" });
+    });
+    expect(context.createBuffer).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces the idle warning, clears it on conversation, and explains an idle end", async () => {
+    const { result, socket, emit, onError } = await startSpeech(AVATAR);
+    const before = Date.now();
+    act(() => emit({ type: "ai4ia.avatar.session", max_session_seconds: 600, idle_timeout_seconds: 120 }));
+    expect(result.current.avatar?.sessionEndsAt).toBeGreaterThanOrEqual(before + 600_000);
+    act(() => emit({ type: "ai4ia.avatar.idle_warning", seconds_remaining: 30 }));
+    expect(result.current.avatar?.idleEndsAt).toBeGreaterThanOrEqual(before + 30_000);
+    act(() => emit({ type: "response.video.delta", delta: toBase64(initSegment()) }));
+    expect(result.current.avatar?.idleEndsAt).not.toBeNull(); // idle video is not conversation
+    act(() => emit({ type: "input_audio_buffer.speech_started" }));
+    expect(result.current.avatar?.idleEndsAt).toBeNull();
+    act(() => {
+      emit({ type: "ai4ia.avatar.session_ended", reason: "idle_timeout" });
+      socket.onclose?.({ code: 1000, reason: "" });
+    });
+    expect(onError).toHaveBeenCalledWith(
+      "The avatar session ended because nobody spoke for a while. Start Voice Live again to continue.",
+    );
+    expect(result.current.status).toBe("idle");
+  });
+
+  it("explains a bounded avatar refusal instead of the raw protocol error", async () => {
+    const { emit, onError } = await startSpeech(AVATAR);
+    act(() => emit({ type: "error", error: {
+      type: "avatar_error", code: "avatar_unavailable", reason: "needs_reverification",
+      message: "The avatar service couldn't verify this avatar. Try again later.",
+      retry_after_seconds: 300,
+    } }));
+    expect(onError).toHaveBeenCalledWith(
+      "The avatar service couldn't verify this avatar. Try again in 5 minutes.",
+    );
+  });
+
+  it("ends the session when the avatar stream cannot play", async () => {
+    const { result, emit, onError } = await startSpeech(AVATAR);
+    const source = FakeAvatarMediaSource.instances[0];
+    act(() => {
+      source.open();
+      emit({ type: "response.video.delta", delta: toBase64(mediaFragment(1)) });
+    });
+    expect(result.current.avatar?.failure).toBe("stream_invalid");
+    expect(onError).toHaveBeenCalledWith(expect.stringMatching(/avatar video couldn't play/));
+    expect(result.current.status).toBe("idle");
   });
 });
