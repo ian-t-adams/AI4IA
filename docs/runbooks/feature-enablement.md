@@ -22,7 +22,7 @@ feature posture.
 
 | Feature | API flag / setting | Web flag | IaC parameter | Deployed prerequisites |
 |---|---|---|---|---|
-| Cross-tenant Claude | `AI4IA_CLAUDE_ENABLED` + `AI4IA_CLAUDE_EXTERNAL_ENABLED` | safe server catalog only | `claudeEnabled`, `claudeExternalEnabled`, `claudeBindingJson` | Defaults off/unconfigured. Separate target account/models, explicit legal/network decision, source UAMI + multitenant app/FIC, target SP + exact-account AIServices inference role, distinct target reader and fresh both-tenant readbacks. Not Private Link or live approval. |
+| Cross-tenant Claude | `AI4IA_CLAUDE_ENABLED` + `AI4IA_CLAUDE_EXTERNAL_ENABLED` | safe server catalog only | `claudeEnabled`, `claudeExternalEnabled`, `claudeBindingJsonBase64` | Defaults off/unconfigured. Separate target account/models, explicit legal/network decision, source UAMI + multitenant app/FIC, target SP + exact-account AIServices inference role, distinct target reader and fresh both-tenant readbacks. Not Private Link or live approval. |
 | Atomic request-count admission | `AI4IA_HARD_QUOTA_ENABLED` | none | `hardQuotaEnabled`, `hardQuotaRolloutId` (`AI4IA_HARD_QUOTA_ROLLOUT_ID`) | Default `false`; outside the local test fake needs Entra, Cosmos and the approved rollout record selected by `AI4IA_HARD_QUOTA_ROLLOUT_ID` (startup validates evidence shape and layout). Request-count only; owners need an operator bootstrap; drain before activation. See the note below |
 | Versioned one-attempt gateway staging | `AI4IA_GATEWAY_ATTEMPTS_V1_STAGED` | none | `gatewayAttemptsV1Staged` | Default `false`; stages only the isolated API/operations/policy/scoped proxy key on the existing APIM. Governed HTTPS native proxy ingress and S7P-KEY auth required; no shipping runtime verifier or cap activation. See [construction prerequisites](../hard-quota-admission.md#versioned-route-staging-and-construction-contract) |
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | `voiceLiveEnabled` | Browser Origin allowlist outside local |
@@ -47,7 +47,7 @@ feature posture.
 | Private tool catalog (API Center) | admin/IaC only (no app-runtime env) | none | `enablePrivateToolCatalog` | Requires `enableOfficialMcp`; IaC registers each official MCP server with an APIM-fronted deployment. Preview. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
 | Web IQ search tools | `AI4IA_WEB_SEARCH_ENABLED` | none | `webSearchEnabled` | Web IQ API key or Entra managed identity outside local |
 | Session/run tool auto-approval | `AI4IA_TOOL_AUTO_APPROVE_ENABLED` | availability read from API | `toolAutoApproveEnabled` | Default `false`; explicit user consent plus Entra auth and Cosmos outside local. No new Azure resources. |
-| Group policy | `AI4IA_GROUP_POLICY_ENABLED`, `AI4IA_GROUP_POLICY_JSON` | current capabilities from API | `groupPolicyEnabled`, `groupPolicyJson` | Default off/unconfigured; bounded operator mapping, validated Entra claims, explicit restrictive defaults. No Graph permissions or membership queries. |
+| Group policy | `AI4IA_GROUP_POLICY_ENABLED`, `AI4IA_GROUP_POLICY_JSON` | current capabilities from API | `groupPolicyEnabled`, `groupPolicyJsonBase64` | Default off/unconfigured; bounded operator mapping, validated Entra claims, explicit restrictive defaults. No Graph permissions or membership queries. |
 | Reviewed agent/workflow publishing | `AI4IA_ASSET_PUBLISHING_ENABLED` | availability from API | `assetPublishingEnabled` | Default off; group policy, Entra, one tenant, durable Cosmos outside local, explicit owner submission and independent review. |
 | Resumable exact-call workflow approvals | `AI4IA_WORKFLOW_APPROVALS_ENABLED` | owner inbox and resumable run controls; availability from API | `workflowApprovalsEnabled` | Default `false`; existing DTS host, metering, finite runtime and approved v1 conversation readiness. Entra + Cosmos outside local. No standing grant or existing-session enrollment. |
 | Safe-only workflow scheduling | `AI4IA_WORKFLOW_SCHEDULING_ENABLED` | existing workflow builder; availability from API | `workflowSchedulingEnabled` | Default `false`; requires resumable approvals. Finite once/daily/weekly schedules, current owner/policy checks and explicit no-hard-dollar-cap mode. No new resource or Graph authority. See [workflow automation](../workflow-automation.md). |
@@ -327,7 +327,14 @@ by the normal application runtime or by this source change:
 ### Exact binding and continuously fresh readback
 
 `AI4IA_CLAUDE_BINDING_JSON` contains exactly these noncredential strings. Keep
-real values in operator configuration, never source or a public report.
+real values in operator configuration, never source or a public report. Set the
+repository variable (or `azd env set` value) to the raw JSON object. Do not
+escape or encode it, and never set `AI4IA_CLAUDE_BINDING_JSON_B64`: `deploy.yml`
+and the azd preprovision hook derive that transport, because azd cannot
+substitute raw JSON into `main.parameters.json`
+([JSON-valued variables](../configuration-reference.md#json-valued-variables)).
+The workflow's `fromJSON(...)` target-reader login and `check-claude-binding.py`
+keep reading the raw value.
 
 | Binding fields | Required observation |
 | --- | --- |
@@ -513,6 +520,16 @@ assign groups, publish existing assets, or migrate user data.
 `tools` (exact canonical governance names), `documents` (read, upload, process,
 compute, export, share, annotate, memory, analyzers, index), `publication`
 (submit, review, consume), and `admin` (explicit operation names).
+
+Set the repository variable (or `azd env set` value) to that raw JSON, unescaped
+and unencoded, at most 64 KiB. The deploy workflow and the azd preprovision hook
+derive `AI4IA_GROUP_POLICY_JSON_B64`, the only form azd substitutes into
+`main.parameters.json`, and Bicep decodes it, so the API receives the exact raw
+value. Never set the transport yourself: `validate-feature-prereqs.py` refuses a
+transport that does not decode to the raw variable byte for byte. Before this
+transport existed, any policy containing a quote failed `azd provision` before it
+changed anything
+([deployment §7.18](deployment.md#718-provision-infrastructure-fails-immediately-error-unmarshalling-bicep-template-parameters)).
 
 Each configured domain requires `default`; it has `allow`, `deny`, and optional
 `restrict` lists. Its optional `mappings` list uses an exact `claim` of `roles`
@@ -1227,7 +1244,9 @@ setting App Configuration-writable is a reviewed change to the
   is supplied. Enablement requires Entra workload authentication (or another
   verified app-identity boundary); then supply only the minimal server-owned
   Cosmos projection through `AI4IA_PROXY_PROFILE_PROJECTION_JSON`. It is mounted
-  as a secret file. Do not configure `UserConfigUrl` to an unauthenticated HTTP or
+  as a secret file. Store the secret as raw JSON; the deploy workflow derives its
+  `AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64` transport and masks it in the log
+  before writing it. Do not configure `UserConfigUrl` to an unauthenticated HTTP or
   Blob URL, and do not grant the proxy Cosmos access.
 
 #### Onboarding another application

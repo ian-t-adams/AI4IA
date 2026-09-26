@@ -61,6 +61,8 @@ on:
       - "scripts/_capacity_evidence.py"
       - "scripts/_model_retirement.py"
       - "scripts/validate-feature-prereqs.py"
+      - "scripts/derive-json-transport.py"
+      - "scripts/_json_transport.py"
       - "scripts/provision-foundry-toolbox.py"
       - "scripts/gen-model-catalog.py"
       - "scripts/gen-mcp-catalog.py"
@@ -253,6 +255,11 @@ jobs:
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AI4IA_CLAUDE_ENABLED: ${{ vars.AI4IA_CLAUDE_ENABLED }}
       AI4IA_CLAUDE_EXTERNAL_ENABLED: ${{ vars.AI4IA_CLAUDE_EXTERNAL_ENABLED }}
+      # Raw JSON, like AI4IA_GROUP_POLICY_JSON and the secret
+      # AI4IA_PROXY_PROFILE_PROJECTION_JSON below. azd cannot substitute JSON into
+      # main.parameters.json, so it reads the <NAME>_B64 transports that
+      # "Derive azd transports for JSON-valued variables" writes before provisioning.
+      # The fromJSON() inputs and check-claude-binding.py keep reading this raw value.
       AI4IA_CLAUDE_BINDING_JSON: ${{ vars.AI4IA_CLAUDE_BINDING_JSON }}
       # Anthropic Marketplace attestation. These values auto-accept the offer
       # through modelProviderData and must describe the real legal entity.
@@ -293,6 +300,7 @@ jobs:
       # Allows explicit per-session/run consent; does not auto-approve by itself.
       AI4IA_TOOL_AUTO_APPROVE_ENABLED: ${{ vars.AI4IA_TOOL_AUTO_APPROVE_ENABLED }}
       AI4IA_GROUP_POLICY_ENABLED: ${{ vars.AI4IA_GROUP_POLICY_ENABLED }}
+      # Raw JSON; reaches Bicep only as AI4IA_GROUP_POLICY_JSON_B64 (see above).
       AI4IA_GROUP_POLICY_JSON: ${{ vars.AI4IA_GROUP_POLICY_JSON }}
       AI4IA_ASSET_PUBLISHING_ENABLED: ${{ vars.AI4IA_ASSET_PUBLISHING_ENABLED }}
       AI4IA_HARD_QUOTA_ENABLED: ${{ vars.AI4IA_HARD_QUOTA_ENABLED }}
@@ -313,6 +321,8 @@ jobs:
       # Multi-application gateway controls are default-off. The profile projection
       # is a secret and validation refuses profile enablement until the edge has a
       # verified workload identity rather than the temporary shared-key contract.
+      # It reaches Bicep only as its masked AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64
+      # transport (see AI4IA_CLAUDE_BINDING_JSON above).
       AI4IA_PROXY_PROFILES_ENABLED: ${{ vars.AI4IA_PROXY_PROFILES_ENABLED }}
       AI4IA_PROXY_PROFILE_PROJECTION_JSON: ${{ secrets.AI4IA_PROXY_PROFILE_PROJECTION_JSON }}
       AI4IA_PROXY_PRIORITIES_ENABLED: ${{ vars.AI4IA_PROXY_PRIORITIES_ENABLED }}
@@ -740,6 +750,17 @@ jobs:
           set -euo pipefail
           python scripts/post-deploy-verify.py capture \
             --state "${RUNNER_TEMP}/ai4ia-deploy-state.json"
+
+      # azd substitutes parameter values into infra/main.parameters.json without
+      # JSON escaping, so a raw JSON value breaks the file before anything is
+      # provisioned (run 36259812510: `error unmarshalling Bicep template
+      # parameters`). The parameters file reads a base64 transport of each
+      # JSON-valued variable instead, and main.bicep decodes it; the repository
+      # variables and the secret stay raw JSON. The script masks the transport of
+      # the secret projection before writing it. No `if:`, so every later azd
+      # invocation resolves the same values. See docs/runbooks/deployment.md 7.18.
+      - name: Derive azd transports for JSON-valued variables
+        run: python scripts/derive-json-transport.py --github-env
 
       - name: Provision infrastructure
         id: provision

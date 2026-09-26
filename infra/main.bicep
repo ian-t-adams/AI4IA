@@ -36,8 +36,8 @@ param claudeEnabled bool = false
 @description('Attach the separately approved source UAMI and stage the external Claude binding. Default OFF; never creates target resources or directory objects.')
 param claudeExternalEnabled bool = false
 
-@description('Operator-owned exact cross-tenant binding JSON, checked by check-claude-binding.py using two isolated authenticated readers. No credentials. Empty by default; configuration is not readback proof.')
-param claudeBindingJson string = ''
+@description('Operator-owned exact cross-tenant binding JSON (AI4IA_CLAUDE_BINDING_JSON), carried as its UTF-8 base64 transport because azd substitutes parameter values unescaped; checked by check-claude-binding.py using two isolated authenticated readers. No credentials. Empty by default; configuration is not readback proof.')
+param claudeBindingJsonBase64 string = ''
 
 @description('Legal entity name sent to Anthropic in modelProviderData. Required when claudeEnabled; supplying it accepts the applicable Marketplace terms. Never use an inferred owner tag or placeholder.')
 param claudeOrganizationName string = ''
@@ -262,9 +262,9 @@ param toolAutoApproveEnabled bool = false
 @description('Apply bounded operator role/group policy after existing Entra validation. Default OFF; grants never widen individual/server ceilings.')
 param groupPolicyEnabled bool = false
 
-@description('Operator-owned policy JSON. No credentials, directory lookups or live assignments; empty is unconfigured.')
-@maxLength(65536)
-param groupPolicyJson string = ''
+@description('Operator-owned policy JSON (AI4IA_GROUP_POLICY_JSON), carried as its UTF-8 base64 transport because azd substitutes parameter values unescaped. At most the encoding of 64 KiB. No credentials, directory lookups or live assignments; empty is unconfigured.')
+@maxLength(87384)
+param groupPolicyJsonBase64 string = ''
 
 @description('Enable independently reviewed user-asset publication using existing owner-partitioned Cosmos containers. Default OFF; requires group policy and Entra.')
 param assetPublishingEnabled bool = false
@@ -327,8 +327,8 @@ param proxyManagedCertName string = ''
 param proxyProfilesEnabled bool = false
 
 @secure()
-@description('Minimal server-owned application profile projection. Mounted as an ACA secret file; never fetched from a public endpoint.')
-param proxyProfileProjectionJson string = ''
+@description('Minimal server-owned application profile projection (the secret AI4IA_PROXY_PROFILE_PROJECTION_JSON), carried as its UTF-8 base64 transport because azd substitutes parameter values unescaped. Mounted as an ACA secret file; never fetched from a public endpoint.')
+param proxyProfileProjectionJsonBase64 string = ''
 
 @description('Enable priority-key mapping and reserved proxy workers. Default OFF.')
 param proxyPrioritiesEnabled bool = false
@@ -451,6 +451,13 @@ var models = loadJsonContent('models.json')
 var skuShort = models.naming.skuShort
 var catalog = models.catalog
 var deployableCatalog = filter(catalog, model => deploymentTarget(model) == 'source' && model.format != 'Anthropic')
+// azd substitutes environment values into main.parameters.json without JSON
+// escaping, so the JSON-valued settings arrive as UTF-8 base64 transports derived
+// from the raw operator variables (scripts/_json_transport.py). Decode them here;
+// every consumer still receives the raw JSON string, and empty stays empty. The
+// secret proxy projection is decoded inline at the gateway module instead.
+var claudeBindingJson = empty(claudeBindingJsonBase64) ? '' : base64ToString(claudeBindingJsonBase64)
+var groupPolicyJson = empty(groupPolicyJsonBase64) ? '' : base64ToString(groupPolicyJsonBase64)
 var claudeBinding = claudeExternalEnabled ? json(claudeBindingJson) : {}
 
 // Naming tokens come from models.json `naming` (the single source of truth also read by
@@ -922,7 +929,7 @@ module gateway 'modules/gateway.bicep' = {
     #disable-next-line BCP318
     eventHubName: proxyEventHubTelemetryEnabled ? eventhubs.outputs.telemetryHubName : ''
     proxyProfilesEnabled: proxyProfilesEnabled
-    proxyProfileProjectionJson: proxyProfileProjectionJson
+    proxyProfileProjectionJson: empty(proxyProfileProjectionJsonBase64) ? '' : base64ToString(proxyProfileProjectionJsonBase64)
     proxyPrioritiesEnabled: proxyPrioritiesEnabled
     proxyPriorityWorkers: proxyPriorityWorkers
     proxyWorkers: proxyWorkers

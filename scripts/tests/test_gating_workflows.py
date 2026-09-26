@@ -25,9 +25,11 @@ and a required-check entry that no longer matches anything blocks every PR.
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from copy import deepcopy
@@ -345,6 +347,8 @@ class DeployWorkflowOperationalScriptTriggers(unittest.TestCase):
                 "scripts/check-resource-providers.py",
                 "scripts/check-model-availability.py",
                 "scripts/validate-feature-prereqs.py",
+                "scripts/derive-json-transport.py",
+                "scripts/_json_transport.py",
                 "scripts/gen-model-catalog.py",
                 "scripts/gen-mcp-catalog.py",
                 "scripts/gen-voice-provider-catalog.py",
@@ -523,6 +527,145 @@ class DeployCliLoginRefreshTests(unittest.TestCase):
                 change(steps)
                 with self.assertRaises(AssertionError):
                     self.assert_refresh_contract(steps)
+
+
+DERIVE_TRANSPORTS = "Derive azd transports for JSON-valued variables"
+DERIVE_COMMAND = "python scripts/derive-json-transport.py --github-env"
+TRANSPORT_RAW_VALUES = {
+    "AI4IA_GROUP_POLICY_JSON": '{"version": 1, "domains": {}}',
+    "AI4IA_CLAUDE_BINDING_JSON": '{"networkMode": "public-keyless"}',
+    "AI4IA_PROXY_PROFILE_PROJECTION_JSON": '[{"appId": "synthetic-app"}]',
+}
+
+
+class DeployJsonTransportTests(unittest.TestCase):
+    """JSON-valued variables reach azd only as transports derived before provisioning.
+
+    azd substitutes values into main.parameters.json unescaped, so deploy run
+    36259812510 failed before provisioning anything once AI4IA_GROUP_POLICY_JSON
+    held valid JSON. The derivation must precede `azd provision`, mask the
+    secret-derived projection, and need no token or permission.
+    """
+
+    def setUp(self) -> None:
+        document = yaml.safe_load(DEPLOY_WORKFLOW.read_text(encoding="utf-8"))
+        self.job = document["jobs"]["deploy"]
+        self.steps = self.job["steps"]
+
+    @staticmethod
+    def assert_derivation_contract(steps: list[dict]) -> None:
+        names = [step.get("name") for step in steps]
+        positions = [index for index, name in enumerate(names) if name == DERIVE_TRANSPORTS]
+        _require(len(positions) == 1, f"expected one {DERIVE_TRANSPORTS!r} step, found {len(positions)}")
+        (position,) = positions
+        # Only the command: no action, token, env override, condition or suppression.
+        step = steps[position]
+        _require(step == {"name": DERIVE_TRANSPORTS, "run": DERIVE_COMMAND}, f"derivation step is {step!r}")
+        provisions = [
+            index for index, candidate in enumerate(steps)
+            if re.search(r"\bazd\s+provision\b", str(candidate.get("run", "")))
+        ]
+        _require(
+            len(provisions) == 1 and position < provisions[0],
+            f"derivation at {position} must precede the one azd provision at {provisions}",
+        )
+        python = next(
+            (index for index, candidate in enumerate(steps)
+             if str(candidate.get("uses", "")).startswith("actions/setup-python@")),
+            None,
+        )
+        _require(python is not None and python < position, "derivation runs before Python is set up")
+
+    def test_transports_are_derived_before_azd_provision(self) -> None:
+        self.assert_derivation_contract(self.steps)
+
+    def test_the_contract_rejects_each_way_the_derivation_can_regress(self) -> None:
+        def at(steps: list[dict], name: str) -> int:
+            return next(index for index, step in enumerate(steps) if step.get("name") == name)
+
+        def remove(steps: list[dict]) -> None:
+            steps.pop(at(steps, DERIVE_TRANSPORTS))
+
+        def duplicate(steps: list[dict]) -> None:
+            index = at(steps, DERIVE_TRANSPORTS)
+            steps.insert(index + 1, deepcopy(steps[index]))
+
+        def move(target: str | None):
+            def change(steps: list[dict]) -> None:
+                step = steps.pop(at(steps, DERIVE_TRANSPORTS))
+                steps.insert(0 if target is None else at(steps, target) + 1, step)
+            return change
+
+        def edit(**fields: object):
+            def change(steps: list[dict]) -> None:
+                steps[at(steps, DERIVE_TRANSPORTS)].update(deepcopy(fields))
+            return change
+
+        mutations = {
+            "removed": remove,
+            "duplicated": duplicate,
+            "moved after provisioning": move("Provision infrastructure"),
+            "moved before Python": move(None),
+            "conditional": edit(**{"if": "${{ inputs.provision }}"}),
+            "suppressed failure": edit(**{"continue-on-error": True}),
+            "extra environment": edit(env={"AI4IA_PROXY_PROFILE_PROJECTION_JSON": "${{ secrets.OTHER }}"}),
+            "hook mode instead of GITHUB_ENV": edit(run="python scripts/derive-json-transport.py --azd-env"),
+            "an action": edit(uses="actions/github-script@v7"),
+        }
+        # Control: the identical copy, before any mutation, satisfies the contract.
+        self.assert_derivation_contract(deepcopy(self.steps))
+        for name, change in mutations.items():
+            with self.subTest(mutation=name):
+                steps = deepcopy(self.steps)
+                change(steps)
+                with self.assertRaises(AssertionError):
+                    self.assert_derivation_contract(steps)
+
+    def test_the_step_masks_the_secret_before_anything_else_it_prints(self) -> None:
+        step = next(step for step in self.steps if step.get("name") == DERIVE_TRANSPORTS)
+        program, script, mode = step["run"].split()
+        self.assertEqual(program, "python")
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "github-env"
+            target.write_text("", encoding="utf-8")
+            env = {
+                key: value for key, value in os.environ.items()
+                if not key.startswith(("AI4IA_", "GITHUB_"))
+            }
+            env.update(TRANSPORT_RAW_VALUES, GITHUB_ENV=str(target))
+            result = subprocess.run(
+                [sys.executable, script, mode], cwd=ROOT, env=env,
+                capture_output=True, text=True, timeout=60,
+            )
+            written = dict(line.split("=", 1) for line in target.read_text(encoding="utf-8").splitlines())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(written), {f"{name}_B64" for name in TRANSPORT_RAW_VALUES})
+        for name, raw in TRANSPORT_RAW_VALUES.items():
+            self.assertEqual(base64.b64decode(written[f"{name}_B64"], validate=True).decode("utf-8"), raw)
+        secret = written["AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64"]
+        self.assertEqual(result.stdout.splitlines()[0], f"::add-mask::{secret}")
+        self.assertEqual(result.stdout.count(secret), 1)
+        self.assertNotIn(secret, result.stderr)
+
+    def test_the_step_needs_no_token_or_permission(self) -> None:
+        step = next(step for step in self.steps if step.get("name") == DERIVE_TRANSPORTS)
+        boundary = WorkflowPermissionBoundaryTests("test_all_workflow_jobs_have_only_the_permissions_their_steps_need")
+        self.assertEqual(boundary.required_permissions({"steps": [step]}), {})
+        self.assertEqual(
+            self.job["permissions"], {"id-token": "write", "contents": "read", "attestations": "write"}
+        )
+
+    def test_raw_variables_stay_the_exported_operator_contract(self) -> None:
+        env = self.job["env"]
+        self.assertEqual(env["AI4IA_GROUP_POLICY_JSON"], "${{ vars.AI4IA_GROUP_POLICY_JSON }}")
+        self.assertEqual(env["AI4IA_CLAUDE_BINDING_JSON"], "${{ vars.AI4IA_CLAUDE_BINDING_JSON }}")
+        self.assertEqual(
+            env["AI4IA_PROXY_PROFILE_PROJECTION_JSON"], "${{ secrets.AI4IA_PROXY_PROFILE_PROJECTION_JSON }}"
+        )
+        self.assertEqual([name for name in env if name.endswith("_B64")], [], "transports are derived, never configured")
+        reader = next(step for step in self.steps if step.get("name") == "Log in isolated Claude target reader (OIDC)")
+        for value in reader["with"].values():
+            self.assertIn("fromJSON(env.AI4IA_CLAUDE_BINDING_JSON || '{}')", value)
 
 
 class WorkflowCheckoutCredentialTests(unittest.TestCase):

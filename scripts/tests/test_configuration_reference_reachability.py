@@ -33,6 +33,8 @@ import pathlib
 import re
 import unittest
 
+from scripts._json_transport import TRANSPORTS
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / ".github" / "workflows" / "deploy.yml"
 PARAMS = ROOT / "infra" / "main.parameters.json"
@@ -53,9 +55,15 @@ def _forwarded() -> set[str]:
 
 
 def _consumed() -> set[str]:
-    """AI4IA_* variables main.parameters.json reads via a ${...} token."""
+    """AI4IA_* variables main.parameters.json reads via a ${...} token.
+
+    azd substitutes values unescaped, so a JSON-valued variable is read through
+    its base64 transport token, which deploy.yml derives from the raw variable.
+    Both the transport and the raw variable it carries count as consumed.
+    """
     text = PARAMS.read_text(encoding="utf-8")
-    return set(re.findall(r"\$\{(AI4IA_[A-Z0-9_]+)", text))
+    tokens = set(re.findall(r"\$\{(AI4IA_[A-Z0-9_]+)", text))
+    return tokens | {t.variable for t in TRANSPORTS if t.transport_variable in tokens}
 
 
 def _doc_claims() -> list[tuple[int, str, str]]:
