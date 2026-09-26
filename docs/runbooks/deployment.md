@@ -741,6 +741,7 @@ These are **workflow-only repository variables**, not azd/Bicep inputs:
 | `AI4IA_CANARY_ENABLED` | Exactly `true` opts in; absent or `false` is disabled. |
 | `AI4IA_CANARY_CONFIG` | Strict, non-secret JSON shown below. Unknown/missing fields and non-Boolean postures are rejected. |
 | `AI4IA_CANARY_HARD_USD_CAP` | Must be absent. Any asserted hard-dollar cap refuses activation because the provider/proxy retry envelope is not proven. |
+| `AI4IA_CANARY_RESOLUTION` | Optional owner-attested record for resolving a blocked chain, read only by the admission job. Inert without a `resolve` dispatch carrying its SHA-256. See [Blocked state and recovery](#blocked-state-and-recovery). |
 | `AZURE_CLIENT_ID` | Read only to reject reuse of the existing deployment principal; never used to acquire the canary token. |
 
 The placeholders below are a schema illustration, **not an approval or a
@@ -882,14 +883,15 @@ through the pydantic catalog, which the canary jobs do not install.
 The monitor's unit tests inject a synthetic price book, so they cannot prove
 this runtime. `scripts.tests.test_canary_runtime`, run by the quality job,
 creates a fresh virtual environment. It executes the workflow's own install
-command there, then drives bootstrap, predecessor location, admission,
-observation and notification through the real CLI. The real catalog and price
-book are used; only GitHub, OIDC/Entra and the application are faked. The same
-test also bounds which API modules the job may load.
+command there, then drives the real CLI through five runs: a bootstrap, a lost
+observation, a durable block, an attested resolution, and a scored observation.
+The real catalog and price book are used; only GitHub, OIDC/Entra and the
+application are faked. The same test also bounds which API modules the job may
+load.
 
 #### Blocked state and recovery
 
-A blocked state is terminal for the current state chain, by design. A lost,
+A blocked state is terminal for its chain until the owner resolves it. A lost,
 stale, gapped, malformed or unresolved predecessor records `blocked: true` with
 `cleanup_safe: false`, and every later state inherits it:
 
@@ -899,22 +901,64 @@ stale, gapped, malformed or unresolved predecessor records `blocked: true` with
 - A re-run is refused (`state_invalid`); only first attempts are admissible.
 - A gap or stale predecessor never becomes a zero-failure baseline.
 
-A chain starts only at the workflow's run number 1, which has no predecessor.
-There is no operator-only unblock. Re-activation needs, in order:
+The only way out is `resolve`, an owner-attested bootstrap of a new lease. No
+configuration change, schedule or elapsed time unblocks a chain. Resolution
+needs, in order:
 
 1. **Owner investigation.** From the blocked run's log and handoff artifact, and
-   API telemetry for correlation `application-canary-<run-id>-1`, establish
-   whether any application write could be unresolved. Resolve an unresolved
-   session or chat through the exact-owner v1 cleanup path first.
-2. **A reviewed, owner-approved source change that starts a new chain.** Either
-   a new workflow identity (a new path and `contracts.WORKFLOW`) whose run 1
-   starts a new chain, or an explicit owner-attested resolution transition that
-   records the investigation. Neither exists today, and neither is automatic.
-3. **A new lease.** A new `approval_id` and `expires_at`, then one `bootstrap`
-   dispatch, then observation. A used approval is never reused.
+   API telemetry for correlation `application-canary-<run-id>-1`, establish that
+   no application write can be unresolved. Resolve an unresolved session or chat
+   through the exact-owner v1 cleanup path first; a write that still needs
+   cleanup cannot be attested.
+2. **A new lease.** Set `AI4IA_CANARY_CONFIG` with a new `approval_id` and
+   `expires_at`, and `AI4IA_CANARY_ENABLED=true`. The blocked chain still
+   refuses to observe.
+3. **The record.** Write the exact `AI4IA_CANARY_RESOLUTION` value. Save it to a
+   file too, and run `python -m scripts.canaries.resolution <file>` offline,
+   which validates the record and prints its SHA-256.
+4. **The approval.** Before the next scheduled run, dispatch the workflow with
+   `operation=resolve` and `resolution_sha256=<that SHA-256>`.
 
-Keep `AI4IA_CANARY_ENABLED=false` until then. Disabling the workflow stops the
-red scheduled runs; the chain then goes stale, which is still blocked.
+The record's shape is shown below. It is a schema illustration, not a copyable
+record:
+
+```text
+{
+  "version": 1,
+  "blocked_run_id": <run id of the latest completed, blocked run>,
+  "lost_run_ids": [<investigated run ids, ascending>],
+  "evidence": "no_application_write",
+  "approval_id": "<the new lease's approval_id>",
+  "superseded_approval_digests": ["<SHA-256 of each retired lease's approval_id, sorted>"]
+}
+```
+
+Admission accepts the record only if it holds all of these:
+
+- **Approval.** Its canonical SHA-256 equals the dispatched `resolution_sha256`.
+- **Exact predecessor.** `blocked_run_id` is the exact, fresh predecessor, and
+  that predecessor is blocked.
+- **Verified lost runs.** Each lost run is re-read from GitHub as a completed,
+  first-attempt main run of this workflow that precedes the block. Its artifacts
+  and logs are not used.
+- **New lease.** `approval_id` is the configured one. It is never listed as
+  superseded, and every lease the blocked state still names is.
+  `superseded_approval_digests` values are each `sha256(json.dumps(approval_id))`,
+  as retained in earlier states' `approval_digest`.
+
+Every refusal leaves a blocked chain blocked and a healthy chain unaffected. A
+stale record fails once a newer blocked run exists, so write it against the
+latest run.
+
+The `resolved` state is unscored and claims no health. Alerts stay active, and
+it records the record's SHA-256, the blocked run, the lost runs and the evidence.
+Its cadence counts from the latest investigated run, so the six-hour interval
+after a lost attempt is never shortened. It admits the new lease directly, so a
+separate bootstrap is not needed.
+
+A record resolves one block only. Its predecessor is unblocked afterwards, and a
+later block has a different `blocked_run_id`. Leave the variable unchanged or
+delete it after the resolution; it is inert without a matching dispatch digest.
 
 #### 2026-09-26 missing-runtime incident
 
@@ -931,8 +975,12 @@ red scheduled runs; the chain then goes stale, which is still blocked.
 - The unit tests had passed because every monitor test injected a price book.
   An import check would also have passed, because the failure was at run time.
 
-The fix is the declared runtime above. It does not unblock the chain; recovery
-follows the steps in [Blocked state and recovery](#blocked-state-and-recovery).
+The declared runtime above fixed the cause but did not unblock the chain. Its
+recovery is the procedure in
+[Blocked state and recovery](#blocked-state-and-recovery), with `lost_run_ids`
+`[36267220637]` and #49's retained lease digest
+`b99461865b4b2670f2ac5a2c53619133edca0f53a779bd1d39f07f31e6f251b5` as the
+superseded approval.
 
 ### Automatic and manual rollback
 

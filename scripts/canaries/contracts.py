@@ -39,6 +39,8 @@ CODES = frozenset({
     "logical_deleted", "cleanup_verified", "cleanup_failed",
     "ga_not_selected", "ga_unavailable", "protocol_mismatch", "protocol_error",
     "event_order", "event_limit", "closed", "cancelled", "collection_failed",
+    "resolved", "not_blocked", "resolution_unapproved", "resolution_stale",
+    "resolution_invalid",
 })
 Outcome = Literal["pass", "fail", "unknown", "not_run", "partial"]
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")

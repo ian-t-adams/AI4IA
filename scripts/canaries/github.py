@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Awaitable, Callable, Sequence
 
 from .contracts import CanaryError, Run, WORKFLOW, integer, obj, timestamp
+from .resolution import Attested
 from .state import State, validate_predecessor
 from .transport import Transport
 
@@ -64,11 +65,7 @@ def _run_metadata(data: Any, expected: Run, workflow_id: int, *, completed: bool
     return raw
 
 
-async def locate(
-    run: Run, token: str, *, transport: Transport,
-) -> Predecessor | None:
-    if not token:
-        raise CanaryError("state_missing")
+def _reader(run: Run, token: str, transport: Transport) -> Callable[[str], Awaitable[dict[str, Any]]]:
     root = f"https://api.github.com/repos/{run.repository}"
 
     async def read(path: str) -> dict[str, Any]:
@@ -80,10 +77,47 @@ async def locate(
             raise CanaryError("state_missing")
         return response.object()
 
+    return read
+
+
+async def _workflow_id(read: Callable[[str], Awaitable[dict[str, Any]]]) -> int:
     workflow = await read(f"/actions/workflows/{WORKFLOW.rsplit('/', 1)[-1]}")
     if workflow.get("path") != WORKFLOW:
         raise CanaryError("state_invalid")
-    workflow_id = integer(workflow.get("id"), 1, 2**63 - 1)
+    return integer(workflow.get("id"), 1, 2**63 - 1)
+
+
+async def attested_runs(
+    run: Run, identifiers: Sequence[int], token: str, *, transport: Transport,
+) -> list[Attested]:
+    """Exact, completed, first-attempt main runs of this workflow, earlier than ``run``."""
+    if not token:
+        raise CanaryError("resolution_invalid")
+    read = _reader(run, token, transport)
+    workflow_id = await _workflow_id(read)
+    rows = []
+    for identifier in identifiers:
+        raw = await read(f"/actions/runs/{integer(identifier, 1, run.run_id - 1)}")
+        sha = raw.get("head_sha")
+        if not isinstance(sha, str):
+            raise CanaryError("invalid_response")
+        lost = Run(
+            run.repository, run.repository_id, integer(raw.get("id"), identifier, identifier),
+            integer(raw.get("run_number"), 1, run.number - 1), integer(raw.get("run_attempt"), 1, 1), sha,
+        )
+        lost.validate()
+        _run_metadata(raw, lost, workflow_id, completed=True)
+        rows.append(Attested(lost, raw["updated_at"]))
+    return rows
+
+
+async def locate(
+    run: Run, token: str, *, transport: Transport,
+) -> Predecessor | None:
+    if not token:
+        raise CanaryError("state_missing")
+    read = _reader(run, token, transport)
+    workflow_id = await _workflow_id(read)
     _run_metadata(
         await read(f"/actions/runs/{run.run_id}"), run, workflow_id, completed=False,
     )

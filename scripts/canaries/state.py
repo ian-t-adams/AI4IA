@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Sequence
 
 from .configuration import Configuration
 from .contracts import (
     CanaryError, INTERVAL_SECONDS, MAX_RUNS, Report, Run, SHA256, THRESHOLD,
     VERSION, integer, obj, timestamp,
 )
+from .resolution import EVIDENCE, MAX_LOST_RUNS, Attested, Resolution
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,8 @@ class State:
     chat: Counter = Counter()
     realtime: Counter = Counter()
     version: int = VERSION
+    # Only the owner-attested `resolved` control carries it; nothing inherits it.
+    resolution: dict[str, Any] | None = None
 
     def document(self) -> dict[str, Any]:
         data = asdict(self)
@@ -68,7 +71,12 @@ class State:
 
     @classmethod
     def parse(cls, value: Any) -> State:
-        data = obj(value, set(cls.__dataclass_fields__)).copy()
+        fields = set(cls.__dataclass_fields__)
+        data = obj(value).copy()
+        # States written before resolution existed omit the field; they are never resolved ones.
+        if set(data) not in (fields, fields - {"resolution"}):
+            raise CanaryError("invalid_response")
+        data.setdefault("resolution", None)
         data["report"] = Report.parse(data["report"])
         data["chat"] = Counter.parse(data["chat"])
         data["realtime"] = Counter.parse(data["realtime"])
@@ -84,7 +92,9 @@ class State:
             if data["previous_run_id"] == data["report"].run.run_id:
                 raise CanaryError("state_invalid")
         integer(data["observations"], 0, MAX_RUNS)
-        if type(data["blocked"]) is not bool or data["control"] not in ("disabled", "bootstrap", "observe", "blocked"):
+        if type(data["blocked"]) is not bool or data["control"] not in (
+            "disabled", "bootstrap", "observe", "blocked", "resolved",
+        ):
             raise CanaryError("state_invalid")
         if data["last_attempt_at"] is not None:
             attempted = timestamp(data["last_attempt_at"])
@@ -94,12 +104,34 @@ class State:
             raise CanaryError("state_invalid")
         if not data["report"].cleanup_safe and not data["blocked"]:
             raise CanaryError("state_invalid")
-        if data["control"] in ("disabled", "bootstrap") and (
+        if data["control"] in ("disabled", "bootstrap", "resolved") and (
             data["report"].chat_attempts or data["report"].realtime_attempts
             or data["report"].coverage != "unscored"
         ):
             raise CanaryError("state_invalid")
+        if data["control"] == "resolved":
+            if (
+                data["blocked"] or data["observations"] or data["previous_run_id"] is None
+                or data["scope_digest"] is None or data["approval_digest"] is None
+            ):
+                raise CanaryError("state_invalid")
+            _resolution(data["resolution"], data["previous_run_id"])
+        elif data["resolution"] is not None:
+            raise CanaryError("state_invalid")
         return cls(**data)
+
+
+def _resolution(value: Any, blocked_run_id: int) -> None:
+    data = obj(value, {"sha256", "blocked_run_id", "lost_run_ids", "evidence"})
+    lost = data["lost_run_ids"]
+    if (
+        not isinstance(data["sha256"], str) or not SHA256.fullmatch(data["sha256"])
+        or type(data["blocked_run_id"]) is not int or data["blocked_run_id"] != blocked_run_id
+        or not isinstance(lost, list) or not 1 <= len(lost) <= MAX_LOST_RUNS
+        or any(type(item) is not int or not 1 <= item < blocked_run_id for item in lost)
+        or lost != sorted(set(lost)) or data["evidence"] not in EVIDENCE
+    ):
+        raise CanaryError("state_invalid")
 
 
 def validate_predecessor(previous: State, current: Run, now: datetime) -> None:
@@ -142,6 +174,64 @@ def admit(
         raise CanaryError("cadence")
 
 
+@dataclass(frozen=True)
+class Resolved:
+    document: dict[str, Any]
+    last_attempt_at: str
+
+
+def resolve(
+    config: Configuration, record: Resolution, attested: Sequence[Attested] | None,
+    run: Run, previous: State | None, now: datetime, approval: str,
+) -> Resolved:
+    """The only transition out of a blocked chain: an attested bootstrap of a new lease.
+
+    The resolution's own refusals never poison a chain: a blocked chain stays
+    blocked and an unblocked one is unaffected by a mistaken dispatch. Only a
+    predecessor that already fails validation keeps its existing poisoning code.
+    """
+    if previous is None:
+        raise CanaryError("not_blocked")
+    validate_predecessor(previous, run, now)
+    if not previous.blocked:
+        raise CanaryError("not_blocked")
+    if approval != record.sha256:
+        raise CanaryError("resolution_unapproved")
+    if record.blocked_run_id != previous.report.run.run_id:
+        raise CanaryError("resolution_stale")
+    if (
+        record.approval_id != config.approval_id
+        or (previous.approval_digest is not None
+            and previous.approval_digest not in record.superseded_approval_digests)
+    ):
+        # A resolution admits a new lease; it never renews or resets a used one.
+        # The record's own new approval can never be superseded (`Resolution.load`).
+        raise CanaryError("resolution_invalid")
+    rows = list(attested or ())
+    if (
+        attested is None or sorted(row.run.run_id for row in rows) != list(record.lost_run_ids)
+        or any(
+            row.run.repository != run.repository or row.run.repository_id != run.repository_id
+            or row.run.number >= previous.report.run.number
+            or timestamp(row.updated_at) > now
+            for row in rows
+        )
+    ):
+        raise CanaryError("resolution_invalid")
+    # Cadence runs from the latest investigated attempt, so a resolution can
+    # never shorten the interval after a lost observation.
+    anchors = [row.updated_at for row in rows]
+    if previous.last_attempt_at is not None:
+        anchors.append(previous.last_attempt_at)
+    return Resolved(
+        {
+            "sha256": record.sha256, "blocked_run_id": record.blocked_run_id,
+            "lost_run_ids": list(record.lost_run_ids), "evidence": record.evidence,
+        },
+        max(anchors, key=timestamp),
+    )
+
+
 def chat_outcome(report: Report) -> str:
     measured = [
         report.stages[name].outcome for name in
@@ -156,15 +246,19 @@ def chat_outcome(report: Report) -> str:
 
 def finish(
     report: Report, config: Configuration | None, previous: State | None, *,
-    control: str, attempted: bool = False,
+    control: str, attempted: bool = False, resolved: Resolved | None = None,
 ) -> State:
-    if control == "bootstrap":
+    if (control == "resolved") != (resolved is not None) or (resolved and (config is None or previous is None)):
+        raise ValueError("Only an admitted resolution produces a resolved state.")
+    if control in ("bootstrap", "resolved"):
         return State(
             report, config.scope_digest if config else None, config.approval_digest if config else None,
             previous.report.run.run_id if previous else None, 0,
-            previous.last_attempt_at if previous else None, False, control,
+            resolved.last_attempt_at if resolved else (previous.last_attempt_at if previous else None),
+            False, control,
             chat=(previous.chat if previous else Counter()).advance("unknown"),
             realtime=(previous.realtime if previous else Counter()).advance("unknown"),
+            resolution=resolved.document if resolved else None,
         )
     return State(
         report=report,
