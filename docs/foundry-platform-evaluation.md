@@ -9,9 +9,9 @@
 > features target Foundry prompt and hosted agents, which AI4IA deliberately
 > does not use as its runtime. The custom photo avatar requirement added on
 > 2026-09-25 follows the same rule. Its Phase 1 backend and Phase 2 live sessions
-> are implemented behind a default-off flag and a fail-closed Limited Access check.
-> The owner approved enabling them on 2026-09-26 (see the
-> [design](photo-avatars.md)).
+> are implemented behind a flag and a fail-closed Limited Access check. They have
+> been enabled in production since 2026-09-26, and their enablement checks passed
+> (see the [design](photo-avatars.md)).
 >
 > **Update (2026-09-25):** Opus 5.5 is now cataloged under a second, explicit
 > adaptive text-only profile ([below](#claude-opus-55)). Claude stays
@@ -34,7 +34,7 @@ owner approval before merge.
 | Claude Opus 5.5 | GA, Hosted on Azure | Capacity cataloged under the adaptive text-only profile; Opus 5 and Sonnet 5 keep the thinking-disabled text/tool profile. None is activated | Tool use needs the signed thinking-block replay stage; activation waits on target-tenant admin actions |
 | Voice agents in Agent Service | Public preview | Voice Live through the FastAPI relay → APIM, two providers | Not adopted; needs a new provider design |
 | Voice-agent observability | Public preview | Applies only to Foundry voice agents | Not applicable |
-| Custom photo avatars from a description (owner requirement, 2026-09-25) | Limited Access; creation REST surface undocumented | Phase 1 and Phase 2 implemented behind a fail-closed capability check. Phase 1 covers create, status, preview, list, delete and report through an exact-operation APIM API; Phase 2 is live avatar sessions on the existing Voice Live WebSocket. The owner approved enablement on 2026-09-26 | [Design](photo-avatars.md); works once the home account reports the Limited Access capability |
+| Custom photo avatars from a description (owner requirement, 2026-09-25) | Limited Access; creation REST surface undocumented | Phase 1 and Phase 2 implemented behind a fail-closed capability check. Phase 1 covers create, status, preview, list, delete and report through an exact-operation APIM API; Phase 2 is live avatar sessions on the existing Voice Live WebSocket. Enabled in production on 2026-09-26, with all enablement checks passed | [Design](photo-avatars.md); works while the home account reports the Limited Access capability |
 | Long-running resilience | Public preview, hosted agents | Resumable workflows on the Durable Task Scheduler worker | Not applicable |
 | Agent Framework updates | Announced | No Agent Framework dependency | Not applicable |
 | Foundry dev pack | Public preview | Optional operator toolchain | No repository requirement changes |

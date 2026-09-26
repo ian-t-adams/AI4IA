@@ -1,10 +1,10 @@
 # Custom photo avatars: design and phased plan
 
-> **Status (2026-09-26): owner-approved for enablement.** Phase 1 (create from a
-> description, then status, preview, list, delete and report) and Phase 2 (real-time
-> conversation on the existing Voice Live WebSocket) are implemented. Phase 2 adds no
-> gate of its own: it inherits photo avatars, Speech Voice Live and the capability.
-> On 2026-09-26 the owner:
+> **Status (2026-09-26): enabled in production.** Phase 1 (create from a description,
+> then status, preview, list, delete and report) and Phase 2 (real-time conversation on
+> the existing Voice Live WebSocket) are live. Phase 2 adds no gate of its own: it
+> inherits photo avatars, Speech Voice Live and the capability. On 2026-09-26 the
+> owner:
 >
 > - approved enabling both phases in production;
 > - re-approved the annotate-only posture for avatar prompts and live sessions under
@@ -13,11 +13,22 @@
 >   (the evidence stays outside the repository);
 > - took ownership of the report queue.
 >
-> Creation and live sessions still work only while the home account itself reports
-> the Limited Access capability. Until it does, the API reports
-> `capability_unavailable`, and nothing is created or billed. The enablement checks
-> are in [the runbook](runbooks/feature-enablement.md#custom-photo-avatars). Phase 3
-> (rendered videos) is not built, and this approval does not cover it.
+> The same day, the home account reported the Limited Access capability, and every
+> enablement check in [the runbook](runbooks/feature-enablement.md#custom-photo-avatars)
+> passed through the governed path:
+>
+> - availability reported;
+> - a create reached `ready` with a stored preview from the catalog's eastus2 preview
+>   host;
+> - delete removed the record, the preview and the provider avatar;
+> - the ledger recorded a known $2 row;
+> - a live avatar session through AI4IA's own relay and APIM was confirmed and billed per
+>   second;
+> - the idle timeout ended a silent session.
+>
+> Creation and live sessions keep working only while the home account reports the
+> capability. Phase 3 (rendered videos) is not built, and this approval does not cover
+> it.
 
 ## Requirement and scope
 
