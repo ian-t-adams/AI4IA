@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 var builder = WebApplication.CreateBuilder(args);
 // AI4IA: the chat/vision presets and pages are not vendored; Event Hubs uses managed identity only.
 HostedGuard.RequireManagedIdentityOnly(builder.Configuration);
+var adminAccess = HostedGuard.RequireAdminAllowlist(builder.Configuration);
 
 var eventHubSection = builder.Configuration.GetSection(EventHubMonitorOptions.SectionName);
 var eventHubEnabled = eventHubSection.GetValue<bool>("eventhub_enabled", true);
@@ -54,6 +55,8 @@ builder.Services.Configure<EventHubMonitorOptions>(
     builder.Configuration.GetSection(EventHubMonitorOptions.SectionName));
 
 var app = builder.Build();
+// AI4IA: first in the pipeline, so nothing else runs for a non-admin request.
+app.Use(HostedGuard.AdminOnly(adminAccess));
 var companionAppOptions = app.Services.GetRequiredService<IOptions<CompanionAppOptions>>().Value;
 app.Services.GetRequiredService<HistorySettings>()
     .ApplyDefaultsIfMissing(companionAppOptions.History);

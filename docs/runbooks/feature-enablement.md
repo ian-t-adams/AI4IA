@@ -54,6 +54,7 @@ feature posture.
 | Proxy application profiles | proxy runtime only | none | `proxyProfilesEnabled` | Secret-mounted minimal projection **and verified identity-aware app header**; validator blocks enablement with shared-key ingress |
 | Proxy priority reservations | `AI4IA_PROXY_PRIORITIES_ENABLED` | none | `proxyPrioritiesEnabled`, `proxyPriorityWorkers` | Valid `priority:count` reservations; per-replica fairness only. The API and proxy read the **same** switch — see the note below the table |
 | Proxy metadata telemetry | proxy runtime only | none | `proxyEventHubTelemetryEnabled` | Creates Event Hubs + proxy sender RBAC only when enabled; no prompt/response/header logging |
+| CompanionApp telemetry console | none (not an API feature) | none | `companionAppEnabled` + image, sign-in app, admin set, optional IP ranges and replicas | Default off; creates nothing. Proxy telemetry, an attested digest from `companion-image.yml`, an Entra app registration and at least one admin group or principal. Admin-only and read-only; see [below](#companionapp-telemetry-console) |
 | Proxy durable async | proxy runtime only | none | `proxyAsyncEnabled` | Dedicated AVM Blob + Service Bus resources and proxy MI RBAC |
 | Raw-file compute (code interpreter) | `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` | none | `codeInterpreterRawFilesEnabled` | Requires document understanding + document compute + a code-interpreter base URL; `api.bicep` emits the env var only when all three hold. Uploads a document's **original bytes** to the sandbox instead of Content Understanding's parsed text, falling back transparently on unsupported/oversize/failed uploads. Had **no Bicep parameter at all** until now, so it was implemented but unreachable from a normal `azd` deploy |
 | Azure Monitor alerting baseline | n/a (infra only) | none | `enableAlerts`, `alertEmail` | Action group + api-5xx / Cosmos-429 metric alerts. An action group with **no** receiver is legal ARM and notifies nobody — see the note below |
@@ -946,6 +947,119 @@ The onboarding sequence for a future independent application is:
 
 Steps 1-4 are explicit prerequisites, not implemented automation. Until they are
 complete, `proxyProfilesEnabled=true` fails validation.
+
+### CompanionApp telemetry console
+
+`AI4IA_COMPANION_APP_ENABLED` hosts a subset of upstream's SimpleL7Proxy
+CompanionApp as an admin-only, read-only view of the proxy's Event Hub feed. It is
+default off and creates nothing while off.
+
+**What it is.** The console has two pages. The Event Hub monitor shows live
+request flow, backends, status codes, latency, requeues and circuit-breaker events.
+Insights aggregates the same feed per endpoint and model. The vendored subset is
+`proxy/CompanionApp` at the proxy pin.
+
+**What it is not.** Upstream's chat, URL tester, stress, abort, investigator,
+vision, history, preferences, App Configuration editor and deployment pages are
+not vendored. `proxy/upstream-provenance.json` records each one as
+`ai4ia-excluded`, bound to its upstream hash and a reason. Those pages would send
+server-side requests to caller-chosen URLs with caller-chosen headers, generate
+load and model cost, write shared history, or publish proxy configuration with
+the server identity. `AI4IA.CompanionApp.Tests` asserts that the compiled routes
+are exactly `/`, `/explore`, `/eventhub`, `/insights`, `/Error` and `/not-found`.
+As defense in depth, the injected `HttpClient` refuses every request before
+connecting. The console makes no model calls and holds no Foundry, Key Vault,
+Storage, Cosmos or App Configuration access.
+
+**Boundary.**
+
+- **Sign-in.** Container Apps authentication requires an Entra session on every
+  request, including the Blazor circuit, and redirects anonymous browsers to sign
+  in. The built-in authorization policy then admits only the listed admin group or
+  principal object ids; everyone else gets 403.
+- **In-app gate.** The ARM schema accepts `allowedPrincipals.groups`, but the
+  platform documentation only describes `identities` enforcement. So the app
+  re-checks every request itself. It reads the `X-MS-CLIENT-PRINCIPAL-ID` and
+  `X-MS-CLIENT-PRINCIPAL` headers that Container Apps authentication injects;
+  client-supplied copies are dropped. A request passes only if its object id or
+  one of its `groups` claims is in the same allowlist. Anything missing, malformed
+  or unlisted gets an empty 403 before any page, asset or Blazor circuit runs.
+  Group admission requires the app registration to emit **security group claims**;
+  a user whose token overflows to group overage is refused, which fails closed.
+  Principal ids need no group claim.
+- **Fail-closed.** An empty admin list would admit every user in the tenant. The
+  preprovision validator refuses that configuration. Bicep independently creates
+  nothing unless every prerequisite holds, and the app refuses to start with an
+  empty or malformed list.
+- **Identity.** The dedicated `id-companion-<env>` holds only AcrPull on the
+  environment registry and Azure Event Hubs Data Receiver on the one telemetry hub.
+  The container pins `AZURE_TOKEN_CREDENTIALS=ManagedIdentityCredential`, and
+  startup fails if an Event Hubs connection string or checkpoint store is
+  configured. There is no write-capable mode; a configuration editor would need
+  App Configuration Data Owner and is out of scope.
+- **Ingress.** The Container Apps environment has public ingress and admins have
+  no private path to it, so ingress stays external with HTTPS only.
+  `AI4IA_COMPANION_APP_ALLOWED_IP_RANGES` optionally adds an IPv4 allow-list; a
+  `/0` range is refused. Without one, Easy Auth plus the admin policy is the
+  boundary. The app scales to at most one replica, with sticky sessions for Blazor
+  circuits.
+- **State.** The feed is held in memory. Nothing is persisted, and no chat history
+  exists because no page writes it. The ASP.NET Data Protection key ring lives in
+  the container and is lost with the revision, which only signs users out. With
+  `AI4IA_COMPANION_APP_MIN_REPLICAS=0` the console scales to zero, and after idle
+  it starts empty from the latest events.
+
+**Cost.** Enabling the console needs `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED=true`,
+which provisions a paid Event Hubs Standard namespace. It also adds one small
+Container App. Both are owner decisions.
+
+**Image path.** The console is **not an azd service**: azd cannot skip a service
+whose app is absent, and the web, api and proxy digest promotion stays unchanged.
+Instead:
+
+1. Run the manual, main-only `companion-image.yml` workflow. It builds
+   `proxy/CompanionApp.Dockerfile` once, pushes
+   `<acr>.azurecr.io/ai4ia/companion-<env>`, gates it on HIGH/CRITICAL findings,
+   attests SLSA provenance and an SPDX SBOM, verifies them, and prints the digest
+   reference in its summary. It uses the `production` environment and the existing
+   deploy identity, and is serialized with deploy.yml.
+2. Set the `AI4IA_COMPANION_APP_IMAGE` repository variable to that
+   `...@sha256:<digest>` reference.
+3. Run deploy.yml. Before provisioning, `scripts/verify-companion-image.py`
+   re-verifies the attestations for exactly that digest with the pinned GitHub CLI:
+   the companion workflow on main, a GitHub-hosted runner, and a single matching
+   subject. Only then may Bicep reference it. A tag, a registry-less reference or
+   another environment's repository is refused.
+
+Every pull request also builds and scans the image in the `api image` job.
+
+**Enable.**
+
+1. Enable proxy telemetry: `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED=true`.
+2. Register an Entra app for sign-in. Its redirect URI is
+   `https://ca-companion-<env>.<environment-default-domain>/.auth/login/aad/callback`.
+   The default domain is the same one the other apps use; read it with
+   `az containerapp env show -g <rg> -n <environment> --query properties.defaultDomain -o tsv`.
+   After provisioning, the exact origin is also emitted as `AZURE_COMPANION_APP_URL`.
+   Enable **ID tokens**, set **Assignment required**, and assign only the admin
+   group. If you allow-list a group, also set **Token configuration > groups
+   claim > Security groups**. No client secret is needed: sign-in uses the
+   ID-token flow, and the token store is off.
+3. Promote the image as above, then set `AI4IA_COMPANION_APP_ENABLED=true`,
+   `AI4IA_COMPANION_APP_IMAGE`, `AI4IA_COMPANION_APP_ENTRA_CLIENT_ID`, and
+   `AI4IA_COMPANION_APP_ADMIN_GROUP_IDS` and/or
+   `AI4IA_COMPANION_APP_ADMIN_PRINCIPAL_IDS`.
+4. Run deploy.yml, then sign in as an admin, and as a non-admin to see the 403.
+
+**Disable.** Set `AI4IA_COMPANION_APP_ENABLED=false` and run deploy.yml. The
+incremental provision stops managing the console but does not delete it. Delete
+`ca-companion-<env>` and `id-companion-<env>` explicitly, following the teardown
+runbook's approval rules. Also remove the identity's two role assignments: a
+deleted identity leaves them behind as orphaned assignments.
+
+**Refresh.** Rerun `companion-image.yml` after a proxy refresh or base-image
+update, then update `AI4IA_COMPANION_APP_IMAGE`. The console rolls only on
+provision.
 
 ### Document library and multimodal understanding
 

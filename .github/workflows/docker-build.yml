@@ -262,6 +262,56 @@ jobs:
             exit 1
           fi
 
+      - name: Smoke test - CompanionApp starts and admits only the allow-listed admin
+        run: |
+          set -euo pipefail
+          admin="11111111-1111-1111-1111-111111111111"
+          # Without an admin allow-list the app must exit, never serve (fail closed).
+          docker run --detach --name companion-refused \
+            --env CompanionApp__EventHubMonitor__eventhub_enabled=false ai4ia-companion:ci >/dev/null
+          status="$(timeout 60 docker wait companion-refused || echo running)"
+          docker rm --force companion-refused >/dev/null
+          if [[ "${status}" == "running" || "${status}" == "0" ]]; then
+            echo "::error::CompanionApp did not refuse to start without an admin allow-list (${status})."
+            exit 1
+          fi
+          docker run --detach --name companion-smoke --publish 127.0.0.1:18080:8080 \
+            --env CompanionApp__EventHubMonitor__eventhub_enabled=false \
+            --env "CompanionApp__Admin__PrincipalIds=${admin}" ai4ia-companion:ci >/dev/null
+          cleanup() {
+            local rc=$?
+            if [[ "${rc}" -ne 0 ]]; then
+              docker logs companion-smoke 2>&1 | tail -n 40 || true
+            fi
+            docker rm --force companion-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          status_of() {
+            local path="$1" principal="$2"
+            local args=(--silent --output /dev/null --write-out '%{http_code}')
+            if [[ -n "${principal}" ]]; then
+              args+=(--header "X-MS-CLIENT-PRINCIPAL-ID: ${principal}")
+            fi
+            curl "${args[@]}" "http://127.0.0.1:18080${path}" || true
+          }
+          for _ in $(seq 1 60); do
+            [[ "$(status_of / "${admin}")" == "200" ]] && break
+            sleep 1
+          done
+          expect() {
+            local expected="$1" path="$2" principal="$3" actual
+            actual="$(status_of "${path}" "${principal}")"
+            if [[ "${actual}" != "${expected}" ]]; then
+              echo "::error::GET ${path} (principal='${principal}') returned ${actual}, expected ${expected}."
+              exit 1
+            fi
+          }
+          expect 200 / "${admin}"
+          expect 200 /eventhub "${admin}"
+          expect 404 /url-tester "${admin}"
+          expect 403 / ""
+          expect 403 /eventhub "33333333-3333-3333-3333-333333333333"
+
       - name: Scan final CompanionApp image for HIGH/CRITICAL vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

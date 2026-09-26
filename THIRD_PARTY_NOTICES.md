@@ -11,11 +11,12 @@ Vendored directories:
 - `proxy/Shared/`
 - `proxy/Shared-parser/`
 - `proxy/SimpleL7Proxy/`
+- `proxy/CompanionApp/`, a hosted subset of the upstream telemetry console. Upstream pages AI4IA does not vendor are recorded as `ai4ia-excluded` in the provenance manifest. The subset also carries Bootstrap 5.3.3's minified stylesheet (`wwwroot/lib/bootstrap/dist/css/bootstrap.min.css`, MIT License, copyright The Bootstrap Authors), whose license header is retained in the file.
 
 Upstream license: MIT License, copyright Microsoft Corporation. A copy of the upstream MIT license is kept at `proxy/LICENSE`. Keep the pinned commit, this notice, `proxy/README.md`, and its documented AI4IA deviations in sync whenever the vendored copy is refreshed.
 
 `proxy/upstream-provenance.json` is the machine-readable inventory of every
-upstream-equivalent, AI4IA-patched, and AI4IA-added file. See `proxy/README.md`
+upstream-equivalent, AI4IA-patched, AI4IA-added, and AI4IA-excluded file. See `proxy/README.md`
 for the audited pin, current drift assessment, patch rationale, and regeneration
 procedure; do not copy counts into this notice because the manifest owns them.
 The AI4IA one-attempt transport, authenticated request binding and replay fences
@@ -25,7 +26,7 @@ are local adaptations over that pin, documented in the same inventory.
 
 - `app/web` uses Next.js, React, TypeScript, ESLint, Vitest, Testing Library, MSAL browser packages, and their transitive npm dependencies. See `app/web/package.json` and `app/web/package-lock.json`.
 - `app/api` uses FastAPI, Pydantic, httpx, Azure SDKs, PyJWT, Durable Task, Web IQ, OpenTelemetry/Azure Monitor packages, pytest, ruff, pyright, and their transitive Python dependencies. See `app/api/pyproject.toml` and `app/api/uv.lock`.
-- `proxy` builds .NET 10 SimpleL7Proxy and NuGet dependencies from the vendored project files.
+- `proxy` builds .NET 10 SimpleL7Proxy and NuGet dependencies from the vendored project files. The optional CompanionApp console (`proxy/CompanionApp.Dockerfile`) builds from the same vendored source and locked NuGet graph.
 
 ## Tooling, containers, and actions
 

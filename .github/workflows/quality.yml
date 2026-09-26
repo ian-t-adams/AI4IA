@@ -115,7 +115,7 @@ jobs:
             --configuration Release --no-restore --nologo
           if ! dotnet test proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj \
             --configuration Release --no-build --no-restore --nologo \
-            -- --minimum-expected-tests 8; then
+            -- --minimum-expected-tests 13; then
             cat proxy/AI4IA.CompanionApp.Tests/bin/Release/net10.0/TestResults/AI4IA.CompanionApp.Tests_net10.0_x64.log
             exit 1
           fi

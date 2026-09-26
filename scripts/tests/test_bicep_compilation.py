@@ -337,6 +337,9 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         env = {item["name"]: item.get("value") for item in container["env"]}
         self.assertEqual(env["AZURE_TOKEN_CREDENTIALS"], "ManagedIdentityCredential")
         self.assertEqual(env["CompanionApp__EventHubMonitor__eventhub_enabled"], "true")
+        # The in-app admin gate receives exactly the platform policy's allow-list.
+        self.assertEqual(env["CompanionApp__Admin__GroupIds"], "[join(parameters('adminGroupIds'), ',')]")
+        self.assertEqual(env["CompanionApp__Admin__PrincipalIds"], "[join(parameters('adminPrincipalIds'), ',')]")
         for forbidden in ("EVENTHUB_CONNECTIONSTRING", "CompanionApp__EventHubMonitor__ConnectionString",
                           "CompanionApp__EventHubMonitor__CheckpointStorage"):
             self.assertNotIn(forbidden, env)

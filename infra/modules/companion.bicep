@@ -151,6 +151,10 @@ resource app 'Microsoft.App/containerApps@2024-10-02-preview' = {
           env: [
             { name: 'AZURE_CLIENT_ID', value: identity.properties.clientId }
             { name: 'AZURE_TOKEN_CREDENTIALS', value: 'ManagedIdentityCredential' }
+            // The app re-checks the platform-authenticated principal against the same
+            // admin set and refuses to start without one.
+            { name: 'CompanionApp__Admin__GroupIds', value: join(adminGroupIds, ',') }
+            { name: 'CompanionApp__Admin__PrincipalIds', value: join(adminPrincipalIds, ',') }
             { name: 'CompanionApp__EventHubMonitor__eventhub_enabled', value: 'true' }
             { name: 'CompanionApp__EventHubMonitor__EventHubNamespace', value: '${eventHubNamespaceName}.servicebus.windows.net' }
             { name: 'CompanionApp__EventHubMonitor__EventHubName', value: eventHubName }

@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Text;
+using System.Text.Json;
 using CompanionApp.Ai4ia;
 using CompanionApp.Components;
 using CompanionApp.Components.Shared;
@@ -14,14 +16,19 @@ namespace AI4IA.CompanionApp.Tests;
 
 /// <summary>
 /// Drives the real vendored CompanionApp host to prove the AI4IA hosted-mode
-/// boundary: only the telemetry pages exist, outbound HTTP is refused before a
-/// connection, nothing fabricated is published, and Event Hubs is MI-only.
+/// boundary: only allow-listed admins get in, only the telemetry pages exist,
+/// outbound HTTP is refused before a connection, nothing fabricated is published,
+/// and Event Hubs is MI-only.
 /// </summary>
 [TestClass]
 [DoNotParallelize] // Startup configuration is supplied through process environment variables.
 public sealed class HostedCompanionAppTests
 {
     private const string MonitorSection = "CompanionApp__EventHubMonitor__";
+    private const string AdminSection = "CompanionApp__Admin__";
+    private const string AdminPrincipal = "11111111-1111-1111-1111-111111111111";
+    private const string AdminGroup = "22222222-2222-2222-2222-222222222222";
+    private const string OtherPrincipal = "33333333-3333-3333-3333-333333333333";
 
     internal static readonly string[] AllowedRoutes = ["/", "/explore", "/eventhub", "/insights", "/Error", "/not-found"];
 
@@ -50,7 +57,7 @@ public sealed class HostedCompanionAppTests
     {
         using var scope = StartupEnvironment.Default();
         await using var factory = new WebApplicationFactory<App>();
-        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        using var client = AdminClient(factory);
         // Control: the same client renders every retained page.
         foreach (string route in new[] { "/", "/explore", "/eventhub", "/insights" })
         {
@@ -62,6 +69,74 @@ public sealed class HostedCompanionAppTests
             using var response = await client.GetAsync(route);
             Assert.AreEqual(HttpStatusCode.NotFound, response.StatusCode, route);
         }
+    }
+
+    [TestMethod]
+    public async Task EveryRequestRequiresAnAllowListedEntraPrincipal()
+    {
+        using var scope = StartupEnvironment.Default().With(AdminSection + "GroupIds", AdminGroup);
+        await using var factory = new WebApplicationFactory<App>();
+        using var anonymous = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        var cases = new (string Name, Dictionary<string, string> Headers, HttpStatusCode Expected)[]
+        {
+            ("no platform principal", new(), HttpStatusCode.Forbidden),
+            ("non-GUID principal", new() { [HostedGuard.PrincipalIdHeader] = "admin" }, HttpStatusCode.Forbidden),
+            ("unlisted principal", new() { [HostedGuard.PrincipalIdHeader] = OtherPrincipal }, HttpStatusCode.Forbidden),
+            ("unlisted principal, other group", Principal(OtherPrincipal, "44444444-4444-4444-4444-444444444444"), HttpStatusCode.Forbidden),
+            ("group claim without a principal id", Principal(null, AdminGroup), HttpStatusCode.Forbidden),
+            ("malformed principal claims", new()
+            {
+                [HostedGuard.PrincipalIdHeader] = OtherPrincipal, [HostedGuard.PrincipalHeader] = "not-base64!",
+            }, HttpStatusCode.Forbidden),
+            ("group under another claim type", Principal(OtherPrincipal, AdminGroup, claimType: "roles"), HttpStatusCode.Forbidden),
+            // Controls: the same host admits a listed principal and a listed group member.
+            ("listed principal", new() { [HostedGuard.PrincipalIdHeader] = AdminPrincipal }, HttpStatusCode.OK),
+            ("listed principal, other case", new() { [HostedGuard.PrincipalIdHeader] = AdminPrincipal.ToUpperInvariant() }, HttpStatusCode.OK),
+            ("member of a listed group", Principal(OtherPrincipal, AdminGroup), HttpStatusCode.OK),
+        };
+        foreach (var (name, headers, expected) in cases)
+        {
+            foreach (string route in new[] { "/", "/eventhub", "/_framework/blazor.web.js", "/url-tester" })
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, route);
+                foreach (var (header, value) in headers)
+                    request.Headers.TryAddWithoutValidation(header, value);
+                using var response = await anonymous.SendAsync(request);
+                // An admitted request reaches routing, where an excluded tool is still a 404.
+                var effective = expected == HttpStatusCode.OK && route == "/url-tester" ? HttpStatusCode.NotFound : expected;
+                Assert.AreEqual(effective, response.StatusCode, $"{name}: {route}");
+                if (expected == HttpStatusCode.Forbidden)
+                    Assert.AreEqual(0, (await response.Content.ReadAsByteArrayAsync()).Length, $"{name}: {route}");
+            }
+        }
+    }
+
+    [DataTestMethod]
+    [DataRow("", "")]
+    [DataRow(" , ", "")]
+    [DataRow("admins", "")]
+    [DataRow("", "not-a-guid")]
+    public async Task AnEmptyOrMalformedAdminAllowListRefusesStartup(string groups, string principals)
+    {
+        using (StartupEnvironment.Default()
+            .With(AdminSection + "GroupIds", groups)
+            .With(AdminSection + "PrincipalIds", principals))
+        {
+            await using var refused = new WebApplicationFactory<App>();
+            var error = Assert.ThrowsException<InvalidOperationException>(() => refused.CreateClient());
+            StringAssert.Contains(error.ToString(), "CompanionApp");
+        }
+        // Control: a group-only allow-list starts the identical host.
+        using var scope = StartupEnvironment.Default()
+            .With(AdminSection + "PrincipalIds", null)
+            .With(AdminSection + "GroupIds", AdminGroup);
+        await using var factory = new WebApplicationFactory<App>();
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        foreach (var (header, value) in Principal(OtherPrincipal, AdminGroup))
+            request.Headers.TryAddWithoutValidation(header, value);
+        using var response = await client.SendAsync(request);
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
     }
 
     [TestMethod]
@@ -90,7 +165,7 @@ public sealed class HostedCompanionAppTests
     {
         using var scope = StartupEnvironment.Default();
         await using var factory = new WebApplicationFactory<App>();
-        using var client = factory.CreateClient();
+        using var client = AdminClient(factory);
         var catalog = factory.Services.GetRequiredService<ProxyMetricsCatalog>();
         Assert.AreEqual(default, catalog.LastPublishedUtc);
         // Every metric is still the catalog's unknown marker, so no seeded values exist.
@@ -120,7 +195,7 @@ public sealed class HostedCompanionAppTests
         // Control: the identical host starts without the secret.
         using var scope = StartupEnvironment.Default();
         await using var factory = new WebApplicationFactory<App>();
-        using var client = factory.CreateClient();
+        using var client = AdminClient(factory);
         using var response = await client.GetAsync("/");
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
     }
@@ -139,6 +214,26 @@ public sealed class HostedCompanionAppTests
         Assert.ThrowsException<InvalidOperationException>(() => HostedGuard.RequireManagedIdentityOnly(configured));
     }
 
+    private static HttpClient AdminClient(WebApplicationFactory<App> factory)
+    {
+        var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        client.DefaultRequestHeaders.Add(HostedGuard.PrincipalIdHeader, AdminPrincipal);
+        return client;
+    }
+
+    // The Container Apps authentication principal: base64 JSON with typed claims.
+    private static Dictionary<string, string> Principal(string? principalId, string group, string claimType = "groups")
+    {
+        var claims = new { auth_typ = "aad", claims = new[] { new { typ = claimType, val = group } } };
+        var headers = new Dictionary<string, string>
+        {
+            [HostedGuard.PrincipalHeader] = Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(claims))),
+        };
+        if (principalId is not null)
+            headers[HostedGuard.PrincipalIdHeader] = principalId;
+        return headers;
+    }
+
     /// <summary>Scoped process environment for host startup, restored on dispose.</summary>
     private sealed class StartupEnvironment : IDisposable
     {
@@ -151,6 +246,8 @@ public sealed class HostedCompanionAppTests
             .With(MonitorSection + "ConnectionString", null)
             .With(MonitorSection + "CheckpointStorage", null)
             .With(HostedGuard.ConnectionStringVariable, null)
+            .With(AdminSection + "PrincipalIds", AdminPrincipal)
+            .With(AdminSection + "GroupIds", null)
             .With("CompanionApp__History__DiskPath", Path.Combine(Path.GetTempPath(), "ai4ia-companion-tests", "history"))
             // Keep generated Data Protection keys out of the source tree.
             .With("CompanionApp__DataProtectionKeysPath", Path.Combine(Path.GetTempPath(), "ai4ia-companion-tests", "keys"));

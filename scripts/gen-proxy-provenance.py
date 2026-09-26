@@ -108,8 +108,9 @@ AI4IA_PATCH_REASONS = {
         "page and chat/vision presets."
     ),
     "CompanionApp/Program.cs": (
-        "Hosted mode: refuse outbound HTTP, require managed identity for Event Hubs, "
-        "drop the App Configuration editor, chat stores and preset files, never "
+        "Hosted mode: a first-in-pipeline admin gate over the platform principal with a "
+        "fail-closed allow-list, refuse outbound HTTP, require managed identity for Event "
+        "Hubs, drop the App Configuration editor, chat stores and preset files, never "
         "publish fabricated sample metrics, and allow a configured key-ring path."
     ),
     "CompanionApp/Components/Pages/Home.razor": (
@@ -120,7 +121,8 @@ AI4IA_PATCH_REASONS = {
         "Link only the retained Event Hub monitor and Insights pages."
     ),
     "CompanionApp/Ai4ia/HostedGuard.cs": (
-        "AI4IA hosted-mode guards: a refusing HttpClient and managed-identity-only Event Hubs."
+        "AI4IA hosted-mode guards: the admin allow-list gate, a refusing HttpClient and "
+        "managed-identity-only Event Hubs."
     ),
     "CompanionApp/packages.lock.json": "AI4IA-generated NuGet lock for deterministic restore.",
 }

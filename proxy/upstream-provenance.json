@@ -20,7 +20,7 @@
   "patches": [
     {
       "path": "CompanionApp/Ai4ia/HostedGuard.cs",
-      "reason": "AI4IA hosted-mode guards: a refusing HttpClient and managed-identity-only Event Hubs."
+      "reason": "AI4IA hosted-mode guards: the admin allow-list gate, a refusing HttpClient and managed-identity-only Event Hubs."
     },
     {
       "path": "CompanionApp/CompanionApp.csproj",
@@ -36,7 +36,7 @@
     },
     {
       "path": "CompanionApp/Program.cs",
-      "reason": "Hosted mode: refuse outbound HTTP, require managed identity for Event Hubs, drop the App Configuration editor, chat stores and preset files, never publish fabricated sample metrics, and allow a configured key-ring path."
+      "reason": "Hosted mode: a first-in-pipeline admin gate over the platform principal with a fail-closed allow-list, refuse outbound HTTP, require managed identity for Event Hubs, drop the App Configuration editor, chat stores and preset files, never publish fabricated sample metrics, and allow a configured key-ring path."
     },
     {
       "path": "CompanionApp/packages.lock.json",
@@ -287,7 +287,7 @@
   ],
   "files": {
     "CompanionApp/Ai4ia/HostedGuard.cs": {
-      "localCanonicalSha256": "112dc1a78955cf857fe001d0fdce796200c0e0f39c8302d8e7cecdee64d11e5f",
+      "localCanonicalSha256": "9f9c97027b9a581696262f7e7f9afad11ae3cc2e1e2066afe2ef64c2eb18b3ff",
       "disposition": "ai4ia-added"
     },
     "CompanionApp/Assets/Deployment/Bicep/bootstrap.bicep": {
@@ -1239,7 +1239,7 @@
       "upstreamCanonicalSha256": "af61d626b74ffd00cb40acea41e206ae4fe6ce8ff16045ce83de3f6e2edbebd2"
     },
     "CompanionApp/Program.cs": {
-      "localCanonicalSha256": "7fd62e470302b0f0257f5a72de96d94c06c378911b5f5d78306356cf6e93de36",
+      "localCanonicalSha256": "40b4067145f657cdc911d87e847febb129e4a6ba741f8fb9e0e770b7f3ff03e9",
       "upstreamRawSha256": "e837b1aa48e4950186bc730eab8af5b4313ba9be542d260266d6d42aa3e3dce3",
       "upstreamCanonicalSha256": "e837b1aa48e4950186bc730eab8af5b4313ba9be542d260266d6d42aa3e3dce3",
       "disposition": "ai4ia-patched"
