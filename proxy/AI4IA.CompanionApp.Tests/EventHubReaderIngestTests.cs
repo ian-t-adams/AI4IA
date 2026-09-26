@@ -32,11 +32,16 @@ public sealed class EventHubReaderIngestTests
             : new Dictionary<string, string[]> { ["0"] = workloads.SelectMany(events => events).ToArray() };
 
         var harness = new ReaderHarness();
+        var probe = new OverlapProbe();
+        harness.Store.Changed += probe.Enter;
         var consumer = new FakeConsumer(partitions);
         await harness.ConsumeAsync(consumer);
 
         // Non-vacuity: the concurrent row really overlapped its partition loops.
         Assert.AreEqual(concurrent ? Partitions : 1, consumer.MaxActivePartitions);
+        // Deterministic: no two pipeline executions ever ran at once, even while the probe held
+        // the first one open with every other partition loop already delivering events.
+        Assert.AreEqual(1, probe.MaxConcurrent, "pipeline executions overlapped");
         Assert.AreEqual(0, harness.Logger.Problems.Count, string.Join(Environment.NewLine, harness.Logger.Problems.Take(3)));
         var requests = harness.Store.GetSnapshot().Requests;
         Assert.AreEqual(Partitions * RequestsPerPartition, requests.Count, "one row per request, finalized in place");
@@ -110,6 +115,30 @@ public sealed class EventHubReaderIngestTests
         {
             var value = typeof(EventHubReader).GetField(field, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(_reader)!;
             return (int)value.GetType().GetProperty("Count")!.GetValue(value)!;
+        }
+    }
+
+    /// <summary>
+    /// Runs inside the pipeline: the store raises <c>Changed</c> synchronously from the reader.
+    /// The first execution waits for a concurrent one, so an unserialized pipeline is caught
+    /// every run instead of only when a dictionary happens to corrupt.
+    /// </summary>
+    private sealed class OverlapProbe
+    {
+        private int _inside;
+        private int _max;
+        private int _held;
+
+        internal int MaxConcurrent => Volatile.Read(ref _max);
+
+        internal void Enter()
+        {
+            int inside = Interlocked.Increment(ref _inside);
+            for (int seen = Volatile.Read(ref _max); inside > seen; seen = Volatile.Read(ref _max))
+                Interlocked.CompareExchange(ref _max, inside, seen);
+            if (Interlocked.Exchange(ref _held, 1) == 0)
+                SpinWait.SpinUntil(() => Volatile.Read(ref _max) > 1, TimeSpan.FromSeconds(2));
+            Interlocked.Decrement(ref _inside);
         }
     }
 
