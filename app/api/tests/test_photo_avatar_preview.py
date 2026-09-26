@@ -20,7 +20,8 @@ from ai4ia_api.photo_avatars.provider import PreviewLink
 CATALOG = load_photo_avatar_catalog().preview
 HOST = CATALOG.host
 PUBLIC_IP = "20.60.1.10"
-TOKEN = "SYNTHETICSAS0123456789abcdef"
+# Built at runtime so the source holds no secret-shaped literal (.gitleaks.toml entry 7).
+TOKEN = "-".join(("synthetic", "sas", "signature", "fixture"))
 URL = f"https://{HOST}/container/a/b/c/d/e?sv=2025&sp=r&sig={TOKEN}"
 
 

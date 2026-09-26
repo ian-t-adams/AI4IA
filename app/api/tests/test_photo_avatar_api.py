@@ -37,7 +37,8 @@ from tests.conftest import make_settings
 
 CATALOG = load_photo_avatar_catalog()
 HOST = CATALOG.preview.host
-TOKEN = "SYNTHETICSASSIGNATURE0123456789abc"
+# Built at runtime so the source holds no secret-shaped literal (.gitleaks.toml entry 7).
+TOKEN = "-".join(("synthetic", "sas", "signature", "fixture"))
 T0 = datetime(2026, 9, 26, 12, tzinfo=timezone.utc)
 NOT_FOUND = {"error": {"code": "NotFound", "message": "Synthetic avatar not found."}}
 BODY = {
