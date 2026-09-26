@@ -1481,8 +1481,10 @@ a new owner-approved exception.
 - **Video.** `response.video.delta` is forwarded verbatim under the 256 KiB frame
   bound. It is never logged, receipted, parsed beyond its type, or copied into
   telemetry.
-- **Provider id.** It is scrubbed from the `session.updated` echo and every other
-  frame before it is forwarded or inspected. Evidence and usage carry only the
+- **Provider id.** It is scrubbed from the `session.updated` echo, every other
+  frame, and upstream close reasons and error messages before they are forwarded,
+  inspected or logged. The completion log and event scrub it again as a backstop.
+  Evidence and usage carry only the
   8-character record prefix (`resourceRef`); the receipt redactor would mask a
   full id anyway.
 - **Admission and caps.**

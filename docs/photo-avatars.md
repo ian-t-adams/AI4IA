@@ -604,8 +604,10 @@ avatar byte stays on the existing governed path: browser → FastAPI
   a 1009 close.
   - Video is never parsed beyond its event type, logged, receipted or copied into
     telemetry.
-  - The provider id is scrubbed from the `session.updated` echo and every other
-    frame before it is forwarded or read for log metadata.
+  - The provider id is scrubbed from the `session.updated` echo, every other
+    frame, and upstream close reasons and error messages before they are
+    forwarded, read for log metadata or logged. The completion log and event scrub
+    it again as a backstop.
 - **Confirmation and errors.**
   - The avatar is confirmed by `session.updated` listing the `avatar` modality, or
     by the first video frame. A `session.updated` that drops a requested avatar
@@ -765,12 +767,14 @@ records the operator cleanup until one does.
   for the whole connected session, idle included. The idle timeout, the
   per-session cap, admission and the explicit end control bound it. No
   cross-replica cap limits concurrent avatar sessions per user.
-- **Browser support.** MediaSource or the stream's codecs may be missing, for
-  example on older mobile browsers. Those sessions fall back to voice only before
-  connecting.
-- **Provider id in echoes.** Voice Live echoes the avatar's `character`; the relay
-  scrubs every non-video frame. A future event that carried the id inside video
-  data would need a new rule.
+- **Browser support.** The player needs `MediaSource` and the stream's H.264 and
+  AAC codecs. iPhone Safari exposes only `ManagedMediaSource`, which the player
+  doesn't use yet, so iPhones stay voice only. So do other browsers without the
+  codecs. These sessions fall back to voice only before connecting.
+- **Provider id in echoes.** Voice Live echoes the avatar's `character`. The relay
+  scrubs it from every non-video frame, from upstream close reasons and error
+  messages, and, as a backstop, from the completion log and event. A future event
+  that carried the id inside video data would need a new rule.
 - **Echo cancellation.** Server echo cancellation now has to cope with speech
   played by a buffered video element. This is untested live; headphones avoid it.
 - **Cross-user access.** `avatar_verification_failed` checks only that an avatar
