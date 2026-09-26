@@ -35,7 +35,7 @@ def _valid() -> dict:
         "owner": "repository-owner",
         "sdkContract": {
             "package": "azure-ai-projects",
-            "version": "2.6.1",
+            "version": "2.7.0",
             "status": "not-executable",
             "surface": "no-validated-inbound-a2a-surface",
         },
