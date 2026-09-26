@@ -182,19 +182,68 @@ public sealed class IngressWorkerPolicyTests
                 (HealthCheckService)RuntimeHelpers.GetUninitializedObject(typeof(HealthCheckService)),
                 (ProbeServer)RuntimeHelpers.GetUninitializedObject(typeof(ProbeServer)),
                 notifier, NullLogger<Server>.Instance);
-            // The production prefix binds every interface; the harness binds loopback only.
-            using var probe = new TcpListener(IPAddress.Loopback, 0);
-            probe.Start();
-            int port = ((IPEndPoint)probe.LocalEndpoint).Port;
-            probe.Stop();
-            var listener = (HttpListener)typeof(Server)
-                .GetField("_httpListener", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(gateway._server)!;
-            listener.Prefixes.Clear();
-            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            // Own the listening socket before anything is sent. Since .NET 10, StartAsync runs
+            // all of ExecuteAsync, including the server's own HttpListener.Start(), on the
+            // thread pool, so it can return before the port is bound: CI's "Connection
+            // refused". Windows masks the race by retrying a refused loopback connect for
+            // about two seconds. Start() is idempotent, and a request that arrives before
+            // Run() asks for a context waits in the listener's queue.
+            var listenerField = typeof(Server).GetField("_httpListener", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            // Never started: the production prefix binds every interface.
+            ((HttpListener)listenerField.GetValue(gateway._server)!).Close();
+            var listener = StartLoopbackListener(out int port);
+            try
+            {
+                await WaitUntilAccepting(listener, port);
+            }
+            catch
+            {
+                listener.Close();
+                throw;
+            }
+            listenerField.SetValue(gateway._server, listener);
             gateway._url = $"http://127.0.0.1:{port}";
             await gateway._server.StartAsync(gateway._stop.Token);
             gateway._worker = Task.Run(worker.TaskRunnerAsync);
             return gateway;
+        }
+
+        // Bind and dial the same literal loopback address ("localhost" can resolve to ::1
+        // alone). A discovered port is owned only once Start() binds it, so a port another
+        // process takes first is retried with a fresh listener: one whose Start() failed is
+        // closed and cannot be reused.
+        private static HttpListener StartLoopbackListener(out int port)
+        {
+            for (int attempt = 1; ; attempt++)
+            {
+                using (var discovery = new TcpListener(IPAddress.Loopback, 0))
+                {
+                    discovery.Start();
+                    port = ((IPEndPoint)discovery.LocalEndpoint).Port;
+                    discovery.Stop();
+                }
+                var listener = new HttpListener();
+                listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+                try
+                {
+                    listener.Start();
+                    return listener;
+                }
+                catch (Exception error) when ((error is HttpListenerException or SocketException) && attempt < 20)
+                {
+                    listener.Close();
+                }
+            }
+        }
+
+        // Explicit readiness with a bounded deadline: the owned socket accepts on the address
+        // the client dials before any request is sent. A mismatch fails here, not mid-test.
+        private static async Task WaitUntilAccepting(HttpListener listener, int port)
+        {
+            Assert.IsTrue(listener.IsListening, "the harness listener is not started");
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var probe = new TcpClient(AddressFamily.InterNetwork);
+            await probe.ConnectAsync(IPAddress.Loopback, port, deadline.Token);
         }
 
         internal Task<HttpResponseMessage> Post(string path, byte[] body, Dictionary<string, string> headers)
