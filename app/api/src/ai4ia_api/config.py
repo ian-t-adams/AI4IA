@@ -1170,6 +1170,53 @@ class Settings(BaseSettings):
                 "Staging does not supply a verified runtime capability."
             )
 
+    def validate_photo_avatars(self) -> None:
+        """Fail closed on an enabled photo avatar feature without its prerequisites.
+
+        The Limited Access approval and the RAI re-approval are enablement
+        prerequisites held outside the repository; at runtime the capability
+        probe refuses creation until the account reports the feature.
+        """
+        if not self.photo_avatars_enabled:
+            return
+        for name, value in (
+            ("AI4IA_PHOTO_AVATAR_MAX_PER_USER", self.photo_avatar_max_per_user),
+            ("AI4IA_PHOTO_AVATAR_MAX_CREATIONS_PER_DAY", self.photo_avatar_max_creations_per_day),
+        ):
+            if not 1 <= value <= 50:
+                raise RuntimeError(f"{name} must be between 1 and 50.")
+        from .photo_avatars.catalog import load_photo_avatar_catalog
+
+        try:
+            catalog = load_photo_avatar_catalog()
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                "AI4IA_PHOTO_AVATARS_ENABLED requires the packaged photoAvatars catalog block."
+            ) from exc
+        policy = (self.data_residency or "").strip().lower()
+        if not catalog.satisfies_residency(policy):
+            raise RuntimeError(
+                f"AI4IA_PHOTO_AVATARS_ENABLED processes avatars in {catalog.homeRegion} "
+                f"({catalog.homeDataZone}), which AI4IA_DATA_RESIDENCY={policy} does not allow. "
+                "Disable photo avatars or approve a home account in the required zone."
+            )
+        if self.env == Environment.local:
+            return
+        blob = urlparse((self.photo_avatar_blob_account_url or "").strip())
+        if blob.scheme != "https" or not blob.hostname or blob.username or blob.password:
+            raise RuntimeError(
+                "AI4IA_PHOTO_AVATARS_ENABLED requires an HTTPS AI4IA_PHOTO_AVATAR_BLOB_ACCOUNT_URL "
+                "outside local so previews stay durable."
+            )
+        if self.session_store != SessionStoreKind.cosmos or not self.cosmos_endpoint:
+            raise RuntimeError("AI4IA_PHOTO_AVATARS_ENABLED requires the Cosmos store outside local.")
+        if self.auth_provider != AuthProviderKind.entra:
+            raise RuntimeError("AI4IA_PHOTO_AVATARS_ENABLED requires Entra authentication outside local.")
+        if not self.usage_metering_enabled:
+            raise RuntimeError(
+                "AI4IA_PHOTO_AVATARS_ENABLED requires usage metering so every creation is recorded."
+            )
+
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
         if self.claude_enabled and not self.claude_external_enabled:
@@ -1258,6 +1305,7 @@ class Settings(BaseSettings):
                     f"AI4IA_{media.upper()}_BLOB_ACCOUNT_URL outside local "
                     "so generated artifacts remain durable."
                 )
+        self.validate_photo_avatars()
         if self.entitlements_enabled and not self.usage_metering_enabled:
             # Budgets/rate limits accrue from the usage ledger; with metering off
             # every positive limit silently never trips (only disabled and

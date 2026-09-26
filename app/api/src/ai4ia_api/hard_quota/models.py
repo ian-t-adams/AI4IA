@@ -33,7 +33,7 @@ Epoch = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
 Owner = Annotated[str, Field(min_length=1, max_length=128)]
 Surface = Literal[
     "chat", "embedding", "image", "video", "transcription", "speech",
-    "realtime", "compute", "document", "web_search", "mcp", "external_tool",
+    "realtime", "compute", "document", "web_search", "mcp", "external_tool", "avatar",
 ]
 Outcome = Literal["complete", "cancelled", "error", "timeout", "unknown"]
 Phase = Literal["reserved", "dispatched", "settled", "unknown", "released"]

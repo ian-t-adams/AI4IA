@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 MAX_POLICY_BYTES = 64 * 1024
 MAX_MAPPINGS = 128
-PolicyDomain = Literal["models", "zones", "tools", "documents", "publication", "admin"]
+PolicyDomain = Literal["models", "zones", "tools", "documents", "publication", "admin", "avatars"]
 PolicyOutcome = Literal["allow", "deny", "unavailable"]
 ChatRestrictedProfile = Literal["monitor-canary", "authored-synthetic-evaluation"]
 RestrictedProfile = Literal["monitor-canary", "authored-synthetic-evaluation", "realtime-setup-canary"]
@@ -37,6 +37,10 @@ DOCUMENT_TOOL_FEATURES = {
     "analyze_attachment": "compute", "process_document": "process",
 }
 PUBLICATION_ACTIONS = frozenset({"submit", "review", "consume"})
+# Custom photo avatars: ``create`` spends (one metered provider creation);
+# ``use`` covers viewing an owned preview and, in later phases, live sessions.
+# Listing, status, deletion and reports never need a grant.
+AVATAR_ACTIONS = frozenset({"create", "use"})
 ADMIN_OPERATIONS: frozenset[PolicyOperation] = frozenset({
     "admin.usage.read", "admin.directory.read", "admin.entitlements.read",
     "admin.entitlements.write", "admin.metrics.resources.read",
@@ -49,6 +53,7 @@ PolicyOperation = Literal[
     "document.export", "document.share", "document.annotate", "document.memory",
     "document.analyzers", "document.index",
     "publication.submit", "publication.review", "publication.consume",
+    "avatar.create", "avatar.use",
     "admin.usage.read", "admin.directory.read", "admin.entitlements.read",
     "admin.entitlements.write", "admin.metrics.resources.read",
     "admin.metrics.operations.read", "admin.metrics.security.read",
@@ -153,7 +158,7 @@ class CanaryActor(StrictRecord):
 
 class PolicyConfig(StrictRecord):
     version: Literal[1] = 1
-    domains: dict[PolicyDomain, DomainPolicy] = Field(default_factory=dict, max_length=6)
+    domains: dict[PolicyDomain, DomainPolicy] = Field(default_factory=dict, max_length=7)
     spend: SpendPolicy | None = None
     adminCeiling: ValueSet = ()
     canaryActor: CanaryActor | None = None
@@ -188,6 +193,7 @@ class PolicyConfig(StrictRecord):
             "documents": DOCUMENT_FEATURES,
             "publication": PUBLICATION_ACTIONS,
             "admin": ADMIN_OPERATIONS,
+            "avatars": AVATAR_ACTIONS,
         }
         for name, domain in self.domains.items():
             identities = [(item.claim, item.value) for item in domain.mappings]
