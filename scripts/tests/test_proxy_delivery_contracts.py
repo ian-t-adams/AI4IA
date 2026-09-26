@@ -28,6 +28,10 @@ CONFIG_FACTORY = (
 APP_CONFIG_SERVICE = (
     ROOT / "proxy" / "SimpleL7Proxy" / "Config" / "AppConfigService.cs"
 )
+APP_CONFIG_KEY_POLICY = (
+    ROOT / "proxy" / "SimpleL7Proxy" / "Config" / "AppConfigKeyPolicy.cs"
+)
+PROXY_CONFIG = ROOT / "proxy" / "SimpleL7Proxy" / "Config" / "ProxyConfig.cs"
 
 
 class ProxyTelemetryContracts(unittest.TestCase):
@@ -109,6 +113,74 @@ class ProxyRuntimeContracts(unittest.TestCase):
             dereference,
             "a transient App Configuration failure must return before result.Value",
         )
+
+
+class AppConfigurationKeyPolicyContracts(unittest.TestCase):
+    """App Configuration may set only settings that gateway.bicep does not author.
+
+    The proxy's behavior under the policy is tested in AI4IA.Proxy.Tests. This binds the
+    reviewed allowlist to the authored proxy environment, so a Bicep setting can never be
+    overridden from App Configuration, even when someone later authors a reviewed key.
+    """
+
+    @staticmethod
+    def _reviewed_key_paths() -> list[str]:
+        source = APP_CONFIG_KEY_POLICY.read_text(encoding="utf-8")
+        start = source.index("ReviewedWarmKeyPaths =")
+        return re.findall(r'"([^"]+)"', source[start : source.index("];", start)])
+
+    @staticmethod
+    def _config_names(key_path: str) -> set[str]:
+        match = re.search(
+            r'\[ConfigOption\("' + re.escape(key_path) + r'"(?P<rest>[^\]]*)\)\]\s*'
+            r"public\s+\S+\s+(?P<property>\w+)",
+            PROXY_CONFIG.read_text(encoding="utf-8"),
+        )
+        if match is None:
+            raise AssertionError(f"ProxyConfig.cs declares no [ConfigOption] for {key_path}")
+        explicit = re.search(r'ConfigName\s*=\s*"([^"]+)"', match["rest"])
+        return {match["property"]} | ({explicit[1]} if explicit else set())
+
+    @staticmethod
+    def _authored_proxy_environment() -> set[str]:
+        gateway = GATEWAY.read_text(encoding="utf-8")
+        start = gateway.index("// ---------------- SimpleL7Proxy Container App")
+        end = gateway.index("var proxySecrets", start)
+        return set(re.findall(r"name:\s*'([^']+)'", gateway[start:end]))
+
+    def test_no_bicep_authored_proxy_setting_is_app_configuration_writable(self) -> None:
+        key_paths = self._reviewed_key_paths()
+        self.assertEqual(
+            key_paths,
+            [
+                "Sentinel",
+                "CircuitBreaker:ErrorThreshold",
+                "CircuitBreaker:Timeslice",
+                "Request:DefaultTimeout",
+                "Request:DefaultTTLSecs",
+            ],
+        )
+        # The proxy reads its environment case-insensitively.
+        authored = {name.lower() for name in self._authored_proxy_environment()}
+        self.assertTrue(
+            {
+                "host1",
+                "host1-api-key",
+                "validateauthconfig",
+                "validateauthkey1",
+                "maxattempts",
+                "disallowedheaders",
+                "striprequestheaders",
+            }
+            <= authored,
+            f"the authored proxy environment was not found: {sorted(authored)}",
+        )
+        for key_path in key_paths:
+            names = {name.lower() for name in self._config_names(key_path)}
+            self.assertFalse(
+                names & authored,
+                f"{key_path} is authored in gateway.bicep, so App Configuration could override it",
+            )
 
 
 class ProxySupplyChainContracts(unittest.TestCase):
