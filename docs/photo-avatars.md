@@ -526,6 +526,52 @@ been seen as an issued preview host, so confirming it is an enablement check. If
 the host is wrong, nothing is fetched: the avatar stays `generating` and the API
 logs `host_not_in_catalog` until the catalog is corrected.
 
+#### Phase 1 web experience
+
+The gallery is `app/web/src/components/PhotoAvatarsPanel.tsx`, with its client in
+`app/web/src/lib/photoAvatars.ts`. Like the API it is default-off. The sidebar
+shows a **Photo avatars** entry only while `GET /api/photo-avatars/config` reports
+`enabled` for the signed-in owner, and a failed read hides it. No web environment
+variable or Bicep change is involved. This is visibility only: every route re-checks
+the gate, and enabling the flag outside local development still waits for the
+Limited Access approval.
+
+- **Create.** A name and a description, counted against `promptMaxChars`. Style, age,
+  gender and ethnicity are optional and start unspecified. The three attestation
+  statements appear as `/config` words them, and Create stays disabled until each is
+  confirmed. The ticks belong to the attestation `version` they were given for, so a
+  refresh that brings new wording clears them. The request sends that `version`. The
+  form shows the per-avatar estimate, or "unknown" when there is no price, and the
+  current limits.
+- **Unknown create outcomes.** A create is never repeated automatically. A 4xx, or
+  a 5xx with one of the codes the service raises before anything reaches the
+  provider, is a definite refusal. Anything else leaves the outcome unknown: a
+  network failure, an unreadable reply, or a 5xx with no code or a generic one. An
+  unknown outcome re-reads the gallery and clears the confirmations.
+- **Status.** Pending records poll `GET /{id}` with backoff from 2 to 15 seconds, for
+  at most three minutes and never while the tab is hidden. Polling stops on `ready`,
+  on `failed`, or when the gallery closes. A ready record with `needsReverification`
+  shows **Re-verifying…**, and its preview, Report and Delete stay available. Only a
+  status read lets the server re-check it after its cooldown, so the gallery reads it
+  at once and then once a minute, for six minutes.
+- **Preview.** The bytes come only from the record's own
+  `/api/photo-avatars/<id>/preview`, fetched through `apiFetch` into a `blob:` URL.
+  Any other `preview.url` gets no image and no request. Every preview carries the
+  `disclosure.label` badge. `app/web/src/components/PhotoAvatarPreview.tsx` packages
+  this for later surfaces.
+- **Report a problem.** The server's reasons, optional details bounded by
+  `detailsMaxChars`, and a link to `feedback.microsoftReportUrl`. This is the feedback
+  channel the Limited Access terms require.
+- **Delete.** An inline confirmation, then optimistic removal. `avatar_confirming`
+  puts the avatar back and disables Delete for its `Retry-After`.
+  `provider_delete_failed` and `delete_incomplete` put it back in `deleting`, so
+  Delete can be repeated to finish. `avatar_home_changed` puts it back unchanged and
+  explains that an operator must remove it. Delete then stays disabled while the
+  gallery is open, and no retry is suggested.
+- **Unavailable states.** Each `reason` and refusal code has its own explanation,
+  including a pending Limited Access approval (`capability_unavailable`). Existing
+  avatars stay listed while creation is unavailable.
+
 ### Phase 2: real-time conversation
 
 - **Server-owned avatar.** This works on the Speech Voice Live provider only.

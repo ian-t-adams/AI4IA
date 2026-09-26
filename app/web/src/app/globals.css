@@ -2109,3 +2109,458 @@ select {
   max-width: 100%;
   margin: 4px 6px 4px 0;
 }
+
+/* --- Photo avatars gallery ---------------------------------------------------
+
+   A modal gallery opened from the sidebar utility area. Items are figures on
+   the dialog surface, not bordered cards: the square preview frame carries the
+   shape and the text sits beneath it. The AI-generated label rides on every
+   preview in --bg-elevated/--fg with a border, so it keeps full text contrast
+   over any image in every theme. Status is always text plus a glyph, never
+   colour alone. */
+.photo-avatar-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.photo-avatar-panel p,
+.photo-avatar-panel h3,
+.photo-avatar-panel h4,
+.photo-avatar-report p {
+  margin: 0;
+}
+
+.photo-avatar-intro {
+  max-width: 65ch;
+  color: var(--fg-muted);
+  font-size: 0.875rem;
+}
+
+.photo-avatar-intro strong {
+  color: var(--fg);
+}
+
+.photo-avatar-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 0.875rem;
+}
+
+.photo-avatar-notice strong {
+  color: var(--warn);
+  font-size: 0.95rem;
+}
+
+.photo-avatar-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.photo-avatar-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.photo-avatar-toolbar > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.photo-avatar-toolbar h3 {
+  font-size: 1.05rem;
+}
+
+.photo-avatar-toolbar button,
+.photo-avatar-form-actions button {
+  min-height: 44px;
+}
+
+.photo-avatar-meta {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+}
+
+.photo-avatar-blocked {
+  max-width: 65ch;
+  color: var(--warn);
+  font-size: 0.85rem;
+}
+
+.photo-avatar-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 0;
+  border-block: 1px solid var(--border);
+}
+
+/* The class sets display, which would otherwise beat the hidden attribute. */
+.photo-avatar-form[hidden] {
+  display: none;
+}
+
+.photo-avatar-form h4 {
+  font-size: 1rem;
+}
+
+.photo-avatar-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.photo-avatar-field label {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.photo-avatar-field input,
+.photo-avatar-field textarea,
+.photo-avatar-field select {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+.photo-avatar-field textarea {
+  min-height: 96px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.photo-avatar-field [aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.photo-avatar-hint,
+.photo-avatar-counter {
+  max-width: 65ch;
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+}
+
+.photo-avatar-counter {
+  font-variant-numeric: tabular-nums;
+}
+
+.photo-avatar-counter[data-over] {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.photo-avatar-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.photo-avatar-fieldset legend {
+  margin-bottom: 2px;
+  padding: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.photo-avatar-attributes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  gap: 10px 12px;
+}
+
+.photo-avatar-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 32px;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.photo-avatar-check input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.photo-avatar-cost {
+  max-width: 65ch;
+  font-size: 0.85rem;
+}
+
+.photo-avatar-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.photo-avatar-form-actions button:disabled,
+.photo-avatar-actions button:disabled,
+.photo-avatar-toolbar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.photo-avatar-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 140px), 1fr));
+  gap: 22px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.photo-avatar-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.photo-avatar-frame {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.photo-avatar-frame[data-status="failed"],
+.photo-avatar-frame[data-status="deleting"] {
+  border-style: dashed;
+}
+
+.photo-avatar-preview {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+}
+
+.photo-avatar-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.photo-avatar-preview-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.photo-avatar-disclosure {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 9px;
+  background: var(--bg-elevated);
+  color: var(--fg);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A quiet head-and-shoulders placeholder until a preview exists. */
+.photo-avatar-silhouette {
+  position: absolute;
+  inset: 0;
+}
+
+.photo-avatar-silhouette::before,
+.photo-avatar-silhouette::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  background: var(--border);
+  transform: translateX(-50%);
+}
+
+.photo-avatar-silhouette::before {
+  top: 22%;
+  width: 30%;
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+}
+
+.photo-avatar-silhouette::after {
+  bottom: -12%;
+  width: 70%;
+  height: 40%;
+  border-radius: 50% 50% 0 0 / 70% 70% 0 0;
+}
+
+.photo-avatar-name {
+  font-size: 0.95rem;
+  font-weight: 650;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.photo-avatar-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.photo-avatar-status .activity-spinner {
+  margin-top: 0.3em;
+}
+
+.photo-avatar-status[data-tone="info"] { color: var(--info); }
+.photo-avatar-status[data-tone="success"] { color: var(--success); }
+.photo-avatar-status[data-tone="warn"] { color: var(--warn); }
+.photo-avatar-status[data-tone="danger"] { color: var(--danger); }
+
+.photo-avatar-status-glyph {
+  display: inline-flex;
+  justify-content: center;
+  width: 1em;
+}
+
+.photo-avatar-note {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.photo-avatar-note[data-tone="danger"] {
+  color: var(--danger);
+}
+
+.photo-avatar-note[data-tone="warn"] {
+  color: var(--warn);
+}
+
+.photo-avatar-details {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+}
+
+.photo-avatar-details summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  color: var(--fg);
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+
+.photo-avatar-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.photo-avatar-details summary::before {
+  content: "\25B8";
+  /* Empty alternative text keeps the marker out of the summary's name. */
+  content: "\25B8" / "";
+  display: inline-block;
+  transition: transform 0.15s ease-out;
+}
+
+.photo-avatar-details[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.photo-avatar-details dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 4px 0 8px;
+}
+
+.photo-avatar-details dd {
+  margin: 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.photo-avatar-details p {
+  margin: 0 0 8px;
+}
+
+.photo-avatar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.photo-avatar-confirm-text {
+  flex-basis: 100%;
+  color: var(--danger);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.photo-avatar-empty {
+  max-width: 65ch;
+  padding: 8px 0;
+  color: var(--fg-muted);
+  font-size: 0.875rem;
+}
+
+.photo-avatar-load-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.photo-avatar-report {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.photo-avatar-report a,
+.photo-avatar-panel a {
+  color: var(--accent);
+  text-underline-offset: 2px;
+}

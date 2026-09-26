@@ -46,6 +46,7 @@ export function useWorkspacePanels() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [photoAvatarsOpen, setPhotoAvatarsOpen] = useState(false);
   const [leftCollapsed, toggleLeftCollapsed] = useStoredBoolean(
     "ai4ia.leftCollapsed",
   );
@@ -101,17 +102,22 @@ export function useWorkspacePanels() {
   const closeStudio = useCallback(() => setStudioOpen(false), []);
   const openLibrary = useCallback(() => setLibraryOpen(true), []);
   const closeLibrary = useCallback(() => setLibraryOpen(false), []);
+  const openPhotoAvatars = useCallback(() => setPhotoAvatarsOpen(true), []);
+  const closePhotoAvatars = useCallback(() => setPhotoAvatarsOpen(false), []);
 
   return {
     settingsOpen,
     studioOpen,
     libraryOpen,
+    photoAvatarsOpen,
     openSettings,
     closeSettings,
     openStudio,
     closeStudio,
     openLibrary,
     closeLibrary,
+    openPhotoAvatars,
+    closePhotoAvatars,
     mobileSidebar,
     drawerInspector,
     mobileSidebarOpen,
