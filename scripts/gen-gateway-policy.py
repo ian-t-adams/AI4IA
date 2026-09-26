@@ -1357,6 +1357,41 @@ PHOTO_AVATAR_EXPECTED_OPERATIONS = (
     ("photo-avatar-read", "GET", "/photoavatars"),
     ("photo-avatar-delete", "DELETE", "/photoavatars"),
 )
+# APIM supplies context.Api.Path with a leading slash ("/ai4ia-photo-avatars-v1"),
+# although the API's ARM `path` has none; a slashless comparison refused every photo
+# avatar call in production (2026-09-26). Each isolated API's guard trims slashes,
+# then compares the exact path, and must be its expression's first statement
+# (whitespace aside), so a removed, slashless-only or weakened guard fails here.
+PHOTO_AVATAR_MEMBERSHIP_GUARD = (
+    'if ((context.Api.Path ?? "").Trim(\'/\') != "ai4ia-photo-avatars-v1" || '
+    "context.Subscription == null || "
+    'context.Subscription.Id != "__AI4IA_PHOTO_AVATAR_SUBSCRIPTION_ID__") { return ""; }'
+)
+ATTEMPTS_MEMBERSHIP_GUARD = (
+    'if ((context.Api.Path ?? "").Trim(\'/\') != "ai4ia-attempts-v1" || '
+    "context.Subscription == null || "
+    'context.Subscription.Id != "__AI4IA_ATTEMPTS_SUBSCRIPTION_ID__" || '
+    'context.Request.Method != "POST") { return ""; }'
+)
+
+
+def _opens_with_guard(expression: str, guard: str) -> bool:
+    """Whether a statement-block expression's first statement is exactly ``guard``."""
+    normalized = " ".join(expression.split())
+    return normalized.startswith("@{") and normalized[2:].lstrip().startswith(guard + " ")
+
+
+def validate_attempts_policy(policy: str, source: str) -> None:
+    """Pin the versioned API's first inbound policy to its exact membership guard."""
+    inbound = ElementTree.fromstring(policy).find("./inbound")
+    children = list(inbound) if inbound is not None else []
+    if not children or children[0].tag != "set-variable" or children[0].get("name") != "attemptsV1Path":
+        raise ValueError(f"{source}: the versioned membership guard must be the first inbound policy")
+    if not _opens_with_guard(children[0].get("value", ""), ATTEMPTS_MEMBERSHIP_GUARD):
+        raise ValueError(
+            f"{source}: the versioned membership guard must open with exactly: "
+            f"{ATTEMPTS_MEMBERSHIP_GUARD}"
+        )
 
 
 def validate_photo_avatar_policy(
@@ -1399,10 +1434,11 @@ def validate_photo_avatar_policy(
     if not children or children[0].tag != "set-variable" or children[0].get("name") != "photoAvatarOperation":
         raise ValueError(f"{source}: the operation validation must be the first inbound policy")
     validation = children[0].get("value", "")
+    if not _opens_with_guard(validation, PHOTO_AVATAR_MEMBERSHIP_GUARD):
+        raise ValueError(
+            f"{source}: the operation validation must open with exactly: {PHOTO_AVATAR_MEMBERSHIP_GUARD}"
+        )
     required = [
-        'context.Api.Path != "ai4ia-photo-avatars-v1"',
-        "context.Subscription == null",
-        'context.Subscription.Id != "__AI4IA_PHOTO_AVATAR_SUBSCRIPTION_ID__"',
         "string.IsNullOrEmpty(query)",
         r'@"\A/ai4ia-photo-avatars-v1/(features|project|photoavatars/(ai4ia-[0-9a-f]{20}))\z"',
         'context.Request.MatchedParameters["avatarId"] != match.Groups[2].Value',
@@ -1582,6 +1618,9 @@ def main() -> int:
         )
         validate_photo_avatar_policy(
             photo_avatar_policy, str(PHOTO_AVATAR_POLICY_PATH.relative_to(ROOT)),
+        )
+        validate_attempts_policy(
+            generate_attempts_policy(priority_generated), str(ATTEMPTS_OUTPUT_PATH.relative_to(ROOT)),
         )
         if max(len(content.encode("utf-8")) for content in (
             priority_generated, generate_attempts_policy(priority_generated),

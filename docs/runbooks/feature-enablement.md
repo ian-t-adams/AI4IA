@@ -1645,6 +1645,16 @@ the outcome:
 1. `GET /api/photo-avatars/config` reports `reason: available`, which means the
    features read returned the catalog's feature name. `capability_unavailable`
    means the approval has not reached the account; stop.
+   `capability_unknown` together with an APIM 400 `invalid_photo_avatar_request`
+   on `/features` (a 49-byte body in the proxy log, or `responseCode_d=400` in
+   GatewayLogs) means the generated policy refused the request itself. No backend
+   call happened, so it says nothing about the approval. Confirm the deployed API
+   policy equals `infra/policies/photo-avatars.xml` with its subscription
+   placeholder substituted, and that GatewayLogs shows the `ai4ia-photo-avatars-v1`
+   API, the `photo-avatar-features` operation and the
+   `<workload>-proxy-photo-avatars` subscription. A policy deployed before the
+   2026-09-26 guard fix compared `context.Api.Path` without the leading slash APIM
+   supplies, and refused every call.
 2. Create one avatar. The provider must accept the create, and status must reach
    `ready` with a stored preview. This also proves that APIM's Cognitive
    Services User role can read and create the avatar project and create, read and

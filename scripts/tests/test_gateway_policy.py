@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import html
+import io
 import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -1815,7 +1818,9 @@ class GatewayPolicyTests(unittest.TestCase):
             "operation == &quot;photo-avatar-delete&quot; ? &quot;DELETE /photoavatars&quot; :"
         )
         mutations = {
-            "api path check": ("context.Api.Path != &quot;ai4ia-photo-avatars-v1&quot;", "false"),
+            "api path check": (
+                "(context.Api.Path ?? &quot;&quot;).Trim('/') != &quot;ai4ia-photo-avatars-v1&quot;", "false",
+            ),
             "subscription check": (
                 "context.Subscription.Id != &quot;__AI4IA_PHOTO_AVATAR_SUBSCRIPTION_ID__&quot;", "false",
             ),
@@ -1861,6 +1866,85 @@ class GatewayPolicyTests(unittest.TestCase):
                     mutated = mutated.replace(identity, f"{identity}\n    {strip}", 1)
                 with self.assertRaises(ValueError):
                     gateway_generator.validate_photo_avatar_policy(mutated, "photo-avatars.xml")
+
+    @staticmethod
+    def _api_path_guard_mutations(guard: str, api_path: str) -> dict[str, tuple[str, str]]:
+        """Removed, slashless-only and weakened forms of an isolated API's path guard."""
+        return {
+            "removed": (guard + " ||\n        ", ""),
+            "slashless only": (guard, f"context.Api.Path != &quot;{api_path}&quot;"),
+            "never refuses": (guard + " ||", guard + " &amp;&amp; false ||"),
+            "prefix match": (
+                guard, f"!(context.Api.Path ?? &quot;&quot;).Trim('/').StartsWith(&quot;{api_path}&quot;)",
+            ),
+            "bypassed first": (
+                "@{\n    if (", "@{\n    if (context.Operation != null) { return context.Operation.Id; }\n    if (",
+            ),
+        }
+
+    def test_photo_avatar_api_path_guard_is_the_exact_normalized_comparison(self) -> None:
+        # APIM supplies context.Api.Path as "/ai4ia-photo-avatars-v1": the slashless-only
+        # comparison refused every call in production. The actual policy is the control.
+        policy = (ROOT / "infra/policies/photo-avatars.xml").read_text(encoding="utf-8")
+        gateway_generator.validate_photo_avatar_policy(policy, "photo-avatars.xml")
+        guard = "(context.Api.Path ?? &quot;&quot;).Trim('/') != &quot;ai4ia-photo-avatars-v1&quot;"
+        for label, (before, after) in self._api_path_guard_mutations(guard, "ai4ia-photo-avatars-v1").items():
+            with self.subTest(mutation=label):
+                self.assertEqual(policy.count(before), 1, "the mutation must target the actual guard")
+                with self.assertRaisesRegex(ValueError, "must open with exactly"):
+                    gateway_generator.validate_photo_avatar_policy(
+                        policy.replace(before, after), "photo-avatars.xml",
+                    )
+
+    def test_attempts_api_path_guard_is_the_exact_normalized_comparison(self) -> None:
+        policy = gateway_generator.ATTEMPTS_OUTPUT_PATH.read_text(encoding="utf-8")
+        gateway_generator.validate_attempts_policy(policy, "attempts-v1-policy.xml")
+        guard = "(context.Api.Path ?? &quot;&quot;).Trim('/') != &quot;ai4ia-attempts-v1&quot;"
+        mutations = self._api_path_guard_mutations(guard, "ai4ia-attempts-v1") | {
+            "subscription check": (
+                "context.Subscription.Id != &quot;__AI4IA_ATTEMPTS_SUBSCRIPTION_ID__&quot;", "false",
+            ),
+            "method check": ("context.Request.Method != &quot;POST&quot;", "false"),
+        }
+        for label, (before, after) in mutations.items():
+            with self.subTest(mutation=label):
+                self.assertEqual(policy.count(before), 1, "the mutation must target the actual guard")
+                with self.assertRaisesRegex(ValueError, "must open with exactly"):
+                    gateway_generator.validate_attempts_policy(
+                        policy.replace(before, after), "attempts-v1-policy.xml",
+                    )
+        with self.assertRaisesRegex(ValueError, "must be the first inbound policy"):
+            gateway_generator.validate_attempts_policy(
+                policy.replace('name="attemptsV1Path"', 'name="attemptsV1PathLater"', 1),
+                "attempts-v1-policy.xml",
+            )
+
+    def test_generation_refuses_a_slashless_attempts_guard_source(self) -> None:
+        # The guard is authored in attempts-v1-guard.xml and spliced by the generator,
+        # so generation itself must refuse the old form. The current source is the
+        # control; the stale-output message alone would not prove the validator ran.
+        source = gateway_generator.ATTEMPTS_GUARD_PATH.read_text(encoding="utf-8")
+        guard = "(context.Api.Path ?? &quot;&quot;).Trim('/') != &quot;ai4ia-attempts-v1&quot;"
+        self.assertEqual(source.count(guard), 1)
+        for slashless in (False, True):
+            with self.subTest(slashless=slashless), tempfile.TemporaryDirectory() as temp_dir:
+                path = Path(temp_dir) / "attempts-v1-guard.xml"
+                path.write_text(
+                    source.replace(guard, "context.Api.Path != &quot;ai4ia-attempts-v1&quot;")
+                    if slashless else source,
+                    encoding="utf-8",
+                )
+                stderr = io.StringIO()
+                with (
+                    patch.object(gateway_generator, "ATTEMPTS_GUARD_PATH", path),
+                    patch.object(sys, "argv", ["gen-gateway-policy.py", "--check"]),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(stderr),
+                ):
+                    self.assertEqual(gateway_generator.main(), 1 if slashless else 0, stderr.getvalue())
+                self.assertEqual(
+                    "versioned membership guard must open with exactly" in stderr.getvalue(), slashless,
+                )
 
     def test_code_interpreter_policy_guards_are_non_vacuous(self) -> None:
         policy = (

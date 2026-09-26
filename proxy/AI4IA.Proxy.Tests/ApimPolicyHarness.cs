@@ -26,6 +26,7 @@ internal sealed class ApimPolicyHarness
     // Generated from the photoAvatars catalog by gen-voice-provider-catalog.py.
     internal static readonly XElement PhotoAvatarPolicy = LoadPolicy(
         System.IO.Path.Combine(PolicyDirectory, "photo-avatars.xml"));
+    // The API resource's ARM `path`, which has no leading slash; see RuntimeApiPath.
     internal const string PhotoAvatarApiPath = "ai4ia-photo-avatars-v1";
     internal const string PhotoAvatarSubscription = "__AI4IA_PHOTO_AVATAR_SUBSCRIPTION_ID__";
     private static readonly XElement LegacyPolicy = LoadPolicy(
@@ -60,13 +61,24 @@ internal sealed class ApimPolicyHarness
     private readonly bool _versioned;
     private readonly bool _photoAvatar;
 
+    // APIM supplies context.Api.Path with a leading slash: an API whose ARM `path` is
+    // "my-prefix" reports "/my-prefix". Microsoft's SAP principal-propagation snippet
+    // (Azure/api-management-policy-snippets) builds "host:443/my-prefix/..." from
+    // OriginalUrl.Host + ":" + OriginalUrl.Port + context.Api.Path;
+    // Azure-Samples/ai-hub-gateway-solution-accelerator trims it with
+    // (context.Api.Path ?? "").Trim('/'); and a slashless comparison refused every photo
+    // avatar call in production (2026-09-26). Every API modelled here gets that form.
+    internal static string RuntimeApiPath(string armPath) => "/" + armPath;
+
     // The photo avatar API: APIM matches the operation (id + template parameters)
     // before any policy runs; the test supplies that match from the Bicep inventory.
     internal ApimPolicyHarness(
         WireRequest request, string operationId, IReadOnlyDictionary<string, string> matched, WireServer home)
     {
         _photoAvatar = true;
-        Context.Api.Path = PhotoAvatarApiPath;
+        Context.Api.Path = RuntimeApiPath(PhotoAvatarApiPath);
+        // Subscription.Id is the subscription name (its sid), which GatewayLogs records as
+        // apimSubscriptionId; gateway.bicep substitutes it for this placeholder.
         Context.Subscription!.Id = PhotoAvatarSubscription;
         Context.Subscription.PrimaryKey = "photo-avatar-fixture-key";
         Context.Operation.Id = operationId;
@@ -74,6 +86,7 @@ internal sealed class ApimPolicyHarness
         Context.Request.Headers = new(request.Headers.ToDictionary(p => p.Key, p => new[] { p.Value }), StringComparer.OrdinalIgnoreCase);
         Context.Request.Body = new ApimBody(request.Body);
         Context.Request.Method = request.Method;
+        // OriginalUrl.Path is the caller's full path, leading slash and API suffix included.
         Context.Request.OriginalUrl = new ApimUrl(request.Path);
         Context.Request.Url = new ApimUrl(request.Path);
         foreach (var pair in matched)
@@ -86,7 +99,7 @@ internal sealed class ApimPolicyHarness
     internal ApimPolicyHarness(WireRequest request, params WireServer[] servers)
     {
         _versioned = request.Path.StartsWith("/ai4ia-attempts-v1/", StringComparison.Ordinal);
-        Context.Api.Path = _versioned ? "ai4ia-attempts-v1" : "openai";
+        Context.Api.Path = RuntimeApiPath(_versioned ? "ai4ia-attempts-v1" : "openai");
         Context.Subscription!.Id = _versioned ? "__AI4IA_ATTEMPTS_SUBSCRIPTION_ID__" : "proxy-models";
         Context.Subscription.PrimaryKey = _versioned ? NoReplayWorkerTests.Key : NoReplayWorkerTests.LegacyKey;
         Context.Request.Headers = new(request.Headers.ToDictionary(p => p.Key, p => new[] { p.Value }), StringComparer.OrdinalIgnoreCase);
@@ -440,7 +453,9 @@ public sealed class ApimContext
 public sealed class ApimApi
 {
     public string Id => "fixture";
-    public string Path { get; set; } = "openai";
+    // APIM's runtime form, with a leading slash (see ApimPolicyHarness.RuntimeApiPath).
+    // Nullable so a test can prove a guard also refuses a missing path.
+    public string? Path { get; set; } = "/openai";
 }
 public sealed class ApimOperation
 {

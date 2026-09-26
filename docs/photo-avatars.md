@@ -448,6 +448,10 @@ later status read re-verifies the avatar.
   `infra/policies/photo-avatars.xml`, from the catalog, and
   `scripts/gen-gateway-policy.py` validates it. The policy:
   - binds the API-scoped proxy subscription;
+  - compares `context.Api.Path` exactly after trimming its slashes. APIM supplies
+    it with a leading slash (`/ai4ia-photo-avatars-v1`), although the API's ARM
+    `path` has none. The original slashless comparison refused every call in
+    production on 2026-09-26; the offline harness now supplies APIM's form;
   - admits only AI4IA-issued avatar ids (`ai4ia-` plus 20 hex characters), no
     caller query string and, for create, a JSON object of catalog-enumerated
     properties up to 16 KiB;

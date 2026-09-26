@@ -277,6 +277,12 @@ is byte-for-byte identical to upstream, and update both pin references.
   `Host-photoavatars` (`path=/ai4ia-photo-avatars-v1;stripprefix=false;retryafter=false`, its own
   API-scoped key) for this reason; with `MaxAttempts=1`, single-pass iteration and no
   `S7PREQUEUE`, a create is sent at most once.
+- APIM supplies `context.Api.Path` with a leading slash (`/ai4ia-photo-avatars-v1`), although
+  the API's ARM `path` has none. The photo avatar and versioned API guards trim slashes before
+  their exact comparison, and the offline APIM harness
+  (`proxy/AI4IA.Proxy.Tests/ApimPolicyHarness.cs`) supplies the same form. A slashless
+  comparison refused every photo avatar call in production on 2026-09-26, while the harness,
+  which then supplied the slashless form, stayed green.
 - APIM's system identity, not the proxy identity, holds Cognitive Services data-plane roles on
   Foundry. This makes APIM the only model-backend trust boundary for normal proxy traffic.
 
