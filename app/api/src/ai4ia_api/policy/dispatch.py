@@ -80,9 +80,10 @@ async def authorize_dispatch(
     if surface == "avatar_live":
         # Live avatar time on the Speech Voice Live relay: using an owned avatar,
         # never creating one. Its companion "realtime" admission still carries the
-        # voice session's own model/consumption policy.
+        # voice session's own model/consumption policy. A zones restriction can't
+        # cover the avatar home here either, so creation's rule applies.
         await require_policy(PolicyRequest("avatar.use"))
-        if "zones" in actor.domains:
+        if avatar_creation_zone_scoped(actor):
             raise PolicyError(PolicyDecision("unavailable", "policy_surface_unsupported"))
         return
     if surface in {"mcp", "external_tool", "web_search"}:

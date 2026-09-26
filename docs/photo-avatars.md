@@ -627,6 +627,12 @@ avatar byte stays on the existing governed path: browser → FastAPI
     `{"type":"error","error":{"type":"avatar_error","code":"avatar_unavailable","reason":…}}`.
     The reason is allowlisted, and `retry_after_seconds` appears only with
     `needs_reverification`. Nothing is opened upstream and nothing is metered.
+    Each of layer 1's live refusal codes has its own reason: a record from a
+    previous avatar home (409 `avatar_home_changed`) becomes `home_changed`, and
+    only an unrecognized code falls back to the generic `unavailable`.
+  - `avatar_live` admission refuses a zones-scoped actor by the same
+    `avatar_creation_zone_scoped` rule as creation. `/config` applies that rule
+    too, so such an actor is never offered the picker.
 - **Server-owned block.** The relay injects
   `{"type":"photo-avatar","model":<catalog base model>,"character":<provider id>,"customized":true,"output_protocol":"websocket"}`
   into every rebuilt `session.update`, after Speech normalization and the

@@ -1348,7 +1348,7 @@ def test_live_refuses_client_avatar_connect_while_other_frames_pass(query):
         c.__exit__(None, None, None)
 
 
-@pytest.mark.parametrize("guard", ["owner", "ready", "flag", "capability"])
+@pytest.mark.parametrize("guard", ["owner", "ready", "home", "flag", "capability"])
 def test_live_avatar_rechecks_the_grant_at_every_connect(guard):
     c, rig = _avatar_client()
     try:
@@ -1362,6 +1362,12 @@ def test_live_avatar_rechecks_the_grant_at_every_connect(guard):
                 readyAt=None,
             )
             assert _avatar_refusal(c, AVATAR_OTHER_RECORD_ID)["reason"] == "not_ready"
+        elif guard == "home":
+            # A record from a previous avatar home is refused by layer 1 (409
+            # avatar_home_changed) and reaches the browser as one allowlisted reason.
+            _seed_avatar(c, rig, record_id=AVATAR_OTHER_RECORD_ID, homeRegion="swedencentral")
+            refused = _avatar_refusal(c, AVATAR_OTHER_RECORD_ID)
+            assert (refused["code"], refused["reason"]) == ("avatar_unavailable", "home_changed")
         elif guard == "flag":
             c.app.state.settings.photo_avatars_enabled = False
             assert _avatar_refusal(c)["reason"] == "disabled"

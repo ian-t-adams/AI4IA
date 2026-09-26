@@ -1875,6 +1875,17 @@ def test_live_refusals_map_to_allowlisted_client_reasons(code, reason, expected)
     assert refusal_reason(LiveAvatarError(409, code, "detail", reason=reason)) == expected
 
 
+def test_every_layer_one_live_refusal_code_has_its_own_client_reason():
+    from ai4ia_api.photo_avatars.live import LIVE_AVATAR_ERROR_CODES
+    from ai4ia_api.realtime_avatar import AVATAR_UNAVAILABLE_REASONS
+
+    for code in set(LIVE_AVATAR_ERROR_CODES) - {"photo_avatars_unavailable"}:
+        mapped = refusal_reason(LiveAvatarError(409, code, "detail"))
+        assert mapped in AVATAR_UNAVAILABLE_REASONS and mapped != "unavailable", code
+    # Control: a code layer 1 never issues falls back to the generic reason.
+    assert refusal_reason(LiveAvatarError(409, "invented_code", "detail")) == "unavailable"
+
+
 def test_client_avatar_errors_are_bounded_and_id_free():
     body = json.loads(unavailable_error("needs_reverification", retry_after=10**9))
     assert body == {"type": "error", "error": {
@@ -2348,11 +2359,18 @@ async def test_live_avatar_admission_requires_avatar_use_and_never_creation(grou
         clear_policy_context()
 
 
-async def test_a_zones_restriction_cannot_silently_cover_live_avatar_dispatch():
-    config = {"domains": {**USE_ONLY["domains"], "zones": {"default": {"allow": ["global"]}}}}
-    policy, _ = policy_service(config)
+@pytest.mark.parametrize("zones", [True, False])
+async def test_a_zones_restriction_cannot_silently_cover_live_avatar_dispatch(zones):
+    domains = dict(USE_ONLY["domains"])
+    if zones:
+        domains["zones"] = {"default": {"allow": ["global"]}}
+    policy, _ = policy_service({**USE_ONLY, "domains": domains})
     bind_authenticated(policy, policy_user(groups=[GROUP]))
     try:
+        if not zones:
+            # Control: the same actor without a zones restriction is admitted.
+            await authorize_dispatch("avatar_live", deployment=None, required=True)
+            return
         with pytest.raises(PolicyError) as refused:
             await authorize_dispatch("avatar_live", deployment=None, required=True)
         assert refused.value.decision.reason == "policy_surface_unsupported"
