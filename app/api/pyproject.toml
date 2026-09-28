@@ -17,7 +17,7 @@ dependencies = [
     # Starlette is FastAPI's ASGI foundation (otherwise pulled in transitively);
     # pinned directly so its upper bound is enforced independently of FastAPI's
     # loose `>=0.46.0` floor. See the fastapi note above.
-    "starlette>=1.4.1,<1.7",
+    "starlette>=1.4.1,<1.8",
     "uvicorn[standard]>=0.52.3",
     "pydantic>=2.7",
     "pydantic-settings>=2.15.0",
