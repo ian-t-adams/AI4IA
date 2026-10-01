@@ -1652,6 +1652,15 @@ a new owner-approved exception.
   offering. Retiring a model deployment does not authorize removing the shared
   avatar home account/project or user records/previews. Keep the existing
   Bicep/API gates and the separately approved realtime cutover/removal procedure.
+- **Frame responsiveness.** One serialized voice frame resolves the current
+  owner once for all of its voice/avatar scopes; the next frame resolves again.
+  This is not a cached grant. Preserve post-await identity/configuration,
+  budgets and publication fences. Native Ping/Pong controls must reproduce the
+  repeated-read backlog and keep paced audio live with the guard intact; do not
+  disable heartbeats or broaden authority to hide a keepalive timeout.
+  Bound the browser microphone queue and stop explicitly on overflow, never
+  silently drop or replay audio. Typed HTTP/SSE chat remains separate from live
+  speech, and that distinction must be visible rather than only a tooltip.
 
 ## Group policy and publication source contract
 

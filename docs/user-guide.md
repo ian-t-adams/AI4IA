@@ -302,6 +302,11 @@ billing. Choose **Start talking** (or the chat microphone) to speak with it usin
 the current conversation's instructions and agent. Its live video speaks the
 replies, labelled **AI-generated** for the whole session.
 
+Speak into your microphone to talk with the live avatar. **Send** and Enter still
+use the conversation's separate text-chat model; those typed replies are not
+spoken by the avatar. Typed history is included when the next voice session
+connects. The voice status bar explains this distinction while connected.
+
 **Choose avatar** reopens the gallery; **Voice only** removes the avatar without
 changing the Speech voice. You can also use **Setup > Voice > Choose avatar**, or
 pick a ready avatar from the **Avatar** list with Azure Speech selected.
@@ -314,6 +319,11 @@ warns you first) or at its time limit. **End session** stops it at once. Speakin
 over the avatar interrupts it. If your browser can't play the avatar video, live
 avatar use is disabled with an explanation. Choose **Voice only** to continue
 without video. Headphones help the avatar not hear itself.
+
+If the connection stops responding, the client stops its microphone rather than
+queueing increasingly stale audio. A keepalive timeout is a connection failure,
+not a successful avatar response. Start a new session only after the connection
+has recovered; accepted audio is not replayed automatically.
 
 ## Memory
 

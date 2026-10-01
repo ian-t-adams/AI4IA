@@ -52,6 +52,28 @@ exporters rather than assuming its events reach Application Insights.
 Container stdout is queried separately in `ContainerAppConsoleLogs_CL`, filtered
 by `ContainerAppName_s` for the target proxy.
 
+### Voice Live stalls and keepalive timeouts
+
+Close code 1011 with `keepalive ping timeout` means the WebSocket heartbeat did
+not receive its Pong in time. It does not identify a model failure by itself:
+network loss, a paused transport or slow application frame consumption can all
+produce it. First check resource health, then same-resource/time-window producer
+coverage and content-free completion/frame/error summaries. A zero-row query or
+an unauthorized diagnostic read is unknown coverage, not a healthy result.
+
+The relay authorizes every protected send. Voice and avatar checks for one frame
+use one fresh owner read; the next frame re-reads and rechecks. Do not replace
+this with a long-lived grant, disable the watchdog, relax heartbeat timeouts or
+replay possibly accepted audio as a latency fix. Native loopback controls in
+`app/api/tests/test_realtime_policy_frames.py` exercise the real transport,
+paced audio, slow owner storage and revocation without live models.
+
+The browser bounds outgoing microphone audio and stops on overflow. Typed chat
+is a separate HTTP/SSE request and is not spoken by the live avatar. A screenshot
+showing a typed reply generating while the avatar listens is therefore not proof
+of microphone input or an upstream speech response. Never collect audio, video,
+transcripts, browser tokens or raw provider payloads to establish that distinction.
+
 ## Admin API contract
 
 - `GET /api/admin/metrics/operations?minutes=15..1440`

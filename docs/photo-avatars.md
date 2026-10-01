@@ -739,6 +739,12 @@ avatar byte stays on the existing governed path: browser → FastAPI
     every 15 seconds. A client that sends nothing the guard checks still loses the
     session: it gets `avatar_unavailable` with `policy_denied` or
     `policy_unavailable`, then a 1008 close.
+  - Voice and avatar scopes for one serialized frame share one fresh owner
+    resolution. Each next frame resolves again; this is not a cached grant.
+    Budget, token-expiry, current-configuration and publication checks remain
+    execution fences. Repeated owner reads per 100 ms audio chunk can congest
+    ingress and prevent timely Ping/Pong processing; batching the same frame's
+    checks removes that backlog without relaxing heartbeat timeouts.
 - **Meter.** Server-measured from avatar confirmation to relay close, in whole
   seconds, rounded up. It is priced at $0.60 per minute billed per second through
   the catalog's `liveBillingModelId` (`photo-avatar-realtime-standard`) in
@@ -773,6 +779,12 @@ avatar byte stays on the existing governed path: browser → FastAPI
     the live edge.
   - **Audio.** Avatar mode plays no PCM. The video is primed in the start gesture
     and is also the speaker.
+    - The microphone's outgoing queue is bounded to 128 KiB, roughly two seconds
+      of base64 PCM16. Overflow stops the session with an explicit error rather
+      than dropping input, accumulating stale audio or replaying it on reconnect.
+    - Typed **Send** remains a separate HTTP/SSE chat request, not an input to the
+      live avatar. The connected status explicitly tells the owner to speak into
+      the microphone and that typed replies are not spoken.
   - **Fallback.** Without MediaSource or the codec, the UI explains the
     limitation and offers an explicit **Voice only** choice. The transport
     still refuses to request avatar media it cannot play.
@@ -792,7 +804,10 @@ avatar byte stays on the existing governed path: browser → FastAPI
 - **Tests.** Paired and mutation-proven, in `app/api/tests/test_realtime_logic.py`,
   `app/api/tests/test_realtime_api.py` (with layer 1's real service) and
   `app/api/tests/test_realtime_staged_api.py`, plus vitest tests on synthetic
-  fragmented MP4.
+  fragmented MP4. `app/api/tests/test_realtime_policy_frames.py` also drives
+  native Uvicorn Ping/Pong under paced synthetic audio and delayed owner reads:
+  the repeated-read control reproduces 1011 `keepalive ping timeout`, while the
+  single-read path preserves streaming, fresh revocation and budget enforcement.
 - **Live evidence and remaining limits.** The 2026-09-26 enablement checks
   confirmed a billed avatar session and idle termination through AI4IA's own
   relay/APIM path. Server-VAD barge-in with spoken input and echo cancellation
