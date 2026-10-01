@@ -2483,6 +2483,52 @@ select {
   opacity: 0.6;
 }
 
+.photo-avatar-voice-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin: 8px max(16px, 6%) 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+
+.photo-avatar-voice-portrait {
+  position: relative;
+  flex: 0 0 auto;
+  width: clamp(72px, 16vw, 112px);
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--bg-sidebar);
+}
+
+.photo-avatar-voice-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.photo-avatar-voice-body h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.photo-avatar-voice-body p {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.photo-avatar-voice-card button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .photo-avatar-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 140px), 1fr));

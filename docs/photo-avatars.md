@@ -234,11 +234,12 @@ here.
 ## Access and responsible AI
 
 - **Limited Access.** Custom text to speech avatar, which includes custom photo
-  avatars, is available by registration only, for approved use cases. AI4IA's
-  registration is still pending; its Custom Neural Voice registration is approved.
-  Activation outside local development waits for that approval. A successful API
-  call is not entitlement: the runtime capability check must see the approved
-  capability, and it fails closed.
+  avatars, is available by registration only, for approved use cases. The owner
+  reported the custom avatar approval as held on 2026-09-26; its evidence stays
+  outside this repository. That approval and the same day's enablement checks
+  apply to the approved deployment, not every subscription or a future home
+  account. A successful API call is not entitlement: the runtime capability
+  check must continue to see the approved capability, and it fails closed.
 - **Terms obligations.** Under the Limited Access terms, a deployment must:
   - use each avatar only for the approved use cases;
   - never use it for uses the Code of Conduct prohibits;
@@ -278,6 +279,31 @@ here.
 | Real-time media | Existing relay → APIM path (rule 1); no exception | `output_protocol: websocket`: the avatar's video and speech arrive as `response.video.delta` frames on the same governed WebSocket, FastAPI relay → APIM Voice Live API → Foundry. Frames are bounded and never logged or stored. There is no WebRTC, no ICE or TURN credential and no browser media plane. |
 | Cost | Owner admission (rule 8) | Priced per avatar, and per second of live avatar time at $0.60 per minute. Admission happens before any provider spend. Unpriced paths stay cost-unknown and refuse under caps, and accepted but unrecoverable work is never refunded. |
 | Evidence | Receipts; no secret sprawl (rules 6 and 7) | Record a bounded prompt, attributes, the outcome and cost evidence. Record avatar ids as short prefixes, because the receipt redactor in `app/api/src/ai4ia_api/agents/tools.py` masks tokens of 32 or more characters. Never record video frames or the provider id. |
+
+### Infrastructure and release wiring
+
+Both implemented phases are part of the existing Bicep stack, not a separate
+avatar deployment. `infra/main.bicep` passes the avatar flag and limits to the
+data, gateway and API modules; `infra/main.parameters.json` transports the
+documented azd variables. The avatar home account and project are selected from
+`infra/voice-providers.json`, not an operator-supplied endpoint.
+
+Creation uses `AI4IA_PHOTO_AVATARS_ENABLED`, whose source default remains false.
+Live use additionally needs `AI4IA_VOICE_LIVE_ENABLED` and
+`AI4IA_SPEECH_VOICE_LIVE_ENABLED`. The API relay and web control share the root
+voice flag; the web receives the API ingress URL, never a direct Foundry URL.
+Avatar gallery visibility comes from the authenticated API `/config`, with no
+separate browser avatar flag or secret.
+
+For an existing environment, release these changes through the governed
+[deployment workflow](runbooks/deployment.md). Do not run a standalone
+`azd provision`: it can reconcile placeholder app images without promoting the
+signed production images.
+
+Model refreshes do not move the avatar home. Retiring a model deployment is not
+approval to delete its shared Foundry account/project, avatar provider records,
+Cosmos records or Blob previews. Likewise, a new HTTP chat model is not
+automatically a supported Speech Voice Live managed model.
 
 ## Current seams the phases change
 
@@ -386,7 +412,9 @@ approved exceptions, and the prices are sourced.
   avatar is absent, so the owner is never charged twice.
 - **Web.** An avatar gallery with create, status, preview and delete. Items carry
   AI-generated labels and a report-a-problem link, which meets the feedback
-  obligation. The gallery is hidden when the feature is unavailable.
+  obligation. The gallery entry is hidden while the feature is disabled. When
+  enabled but unavailable, existing records remain visible with an explanation;
+  creation and live use refuse rather than pretending the gallery is empty.
 - **Degradation.** If the capability disappears, creation refuses and existing
   avatars show as unavailable. Records are never deleted automatically.
 - **Tests.** Each case is paired with a control, and each guard is
@@ -727,16 +755,27 @@ avatar byte stays on the existing governed path: browser → FastAPI
     "Avatar voice session ended.", whose execution receipt carries runtime, tools,
     unknown voice usage and `avatar` evidence.
 - **Web.**
-  - **Picker.** The Speech voice settings offer an avatar picker only while
-    `/api/photo-avatars/config` is enabled and available and the owner has
-    `usable` avatars.
+  - **Gallery to voice.** A ready, usable avatar offers **Use in Voice Live**.
+    This selects Azure Speech and the owned record, closes the gallery and shows
+    **Start talking** in chat. Selection alone opens neither the microphone nor
+    a billed session. A current connection, unsaved transcript, unavailable
+    provider or unsupported browser disables the action with a reason.
+  - **Picker and recovery.** **Choose avatar** is available in voice settings
+    even before the first avatar exists or Azure Speech is selected. Only the
+    owner's ready, `usable` records are selectable. Refreshing the gallery
+    invalidates the previous snapshot immediately, so a newly selected avatar
+    cannot start voice-only while its fresh record is loading. A failed read or
+    unavailable saved selection blocks start until the owner chooses another
+    avatar or **Voice only**.
   - **Player.** `app/web/src/lib/avatarVideo.ts` derives the codec from the
     stream's `avcC` box, falling back to `avc1.64001E, mp4a.40.2`. It appends
     strictly in order through one bounded queue, evicts played media and chases
     the live edge.
   - **Audio.** Avatar mode plays no PCM. The video is primed in the start gesture
     and is also the speaker.
-  - **Fallback.** Without MediaSource or the codec, the session stays voice only.
+  - **Fallback.** Without MediaSource or the codec, the UI explains the
+    limitation and offers an explicit **Voice only** choice. The transport
+    still refuses to request avatar media it cannot play.
   - **Stage.** `app/web/src/components/LiveAvatarStage.tsx` keeps the
     `AI-generated` label visible, counts down the idle and session limits, and
     offers **End session**.
@@ -754,9 +793,12 @@ avatar byte stays on the existing governed path: browser → FastAPI
   `app/api/tests/test_realtime_api.py` (with layer 1's real service) and
   `app/api/tests/test_realtime_staged_api.py`, plus vitest tests on synthetic
   fragmented MP4.
-- **Not yet proven live:** a server-VAD barge-in with spoken input, echo
-  cancellation through the video element's speaker, and the path through AI4IA's
-  own APIM. The enablement canary covers the last one.
+- **Live evidence and remaining limits.** The 2026-09-26 enablement checks
+  confirmed a billed avatar session and idle termination through AI4IA's own
+  relay/APIM path. Server-VAD barge-in with spoken input and echo cancellation
+  through the video element's speaker remain separate live acceptance checks.
+  Source/UI tests do not refresh that production evidence or activate a new
+  environment.
 
 ### Phase 3 (optional): rendered talking-head videos
 
