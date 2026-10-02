@@ -101,7 +101,7 @@ export class WebBuildMonitor {
 
   /** Window focus or the tab becoming visible. */
   nudge(): void {
-    if (this.finished || this.controller !== null || this.hidden()) return;
+    if (this.finished || this.hidden()) return;
     const spacing = this.options.minSpacingMs ?? BUILD_CHECK_MIN_SPACING_MS;
     if (!this.dueWhileHidden && this.now() - this.lastCheck < spacing) return;
     void this.check();
