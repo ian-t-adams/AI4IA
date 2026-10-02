@@ -773,7 +773,7 @@ describe("ChatApp session state reliability", () => {
     await screen.findByRole("heading", { name: "Conversation removed/session" });
     expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Close deletion status" }));
-    const newChat = screen.getByRole("button", { name: "+ New chat" });
+    const newChat = screen.getByRole("button", { name: "New chat" });
     expect(newChat).toHaveAttribute("aria-disabled", "true");
     await user.click(newChat);
     expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "C");
@@ -1404,7 +1404,7 @@ describe("ChatApp uploads", () => {
         "false",
       ),
     );
-    await user.click(screen.getByRole("button", { name: "+ New chat" }));
+    await user.click(screen.getByRole("button", { name: "New chat" }));
     expect(
       await screen.findByText("New conversation", { selector: "strong" }),
     ).toBeInTheDocument();
@@ -1418,7 +1418,9 @@ describe("ChatApp uploads", () => {
       "matchMedia",
       vi.fn((query: string) => ({
         matches:
-          query === "(max-width: 720px)" || query === "(max-width: 1050px)",
+          query === "(max-width: 720px)" ||
+          query === "(max-width: 1099px)" ||
+          query === "(max-width: 1439px)",
         media: query,
         addEventListener: vi.fn(),
         removeEventListener: vi.fn(),
@@ -1502,7 +1504,7 @@ describe("ChatApp uploads", () => {
     rerender(<ChatApp />);
 
     const sessionBButton = screen.getByRole("button", { name: "Session B" });
-    const newChatButton = screen.getByRole("button", { name: "+ New chat" });
+    const newChatButton = screen.getByRole("button", { name: "New chat" });
     const deleteButton = screen.getByRole("button", { name: "Delete Session A" });
     const headerRename = document.querySelector(
       ".chat-header .editable-session-title-trigger",
@@ -2154,7 +2156,7 @@ describe("ChatApp uploads", () => {
     // "New chat" bumps the selection generation and resets settings back to
     // the exact same defaults they already were -- no visible settings
     // change, but a genuinely different generation.
-    await user.click(screen.getByRole("button", { name: "+ New chat" }));
+    await user.click(screen.getByRole("button", { name: "New chat" }));
 
     // A fresh caller (e.g. a text send) in the new generation asks for a
     // session under those (coincidentally identical) default settings.
@@ -2187,7 +2189,7 @@ describe("ChatApp uploads", () => {
   });
 
   // Regression (voice acceptance round 11, HIGH -- literal scenario):
-  // proves the same New-chat-then-diverge flow using the real "+ New chat"
+  // proves the same New-chat-then-diverge flow using the real "New chat"
   // button (rather than editing the draft directly, as the round-10 test
   // above does) followed by genuinely different settings, end to end.
   it("fires its own session creation for a send after New chat resets settings differently than an earlier abandoned voice creation", async () => {
@@ -2226,7 +2228,7 @@ describe("ChatApp uploads", () => {
 
     // Stop waiting + New chat: bumps generation and resets the system
     // prompt back to blank.
-    await user.click(screen.getByRole("button", { name: "+ New chat" }));
+    await user.click(screen.getByRole("button", { name: "New chat" }));
 
     // The user then types a different prompt before sending. Instructions is
     // still the inspector's open section, so there is nothing to re-navigate.

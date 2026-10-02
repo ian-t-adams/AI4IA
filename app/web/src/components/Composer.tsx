@@ -25,6 +25,7 @@ import {
   type LibraryDocument,
 } from "@/lib/library";
 import { SLASH_COMMANDS, type SlashCommand } from "@/lib/commands";
+import { Icon } from "./Icon";
 
 export interface UploadItem {
   id: string;
@@ -84,6 +85,7 @@ export function Composer({
   onRemoveLibraryDocument,
   onError,
   voiceLive,
+  live,
   prefill,
 }: {
   disabled: boolean;
@@ -118,6 +120,15 @@ export function Composer({
     startBlockedReason?: string | null;
     start: () => void;
     stop: () => void;
+  };
+  // Present only while a live voice session is connected: where typed lines
+  // go. "live" sends them into the session (answered out loud); "chat" keeps
+  // the normal text chat with its own model, tools and approvals.
+  live?: {
+    target: "live" | "chat";
+    onTargetChange: (target: "live" | "chat") => void;
+    avatarName: string | null;
+    onSend: (text: string) => boolean;
   };
 }) {
   const [text, setText] = useState("");
@@ -158,7 +169,7 @@ export function Composer({
     const padding =
       (Number.parseFloat(computed.paddingTop) || 0) +
       (Number.parseFloat(computed.paddingBottom) || 0);
-    const minHeight = 64;
+    const minHeight = 52;
     const maxHeight = lineHeight * 8 + padding;
     element.style.height = "0px";
     const height = Math.min(maxHeight, Math.max(minHeight, element.scrollHeight));
@@ -254,8 +265,11 @@ export function Composer({
 
   // A "@" mention and a "/" command are mutually exclusive (the regexes anchor on
   // different sigils at the start), so at most one menu is active per keystroke.
+  const liveTarget = live?.target === "live";
   const menuMode: MenuMode | null =
-    mention && agentOptions.length > 0
+    liveTarget
+      ? null
+      : mention && agentOptions.length > 0
       ? "mention"
       : command && commandOptions.length > 0
         ? "command"
@@ -352,8 +366,14 @@ export function Composer({
 
   const submit = () => {
     const trimmed = text.trim();
-    if (!trimmed || disabled) return;
-    onSend(trimmed);
+    if (!trimmed) return;
+    if (live && liveTarget) {
+      // Keep the draft when the session can't take it (it just ended).
+      if (!live.onSend(trimmed)) return;
+    } else {
+      if (disabled) return;
+      onSend(trimmed);
+    }
     setText("");
     setCaret(0);
     setSuppressed(false);
@@ -399,27 +419,24 @@ export function Composer({
       ? `agent-option-${agentOptions[highlightedIndex]?.name}`
       : `command-option-${commandOptions[highlightedIndex]?.name}`;
 
+  const placeholder = liveTarget
+    ? live?.avatarName
+      ? `Type to ${live.avatarName}. They answer out loud.`
+      : "Type to the live voice. It answers out loud."
+    : "Message AI4IA";
+  const sendDisabled = liveTarget ? !text.trim() : disabled || !text.trim();
+  const attachBlocked = !capabilities || uploading || atDocLimit;
+  const voiceBlocked =
+    voiceLive !== undefined &&
+    (!voiceLive.supported ||
+      (!voiceLive.active &&
+        (voiceLive.saving || voiceLive.saveBlocked || Boolean(voiceLive.startBlockedReason))));
+
   return (
-    <div
-      className="composer-shell"
-      style={{
-        borderTop: "1px solid var(--border)",
-        padding: "12px max(16px, 6%)",
-        background: "var(--bg-elevated)",
-      }}
-    >
-      {(documents.length > 0 || libraryDocuments.length > 0) && (
-        <ul
-          aria-label="Attached documents"
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 8,
-            margin: "0 0 8px",
-            padding: 0,
-            listStyle: "none",
-          }}
-        >
+    <div className="composer-shell">
+      <div className="composer-inner">
+        {(documents.length > 0 || libraryDocuments.length > 0) && (
+          <ul aria-label="Attached documents" className="composer-attachments">
           {documents.map((d) => (
             <li
               key={d.id}
@@ -555,40 +572,61 @@ export function Composer({
               ? "Content Understanding library"
               : "session context"}
           </li>
-        </ul>
-      )}
+          </ul>
+        )}
 
-      <div
-        className="composer-row"
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 8,
-          alignItems: "flex-end",
-          position: "relative",
-        }}
-      >
+        {!capabilities ? (
+          <div
+            className={capabilitiesError ? "inspector-error" : "inspector-empty"}
+            role={capabilitiesError ? "alert" : "status"}
+          >
+            {capabilitiesError
+              ? `Attachments unavailable: ${capabilitiesError}`
+              : "Loading attachment capabilities…"}
+            {capabilitiesError ? (
+              <button type="button" onClick={onRetryCapabilities}>Retry</button>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="upload-status-list" aria-live="polite">
+          {uploads.map((upload) => (
+            <div key={upload.id} className="upload-status-row">
+              <span>
+                {upload.filename} · {upload.status}
+                {upload.error ? ` · ${upload.error}` : ""}
+              </span>
+              {upload.status === "failed" ? (
+                <>
+                  <button
+                    type="button"
+                    aria-label={`Retry upload ${upload.filename}`}
+                    onClick={() => onRetryUpload?.(upload.id)}
+                  >
+                    Retry
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Dismiss failed upload ${upload.filename}`}
+                    onClick={() => onDismissUpload?.(upload.id)}
+                  >
+                    Dismiss
+                  </button>
+                </>
+              ) : null}
+            </div>
+          ))}
+        </div>
+
+        <div
+          className="composer-card composer-row"
+          data-target={liveTarget ? "live" : "chat"}
+        >
         {menuOpen && (
           <ul
             id="composer-autocomplete-menu"
             role="listbox"
             aria-label={menuMode === "mention" ? "Agents" : "Commands"}
-            style={{
-              position: "absolute",
-              bottom: "calc(100% + 6px)",
-              left: 0,
-              width: "min(420px, 100%)",
-              maxHeight: 280,
-              overflowY: "auto",
-              margin: 0,
-              padding: 4,
-              listStyle: "none",
-              borderRadius: 12,
-              border: "1px solid var(--border)",
-              background: "var(--bg-elevated)",
-              boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
-              zIndex: 20,
-            }}
+            className="composer-autocomplete"
           >
             {menuMode === "mention"
               ? agentOptions.map((a, i) => (
@@ -665,235 +703,179 @@ export function Composer({
           </ul>
         )}
 
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept={accept}
-          className="visually-hidden"
-          aria-hidden="true"
-          tabIndex={-1}
-          onChange={(e) => {
-            void onPickFiles(e.target.files);
-            // Reset so re-selecting the same file fires onChange again.
-            e.target.value = "";
-          }}
-        />
-        <button
-          type="button"
-          className="composer-icon-button composer-attach-button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={!capabilities || uploading || atDocLimit}
-          aria-busy={uploading}
-          aria-label={
-            atDocLimit
-              ? `Attachment limit reached (${maxDocuments})`
-              : !capabilities
-                ? capabilitiesError
-                  ? "Attachments unavailable"
-                  : "Loading attachment capabilities"
-                : uploading
-                ? "Uploading document"
-                : "Attach files"
-          }
-          title={
-            atDocLimit
-              ? `You can attach at most ${maxDocuments} files here`
-              : !capabilities
-                ? capabilitiesError ?? "Loading attachment capabilities"
-                : uploading
-                ? "Uploading…"
-                : capabilities
-                  ? `Attach ${capabilities.modalities.join(", ")} files up to ${formatBytes(capabilities.maxBytes)}`
-                  : "Loading attachment capabilities"
-          }
-          style={{
-            alignSelf: "stretch",
-            minHeight: 46,
-            padding: "0 14px",
-            borderRadius: 10,
-            border: "1px solid var(--border)",
-            background: "var(--bg)",
-            color: "var(--fg)",
-            fontSize: "1.15em",
-            lineHeight: 1,
-            cursor: !capabilities || uploading || atDocLimit ? "not-allowed" : "pointer",
-            opacity: !capabilities || uploading || atDocLimit ? 0.45 : 1,
-          }}
-        >
-          {uploading ? "…" : "📎"}
-        </button>
-        {!capabilities ? (
-          <div
-            className={capabilitiesError ? "inspector-error" : "inspector-empty"}
-            role={capabilitiesError ? "alert" : "status"}
-          >
-            {capabilitiesError
-              ? `Attachments unavailable: ${capabilitiesError}`
-              : "Loading attachment capabilities…"}
-            {capabilitiesError ? (
-              <button type="button" onClick={onRetryCapabilities}>Retry</button>
-            ) : null}
-          </div>
-        ) : null}
-        <div className="upload-status-list" aria-live="polite">
-            {uploads.map((upload) => (
-              <div key={upload.id} className="upload-status-row">
-                <span>
-                  {upload.filename} · {upload.status}
-                  {upload.error ? ` · ${upload.error}` : ""}
-                </span>
-                {upload.status === "failed" ? (
-                  <>
-                    <button
-                      type="button"
-                      aria-label={`Retry upload ${upload.filename}`}
-                      onClick={() => onRetryUpload?.(upload.id)}
-                    >
-                      Retry
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Dismiss failed upload ${upload.filename}`}
-                      onClick={() => onDismissUpload?.(upload.id)}
-                    >
-                      Dismiss
-                    </button>
-                  </>
-                ) : null}
+          {live ? (
+            <div className="composer-target">
+              <span className="composer-target-label" id="composer-target-label">
+                Send to
+              </span>
+              <div className="segmented" role="radiogroup" aria-labelledby="composer-target-label">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={liveTarget}
+                  onClick={() => live.onTargetChange("live")}
+                >
+                  {live.avatarName ? live.avatarName : "Live voice"}
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={!liveTarget}
+                  onClick={() => live.onTargetChange("chat")}
+                >
+                  Text chat
+                </button>
               </div>
-            ))}
+            </div>
+          ) : null}
+          <label htmlFor="composer" className="visually-hidden">
+            Message
+          </label>
+          <textarea
+            id="composer"
+            className="composer-textarea"
+            ref={textareaRef}
+            value={text}
+            rows={1}
+            placeholder={placeholder}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-haspopup="listbox"
+            aria-expanded={menuOpen}
+            aria-controls="composer-autocomplete-menu"
+            aria-activedescendant={activeOptionId}
+            aria-describedby="composer-hint"
+            onChange={(e) => {
+              setText(e.target.value);
+              setSuppressed(false);
+              syncCaret(e.currentTarget);
+            }}
+            onSelect={(e) => syncCaret(e.currentTarget)}
+            onKeyDown={onKeyDown}
+          />
+          <div className="composer-toolbar">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={accept}
+              className="visually-hidden"
+              aria-hidden="true"
+              tabIndex={-1}
+              onChange={(e) => {
+                void onPickFiles(e.target.files);
+                // Reset so re-selecting the same file fires onChange again.
+                e.target.value = "";
+              }}
+            />
+            <button
+              type="button"
+              className="icon-btn composer-icon-button composer-attach-button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={attachBlocked}
+              aria-busy={uploading}
+              aria-label={
+                atDocLimit
+                  ? `Attachment limit reached (${maxDocuments})`
+                  : !capabilities
+                    ? capabilitiesError
+                      ? "Attachments unavailable"
+                      : "Loading attachment capabilities"
+                    : uploading
+                    ? "Uploading document"
+                    : "Attach files"
+              }
+              title={
+                atDocLimit
+                  ? `You can attach at most ${maxDocuments} files here`
+                  : !capabilities
+                    ? capabilitiesError ?? "Loading attachment capabilities"
+                    : uploading
+                    ? "Uploading…"
+                    : capabilities
+                      ? `Attach ${capabilities.modalities.join(", ")} files up to ${formatBytes(capabilities.maxBytes)}`
+                      : "Loading attachment capabilities"
+              }
+            >
+              <Icon name="attach" />
+            </button>
+            {voiceLive && (
+              <button
+                type="button"
+                className="icon-btn composer-icon-button composer-voice-button"
+                onClick={voiceLive.active ? voiceLive.stop : voiceLive.start}
+                disabled={voiceBlocked}
+                aria-pressed={voiceLive.active}
+                aria-busy={
+                  voiceLive.connecting || voiceLive.ending || voiceLive.saving
+                }
+                aria-label={
+                  // `active` (covers connecting and live) must always resolve to
+                  // the Stop label/action first: whatever saving/saveBlocked say
+                  // about a *previous* cycle can never leave the current, live
+                  // session without a way to stop it.
+                  voiceLive.active
+                    ? "Stop live voice conversation"
+                    : voiceLive.saveBlocked
+                      ? "Retry saving the voice transcript below"
+                      : voiceLive.saving
+                        ? "Saving live voice transcript"
+                        : voiceLive.retrying
+                          ? "Retry live voice conversation"
+                          : "Start live voice conversation"
+                }
+                title={
+                  !voiceLive.supported
+                    ? "Live voice isn't supported in this browser"
+                    : voiceLive.active
+                      ? "Stop Voice Live"
+                      : voiceLive.startBlockedReason
+                        ?? (voiceLive.saveBlocked
+                          ? "Save the previous Voice Live transcript before starting again"
+                          : "Start Voice Live in this chat")
+                }
+              >
+                <Icon
+                  name={
+                    voiceLive.active
+                      ? "stop"
+                      : voiceLive.saveBlocked || voiceLive.saving
+                        ? "wave"
+                        : "mic"
+                  }
+                />
+              </button>
+            )}
+            <span id="composer-hint" className="composer-hint">
+              {liveTarget
+                ? "Enter to send to the live session · Shift+Enter for a new line"
+                : "Enter to send · Shift+Enter for a new line · / commands · @ agents"}
+            </span>
+            {streaming && !liveTarget ? (
+              <button
+                type="button"
+                className="composer-submit-button"
+                data-variant="stop"
+                onClick={onStop}
+              >
+                <Icon name="stop" size={18} />
+                Stop
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="composer-submit-button"
+                onClick={submit}
+                disabled={sendDisabled}
+                aria-label="Send"
+                title={liveTarget ? "Send to the live session" : "Send message"}
+              >
+                <Icon name="send" size={18} />
+              </button>
+            )}
+          </div>
         </div>
-
-        {voiceLive && (
-          <button
-            type="button"
-            className="composer-icon-button composer-voice-button"
-            onClick={voiceLive.active ? voiceLive.stop : voiceLive.start}
-            disabled={
-              !voiceLive.supported ||
-              (!voiceLive.active && (voiceLive.saving || voiceLive.saveBlocked || Boolean(voiceLive.startBlockedReason)))
-            }
-            aria-pressed={voiceLive.active}
-            aria-busy={
-              voiceLive.connecting || voiceLive.ending || voiceLive.saving
-            }
-            aria-label={
-              // `active` (covers connecting and live) must always resolve to
-              // the Stop label/action first: whatever saving/saveBlocked say
-              // about a *previous* cycle can never leave the current, live
-              // session without a way to stop it.
-              voiceLive.active
-                ? "Stop live voice conversation"
-                : voiceLive.saveBlocked
-                  ? "Retry saving the voice transcript below"
-                  : voiceLive.saving
-                    ? "Saving live voice transcript"
-                    : voiceLive.retrying
-                      ? "Retry live voice conversation"
-                      : "Start live voice conversation"
-            }
-            title={
-              !voiceLive.supported
-                ? "Live voice isn't supported in this browser"
-                : voiceLive.active
-                  ? "Stop Voice Live"
-                  : voiceLive.startBlockedReason
-                    ?? (voiceLive.saveBlocked
-                      ? "Save the previous Voice Live transcript before starting again"
-                      : "Start Voice Live in this chat")
-            }
-            style={{
-              alignSelf: "stretch",
-              minHeight: 46,
-              padding: "0 14px",
-              borderRadius: 10,
-              border: `1px solid ${voiceLive.active ? "var(--danger)" : "var(--accent)"}`,
-              background: voiceLive.active ? "var(--danger)" : "var(--accent)",
-              color: voiceLive.active ? "var(--danger-fg)" : "var(--accent-fg)",
-              fontSize: "1.15em",
-              lineHeight: 1,
-              cursor:
-                !voiceLive.supported ||
-                (!voiceLive.active && (voiceLive.saving || voiceLive.saveBlocked || Boolean(voiceLive.startBlockedReason)))
-                  ? "not-allowed"
-                  : "pointer",
-              opacity: voiceLive.supported ? 1 : 0.45,
-            }}
-          >
-            {voiceLive.active
-              ? voiceLive.connecting
-                ? "…"
-                : "■"
-              : voiceLive.saveBlocked
-                ? "!"
-                : voiceLive.saving
-                  ? "…"
-                  : "🎤"}
-          </button>
-        )}
-
-        <label htmlFor="composer" className="visually-hidden">
-          Message
-        </label>
-        <textarea
-          id="composer"
-          className="composer-textarea"
-          ref={textareaRef}
-          value={text}
-          rows={2}
-          placeholder="Send a message…  (Enter to send, Shift+Enter for newline, @ to mention an agent, / for commands)"
-          role="combobox"
-          aria-autocomplete="list"
-          aria-haspopup="listbox"
-          aria-expanded={menuOpen}
-          aria-controls="composer-autocomplete-menu"
-          aria-activedescendant={activeOptionId}
-          onChange={(e) => {
-            setText(e.target.value);
-            setSuppressed(false);
-            syncCaret(e.currentTarget);
-          }}
-          onSelect={(e) => syncCaret(e.currentTarget)}
-          onKeyDown={onKeyDown}
-        />
-        {streaming ? (
-          <button
-            type="button"
-            className="composer-submit-button"
-            onClick={onStop}
-            style={{
-              padding: "12px 18px",
-              borderRadius: 10,
-              border: "1px solid var(--border)",
-              background: "var(--danger)",
-              color: "var(--danger-fg)",
-              fontWeight: 600,
-            }}
-          >
-            Stop
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="composer-submit-button"
-            onClick={submit}
-            disabled={disabled || !text.trim()}
-            style={{
-              padding: "12px 22px",
-              borderRadius: 10,
-              border: "none",
-              background:
-                disabled || !text.trim() ? "var(--border)" : "var(--accent)",
-              color: "var(--accent-fg)",
-              fontWeight: 600,
-            }}
-          >
-            Send
-          </button>
-        )}
       </div>
-
     </div>
   );
 }

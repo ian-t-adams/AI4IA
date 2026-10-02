@@ -48,6 +48,18 @@ const mocks = vi.hoisted(() => ({
   voiceActive: false,
   voiceSaving: false,
   avatarVideoSupported: true,
+  voiceAvatar: null as null | {
+    element: HTMLVideoElement | null;
+    label: string;
+    unsupported: boolean;
+    failure: null;
+    started: boolean;
+    speaking: boolean;
+    idleEndsAt: null;
+    sessionEndsAt: null;
+    playbackBlocked: boolean;
+    resume: () => void;
+  },
   useInlineVoiceLive: vi.fn(),
   startVoice: vi.fn(),
   stopVoice: vi.fn(),
@@ -104,7 +116,8 @@ vi.mock("./InlineVoiceLive", () => ({
       exitLocked: false,
       messages: [],
       boundSessionId: null,
-      avatar: null,
+      avatar: mocks.voiceAvatar,
+      sendText: () => true,
     };
   },
 }));
@@ -191,6 +204,7 @@ beforeEach(() => {
   mocks.voiceActive = false;
   mocks.voiceSaving = false;
   mocks.avatarVideoSupported = true;
+  mocks.voiceAvatar = null;
   mocks.getVoiceLiveConfig.mockResolvedValue({
     defaultProviderId: "azure_openai",
     enabledProviderIds: ["azure_openai", "speech_voice_live"],
@@ -229,7 +243,7 @@ describe("photo avatars in the workspace", () => {
     // Let the settled read commit before asserting the entry stayed absent.
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByRole("button", { name: "Photo avatars" })).toBeNull();
-    expect(screen.queryByRole("dialog", { name: "Photo avatars" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Photo avatars" })).toBeNull();
     expect(mocks.apiFetch.mock.calls.map(([input]) => String(input))).toEqual([
       "/api/photo-avatars/config",
     ]);
@@ -242,13 +256,21 @@ describe("photo avatars in the workspace", () => {
     render(<ChatApp />);
     const entry = await screen.findByRole("button", { name: "Photo avatars" });
     await user.click(entry);
-    const dialog = await screen.findByRole("dialog", { name: "Photo avatars" });
-    expect(await within(dialog).findByText(/Limited Access approval/)).toBeInTheDocument();
-    expect(await within(dialog).findByText(/No avatars yet/)).toBeInTheDocument();
+    // The gallery is a page in the workspace, addressed by the URL hash.
+    const page = await screen.findByRole("region", { name: "Photo avatars" });
+    expect(entry).toHaveAttribute("aria-current", "page");
+    expect(window.location.hash).toBe("#/avatars");
+    expect(await within(page).findByText(/Limited Access approval/)).toBeInTheDocument();
+    expect(await within(page).findByText(/No avatars yet/)).toBeInTheDocument();
     expect(mocks.apiFetch.mock.calls.map(([input]) => String(input))).toContain("/api/photo-avatars");
-    await user.click(within(dialog).getByRole("button", { name: "Close photo avatars" }));
-    expect(screen.queryByRole("dialog", { name: "Photo avatars" })).toBeNull();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Photo avatars" })).toHaveFocus());
+    await waitFor(() =>
+      expect(within(page).getByRole("heading", { level: 1, name: "Photo avatars" })).toHaveFocus(),
+    );
+    // Choosing a conversation returns to it.
+    await user.click(screen.getByRole("button", { name: "Session A" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Photo avatars" })).toBeNull());
+    expect(window.location.hash).toBe("");
+    expect(entry).not.toHaveAttribute("aria-current");
   });
 });
 
@@ -281,7 +303,7 @@ describe("gallery-to-voice integration", () => {
     render(<ChatApp />);
     await user.click(await screen.findByRole("button", { name: "Photo avatars" }));
     await user.click(await screen.findByRole("button", { name: "Use Office guide in Voice Live" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Photo avatars" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Photo avatars" })).toBeNull());
     const card = await screen.findByRole("region", { name: "Avatar voice" });
     const start = within(card).getByRole("button", { name: "Start talking" });
     await waitFor(() => expect(start).toBeEnabled());
@@ -326,7 +348,7 @@ describe("gallery-to-voice integration", () => {
     expect(use).toHaveAccessibleDescription(explanation);
     await user.click(use);
     expect(mocks.startVoice).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog", { name: "Photo avatars" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Photo avatars" })).toBeInTheDocument();
   });
 
   it("does not fall back to voice only while a newly selected avatar is being refreshed", async () => {
@@ -378,4 +400,81 @@ describe("gallery-to-voice integration", () => {
     await user.click(screen.getByRole("button", { name: "Start live voice conversation" }));
     expect(mocks.startVoice).toHaveBeenCalledTimes(1);
   });
+
+  it("remembers a minimized lobby and shows the stage again when an avatar is chosen", async () => {
+    enableVoice();
+    const user = userEvent.setup();
+    const first = render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Photo avatars" }));
+    await user.click(await screen.findByRole("button", { name: "Use Office guide in Voice Live" }));
+    const stage = await screen.findByRole("region", { name: "Avatar voice" });
+    await user.click(within(stage).getByRole("button", { name: "Minimize the avatar stage" }));
+    const bar = await screen.findByRole("button", { name: "Show the avatar stage" });
+    expect(window.localStorage.getItem("ai4ia.lobbyCompact")).toBe("1");
+    expect(screen.getAllByRole("region", { name: "Avatar voice" })).toHaveLength(1);
+    expect(bar).toBeInTheDocument();
+    first.unmount();
+
+    // A later visit starts minimized.
+    render(<ChatApp />);
+    expect(await screen.findByRole("button", { name: "Show the avatar stage" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Minimize the avatar stage" })).toBeNull();
+    // Choosing an avatar puts it back on the stage.
+    await user.click(await screen.findByRole("button", { name: "Photo avatars" }));
+    await user.click(await screen.findByRole("button", { name: "Use Office guide in Voice Live" }));
+    expect(await screen.findByRole("button", { name: "Minimize the avatar stage" })).toBeInTheDocument();
+    expect(window.localStorage.getItem("ai4ia.lobbyCompact")).toBe("0");
+  });
+
+  it("steps the docked inspector aside while a live avatar is on stage, then brings it back", async () => {
+    enableVoice();
+    window.localStorage.setItem(VOICE_PREFERENCES_STORAGE_NAME, JSON.stringify({
+      provider: "speech_voice_live", speechAvatarId: READY.id,
+    }));
+    const user = userEvent.setup();
+    const view = render(<ChatApp />);
+    // jsdom reports a wide screen, where the inspector starts docked open.
+    expect(await screen.findByRole("complementary", { name: "Conversation inspector" })).toBeInTheDocument();
+
+    mocks.voiceActive = true;
+    mocks.voiceAvatar = {
+      element: document.createElement("video"),
+      label: "AI-generated",
+      unsupported: false,
+      failure: null,
+      started: true,
+      speaking: false,
+      idleEndsAt: null,
+      sessionEndsAt: null,
+      playbackBlocked: false,
+      resume: vi.fn(),
+    };
+    view.rerender(<ChatApp />);
+    expect(await screen.findByRole("region", { name: "Live avatar" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("complementary", { name: "Conversation inspector" })).toBeNull(),
+    );
+    // The saved preference is untouched; the header can bring it back mid-session.
+    expect(window.localStorage.getItem("ai4ia.rightCollapsed")).not.toBe("1");
+    await user.click(screen.getByRole("button", { name: "Open conversation inspector" }));
+    expect(screen.getByRole("complementary", { name: "Conversation inspector" })).toBeInTheDocument();
+
+    // A control: once the session ends, the docked inspector is simply open.
+    const liveAvatar = mocks.voiceAvatar;
+    mocks.voiceActive = false;
+    mocks.voiceAvatar = null;
+    view.rerender(<ChatApp />);
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Live avatar" })).toBeNull(),
+    );
+    expect(screen.getByRole("complementary", { name: "Conversation inspector" })).toBeInTheDocument();
+
+    // Reopening it was for that session only: the next one gets the room again.
+    mocks.voiceActive = true;
+    mocks.voiceAvatar = liveAvatar;
+    view.rerender(<ChatApp />);
+    expect(await screen.findByRole("region", { name: "Live avatar" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Conversation inspector" })).toBeNull();
+  });
 });
+

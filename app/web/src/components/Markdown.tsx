@@ -26,12 +26,47 @@ import {
   Fragment,
   cloneElement,
   isValidElement,
+  useEffect,
+  useRef,
+  useState,
   type ReactNode,
 } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { parseCitations, type CitationToken } from "@/lib/citations";
 import type { RetrievedSource } from "@/lib/types";
+
+// A fenced code block with a copy action. Copying reads the rendered text, so
+// it is exactly what the reader sees.
+function CodeBlock({ children }: { children: ReactNode }) {
+  const pre = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  const canCopy = typeof navigator !== "undefined" && Boolean(navigator.clipboard?.writeText);
+  return (
+    <div className="md-code">
+      <pre ref={pre}>{children}</pre>
+      {canCopy ? (
+        <button
+          type="button"
+          className="md-code-copy"
+          onClick={() => {
+            void navigator.clipboard
+              .writeText(pre.current?.textContent ?? "")
+              .then(() => setCopied(true), () => setCopied(false));
+          }}
+          aria-label={copied ? "Code copied" : "Copy code"}
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
 
 // What a click on a verified citation asks the app to open. `documentId` is
 // identity; `filename` is only ever a label.
@@ -236,6 +271,13 @@ export function Markdown({ content, onCitation, sources }: MarkdownProps) {
     li: ({ children }) => <li>{withCitations(children)}</li>,
     td: ({ children }) => <td>{withCitations(children)}</td>,
     th: ({ children }) => <th>{withCitations(children)}</th>,
+    pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+    // Wide tables scroll inside the reply instead of widening the page.
+    table: ({ children }) => (
+      <div className="md-table-scroll">
+        <table>{children}</table>
+      </div>
+    ),
   };
   return (
     <div className="md">

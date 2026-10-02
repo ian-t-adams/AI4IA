@@ -8,14 +8,18 @@
 import { useEffect, useState } from "react";
 
 import { canShowAdmin, fetchWhoAmI } from "@/lib/admin";
+import { Icon } from "./Icon";
 
 export function AdminLink({
   disabled = false,
   disabledReasonId,
+  compact = false,
 }: {
   disabled?: boolean;
   /** Id of a visible element (elsewhere on the page) describing why disabled, wired via aria-describedby. */
   disabledReasonId?: string;
+  /** Icon-only form for the collapsed navigation rail. */
+  compact?: boolean;
 }) {
   const [isAdmin, setIsAdmin] = useState(false);
 
@@ -38,14 +42,16 @@ export function AdminLink({
   return (
     <a
       href={disabled ? undefined : "/admin"}
-      className="sidebar-utility-action"
+      className={compact ? "icon-btn" : "sidebar-utility-action"}
       aria-disabled={disabled}
+      aria-label={compact ? "Admin" : undefined}
+      title={compact ? "Admin" : undefined}
       tabIndex={disabled ? 0 : undefined}
       aria-describedby={disabled && disabledReasonId ? disabledReasonId : undefined}
       onClick={disabled ? (event) => event.preventDefault() : undefined}
     >
-      <span aria-hidden="true">◆</span>
-      <span>Admin</span>
+      <Icon name="admin" />
+      {compact ? null : <span>Admin</span>}
     </a>
   );
 }

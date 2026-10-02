@@ -9,11 +9,22 @@ Inspector makes those choices visible; the API enforces them.
 
 1. Open your environment's web app and sign in with Microsoft Entra ID.
    Local development may instead use a configured development identity.
-2. Start a conversation or reopen one from the sidebar.
-3. Open the Conversation Inspector: **Setup** controls the model, instructions,
-   agent, tools, and voice; **Context** controls documents and memory; **Usage**
-   explains the recorded consumption.
+2. Start a conversation with **New chat**, or reopen one from the sidebar. The
+   sidebar groups conversations by how recently they changed and offers a search
+   field once the list is long. Its panel button collapses it to a slim rail.
+3. Open the Conversation Inspector with the settings button in the conversation
+   header, or select the model name there to go straight to its controls.
+   **Setup** controls the model, instructions, agent, tools, and voice;
+   **Context** controls documents and memory; **Usage** explains the recorded
+   consumption.
 4. Describe the outcome you need and attach or select only the relevant sources.
+
+**Document library**, **Photo avatars**, **Agents & workflows** and **Settings**
+open as pages in the same workspace. The browser's back button returns to the
+conversation, and a live voice session keeps running in a small player while a
+page is open. **Settings** holds appearance and accessibility options, deletion
+status, and links to help. On a phone, the menu button opens the sidebar and the
+inspector opens over the conversation.
 
 Features vary by deployment. A hidden control can mean the operator disabled the
 capability or the selected model cannot use it; it is not a permission you can
@@ -224,8 +235,13 @@ Settings apply to the **next connection** without silently reconnecting the
 current one. The API supplies the selected agent persona or saved conversation
 instructions; voice has no competing instructions field.
 
-You can type while connected. Typed turns save immediately but enter the live
-provider's context on its next connection. A failed microphone permission or
+You can also type while connected. The composer then shows **Send to**: with
+the live session selected (the default), a typed line goes to it, joins the
+voice transcript and is answered out loud. A line typed while the assistant is
+replying, or while you are speaking, waits and is sent as soon as it can be.
+Choose **Text chat** to send to the conversation's text model instead; that
+reply is not spoken, and it enters the live session's context on its next
+connection. A failed microphone permission or
 connection attempt does not create an empty conversation. If saving finalized
 turns fails, use **Retry** or **Discard**; stopping still releases the microphone
 and socket. A lost/muted microphone or unrecoverable audio context closes the
@@ -296,18 +312,28 @@ be deleted from the gallery; ask an operator to remove it.
 ### Talking with your avatar
 
 In **Photo avatars**, choose **Use in Voice Live** on a ready avatar. This selects
-Azure Speech and returns to the chat, where your avatar has a **Start talking**
-button above the composer. Selection alone does not open the microphone or start
+Azure Speech and returns to the conversation, where the avatar's portrait stands
+on a stage beside the transcript (above it on narrow or tall screens) with
+**Start talking**. Selection alone does not open the microphone or start
 billing. Choose **Start talking** (or the chat microphone) to speak with it using
 the current conversation's instructions and agent. Its live video speaks the
 replies, labelled **AI-generated** for the whole session.
 
-Speak into your microphone to talk with the live avatar. **Send** and Enter still
-use the conversation's separate text-chat model; those typed replies are not
-spoken by the avatar. Typed history is included when the next voice session
-connects. The voice status bar explains this distinction while connected.
+Speak, or type: while the session is connected, **Send to** is set to the avatar,
+so a typed line is answered out loud. Choose **Text chat** to send a line to the
+conversation's text model instead; that reply is not spoken.
 
-**Choose avatar** reopens the gallery; **Voice only** removes the avatar without
+The stage follows your screen. On a wide screen, the Conversation Inspector steps
+aside for the session; reopen it from the header at any time. **Focus view**
+gives the avatar the whole conversation area with captions, **Fill frame** crops
+the video to fill the stage, and **Full screen** enlarges the stage, label
+included. On a phone, the stage's buttons become a slim column beside the video.
+Before a session, the minimize button shrinks the stage to a slim bar above the
+composer; that choice is remembered, and choosing an avatar again brings the
+stage back. Opening another page keeps the session in a small player with
+**Return to conversation** and **End session**.
+
+**Choose avatar** opens the gallery; **Voice only** removes the avatar without
 changing the Speech voice. You can also use **Setup > Voice > Choose avatar**, or
 pick a ready avatar from the **Avatar** list with Azure Speech selected.
 Unavailable avatars and failed availability checks are explained explicitly;
@@ -492,6 +518,8 @@ still apply and modality coverage remains incomplete.
 | Photo avatars are missing | They are off by default and need Microsoft's Limited Access approval |
 | Can't use an avatar | Choose **Use in Voice Live** in the gallery. The avatar must be ready and verified, Azure Speech Voice Live must be available, and the browser must support avatar video. End an active session or finish saving its transcript before choosing another avatar |
 | An avatar session ended by itself | It ends after a stretch of silence or at its time limit; start Voice Live again |
+| A typed line isn't spoken | While connected, check that **Send to** is set to the live session or avatar, not **Text chat** |
+| The avatar looks small | Use **Focus view** or **Full screen**, or minimize other panels; the stage grows with the space it has |
 | Search or another tool fails | Its visible error/approval state; an enabled gate does not prove upstream entitlement |
 | An admin panel is unavailable | Resource wiring, API identity permissions, and source freshness |
 

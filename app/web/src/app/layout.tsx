@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./ui.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ClientTelemetryBoot } from "@/components/ClientTelemetryBoot";
 import { SkipLink } from "@/components/SkipLink";

@@ -27,6 +27,7 @@ import {
   VAD_THRESHOLD_MAX,
   VAD_THRESHOLD_MIN,
 } from "@/lib/voicePreferences";
+import { formatVoiceName } from "@/lib/voiceNames";
 
 // The sentinel option value for "no explicit pick — follow the default".
 // HTML <select> options can't carry a real null, so "" round-trips to/from it
@@ -280,7 +281,7 @@ export function VoiceSettingsPanel({
           >
             {voiceOptions.map((v) => (
               <option key={v} value={v}>
-                {v}
+                {formatVoiceName(v)}
               </option>
             ))}
           </select>

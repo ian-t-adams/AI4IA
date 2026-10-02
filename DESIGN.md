@@ -67,8 +67,17 @@ depend on color alone.
 ## Layout
 
 - The transcript and composer are the primary workspace.
-- Desktop uses a collapsible conversation sidebar, flexible chat canvas, and a
-  340-380px contextual inspector.
+- Desktop uses a conversation sidebar that collapses to an icon rail, a flexible
+  chat canvas, and a 340-380px contextual inspector, docked open by default from
+  1440px. Below 1100px the sidebar is a rail and the inspector a drawer; at 720px
+  and below the sidebar is a drawer too.
+- The library, photo avatars, agents & workflows and settings are pages in the
+  same shell, addressed by the URL hash. They never unmount the conversation: a
+  live session continues in a small floating player while one is open.
+- The chat canvas is a size container. A live avatar (or the chosen avatar
+  before a session) takes a stage beside the transcript when the canvas is at
+  least 720px wide and wider than 6:5, and above it otherwise. Focus view gives
+  the stage the whole canvas.
 - The inspector has one navigation level and progressive disclosure; do not put
   cards inside cards.
 - On narrow screens, the conversation sidebar and inspector become labelled
@@ -103,18 +112,33 @@ effective viewport. A `title` attribute is never the only explanation.
 
 ### Navigation
 
-The left rail owns conversations and true destinations. Docs, status, admin,
-account, and sign-out live in one utility/account area. The top bar contains only
-conversation identity and meaningful activity state.
+The left rail owns New chat, true destinations and conversations, grouped by
+recency and searchable once the list is long. Settings, docs, status, admin,
+account, and sign-out live in one utility/account area at its foot. The top bar
+contains only conversation identity, the model chip (which opens the model
+controls) and meaningful activity state; an idle conversation shows no status.
 
 ### Composer
 
 The composer provides one Attach action for server-advertised media, one live-voice
-microphone, the text field, and Send/Stop. Upload and processing state appears
+microphone, the text field, and Send/Stop. While a live session is connected, a
+visible **Send to** switch chooses where typed lines go: the live session (the
+default, answered out loud) or text chat. Upload and processing state appears
 inline. Image generation is a chat/tool capability rather than primary navigation.
 Upload routing follows the server-advertised ingest path. A document appears as
 selected context only after association succeeds, and in-flight uploads remain
 bound to the conversation that started them.
+
+### Live Stage
+
+The stage holds the chosen avatar's portrait with Start talking before a session
+(the lobby) and the live video during one. The frame keeps the media's aspect
+ratio and grows with its container. Wide, short stages put the copy and controls
+beside the picture; small, squarish ones move session controls into an icon rail.
+The AI-generated label is never covered: the state badge truncates and steps
+away on small frames, and full screen enlarges the whole stage, not the video.
+Fit/fill, focus view, full screen and minimizing are presentation only. Only
+Start talking or the microphone starts a session.
 
 ### Data and Governance
 

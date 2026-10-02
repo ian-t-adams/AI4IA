@@ -34,7 +34,7 @@ import {
 } from "@/lib/library";
 import { MediaPlayer } from "./MediaPlayer";
 import AnnotationsPanel from "./AnnotationsPanel";
-import { ModalShell } from "./ModalShell";
+import { SurfaceFrame, type SurfaceVariant } from "./ModalShell";
 import SharePanel from "./SharePanel";
 import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
@@ -146,12 +146,15 @@ export function LibraryPanel({
   onClose,
   onEditImage,
   editImageScope = null,
+  variant = "dialog",
 }: {
   onClose: () => void;
   /** Present only while image editing is available in an active conversation. */
   onEditImage?: (doc: LibraryDocument) => void;
   /** The active conversation's library selection; null means every document. */
   editImageScope?: string[] | null;
+  /** "page" renders the library as a destination page inside the shell. */
+  variant?: SurfaceVariant;
 }) {
   const editableImage = (doc: LibraryDocument) =>
     onEditImage !== undefined &&
@@ -371,7 +374,8 @@ export function LibraryPanel({
 
   return (
     <>
-      <ModalShell
+      <SurfaceFrame
+        variant={variant}
         ariaLabel="Document library"
         title="Document library"
         closeLabel="Close library"
@@ -388,7 +392,7 @@ export function LibraryPanel({
           isn&apos;t queried.
         </p>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div className="library-upload" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {analyzers.length > 0 && (
             <div
               style={{ fontSize: "0.8em", color: "var(--fg-muted)", display: "flex", flexDirection: "column", gap: 4 }}
@@ -799,7 +803,7 @@ export function LibraryPanel({
             ))}
           </div>
         )}
-      </ModalShell>
+      </SurfaceFrame>
       {playing && (
         <MediaPlayer doc={playing} onClose={() => setPlaying(null)} />
       )}

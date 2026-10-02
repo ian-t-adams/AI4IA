@@ -24,6 +24,14 @@ import { MemoryProvenance } from "./MemoryProvenance";
 import { Markdown, type CitationTarget } from "@/components/Markdown";
 import { msToTimecode } from "@/lib/citations";
 import { DOCS_INDEX_URL, STATUS_URL, USER_GUIDE_URL } from "@/lib/docs";
+import { DialogFrame } from "./DialogFrame";
+import { Icon, type IconName } from "./Icon";
+
+export interface EmptyAction {
+  label: string;
+  icon: IconName;
+  onClick: () => void;
+}
 
 interface DisplayMessage {
   id: string;
@@ -268,6 +276,7 @@ function ImageAttachmentView({
 }) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
 
   useEffect(() => {
     let objectUrl: string | null = null;
@@ -299,17 +308,25 @@ function ImageAttachmentView({
   return (
     <figure className="generated-image">
       {url ? (
-        // eslint-disable-next-line @next/next/no-img-element -- authenticated blob object URL; next/image adds no value
-        <img
-          src={url}
-          alt={caption}
-          style={{
-            maxWidth: "100%",
-            borderRadius: 10,
-            border: "1px solid var(--border)",
-            display: "block",
-          }}
-        />
+        <button
+          type="button"
+          className="generated-image-open"
+          onClick={() => setViewerOpen(true)}
+        >
+          <span className="visually-hidden">Open full size: </span>
+          {/* eslint-disable-next-line @next/next/no-img-element -- authenticated blob object URL; next/image adds no value */}
+          <img
+            src={url}
+            alt={caption}
+            style={{
+              maxWidth: "100%",
+              maxHeight: 520,
+              borderRadius: 10,
+              border: "1px solid var(--border)",
+              display: "block",
+            }}
+          />
+        </button>
       ) : (
         <div
           aria-label="Loading image"
@@ -376,6 +393,27 @@ function ImageAttachmentView({
             Edit
           </button>
         </div>
+      ) : null}
+      {viewerOpen && url ? (
+        <DialogFrame
+          ariaLabel={`Image: ${caption}`}
+          onClose={() => setViewerOpen(false)}
+          overlayPadding={12}
+        >
+          <div className="image-viewer" onClick={(event) => event.stopPropagation()}>
+            {/* eslint-disable-next-line @next/next/no-img-element -- authenticated blob object URL */}
+            <img src={url} alt={caption} />
+            <div className="image-viewer-bar">
+              <p>{caption}</p>
+              <a className="btn btn-sm" href={url} download={`ai4ia-image-${attachment.id}.png`}>
+                Download
+              </a>
+              <button type="button" className="btn btn-sm" onClick={() => setViewerOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </DialogFrame>
       ) : null}
     </figure>
   );
@@ -586,6 +624,32 @@ function DocumentAttachmentView({ attachment }: { attachment: MessageAttachment 
   );
 }
 
+function CopyAction({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return null;
+  return (
+    <button
+      type="button"
+      className="message-action"
+      onClick={() => {
+        void navigator.clipboard.writeText(text).then(
+          () => setCopied(true),
+          () => setCopied(false),
+        );
+      }}
+      aria-label={copied ? "Message copied" : "Copy message"}
+    >
+      <Icon name={copied ? "check" : "copy"} size={16} />
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 function Bubble({
   msg,
   speechState,
@@ -607,65 +671,23 @@ function Bubble({
   if (isSystem) return null;
   const label = isUser ? "You" : "Assistant";
   const speakable = !isUser && !msg.pending && msg.content.trim().length > 0;
+  const images = msg.attachments?.filter((attachment) =>
+    ["image", "image_error"].includes(attachment.kind),
+  ) ?? [];
   return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: isUser ? "flex-end" : "flex-start",
-        padding: "6px 0",
-      }}
-    >
-      <div
-        style={{
-          maxWidth: "min(720px, 80%)",
-          padding: "12px 16px",
-          borderRadius: 14,
-          background: isUser ? "var(--user-bubble)" : "var(--assistant-bubble)",
-          color: isUser ? "var(--user-bubble-fg)" : "var(--assistant-bubble-fg)",
-          border: isUser ? "none" : "1px solid var(--border)",
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
-        }}
-      >
-        <div
-          style={{
-            fontSize: "0.7em",
-            textTransform: "uppercase",
-            letterSpacing: 0.6,
-            opacity: 0.7,
-            marginBottom: 4,
-            display: "flex",
-            gap: 6,
-            alignItems: "center",
-            justifyContent: isUser ? "flex-end" : "flex-start",
-          }}
-        >
-          <span>{label}</span>
-          {msg.source === "voice" && (
-            <span
-              title="From a Voice Live conversation"
-              aria-label="from voice"
-              style={{ textTransform: "none", letterSpacing: 0 }}
-            >
-              🎧
-            </span>
-          )}
-          {msg.agent && (
-            <span
-              style={{
-                textTransform: "none",
-                letterSpacing: 0,
-                padding: "1px 6px",
-                borderRadius: 999,
-                background: "var(--accent)",
-                color: "var(--accent-fg)",
-                fontWeight: 600,
-              }}
-            >
-              @{msg.agent}
-            </span>
-          )}
-        </div>
+    <article className={`message ${isUser ? "message-user" : "message-assistant"}`}>
+      <div className="message-meta">
+        {/* The role is announced, not drawn: alignment and the bubble carry it visually. */}
+        <span className="visually-hidden">{label}</span>
+        {msg.source === "voice" && (
+          <span className="message-tag" title="From a Voice Live conversation" aria-label="from voice">
+            <Icon name="mic" size={14} />
+            Voice
+          </span>
+        )}
+        {msg.agent && <span className="message-tag">@{msg.agent}</span>}
+      </div>
+      <div className="message-body">
         {isUser ? (
           msg.content
         ) : (
@@ -683,7 +705,10 @@ function Bubble({
               ▍
             </span>
           )
-        ) : msg.steps && msg.steps.length > 0 ? (
+        ) : null}
+      </div>
+      <div className="message-details">
+        {!msg.pending && msg.steps && msg.steps.length > 0 ? (
           <ActivityPanel steps={msg.steps} live={false} />
         ) : null}
         {/* Annotate-only safety verdicts, shown once the turn is settled so a
@@ -717,49 +742,40 @@ function Bubble({
             <ExecutionReceiptPanel receipt={msg.executionReceipt} />
           ) : null}
         </div>
-        {msg.attachments?.some((attachment) =>
-          ["image", "image_error"].includes(attachment.kind)
-        ) ? (
-          <ol
-            className="image-comparison-grid"
-            aria-label={
-              msg.attachments.filter((attachment) =>
-                ["image", "image_error"].includes(attachment.kind)
-              )
-                .length > 1
-                ? "Image model comparison"
-                : "Generated image"
-            }
-          >
-            {msg.attachments
-              .filter((attachment) =>
-                ["image", "image_error"].includes(attachment.kind)
-              )
-              .map((attachment) => (
-                <li key={attachment.id}>
-                  {attachment.kind === "image" ? (
-                    <ImageAttachmentView
-                      attachment={attachment}
-                      onEdit={msg.pending ? undefined : onEditImage}
-                    />
-                  ) : (
-                    <ImageFailureView attachment={attachment} />
-                  )}
-                </li>
-              ))}
-          </ol>
-        ) : null}
-        {msg.attachments?.map((att) =>
-          att.kind === "video" ? (
-            <VideoAttachmentView key={att.id} attachment={att} />
-          ) : att.kind === "document" ? (
-            <DocumentAttachmentView key={att.id} attachment={att} />
-          ) : null,
-        )}
-        {speakable && (
-          <div style={{ marginTop: 8 }}>
+      </div>
+      {images.length > 0 ? (
+        <ol
+          className="image-comparison-grid"
+          aria-label={images.length > 1 ? "Image model comparison" : "Generated image"}
+        >
+          {images.map((attachment) => (
+            <li key={attachment.id}>
+              {attachment.kind === "image" ? (
+                <ImageAttachmentView
+                  attachment={attachment}
+                  onEdit={msg.pending ? undefined : onEditImage}
+                />
+              ) : (
+                <ImageFailureView attachment={attachment} />
+              )}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {msg.attachments?.map((att) =>
+        att.kind === "video" ? (
+          <VideoAttachmentView key={att.id} attachment={att} />
+        ) : att.kind === "document" ? (
+          <DocumentAttachmentView key={att.id} attachment={att} />
+        ) : null,
+      )}
+      {!isUser && !msg.pending && msg.content.trim().length > 0 ? (
+        <div className="message-actions">
+          <CopyAction text={msg.content} />
+          {speakable && (
             <button
               type="button"
+              className="message-action"
               onClick={() => onToggleSpeak(msg.id, msg.content)}
               aria-pressed={speechState === "playing"}
               aria-busy={speechState === "busy"}
@@ -770,40 +786,18 @@ function Bubble({
                     ? "Preparing audio"
                     : "Read message aloud"
               }
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "4px 10px",
-                borderRadius: 999,
-                border: "1px solid var(--border)",
-                background:
-                  speechState === "playing" ? "var(--accent)" : "transparent",
-                color:
-                  speechState === "playing"
-                    ? "var(--accent-fg)"
-                    : "var(--fg-muted)",
-                fontSize: "0.78em",
-                cursor: speechState === "busy" ? "wait" : "pointer",
-              }}
             >
-              <span aria-hidden="true">
-                {speechState === "playing"
-                  ? "■"
-                  : speechState === "busy"
-                    ? "…"
-                    : "▶"}
-              </span>
+              <Icon name={speechState === "playing" ? "stop" : "speaker"} size={16} />
               {speechState === "playing"
                 ? "Stop"
                 : speechState === "busy"
                   ? "Loading…"
                   : "Speak"}
             </button>
-          </div>
-        )}
-      </div>
-    </div>
+          )}
+        </div>
+      ) : null}
+    </article>
   );
 }
 
@@ -814,6 +808,7 @@ export function MessageList({
   onCitation,
   onInspectMemory,
   onEditImage,
+  emptyActions,
 }: {
   messages: DisplayMessage[];
   conversationId?: string | null;
@@ -822,6 +817,8 @@ export function MessageList({
   onInspectMemory?: (memoryId: string | null) => void;
   /** Present only while the server reports image editing available. */
   onEditImage?: (attachment: MessageAttachment) => void;
+  /** Shortcuts offered in an empty conversation (attach, talk, generate). */
+  emptyActions?: EmptyAction[];
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -866,119 +863,81 @@ export function MessageList({
   };
 
   return (
-    <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+    <div className="message-viewport">
       <div
         ref={viewportRef}
         role="log"
         aria-live="polite"
         aria-label="Conversation"
         onScroll={updateScrollPosition}
-        style={{
-          height: "100%",
-          overflowY: "auto",
-          padding: `24px max(24px, 6%) ${showJumpToLatest ? "80px" : "24px"}`,
-        }}
+        className="message-scroll"
       >
-        {messages.length === 0 ? (
-          <div
-            style={{
-              height: "100%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "var(--fg-muted)",
-              textAlign: "center",
-            }}
-          >
-            <div style={{ maxWidth: 520 }}>
-              <p style={{ fontSize: "1.3em", marginBottom: 8, color: "var(--fg)" }}>
-                Start a conversation
+        <div
+          className="message-column"
+          style={showJumpToLatest ? { paddingBottom: 80 } : undefined}
+        >
+          {messages.length === 0 ? (
+            <div className="message-empty">
+              <h2>Start a conversation</h2>
+              <p>
+                Ask anything, attach a document to ground the reply, type <strong>/</strong> for
+                commands or <strong>@</strong> to bring in an agent.
               </p>
-              <p style={{ marginBottom: 12 }}>
-                Type <strong>/</strong> for commands, <strong>@</strong> to call an agent, or
-                attach a file to ground the reply. Pick a model only when you need to.
-              </p>
-              <div
-                style={{
-                  display: "flex",
-                  gap: 12,
-                  justifyContent: "center",
-                  flexWrap: "wrap",
-                  fontSize: "0.9em",
-                }}
-              >
-                <a
-                  href={USER_GUIDE_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ color: "var(--accent)" }}
-                >
+              {emptyActions && emptyActions.length > 0 ? (
+                <div className="message-empty-actions">
+                  {emptyActions.map((action) => (
+                    <button
+                      key={action.label}
+                      type="button"
+                      className="btn"
+                      onClick={action.onClick}
+                    >
+                      <Icon name={action.icon} size={18} />
+                      {action.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <div className="message-empty-links">
+                <a href={USER_GUIDE_URL} target="_blank" rel="noreferrer">
                   User guide
                   <span className="visually-hidden"> (opens in a new tab)</span>
                 </a>
-                <a
-                  href={DOCS_INDEX_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ color: "var(--accent)" }}
-                >
+                <a href={DOCS_INDEX_URL} target="_blank" rel="noreferrer">
                   Documentation
                   <span className="visually-hidden"> (opens in a new tab)</span>
                 </a>
-                <a
-                  href={STATUS_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ color: "var(--accent)" }}
-                >
+                <a href={STATUS_URL} target="_blank" rel="noreferrer">
                   Deployment status
                   <span className="visually-hidden"> (opens in a new tab)</span>
                 </a>
               </div>
             </div>
-          </div>
-        ) : (
-          messages.map((m) => (
-            <Bubble
-              key={m.id}
-              msg={m}
-              speechState={
-                playback.activeId === m.id
-                  ? "playing"
-                  : playback.busyId === m.id
-                    ? "busy"
-                    : "idle"
-              }
-              onToggleSpeak={playback.toggle}
-              onCitation={onCitation}
-              onInspectMemory={onInspectMemory}
-              onEditImage={onEditImage}
-            />
-          ))
-        )}
-        <div ref={endRef} />
+          ) : (
+            messages.map((m) => (
+              <Bubble
+                key={m.id}
+                msg={m}
+                speechState={
+                  playback.activeId === m.id
+                    ? "playing"
+                    : playback.busyId === m.id
+                      ? "busy"
+                      : "idle"
+                }
+                onToggleSpeak={playback.toggle}
+                onCitation={onCitation}
+                onInspectMemory={onInspectMemory}
+                onEditImage={onEditImage}
+              />
+            ))
+          )}
+          <div ref={endRef} />
+        </div>
       </div>
       {showJumpToLatest && (
-        <button
-          type="button"
-          onClick={jumpToLatest}
-          style={{
-            position: "absolute",
-            left: "50%",
-            bottom: 16,
-            transform: "translateX(-50%)",
-            minHeight: 44,
-            padding: "8px 14px",
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-            background: "var(--bg-elevated)",
-            color: "var(--fg)",
-            font: "inherit",
-            fontWeight: 650,
-            cursor: "pointer",
-            zIndex: 1,
-          }}
-        >
+        <button type="button" className="jump-to-latest" onClick={jumpToLatest}>
+          <Icon name="arrow-down" size={16} />
           Jump to latest
         </button>
       )}

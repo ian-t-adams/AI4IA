@@ -762,10 +762,12 @@ avatar byte stays on the existing governed path: browser → FastAPI
     unknown voice usage and `avatar` evidence.
 - **Web.**
   - **Gallery to voice.** A ready, usable avatar offers **Use in Voice Live**.
-    This selects Azure Speech and the owned record, closes the gallery and shows
-    **Start talking** in chat. Selection alone opens neither the microphone nor
-    a billed session. A current connection, unsaved transcript, unavailable
-    provider or unsupported browser disables the action with a reason.
+    This selects Azure Speech and the owned record, returns to the conversation
+    and puts the portrait on its stage with **Start talking**. The stage can be
+    minimized to a slim bar (remembered per browser), which shows no likeness.
+    Selection alone opens neither the microphone nor a billed session. A current
+    connection, unsaved transcript, unavailable provider or unsupported browser
+    disables the action with a reason.
   - **Picker and recovery.** **Choose avatar** is available in voice settings
     even before the first avatar exists or Azure Speech is selected. Only the
     owner's ready, `usable` records are selectable. Refreshing the gallery
@@ -782,18 +784,30 @@ avatar byte stays on the existing governed path: browser → FastAPI
     - The microphone's outgoing queue is bounded to 128 KiB, roughly two seconds
       of base64 PCM16. Overflow stops the session with an explicit error rather
       than dropping input, accumulating stale audio or replaying it on reconnect.
-    - Typed **Send** remains a separate HTTP/SSE chat request, not an input to the
-      live avatar. The connected status explicitly tells the owner to speak into
-      the microphone and that typed replies are not spoken.
+    - While connected, typed lines go to the live session by default (the
+      composer's **Send to** switch). Each line is a user `input_text` item plus a
+      configuration-free `response.create`, the frames the relay already governs
+      for seeded history. Upstream refuses a second `response.create` while one
+      is active, and that refusal ends the session, so lines wait while a reply is
+      active, while the owner is speaking and until the reply to that speech
+      starts, released after four seconds if none does. **Text chat** sends a
+      separate HTTP/SSE request instead, which the avatar does not speak.
   - **Fallback.** Without MediaSource or the codec, the UI explains the
     limitation and offers an explicit **Voice only** choice. The transport
     still refuses to request avatar media it cannot play.
   - **Stage.** `app/web/src/components/LiveAvatarStage.tsx` keeps the
     `AI-generated` label visible, counts down the idle and session limits, and
     offers **End session**.
-    - The label is drawn over the video, so the video can't leave the stage.
-      Picture-in-picture, fullscreen, remote playback and the context menu are
-      disabled, and entering either mode anyway exits it at once.
+    - The frame keeps the video's own aspect ratio and grows with the
+      conversation area: beside the transcript on wide screens, above it on
+      narrow ones, or across the whole area in **Focus view** (with captions).
+      Small stages move their controls into an icon rail. The docked inspector
+      steps aside for a session until the owner reopens it.
+    - The label is drawn over the video, so the video can't leave the stage. The
+      state badge never covers it: it truncates, and steps away on small frames.
+      The video element's own picture-in-picture, fullscreen, remote playback and
+      context menu are disabled, and entering either mode anyway exits it at
+      once. The stage's **Full screen** enlarges the whole stage, label included.
     - The countdowns are `role="timer"`, which isn't announced. A separate status
       region speaks once when a warning appears and once about ten seconds before
       the end.

@@ -121,7 +121,7 @@ describe("Composer", () => {
     expect(textarea).toHaveValue("変換中");
   });
 
-  it("autosizes from the 64px minimum to an eight-line cap before scrolling", () => {
+  it("autosizes from the 52px minimum to an eight-line cap before scrolling", () => {
     const { textarea } = setup();
     let scrollHeight = 40;
     Object.defineProperty(textarea, "scrollHeight", {
@@ -130,7 +130,7 @@ describe("Composer", () => {
     });
 
     fireEvent.change(textarea, { target: { value: "short" } });
-    expect(textarea.style.height).toBe("64px");
+    expect(textarea.style.height).toBe("52px");
     expect(textarea.style.overflowY).toBe("hidden");
 
     scrollHeight = 400;
@@ -142,7 +142,7 @@ describe("Composer", () => {
 
     scrollHeight = 0;
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(textarea.style.height).toBe("64px");
+    expect(textarea.style.height).toBe("52px");
     expect(textarea.style.overflowY).toBe("hidden");
   });
 

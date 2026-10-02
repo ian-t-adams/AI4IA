@@ -4,6 +4,7 @@ import { useState, type KeyboardEvent } from "react";
 import type { AgentSummary, ModelEntry } from "@/lib/types";
 import { AgentBuilder } from "./AgentBuilder";
 import { DialogFrame } from "./DialogFrame";
+import type { SurfaceVariant } from "./ModalShell";
 import { WorkflowBuilder } from "./WorkflowBuilder";
 import { McpServerBuilder } from "./McpServerBuilder";
 
@@ -23,6 +24,7 @@ export function StudioPanel({
   onAgentsChanged,
   onRun,
   onClose,
+  variant = "dialog",
 }: {
   models: ModelEntry[];
   agents: AgentSummary[];
@@ -31,11 +33,14 @@ export function StudioPanel({
   onAgentsChanged: () => Promise<void>;
   onRun: (sessionId: string) => void;
   onClose: () => void;
+  /** "page" renders the studio as a destination page inside the shell. */
+  variant?: SurfaceVariant;
 }) {
   const [tab, setTab] = useState<Tab>("agents");
   const tabs: Tab[] = customToolsEnabled
     ? ["agents", "workflows", "tools"]
     : ["agents", "workflows"];
+  const page = variant === "page";
 
   const selectTab = (nextTab: Tab, focus = false) => {
     setTab(nextTab);
@@ -54,83 +59,81 @@ export function StudioPanel({
     selectTab(tabs[nextIndex], true);
   };
 
-  return (
-    <DialogFrame
-      ariaLabel="Agents and workflows builder"
-      onClose={onClose}
-      zIndex={50}
-      overlayPadding={8}
+  const surface = (
+    <div
+      data-testid="studio-surface"
+      className="studio-surface"
+      onClick={page ? undefined : (event) => event.stopPropagation()}
+      style={{
+        background: page ? undefined : "var(--bg-elevated)",
+        color: "var(--fg)",
+        width: page ? "100%" : "min(880px, 100%)",
+        maxWidth: "100%",
+        height: page ? "min(760px, calc(100dvh - 180px))" : "min(680px, 100%)",
+        minHeight: page ? 480 : undefined,
+        maxHeight: "100%",
+        minWidth: 0,
+        borderRadius: "var(--radius)",
+        border: "1px solid var(--border)",
+        padding: "clamp(12px, 3vw, 24px)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 16,
+        overflow: "hidden",
+        ...(page ? { background: "var(--bg-elevated)" } : {}),
+      }}
     >
       <div
-        data-testid="studio-surface"
-        onClick={(event) => event.stopPropagation()}
         style={{
-          background: "var(--bg-elevated)",
-          color: "var(--fg)",
-          width: "min(880px, 100%)",
-          maxWidth: "100%",
-          height: "min(680px, 100%)",
-          maxHeight: "100%",
-          minWidth: 0,
-          borderRadius: "var(--radius)",
-          border: "1px solid var(--border)",
-          padding: "clamp(12px, 3vw, 24px)",
           display: "flex",
-          flexDirection: "column",
-          gap: 16,
-          overflow: "hidden",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 8,
+          minWidth: 0,
         }}
       >
         <div
+          role="tablist"
+          aria-label="Studio sections"
           style={{
             display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            flexWrap: "wrap",
             gap: 8,
+            flex: "1 1 auto",
             minWidth: 0,
+            maxWidth: "100%",
+            overflowX: "auto",
+            paddingBottom: 2,
           }}
         >
-          <div
-            role="tablist"
-            aria-label="Studio sections"
-            style={{
-              display: "flex",
-              gap: 8,
-              flex: "1 1 auto",
-              minWidth: 0,
-              maxWidth: "100%",
-              overflowX: "auto",
-              paddingBottom: 2,
-            }}
-          >
-            {tabs.map((id) => (
-              <button
-                key={id}
-                id={`studio-tab-${id}`}
-                type="button"
-                role="tab"
-                aria-selected={tab === id}
-                aria-controls="studio-tabpanel"
-                tabIndex={tab === id ? 0 : -1}
-                onClick={() => selectTab(id)}
-                onKeyDown={onTabKeyDown}
-                style={{
-                  minHeight: 44,
-                  flex: "0 0 auto",
-                  padding: "8px 16px",
-                  borderRadius: 8,
-                  border: "1px solid var(--border)",
-                  background: tab === id ? "var(--accent)" : "var(--bg)",
-                  color: tab === id ? "var(--accent-fg)" : "var(--fg)",
-                  fontWeight: tab === id ? 600 : 400,
-                  cursor: "pointer",
-                }}
-              >
-                {TAB_LABELS[id]}
-              </button>
-            ))}
-          </div>
+          {tabs.map((id) => (
+            <button
+              key={id}
+              id={`studio-tab-${id}`}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              aria-controls="studio-tabpanel"
+              tabIndex={tab === id ? 0 : -1}
+              onClick={() => selectTab(id)}
+              onKeyDown={onTabKeyDown}
+              style={{
+                minHeight: 44,
+                flex: "0 0 auto",
+                padding: "8px 16px",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                background: tab === id ? "var(--accent)" : "var(--bg)",
+                color: tab === id ? "var(--accent-fg)" : "var(--fg)",
+                fontWeight: tab === id ? 600 : 400,
+                cursor: "pointer",
+              }}
+            >
+              {TAB_LABELS[id]}
+            </button>
+          ))}
+        </div>
+        {page ? null : (
           <button
             type="button"
             onClick={onClose}
@@ -148,35 +151,48 @@ export function StudioPanel({
           >
             ✕
           </button>
-        </div>
-
-        <div
-          id="studio-tabpanel"
-          role="tabpanel"
-          aria-labelledby={`studio-tab-${tab}`}
-          tabIndex={0}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            minHeight: 0,
-            display: "flex",
-            overflow: "auto",
-          }}
-        >
-          {tab === "agents" ? (
-            <AgentBuilder
-              agents={agents}
-              models={models}
-              customToolsEnabled={customToolsEnabled}
-              onChanged={onAgentsChanged}
-            />
-          ) : tab === "tools" ? (
-            <McpServerBuilder />
-          ) : (
-            <WorkflowBuilder agents={agents} runModel={runModel} onRun={onRun} />
-          )}
-        </div>
+        )}
       </div>
+
+      <div
+        id="studio-tabpanel"
+        role="tabpanel"
+        aria-labelledby={`studio-tab-${tab}`}
+        tabIndex={0}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          minHeight: 0,
+          display: "flex",
+          overflow: "auto",
+        }}
+      >
+        {tab === "agents" ? (
+          <AgentBuilder
+            agents={agents}
+            models={models}
+            customToolsEnabled={customToolsEnabled}
+            onChanged={onAgentsChanged}
+          />
+        ) : tab === "tools" ? (
+          <McpServerBuilder />
+        ) : (
+          <WorkflowBuilder agents={agents} runModel={runModel} onRun={onRun} />
+        )}
+      </div>
+    </div>
+  );
+
+  if (page) return surface;
+
+  return (
+    <DialogFrame
+      ariaLabel="Agents and workflows builder"
+      onClose={onClose}
+      zIndex={50}
+      overlayPadding={8}
+    >
+      {surface}
     </DialogFrame>
   );
 }

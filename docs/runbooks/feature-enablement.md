@@ -1706,7 +1706,8 @@ the outcome:
    avatar are all gone.
 5. Confirm the usage ledger holds one known $2 estimate for the create.
 6. **Live avatar (Phase 2).** This needs Speech Voice Live enabled. In the gallery,
-   choose **Use in Voice Live** on a ready avatar, then **Start talking** in chat.
+   choose **Use in Voice Live** on a ready avatar, then **Start talking** on the
+   conversation's avatar stage.
    Selection must switch to Azure Speech without opening the microphone or a
    billed session. The start action opens the existing API Container App socket,
    whose relay reaches the separately scoped APIM Voice Live API.

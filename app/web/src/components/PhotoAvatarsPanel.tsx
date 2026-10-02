@@ -13,7 +13,6 @@ import {
   useId,
   useRef,
   useState,
-  type CSSProperties,
   type FormEvent,
   type KeyboardEvent,
 } from "react";
@@ -54,28 +53,8 @@ import {
   type PhotoAvatarLimits,
   type PhotoAvatarReportReason,
 } from "@/lib/photoAvatars";
-import { primaryBtn, secondaryBtn } from "./builderStyles";
-import { ModalShell } from "./ModalShell";
+import { ModalShell, SurfaceFrame, type SurfaceVariant } from "./ModalShell";
 import { PhotoAvatarPreview } from "./PhotoAvatarPreview";
-
-const compactBtn: CSSProperties = {
-  ...secondaryBtn,
-  minHeight: 36,
-  padding: "6px 12px",
-  fontSize: "0.85rem",
-};
-const compactPrimaryBtn: CSSProperties = {
-  ...primaryBtn,
-  minHeight: compactBtn.minHeight,
-  padding: compactBtn.padding,
-  fontSize: compactBtn.fontSize,
-};
-const dangerBtn: CSSProperties = {
-  ...compactBtn,
-  border: "1px solid var(--danger)",
-  background: "var(--danger)",
-  color: "var(--danger-fg)",
-};
 
 type ListState =
   | { phase: "loading" }
@@ -394,7 +373,7 @@ function AvatarItem({
           checks have stopped.{" "}
           <button
             type="button"
-            style={compactBtn}
+            className="btn btn-sm"
             onClick={resume}
             aria-label={`Check the status of ${avatar.displayName}`}
           >
@@ -439,7 +418,7 @@ function AvatarItem({
           <span className="photo-avatar-confirm-text">Delete permanently?</span>
           <button
             type="button"
-            style={dangerBtn}
+            className="btn btn-sm btn-danger"
             onClick={() => {
               setConfirming(false);
               onDelete(avatar);
@@ -448,7 +427,7 @@ function AvatarItem({
           >
             Delete
           </button>
-          <button ref={keepRef} type="button" style={compactBtn} onClick={keep}>
+          <button ref={keepRef} type="button" className="btn btn-sm" onClick={keep}>
             Keep
           </button>
         </div>
@@ -458,7 +437,7 @@ function AvatarItem({
             <>
               <button
                 type="button"
-                style={compactPrimaryBtn}
+                className="btn btn-sm btn-primary"
                 disabled={useReason !== null}
                 aria-describedby={useReason ? useReasonId : undefined}
                 onClick={() => onUse(avatar)}
@@ -472,7 +451,7 @@ function AvatarItem({
           {ready && reportable ? (
             <button
               type="button"
-              style={compactBtn}
+              className="btn btn-sm"
               onClick={() => onReport(avatar)}
               aria-label={`Report a problem with ${avatar.displayName}`}
             >
@@ -482,7 +461,7 @@ function AvatarItem({
           <button
             ref={deleteRef}
             type="button"
-            style={compactBtn}
+            className="btn btn-sm"
             disabled={blocked}
             onClick={() => setConfirming(true)}
             aria-label={`Delete ${avatar.displayName}`}
@@ -710,13 +689,13 @@ function CreateAvatarForm({
       <div className="photo-avatar-form-actions">
         <button
           type="submit"
-          style={primaryBtn}
+          className="btn btn-primary"
           disabled={!canSubmit}
           aria-describedby={hint ? ids.submitHint : undefined}
         >
           {submitting ? "Creating…" : "Create avatar"}
         </button>
-        <button type="button" style={secondaryBtn} disabled={submitting} onClick={onCancel}>
+        <button type="button" className="btn" disabled={submitting} onClick={onCancel}>
           Cancel
         </button>
       </div>
@@ -802,7 +781,7 @@ function ReportDialog({
           <p role="status">Thanks. Your report was recorded with this avatar.</p>
           {microsoftLink ? <p>You can also {microsoftLink}.</p> : null}
           <div className="photo-avatar-form-actions">
-            <button ref={doneRef} type="button" style={primaryBtn} onClick={onClose}>
+            <button ref={doneRef} type="button" className="btn btn-primary" onClick={onClose}>
               Done
             </button>
           </div>
@@ -849,10 +828,10 @@ function ReportDialog({
             </p>
           ) : null}
           <div className="photo-avatar-form-actions">
-            <button type="submit" style={primaryBtn} disabled={!canSend}>
+            <button type="submit" className="btn btn-primary" disabled={!canSend}>
               {sending ? "Sending…" : "Send report"}
             </button>
-            <button type="button" style={secondaryBtn} disabled={sending} onClick={onClose}>
+            <button type="button" className="btn" disabled={sending} onClick={onClose}>
               Cancel
             </button>
           </div>
@@ -866,10 +845,13 @@ export function PhotoAvatarsPanel({
   onClose,
   onUse,
   useDisabledReason = null,
+  variant = "dialog",
 }: {
   onClose: () => void;
   onUse?: (avatar: PhotoAvatar) => void;
   useDisabledReason?: string | null;
+  /** "page" renders the gallery as a destination page inside the shell. */
+  variant?: SurfaceVariant;
 }) {
   const [config, setConfig] = useState<PhotoAvatarConfig | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -1094,7 +1076,8 @@ export function PhotoAvatarsPanel({
 
   return (
     <>
-      <ModalShell
+      <SurfaceFrame
+        variant={variant}
         ariaLabel="Photo avatars"
         title="Photo avatars"
         closeLabel="Close photo avatars"
@@ -1112,9 +1095,10 @@ export function PhotoAvatarsPanel({
           {onUse ? (
             <>
               <p className="photo-avatar-intro">
-                Choose Use in Voice Live, then choose Start talking in chat. Your avatar speaks
-                the replies through Azure Speech. Avatar time is billed while the session is
-                connected, even when nobody is talking.
+                Choose Use in Voice Live to put an avatar on your conversation&apos;s stage, then
+                choose Start talking. Your avatar speaks the replies through Azure Speech, and you
+                can speak or type to it. Avatar time is billed while the session is connected, even
+                when nobody is talking.
               </p>
               {liveUseDisabledReason && liveUseDisabledReason !== blockedReason ? (
                 <p role="status" className="photo-avatar-note">{liveUseDisabledReason}</p>
@@ -1152,7 +1136,7 @@ export function PhotoAvatarsPanel({
                     <button
                       ref={toggleRef}
                       type="button"
-                      style={formOpen ? secondaryBtn : primaryBtn}
+                      className={formOpen ? "btn" : "btn btn-primary"}
                       aria-expanded={formOpen}
                       aria-controls={config ? formId : undefined}
                       aria-describedby={blockedReason ? blockedId : undefined}
@@ -1169,7 +1153,7 @@ export function PhotoAvatarsPanel({
                     {configError && !config ? (
                       <>
                         {" "}
-                        <button type="button" style={compactBtn} onClick={reload}>
+                        <button type="button" className="btn btn-sm" onClick={reload}>
                           Try again
                         </button>
                       </>
@@ -1196,7 +1180,7 @@ export function PhotoAvatarsPanel({
                 ) : list.phase === "error" ? (
                   <div role="alert" className="studio-alert photo-avatar-load-error">
                     <span>Your avatars couldn&apos;t be loaded. {list.message}</span>
-                    <button type="button" style={compactBtn} onClick={reload}>
+                    <button type="button" className="btn btn-sm" onClick={reload}>
                       Try again
                     </button>
                   </div>
@@ -1230,7 +1214,7 @@ export function PhotoAvatarsPanel({
             </>
           )}
         </div>
-      </ModalShell>
+      </SurfaceFrame>
       {reporting && config?.feedback ? (
         <ReportDialog
           key={reporting.id}

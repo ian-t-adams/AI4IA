@@ -1,19 +1,19 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { SettingsPanel } from "./SettingsPanel";
+import { AppearanceSettings, SettingsPage } from "./SettingsPanel";
 import { ThemeProvider } from "./ThemeProvider";
 
 afterEach(cleanup);
 
-describe("SettingsPanel", () => {
+describe("AppearanceSettings", () => {
   it("keeps the high-contrast accent explanation at full contrast, outside the dimmed disabled fieldset", async () => {
     const user = userEvent.setup();
     render(
       <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
+        <AppearanceSettings />
       </ThemeProvider>,
     );
     await user.click(screen.getByRole("button", { name: "High contrast" }));
@@ -31,7 +31,7 @@ describe("SettingsPanel", () => {
   it("does not render the accent explanation outside high contrast", () => {
     render(
       <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
+        <AppearanceSettings />
       </ThemeProvider>,
     );
     expect(
@@ -39,61 +39,61 @@ describe("SettingsPanel", () => {
     ).toBeNull();
     expect(screen.getByRole("group", { name: "Accent color" })).toBeEnabled();
   });
+});
 
-  it("wraps Tab from the last enabled control when a disabled fieldset follows it", async () => {
-    const user = userEvent.setup();
+describe("SettingsPage", () => {
+  function renderPage(onOpenDeletionStatus = vi.fn()) {
     render(
       <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
+        <SettingsPage onOpenDeletionStatus={onOpenDeletionStatus} />
       </ThemeProvider>,
     );
-    await user.click(screen.getByRole("button", { name: "High contrast" }));
-    const textSize = screen.getByRole("slider", { name: /Text size/i });
-    const close = screen.getByRole("button", { name: "Close settings" });
-    textSize.focus();
+    return onOpenDeletionStatus;
+  }
 
-    const event = new KeyboardEvent("keydown", {
-      key: "Tab",
-      bubbles: true,
-      cancelable: true,
-    });
-    textSize.dispatchEvent(event);
-
-    expect(event.defaultPrevented).toBe(true);
-    expect(close).toHaveFocus();
+  it("groups appearance, data and help into labelled sections", () => {
+    renderPage();
+    for (const name of ["Appearance & accessibility", "Data & privacy", "Help & resources"]) {
+      expect(screen.getByRole("region", { name })).toBeInTheDocument();
+    }
+    const appearance = screen.getByRole("region", { name: "Appearance & accessibility" });
+    expect(within(appearance).getByRole("group", { name: "Theme" })).toBeInTheDocument();
+    expect(within(appearance).getByRole("slider", { name: /Text size/i })).toBeInTheDocument();
+    expect(within(appearance).getByRole("group", { name: "Accent color" })).toBeInTheDocument();
   });
 
-  it("wraps Tab from the last accent control when that fieldset is enabled", () => {
-    render(
-      <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
-      </ThemeProvider>,
-    );
-    const lastAccent = screen.getByRole("button", { name: "Accent Magenta" });
-    const close = screen.getByRole("button", { name: "Close settings" });
-    lastAccent.focus();
-
-    const event = new KeyboardEvent("keydown", {
-      key: "Tab",
-      bubbles: true,
-      cancelable: true,
-    });
-    lastAccent.dispatchEvent(event);
-
-    expect(event.defaultPrevented).toBe(true);
-    expect(close).toHaveFocus();
-  });
-  it("contains only appearance and accessibility controls", () => {
-    render(
-      <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
-      </ThemeProvider>,
-    );
-
-    expect(screen.getByRole("dialog")).toHaveAccessibleName(
-      "Appearance and accessibility settings",
-    );
+  it("contains no conversation settings or background generator", () => {
+    renderPage();
     expect(screen.queryByRole("group", { name: /Background/i })).toBeNull();
     expect(screen.queryByText(/Generate a background/i)).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /Model/i })).toBeNull();
+  });
+
+  it("opens deletion status without implying that removal erases data", async () => {
+    const user = userEvent.setup();
+    const onOpen = renderPage();
+    const data = screen.getByRole("region", { name: "Data & privacy" });
+    expect(data).toHaveTextContent("That alone doesn't mean its stored data has been erased.");
+    expect(data).toHaveTextContent("It is not proof of erasure, there is no automatic cleanup");
+    expect(data).not.toHaveTextContent(/permanently erased|automatically deleted/i);
+
+    await user.click(within(data).getByRole("button", { name: "Deletion status" }));
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens help resources in a new tab without an opener", () => {
+    renderPage();
+    const help = screen.getByRole("region", { name: "Help & resources" });
+    const links = within(help).getAllByRole("link");
+    expect(links.map((link) => link.textContent?.replace(" (opens in a new tab)", ""))).toEqual([
+      "User guide",
+      "Documentation",
+      "Deployment status",
+    ]);
+    for (const link of links) {
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link.getAttribute("rel")).toContain("noopener");
+      expect(link).toHaveAccessibleName(/opens in a new tab/);
+    }
   });
 });

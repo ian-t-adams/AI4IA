@@ -106,6 +106,9 @@ export interface InlineVoiceLiveState {
   avatar: LiveAvatarView | null;
   start: () => void;
   stop: () => void;
+  // Sends a typed line into the live session (answered out loud); false when
+  // no live session can take it.
+  sendText: (text: string) => boolean;
   retryPersistence: () => void;
   // Abandons a stuck (still saving) or failed voice transcript so navigation
   // unlocks immediately without waiting on the network. If the save hasn't
@@ -603,6 +606,13 @@ export function useInlineVoiceLive({
       live.turns.length > 0 &&
       (live.active || finalizedTurns(live.turns, live.active).length > 0));
 
+  // Stable for the controller's lifetime, so consumers can memoize on it.
+  const liveSendText = live.sendText;
+  const sendText = useCallback(
+    (text: string) => liveSendText?.(text) ?? false,
+    [liveSendText],
+  );
+
   return {
     messages,
     enabled: config.enabled && (providerId === "speech_voice_live" || model !== null),
@@ -620,6 +630,7 @@ export function useInlineVoiceLive({
     avatar: live.avatar,
     start,
     stop,
+    sendText,
     retryPersistence: () => void persist(),
     discardPersistence,
   };
@@ -637,98 +648,56 @@ export function InlineVoiceLiveStatus({
   const status = !voice.supported
     ? "Voice Live isn't supported in this browser."
     : error ?? voice.statusLabel;
+  const avatarLive = Boolean(voice.avatar && !voice.avatar.unsupported);
   return (
     <div
+      className="voice-call-bar"
+      data-active={isActive && !error ? "true" : undefined}
+      data-tone={error ? "error" : undefined}
       aria-live="polite"
       aria-busy={
         voice.phase === "connecting" || voice.phase === "ending" || voice.saving
       }
-      style={{
-        display: "flex",
-        alignItems: "center",
-        flexWrap: "wrap",
-        gap: 8,
-        minHeight: 32,
-        padding: "5px max(16px, 6%)",
-        borderTop: "1px solid var(--border)",
-        background: "var(--bg-elevated)",
-        color: error ? "var(--danger)" : "var(--fg-muted)",
-        fontSize: "0.78em",
-      }}
     >
-      <span
-        aria-hidden="true"
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: "50%",
-          background: error
-            ? "var(--danger)"
-            : isActive
-              ? "var(--accent)"
-              : "var(--border)",
-        }}
-      />
-      <strong style={{ color: error ? "var(--danger)" : "var(--fg)" }}>
+      <strong>
+        <span className="voice-call-dot" aria-hidden="true" />
         {status}
       </strong>
       {!error && voice.agentLabel && <span>with {voice.agentLabel}</span>}
       {!error && voice.active && (
-        <span>
-          {voice.avatar && !voice.avatar.unsupported
-            ? "Speak into your microphone to talk to the avatar. Typed messages use text chat and aren't spoken."
-            : "Speak into your microphone. Typed messages stay in text chat until the next voice session."}
+        <span className="voice-call-hint">
+          {avatarLive
+            ? "Speak or type to talk to the avatar. It answers out loud."
+            : "Speak, or type a message: the live voice answers out loud."}
         </span>
       )}
-      {voice.error && !voice.active && !voice.persistenceError && (
-        <button
-          type="button"
-          onClick={voice.start}
-          style={{
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-            padding: "3px 9px",
-            background: "var(--bg)",
-            color: "var(--fg)",
-            cursor: "pointer",
-          }}
-        >
-          Retry
-        </button>
-      )}
-      {voice.persistenceError && (
-        <button
-          type="button"
-          onClick={voice.retryPersistence}
-          style={{
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-            padding: "3px 9px",
-            background: "var(--bg)",
-            color: "var(--fg)",
-            cursor: "pointer",
-          }}
-        >
-          Retry saving
-        </button>
-      )}
-      {(voice.saving || voice.persistenceError) && (
-        <button
-          type="button"
-          onClick={voice.discardPersistence}
-          title="Stop waiting on this voice transcript so chat navigation unlocks immediately. Session creation still pending is cancelled right away; a save already past that point isn't cancelled and may still complete in the background."
-          style={{
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-            padding: "3px 9px",
-            background: "var(--bg)",
-            color: "var(--fg)",
-            cursor: "pointer",
-          }}
-        >
-          Stop waiting
-        </button>
-      )}
+      <span className="voice-call-actions">
+        {voice.error && !voice.active && !voice.persistenceError && (
+          <button type="button" className="btn btn-sm" onClick={voice.start}>
+            Retry
+          </button>
+        )}
+        {voice.persistenceError && (
+          <button type="button" className="btn btn-sm" onClick={voice.retryPersistence}>
+            Retry saving
+          </button>
+        )}
+        {(voice.saving || voice.persistenceError) && (
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={voice.discardPersistence}
+            title="Stop waiting on this voice transcript so chat navigation unlocks immediately. Session creation still pending is cancelled right away; a save already past that point isn't cancelled and may still complete in the background."
+          >
+            Stop waiting
+          </button>
+        )}
+        {voice.active && !avatarLive && (
+          <button type="button" className="btn btn-sm btn-danger" onClick={voice.stop}>
+            End voice session
+          </button>
+        )}
+      </span>
     </div>
   );
 }

@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   start: vi.fn(),
   stop: vi.fn(),
   toggle: vi.fn(),
+  sendText: vi.fn(() => true),
   useVoiceLive: vi.fn(),
 }));
 
@@ -85,6 +86,7 @@ function makeController(
     start: mocks.start,
     stop: mocks.stop,
     toggle: mocks.toggle,
+    sendText: mocks.sendText,
     ...overrides,
   };
 }
@@ -98,6 +100,7 @@ function Harness({
   voice: voiceOverride,
   settings: settingsOverride,
   tools: toolsOverride,
+  avatarName = null,
 }: {
   persist?: (
     sessionId: string,
@@ -112,8 +115,12 @@ function Harness({
   voice?: RealtimeVoice;
   settings?: VoiceSessionSettings;
   tools?: boolean;
+  avatarName?: string | null;
 }) {
   const [persistedMessages, setPersistedMessages] = useState<DisplayMessage[]>([]);
+  // ChatApp's wiring: while a session is live, typing goes to it unless the
+  // user switches the composer back to text chat.
+  const [target, setTarget] = useState<"live" | "chat">("live");
   const persistConversation = useCallback(
     async (
       sessionId: string,
@@ -183,6 +190,19 @@ function Harness({
           start: voice.start,
           stop: voice.stop,
         }}
+        live={
+          voice.active
+            ? {
+                target,
+                onTargetChange: setTarget,
+                avatarName:
+                  voice.avatar && !voice.avatar.unsupported && voice.avatar.element
+                    ? avatarName
+                    : null,
+                onSend: voice.sendText,
+              }
+            : undefined
+        }
       />
     </>
   );
@@ -325,22 +345,54 @@ describe("inline Voice Live chat", () => {
     expect(screen.getByText("Speaking")).toBeInTheDocument();
   });
 
-  it("keeps the composer usable for typed sends during live voice", async () => {
+  it("sends typed lines to the live session while it is connected, and to text chat on request", async () => {
     const onSend = vi.fn();
-    controller = makeController({ status: "live", active: true });
+    const sendText = vi.fn(() => true);
+    controller = makeController({ status: "live", active: true, sendText });
+    render(<Harness onSend={onSend} />);
+
+    expect(
+      screen.getByText("Speak, or type a message: the live voice answers out loud."),
+    ).toBeInTheDocument();
+    const composer = screen.getByRole("combobox", { name: "Message" });
+    expect(screen.getByRole("radio", { name: "Live voice" })).toHaveAttribute("aria-checked", "true");
+    await userEvent.type(composer, "Typed while listening{Enter}");
+    expect(sendText).toHaveBeenCalledExactlyOnceWith("Typed while listening");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(composer).toHaveValue("");
+
+    await userEvent.click(screen.getByRole("radio", { name: "Text chat" }));
+    expect(screen.getByRole("radio", { name: "Text chat" })).toHaveAttribute("aria-checked", "true");
+    await userEvent.type(composer, "For the text model{Enter}");
+    expect(onSend).toHaveBeenCalledExactlyOnceWith("For the text model");
+    expect(sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a typed line in the composer when the live session cannot take it", async () => {
+    const onSend = vi.fn();
+    const sendText = vi.fn(() => false);
+    controller = makeController({ status: "live", active: true, sendText });
     render(<Harness onSend={onSend} />);
 
     const composer = screen.getByRole("combobox", { name: "Message" });
-    await userEvent.type(composer, "Typed while listening{Enter}");
-
-    expect(onSend).toHaveBeenCalledWith("Typed while listening");
-    expect(screen.getByText(
-      "Speak into your microphone. Typed messages stay in text chat until the next voice session.",
-    )).toBeInTheDocument();
+    await userEvent.type(composer, "Too late{Enter}");
+    expect(sendText).toHaveBeenCalledExactlyOnceWith("Too late");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(composer).toHaveValue("Too late");
   });
 
-  it("visibly explains that typed text is not sent to the listening avatar", async () => {
+  it("offers no send target before a session starts", async () => {
     const onSend = vi.fn();
+    render(<Harness onSend={onSend} />);
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    await userEvent.type(screen.getByRole("combobox", { name: "Message" }), "Plain chat{Enter}");
+    expect(onSend).toHaveBeenCalledExactlyOnceWith("Plain chat");
+    expect(mocks.sendText).not.toHaveBeenCalled();
+  });
+
+  it("names a live avatar as the typing target and leaves ending it to the stage", async () => {
+    const onSend = vi.fn();
+    const sendText = vi.fn(() => true);
     const avatar = {
       element: document.createElement("video"),
       label: "AI-generated",
@@ -353,20 +405,33 @@ describe("inline Voice Live chat", () => {
       playbackBlocked: false,
       resume: vi.fn(),
     };
-    controller = makeController({ status: "live", active: true, avatar });
-    const { rerender } = render(<Harness onSend={onSend} />);
-    expect(screen.getByText(
-      "Speak into your microphone to talk to the avatar. Typed messages use text chat and aren't spoken.",
-    )).toBeInTheDocument();
-    await userEvent.type(screen.getByRole("combobox", { name: "Message" }), "Hello{Enter}");
-    expect(onSend).toHaveBeenCalledWith("Hello");
+    controller = makeController({ status: "live", active: true, avatar, sendText });
+    const { rerender } = render(<Harness onSend={onSend} avatarName="Ava Marsh" />);
+    expect(
+      screen.getByText("Speak or type to talk to the avatar. It answers out loud."),
+    ).toBeInTheDocument();
+    // The avatar stage owns End session; the call bar adds no second control.
+    expect(screen.queryByRole("button", { name: "End voice session" })).toBeNull();
+    expect(screen.getByRole("radio", { name: "Ava Marsh" })).toHaveAttribute("aria-checked", "true");
+    const composer = screen.getByRole("combobox", { name: "Message" });
+    expect(composer).toHaveAttribute("placeholder", "Type to Ava Marsh. They answer out loud.");
+    await userEvent.type(composer, "Hello{Enter}");
+    expect(sendText).toHaveBeenCalledExactlyOnceWith("Hello");
+    expect(onSend).not.toHaveBeenCalled();
+
+    // Without avatar video the session is voice only, and the bar says so.
     controller = makeController({
-      status: "live", active: true, avatar: { ...avatar, element: null, unsupported: true },
+      status: "live",
+      active: true,
+      avatar: { ...avatar, element: null, unsupported: true },
+      sendText,
     });
-    rerender(<Harness onSend={onSend} />);
-    expect(screen.getByText(
-      "Speak into your microphone. Typed messages stay in text chat until the next voice session.",
-    )).toBeInTheDocument();
+    rerender(<Harness onSend={onSend} avatarName="Ava Marsh" />);
+    expect(
+      screen.getByText("Speak, or type a message: the live voice answers out loud."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Live voice" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "End voice session" })).toBeInTheDocument();
   });
 
   it("stops, persists finalized turns once, removes local duplicates, and returns idle", async () => {

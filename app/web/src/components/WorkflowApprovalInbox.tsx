@@ -4,10 +4,18 @@ import { useEffect, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import type { AutomationReview, AutomationRun } from "@/lib/workflowAutomation";
 import { DialogFrame } from "./DialogFrame";
+import { Icon } from "./Icon";
 import { primaryBtn, secondaryBtn } from "./builderStyles";
 import { WorkflowSpendEvidence } from "./WorkflowSpendEvidence";
 
-export function WorkflowApprovalInboxEntry({ disabled = false }: { disabled?: boolean }) {
+export function WorkflowApprovalInboxEntry({
+  disabled = false,
+  compact = false,
+}: {
+  disabled?: boolean;
+  /** Icon-only form for the collapsed navigation rail. */
+  compact?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [count, setCount] = useState<number | null>(null);
   useEffect(() => {
@@ -38,10 +46,15 @@ export function WorkflowApprovalInboxEntry({ disabled = false }: { disabled?: bo
     window.addEventListener("focus", focused);
     return () => { controller.abort(); clearTimeout(timer); window.removeEventListener("focus", focused); };
   }, []);
+  const pending = count != null && count > 0;
+  const label = `Workflow approvals${pending ? ` (${count})` : ""}`;
   return <>
-    <button type="button" className="sidebar-utility-action" disabled={disabled} onClick={() => setOpen(true)}
-      style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--sidebar-fg)" }}>
-      Workflow approvals{count != null && count > 0 ? ` (${count})` : ""}
+    <button type="button" className={compact ? "icon-btn" : "sidebar-link"} disabled={disabled} onClick={() => setOpen(true)}
+      aria-label={compact ? label : undefined} title={compact ? label : undefined}>
+      <Icon name="inbox" />
+      {compact ? null : <span>Workflow approvals</span>}
+      {pending ? <span className="count-badge" aria-hidden="true">{count}</span> : null}
+      {!compact && pending ? <span className="visually-hidden"> ({count})</span> : null}
     </button>
     {open ? <DialogFrame ariaLabel="Workflow approvals" onClose={() => setOpen(false)} overlayPadding={12}>
       <section className="workflow-automation-dialog" onClick={(event) => event.stopPropagation()}>

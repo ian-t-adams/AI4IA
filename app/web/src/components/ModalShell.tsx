@@ -4,6 +4,47 @@ import type { ReactNode } from "react";
 
 import { DialogFrame } from "./DialogFrame";
 
+export type SurfaceVariant = "dialog" | "page";
+
+interface ModalShellProps {
+  ariaLabel: string;
+  title: ReactNode;
+  filename?: string;
+  closeLabel: string;
+  onClose: () => void;
+  width?: string;
+  zIndex?: number;
+  contentGap?: number;
+  headingFontSize?: string;
+  headerGap?: number;
+  children: ReactNode;
+}
+
+// The same surface as a modal dialog (contextual flows) or as the body of a
+// destination page, where the shell owns the heading and there is nothing to
+// close: the page is left by navigating, not dismissed.
+export function SurfaceFrame({
+  variant = "dialog",
+  ...props
+}: ModalShellProps & { variant?: SurfaceVariant }) {
+  if (variant === "page") {
+    return (
+      <div
+        className="page-surface"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: props.contentGap ?? 16,
+          minWidth: 0,
+        }}
+      >
+        {props.children}
+      </div>
+    );
+  }
+  return <ModalShell {...props} />;
+}
+
 export function ModalShell({
   ariaLabel,
   title,
@@ -16,19 +57,7 @@ export function ModalShell({
   headingFontSize = "1.1em",
   headerGap = 12,
   children,
-}: {
-  ariaLabel: string;
-  title: ReactNode;
-  filename?: string;
-  closeLabel: string;
-  onClose: () => void;
-  width?: string;
-  zIndex?: number;
-  contentGap?: number;
-  headingFontSize?: string;
-  headerGap?: number;
-  children: ReactNode;
-}) {
+}: ModalShellProps) {
   return (
     <DialogFrame ariaLabel={ariaLabel} onClose={onClose} zIndex={zIndex}>
       <div
