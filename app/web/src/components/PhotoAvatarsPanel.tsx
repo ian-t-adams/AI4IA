@@ -1,7 +1,8 @@
 "use client";
 
 // Photo avatar gallery (Phase 1): create a fictional avatar from a text
-// description, watch its status, preview it, report a problem and delete it.
+// description, watch its status, preview it, choose it for live voice, report a
+// problem and delete it.
 // ChatApp offers it only while GET /api/photo-avatars/config reports the
 // feature enabled. That is display posture, never enforcement: every route
 // re-checks the gate, policy, limits, cost and attestation on the server.
@@ -62,6 +63,12 @@ const compactBtn: CSSProperties = {
   minHeight: 36,
   padding: "6px 12px",
   fontSize: "0.85rem",
+};
+const compactPrimaryBtn: CSSProperties = {
+  ...primaryBtn,
+  minHeight: compactBtn.minHeight,
+  padding: compactBtn.padding,
+  fontSize: compactBtn.fontSize,
 };
 const dangerBtn: CSSProperties = {
   ...compactBtn,
@@ -266,6 +273,8 @@ function AvatarItem({
   onAnnounce,
   onDelete,
   onReport,
+  onUse,
+  useDisabledReason,
 }: {
   avatar: PhotoAvatar;
   notice: ItemNotice | undefined;
@@ -277,7 +286,10 @@ function AvatarItem({
   onAnnounce: (message: string) => void;
   onDelete: (avatar: PhotoAvatar) => void;
   onReport: (avatar: PhotoAvatar) => void;
+  onUse?: (avatar: PhotoAvatar) => void;
+  useDisabledReason: string | null;
 }) {
+  const useReasonId = useId();
   const [confirming, setConfirming] = useState(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const deleteRef = useRef<HTMLButtonElement>(null);
@@ -332,6 +344,9 @@ function AvatarItem({
   const reverifying = isReverifyingPhotoAvatar(avatar);
   const { tone, glyph } = statusTone(avatar);
   const ready = avatar.status === "ready";
+  const useReason = useDisabledReason ?? (
+    !avatar.usable || reverifying ? "This avatar isn't available for live use yet." : null
+  );
   const blocked = notice?.blockedUntil != null;
   const price = formatPhotoAvatarPrice(avatar.cost?.estimatedUsd, avatar.cost?.currency, avatar.cost?.known === true);
   const created = formatPhotoAvatarTime(avatar.createdAt);
@@ -439,6 +454,21 @@ function AvatarItem({
         </div>
       ) : (
         <div className="photo-avatar-actions">
+          {ready && onUse ? (
+            <>
+              <button
+                type="button"
+                style={compactPrimaryBtn}
+                disabled={useReason !== null}
+                aria-describedby={useReason ? useReasonId : undefined}
+                onClick={() => onUse(avatar)}
+                aria-label={`Use ${avatar.displayName} in Voice Live`}
+              >
+                Use in Voice Live
+              </button>
+              {useReason ? <span id={useReasonId} className="visually-hidden">{useReason}</span> : null}
+            </>
+          ) : null}
           {ready && reportable ? (
             <button
               type="button"
@@ -832,7 +862,15 @@ function ReportDialog({
   );
 }
 
-export function PhotoAvatarsPanel({ onClose }: { onClose: () => void }) {
+export function PhotoAvatarsPanel({
+  onClose,
+  onUse,
+  useDisabledReason = null,
+}: {
+  onClose: () => void;
+  onUse?: (avatar: PhotoAvatar) => void;
+  useDisabledReason?: string | null;
+}) {
   const [config, setConfig] = useState<PhotoAvatarConfig | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
   const [avatars, setAvatars] = useState<PhotoAvatar[]>([]);
@@ -1046,6 +1084,13 @@ export function PhotoAvatarsPanel({ onClose }: { onClose: () => void }) {
   const canOpenForm = config !== null && list.phase === "ready" && blockedReason === null;
   const usage = usageText(config?.limits ?? null);
   const label = config?.disclosure?.label?.trim() || "AI-generated";
+  const liveUseDisabledReason = configError
+    ? "Avatar availability couldn't be checked. Close and reopen the gallery to try again."
+    : !config
+      ? "Checking avatar availability..."
+      : !config.enabled || !config.available
+        ? photoAvatarUnavailableText(config.reason)
+        : useDisabledReason;
 
   return (
     <>
@@ -1064,6 +1109,18 @@ export function PhotoAvatarsPanel({ onClose }: { onClose: () => void }) {
             Describe a fictional adult and AI generates a portrait of them. Every preview stays
             labelled <strong>{label}</strong>.
           </p>
+          {onUse ? (
+            <>
+              <p className="photo-avatar-intro">
+                Choose Use in Voice Live, then choose Start talking in chat. Your avatar speaks
+                the replies through Azure Speech. Avatar time is billed while the session is
+                connected, even when nobody is talking.
+              </p>
+              {liveUseDisabledReason && liveUseDisabledReason !== blockedReason ? (
+                <p role="status" className="photo-avatar-note">{liveUseDisabledReason}</p>
+              ) : null}
+            </>
+          ) : null}
           <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
             {announcement}
           </p>
@@ -1163,6 +1220,8 @@ export function PhotoAvatarsPanel({ onClose }: { onClose: () => void }) {
                         onAnnounce={setAnnouncement}
                         onDelete={(item) => void remove(item)}
                         onReport={setReporting}
+                        onUse={onUse}
+                        useDisabledReason={liveUseDisabledReason}
                       />
                     ))}
                   </ul>
