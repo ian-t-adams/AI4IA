@@ -1852,7 +1852,6 @@ export function useVoiceLive(
           case "session.avatar.switch_to_idle": {
             if (!avatarPlayerForSession) break;
             avatarSpeakingUpstream = false;
-            outputClearRequested = false;
             if (mountedRef.current) {
               setSpeaking(false);
               patchAvatar({ speaking: false });

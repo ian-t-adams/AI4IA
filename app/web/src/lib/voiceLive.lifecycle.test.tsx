@@ -2362,6 +2362,27 @@ describe("useVoiceLive live photo avatar", () => {
     ]);
   });
 
+  it("Interrupt during the tail skips the rest locally without asking the idle server to stop", async () => {
+    const playback = controlPlayback();
+    const jump = vi.spyOn(AvatarVideoPlayer.prototype, "jumpToLiveEdge");
+    const { result, socket, emit } = await startSpeech(AVATAR);
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      emit({ type: "session.avatar.switch_to_speaking" });
+      emit({ type: "response.done", response: { id: "r1" } });
+    });
+    playback.end = 5;
+    act(() => emit({ type: "session.avatar.switch_to_idle" }));
+    expect(result.current.avatar?.micPaused).toBe(true); // the end of the speech is still playing
+
+    act(() => result.current.avatar?.interrupt());
+    expect(stopFrames(socket)).toEqual([]);
+    expect(jump).toHaveBeenCalledTimes(1);
+    expect(result.current.avatar?.micPaused).toBe(false);
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(false);
+  });
+
   it("Interrupt does nothing once the session has ended", async () => {
     const jump = vi.spyOn(AvatarVideoPlayer.prototype, "jumpToLiveEdge");
     const { result, socket, emit } = await startSpeech(AVATAR);
