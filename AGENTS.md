@@ -1683,6 +1683,20 @@ a new owner-approved exception.
   user is speaking, and until the server's reply to that speech starts (released
   after `TYPED_RELEASE_MS` if none does). **Text chat** on the same switch is the
   only route to typed HTTP/SSE chat during a session; never send a line both ways.
+- **Echo.** The avatar speaks from its video, later than Speech's default server
+  echo reference assumes, so on speakers it can hear and interrupt itself.
+  Avatar sessions request browser `echoCancellation: "all"` (noise suppression
+  and gain control stay off; voice-only Speech and Azure OpenAI capture are
+  unchanged). The default **Pause my microphone** mode replaces microphone
+  samples with same-length silence while the avatar is audibly speaking: from
+  `switch_to_speaking` until playback passes the media pushed before
+  `switch_to_idle` plus a 0.4 s tail, bounded by the player's lag allowance and
+  the relay's five-minute speaking hold. The stage and call bar must show it.
+  Outside that visible pause, never drop, delay or replay microphone audio.
+  **Interrupt** sends at most one stop (`response.cancel` while a response is
+  active, else `output_audio_buffer.clear` while the avatar speaks); only that
+  cancel's own `response_cancel_not_active`, within its window, is non-fatal.
+  Live-Reference AEC needs API `2026-07-15`; the catalog pins `2026-04-10`.
 
 ## Group policy and publication source contract
 

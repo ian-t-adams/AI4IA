@@ -1903,13 +1903,15 @@ describe("useVoiceLive live photo avatar", () => {
     avatar: LiveAvatarSelection | null,
     onError = vi.fn(),
     speechSettings = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+    onRender: () => void = () => {},
   ) {
-    const hook = renderHook(() =>
-      useVoiceLive(
+    const hook = renderHook(() => {
+      onRender();
+      return useVoiceLive(
         CONFIG, "speech_voice_live", null, null, "ignored", onError, null, [],
         DEFAULT_VOICE_SETTINGS, speechSettings, false, null, avatar,
-      ),
-    );
+      );
+    });
     act(() => {
       hook.result.current.start();
     });
@@ -2199,6 +2201,32 @@ describe("useVoiceLive live photo avatar", () => {
     expect(result.current.avatar?.micPaused).toBe(false);
     // Every frame went out: silence replaced samples, nothing was dropped.
     expect(sentAudio(socket)).toHaveLength(5);
+  });
+
+  it("renders for a pause's start and end, never for each paused frame", async () => {
+    const playback = controlPlayback();
+    let renders = 0;
+    const { result, socket, emit } = await startSpeech(
+      AVATAR, vi.fn(), SPEECH_SETTINGS, () => {
+        renders += 1;
+      },
+    );
+    act(() => emit({ type: "session.avatar.switch_to_speaking" }));
+    const paused = renders;
+    for (let frame = 0; frame < 5; frame += 1) micFrame();
+    expect(silent(lastAudio(socket))).toBe(true);
+    expect(renders).toBe(paused);
+
+    playback.end = 1;
+    act(() => emit({ type: "session.avatar.switch_to_idle" }));
+    const tail = renders;
+    for (let frame = 0; frame < 5; frame += 1) micFrame();
+    expect(renders).toBe(tail);
+    // Control: the release is a transition, so the stage hears about it.
+    playback.time = 1 + AVATAR_ECHO_TAIL_SECONDS;
+    micFrame();
+    expect(result.current.avatar?.micPaused).toBe(false);
+    expect(renders).toBeGreaterThan(tail);
   });
 
   it("never pauses the microphone in Keep listening mode (control)", async () => {
