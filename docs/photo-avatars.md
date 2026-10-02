@@ -203,7 +203,8 @@ mode instead returns ICE servers with TURN credentials and needs
 
 The avatar component (`type`, `model`, `character`, `customized`, `output_protocol`,
 `ice_servers`) is documented in the `2026-04-10` reference, which AI4IA pins, and in
-`2026-07-15`. The WebSocket measurements above used `2026-04-10`.
+`2026-07-15`, which only an opted-in Live-Reference AEC session uses (see **Echo**
+below). The WebSocket measurements above used `2026-04-10`.
 
 **Regions.** Custom photo avatar creation, real-time avatar and batch avatar are
 all available in:
@@ -836,9 +837,54 @@ avatar byte stays on the existing governed path: browser → FastAPI
       speaking hold, and, after `switch_to_idle`, the player's lag allowance plus
       the tail. The stage and the call bar read **Speaking · mic paused**.
       **Keep listening (headphones)** never pauses.
-    - Live-Reference AEC, where the client sends what it played as a second
-      channel, needs API version `2026-07-15`. AI4IA pins `2026-04-10`, so it
-      remains a follow-up.
+    - **Keep listening with precise echo cancellation (preview)** is the opt-in
+      Live-Reference AEC path (2026-10-02). The client supplies the echo
+      reference, so Azure removes the avatar's voice against what the page
+      actually played, however late the video plays it.
+      - The browser offers it only when the server's voice catalog advertises
+        `capabilities.echoCancellation.clientReference`, and asks with
+        `?echoRef=client` only for a Speech avatar session.
+      - The relay refuses any other value, a repeated value, another provider
+        or an unoffered catalog before connecting.
+      - For that session alone the relay connects at the catalog's `2026-07-15`
+        with `&features=client_ec_reference:true`. It rebuilds every
+        `session.update` with `input_audio_echo_cancellation` set to
+        `server_echo_cancellation` with `reference_source: client` and
+        `channels: 2`, plus `pcm16` at 24 kHz. These can't change
+        mid-session, and a client request to change them is dropped.
+      - From the version that adds client references, `parallel_tool_calls`
+        defaults to true, so that session also sends `false`: the relay's tool
+        bridge answers one call at a time.
+      - The generated APIM policy admits only that exact version and flag
+        pair, and refuses any other `features` value with a 400. Every other
+        session stays on the pinned `2026-04-10`, with its frames unchanged
+        byte for byte.
+      - In the browser, the avatar video's audio is routed through the capture
+        `AudioContext` with `createMediaElementSource`; the MediaSource blob URL
+        is same-origin. One gain bus feeds the speakers and input 1 of the
+        stereo capture worklet (`ai4ia-capture-stereo`, in the same
+        same-origin module).
+      - The worklet sends interleaved PCM16, `[mic0, ref0, mic1, ref1, …]`, in
+        100 ms chunks, always whole sample pairs. Both inputs are rendered in
+        the same quantum, so every reference sample is aligned with its
+        microphone sample.
+      - The microphone is captured with browser echo cancellation, noise
+        suppression and gain control off. Microsoft's sample does the same,
+        because Azure must hear the raw microphone to cancel against the
+        reference.
+      - The microphone starts only at Azure's `session.updated`, so stereo audio
+        is never read under a stale mono configuration. The wait is bounded at
+        15 seconds. Then it is never paused, and the microphone queue bound
+        doubles to keep the same two seconds of audio.
+      - A refusal (for example `invalid_ec_reference_channels`) or a close
+        before confirmation ends the session with Azure's message and the way
+        back to **Pause my microphone**. The relay never retries at another
+        version and never switches modes.
+      - Telemetry adds `echoReference: client` to `voice_live_completion`, and
+        a chat-bound avatar receipt gains the `echo_reference_client` note.
+        Azure strips the reference channel before audio billing.
+      - Only this page's own playback is removed: other tabs or apps on the
+        speakers still reach the microphone.
   - **Interrupt and barge-in.**
     - The stage's **Interrupt** sends at most one stop event: `response.cancel`
       while a response is generating, otherwise `output_audio_buffer.clear`
@@ -861,12 +907,33 @@ avatar byte stays on the existing governed path: browser → FastAPI
   native Uvicorn Ping/Pong under paced synthetic audio and delayed owner reads:
   the repeated-read control reproduces 1011 `keepalive ping timeout`, while the
   single-read path preserves streaming, fresh revocation and budget enforcement.
+  The client echo reference adds:
+  - `app/web/src/lib/captureWorklet.test.ts`, which runs the shipped worklet
+    module and checks sample order, alignment, whole pairs, downmix and
+    silence;
+  - `proxy/AI4IA.Proxy.Tests/SpeechVoiceLiveApimTests.cs`, which compiles the
+    generated Speech policy's C# expressions offline and checks the pinned
+    version, the exact pair and every other `features` value against
+    projected handshakes.
 - **Live evidence and remaining limits.** The 2026-09-26 enablement checks
   confirmed a billed avatar session and idle termination through AI4IA's own
   relay/APIM path. Server-VAD barge-in with spoken input and echo cancellation
   through the video element's speaker remain separate live acceptance checks,
   as do each browser's cancellation of media-element playback, how closely
   `switch_to_idle` tracks the video, and **Interrupt** against a live session.
+  The Live-Reference AEC path is likewise unverified live:
+  - whether Voice Live accepts `2026-07-15` with the preview flag on this
+    resource and region (Microsoft's browser sample connects at `2026-07-15`
+    without the flag, while the API reference says to append it);
+  - whether the avatar works over WebSocket at that version;
+  - how well real echo is removed through real speakers.
+
+  A local Chromium probe ran the shipped stereo worklet and confirmed sample
+  order and alignment. It also confirmed that a same-origin MediaSource
+  element's audio reaches the reference channel through
+  `createMediaElementSource`. It used a recorded Opus tone, not the avatar's
+  H.264/AAC stream, and only Chromium.
+
   Source/UI tests do not refresh that production evidence or activate a new
   environment.
 
@@ -975,6 +1042,8 @@ records the operator cleanup until one does.
   that carried the id inside video data would need a new rule.
 - **Echo cancellation.** Server echo cancellation now has to cope with speech
   played by a buffered video element. This is untested live; headphones avoid it.
+  The opt-in client echo reference (preview) addresses it by sending what the
+  page plays, but it is also untested live and cancels only this page's audio.
 - **Cross-user access.** `avatar_verification_failed` checks only that an avatar
   exists on the resource, not who owns it. AI4IA's owner-scoped records are the
   only boundary between users.
@@ -994,6 +1063,8 @@ Checked 2026-09-25:
 - [Voice Live how-to: text to speech avatar](https://learn.microsoft.com/azure/ai-services/speech-service/voice-live-how-to#azure-text-to-speech-avatar)
 - [Voice Live `2026-04-10` API reference](https://learn.microsoft.com/azure/ai-services/speech-service/voice-live-api-reference-2026-04-10)
 - [Voice Live `2026-07-15` API reference](https://learn.microsoft.com/azure/ai-services/speech-service/voice-live-api-reference-2026-07-15)
+- [Voice Live how-to: Live-Reference AEC](https://learn.microsoft.com/azure/ai-services/speech-service/voice-live-how-to#live-reference-aec-acoustic-echo-cancellation) (checked 2026-10-02)
+- [Live-Reference AEC browser sample](https://github.com/microsoft-foundry/voicelive-samples/tree/main/javascript/live-reference-aec) (checked 2026-10-02)
 - [Supported regions for Azure Speech](https://learn.microsoft.com/azure/ai-services/speech-service/regions)
 - [Limited Access for text to speech](https://learn.microsoft.com/azure/foundry/responsible-ai/speech-service/text-to-speech/limited-access)
 - [Disclosure design guidelines for synthetic voices](https://learn.microsoft.com/azure/ai-foundry/responsible-ai/speech-service/text-to-speech/concepts-disclosure-guidelines)

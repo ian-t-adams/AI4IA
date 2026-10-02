@@ -2182,6 +2182,100 @@ class GatewayPolicyTests(unittest.TestCase):
                         "speech-voice-live.xml",
                     )
 
+    def test_speech_voice_live_policy_leaves_its_version_only_for_the_exact_echo_pair(
+        self,
+    ) -> None:
+        policy = (ROOT / "infra/policies/speech-voice-live.xml").read_text(
+            encoding="utf-8"
+        )
+        # Control: the shipped policy carries both pins and passes.
+        gateway_generator.validate_speech_voice_live_policy(policy, "speech-voice-live.xml")
+        root = ElementTree.fromstring(policy)
+        branches = root.findall("./inbound/choose/when")
+        self.assertEqual(
+            branches[1].attrib["condition"],
+            '@(context.Request.Url.Query.ContainsKey("features") && '
+            '!(context.Request.Url.Query.GetValueOrDefault("features", "") == '
+            '"client_ec_reference:true" && '
+            'context.Request.Url.Query.GetValueOrDefault("api-version", "") == "2026-07-15"))',
+        )
+        api_version = root.find("./inbound/set-query-parameter[@name='api-version']")
+        assert api_version is not None
+        self.assertEqual(
+            api_version.findtext("value"),
+            '@((context.Request.Url.Query.GetValueOrDefault("features", "") == '
+            '"client_ec_reference:true" && '
+            'context.Request.Url.Query.GetValueOrDefault("api-version", "") == "2026-07-15")'
+            ' ? "2026-07-15" : "2026-04-10")',
+        )
+        echo_check = (
+            ' &amp;&amp; context.Request.Url.Query.GetValueOrDefault('
+            '&quot;api-version&quot;, &quot;&quot;) == &quot;2026-07-15&quot;))'
+        )
+        mutations = {
+            # Without the version check the flag could ride the pinned version.
+            "feature branch ignores the version": (
+                policy.replace(echo_check, "))", 1),
+                "feature rejection branch",
+            ),
+            # Without the branch any features value would pass through.
+            "feature branch removed": (
+                re.sub(
+                    r'\n      <when condition="@\(context\.Request\.Url\.Query\.ContainsKey.*?</when>',
+                    "",
+                    policy,
+                    count=1,
+                    flags=re.DOTALL,
+                ),
+                "one feature rejection branch",
+            ),
+            "feature branch allows a request through": (
+                policy.replace(
+                    '<set-status code="400" reason="Voice Live feature is not in the AI4IA catalog" />',
+                    '<set-status code="200" reason="Voice Live feature is not in the AI4IA catalog" />',
+                    1,
+                ),
+                "unsupported features",
+            ),
+            "every session on the echo-reference version": (
+                policy.replace(
+                    ' ? "2026-07-15" : "2026-04-10")</value>',
+                    ' ? "2026-07-15" : "2026-07-15")</value>',
+                    1,
+                ),
+                "api-version query parameter",
+            ),
+            "pinned version restored as a literal": (
+                re.sub(
+                    r'(<set-query-parameter name="api-version" exists-action="override">\s*<value>).*?(</value>)',
+                    r"\g<1>2026-04-10\g<2>",
+                    policy,
+                    count=1,
+                    flags=re.DOTALL,
+                ),
+                "api-version query parameter",
+            ),
+            "features rewritten after the check": (
+                policy.replace(
+                    '    <set-query-parameter name="deployment" exists-action="delete" />',
+                    '    <set-query-parameter name="features" exists-action="override">\n'
+                    "      <value>client_ec_reference:true</value>\n"
+                    "    </set-query-parameter>\n"
+                    '    <set-query-parameter name="deployment" exists-action="delete" />',
+                    1,
+                ),
+                "features may only pass through",
+            ),
+        }
+        for label, (mutated, message) in mutations.items():
+            with self.subTest(label=label):
+                self.assertNotEqual(mutated, policy)
+                with self.assertRaisesRegex(ValueError, message):
+                    gateway_generator.validate_speech_voice_live_policy(
+                        mutated,
+                        "speech-voice-live.xml",
+                    )
+
     def test_speech_voice_live_is_additive_and_isolated_from_other_gateway_planes(self) -> None:
         gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
         main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
@@ -2293,7 +2387,9 @@ class GatewayPolicyTests(unittest.TestCase):
             policy,
         )
         self.assertIn('? "gpt-realtime" :', policy)
-        self.assertIn('<value>2026-04-10</value>', policy)
+        # Pinned to 2026-04-10; only the exact opt-in echo-reference pair leaves it.
+        self.assertIn(' ? "2026-07-15" : "2026-04-10")</value>', policy)
+        self.assertNotIn("<value>2026-07-15</value>", policy)
         self.assertIn(
             '<set-query-parameter name="deployment" exists-action="delete" />',
             policy,

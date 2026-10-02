@@ -31,6 +31,7 @@ from ai4ia_api.routers.realtime import (
 )
 from ai4ia_api.usage.pricing import PricingBook
 from ai4ia_api.voice_delivery import compose_voice_instructions
+from ai4ia_api.voice_provider_catalog import SpeechVoiceProvider, load_voice_provider_catalog
 from tests.conftest import make_settings
 from tests.test_photo_avatar_live import OTHER_RECORD_ID as AVATAR_OTHER_RECORD_ID
 from tests.test_photo_avatar_live import PROVIDER_ID as AVATAR_PROVIDER_ID
@@ -731,12 +732,291 @@ def test_live_speech_forwards_mai_choices_and_surfaces_refusal_without_fallback(
         c.__exit__(None, None, None)
 
 
+# --------------------------------------------------------------------------- #
+# Live-Reference AEC: the opt-in client echo reference (Speech Voice Live only).
+# --------------------------------------------------------------------------- #
+
+SPEECH_QUERY = "/api/voice/live?provider=speech_voice_live&model=gpt-realtime"
+# What a client might send to pick the reference, the layout or the format itself.
+CLIENT_ECHO_SESSION = {
+    "voice": {"type": "azure-standard", "name": "en-US-AndrewNeural"},
+    "input_audio_echo_cancellation": {
+        "type": "server_echo_cancellation", "reference_source": "server", "channels": 1,
+    },
+    "parallel_tool_calls": True,
+    "input_audio_format": "g711_ulaw",
+    "input_audio_sampling_rate": 16000,
+}
+OPTED_IN_ECHO = {"type": "server_echo_cancellation", "reference_source": "client", "channels": 2}
+
+
+@pytest.mark.parametrize("opted_in", [True, False])
+def test_live_speech_echo_reference_opt_in_owns_the_version_flag_and_echo_block(opted_in):
+    c = _speech_client()
+    try:
+        connector = c.app.state.realtime_connector
+        with c.websocket_connect(
+            SPEECH_QUERY + ("&echoRef=client" if opted_in else ""),
+            subprotocols=[DEV_SUBPROTOCOL, "echouser"], headers=_origin(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "session.update", "session": CLIENT_ECHO_SESSION}))
+            ws.receive_text()
+            # A later update can't switch the reference, the layout or the format.
+            ws.send_text(json.dumps({"type": "session.update", "session": {
+                "input_audio_echo_cancellation": (
+                    {"type": "server_echo_cancellation"} if opted_in else OPTED_IN_ECHO
+                ),
+            }}))
+            ws.receive_text()
+            ws.send_text('{"type":"input_audio_buffer.append","audio":"AAAAAA=="}')
+            ws.receive_text()
+
+        assert len(connector.connects) == 1
+        assert connector.connects[0]["url"] == (
+            "wss://speech-gateway.test/speech/voice-live/realtime"
+            + (
+                "?api-version=2026-07-15&model=gpt-realtime&features=client_ec_reference:true"
+                if opted_in else "?api-version=2026-04-10&model=gpt-realtime"
+            )
+        )
+        sent = [json.loads(frame) for frame in connector.upstream.sent_text]
+        updates = [frame["session"] for frame in sent if frame["type"] == "session.update"]
+        assert len(updates) == 2
+        for session in updates:
+            assert session["input_audio_format"] == "pcm16"
+            assert session["input_audio_sampling_rate"] == 24_000
+            if opted_in:
+                assert session["input_audio_echo_cancellation"] == OPTED_IN_ECHO
+                assert session["parallel_tool_calls"] is False
+            else:
+                assert session["input_audio_echo_cancellation"] == {
+                    "type": "server_echo_cancellation"
+                }
+                assert "parallel_tool_calls" not in session
+        # Audio is forwarded unchanged in both layouts.
+        assert sent[-1] == {"type": "input_audio_buffer.append", "audio": "AAAAAA=="}
+    finally:
+        c.__exit__(None, None, None)
+
+
+def _speech_managed_model_ids() -> list[str]:
+    provider = load_voice_provider_catalog().get("speech_voice_live")
+    assert isinstance(provider, SpeechVoiceProvider)
+    return [model.id for model in provider.managedModels]
+
+
+@pytest.mark.parametrize("model_id", _speech_managed_model_ids())
+def test_live_echo_reference_leaves_the_pinned_version_only_when_a_session_asks(model_id):
+    urls: dict[bool, str] = {}
+    for opted_in in (False, True):
+        c = _speech_client()
+        try:
+            connector = ScriptedRealtimeConnector(
+                [UpstreamMessage("close", close_code=1000, source_event="CLOSE")]
+            )
+            c.app.state.realtime_connector = connector
+            with c.websocket_connect(
+                f"/api/voice/live?provider=speech_voice_live&model={model_id}"
+                + ("&echoRef=client" if opted_in else ""),
+                subprotocols=[DEV_SUBPROTOCOL, "echouser"], headers=_origin(),
+            ) as ws:
+                with pytest.raises(WebSocketDisconnect):
+                    ws.receive_text()
+            urls[opted_in] = connector.connects[0]["url"]
+        finally:
+            c.__exit__(None, None, None)
+    base = "wss://speech-gateway.test/speech/voice-live/realtime"
+    assert urls[False] == f"{base}?api-version=2026-04-10&model={model_id}"
+    assert urls[True] == (
+        f"{base}?api-version=2026-07-15&model={model_id}&features=client_ec_reference:true"
+    )
+
+
+def test_live_speech_echo_reference_changes_nothing_else_in_the_session():
+    frames: dict[bool, dict] = {}
+    for opted_in in (False, True):
+        c = _speech_client()
+        try:
+            with c.websocket_connect(
+                SPEECH_QUERY + ("&echoRef=client" if opted_in else ""),
+                subprotocols=[DEV_SUBPROTOCOL, "echouser"], headers=_origin(),
+            ) as ws:
+                ws.send_text(json.dumps({"type": "session.update", "session": CLIENT_ECHO_SESSION}))
+                ws.receive_text()
+            frames[opted_in] = json.loads(c.app.state.realtime_connector.upstream.sent_text[0])
+        finally:
+            c.__exit__(None, None, None)
+    opted = frames[True]
+    assert opted != frames[False]
+    del opted["session"]["parallel_tool_calls"]
+    opted["session"]["input_audio_echo_cancellation"] = {"type": "server_echo_cancellation"}
+    assert opted == frames[False]
+
+
+@pytest.mark.parametrize(
+    ("query", "reason"),
+    [
+        ("?provider=speech_voice_live&echoRef=server", "echo_reference_invalid"),
+        ("?provider=speech_voice_live&echoRef=", "echo_reference_invalid"),
+        ("?provider=speech_voice_live&echoRef=CLIENT", "echo_reference_invalid"),
+        ("?provider=speech_voice_live&echoRef=client&echoRef=client", "echo_reference_invalid"),
+        ("?provider=azure_openai&echoRef=client", "echo_reference_provider_unsupported"),
+        ("?echoRef=client", "echo_reference_provider_unsupported"),
+    ],
+)
+def test_live_echo_reference_is_refused_before_any_upstream(monkeypatch, query, reason):
+    blocks: list[str] = []
+    monkeypatch.setattr(
+        realtime_module, "emit_security_block",
+        lambda category, block_reason, surface: blocks.append(block_reason),
+    )
+    c = _speech_client()
+    try:
+        connector = c.app.state.realtime_connector
+        with pytest.raises(WebSocketDisconnect) as closed:
+            with c.websocket_connect(
+                f"/api/voice/live{query}", subprotocols=[DEV_SUBPROTOCOL, "echouser"],
+                headers=_origin(),
+            ):
+                pass
+        assert closed.value.code == 1008
+        assert blocks == [reason]
+        assert connector.connects == []
+        # Control: the exact opt-in on Speech connects.
+        with c.websocket_connect(
+            "/api/voice/live?provider=speech_voice_live&echoRef=client",
+            subprotocols=[DEV_SUBPROTOCOL, "echouser"], headers=_origin(),
+        ) as ws:
+            ws.send_text('{"type":"session.update","session":{}}')
+            ws.receive_text()
+        assert len(connector.connects) == 1
+        assert blocks == [reason]
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_live_echo_reference_is_refused_when_the_catalog_does_not_offer_it(monkeypatch):
+    blocks: list[str] = []
+    monkeypatch.setattr(
+        realtime_module, "emit_security_block",
+        lambda category, block_reason, surface: blocks.append(block_reason),
+    )
+    c = _speech_client()
+    try:
+        catalog = load_voice_provider_catalog().model_copy(deep=True)
+        provider = catalog.get("speech_voice_live")
+        assert isinstance(provider, SpeechVoiceProvider)
+        provider.capabilities.echoCancellation.clientReference = None
+        c.app.state.voice_provider_catalog = catalog
+        connector = c.app.state.realtime_connector
+        with pytest.raises(WebSocketDisconnect) as closed:
+            with c.websocket_connect(
+                "/api/voice/live?provider=speech_voice_live&echoRef=client",
+                subprotocols=[DEV_SUBPROTOCOL, "echouser"], headers=_origin(),
+            ):
+                pass
+        assert closed.value.code == 1008
+        assert blocks == ["echo_reference_unavailable"]
+        assert connector.connects == []
+        # Control: the same catalog still serves a session that doesn't ask.
+        with c.websocket_connect(
+            "/api/voice/live?provider=speech_voice_live",
+            subprotocols=[DEV_SUBPROTOCOL, "echouser"], headers=_origin(),
+        ) as ws:
+            ws.send_text('{"type":"session.update","session":{}}')
+            ws.receive_text()
+        assert connector.connects[0]["url"].endswith("?api-version=2026-04-10&model=gpt-realtime")
+    finally:
+        c.__exit__(None, None, None)
+
+
+class RejectingEchoReferenceUpstream(RejectingTranscriptionUpstream):
+    """Refuses a client echo reference, as a resource without the preview flag would."""
+
+    REFUSAL = {
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "code": "invalid_ec_reference_channels",
+            "message": "Client reference audio must be provided via the stereo channel.",
+            "param": "session.input_audio_echo_cancellation",
+        },
+    }
+
+    async def send_text(self, data: str) -> None:
+        self.sent_text.append(data)
+        payload = json.loads(data)
+        echo = payload.get("session", {}).get("input_audio_echo_cancellation", {})
+        if payload.get("type") == "session.update" and echo.get("reference_source") == "client":
+            await self._queue.put(UpstreamMessage("text", text=json.dumps(self.REFUSAL)))
+        else:
+            await self._queue.put(UpstreamMessage("text", text='{"type":"session.updated"}'))
+
+
+class RejectingEchoReferenceConnector(RejectingTranscriptionConnector):
+    def __init__(self) -> None:
+        self.upstream = RejectingEchoReferenceUpstream()
+        self.connects: list[dict] = []
+
+
+@pytest.mark.parametrize("opted_in", [True, False])
+def test_live_echo_reference_refusal_reaches_the_browser_without_fallback(caplog, opted_in):
+    caplog.set_level("INFO", logger="ai4ia_api.routers.realtime")
+    c = _speech_client()
+    capture = _attach_completion_capture(caplog)
+    try:
+        connector = RejectingEchoReferenceConnector()
+        c.app.state.realtime_connector = connector
+        with c.websocket_connect(
+            SPEECH_QUERY + ("&echoRef=client" if opted_in else ""),
+            subprotocols=[DEV_SUBPROTOCOL, "echouser"], headers=_origin(),
+        ) as ws:
+            ws.send_text('{"type":"session.update","session":{}}')
+            # Azure's own refusal reaches the browser, which explains it; a
+            # session that didn't ask is configured as before (control).
+            assert json.loads(ws.receive_text()) == (
+                RejectingEchoReferenceUpstream.REFUSAL if opted_in
+                else {"type": "session.updated"}
+            )
+        # One connection at the asked-for version: no retry or other reference.
+        assert len(connector.connects) == 1
+        assert ("features=client_ec_reference:true" in connector.connects[0]["url"]) is opted_in
+        updates = [
+            json.loads(frame) for frame in connector.upstream.sent_text
+            if json.loads(frame)["type"] == "session.update"
+        ]
+        assert len(updates) == 1
+        payloads = _completion_payloads(caplog)
+        assert len(payloads) == 1
+        if opted_in:
+            assert payloads[0]["outcome"] == "error"
+            assert payloads[0]["metadata"]["protocolError"]["code"] == (
+                "invalid_ec_reference_channels"
+            )
+        # Content-free telemetry names the reference only for an opted-in session.
+        assert payloads[0].get("echoReference") == ("client" if opted_in else None)
+        assert ("echoReference" in payloads[0]) is opted_in
+    finally:
+        if capture is not None:
+            capture.removeHandler(caplog.handler)
+        c.__exit__(None, None, None)
+
+
 def test_live_config_exposes_safe_provider_catalog():
     c = _speech_client()
     try:
         response = c.get("/api/voice/live/config")
         assert response.status_code == 200
         body = response.json()
+        # The browser offers the opt-in client echo reference only when advertised.
+        assert body["providers"][1]["capabilities"]["echoCancellation"] == {
+            "default": "server_echo_cancellation",
+            "options": ["server_echo_cancellation"],
+            "clientReference": {
+                "preview": True, "apiVersion": "2026-07-15",
+                "features": "client_ec_reference:true", "channels": 2,
+            },
+        }
         assert body["defaultProviderId"] == "azure_openai"
         assert body["enabledProviderIds"] == ["azure_openai", "speech_voice_live"]
         providers = {provider["id"]: provider for provider in body["providers"]}
@@ -2024,6 +2304,54 @@ def test_live_avatar_receipt_is_written_for_chat_bound_sessions_only(bound):
         assert "avatar_media_not_recorded" in receipt["notes"]
         assert receipt["runtime"]["api"] == "speech"
         assert AVATAR_PROVIDER_ID not in json.dumps(ended[0])
+    finally:
+        c.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("opted_in", [True, False])
+def test_live_avatar_echo_reference_keeps_the_avatar_block_and_marks_the_receipt(
+    monkeypatch, opted_in,
+):
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        realtime_module, "emit_custom_event", lambda name, attrs: events.append((name, attrs)),
+    )
+    c, rig = _avatar_client()
+    try:
+        _seed_avatar(c, rig)
+        created = c.post(
+            "/api/sessions", headers={"X-Dev-User": "alice"}, json={"title": "Avatar chat"},
+        )
+        session_id = created.json()["id"]
+        connector = c.app.state.realtime_connector
+        query = AVATAR_QUERY + f"&session={session_id}" + ("&echoRef=client" if opted_in else "")
+        with c.websocket_connect(
+            f"/api/voice/live{query}", subprotocols=[DEV_SUBPROTOCOL, "alice"], headers=_origin(),
+        ) as ws:
+            assert json.loads(ws.receive_text())["type"] == "ai4ia.avatar.session"
+            ws.send_text('{"type":"session.update","session":{}}')
+            ws.receive_text()
+        assert ("&features=client_ec_reference:true" in connector.connects[0]["url"]) is opted_in
+        session = json.loads(connector.upstream.sent_text[0])["session"]
+        # The server-owned avatar block is unchanged either way.
+        assert session["avatar"] == {
+            "type": "photo-avatar", "model": "vasa-1", "character": AVATAR_PROVIDER_ID,
+            "customized": True, "output_protocol": "websocket",
+        }
+        assert session["input_audio_echo_cancellation"] == (
+            OPTED_IN_ECHO if opted_in else {"type": "server_echo_cancellation"}
+        )
+        messages = c.get(
+            f"/api/sessions/{session_id}/messages", headers={"X-Dev-User": "alice"},
+        ).json()
+        receipt = next(
+            m for m in messages if m["content"] == "Avatar voice session ended."
+        )["executionReceipt"]
+        assert ("echo_reference_client" in receipt["notes"]) is opted_in
+        assert "avatar_media_not_recorded" in receipt["notes"]
+        live = [attrs for name, attrs in events if name == "voice_live_completion"]
+        assert len(live) == 1
+        assert live[0].get("echoReference") == ("client" if opted_in else None)
     finally:
         c.__exit__(None, None, None)
 

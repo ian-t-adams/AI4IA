@@ -376,6 +376,17 @@ headphones, choose **Keep listening** instead and interrupt simply by talking.
 Either way, the browser is also asked to cancel the avatar's voice from your
 microphone. The choice applies to your next session.
 
+To interrupt by talking while using speakers, choose **Keep listening with
+precise echo cancellation (preview)**. This page then also sends Azure what it
+plays, so Azure can remove the avatar's voice from your microphone. Your
+microphone opens once Azure confirms the session and stays open while the avatar
+talks. **Interrupt** still works.
+
+This mode is a preview, offered only where your deployment's catalog has it. It
+removes only this page's own sound: other tabs or apps playing on your speakers
+still reach the microphone. If Azure doesn't accept the mode, the session ends
+with Azure's message. Switch back to **Pause my microphone** and start again.
+
 If the connection stops responding, the client stops its microphone rather than
 queueing increasingly stale audio. A keepalive timeout is a connection failure,
 not a successful avatar response. Start a new session only after the connection
@@ -564,7 +575,8 @@ still apply and modality coverage remains incomplete.
 | A typed line isn't spoken | While connected, check that **Send to** is set to the live session or avatar, not **Text chat** |
 | The avatar looks small | Use **Focus view** or **Full screen**, or minimize other panels; the stage grows with the space it has |
 | The avatar interrupts itself or answers its own words | On speakers, keep **While the avatar talks** on **Pause my microphone**, or use headphones |
-| The avatar doesn't stop when I talk | While it speaks your microphone is paused: choose **Interrupt**, or use headphones with **Keep listening** |
+| The avatar doesn't stop when I talk | While it speaks your microphone is paused: choose **Interrupt**, use headphones with **Keep listening**, or try **Keep listening with precise echo cancellation (preview)** on speakers |
+| An avatar session with precise echo cancellation ends at once | The preview isn't accepted there: choose **Pause my microphone** and start again |
 | Search or another tool fails | Its visible error/approval state; an enabled gate does not prove upstream entitlement |
 | An admin panel is unavailable | Resource wiring, API identity permissions, and source freshness |
 

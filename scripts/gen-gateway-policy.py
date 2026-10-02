@@ -71,6 +71,25 @@ REALTIME_GA_OUTPUT_PATH = ROOT / "infra" / "policies" / "realtime-ga-routing.xml
 # Generated from infra/voice-providers.json by gen-voice-provider-catalog.py,
 # then independently validated here with the other gateway policies.
 SPEECH_VOICE_LIVE_POLICY_PATH = ROOT / "infra" / "policies" / "speech-voice-live.xml"
+# The Speech handshake's one pinned api-version, and the only other version a
+# session may reach: the opt-in Live-Reference AEC pair, with its exact flag.
+SPEECH_VOICE_LIVE_API_VERSION = "2026-04-10"
+SPEECH_ECHO_REFERENCE_API_VERSION = "2026-07-15"
+SPEECH_ECHO_REFERENCE_FEATURES = "client_ec_reference:true"
+_SPEECH_ECHO_REFERENCE_OPT_IN = (
+    'context.Request.Url.Query.GetValueOrDefault("features", "") == '
+    f'"{SPEECH_ECHO_REFERENCE_FEATURES}" && '
+    'context.Request.Url.Query.GetValueOrDefault("api-version", "") == '
+    f'"{SPEECH_ECHO_REFERENCE_API_VERSION}"'
+)
+SPEECH_VOICE_LIVE_API_VERSION_EXPRESSION = (
+    f'@(({_SPEECH_ECHO_REFERENCE_OPT_IN}) ? "{SPEECH_ECHO_REFERENCE_API_VERSION}" '
+    f': "{SPEECH_VOICE_LIVE_API_VERSION}")'
+)
+SPEECH_VOICE_LIVE_FEATURE_REJECTION = (
+    '@(context.Request.Url.Query.ContainsKey("features") && '
+    f"!({_SPEECH_ECHO_REFERENCE_OPT_IN}))"
+)
 PHOTO_AVATAR_POLICY_PATH = ROOT / "infra" / "policies" / "photo-avatars.xml"
 VOICE_PROVIDERS_PATH = ROOT / "infra" / "voice-providers.json"
 CODE_INTERPRETER_POLICY_PATH = (
@@ -1061,7 +1080,8 @@ def validate_realtime_policy(policy: str, source: str, *, ga: bool = False) -> N
 def validate_speech_voice_live_policy(policy: str, source: str) -> None:
     """Statically pin the Speech Voice Live onHandshake policy to the approved,
     additive, isolated topology: only WebSocket-handshake-supported elements, a
-    curated model allowlist, one fixed backend/API version, managed-identity
+    curated model allowlist, one pinned API version (left only for the exact
+    opt-in Live-Reference AEC version and feature flag), managed-identity
     backend auth via a named value, and no reference to another host or API."""
     root = ElementTree.fromstring(policy)
     allowed = {
@@ -1129,8 +1149,11 @@ def validate_speech_voice_live_policy(policy: str, source: str) -> None:
     if len(choices) != 1:
         raise ValueError(f"{source}: expected exactly one inbound model allowlist")
     reject_branches = choices[0].findall("./when")
-    if len(reject_branches) != 1:
-        raise ValueError(f"{source}: expected exactly one model rejection branch")
+    if len(reject_branches) != 2:
+        raise ValueError(
+            f"{source}: expected exactly one model rejection branch and one feature "
+            "rejection branch"
+        )
     reject_condition = html.unescape(reject_branches[0].attrib.get("condition", ""))
     allowed_model_literals = tuple(
         re.findall(
@@ -1152,8 +1175,25 @@ def validate_speech_voice_live_policy(policy: str, source: str) -> None:
         or rejection_statuses[0].attrib.get("code") != "400"
     ):
         raise ValueError(f"{source}: unsupported models must receive a bodyless 400 response")
-    if fixed_params.get("api-version") != "2026-04-10":
-        raise ValueError(f"{source}: api-version query parameter must be fixed to 2026-04-10")
+    feature_condition = html.unescape(reject_branches[1].attrib.get("condition", ""))
+    if feature_condition != SPEECH_VOICE_LIVE_FEATURE_REJECTION:
+        raise ValueError(
+            f"{source}: feature rejection branch must refuse every features value except "
+            f"{SPEECH_ECHO_REFERENCE_FEATURES} with api-version {SPEECH_ECHO_REFERENCE_API_VERSION}"
+        )
+    feature_statuses = reject_branches[1].findall("./return-response/set-status")
+    if len(feature_statuses) != 1 or feature_statuses[0].attrib.get("code") != "400":
+        raise ValueError(f"{source}: unsupported features must receive a bodyless 400 response")
+    if fixed_params.get("api-version") != SPEECH_VOICE_LIVE_API_VERSION_EXPRESSION:
+        raise ValueError(
+            f"{source}: api-version query parameter must be {SPEECH_VOICE_LIVE_API_VERSION}, "
+            f"or {SPEECH_ECHO_REFERENCE_API_VERSION} only for the exact echo-reference pair"
+        )
+    if any(query_param.attrib.get("name") == "features" for query_param in query_params):
+        raise ValueError(
+            f"{source}: features may only pass through after the exact rejection branch, "
+            "never be set or rewritten"
+        )
     deleted_params = {
         query_param.attrib.get("name")
         for query_param in query_params

@@ -8,6 +8,8 @@ import {
   AVATAR_ECHO_TAIL_SECONDS,
   AVATAR_SPEAKING_PAUSE_MAX_MS,
   base64ToInt16,
+  ECHO_REFERENCE_CONFIRM_TIMEOUT_MS,
+  int16ToBase64,
   microphoneConstraints,
   MAX_MICROPHONE_BUFFERED_BYTES,
   OWN_CANCEL_RACE_WINDOW_MS,
@@ -76,6 +78,19 @@ class FakeAudioContext {
     connect: vi.fn(),
     disconnect: vi.fn(),
   }));
+  // The avatar's audio route for the client echo reference.
+  mediaElementSources: { element: unknown; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }[] = [];
+  gains: { connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }[] = [];
+  createMediaElementSource = vi.fn((element: unknown) => {
+    const node = { element, connect: vi.fn(), disconnect: vi.fn() };
+    this.mediaElementSources.push(node);
+    return node;
+  });
+  createGain = vi.fn(() => {
+    const node = { connect: vi.fn(), disconnect: vi.fn() };
+    this.gains.push(node);
+    return node;
+  });
   bufferSources: FakeAudioBufferSource[] = [];
   createBuffer = vi.fn(() => ({
     duration: 0.1,
@@ -89,7 +104,11 @@ class FakeAudioContext {
 
   constructor() {
     FakeAudioContext.instances.push(this);
+    FakeAudioContext.configure?.(this);
   }
+
+  // Lets a test adjust a context the hook creates, before the hook uses it.
+  static configure: ((context: FakeAudioContext) => void) | null = null;
 }
 
 class FakeAudioBufferSource {
@@ -106,7 +125,11 @@ class FakeAudioWorkletNode {
   connect = vi.fn();
   disconnect = vi.fn();
 
-  constructor() {
+  constructor(
+    public readonly context?: unknown,
+    public readonly name?: string,
+    public readonly options?: Record<string, unknown>,
+  ) {
     FakeAudioWorkletNode.instances.push(this);
   }
 }
@@ -182,6 +205,7 @@ const CONFIG = {
 
 beforeEach(() => {
   FakeAudioContext.instances = [];
+  FakeAudioContext.configure = null;
   FakeAudioWorkletNode.instances = [];
   FakeWebSocket.instances = [];
   Object.defineProperty(window, "AudioContext", {
@@ -1904,6 +1928,7 @@ describe("useVoiceLive live photo avatar", () => {
     onError = vi.fn(),
     speechSettings = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
     onRender: () => void = () => {},
+    beforeOpen: () => void = () => {},
   ) {
     const hook = renderHook(() => {
       onRender();
@@ -1919,6 +1944,7 @@ describe("useVoiceLive live photo avatar", () => {
     const socket = FakeWebSocket.instances[0];
     const emit = (event: object) =>
       socket.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
+    beforeOpen();
     act(() => {
       socket.readyState = FakeWebSocket.OPEN;
       socket.onopen?.();
@@ -2240,6 +2266,203 @@ describe("useVoiceLive live photo avatar", () => {
     micFrame();
     expect(silent(lastAudio(socket))).toBe(false);
     expect(result.current.avatar?.micPaused).toBe(false);
+  });
+
+  // ------------------------------------------------------------------------
+  // Keep listening with precise echo cancellation (Live-Reference AEC preview)
+  // ------------------------------------------------------------------------
+
+  const REFERENCE_SETTINGS = { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, avatarListening: "reference" as const };
+  // Interleaved stereo PCM16 as the worklet posts it: microphone, then reference.
+  const STEREO = Int16Array.from({ length: 2 * MIC_FRAME_SAMPLES }, (_, i) => (i % 2 ? -(i + 1) : i + 1));
+
+  function stereoFrame(samples: Int16Array = STEREO) {
+    act(() => {
+      FakeAudioWorkletNode.instances[0].port.onmessage?.(
+        new MessageEvent("message", { data: samples.slice() }),
+      );
+    });
+  }
+
+  const microphone = (context: FakeAudioContext) =>
+    context.createMediaStreamSource.mock.results[0].value as { connect: ReturnType<typeof vi.fn> };
+
+  it("routes the avatar's voice to the speakers and the reference, and starts the microphone once Azure confirms", async () => {
+    const { result, socket, emit, context } = await startSpeech(AVATAR, vi.fn(), REFERENCE_SETTINGS);
+    const url = new URL(socket.url);
+    expect(url.searchParams.get("avatar")).toBe(AVATAR.id);
+    expect(url.searchParams.get("echoRef")).toBe("client");
+    // Azure removes the echo against what the page plays, so it hears the raw microphone.
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenLastCalledWith({
+      audio: { ...SPEECH_CAPTURE, echoCancellation: false },
+    });
+    const worklet = FakeAudioWorkletNode.instances[0];
+    expect(worklet.name).toBe("ai4ia-capture-stereo");
+    expect(worklet.options).toMatchObject({
+      numberOfInputs: 2, channelCount: 1, channelCountMode: "explicit",
+    });
+    // One bus feeds the speakers and the worklet's reference input (input 1).
+    const [avatarAudio] = context.mediaElementSources;
+    expect(avatarAudio.element).toBe(result.current.avatar?.element);
+    const [bus] = context.gains;
+    expect(avatarAudio.connect).toHaveBeenCalledWith(bus);
+    expect(bus.connect).toHaveBeenCalledWith(context.destination);
+    expect(bus.connect).toHaveBeenCalledWith(worklet, 0, 1);
+    const setup = JSON.parse(socket.send.mock.calls[0][0] as string);
+    expect(setup.session.input_audio_echo_cancellation).toEqual({
+      type: "server_echo_cancellation", reference_source: "client", channels: 2,
+    });
+
+    // Stereo audio waits for Azure's confirmation of the session.
+    expect(microphone(context).connect).not.toHaveBeenCalled();
+    act(() => emit({ type: "session.updated", session: {} }));
+    expect(microphone(context).connect).toHaveBeenCalledWith(worklet, 0, 0);
+    act(() => emit({ type: "session.updated", session: {} }));
+    expect(microphone(context).connect).toHaveBeenCalledTimes(1);
+
+    // Never paused: the avatar speaking changes nothing about what is sent.
+    controlPlayback();
+    act(() => emit({ type: "session.avatar.switch_to_speaking" }));
+    stereoFrame();
+    expect(result.current.avatar?.micPaused).toBe(false);
+    expect(lastAudio(socket)).toEqual(STEREO);
+  });
+
+  it("keeps the mono microphone path and the element's own audio in Pause mode (control)", async () => {
+    const { socket, context } = await startSpeech(AVATAR);
+    expect(new URL(socket.url).searchParams.has("echoRef")).toBe(false);
+    expect(FakeAudioWorkletNode.instances[0].name).toBe("ai4ia-capture");
+    expect(context.createMediaElementSource).not.toHaveBeenCalled();
+    expect(context.createGain).not.toHaveBeenCalled();
+    expect(microphone(context).connect).toHaveBeenCalledWith(FakeAudioWorkletNode.instances[0]);
+    const setup = JSON.parse(socket.send.mock.calls[0][0] as string);
+    expect(setup.session.input_audio_echo_cancellation).toEqual({ type: "server_echo_cancellation" });
+  });
+
+  it("asks for the reference only with an avatar: a voice-only session stays mono (control)", async () => {
+    const { socket, context } = await startSpeech(null, vi.fn(), REFERENCE_SETTINGS);
+    expect(new URL(socket.url).searchParams.has("echoRef")).toBe(false);
+    expect(FakeAudioWorkletNode.instances[0].name).toBe("ai4ia-capture");
+    expect(context.createMediaElementSource).not.toHaveBeenCalled();
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenLastCalledWith({
+      audio: { ...SPEECH_CAPTURE, echoCancellation: false },
+    });
+  });
+
+  it("bounds the stereo queue at the same two seconds of audio, then stops rather than drops", async () => {
+    const { result, socket, emit, onError } = await startSpeech(AVATAR, vi.fn(), REFERENCE_SETTINGS);
+    act(() => emit({ type: "session.updated", session: {} }));
+    const frameLength = JSON.stringify({
+      type: "input_audio_buffer.append",
+      audio: int16ToBase64(STEREO),
+    }).length;
+    // A mono-bound backlog is still under the stereo bound.
+    socket.bufferedAmount = 2 * MAX_MICROPHONE_BUFFERED_BYTES - frameLength;
+    stereoFrame();
+    expect(sentAudio(socket)).toHaveLength(1);
+    expect(result.current.status).toBe("live");
+    socket.bufferedAmount += 1;
+    stereoFrame();
+    expect(sentAudio(socket)).toHaveLength(1);
+    expect(onError).toHaveBeenCalledWith(expect.stringMatching(/can't keep up with microphone audio/));
+    expect(result.current.status).toBe("idle");
+  });
+
+  it("ends a session Azure never confirms, naming the way back", async () => {
+    try {
+      const { result, onError } = await startSpeech(
+        AVATAR, vi.fn(), REFERENCE_SETTINGS, () => {}, () => vi.useFakeTimers(),
+      );
+      act(() => {
+        vi.advanceTimersByTime(ECHO_REFERENCE_CONFIRM_TIMEOUT_MS - 1);
+      });
+      expect(result.current.status).toBe("live");
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(onError).toHaveBeenCalledWith(expect.stringMatching(/didn't confirm.*Pause my microphone/));
+      expect(result.current.status).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a confirmed session past the confirmation bound (control)", async () => {
+    try {
+      const { result, emit, onError } = await startSpeech(
+        AVATAR, vi.fn(), REFERENCE_SETTINGS, () => {}, () => vi.useFakeTimers(),
+      );
+      act(() => emit({ type: "session.updated", session: {} }));
+      act(() => {
+        vi.advanceTimersByTime(ECHO_REFERENCE_CONFIRM_TIMEOUT_MS * 2);
+      });
+      expect(onError).not.toHaveBeenCalled();
+      expect(result.current.status).toBe("live");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["precise echo cancellation", REFERENCE_SETTINGS, true],
+    ["Pause my microphone (control)", DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, false],
+  ])("surfaces Azure's own refusal with %s", async (_label, settings, hinted) => {
+    const { emit, onError } = await startSpeech(AVATAR, vi.fn(), settings);
+    act(() => emit({ type: "error", error: {
+      type: "invalid_request_error", code: "invalid_ec_reference_channels",
+      message: "Client reference audio must be provided via the stereo channel.",
+    } }));
+    const message = onError.mock.calls[0][0] as string;
+    expect(message).toContain("Client reference audio must be provided via the stereo channel.");
+    expect(message).toContain("code: invalid_ec_reference_channels");
+    expect(message.includes("Pause my microphone")).toBe(hinted);
+  });
+
+  it("names the way back when the session closes before Azure confirms it", async () => {
+    const { socket, onError } = await startSpeech(AVATAR, vi.fn(), REFERENCE_SETTINGS);
+    act(() => socket.onclose?.({ code: 1011, reason: "" }));
+    expect(onError).toHaveBeenCalledWith(expect.stringMatching(/Live voice connection error.*Pause my microphone/));
+  });
+
+  it("drops the hint for an unrelated close after Azure confirmed the session", async () => {
+    const { socket, emit, onError } = await startSpeech(AVATAR, vi.fn(), REFERENCE_SETTINGS);
+    act(() => emit({ type: "session.updated", session: {} }));
+    act(() => socket.onclose?.({ code: 1011, reason: "" }));
+    expect(onError).toHaveBeenCalledWith("Live voice connection error. (code: 1011)");
+  });
+
+  it("releases the avatar's audio route, the worklet and the context on stop", async () => {
+    const { result, emit, context } = await startSpeech(AVATAR, vi.fn(), REFERENCE_SETTINGS);
+    act(() => emit({ type: "session.updated", session: {} }));
+    act(() => result.current.stop());
+    expect(context.mediaElementSources[0].disconnect).toHaveBeenCalled();
+    expect(context.gains[0].disconnect).toHaveBeenCalled();
+    expect(FakeAudioWorkletNode.instances[0].disconnect).toHaveBeenCalled();
+    expect(context.close).toHaveBeenCalled();
+    expect(result.current.status).toBe("idle");
+  });
+
+  it("explains a browser that can't route the avatar's audio, before opening a socket", async () => {
+    FakeAudioContext.configure = (context) => {
+      context.createMediaElementSource.mockImplementation(() => {
+        throw new DOMException("already connected", "InvalidStateError");
+      });
+    };
+    const onError = vi.fn();
+    const hook = renderHook(() =>
+      useVoiceLive(
+        CONFIG, "speech_voice_live", null, null, "ignored", onError, null, [],
+        DEFAULT_VOICE_SETTINGS, REFERENCE_SETTINGS, false, null, AVATAR,
+      ),
+    );
+    act(() => {
+      hook.result.current.start();
+    });
+    await waitFor(() => expect(onError).toHaveBeenCalled());
+    expect(onError.mock.calls[0][0]).toMatch(/can't route the avatar's audio.*Pause my microphone/);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalled();
+    await waitFor(() => expect(hook.result.current.status).toBe("idle"));
   });
 
   it("never pauses the microphone in a voice-only session (control)", async () => {

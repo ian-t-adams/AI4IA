@@ -550,6 +550,7 @@ describe("VoiceSettingsPanel live avatar picker", () => {
     expect(within(listening).getAllByRole("option").map((option) => option.textContent)).toEqual([
       "Pause my microphone (speakers)",
       "Keep listening (headphones)",
+      "Keep listening with precise echo cancellation (preview)",
     ]);
     expect(listening).toHaveValue("pause");
     expect(listening).toHaveAccessibleDescription(
@@ -568,6 +569,47 @@ describe("VoiceSettingsPanel live avatar picker", () => {
     );
     rerender({ locked: true });
     expect(listening).toBeDisabled();
+  });
+
+  it("offers precise echo cancellation as a preview only where the server's catalog has it", async () => {
+    const { user, rerender, onSpeechSettingsChange } = setup({
+      ...speech, avatarChoices: CHOICES, avatarId: CHOICES[0].id, onAvatarChange: vi.fn(),
+    });
+    const listening = screen.getByRole("combobox", { name: "While the avatar talks" });
+    await user.selectOptions(listening, "Keep listening with precise echo cancellation (preview)");
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      avatarListening: "reference",
+    });
+    rerender({ speechSettings: { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, avatarListening: "reference" } });
+    expect(listening).toHaveValue("reference");
+    expect(listening).toHaveAccessibleDescription(
+      "Talk over the avatar on speakers. This page also sends Azure what it plays, so Azure can remove the avatar's voice from your microphone.",
+    );
+
+    // A server catalog without the client reference leaves the option out, and
+    // the saved choice shows the default it would actually get.
+    const speechProvider = voiceProviderCatalog.providers[1];
+    const withoutReference = {
+      ...speechProvider,
+      capabilities: {
+        ...speechProvider.capabilities,
+        echoCancellation: {
+          default: speechProvider.capabilities.echoCancellation.default,
+          options: speechProvider.capabilities.echoCancellation.options,
+        },
+      },
+    } as unknown as VoiceSettingsPanelProps["activeProvider"];
+    rerender({
+      activeProvider: withoutReference,
+      speechSettings: { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, avatarListening: "reference" },
+    });
+    expect(within(listening).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "Pause my microphone (speakers)",
+      "Keep listening (headphones)",
+    ]);
+    expect(listening).toHaveValue("pause");
+    expect(listening).toHaveAccessibleDescription(/sends silence while the avatar speaks/);
   });
 
   it.each([

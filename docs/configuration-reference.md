@@ -474,6 +474,14 @@ server-authoritative default). It routes
   MAI-Voice-2.1-Flash voices that `voices.previewOptions` marks, and no custom
   endpoint, lexicon, or personal voice value is ever accepted. No setting gates the
   preview options; they ship with the catalog.
+- One opt-in session type leaves that pinned version. A photo avatar session
+  whose owner chooses **Keep listening with precise echo cancellation (preview)**
+  asks the relay for Live-Reference AEC with `echoRef=client`. Only then does the
+  relay connect at the catalog's `capabilities.echoCancellation.clientReference`
+  version (`2026-07-15`) with `features=client_ec_reference:true`. The generated
+  Speech APIM policy passes only that exact pair and refuses any other
+  `features` value. This is reviewed catalog data, not a setting: no deployment
+  variable turns it on or off, and every other session stays on `2026-04-10`.
 - The shared active APIM's system-assigned managed identity authenticates to that
   account using a managed-identity audience set by the **deployment-only** Bicep
   parameter `speechVoiceLiveManagedIdentityAudience` (default `https://ai.azure.com`,

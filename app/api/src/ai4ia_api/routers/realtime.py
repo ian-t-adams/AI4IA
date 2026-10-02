@@ -40,7 +40,7 @@ import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol
 from urllib.parse import quote
 
@@ -101,6 +101,7 @@ from ..voice_provider_catalog import (
     AZURE_OPENAI_PROVIDER_ID,
     SPEECH_VOICE_LIVE_PROVIDER_ID,
     AzureOpenAIVoiceProvider,
+    SpeechEchoClientReference,
     SpeechVoiceProvider,
     VoiceProvider,
     VoiceProviderCatalog,
@@ -269,6 +270,9 @@ class LiveVoiceProviderResolution:
     rewrite_client_frame: Callable[[str], str | None]
     protocol: str = "preview"
     rewrite_upstream_frame: Callable[[str], str] | None = None
+    # Set only for an opted-in Live-Reference AEC session (``?echoRef=client``).
+    echo_reference: SpeechEchoClientReference | None = None
+    features: str | None = None
 
 
 class LiveVoiceProviderError(Exception):
@@ -376,6 +380,40 @@ def _resolve_live_voice_provider(
     )
 
 
+# Per-session opt-in for Live-Reference AEC: the browser supplies the echo
+# reference as the second channel of its microphone audio. Only this exact value
+# asks for it; the relay alone decides whether the catalog offers it.
+ECHO_REFERENCE_QUERY_PARAM = "echoRef"
+ECHO_REFERENCE_CLIENT = "client"
+
+
+def apply_echo_reference(resolution: LiveVoiceProviderResolution) -> LiveVoiceProviderResolution:
+    """Switch a resolved Speech session to the catalog's client echo reference.
+
+    The session connects at the reference's own api-version with its feature
+    flag, and every client ``session.update`` is rebuilt with the reference
+    fields. Any other provider, or a catalog without the reference, refuses.
+    """
+    provider = resolution.provider
+    managed = resolution.managed_model
+    if not isinstance(provider, SpeechVoiceProvider) or managed is None:
+        raise LiveVoiceProviderError("Echo reference needs Speech Voice Live.")
+    reference = provider.capabilities.echoCancellation.clientReference
+    if reference is None:
+        raise LiveVoiceProviderError("Echo reference is not in the voice catalog.")
+
+    def rewrite_client_frame(frame: str) -> str | None:
+        return normalize_speech_client_frame(frame, provider, managed, echo_reference=reference)
+
+    return replace(
+        resolution,
+        api_version=reference.apiVersion,
+        features=reference.features,
+        echo_reference=reference,
+        rewrite_client_frame=rewrite_client_frame,
+    )
+
+
 # Truthy spellings accepted for the per-session ``?tools=`` opt-in, matching the
 # browser's parseEnabledFlag / the server feature-flag env parsing.
 _TOOLS_TRUTHY = frozenset({"1", "true", "yes", "on"})
@@ -405,15 +443,19 @@ def build_upstream_url(
     target_name: str,
     *,
     target_param: str = "deployment",
+    features: str | None = None,
 ) -> str:
     """Construct a realtime WebSocket URL.
 
     The base already carries the APIM prefix. GA uses ``/openai/v1`` and
     ``model`` without an api-version; legacy and Speech retain their versions.
+    ``features`` is only for an opted-in Speech echo-reference session, in the
+    documented ``name:value`` form.
     """
     ws_base = _to_ws_scheme(base_url.rstrip("/"))
     version = f"api-version={quote(api_version, safe='')}&" if api_version is not None else ""
-    return f"{ws_base}/realtime?{version}{target_param}={quote(target_name, safe='')}"
+    flags = f"&features={quote(features, safe=':')}" if features is not None else ""
+    return f"{ws_base}/realtime?{version}{target_param}={quote(target_name, safe='')}{flags}"
 
 
 def _speech_locale(provider: SpeechVoiceProvider, session: dict[str, Any]) -> str:
@@ -547,6 +589,8 @@ def normalize_speech_client_frame(
     frame: str,
     provider: SpeechVoiceProvider,
     managed_model: VoiceProviderManagedModel | None = None,
+    *,
+    echo_reference: SpeechEchoClientReference | None = None,
 ) -> str | None:
     """Parse and normalize every browser text frame for Voice Live Speech.
 
@@ -555,6 +599,13 @@ def normalize_speech_client_frame(
     allowlists, while response.create is reduced to a configuration-free trigger so
     per-response voices, tools, endpoint ids, and other overrides cannot reach Azure.
     Malformed/non-event JSON is rejected by returning ``None``.
+
+    With ``echo_reference`` (an opted-in Live-Reference AEC session) every
+    ``session.update`` carries the client reference fields, which Azure can't
+    change mid-session, and asks for sequential tool calls: from the version
+    that adds client references, ``parallel_tool_calls`` defaults to true, while
+    the relay's tool bridge answers one call at a time. Without it, any client
+    reference field is dropped like every other unlisted field.
     """
     try:
         payload = json.loads(frame)
@@ -602,13 +653,17 @@ def normalize_speech_client_frame(
             default=provider.sessionDefaults.noiseSuppression,
         )
     }
-    normalized["input_audio_echo_cancellation"] = {
+    echo_cancellation: dict[str, Any] = {
         "type": _speech_simple_option(
             session.get("input_audio_echo_cancellation"),
             options=provider.capabilities.echoCancellation.options,
             default=provider.sessionDefaults.echoCancellation,
         )
     }
+    if echo_reference is not None:
+        echo_cancellation.update(reference_source="client", channels=echo_reference.channels)
+        normalized["parallel_tool_calls"] = False
+    normalized["input_audio_echo_cancellation"] = echo_cancellation
     return json.dumps({"type": SESSION_UPDATE_TYPE, "session": normalized})
 
 
@@ -2138,6 +2193,8 @@ def _emit_relay_completion(
         "metadata": outcome.metadata.as_log_dict(),
         "stats": outcome.stats.as_log_dict(),
     }
+    if resolution.echo_reference is not None:
+        payload["echoReference"] = ECHO_REFERENCE_CLIENT
     if usage_error is not None:
         payload["usageError"] = {
             "exceptionClass": usage_error[0],
@@ -2196,6 +2253,8 @@ def _emit_relay_completion(
             outcome.stats.response_outcomes,
         ),
     }
+    if resolution.echo_reference is not None:
+        attributes["echoReference"] = ECHO_REFERENCE_CLIENT
     if avatar is not None and avatar_evidence is not None:
         attributes.update({
             "avatarRef": avatar_evidence["recordRef"],
@@ -2318,6 +2377,15 @@ def _delivery_guidance_notes(bridge: ToolBridge) -> list[str]:
     return [VOICE_DELIVERY_RECEIPT_NOTE] if bridge.delivery_guidance is not None else []
 
 
+# Receipt marker for a session whose microphone audio carried the client's own
+# playback as the echo reference (configuration evidence, never audio).
+ECHO_REFERENCE_RECEIPT_NOTE = "echo_reference_client"
+
+
+def _echo_reference_notes(resolution: LiveVoiceProviderResolution) -> list[str]:
+    return [ECHO_REFERENCE_RECEIPT_NOTE] if resolution.echo_reference is not None else []
+
+
 async def _record_avatar_receipt(
     *,
     state,
@@ -2372,6 +2440,7 @@ async def _record_avatar_receipt(
         notes=[
             "voice_usage_not_recorded", "voice_model_parameters_not_recorded",
             "avatar_media_not_recorded", *_delivery_guidance_notes(bridge),
+            *_echo_reference_notes(resolution),
         ],
     )
     receipt.toolCallCount = bridge.call_count
@@ -2525,6 +2594,28 @@ async def voice_live(websocket: WebSocket) -> None:
             return
         avatar_record_id = avatar_param
 
+    # Live-Reference AEC (Speech Voice Live only). The browser asks; the catalog
+    # decides. An invalid, repeated, wrong-provider or unoffered request is
+    # refused, never quietly downgraded to the server reference.
+    echo_values = websocket.query_params.getlist(ECHO_REFERENCE_QUERY_PARAM)
+    if echo_values:
+        if echo_values != [ECHO_REFERENCE_CLIENT]:
+            await _deny(websocket, WS_POLICY_VIOLATION, security_reason="echo_reference_invalid")
+            return
+        if provider_resolution.provider.id != SPEECH_VOICE_LIVE_PROVIDER_ID:
+            await _deny(
+                websocket, WS_POLICY_VIOLATION,
+                security_reason="echo_reference_provider_unsupported",
+            )
+            return
+        try:
+            provider_resolution = apply_echo_reference(provider_resolution)
+        except LiveVoiceProviderError:
+            await _deny(
+                websocket, WS_POLICY_VIOLATION, security_reason="echo_reference_unavailable"
+            )
+            return
+
     # 5. Entitlement gate BEFORE opening the upstream socket.
     decision = await state.entitlements.check(user.internal_user_id)
     if not decision.allowed:
@@ -2544,6 +2635,7 @@ async def voice_live(websocket: WebSocket) -> None:
         provider_resolution.api_version,
         provider_resolution.target_name,
         target_param=provider_resolution.target_param,
+        features=provider_resolution.features,
     )
     headers = build_upstream_headers(
         provider_resolution.auth_mode,

@@ -81,6 +81,27 @@ class VoiceProviderSimpleOptions(BaseModel):
     options: list[str]
 
 
+class SpeechEchoClientReference(BaseModel):
+    """Opt-in, preview Live-Reference AEC: the client supplies the echo reference.
+
+    A session that asks for it connects at ``apiVersion`` with the ``features``
+    flag and sends ``channels``-channel interleaved PCM16: the microphone, then
+    what the client plays. Every other session keeps its managed model's version.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    preview: Literal[True]
+    apiVersion: Literal["2026-07-15"]
+    features: Literal["client_ec_reference:true"]
+    channels: Literal[2]
+
+
+class SpeechEchoCancellation(VoiceProviderSimpleOptions):
+    # Absent means the client echo reference is unavailable: the relay refuses it.
+    clientReference: SpeechEchoClientReference | None = None
+
+
 class VoiceProviderInterruption(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -141,7 +162,7 @@ class SpeechVoiceProviderCapabilities(BaseModel):
     inputTranscription: SpeechVoiceProviderInputTranscription
     turnDetection: VoiceProviderTurnDetection
     noiseSuppression: VoiceProviderSimpleOptions
-    echoCancellation: VoiceProviderSimpleOptions
+    echoCancellation: SpeechEchoCancellation
     locale: VoiceProviderSimpleOptions
     interruption: VoiceProviderInterruption
     customVoice: VoiceProviderCustomVoice

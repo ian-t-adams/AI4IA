@@ -880,7 +880,8 @@
           "additionalProperties": false,
           "required": [
             "default",
-            "options"
+            "options",
+            "clientReference"
           ],
           "properties": {
             "default": {
@@ -890,6 +891,31 @@
               "const": [
                 "server_echo_cancellation"
               ]
+            },
+            "clientReference": {
+              "description": "Opt-in, preview Live-Reference AEC: the client sends interleaved PCM16 (channel 0 microphone, channel 1 what it plays). Only a session that asks for it connects at this apiVersion with this features flag; every other session keeps the managed model's apiVersion.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "preview",
+                "apiVersion",
+                "features",
+                "channels"
+              ],
+              "properties": {
+                "preview": {
+                  "const": true
+                },
+                "apiVersion": {
+                  "const": "2026-07-15"
+                },
+                "features": {
+                  "const": "client_ec_reference:true"
+                },
+                "channels": {
+                  "const": 2
+                }
+              }
             }
           }
         },

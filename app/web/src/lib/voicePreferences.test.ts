@@ -222,12 +222,28 @@ describe("avatar listening preference", () => {
   it("defaults to pausing the microphone and keeps only a known mode", () => {
     expect(DEFAULT_VOICE_PREFERENCES.speech.avatarListening).toBe("pause");
     expect(normalizeSpeechVoiceLiveSettings({}).avatarListening).toBe("pause");
-    for (const bad of ["LISTEN", "mute", " listen", "", 1, null, true, {}, ["listen"]]) {
+    for (const bad of [
+      "LISTEN", "mute", " listen", "", 1, null, true, {}, ["listen"],
+      "REFERENCE", "client", "echoRef", " reference", ["reference"],
+    ]) {
       expect(normalizeSpeechVoiceLiveSettings({ avatarListening: bad }).avatarListening).toBe("pause");
     }
-    expect(normalizeSpeechVoiceLiveSettings({ avatarListening: "listen" }).avatarListening).toBe(
-      "listen",
+    for (const mode of ["listen", "reference"] as const) {
+      expect(normalizeSpeechVoiceLiveSettings({ avatarListening: mode }).avatarListening).toBe(mode);
+    }
+  });
+
+  it("persists the precise echo cancellation choice (control: the saved record round-trips)", () => {
+    const storage = fakeStorage();
+    saveVoicePreferences(
+      {
+        ...DEFAULT_VOICE_PREFERENCES,
+        provider: "speech_voice_live",
+        speech: { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, avatarListening: "reference" },
+      },
+      storage,
     );
+    expect(loadVoicePreferences(storage).speech.avatarListening).toBe("reference");
   });
 
   it("persists the choice, survives provider sanitizing, and defaults for older records", () => {
