@@ -185,7 +185,50 @@ export const voiceProviderCatalog = {
             "en-US-AndrewNeural",
             "en-US-Brian:DragonHDLatestNeural",
             "en-US-Emma:DragonHDLatestNeural",
-            "en-US-Jenny:DragonHDLatestNeural"
+            "en-US-Jenny:DragonHDLatestNeural",
+            "en-US-Ethan:MAI-Voice-2.1-Flash",
+            "en-US-Grant:MAI-Voice-2.1-Flash",
+            "en-US-Harper:MAI-Voice-2.1-Flash",
+            "en-US-Iris:MAI-Voice-2.1-Flash",
+            "en-US-Jasper:MAI-Voice-2.1-Flash",
+            "en-US-Olivia:MAI-Voice-2.1-Flash",
+            "en-US-Sage:MAI-Voice-2.1-Flash",
+            "en-US-Ethan:MAI-Voice-2.1",
+            "en-US-Grant:MAI-Voice-2.1",
+            "en-US-Harper:MAI-Voice-2.1",
+            "en-US-Iris:MAI-Voice-2.1",
+            "en-US-Jasper:MAI-Voice-2.1",
+            "en-US-Olivia:MAI-Voice-2.1",
+            "en-US-Sage:MAI-Voice-2.1"
+          ],
+          "previewOptions": [
+            "en-US-Ethan:MAI-Voice-2.1-Flash",
+            "en-US-Grant:MAI-Voice-2.1-Flash",
+            "en-US-Harper:MAI-Voice-2.1-Flash",
+            "en-US-Iris:MAI-Voice-2.1-Flash",
+            "en-US-Jasper:MAI-Voice-2.1-Flash",
+            "en-US-Olivia:MAI-Voice-2.1-Flash",
+            "en-US-Sage:MAI-Voice-2.1-Flash",
+            "en-US-Ethan:MAI-Voice-2.1",
+            "en-US-Grant:MAI-Voice-2.1",
+            "en-US-Harper:MAI-Voice-2.1",
+            "en-US-Iris:MAI-Voice-2.1",
+            "en-US-Jasper:MAI-Voice-2.1",
+            "en-US-Olivia:MAI-Voice-2.1",
+            "en-US-Sage:MAI-Voice-2.1"
+          ]
+        },
+        "inputTranscription": {
+          "options": [
+            {
+              "model": "mai-transcribe-2",
+              "displayName": "MAI Transcribe 2",
+              "preview": true,
+              "profiles": [
+                "native_audio",
+                "azure_speech_chain"
+              ]
+            }
           ]
         },
         "turnDetection": {

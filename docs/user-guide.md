@@ -231,6 +231,12 @@ options. Azure OpenAI uses catalogued realtime deployments. Optional Azure
 Speech uses a curated managed-model catalog in East US 2; it does not accept
 arbitrary model names, custom endpoints, or personal voices.
 
+Azure Speech also offers MAI voices, marked *preview* in the **Voice** list, and
+MAI Transcribe 2 (preview) under **Transcription** in place of the model's
+default. Preview options have no service-level agreement. If Azure refuses one,
+Voice Live shows Azure's error instead of switching to another model. A turn it
+can't transcribe is flagged in the call bar while the session continues.
+
 Settings apply to the **next connection** without silently reconnecting the
 current one. The API supplies the selected agent persona or saved conversation
 instructions; voice has no competing instructions field.

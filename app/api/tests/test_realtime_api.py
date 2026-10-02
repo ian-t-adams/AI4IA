@@ -594,6 +594,122 @@ def test_live_speech_upstream_failure_is_bounded_and_cleans_up():
         c.__exit__(None, None, None)
 
 
+class RejectingTranscriptionUpstream:
+    """Refuses a session that selects MAI transcription, as an unsupported region would."""
+
+    REFUSAL = {
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "code": "unsupported_transcription_model",
+            "param": "session.input_audio_transcription.model",
+            "message": "mai-transcribe-2 is not available in this region.",
+        },
+    }
+
+    def __init__(self) -> None:
+        import asyncio
+
+        self.sent_text: list[str] = []
+        self.sent_bytes: list[bytes] = []
+        self.closed = False
+        self._queue: asyncio.Queue[UpstreamMessage] = asyncio.Queue()
+
+    async def send_text(self, data: str) -> None:
+        self.sent_text.append(data)
+        payload = json.loads(data)
+        transcription = payload.get("session", {}).get("input_audio_transcription", {})
+        if payload.get("type") == "session.update" and transcription.get("model") == (
+            "mai-transcribe-2"
+        ):
+            await self._queue.put(UpstreamMessage("text", text=json.dumps(self.REFUSAL)))
+        else:
+            await self._queue.put(UpstreamMessage("text", text='{"type":"session.updated"}'))
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.sent_bytes.append(data)
+
+    async def receive(self) -> UpstreamMessage:
+        return await self._queue.get()
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class RejectingTranscriptionConnector:
+    def __init__(self) -> None:
+        self.upstream = RejectingTranscriptionUpstream()
+        self.connects: list[dict] = []
+
+    @asynccontextmanager
+    async def connect(self, *, url: str, headers: dict[str, str], timeout: float):
+        self.connects.append({"url": url, "headers": headers, "timeout": timeout})
+        try:
+            yield self.upstream
+        finally:
+            await self.upstream.close()
+
+
+@pytest.mark.parametrize("model_id", ["gpt-realtime", "gpt-4.1"])
+def test_live_speech_forwards_mai_choices_and_surfaces_refusal_without_fallback(
+    caplog, model_id
+):
+    caplog.set_level("INFO", logger="ai4ia_api.routers.realtime")
+    c = _speech_client()
+    capture = _attach_completion_capture(caplog)
+    try:
+        connector = RejectingTranscriptionConnector()
+        c.app.state.realtime_connector = connector
+        with c.websocket_connect(
+            f"/api/voice/live?provider=speech_voice_live&model={model_id}",
+            subprotocols=[DEV_SUBPROTOCOL, "maiuser"],
+            headers=_origin(),
+        ) as ws:
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "session.update",
+                        "session": {
+                            "voice": {
+                                "type": "azure-standard",
+                                "name": "en-US-Harper:MAI-Voice-2.1-Flash",
+                            },
+                            "input_audio_transcription": {"model": "mai-transcribe-2"},
+                        },
+                    }
+                )
+            )
+            # The refusal reaches the browser unchanged, so it can explain it.
+            assert json.loads(ws.receive_text()) == RejectingTranscriptionUpstream.REFUSAL
+
+        sent = [json.loads(frame) for frame in connector.upstream.sent_text]
+        updates = [frame for frame in sent if frame["type"] == "session.update"]
+        # Exactly the user's choice went upstream, once: no retry with another model.
+        assert len(updates) == 1
+        assert updates[0]["session"]["input_audio_transcription"] == {
+            "model": "mai-transcribe-2",
+            "language": "en-US",
+        }
+        assert updates[0]["session"]["voice"] == {
+            "type": "azure-standard",
+            "name": "en-US-Harper:MAI-Voice-2.1-Flash",
+            "locale": "en-US",
+        }
+        payloads = _completion_payloads(caplog)
+        assert len(payloads) == 1
+        assert payloads[0]["outcome"] == "error"
+        assert payloads[0]["metadata"]["protocolError"]["code"] == (
+            "unsupported_transcription_model"
+        )
+        assert payloads[0]["metadata"]["protocolError"]["param"] == (
+            "session.input_audio_transcription.model"
+        )
+    finally:
+        if capture is not None:
+            capture.removeHandler(caplog.handler)
+        c.__exit__(None, None, None)
+
+
 def test_live_config_exposes_safe_provider_catalog():
     c = _speech_client()
     try:
@@ -617,7 +733,25 @@ def test_live_config_exposes_safe_provider_catalog():
             "gpt-5.1",
         ]
         assert providers["speech_voice_live"]["capabilities"]["voices"]["kind"] == "azure-standard"
-        assert "inputTranscription" not in providers["speech_voice_live"]["capabilities"]
+        speech_capabilities = providers["speech_voice_live"]["capabilities"]
+        assert speech_capabilities["voices"]["default"] == "en-US-Ava:DragonHDLatestNeural"
+        assert len(speech_capabilities["voices"]["previewOptions"]) == 14
+        assert all(
+            ":MAI-Voice-2.1" in voice for voice in speech_capabilities["voices"]["previewOptions"]
+        )
+        assert set(speech_capabilities["voices"]["previewOptions"]) < set(
+            speech_capabilities["voices"]["options"]
+        )
+        assert speech_capabilities["inputTranscription"] == {
+            "options": [
+                {
+                    "model": "mai-transcribe-2",
+                    "displayName": "MAI Transcribe 2",
+                    "preview": True,
+                    "profiles": ["native_audio", "azure_speech_chain"],
+                }
+            ]
+        }
         assert "inputTranscription" not in providers["speech_voice_live"]["sessionDefaults"]
         for model in providers["speech_voice_live"]["managedModels"]:
             assert set(model) == {

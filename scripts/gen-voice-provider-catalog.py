@@ -7,7 +7,9 @@ The infra catalog is the source of truth for both providers:
   ``infra/models.json`` for realtime deployments.
 - ``speech_voice_live`` exposes only the curated managed-model catalog and
   carries curated azure-standard built-in Speech voices plus safe capability
-  defaults/options.
+  defaults/options. Public-preview MAI voices are listed in
+  ``voices.previewOptions``, and reviewed transcription alternatives to each
+  managed model's own default live in ``inputTranscription.options``.
 
 It also owns the ``photoAvatars`` block: the custom photo avatar home region
 (cross-checked against ``infra/models.json``), the undocumented creation
@@ -90,13 +92,35 @@ AZURE_OPENAI_VOICES = (
     "marin",
     "cedar",
 )
-SPEECH_VOICES = (
+SPEECH_GA_VOICES = (
     "en-US-Ava:DragonHDLatestNeural",
     "en-US-AvaNeural",
     "en-US-AndrewNeural",
     "en-US-Brian:DragonHDLatestNeural",
     "en-US-Emma:DragonHDLatestNeural",
     "en-US-Jenny:DragonHDLatestNeural",
+)
+# Public preview (no SLA). The en-US voices that support both models, per
+# https://learn.microsoft.com/azure/ai-services/speech-service/mai-voices
+# (reviewed 2026-10-02). Flash is listed first: it is the model Microsoft
+# documents for Voice Live; MAI-Voice-2.1 favors fidelity over latency.
+MAI_VOICE_MODELS = ("MAI-Voice-2.1-Flash", "MAI-Voice-2.1")
+MAI_EN_US_VOICE_NAMES = ("Ethan", "Grant", "Harper", "Iris", "Jasper", "Olivia", "Sage")
+SPEECH_PREVIEW_VOICES = tuple(
+    f"en-US-{name}:{model}" for model in MAI_VOICE_MODELS for name in MAI_EN_US_VOICE_NAMES
+)
+SPEECH_VOICES = (*SPEECH_GA_VOICES, *SPEECH_PREVIEW_VOICES)
+SPEECH_PROFILES = ("native_audio", "azure_speech_chain")
+# Selectable alternatives to each managed model's own transcription default.
+# The pinned 2026-04-10 Voice Live reference supports mai-transcribe-2 with
+# gpt-realtime/gpt-realtime-mini and with every other model, so both profiles.
+SPEECH_INPUT_TRANSCRIPTION_OPTIONS = (
+    {
+        "model": "mai-transcribe-2",
+        "displayName": "MAI Transcribe 2",
+        "preview": True,
+        "profiles": list(SPEECH_PROFILES),
+    },
 )
 SPEECH_DEFAULT_MANAGED_MODEL_ID = "gpt-realtime"
 SPEECH_API_VERSION = "2026-04-10"
@@ -375,6 +399,93 @@ def _validate_azure_openai(errors: list[str], provider: dict[str, Any]) -> None:
     )
 
 
+def _validate_speech_preview_voices(errors: list[str], voices: dict[str, Any]) -> None:
+    preview = voices.get("previewOptions")
+    label = "speech_voice_live.capabilities.voices.previewOptions"
+    if not isinstance(preview, list):
+        errors.append(f"{label} must be an array")
+        return
+    _require(
+        errors,
+        tuple(preview) == SPEECH_PREVIEW_VOICES,
+        f"{label} must be {SPEECH_PREVIEW_VOICES!r} (got {tuple(preview)!r})",
+    )
+    options = voices.get("options")
+    option_set = set(options) if isinstance(options, list) else set()
+    _require(
+        errors,
+        all(isinstance(voice, str) and voice in option_set for voice in preview),
+        f"{label} must only name voices in voices.options",
+    )
+    _require(
+        errors,
+        voices.get("default") not in preview,
+        f"{label} must not include the default voice",
+    )
+
+
+def _validate_speech_input_transcription(errors: list[str], block: Any) -> None:
+    label = "speech_voice_live.capabilities.inputTranscription"
+    _exact_keys(errors, block, allowed=("options",), label=label)
+    options = block.get("options") if isinstance(block, dict) else None
+    if not isinstance(options, list):
+        errors.append(f"{label}.options must be an array")
+        return
+    _require(
+        errors,
+        len(options) == len(SPEECH_INPUT_TRANSCRIPTION_OPTIONS),
+        f"{label}.options must contain exactly "
+        f"{len(SPEECH_INPUT_TRANSCRIPTION_OPTIONS)} reviewed option(s)",
+    )
+    managed_defaults = {spec[5] for spec in SPEECH_MANAGED_MODEL_SPECS}
+    models: list[object] = []
+    for index, option in enumerate(options):
+        option_label = f"{label}.options[{index}]"
+        _exact_keys(
+            errors,
+            option,
+            allowed=("model", "displayName", "preview", "profiles"),
+            label=option_label,
+        )
+        if not isinstance(option, dict):
+            continue
+        models.append(option.get("model"))
+        expected = (
+            SPEECH_INPUT_TRANSCRIPTION_OPTIONS[index]
+            if index < len(SPEECH_INPUT_TRANSCRIPTION_OPTIONS)
+            else None
+        )
+        _require(
+            errors,
+            expected is not None and option == expected,
+            f"{option_label} must be {expected!r} (got {option!r})",
+        )
+        _require(
+            errors,
+            option.get("model") not in managed_defaults,
+            f"{option_label}.model must not repeat a managed model default",
+        )
+        profiles = option.get("profiles")
+        _require(
+            errors,
+            isinstance(profiles, list)
+            and bool(profiles)
+            and len(set(profiles)) == len(profiles)
+            and set(profiles) <= set(SPEECH_PROFILES),
+            f"{option_label}.profiles must be unique managed-model profiles",
+        )
+        _require(
+            errors,
+            option.get("preview") is True or option.get("preview") is False,
+            f"{option_label}.preview must be a boolean",
+        )
+    _require(
+        errors,
+        len(models) == len(set(map(repr, models))),
+        f"{label}.options models must be unique",
+    )
+
+
 def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> None:
     _require(
         errors,
@@ -532,6 +643,7 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
         capabilities,
         allowed=(
             "voices",
+            "inputTranscription",
             "turnDetection",
             "noiseSuppression",
             "echoCancellation",
@@ -541,11 +653,16 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
         ),
         label="speech_voice_live.capabilities",
     )
+    voices = capabilities.get("voices", {})
     _exact_keys(
         errors,
-        capabilities.get("voices", {}),
-        allowed=("kind", "default", "options"),
+        voices,
+        allowed=("kind", "default", "options", "previewOptions"),
         label="speech_voice_live.capabilities.voices",
+    )
+    _validate_speech_preview_voices(errors, voices if isinstance(voices, dict) else {})
+    _validate_speech_input_transcription(
+        errors, capabilities.get("inputTranscription") if isinstance(capabilities, dict) else None
     )
     turn_detection = capabilities.get("turnDetection", {})
     _exact_keys(

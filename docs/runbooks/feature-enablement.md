@@ -1104,6 +1104,27 @@ account; the `speechVoiceLiveManagedIdentityAudience` parameter (default
 Verify the selected account accepts this audience by running the authenticated
 Speech canary after any account or audience change.
 
+**Public-preview MAI options.** The catalog also offers 14 MAI voices
+(`MAI-Voice-2.1-Flash` and `MAI-Voice-2.1` for en-US Ethan, Grant, Harper, Iris,
+Jasper, Olivia and Sage) and the selectable `mai-transcribe-2` input transcription.
+Each managed model's default voice and transcription are unchanged, and a user
+opts in under **Setup > Voice**. These are public previews without an SLA, and the
+evidence differs by option (Microsoft Learn, reviewed 2026-10-02):
+
+- Microsoft documents Voice Live use for MAI-Voice-2.1-Flash. MAI-Voice-2.1
+  favors fidelity over latency, so replies may start later.
+- The pinned `2026-04-10` Voice Live reference lists `mai-transcribe-2` for
+  `gpt-realtime`, `gpt-realtime-mini` and every other model. The separate
+  MAI-Transcribe-2-Streaming product lists East US 2 as "coming soon", so East US 2
+  support through Voice Live is unconfirmed.
+- Microsoft neither confirms nor excludes MAI voices with photo avatars.
+
+Treat those combinations as unverified until a signed-in session proves them. If
+Azure refuses a choice, the session ends with Azure's error rather than switching
+models. A turn that fails to transcribe is flagged in the call bar while the
+session continues. Voice Live usage stays cost-unknown in the usage ledger; no
+Azure retail meter for MAI voices or MAI transcription was published at review.
+
 **Enablement status and standing rules.** This provider is **enabled in production**
 (`AI4IA_SPEECH_VOICE_LIVE_ENABLED=true`, with `speech_voice_live` in
 `AI4IA_VOICE_PROVIDER_ALLOWLIST`). The gates below governed that rollout; the ones

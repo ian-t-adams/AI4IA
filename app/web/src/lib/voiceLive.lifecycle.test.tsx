@@ -635,6 +635,119 @@ describe("useVoiceLive lifecycle", () => {
     expect(result.current.active).toBe(false);
   });
 
+  it("sends the chosen MAI options and explains a failed turn without ending or reconfiguring", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const track = new FakeMediaStreamTrack();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const onError = vi.fn();
+    const speechSettings = {
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      voice: "en-US-Harper:MAI-Voice-2.1-Flash",
+      transcriptionModel: "mai-transcribe-2",
+    };
+    const { result } = renderHook(() =>
+      useVoiceLive(
+        CONFIG, "speech_voice_live", "gpt-4.1", null, "unused", onError,
+        null, [], DEFAULT_VOICE_SETTINGS, speechSettings,
+      ),
+    );
+    act(() => { result.current.start(); });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    const emit = (event: object) =>
+      socket.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
+    act(() => {
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onopen?.();
+    });
+    const setup = JSON.parse(socket.send.mock.calls[0][0] as string);
+    expect(setup.session.input_audio_transcription.model).toBe("mai-transcribe-2");
+    expect(setup.session.voice.name).toBe("en-US-Harper:MAI-Voice-2.1-Flash");
+    socket.send.mockClear();
+
+    act(() => emit({ type: "input_audio_buffer.speech_started", item_id: "user_1" }));
+    expect(result.current.turns).toEqual([expect.objectContaining({ role: "user", pending: true })]);
+    // A line typed mid-utterance waits for that turn to finish.
+    act(() => {
+      expect(result.current.sendText("Typed meanwhile")).toBe(true);
+    });
+    expect(socket.send).not.toHaveBeenCalled();
+
+    act(() =>
+      emit({
+        type: "conversation.item.input_audio_transcription.failed",
+        item_id: "user_1",
+        content_index: 0,
+        error: { type: "server_error", code: "transcription_failed", message: "Unavailable" },
+      }),
+    );
+    expect(result.current.notice).toBe(
+      "MAI Transcribe 2 (preview) couldn't transcribe your last turn: Unavailable " +
+        "(type: server_error; code: transcription_failed). If this continues, choose Model " +
+        "default transcription in Voice settings.",
+    );
+    // The empty pending bubble closes instead of waiting forever ...
+    expect(result.current.turns.map((turn) => [turn.text, turn.pending])).toEqual([
+      ["Typed meanwhile", false],
+    ]);
+    // ... so the queued line goes out now.
+    const sent = socket.send.mock.calls.map(([frame]) => JSON.parse(frame as string));
+    expect(sent.map((frame) => frame.type)).toEqual(["conversation.item.create", "response.create"]);
+    // Nothing falls back to another transcription model, and the session stays up.
+    expect(onError).not.toHaveBeenCalled();
+    expect(result.current.status).toBe("live");
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(track.stop).not.toHaveBeenCalled();
+
+    act(() => {
+      emit({ type: "response.done" });
+      emit({ type: "input_audio_buffer.speech_started", item_id: "user_2" });
+      emit({
+        type: "conversation.item.input_audio_transcription.completed",
+        item_id: "user_2",
+        transcript: "Hello again",
+      });
+    });
+    expect(result.current.notice).toBeNull();
+    expect(result.current.turns.map((turn) => turn.text)).toEqual(["Typed meanwhile", "Hello again"]);
+  });
+
+  it("explains a default transcription failure without naming a preview model", async () => {
+    auth.getToken.mockResolvedValue("token");
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [new FakeMediaStreamTrack()] }),
+      },
+    });
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "speech_voice_live", "gpt-realtime", null, "unused", vi.fn()),
+    );
+    act(() => { result.current.start(); });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => {
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onopen?.();
+    });
+    expect(
+      JSON.parse(socket.send.mock.calls[0][0] as string).session.input_audio_transcription.model,
+    ).toBe("gpt-4o-transcribe");
+    act(() =>
+      socket.onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "conversation.item.input_audio_transcription.failed",
+          error: { message: "Audio too short" },
+        }),
+      })),
+    );
+    expect(result.current.notice).toBe("Your last turn couldn't be transcribed: Audio too short.");
+    expect(result.current.status).toBe("live");
+  });
+
   it("admits the exact microphone queue bound and stops rather than dropping or replaying overflow", async () => {
     auth.getToken.mockResolvedValue("token");
     const track = new FakeMediaStreamTrack();

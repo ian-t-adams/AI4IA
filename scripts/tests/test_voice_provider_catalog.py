@@ -26,6 +26,31 @@ EXPECTED_MODELS = (
     ("gpt-5-mini", "azure_speech_chain", "azure_speech", "azure-speech"),
     ("gpt-5.1", "azure_speech_chain", "azure_speech", "azure-speech"),
 )
+SPEECH_GA_VOICES = [
+    "en-US-Ava:DragonHDLatestNeural",
+    "en-US-AvaNeural",
+    "en-US-AndrewNeural",
+    "en-US-Brian:DragonHDLatestNeural",
+    "en-US-Emma:DragonHDLatestNeural",
+    "en-US-Jenny:DragonHDLatestNeural",
+]
+# Spelled out (not derived) so a generator typo cannot agree with itself.
+MAI_VOICES = [
+    "en-US-Ethan:MAI-Voice-2.1-Flash",
+    "en-US-Grant:MAI-Voice-2.1-Flash",
+    "en-US-Harper:MAI-Voice-2.1-Flash",
+    "en-US-Iris:MAI-Voice-2.1-Flash",
+    "en-US-Jasper:MAI-Voice-2.1-Flash",
+    "en-US-Olivia:MAI-Voice-2.1-Flash",
+    "en-US-Sage:MAI-Voice-2.1-Flash",
+    "en-US-Ethan:MAI-Voice-2.1",
+    "en-US-Grant:MAI-Voice-2.1",
+    "en-US-Harper:MAI-Voice-2.1",
+    "en-US-Iris:MAI-Voice-2.1",
+    "en-US-Jasper:MAI-Voice-2.1",
+    "en-US-Olivia:MAI-Voice-2.1",
+    "en-US-Sage:MAI-Voice-2.1",
+]
 
 
 class VoiceProviderCatalogTests(unittest.TestCase):
@@ -86,8 +111,21 @@ class VoiceProviderCatalogTests(unittest.TestCase):
         self.assertEqual(speech["selectionMode"], "managed_model_catalog")
         self.assertEqual(speech["defaultManagedModelId"], "gpt-realtime")
         self.assertNotIn("managedModel", speech)
+        # The default stays per managed model; only alternatives are selectable.
         self.assertNotIn("inputTranscription", speech["sessionDefaults"])
-        self.assertNotIn("inputTranscription", speech["capabilities"])
+        self.assertEqual(
+            speech["capabilities"]["inputTranscription"],
+            {
+                "options": [
+                    {
+                        "model": "mai-transcribe-2",
+                        "displayName": "MAI Transcribe 2",
+                        "preview": True,
+                        "profiles": ["native_audio", "azure_speech_chain"],
+                    }
+                ]
+            },
+        )
         self.assertEqual(
             tuple(
                 (
@@ -111,7 +149,105 @@ class VoiceProviderCatalogTests(unittest.TestCase):
             speech["capabilities"]["voices"]["options"][0],
             "en-US-Ava:DragonHDLatestNeural",
         )
+        self.assertEqual(
+            speech["capabilities"]["voices"]["options"],
+            [*SPEECH_GA_VOICES, *MAI_VOICES],
+        )
+        self.assertEqual(speech["capabilities"]["voices"]["previewOptions"], MAI_VOICES)
+        self.assertEqual(
+            speech["sessionDefaults"]["voice"],
+            "en-US-Ava:DragonHDLatestNeural",
+        )
         self.assertFalse(speech["capabilities"]["customVoice"]["allowPersonalVoice"])
+
+    def test_schema_and_generator_reject_unreviewed_mai_voice_contracts(self) -> None:
+        mutations = {}
+
+        unmarked = copy.deepcopy(self.raw)
+        unmarked["providers"][1]["capabilities"]["voices"]["previewOptions"].pop()
+        mutations["MAI voice not marked preview"] = unmarked
+
+        preview_default = copy.deepcopy(self.raw)
+        preview_default["providers"][1]["capabilities"]["voices"]["previewOptions"].append(
+            "en-US-Ava:DragonHDLatestNeural"
+        )
+        mutations["default voice marked preview"] = preview_default
+
+        missing_preview = copy.deepcopy(self.raw)
+        del missing_preview["providers"][1]["capabilities"]["voices"]["previewOptions"]
+        mutations["missing previewOptions"] = missing_preview
+
+        for voice in (
+            "en-US-Harper:MAI-Voice-2-Flash",
+            "en-GB-Emily:MAI-Voice-2.1-Flash",
+            "MAI-Voice-2.1-Flash",
+        ):
+            unreviewed = copy.deepcopy(self.raw)
+            voices = unreviewed["providers"][1]["capabilities"]["voices"]
+            voices["options"].append(voice)
+            voices["previewOptions"].append(voice)
+            mutations[f"unreviewed voice {voice}"] = unreviewed
+
+        default_mai = copy.deepcopy(self.raw)
+        default_mai["providers"][1]["capabilities"]["voices"][
+            "default"
+        ] = "en-US-Harper:MAI-Voice-2.1-Flash"
+        mutations["preview default voice"] = default_mai
+
+        for label, mutated in mutations.items():
+            with self.subTest(label=label):
+                self.assert_schema_rejects(mutated)
+                self.assert_generator_rejects(mutated)
+
+    def test_schema_and_generator_reject_unreviewed_transcription_options(self) -> None:
+        def option_mutation(change) -> dict:
+            mutated = copy.deepcopy(self.raw)
+            change(mutated["providers"][1]["capabilities"]["inputTranscription"]["options"])
+            return mutated
+
+        def set_field(field: str, value: object):
+            return lambda options: options[0].__setitem__(field, value)
+
+        mutations = {
+            "floating alias": option_mutation(set_field("model", "mai-transcribe")),
+            "streaming product id": option_mutation(
+                set_field("model", "MAI-Transcribe-2-Streaming")
+            ),
+            "managed default repeated": option_mutation(set_field("model", "azure-speech")),
+            "unknown profile": option_mutation(set_field("profiles", ["agent"])),
+            "empty profiles": option_mutation(set_field("profiles", [])),
+            "not marked preview": option_mutation(set_field("preview", False)),
+            "endpoint field": option_mutation(
+                set_field("endpoint", "https://attacker.example")
+            ),
+            "extra option": option_mutation(
+                lambda options: options.append(
+                    {
+                        "model": "whisper-1",
+                        "displayName": "Whisper",
+                        "preview": False,
+                        "profiles": ["native_audio"],
+                    }
+                )
+            ),
+            "duplicate option": option_mutation(
+                lambda options: options.append(copy.deepcopy(options[0]))
+            ),
+            "no options": option_mutation(lambda options: options.clear()),
+        }
+        missing = copy.deepcopy(self.raw)
+        del missing["providers"][1]["capabilities"]["inputTranscription"]
+        mutations["missing capability"] = missing
+        session_default = copy.deepcopy(self.raw)
+        session_default["providers"][1]["sessionDefaults"][
+            "inputTranscription"
+        ] = "mai-transcribe-2"
+        mutations["provider-wide default"] = session_default
+
+        for label, mutated in mutations.items():
+            with self.subTest(label=label):
+                self.assert_schema_rejects(mutated)
+                self.assert_generator_rejects(mutated)
 
     def test_schema_rejects_singular_model_and_custom_selectors(self) -> None:
         mutations = {}
