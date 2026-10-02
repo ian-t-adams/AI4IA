@@ -1701,6 +1701,23 @@ a new owner-approved exception.
   active, else `output_audio_buffer.clear` while the avatar speaks); only that
   cancel's own `response_cancel_not_active`, within its window, is non-fatal.
   Live-Reference AEC needs API `2026-07-15`; the catalog pins `2026-04-10`.
+- **Delivery guidance.** Every live session, on both providers and both Speech
+  profiles (the `azure_speech_chain` text-to-speech reads a text model's reply
+  verbatim), ends its instructions with the relay's versioned voice delivery
+  guidance (`voice_delivery.py`). Persona or saved conversation instructions stay
+  first and unchanged; the relay sets the composition on every `session.update`
+  and client `response.create`, so the browser never chooses or removes it. It
+  shapes only spoken form and must not weaken persona, tool, safety or policy
+  instructions. Receipts record `instructionSource`, the persona digest and the
+  `voice_delivery_guidance_v1` note, and telemetry the version, never the text;
+  changing the text means a new version.
+- **Stale web build.** A long-lived tab keeps old client code after a deploy. One
+  content-derived id (`app/web/build-id.mjs`) is inlined into the bundle and the
+  Next app's public `no-store` `/build-id` route, never under `/api`. The tab polls
+  with jitter, backoff and focus checks, and a failed read is unknown, not stale.
+  The banner never reloads by itself: **Reload** waits for a live session, unsaved
+  transcript, streaming reply or upload, and confirms before clearing an unsent
+  message. A stale tab must reload before any new voice start, including **Retry**.
 
 ## Group policy and publication source contract
 

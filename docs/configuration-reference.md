@@ -592,7 +592,9 @@ template-default table above.
 
 The relay's `voice_live_completion` record carries `correlationId`, provider,
 model/usage target, outcome, bounded protocol error and close metadata, source
-event, and directional frame counts/event types. It deliberately excludes tokens,
+event, directional frame counts/event types, allowlisted per-direction flow-event
+counts, a `response.done` outcome histogram limited to documented status/reason
+values, and the voice delivery guidance version. It deliberately excludes tokens,
 keys, raw frames, audio, transcripts, prompts/history, and tool arguments/results.
 
 APIM owns bounded immediate backend attempts. When all compatible regions are

@@ -245,7 +245,17 @@ the conversation.
 
 Settings apply to the **next connection** without silently reconnecting the
 current one. The API supplies the selected agent persona or saved conversation
-instructions; voice has no competing instructions field.
+instructions; voice has no competing instructions field. Every live session also
+gets short spoken-delivery guidance from the API, after any persona: answer the
+way people talk, usually in a few sentences, offer more instead of listing, and
+never read out lists, markdown, links or emoji. The persona's own instructions
+still apply.
+
+If AI4IA is updated while your tab is open, a banner says **A new version of
+AI4IA is available.** Choose **Reload** when convenient; it waits while a voice
+session, transcript save, reply or upload is in progress, and asks before
+clearing a message you haven't sent. Until you reload, Voice Live asks you to
+reload before starting a new session, because voice behavior lives in the page.
 
 You can also type while connected. The composer then shows **Send to**: with
 the live session selected (the default), a typed line goes to it, joins the
@@ -546,6 +556,7 @@ still apply and modality coverage remains incomplete.
 | A conversation won't delete | Read the message on its sidebar row. For an unconfirmed result, choose **Try again**; if cleanup didn't finish, choose **Finish cleanup** or open **Deletion status** |
 | Voice fails before connecting | Microphone permission, sign-in, API URL, and allowed Origin |
 | Voice settings seem unchanged | Stop and reconnect; settings affect the next connection |
+| Voice won't start and a new version is available | Choose **Reload** in the banner, then start Voice Live again |
 | Speech is not offered | The operator's provider allowlist and Speech feature gate |
 | Photo avatars are missing | They are off by default and need Microsoft's Limited Access approval |
 | Can't use an avatar | Choose **Use in Voice Live** in the gallery. The avatar must be ready and verified, Azure Speech Voice Live must be available, and the browser must support avatar video. End an active session or finish saving its transcript before choosing another avatar |

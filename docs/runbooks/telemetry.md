@@ -12,7 +12,7 @@ transcripts.
 | Requests, errors, dependencies | FastAPI/OpenTelemetry and instrumented `httpx` | Depends on Application Insights export; unavailable is not zero |
 | GenAI text-model calls | Content-free gateway model spans | Actual adapted Chat Completions, Responses and Claude calls; missing usage/response identity stays unknown |
 | Tokens and known cost | Per-user Cosmos usage ledger | Missing provider usage or price is counted as unknown |
-| Voice Live | `voice_live_completion` metadata event and usage ledger | Provider/model/outcome/close/frame metadata only |
+| Voice Live | `voice_live_completion` metadata event and usage ledger | Provider/model/outcome/close/frame metadata, allowlisted flow counts and response outcomes only |
 | MCP tools | Redacted structured MCP events | Process/log export availability controls freshness |
 | Document ingest | `document_ingest` receipt plus `document_ingest_terminal` enrichment events | Terminal ready/failed/cancelled, modality, bounded stage, persistence outcome, and duration only |
 | Memory | `memory_operation` events for list/delete/recall/save | Operation/status/backend/count/latency only; no memory text or id |
@@ -73,6 +73,67 @@ is a separate HTTP/SSE request and is not spoken by the live avatar. A screensho
 showing a typed reply generating while the avatar listens is therefore not proof
 of microphone input or an upstream speech response. Never collect audio, video,
 transcripts, browser tokens or raw provider payloads to establish that distinction.
+
+### Voice Live conversation flow
+
+Each `voice_live_completion` custom event carries `flowVersion` (currently `1`),
+`deliveryGuidance` (the voice delivery guidance version bound to the session) and
+non-zero integer counts for a fixed allowlist of turn-taking events: browser
+events as `client*` (for example `clientAudioAppend`, `clientResponseCreate`,
+`clientResponseCancel`, `clientOutputAudioClear`, `clientItemTruncate`) and
+provider events as `up*` (for example `upSpeechStarted`, `upSpeechStopped`,
+`upTranscriptionCompleted`, `upTranscriptionFailed`, `upResponseCreated`,
+`upResponseDone`, `upAvatarSpeaking`, `upAvatarIdle`, `upError`). How each
+`response.done` ended is counted only for the documented status and reason
+values: `responseCompleted`, `responseCancelledTurnDetected` (a barge-in),
+`responseCancelledClientCancelled`, `responseIncompleteMaxOutputTokens`,
+`responseIncompleteContentFilter`, `responseFailed` and the `*Other` buckets.
+The allowlists live in `app/api/src/ai4ia_api/realtime_flow.py`.
+
+On an event that carries `flowVersion`, an absent count means zero. Older events
+have no `flowVersion`, and their counts are unknown, not zero. The relay parses
+only `response.done` payloads for their status, below a size bound, and never
+records transcripts, item or response ids, tokens, provider avatar ids, URLs or
+free text. The same counts appear in the container's `voice_live_completion`
+JSON line under `stats.*.eventCounts`, `stats.responseOutcomes` and
+`deliveryGuidance`.
+
+One session's flow, by its correlation id:
+
+```kusto
+AppEvents
+| where TimeGenerated > ago(24h) and Name == "voice_live_completion"
+| where tostring(Properties["correlationId"]) == "<correlation id>"
+| where isnotnull(Properties["flowVersion"])
+| project TimeGenerated, provider=tostring(Properties["provider"]),
+    model=tostring(Properties["model"]), outcome=tostring(Properties["outcome"]),
+    deliveryGuidance=tostring(Properties["deliveryGuidance"]),
+    speechStarted=coalesce(toint(Properties["upSpeechStarted"]), 0),
+    transcriptionFailed=coalesce(toint(Properties["upTranscriptionFailed"]), 0),
+    responses=coalesce(toint(Properties["upResponseDone"]), 0),
+    completed=coalesce(toint(Properties["responseCompleted"]), 0),
+    bargeIns=coalesce(toint(Properties["responseCancelledTurnDetected"]), 0),
+    clientCancels=coalesce(toint(Properties["clientResponseCancel"]), 0),
+    avatarClears=coalesce(toint(Properties["clientOutputAudioClear"]), 0)
+```
+
+Barge-ins per model across sessions:
+
+```kusto
+AppEvents
+| where TimeGenerated > ago(7d) and Name == "voice_live_completion"
+| where isnotnull(Properties["flowVersion"])
+| summarize sessions=count(),
+    responses=sum(coalesce(toint(Properties["upResponseDone"]), 0)),
+    bargeIns=sum(coalesce(toint(Properties["responseCancelledTurnDetected"]), 0))
+  by provider=tostring(Properties["provider"]), model=tostring(Properties["model"])
+| extend bargeInShare=iff(responses == 0, real(null), todouble(bargeIns) / responses)
+```
+
+A session with replies but no `upSpeechStarted` never detected the user's speech;
+many `responseCancelledTurnDetected` on an avatar session point at the avatar
+hearing itself (see the echo guidance in the user guide). Counts describe turn
+taking, not what was said, and are unknown, not zero, when the source is absent.
 
 ## Admin API contract
 
