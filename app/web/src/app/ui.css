@@ -1131,6 +1131,11 @@
   margin-left: auto;
 }
 
+/* In a narrow control grid, Interrupt takes a whole row of its own. */
+.live-stage-controls > .live-stage-interrupt {
+  grid-column: 1 / -1;
+}
+
 /* A narrow stage (a phone, a split view, the mini player): the bar stacks, the
    controls pair up in a grid and the lobby keeps to its essentials. */
 @container live-stage-shell (max-width: 559.98px) {

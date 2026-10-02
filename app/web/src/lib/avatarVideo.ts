@@ -355,6 +355,10 @@ export class AvatarVideoPlayer {
   private playbackBlocked = false;
   private failure: AvatarVideoFailure | null = null;
   private destroyed = false;
+  // Monotonic append counts, so a speech-end mark can wait for queued fragments.
+  private appendsAccepted = 0;
+  private appendsCompleted = 0;
+  private speechMark: { target: number; end: number | null } | null = null;
   private readonly maxQueuedChunks: number;
   private readonly maxQueuedBytes: number;
   private readonly retainBehindSeconds: number;
@@ -385,6 +389,31 @@ export class AvatarVideoPlayer {
   /** Queued plus in-flight operations, for diagnostics and tests. */
   get backlog(): { chunks: number; bytes: number } {
     return { chunks: this.queuedChunks, bytes: this.queuedBytes };
+  }
+
+  /** The media time the element is playing. */
+  get currentTime(): number {
+    return this.video.currentTime;
+  }
+
+  /** Whether the avatar can be heard: the element is playing and the player still works. */
+  get audible(): boolean {
+    return !this.destroyed && this.failure === null && !this.video.paused;
+  }
+
+  /**
+   * Marks where everything pushed so far ends: at `switch_to_idle`, the end of
+   * the avatar's speech. Fragments still queued are part of it, so the mark
+   * resolves once they are appended. Read it from `speechEnd`.
+   */
+  markSpeechEnd(): void {
+    this.speechMark = { target: this.appendsAccepted, end: null };
+    this.resolveSpeechMark();
+  }
+
+  /** The marked speech end in media time, or null until it resolves (or without a mark). */
+  get speechEnd(): number | null {
+    return this.speechMark?.end ?? null;
   }
 
   /**
@@ -515,6 +544,7 @@ export class AvatarVideoPlayer {
     this.queue.push({ kind: "append", data: bytes, retried: false });
     this.queuedChunks += 1;
     this.queuedBytes += bytes.length;
+    this.appendsAccepted += 1;
     this.pump();
   }
 
@@ -529,6 +559,8 @@ export class AvatarVideoPlayer {
     if (done?.kind === "append") {
       this.queuedChunks -= 1;
       this.queuedBytes -= done.data.length;
+      this.appendsCompleted += 1;
+      this.resolveSpeechMark();
       if (!this.started) {
         this.started = true;
         this.options.onFirstFrame?.();
@@ -578,6 +610,20 @@ export class AvatarVideoPlayer {
       }
       this.fail("append_failed");
     }
+  }
+
+  private resolveSpeechMark(): void {
+    const mark = this.speechMark;
+    if (!mark || mark.end !== null || this.appendsCompleted < mark.target) return;
+    // With nothing buffered, the speech ends where playback already is.
+    let end = this.video.currentTime;
+    try {
+      const ranges = this.sourceBuffer?.buffered;
+      if (ranges && ranges.length > 0) end = ranges.end(ranges.length - 1);
+    } catch {
+      /* a detached SourceBuffer can't be read */
+    }
+    mark.end = end;
   }
 
   private scheduleEviction(urgent: boolean): boolean {

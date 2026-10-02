@@ -237,6 +237,12 @@ default. Preview options have no service-level agreement. If Azure refuses one,
 Voice Live shows Azure's error instead of switching to another model. A turn it
 can't transcribe is flagged in the call bar while the session continues.
 
+With Azure Speech, **Turn detection** sets how Azure tells that you've finished
+speaking: **Semantic (English)** or **Semantic (multilingual)**. **Stop the reply
+when I start talking** lets you cut in by speaking, and **Let Azure trim
+interrupted replies** keeps only the part of an interrupted reply you heard in
+the conversation.
+
 Settings apply to the **next connection** without silently reconnecting the
 current one. The API supplies the selected agent persona or saved conversation
 instructions; voice has no competing instructions field.
@@ -347,10 +353,18 @@ they never silently start an audio-only session.
 
 Avatar time is billed per second while the session is connected, even when nobody
 is talking, so a session ends on its own after a stretch of silence (a countdown
-warns you first) or at its time limit. **End session** stops it at once. Speaking
-over the avatar interrupts it. If your browser can't play the avatar video, live
-avatar use is disabled with an explanation. Choose **Voice only** to continue
-without video. Headphones help the avatar not hear itself.
+warns you first) or at its time limit. **End session** stops it at once. If your
+browser can't play the avatar video, live avatar use is disabled with an
+explanation. Choose **Voice only** to continue without video.
+
+On speakers, your microphone can pick up the avatar's own voice. So by default
+(**While the avatar talks: Pause my microphone**, in **Setup > Voice** under the
+avatar), your microphone sends silence while the avatar is speaking, and the
+stage and call bar read **Speaking · mic paused**. To cut in, choose
+**Interrupt**: it stops the reply and opens your microphone again. With
+headphones, choose **Keep listening** instead and interrupt simply by talking.
+Either way, the browser is also asked to cancel the avatar's voice from your
+microphone. The choice applies to your next session.
 
 If the connection stops responding, the client stops its microphone rather than
 queueing increasingly stale audio. A keepalive timeout is a connection failure,
@@ -537,6 +551,8 @@ still apply and modality coverage remains incomplete.
 | An avatar session ended by itself | It ends after a stretch of silence or at its time limit; start Voice Live again |
 | A typed line isn't spoken | While connected, check that **Send to** is set to the live session or avatar, not **Text chat** |
 | The avatar looks small | Use **Focus view** or **Full screen**, or minimize other panels; the stage grows with the space it has |
+| The avatar interrupts itself or answers its own words | On speakers, keep **While the avatar talks** on **Pause my microphone**, or use headphones |
+| The avatar doesn't stop when I talk | While it speaks your microphone is paused: choose **Interrupt**, or use headphones with **Keep listening** |
 | Search or another tool fails | Its visible error/approval state; an enabled gate does not prove upstream entitlement |
 | An admin panel is unavailable | Resource wiring, API identity permissions, and source freshness |
 

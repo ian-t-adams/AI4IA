@@ -18,6 +18,7 @@ import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   DEFAULT_SPEECH_MODEL_ID,
   DEFAULT_VOICE_PROVIDER,
+  isAvatarListeningMode,
   isRealtimeVoice,
   isPlaybackProfile,
   isSpeechVoiceProvider,
@@ -244,6 +245,9 @@ export function normalizeSpeechVoiceLiveSettings(
     typeof r.transcriptionModel === "string" && r.transcriptionModel.trim().length > 0
       ? r.transcriptionModel.trim()
       : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.transcriptionModel;
+  const avatarListening = isAvatarListeningMode(r.avatarListening)
+    ? r.avatarListening
+    : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.avatarListening;
   return {
     temperature,
     voice,
@@ -252,6 +256,7 @@ export function normalizeSpeechVoiceLiveSettings(
     interruptResponse,
     autoTruncate,
     transcriptionModel,
+    avatarListening,
   };
 }
 

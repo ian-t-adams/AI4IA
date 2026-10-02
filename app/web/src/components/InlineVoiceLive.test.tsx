@@ -346,6 +346,37 @@ describe("inline Voice Live chat", () => {
     expect(screen.getByText("Speaking")).toBeInTheDocument();
   });
 
+  it("says in the call bar while the microphone is paused for the avatar's speech", () => {
+    const avatar = {
+      element: document.createElement("video"),
+      label: "AI-generated",
+      unsupported: false,
+      failure: null,
+      started: true,
+      speaking: false,
+      idleEndsAt: null,
+      sessionEndsAt: null,
+      playbackBlocked: false,
+      resume: vi.fn(),
+      micPaused: true,
+      interrupt: vi.fn(),
+    };
+    // The server already reports idle, but the end of the speech is still playing.
+    controller = makeController({ status: "live", active: true, avatar });
+    const { rerender } = render(<Harness />);
+    expect(screen.getByText("Speaking · mic paused")).toBeInTheDocument();
+
+    controller = makeController({ status: "live", active: true, avatar: { ...avatar, micPaused: false } });
+    rerender(<Harness />);
+    expect(screen.queryByText("Speaking · mic paused")).toBeNull();
+    expect(screen.getByText("Listening")).toBeInTheDocument();
+
+    // An ended session's view never claims a paused microphone.
+    controller = makeController({ status: "idle", active: false, avatar });
+    rerender(<Harness />);
+    expect(screen.queryByText("Speaking · mic paused")).toBeNull();
+  });
+
   it("sends typed lines to the live session while it is connected, and to text chat on request", async () => {
     const onSend = vi.fn();
     const sendText = vi.fn(() => true);
@@ -434,6 +465,8 @@ describe("inline Voice Live chat", () => {
       sessionEndsAt: null,
       playbackBlocked: false,
       resume: vi.fn(),
+      micPaused: false,
+      interrupt: vi.fn(),
     };
     controller = makeController({ status: "live", active: true, avatar, sendText });
     const { rerender } = render(<Harness onSend={onSend} avatarName="Ava Marsh" />);

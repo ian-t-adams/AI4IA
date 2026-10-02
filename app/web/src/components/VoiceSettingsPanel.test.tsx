@@ -321,6 +321,50 @@ describe("VoiceSettingsPanel", () => {
     expect(select).not.toHaveAttribute("aria-describedby");
   });
 
+  it("names Speech turn detection and interruption in plain words, sending the same values", async () => {
+    const { user, onSpeechSettingsChange } = setup({
+      provider: "speech_voice_live",
+      activeProvider: voiceProviderCatalog.providers[1],
+      voice: voiceProviderCatalog.providers[1].capabilities.voices.default,
+    });
+    const turn = screen.getByRole("combobox", { name: "Turn detection" });
+    expect(
+      within(turn)
+        .getAllByRole<HTMLOptionElement>("option")
+        .map((option) => [option.textContent, option.value]),
+    ).toEqual([
+      ["Semantic (English)", "azure_semantic_vad"],
+      ["Semantic (multilingual)", "azure_semantic_vad_multilingual"],
+    ]);
+    expect(turn).toHaveAccessibleDescription("How Azure tells that you have finished speaking.");
+    await user.selectOptions(turn, "Semantic (multilingual)");
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      turnDetection: "azure_semantic_vad_multilingual",
+    });
+
+    const stopReply = screen.getByRole("checkbox", { name: "Stop the reply when I start talking" });
+    expect(stopReply).toBeChecked();
+    await user.click(stopReply);
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      interruptResponse: false,
+    });
+
+    const trim = screen.getByRole("checkbox", { name: "Let Azure trim interrupted replies" });
+    expect(trim).not.toBeChecked();
+    expect(trim).toHaveAccessibleDescription(
+      "Keeps only the part you heard in the conversation. When off, the browser trims voice-only replies itself.",
+    );
+    await user.click(trim);
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      autoTruncate: true,
+    });
+    expect(screen.queryByText(/barge-in/)).toBeNull();
+    expect(screen.getByText(/asked to cancel the avatar's voice/)).toBeInTheDocument();
+  });
+
   it("edits Speech temperature without changing Azure OpenAI settings", async () => {
     const { user, onSettingsChange, onSpeechSettingsChange } = setup({
       provider: "speech_voice_live",
@@ -451,5 +495,45 @@ describe("VoiceSettingsPanel live avatar picker", () => {
     expect(onOpenPhotoAvatars).toHaveBeenCalledTimes(1);
     rerender({ locked: true });
     expect(screen.getByRole("button", { name: "Choose avatar" })).toBeDisabled();
+  });
+
+  it("offers what the microphone does while the avatar talks, with the avatar settings", async () => {
+    const { user, rerender, onSpeechSettingsChange } = setup({
+      ...speech, avatarChoices: CHOICES, avatarId: CHOICES[0].id, onAvatarChange: vi.fn(),
+    });
+    const listening = screen.getByRole("combobox", { name: "While the avatar talks" });
+    expect(within(listening).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "Pause my microphone (speakers)",
+      "Keep listening (headphones)",
+    ]);
+    expect(listening).toHaveValue("pause");
+    expect(listening).toHaveAccessibleDescription(
+      "Your microphone sends silence while the avatar speaks, so it can't hear itself. Use Interrupt to cut in.",
+    );
+    await user.selectOptions(listening, "Keep listening (headphones)");
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      avatarListening: "listen",
+    });
+
+    rerender({ speechSettings: { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, avatarListening: "listen" } });
+    expect(listening).toHaveValue("listen");
+    expect(listening).toHaveAccessibleDescription(
+      "Talk over the avatar to interrupt it. Without headphones it may hear itself.",
+    );
+    rerender({ locked: true });
+    expect(listening).toBeDisabled();
+  });
+
+  it.each([
+    ["the Azure OpenAI provider", { avatarChoices: CHOICES, onOpenPhotoAvatars: vi.fn() }],
+    ["no avatar to pick", { ...speech, avatarChoices: [] }],
+    [
+      "a browser that can't play avatar video",
+      { ...speech, avatarChoices: CHOICES, avatarId: CHOICES[0].id, avatarVideoSupported: false },
+    ],
+  ])("leaves the listening choice out for %s", (_label, overrides) => {
+    setup(overrides);
+    expect(screen.queryByRole("combobox", { name: "While the avatar talks" })).toBeNull();
   });
 });

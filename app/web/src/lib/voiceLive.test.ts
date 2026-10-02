@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  AVATAR_LISTENING_MODES,
+  avatarPauseTailBoundMs,
   DEFAULT_VOICE,
   DEFAULT_VOICE_SETTINGS,
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
@@ -43,6 +45,26 @@ describe("voice audio transport", () => {
       noiseSuppression: false,
       autoGainControl: false,
     });
+  });
+
+  it("asks the browser to cancel all playback echo only for a Speech avatar session", () => {
+    expect(microphoneConstraints("speech_voice_live", true)).toEqual({
+      channelCount: 1,
+      echoCancellation: "all",
+      noiseSuppression: false,
+      autoGainControl: false,
+    });
+    // Azure OpenAI keeps its browser DSP whatever the flag says.
+    expect(microphoneConstraints("azure_openai", true)).toEqual({
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+    });
+  });
+
+  it("bounds the microphone pause after the avatar's speech by its lag, live edge and echo tail", () => {
+    expect(avatarPauseTailBoundMs(PLAYBACK_BUFFER_MS.balanced / 1000)).toBe(2520);
+    expect(avatarPauseTailBoundMs(PLAYBACK_BUFFER_MS.smooth / 1000)).toBe(2580);
   });
 
   it("keeps every playback profile within a conversational latency budget", () => {
@@ -243,6 +265,19 @@ describe("speechSessionUpdate", () => {
         },
       },
     });
+  });
+
+  it("never sends the browser-only avatar listening mode", () => {
+    expect(DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.avatarListening).toBe("pause");
+    const reference = speechSessionUpdate("gpt-realtime", DEFAULT_SPEECH_VOICE_LIVE_SETTINGS);
+    for (const avatarListening of AVATAR_LISTENING_MODES) {
+      const frame = speechSessionUpdate("gpt-realtime", {
+        ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+        avatarListening,
+      });
+      expect(frame).toBe(reference);
+      expect(frame).not.toContain("avatarListening");
+    }
   });
 
   it("reconstructs stale settings from catalog defaults and clamps temperature", () => {

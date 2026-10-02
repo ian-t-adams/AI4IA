@@ -218,6 +218,42 @@ describe("Speech transcription and preview voice preferences", () => {
   });
 });
 
+describe("avatar listening preference", () => {
+  it("defaults to pausing the microphone and keeps only a known mode", () => {
+    expect(DEFAULT_VOICE_PREFERENCES.speech.avatarListening).toBe("pause");
+    expect(normalizeSpeechVoiceLiveSettings({}).avatarListening).toBe("pause");
+    for (const bad of ["LISTEN", "mute", " listen", "", 1, null, true, {}, ["listen"]]) {
+      expect(normalizeSpeechVoiceLiveSettings({ avatarListening: bad }).avatarListening).toBe("pause");
+    }
+    expect(normalizeSpeechVoiceLiveSettings({ avatarListening: "listen" }).avatarListening).toBe(
+      "listen",
+    );
+  });
+
+  it("persists the choice, survives provider sanitizing, and defaults for older records", () => {
+    const providers = [...voiceProviderCatalog.providers] as VoiceProvider[];
+    const prefs: VoicePreferences = {
+      ...DEFAULT_VOICE_PREFERENCES,
+      provider: "speech_voice_live",
+      speech: { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, avatarListening: "listen" },
+    };
+    const storage = fakeStorage();
+    saveVoicePreferences(prefs, storage);
+    expect(loadVoicePreferences(storage).speech.avatarListening).toBe("listen");
+    expect(
+      sanitizeVoicePreferencesForProviders(
+        prefs, providers, new Set(["gpt-realtime"]), "gpt-realtime", false, "azure_openai", true,
+      ).speech.avatarListening,
+    ).toBe("listen");
+
+    // A record saved before the setting existed.
+    const older: Record<string, unknown> = { ...prefs.speech };
+    delete older.avatarListening;
+    storage.data[VOICE_PREFERENCES_STORAGE_NAME] = JSON.stringify({ ...prefs, speech: older });
+    expect(loadVoicePreferences(storage).speech.avatarListening).toBe("pause");
+  });
+});
+
 describe("normalizeVoiceSessionSettings", () => {
   it("returns defaults for a non-object", () => {
     expect(normalizeVoiceSessionSettings(null)).toEqual(DEFAULT_VOICE_SETTINGS);
