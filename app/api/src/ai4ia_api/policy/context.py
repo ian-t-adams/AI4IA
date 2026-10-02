@@ -1,7 +1,7 @@
 """Task-local actor binding; status/cleanup/accounting never require a new grant."""
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -170,6 +170,46 @@ async def require_policy(request: PolicyRequest, *, owner_id: str | None = None)
     if binding.service.enabled:
         effective = await binding.resolve()
         await binding.service.require(effective, request)
+    await _finish_policy_check(binding, effective, (request,))
+
+
+async def require_policies(
+    requests: Sequence[PolicyRequest],
+    *,
+    service: PolicyService | None = None,
+    validate: Callable[[EffectivePolicy], None] | None = None,
+) -> None:
+    """Check one dispatch's scopes against one fresh owner read, never a cached grant."""
+    binding = _current.get()
+    if service is not None and service.enabled and (
+        binding is None or binding.service is not service
+    ):
+        raise PolicyError(PolicyDecision("unavailable", "reauthentication_required"))
+    if binding is None:
+        return
+    binding.require_configuration()
+    profile = binding.restricted_profile or binding.service.restricted_profile(
+        binding.owner_id, cached=True,
+    )
+    if profile is not None and not binding.service.enabled:
+        raise PolicyError(PolicyDecision("unavailable", "canary_policy_unconfigured"))
+    effective = None
+    if binding.service.enabled:
+        effective = await binding.resolve()
+        if validate is not None:
+            validate(effective)
+        for request in requests:
+            decision = await binding.service._authorize_current(effective, request)
+            if not decision.allowed:
+                raise PolicyError(decision)
+    await _finish_policy_check(binding, effective, requests)
+
+
+async def _finish_policy_check(
+    binding: PolicyBinding,
+    effective: EffectivePolicy | None,
+    requests: Sequence[PolicyRequest],
+) -> None:
     check = _source_check.get()
     if check is not None:
         await check()
@@ -181,7 +221,8 @@ async def require_policy(request: PolicyRequest, *, owner_id: str | None = None)
             raise PolicyError(identity)
     from ..publishing.execution import check_publication_request
 
-    check_publication_request(request)
+    for request in requests:
+        check_publication_request(request)
 
 
 async def require_bound_policy(service: PolicyService, request: PolicyRequest) -> None:

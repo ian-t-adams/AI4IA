@@ -74,13 +74,13 @@ export interface VoiceSettingsPanelProps {
   onSpeechSettingsChange: (settings: SpeechVoiceLiveSettings) => void;
   onReset: () => void;
   // Owned photo avatars usable with Speech Voice Live right now. The picker
-  // appears only when there is at least one; it grants nothing (the server
-  // re-checks every connection).
+  // grants nothing (the server re-checks every connection).
   avatarChoices?: VoiceSettingsAvatarChoice[];
   avatarId?: string | null;
   onAvatarChange?: (id: string | null) => void;
   // False when this browser can't play the avatar stream, so sessions stay voice only.
   avatarVideoSupported?: boolean;
+  onOpenPhotoAvatars?: () => void;
   // True while a live session is connecting/live/closing or a transcript save
   // is in flight — controls disable but stay visible; edits apply next
   // connection.
@@ -127,6 +127,7 @@ export function VoiceSettingsPanel({
   avatarId = null,
   onAvatarChange,
   avatarVideoSupported = true,
+  onOpenPhotoAvatars,
   locked,
 }: VoiceSettingsPanelProps) {
   const idPrefix = useId();
@@ -143,9 +144,10 @@ export function VoiceSettingsPanel({
   );
   const turnDetectionOptions: readonly SpeechVoiceLiveSettings["turnDetection"][] =
     speechProvider?.capabilities.turnDetection.options ?? [];
-  const showAvatarPicker = isSpeechProvider && (avatarChoices?.length ?? 0) > 0;
-  const selectedAvatarId =
-    avatarId && avatarChoices?.some((choice) => choice.id === avatarId) ? avatarId : "";
+  const showAvatarPicker = isSpeechProvider && (
+    (avatarChoices?.length ?? 0) > 0 || avatarId !== null || Boolean(onOpenPhotoAvatars)
+  );
+  const unavailableAvatar = avatarId !== null && !avatarChoices?.some((choice) => choice.id === avatarId);
 
   function patchSettings(patch: Partial<VoiceSessionSettings>) {
     onSettingsChange({ ...settings, ...patch });
@@ -284,31 +286,46 @@ export function VoiceSettingsPanel({
           </select>
         </label>
 
-        {showAvatarPicker && (
+        {(showAvatarPicker || onOpenPhotoAvatars) && (
           <div style={FIELD_STYLE}>
-            <label htmlFor={`${idPrefix}-avatar`}>Avatar</label>
-            <select
-              id={`${idPrefix}-avatar`}
-              aria-describedby={`${idPrefix}-avatar-description`}
-              value={avatarVideoSupported ? selectedAvatarId : ""}
-              disabled={locked || !avatarVideoSupported || !onAvatarChange}
-              onChange={(event) =>
-                onAvatarChange?.(event.target.value === "" ? null : event.target.value)
-              }
-              style={CONTROL_STYLE}
-            >
-              <option value="">None (voice only)</option>
-              {avatarChoices?.map((choice) => (
-                <option key={choice.id} value={choice.id}>
-                  {choice.displayName}
-                </option>
-              ))}
-            </select>
+            {showAvatarPicker ? (
+              <>
+                <label htmlFor={`${idPrefix}-avatar`}>Avatar</label>
+                <select
+                  id={`${idPrefix}-avatar`}
+                  aria-describedby={`${idPrefix}-avatar-description`}
+                  aria-invalid={avatarVideoSupported && unavailableAvatar || undefined}
+                  value={avatarVideoSupported ? avatarId ?? "" : ""}
+                  disabled={locked || !avatarVideoSupported || !onAvatarChange}
+                  onChange={(event) =>
+                    onAvatarChange?.(event.target.value === "" ? null : event.target.value)
+                  }
+                  style={CONTROL_STYLE}
+                >
+                  <option value="">None (voice only)</option>
+                  {unavailableAvatar ? <option value={avatarId ?? ""} disabled>Selected avatar unavailable</option> : null}
+                  {avatarChoices?.map((choice) => (
+                    <option key={choice.id} value={choice.id}>
+                      {choice.displayName}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : <span>Photo avatar</span>}
             <span id={`${idPrefix}-avatar-description`} style={{ maxWidth: 260 }}>
-              {avatarVideoSupported
-                ? "Your AI-generated avatar speaks the replies on video. It streams, and is billed, while the session is connected."
-                : "This browser can't play avatar video, so Voice Live stays voice only."}
+              {!isSpeechProvider
+                ? "Photo avatars use Azure Speech. Choose one from your gallery to switch providers."
+                : !avatarVideoSupported
+                  ? "This browser can't play avatar video. Choose Voice only in chat to continue."
+                  : unavailableAvatar
+                    ? "The selected avatar is unavailable. Choose another avatar or None (voice only) before starting."
+                    : "Your AI-generated avatar speaks the replies on video. It streams, and is billed, while the session is connected."}
             </span>
+            {onOpenPhotoAvatars ? (
+              <button type="button" style={CONTROL_STYLE} disabled={locked} onClick={onOpenPhotoAvatars}>
+                Choose avatar
+              </button>
+            ) : null}
           </div>
         )}
 

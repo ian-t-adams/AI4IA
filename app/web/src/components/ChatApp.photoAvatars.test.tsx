@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
-import { cleanup, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { PhotoAvatarConfig } from "@/lib/photoAvatars";
+import type { PhotoAvatar, PhotoAvatarConfig } from "@/lib/photoAvatars";
+import { voiceProviderCatalog } from "@/lib/data/voice_provider_catalog";
+import { VOICE_PREFERENCES_STORAGE_NAME } from "@/lib/voicePreferences";
 import type { ToolCatalogItem } from "@/lib/types";
 import { ChatApp } from "./ChatApp";
 import { MemoryPreferenceProvider } from "./MemoryPreferenceProvider";
-import { resetChatAppMocks } from "./chatTestFixtures";
+import { CHAT_MODEL_CATALOG, resetChatAppMocks } from "./chatTestFixtures";
 
 function render(ui: ReactElement) {
   return rtlRender(ui, { wrapper: MemoryPreferenceProvider });
@@ -40,6 +42,15 @@ const mocks = vi.hoisted(() => ({
     maxSelectedModels: 3, currency: "USD", priceVersion: null, models: [],
   })),
   apiFetch: vi.fn(),
+  getVoiceLiveConfig: vi.fn(),
+  voiceEnabled: false,
+  voiceSupported: false,
+  voiceActive: false,
+  voiceSaving: false,
+  avatarVideoSupported: true,
+  useInlineVoiceLive: vi.fn(),
+  startVoice: vi.fn(),
+  stopVoice: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -60,7 +71,11 @@ vi.mock("@/lib/inspector", () => ({
   deleteMemory: mocks.deleteMemory,
 }));
 vi.mock("./VoiceLiveProvider", () => ({
-  useVoiceLiveConfig: () => ({ enabled: false, toolsAvailable: false }),
+  useVoiceLiveConfig: () => ({ enabled: mocks.voiceEnabled, toolsAvailable: false }),
+}));
+vi.mock("@/lib/avatarVideo", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/avatarVideo")>()),
+  supportsAvatarVideo: () => mocks.avatarVideoSupported,
 }));
 vi.mock("./LibraryProvider", () => ({
   useLibraryConfig: () => ({ enabled: false }),
@@ -70,25 +85,28 @@ vi.mock("./CustomToolsProvider", () => ({
 }));
 vi.mock("./AdminLink", () => ({ AdminLink: () => null }));
 vi.mock("./UserMenu", () => ({ UserMenu: () => null }));
-vi.mock("./Composer", () => ({ Composer: () => null }));
 vi.mock("./MessageList", () => ({ MessageList: () => null }));
 vi.mock("./InlineVoiceLive", () => ({
   InlineVoiceLiveStatus: () => null,
   mergeDisplayMessages: (messages: unknown[]) => messages,
   voiceMessagesForSession: () => [],
-  useInlineVoiceLive: () => ({
-    active: false,
-    supported: false,
-    phase: "idle",
-    saving: false,
-    persistenceError: null,
-    error: null,
-    start: vi.fn(),
-    stop: vi.fn(),
-    exitLocked: false,
-    messages: [],
-    boundSessionId: null,
-  }),
+  useInlineVoiceLive: (options: unknown) => {
+    mocks.useInlineVoiceLive(options);
+    return {
+      active: mocks.voiceActive,
+      supported: mocks.voiceSupported,
+      phase: mocks.voiceActive ? "listening" : "idle",
+      saving: mocks.voiceSaving,
+      persistenceError: null,
+      error: null,
+      start: mocks.startVoice,
+      stop: mocks.stopVoice,
+      exitLocked: false,
+      messages: [],
+      boundSessionId: null,
+      avatar: null,
+    };
+  },
 }));
 
 const DISABLED: PhotoAvatarConfig = {
@@ -125,6 +143,23 @@ const ENABLED: PhotoAvatarConfig = {
   feedback: { reasons: ["other"], detailsMaxChars: 1000, microsoftReportUrl: "https://aka.ms/reportabuse" },
 };
 
+const READY: PhotoAvatar = {
+  id: "a".repeat(32),
+  displayName: "Office guide",
+  prompt: "A fictional adult office guide.",
+  attributes: { gender: null, age: null, ethnicity: null, style: null },
+  status: "ready",
+  failure: null,
+  preview: null,
+  disclosure: { aiGenerated: true, label: "AI-generated" },
+  cost: { currency: "USD", estimatedUsd: 2, known: true, priceVersion: "v1", basis: "per_avatar" },
+  usable: true,
+  reported: false,
+  createdAt: "2026-09-26T12:00:00Z",
+  updatedAt: "2026-09-26T12:00:00Z",
+  readyAt: "2026-09-26T12:00:00Z",
+};
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -132,14 +167,14 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function serve(config: PhotoAvatarConfig | Error) {
+function serve(config: PhotoAvatarConfig | Error, avatars: PhotoAvatar[] = []) {
   mocks.apiFetch.mockImplementation(async (input: RequestInfo | URL) => {
     const path = String(input);
     if (path === "/api/photo-avatars/config") {
       if (config instanceof Error) throw config;
       return json(config);
     }
-    if (path === "/api/photo-avatars") return json({ avatars: [] });
+    if (path === "/api/photo-avatars") return json({ avatars });
     return json({ detail: "Not found.", code: "not_found" }, 404);
   });
 }
@@ -151,7 +186,31 @@ function configReads() {
 beforeEach(() => {
   resetChatAppMocks(mocks);
   mocks.apiFetch.mockReset();
+  mocks.voiceEnabled = false;
+  mocks.voiceSupported = false;
+  mocks.voiceActive = false;
+  mocks.voiceSaving = false;
+  mocks.avatarVideoSupported = true;
+  mocks.getVoiceLiveConfig.mockResolvedValue({
+    defaultProviderId: "azure_openai",
+    enabledProviderIds: ["azure_openai", "speech_voice_live"],
+    providers: [...voiceProviderCatalog.providers],
+  });
+  window.localStorage.clear();
 });
+
+function enableVoice() {
+  mocks.voiceEnabled = true;
+  mocks.voiceSupported = true;
+  mocks.listModels.mockResolvedValue({
+    ...CHAT_MODEL_CATALOG,
+    models: [
+      ...CHAT_MODEL_CATALOG.models,
+      { ...CHAT_MODEL_CATALOG.models[0], id: "gpt-realtime", displayName: "GPT Realtime", category: "realtime" },
+    ],
+  });
+  serve({ ...ENABLED, available: true, reason: "available" }, [READY]);
+}
 
 afterEach(() => {
   cleanup();
@@ -190,5 +249,133 @@ describe("photo avatars in the workspace", () => {
     await user.click(within(dialog).getByRole("button", { name: "Close photo avatars" }));
     expect(screen.queryByRole("dialog", { name: "Photo avatars" })).toBeNull();
     await waitFor(() => expect(screen.getByRole("button", { name: "Photo avatars" })).toHaveFocus());
+  });
+});
+
+describe("gallery-to-voice integration", () => {
+  it("uses a newly ready avatar that was absent from the initial live-voice snapshot", async () => {
+    enableVoice();
+    serve({ ...ENABLED, available: true, reason: "available" }, []);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await waitFor(() => expect(mocks.apiFetch.mock.calls.filter(
+      ([input]) => String(input) === "/api/photo-avatars",
+    )).toHaveLength(1));
+    const newlyReady = { ...READY, id: "b".repeat(32), displayName: "New guide" };
+    serve({ ...ENABLED, available: true, reason: "available" }, [newlyReady]);
+    await user.click(await screen.findByRole("button", { name: "Photo avatars" }));
+    await user.click(await screen.findByRole("button", { name: "Use New guide in Voice Live" }));
+    const start = await screen.findByRole("button", { name: "Start talking" });
+    await waitFor(() => expect(start).toBeEnabled());
+    expect(screen.getByRole("heading", { name: "Talk with New guide" })).toHaveFocus();
+    await user.click(start);
+    expect(mocks.startVoice).toHaveBeenCalledTimes(1);
+    expect(mocks.useInlineVoiceLive).toHaveBeenLastCalledWith(expect.objectContaining({
+      providerId: "speech_voice_live", avatar: { id: newlyReady.id, label: "AI-generated" },
+    }));
+  });
+
+  it("selects the owned avatar and Azure Speech, then starts only on an explicit talking action", async () => {
+    enableVoice();
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Photo avatars" }));
+    await user.click(await screen.findByRole("button", { name: "Use Office guide in Voice Live" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Photo avatars" })).toBeNull());
+    const card = await screen.findByRole("region", { name: "Avatar voice" });
+    const start = within(card).getByRole("button", { name: "Start talking" });
+    await waitFor(() => expect(start).toBeEnabled());
+    expect(within(card).getByText("Talk with Office guide")).toBeInTheDocument();
+    expect(within(card).getByText(/billed while the session is connected/)).toBeInTheDocument();
+    expect(mocks.startVoice).not.toHaveBeenCalled();
+    expect(mocks.useInlineVoiceLive).toHaveBeenLastCalledWith(expect.objectContaining({
+      providerId: "speech_voice_live",
+      avatar: { id: READY.id, label: "AI-generated" },
+    }));
+    const saved = JSON.parse(window.localStorage.getItem(VOICE_PREFERENCES_STORAGE_NAME)!);
+    expect(saved.provider).toBe("speech_voice_live");
+    expect(saved.speechAvatarId).toBe(READY.id);
+    await user.click(start);
+    expect(mocks.startVoice).toHaveBeenCalledTimes(1);
+    await user.click(within(card).getByRole("button", { name: "Voice only" }));
+    expect(screen.queryByRole("region", { name: "Avatar voice" })).toBeNull();
+    expect(mocks.useInlineVoiceLive).toHaveBeenLastCalledWith(expect.objectContaining({
+      providerId: "speech_voice_live", avatar: null,
+    }));
+  });
+
+  it.each([
+    ["Azure Speech is unavailable", () => {
+      mocks.getVoiceLiveConfig.mockResolvedValue({
+        defaultProviderId: "azure_openai",
+        enabledProviderIds: ["azure_openai"],
+        providers: [...voiceProviderCatalog.providers],
+      });
+    }, /Azure Speech Voice Live/],
+    ["avatar video is unsupported", () => { mocks.avatarVideoSupported = false; }, /can't play avatar video/],
+    ["a voice session is active", () => { mocks.voiceActive = true; }, /End the current voice session/],
+    ["a transcript is saving", () => { mocks.voiceSaving = true; }, /Finish saving/],
+  ])("explains why the gallery cannot use an avatar when %s", async (_label, configure, explanation) => {
+    enableVoice();
+    configure();
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Photo avatars" }));
+    const use = await screen.findByRole("button", { name: "Use Office guide in Voice Live" });
+    expect(use).toBeDisabled();
+    expect(use).toHaveAccessibleDescription(explanation);
+    await user.click(use);
+    expect(mocks.startVoice).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Photo avatars" })).toBeInTheDocument();
+  });
+
+  it("does not fall back to voice only while a newly selected avatar is being refreshed", async () => {
+    enableVoice();
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Photo avatars" }));
+    const use = await screen.findByRole("button", { name: "Use Office guide in Voice Live" });
+    let finish!: (response: Response) => void;
+    mocks.apiFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/photo-avatars/config") {
+        return json({ ...ENABLED, available: true, reason: "available" });
+      }
+      if (String(input) === "/api/photo-avatars") {
+        return new Promise<Response>((resolve) => { finish = resolve; });
+      }
+      return json({ detail: "Not found." }, 404);
+    });
+    await user.click(use);
+    const start = screen.getByRole("button", { name: "Start talking" });
+    expect(start).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Start live voice conversation" })).toBeDisabled();
+    await user.click(start);
+    expect(mocks.startVoice).not.toHaveBeenCalled();
+    await act(async () => { finish(json({ avatars: [READY] })); });
+    await waitFor(() => expect(start).toBeEnabled());
+    await user.click(start);
+    expect(mocks.startVoice).toHaveBeenCalledTimes(1);
+    expect(mocks.useInlineVoiceLive).toHaveBeenLastCalledWith(expect.objectContaining({
+      avatar: { id: READY.id, label: "AI-generated" },
+    }));
+  });
+
+  it("keeps an unavailable saved avatar explicit until the user chooses voice only", async () => {
+    enableVoice();
+    window.localStorage.setItem(VOICE_PREFERENCES_STORAGE_NAME, JSON.stringify({
+      provider: "speech_voice_live", speechAvatarId: READY.id,
+    }));
+    serve({ ...ENABLED, available: true, reason: "available" }, []);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    const start = await screen.findByRole("button", { name: "Start talking" });
+    await waitFor(() => expect(screen.getByText(/no longer ready or available/)).toBeInTheDocument());
+    expect(start).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Start live voice conversation" })).toBeDisabled();
+    await user.click(start);
+    expect(mocks.startVoice).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Voice only" }));
+    await user.click(screen.getByRole("button", { name: "Start live voice conversation" }));
+    expect(mocks.startVoice).toHaveBeenCalledTimes(1);
   });
 });
