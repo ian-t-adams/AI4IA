@@ -490,6 +490,16 @@ manifests, and **memory text and vectors**. Blob holds source documents and
 generated artifacts. Search indexes and document chunks are rebuildable;
 deleting canonical data is a different operation.
 
+To delete a conversation, choose the bin icon on its sidebar row and confirm on
+the row. The icon is always shown on the open conversation; on other rows, hover
+over it or tab to it. The conversation leaves your list and its messages are
+queued for cleanup; **Deletion status** in the sidebar shows the last observed
+progress. If the app can't confirm what happened, the row says so and offers
+**Try again**, which checks the same request and won't delete twice. When your
+deployment uses resumable deletion, conversations created before it was turned on
+can't be deleted from the app yet: the row explains this, nothing is removed, and
+an administrator must approve a migration first.
+
 Conversation deletion is not transactional erasure across all stores: an
 already-authorized concurrent write can leave an orphaned child record. A
 durable cleanup/reconciliation design is still needed; do not treat a successful
@@ -512,6 +522,7 @@ still apply and modality coverage remains incomplete.
 | A control is missing | Deployment availability and the selected model's capabilities |
 | A document is absent from context | Ready state, access, explicit selection, and the turn's context budget |
 | A memory edit conflicts | Reload the latest record before retrying |
+| A conversation won't delete | Read the message on its sidebar row. An older conversation may need an administrator-approved migration; for an unconfirmed result, choose **Try again** |
 | Voice fails before connecting | Microphone permission, sign-in, API URL, and allowed Origin |
 | Voice settings seem unchanged | Stop and reconnect; settings affect the next connection |
 | Speech is not offered | The operator's provider allowlist and Speech feature gate |

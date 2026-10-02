@@ -64,6 +64,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly detail: string,
+    // The API's stable error code (`migration_required`, …) when it sent one.
+    readonly code: string | null = null,
   ) {
     super(`${status}: ${detail}`);
     this.name = "ApiError";
@@ -81,13 +83,15 @@ export function apiErrorDetail(reason: unknown): string {
 async function jsonOrThrow<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
     let detail = resp.statusText;
+    let code: string | null = null;
     try {
       const body = await resp.json();
       detail = body?.detail ?? detail;
+      if (typeof body?.code === "string") code = body.code;
     } catch {
       /* non-JSON error body */
     }
-    throw new ApiError(resp.status, String(detail));
+    throw new ApiError(resp.status, String(detail), code);
   }
   return (await resp.json()) as T;
 }

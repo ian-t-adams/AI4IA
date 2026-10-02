@@ -1,7 +1,8 @@
 "use client";
 
-import { useId, useMemo, useState } from "react";
-import type { RefObject } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent, RefObject } from "react";
+import type { DeletionFeedback } from "@/lib/conversationDeletion";
 import type { Session } from "@/lib/types";
 import type { WorkspaceView } from "@/lib/workspaceView";
 import { DOCS_INDEX_URL, STATUS_URL } from "@/lib/docs";
@@ -41,6 +42,8 @@ export function Sidebar({
   onDelete,
   onRename,
   deletingIds,
+  deletionFeedback,
+  onDismissDeletionFeedback,
   view = "chat",
   onNavigate,
   libraryAvailable = false,
@@ -62,6 +65,9 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => Promise<void>;
   deletingIds?: ReadonlySet<string>;
+  /** The outcome of a deletion that didn't complete, shown on its row. */
+  deletionFeedback?: ReadonlyMap<string, DeletionFeedback>;
+  onDismissDeletionFeedback?: (id: string) => void;
   view?: WorkspaceView;
   onNavigate?: (view: WorkspaceView) => void;
   /** Present only while the deployment offers the document library. */
@@ -87,6 +93,60 @@ export function Sidebar({
   const headingId = useId();
   const describedBy = disabled && disabledReason ? lockHintId : undefined;
   const [query, setQuery] = useState("");
+
+  // Deleting asks on the row itself: one proportionate, keyboard-reachable
+  // confirmation, never a native dialog (a browser can silently suppress
+  // those, which makes Delete do nothing).
+  const rowIdBase = useId();
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const deleteButtons = useRef(new Map<string, HTMLButtonElement>());
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const removalFocus = useRef<{ id: string; index: number } | null>(null);
+  const confirming = confirmingId !== null && sessions.some((session) => session.id === confirmingId)
+    ? confirmingId
+    : null;
+  useEffect(() => {
+    if (confirming) cancelRef.current?.focus();
+  }, [confirming]);
+  useEffect(() => {
+    // A deleted row takes its focused control with it: hand focus to the
+    // conversation now in its place, or New chat, rather than the page.
+    const pending = removalFocus.current;
+    if (!pending || sessions.some((session) => session.id === pending.id)) return;
+    removalFocus.current = null;
+    const container = scrollRef.current;
+    const active = document.activeElement;
+    if (!container || (active && active !== document.body && container.contains(active))) return;
+    const titles = container.querySelectorAll<HTMLElement>(".conversation-row .editable-session-title-text");
+    const next = titles[Math.min(pending.index, titles.length - 1)]
+      ?? container.querySelector<HTMLElement>(".sidebar-new-chat");
+    next?.focus();
+  }, [sessions]);
+
+  const deletionBlocked = (id: string) => deletionFeedback?.get(id)?.blocksRemoval === true;
+  const startDeletion = (id: string) => {
+    if (disabled || deletingIds?.has(id) || deletionBlocked(id)) return;
+    setConfirmingId((current) => (current === id ? null : id));
+  };
+  const cancelDeletion = (id: string) => {
+    setConfirmingId(null);
+    deleteButtons.current.get(id)?.focus();
+  };
+  const confirmDeletion = (id: string, index: number) => {
+    setConfirmingId(null);
+    if (disabled) return;
+    removalFocus.current = { id, index };
+    deleteButtons.current.get(id)?.focus();
+    onDelete(id);
+  };
+  const onConfirmKeyDown = (event: KeyboardEvent<HTMLDivElement>, id: string) => {
+    if (event.key !== "Escape") return;
+    // Cancel the question, not the drawer around it.
+    event.preventDefault();
+    event.stopPropagation();
+    cancelDeletion(id);
+  };
 
   const destinations: Destination[] = [
     ...(libraryAvailable
@@ -267,6 +327,7 @@ export function Sidebar({
         ) : null}
       </div>
       <div
+        ref={scrollRef}
         className="sidebar-scroll"
         data-testid="sidebar-scroll"
         style={{ minHeight: 0, overflowY: "auto", overflowX: "hidden" }}
@@ -335,37 +396,123 @@ export function Sidebar({
                   {group.items.map((session) => {
                     const current = session.id === activeId && view === "chat";
                     const deleting = deletingIds?.has(session.id) ?? false;
+                    const title = session.title || "Untitled";
+                    const feedback = deletionFeedback?.get(session.id);
+                    const blocked = feedback?.blocksRemoval === true;
+                    const asking = confirming === session.id;
+                    const rowIndex = visible.indexOf(session);
+                    const rowKey = `${rowIdBase}-${rowIndex}`;
+                    const feedbackId = `${rowKey}-outcome`;
                     return (
-                      <li
-                        key={session.id}
-                        className="conversation-row"
-                        data-current={current || undefined}
-                      >
-                        <EditableSessionTitle
-                          title={session.title || "Untitled"}
-                          onSave={(title) => onRename(session.id, title)}
-                          onOpen={() => onSelect(session.id)}
-                          current={session.id === activeId}
-                          disabled={disabled}
-                          disabledReasonId={lockHintId}
-                          compact
-                        />
-                        <button
-                          type="button"
-                          className="conversation-delete"
-                          onClick={() => {
-                            if (disabled || deleting) return;
-                            onDelete(session.id);
-                          }}
-                          disabled={deleting}
-                          aria-disabled={disabled || deleting || undefined}
-                          aria-busy={deleting || undefined}
-                          aria-label={`Delete ${session.title || "conversation"}`}
-                          aria-describedby={describedBy}
-                          title={disabled ? undefined : "Delete"}
+                      <li key={session.id} className="conversation-item">
+                        <div
+                          className="conversation-row"
+                          data-current={current || undefined}
+                          data-attention={asking || (feedback && !feedback.dismissed) || undefined}
                         >
-                          <Icon name="trash" size={16} />
-                        </button>
+                          <EditableSessionTitle
+                            title={title}
+                            onSave={(next) => onRename(session.id, next)}
+                            onOpen={() => onSelect(session.id)}
+                            current={session.id === activeId}
+                            disabled={disabled}
+                            disabledReasonId={lockHintId}
+                            compact
+                          />
+                          <button
+                            ref={(element) => {
+                              if (element) deleteButtons.current.set(session.id, element);
+                              else deleteButtons.current.delete(session.id);
+                            }}
+                            type="button"
+                            className="conversation-delete"
+                            onClick={() => startDeletion(session.id)}
+                            disabled={deleting}
+                            aria-disabled={disabled || deleting || blocked || undefined}
+                            aria-busy={deleting || undefined}
+                            aria-expanded={asking}
+                            aria-label={`Delete ${session.title || "conversation"}`}
+                            aria-describedby={describedBy ?? (blocked ? feedbackId : undefined)}
+                            title={disabled || blocked ? undefined : "Delete"}
+                          >
+                            <Icon name="trash" size={16} />
+                          </button>
+                        </div>
+                        {asking ? (
+                          <div
+                            className="conversation-confirm"
+                            role="group"
+                            aria-labelledby={`${rowKey}-ask`}
+                            aria-describedby={`${rowKey}-scope`}
+                            onKeyDown={(event) => onConfirmKeyDown(event, session.id)}
+                          >
+                            <p id={`${rowKey}-ask`} className="conversation-confirm-title">
+                              Delete “{title}”?
+                            </p>
+                            <p id={`${rowKey}-scope`}>
+                              It leaves your chats and its messages are queued for cleanup, which may
+                              stay pending. Backups, library documents, memories and generated media
+                              aren&apos;t erased.
+                            </p>
+                            <div className="conversation-confirm-actions">
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-danger"
+                                onClick={() => confirmDeletion(session.id, rowIndex)}
+                              >
+                                Delete
+                              </button>
+                              <button
+                                ref={cancelRef}
+                                type="button"
+                                className="btn btn-sm"
+                                onClick={() => cancelDeletion(session.id)}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                        {feedback && !feedback.dismissed ? (
+                          <div className="conversation-feedback" data-kind={feedback.kind}>
+                            <p id={feedbackId} role="alert">
+                              {feedback.message}
+                            </p>
+                            <div className="conversation-confirm-actions">
+                              {feedback.retryable ? (
+                                <button
+                                  type="button"
+                                  className="btn btn-sm"
+                                  disabled={deleting}
+                                  aria-disabled={disabled || undefined}
+                                  aria-describedby={describedBy}
+                                  onClick={() => {
+                                    if (disabled || deleting) return;
+                                    removalFocus.current = { id: session.id, index: rowIndex };
+                                    onDelete(session.id);
+                                  }}
+                                >
+                                  Try again
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-ghost"
+                                onClick={() => {
+                                  onDismissDeletionFeedback?.(session.id);
+                                  deleteButtons.current.get(session.id)?.focus();
+                                }}
+                                aria-label={`Dismiss the message about ${title}`}
+                              >
+                                Dismiss
+                              </button>
+                            </div>
+                          </div>
+                        ) : feedback?.dismissed && blocked ? (
+                          <span id={feedbackId} className="visually-hidden">
+                            {feedback.message}
+                          </span>
+                        ) : null}
                       </li>
                     );
                   })}

@@ -43,6 +43,7 @@ import {
 } from "@/lib/library";
 import { Sidebar } from "./Sidebar";
 import { ConversationDeletionNotice, ConversationDeletionPanel } from "./ConversationDeletionPanel";
+import { deletionFeedbackFor, type DeletionFeedback } from "@/lib/conversationDeletion";
 import { useCurrentOwner, type CurrentOwner } from "./MemoryPreferenceProvider";
 import { ConversationInspector } from "./ConversationInspector";
 import { SettingsPage } from "./SettingsPanel";
@@ -205,6 +206,22 @@ export function ChatApp() {
   const [deleting, setDeleting] = useState<{
     owner: CurrentOwner; ids: ReadonlySet<string>;
   } | null>(null);
+  // Why a deletion didn't complete, kept on its row until it's resolved.
+  const [deletionFeedback, setDeletionFeedback] = useState<{
+    owner: CurrentOwner; byId: ReadonlyMap<string, DeletionFeedback>;
+  } | null>(null);
+  const updateDeletionFeedback = useCallback(
+    (forOwner: CurrentOwner, id: string, next: (current?: DeletionFeedback) => DeletionFeedback | null) => {
+      setDeletionFeedback((current) => {
+        const byId = new Map(current?.owner === forOwner ? current.byId : []);
+        const value = next(byId.get(id));
+        if (value) byId.set(id, value);
+        else byId.delete(id);
+        return { owner: forOwner, byId };
+      });
+    },
+    [],
+  );
   const deletionRequestsRef = useRef(new Map<string, symbol>());
   const deletionNoticeRequestRef = useRef<symbol | null>(null);
   const deletionPanelOpen = deletionView?.owner === owner;
@@ -1022,7 +1039,8 @@ export function ChatApp() {
       discardDeletedVoiceRef.current(id);
     }
     if (status) setDeletionNotice({ owner, status });
-  }, [owner, resetConversationView]);
+    updateDeletionFeedback(owner, id, () => null);
+  }, [owner, resetConversationView, updateDeletionFeedback]);
 
   const refreshAgents = useCallback(async () => {
     try {
@@ -1114,18 +1132,27 @@ export function ChatApp() {
       setError("Wait for active attachments to finish before deleting this conversation.");
       return;
     }
-    const title = sessions.find((item) => item.id === id)?.title || "this conversation";
-    if (!window.confirm(
-      `Remove "${title}" from chats and request cleanup of its conversation content and inline originals? Cleanup may remain pending; check Deletion status for resumable requests. This does not erase backups, library documents, memories, or generated media.`,
-    )) return;
+    // The sidebar row has already asked; a Try again resumes that same intent.
     const generation = signOutGenerationRef.current;
+    updateDeletionFeedback(owner, id, () => null);
     try {
       await requestSessionDeletion(id, true);
     } catch (reason) {
       if (owner.isCurrent() && deletionOwnerRef.current === owner
-        && signOutGenerationRef.current === generation) setError(api.apiErrorDetail(reason));
+        && signOutGenerationRef.current === generation) {
+        // Built here, not inside the updater: a closure over the catch binding
+        // makes the React Compiler skip this whole component (and its lint).
+        const feedback = deletionFeedbackFor(reason);
+        updateDeletionFeedback(owner, id, () => feedback);
+      }
     }
-  }, [owner, requestSessionDeletion, sessions]);
+  }, [owner, requestSessionDeletion, updateDeletionFeedback]);
+  const dismissDeletionFeedback = useCallback((id: string) => {
+    // A refusal that still blocks the row keeps its words as the row's
+    // accessible explanation; anything else is simply cleared.
+    updateDeletionFeedback(owner, id, (current) =>
+      current?.blocksRemoval ? { ...current, dismissed: true } : null);
+  }, [owner, updateDeletionFeedback]);
 
   const renameSession = useCallback(async (id: string, title: string) => {
     const updated = await api.updateSession(id, { title });
@@ -2186,6 +2213,7 @@ export function ChatApp() {
     setDeletionView(null);
     setDeletionNotice(null);
     setDeleting(null);
+    setDeletionFeedback(null);
     const pendingCreation = creatingRef.current;
     creatingRef.current = null;
     pendingCreation?.controller.abort();
@@ -3203,6 +3231,8 @@ export function ChatApp() {
             onDelete={deleteSession}
             onRename={renameSession}
             deletingIds={deleting?.owner === owner ? deleting.ids : undefined}
+            deletionFeedback={deletionFeedback?.owner === owner ? deletionFeedback.byId : undefined}
+            onDismissDeletionFeedback={dismissDeletionFeedback}
             view={view}
             onNavigate={navigate}
             libraryAvailable={libraryEnabled}

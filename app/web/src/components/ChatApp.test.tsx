@@ -10,6 +10,13 @@ import { MemoryPreferenceProvider } from "./MemoryPreferenceProvider";
 function render(ui: ReactElement) {
   return rtlRender(ui, { wrapper: MemoryPreferenceProvider });
 }
+
+// Deleting asks on the sidebar row first; confirm it there.
+async function confirmDeletion(user: ReturnType<typeof userEvent.setup>, title: string) {
+  await user.click(await screen.findByRole("button", { name: `Delete ${title}` }));
+  const question = screen.getByRole("group", { name: `Delete “${title}”?` });
+  await user.click(within(question).getByRole("button", { name: "Delete" }));
+}
 import type { CitationTarget } from "./Markdown";
 import type { LibraryDocument } from "@/lib/library";
 import type { DeletionStatus, Session, ToolCatalogItem, ToolConsentStatus } from "@/lib/types";
@@ -588,22 +595,27 @@ describe("ChatApp session state reliability", () => {
     expect(mocks.logout).toHaveBeenCalledTimes(1);
   });
 
-  it("requires confirmation before deleting a conversation", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+  it("asks on the conversation's row before deleting, never with a native dialog", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm");
     const user = userEvent.setup();
     render(<ChatApp />);
 
     await user.click(await screen.findByRole("button", { name: "Delete Session A" }));
 
-    expect(confirmSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/remove "Session A" from chats.*request cleanup.*may remain pending/i),
-    );
+    const question = screen.getByRole("group", { name: "Delete “Session A”?" });
+    expect(question).toHaveAccessibleDescription(/queued for cleanup.*may stay pending.*aren't erased/);
+    await user.click(within(question).getByRole("button", { name: "Cancel" }));
+    expect(confirmSpy).not.toHaveBeenCalled();
     expect(mocks.deleteSession).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Session A" })).toBeInTheDocument();
+
+    // Control: confirming on the row sends exactly one request.
+    await confirmDeletion(user, "Session A");
+    await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledExactlyOnceWith("A"));
+    expect(confirmSpy).not.toHaveBeenCalled();
   });
 
   it("removes a deleted active row locally and reports a separate refresh failure", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     render(<ChatApp />);
     await user.click(await screen.findByRole("button", { name: "Session A" }));
@@ -612,7 +624,7 @@ describe("ChatApp session state reliability", () => {
     });
     mocks.listSessions.mockRejectedValueOnce(new Error("refresh unavailable"));
 
-    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
+    await confirmDeletion(user, "Session A");
 
     await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledWith("A"));
     expect(
@@ -651,11 +663,10 @@ describe("ChatApp session state reliability", () => {
     const status: DeletionStatus = { ...(state === "cleanup_verified" ? VERIFIED_DELETION : PENDING_DELETION), state, sessionId: "A" };
     mocks.deleteSession.mockResolvedValue(status);
     mocks.getSessionDeletion.mockResolvedValue(status);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     render(<ChatApp />);
     await user.click(await screen.findByRole("button", { name: "Session A" }));
-    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
+    await confirmDeletion(user, "Session A");
     const notice = await screen.findByText(/Conversation removed from chats\./);
     expect(notice).toHaveAttribute("role", "status");
     expect(notice).toHaveTextContent(state === "cleanup_verified" ? "Cleanup last verified" : state === "retryable" ? "Retry needed" : "Cleanup pending");
@@ -674,36 +685,77 @@ describe("ChatApp session state reliability", () => {
     expect(mocks.listSessionDeletions).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps migration rejection as the server's error instead of removing the chat or falling back", async () => {
-    const detail = "This legacy conversation requires approved migration before deletion.";
-    mocks.deleteSession.mockRejectedValue(new ApiError(409, detail));
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("explains a conversation that needs an approved migration on its row and holds it", async () => {
+    const detail = "This conversation requires an approved deletion migration; no cleanup was started.";
+    mocks.deleteSession.mockRejectedValue(new ApiError(409, detail, "migration_required"));
     const user = userEvent.setup();
     render(<ChatApp />);
     await user.click(await screen.findByRole("button", { name: "Session A" }));
     const reads = mocks.listSessions.mock.calls.length;
-    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(detail);
+    await confirmDeletion(user, "Session A");
+    const outcome = await screen.findByRole("alert");
+    expect(outcome).toHaveTextContent(
+      /older than resumable deletion.*administrator approves its migration\. Nothing was removed\./,
+    );
+    const trash = screen.getByRole("button", { name: "Delete Session A" });
+    expect(outcome.closest(".conversation-item")).toContainElement(trash);
     expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "A");
-    expect(screen.getByRole("button", { name: "Delete Session A" })).toBeEnabled();
+    expect(trash).toHaveAttribute("aria-disabled", "true");
+    expect(trash).toHaveAccessibleDescription(outcome.textContent!);
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    // The row can't ask again, so the refusal can't loop.
+    await user.click(trash);
+    expect(screen.queryByRole("group", { name: /Delete “Session A”/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "View deletion status" })).not.toBeInTheDocument();
     expect(mocks.deleteSession).toHaveBeenCalledExactlyOnceWith("A");
     expect(mocks.listSessions).toHaveBeenCalledTimes(reads);
     expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
+    // Dismissing the message keeps the row's explanation and its hold.
+    await user.click(screen.getByRole("button", { name: "Dismiss the message about Session A" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(trash).toHaveAccessibleDescription(/older than resumable deletion/);
+    expect(trash).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("keeps an uncoded refusal as the server's words without holding the row", async () => {
+    const detail = "Conversation changed concurrently.";
+    mocks.deleteSession.mockRejectedValue(new ApiError(409, detail));
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await confirmDeletion(user, "Session A");
+    expect(await screen.findByRole("alert")).toHaveTextContent(`${detail} Nothing was removed.`);
+    expect(screen.getByRole("button", { name: "Delete Session A" })).not.toHaveAttribute("aria-disabled");
+    expect(screen.getByRole("button", { name: "Session A" })).toBeInTheDocument();
+    expect(mocks.deleteSession).toHaveBeenCalledExactlyOnceWith("A");
+  });
+
+  it("offers Try again after an unconfirmed outcome and resumes the same request once", async () => {
+    mocks.deleteSession
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce({ ...PENDING_DELETION, sessionId: "A" });
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await confirmDeletion(user, "Session A");
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't confirm whether/);
+    expect(screen.getByRole("button", { name: "Session A" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await screen.findByRole("button", { name: "View deletion status" });
+    expect(mocks.deleteSession.mock.calls).toEqual([["A"], ["A"]]);
+    expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("blocks a duplicate deletion while preserving a different conversation selected during the request", async () => {
     const pending = deferredDeletion<DeletionStatus>();
     mocks.deleteSession.mockReturnValue(pending.promise);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     render(<ChatApp />);
     await user.click(await screen.findByRole("button", { name: "Session A" }));
     const deleting = screen.getByRole("button", { name: "Delete Session A" });
-    await user.click(deleting);
+    await confirmDeletion(user, "Session A");
     expect(deleting).toBeDisabled();
     await user.click(deleting);
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("group", { name: /Delete “Session A”/ })).toBeNull();
     expect(mocks.deleteSession).toHaveBeenCalledExactlyOnceWith("A");
     await user.click(screen.getByRole("button", { name: "Session B" }));
     await waitFor(() => expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "B"));
@@ -716,7 +768,6 @@ describe("ChatApp session state reliability", () => {
 
   it.each([[false, false], [true, false], [false, true], [true, true]])("applies a deletion refresh only when current (newer navigation=%s, failure=%s)", async (newer, fails) => {
     mocks.deleteSession.mockResolvedValue({ ...PENDING_DELETION, sessionId: "A" });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     render(<ChatApp />);
     await user.click(await screen.findByRole("button", { name: "Session A" }));
@@ -727,7 +778,7 @@ describe("ChatApp session state reliability", () => {
     mocks.getInspector.mockImplementation((id: string) => id === "B"
       ? inspection.promise : Promise.resolve(makeInspectorSnapshot(id)));
     mocks.listSessions.mockReturnValueOnce(old.promise).mockResolvedValue([{ ...session("B"), title: "Newer Session B" }]);
-    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
+    await confirmDeletion(user, "Session A");
     await screen.findByRole("button", { name: "View deletion status" });
     if (newer) {
       await user.click(screen.getByRole("button", { name: "Session B" }));
@@ -751,10 +802,9 @@ describe("ChatApp session state reliability", () => {
   it("does not publish a pending deletion or start its list refresh after sign-out", async () => {
     const pending = deferredDeletion<DeletionStatus>();
     mocks.deleteSession.mockReturnValue(pending.promise);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     render(<ChatApp />);
-    await user.click(await screen.findByRole("button", { name: "Delete Session A" }));
+    await confirmDeletion(user, "Session A");
     const reads = mocks.listSessions.mock.calls.length;
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     expect(mocks.logout).toHaveBeenCalledTimes(1);
@@ -1346,7 +1396,7 @@ describe("ChatApp uploads", () => {
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Queue two uploads" }));
     await waitFor(() => expect(mocks.uploadLibraryDocument).toHaveBeenCalledTimes(1));
-    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
+    await confirmDeletion(user, "Session A");
     expect(mocks.deleteSession).not.toHaveBeenCalled();
     expect(
       await screen.findByText(/finish before deleting this conversation/),
