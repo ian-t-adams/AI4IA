@@ -8,6 +8,9 @@ import {
   DEFAULT_SPEECH_ECHO_CANCELLATION,
   DEFAULT_SPEECH_NOISE_SUPPRESSION,
   DEFAULT_PLAYBACK_PROFILE,
+  effectiveAvatarListening,
+  MAX_MICROPHONE_BUFFERED_BYTES,
+  microphoneBufferLimitBytes,
   microphoneConstraints,
   PLAYBACK_BUFFER_MS,
   avatarErrorMessage,
@@ -18,10 +21,12 @@ import {
   resolveAuthorizedVoiceProviders,
   resolveSpeechTranscriptionOption,
   sessionUpdate,
+  speechEchoReference,
   speechSessionUpdate,
   speechTranscriptionOptions,
   transcriptionFailureNotice,
   transcriptionOptionLabel,
+  type VoiceProvider,
   type VoiceSessionSettings,
 } from "./voiceLive";
 import { voiceProviderCatalog } from "./data/voice_provider_catalog";
@@ -65,6 +70,29 @@ describe("voice audio transport", () => {
   it("bounds the microphone pause after the avatar's speech by its lag, live edge and echo tail", () => {
     expect(avatarPauseTailBoundMs(PLAYBACK_BUFFER_MS.balanced / 1000)).toBe(2520);
     expect(avatarPauseTailBoundMs(PLAYBACK_BUFFER_MS.smooth / 1000)).toBe(2580);
+  });
+
+  it("turns browser echo cancellation off for the client echo reference, as Microsoft's sample does", () => {
+    // Azure cancels against what the page plays, so it must hear the raw microphone.
+    expect(microphoneConstraints("speech_voice_live", true, "reference")).toEqual({
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    });
+    // Controls: the other listening modes still ask the browser to cancel playback,
+    // and Azure OpenAI keeps its browser DSP.
+    for (const mode of ["pause", "listen"] as const) {
+      expect(microphoneConstraints("speech_voice_live", true, mode).echoCancellation).toBe("all");
+    }
+    expect(microphoneConstraints("speech_voice_live", false, "reference").echoCancellation).toBe(false);
+    expect(microphoneConstraints("azure_openai", true, "reference").echoCancellation).toBe(true);
+  });
+
+  it("bounds the stereo microphone queue to the same two seconds of audio", () => {
+    expect(microphoneBufferLimitBytes(1)).toBe(MAX_MICROPHONE_BUFFERED_BYTES);
+    expect(microphoneBufferLimitBytes(2)).toBe(2 * MAX_MICROPHONE_BUFFERED_BYTES);
+    expect(microphoneBufferLimitBytes(0)).toBe(MAX_MICROPHONE_BUFFERED_BYTES);
   });
 
   it("keeps every playback profile within a conversational latency budget", () => {
@@ -280,6 +308,35 @@ describe("speechSessionUpdate", () => {
     }
   });
 
+  it("keeps the default frame byte for byte and adds the client reference only when asked", () => {
+    // Captured from the Speech frame before the client echo reference existed.
+    const before =
+      '{"type":"session.update","session":{"voice":{"type":"azure-standard","name":"en-US-Ava:DragonHDLatestNeural","locale":"en-US"},"input_audio_transcription":{"model":"gpt-4o-transcribe","language":"en-US"},"turn_detection":{"type":"azure_semantic_vad","interrupt_response":true,"auto_truncate":false},"input_audio_noise_reduction":{"type":"azure_deep_noise_suppression"},"input_audio_echo_cancellation":{"type":"server_echo_cancellation"}}}';
+    expect(speechSessionUpdate("gpt-realtime")).toBe(before);
+    expect(speechSessionUpdate("gpt-realtime", DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, null)).toBe(before);
+    const reference = speechEchoReference();
+    expect(reference).not.toBeNull();
+    const opted = JSON.parse(
+      speechSessionUpdate("gpt-realtime", DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, reference),
+    );
+    expect(opted.session.input_audio_echo_cancellation).toEqual({
+      type: "server_echo_cancellation",
+      reference_source: "client",
+      channels: 2,
+    });
+    // Nothing else differs from the default frame.
+    opted.session.input_audio_echo_cancellation = { type: "server_echo_cancellation" };
+    expect(JSON.stringify(opted)).toBe(before);
+    expect(
+      buildInitialVoiceFrames({
+        providerId: "speech_voice_live",
+        model: "gpt-realtime",
+        voice: "ignored",
+        echoReference: reference,
+      })[0],
+    ).toContain('"reference_source":"client","channels":2');
+  });
+
   it("reconstructs stale settings from catalog defaults and clamps temperature", () => {
     const parsed = JSON.parse(
       speechSessionUpdate("not-a-managed-model", {
@@ -478,6 +535,67 @@ describe("buildVoiceLiveWebSocketUrl", () => {
     ]) {
       expect(buildVoiceLiveWebSocketUrl(base, input)).not.toContain("avatar=");
     }
+  });
+
+  it("asks the relay for the client echo reference only with a Speech photo avatar", () => {
+    const base = "wss://api.example.test/api/voice/live";
+    const id = "0123456789abcdef0123456789abcdef";
+    expect(
+      buildVoiceLiveWebSocketUrl(base, {
+        providerId: "speech_voice_live", avatar: id, echoReference: true,
+      }),
+    ).toBe(`${base}?provider=speech_voice_live&avatar=${id}&echoRef=client`);
+    for (const input of [
+      { providerId: "speech_voice_live" as const, avatar: id, echoReference: false },
+      { providerId: "speech_voice_live" as const, avatar: id },
+      { providerId: "speech_voice_live" as const, avatar: null, echoReference: true },
+      { providerId: "speech_voice_live" as const, avatar: "../other", echoReference: true },
+      { providerId: "azure_openai" as const, avatar: id, echoReference: true },
+    ]) {
+      expect(buildVoiceLiveWebSocketUrl(base, input)).not.toContain("echoRef");
+    }
+  });
+});
+
+describe("speechEchoReference", () => {
+  const speech = voiceProviderCatalog.providers[1];
+  const withEcho = (echoCancellation: object) =>
+    ({
+      ...speech,
+      capabilities: { ...speech.capabilities, echoCancellation },
+    }) as unknown as VoiceProvider;
+  const without = withEcho({
+    default: speech.capabilities.echoCancellation.default,
+    options: speech.capabilities.echoCancellation.options,
+  });
+
+  it("reads the catalog's opt-in Live-Reference AEC contract, for Speech only", () => {
+    expect(speechEchoReference()).toEqual({
+      preview: true,
+      apiVersion: "2026-07-15",
+      features: "client_ec_reference:true",
+      channels: 2,
+    });
+    expect(speechEchoReference(speech)).toEqual(speechEchoReference());
+    expect(speechEchoReference(voiceProviderCatalog.providers[0])).toBeNull();
+    expect(speechEchoReference(null)).toBeNull();
+    expect(speechEchoReference(without)).toBeNull();
+    // The capture worklet interleaves exactly two channels.
+    expect(
+      speechEchoReference(
+        withEcho({
+          ...speech.capabilities.echoCancellation,
+          clientReference: { ...speech.capabilities.echoCancellation.clientReference, channels: 4 },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("falls back to the default listening mode where the reference isn't offered", () => {
+    expect(effectiveAvatarListening("reference")).toBe("reference");
+    expect(effectiveAvatarListening("reference", without)).toBe("pause");
+    expect(effectiveAvatarListening("listen", without)).toBe("listen");
+    expect(effectiveAvatarListening("pause", speech)).toBe("pause");
   });
 });
 

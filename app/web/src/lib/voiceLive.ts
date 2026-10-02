@@ -177,8 +177,11 @@ export const DEFAULT_SPEECH_ECHO_CANCELLATION = "server_echo_cancellation";
 // from its video, later than Azure's server echo cancellation assumes, so on
 // speakers the avatar can hear itself. "pause" sends silence of the same length
 // while the avatar is audibly speaking; "listen" keeps the microphone open, for
-// headphones. Browser-only: it never reaches the relay.
-export const AVATAR_LISTENING_MODES = ["pause", "listen"] as const;
+// headphones; "reference" (preview, Live-Reference AEC) keeps it open on
+// speakers and sends Azure what this page plays as a second channel, so the
+// service removes the avatar's voice itself. Only "reference" asks the relay for
+// anything, and the relay decides.
+export const AVATAR_LISTENING_MODES = ["pause", "listen", "reference"] as const;
 export type AvatarListeningMode = (typeof AVATAR_LISTENING_MODES)[number];
 export const DEFAULT_AVATAR_LISTENING_MODE: AvatarListeningMode = "pause";
 
@@ -187,6 +190,41 @@ export function isAvatarListeningMode(value: unknown): value is AvatarListeningM
     typeof value === "string" &&
     (AVATAR_LISTENING_MODES as readonly string[]).includes(value)
   );
+}
+
+// The catalog's opt-in Live-Reference AEC contract (Speech Voice Live only).
+export interface SpeechEchoReference {
+  preview: boolean;
+  apiVersion: string;
+  features: string;
+  channels: number;
+}
+
+/**
+ * The client echo reference a Speech provider offers, or null. Voice settings
+ * pass the server's advertised provider; a session reads the catalog bundled
+ * with this build. The relay re-checks it on every connection either way.
+ */
+export function speechEchoReference(
+  provider: VoiceProvider | null = SPEECH_PROVIDER ?? null,
+): SpeechEchoReference | null {
+  if (!provider || provider.id !== "speech_voice_live") return null;
+  const echo = provider.capabilities.echoCancellation as
+    | { clientReference?: SpeechEchoReference | null }
+    | undefined;
+  const reference = echo?.clientReference;
+  // The capture worklet interleaves exactly two channels.
+  return reference && reference.channels === 2 ? reference : null;
+}
+
+/** The listening mode a session can use: "reference" only where it is offered. */
+export function effectiveAvatarListening(
+  mode: AvatarListeningMode,
+  provider: VoiceProvider | null = SPEECH_PROVIDER ?? null,
+): AvatarListeningMode {
+  return mode === "reference" && !speechEchoReference(provider)
+    ? DEFAULT_AVATAR_LISTENING_MODE
+    : mode;
 }
 
 // Echo can still reach the microphone this long after the avatar's last audible word.
@@ -225,7 +263,7 @@ export interface SpeechVoiceLiveSettings {
   // A catalog transcription option chosen instead of the managed model's own
   // default, or null for that default. The relay re-checks it every session.
   transcriptionModel: string | null;
-  // Browser-only: what the microphone does while a photo avatar speaks.
+  // What the microphone does while a photo avatar speaks (AvatarListeningMode).
   avatarListening: AvatarListeningMode;
 }
 
@@ -363,6 +401,15 @@ export function base64ToInt16(b64: string): Int16Array {
 // Same-origin static module so the production `script-src 'self'` CSP permits the
 // AudioWorklet without adding executable `blob:` URLs.
 export const CAPTURE_WORKLET_PATH = "/ai4ia-capture-worklet.js";
+// The processors that module registers: mono microphone capture, and the
+// Live-Reference AEC capture that interleaves the microphone with what the page plays.
+export const CAPTURE_PROCESSOR = "ai4ia-capture";
+export const STEREO_CAPTURE_PROCESSOR = "ai4ia-capture-stereo";
+
+/** The microphone queue bound: the same roughly two seconds of audio in any layout. */
+export function microphoneBufferLimitBytes(channels: number): number {
+  return MAX_MICROPHONE_BUFFERED_BYTES * Math.max(1, Math.floor(channels));
+}
 
 export function supportsVoiceLive(): boolean {
   return (
@@ -387,16 +434,20 @@ const AVATAR_ECHO_CANCELLATION: EchoCancellationMode = "all";
 export function microphoneConstraints(
   providerId: VoiceProviderId,
   avatar = false,
+  listening: AvatarListeningMode = DEFAULT_AVATAR_LISTENING_MODE,
 ): MediaTrackConstraints {
   if (providerId === "speech_voice_live") {
     // Speech Voice Live applies server-side deep noise suppression and echo
     // cancellation. Running browser DSP first produces the robotic/pumping
     // artifacts associated with two independent processors in series. A photo
     // avatar's voice plays from its video, later than the server's echo
-    // reference assumes, so avatar sessions also ask the browser to cancel it.
+    // reference assumes, so avatar sessions also ask the browser to cancel it,
+    // except with the client echo reference: Azure then cancels against what
+    // the page plays, and must hear the microphone as it is (Microsoft's
+    // Live-Reference AEC sample turns browser processing off for this reason).
     return {
       channelCount: 1,
-      echoCancellation: avatar ? AVATAR_ECHO_CANCELLATION : false,
+      echoCancellation: avatar && listening !== "reference" ? AVATAR_ECHO_CANCELLATION : false,
       noiseSuppression: false,
       autoGainControl: false,
     };
@@ -568,6 +619,7 @@ export function sessionUpdate(
 export function speechSessionUpdate(
   modelId: string | null | undefined,
   settings: SpeechVoiceLiveSettings = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  echoReference: SpeechEchoReference | null = null,
 ): string {
   const provider = SPEECH_PROVIDER;
   const managedModel = resolveSpeechManagedModel(modelId, provider);
@@ -625,7 +677,12 @@ export function speechSessionUpdate(
       auto_truncate: settings.autoTruncate,
     },
     input_audio_noise_reduction: { type: noiseSuppression },
-    input_audio_echo_cancellation: { type: echoCancellation },
+    // With the client echo reference the microphone audio is stereo: channel 0
+    // the microphone, channel 1 what this page plays. The relay sets the same
+    // fields itself; Azure can't change them during the session.
+    input_audio_echo_cancellation: echoReference
+      ? { type: echoCancellation, reference_source: "client", channels: echoReference.channels }
+      : { type: echoCancellation },
   };
   if (typeof settings.temperature === "number" && Number.isFinite(settings.temperature)) {
     session.temperature = Math.min(2, Math.max(0, settings.temperature));
@@ -643,6 +700,8 @@ export function buildVoiceLiveWebSocketUrl(
     agent?: string | null;
     tools?: boolean;
     avatar?: string | null;
+    // Live-Reference AEC (preview): only with a photo avatar.
+    echoReference?: boolean;
   },
 ): string {
   const params = new URLSearchParams();
@@ -658,6 +717,8 @@ export function buildVoiceLiveWebSocketUrl(
   // is ever sent, and the server re-checks ownership on every connection.
   if (input.providerId === "speech_voice_live" && isPhotoAvatarId(input.avatar)) {
     params.set("avatar", input.avatar);
+    // The relay alone decides whether the catalog offers the client echo reference.
+    if (input.echoReference) params.set("echoRef", "client");
   }
   if (input.agent) params.set("agent", input.agent);
   if (input.tools) params.set("tools", "1");
@@ -721,10 +782,11 @@ export function buildInitialVoiceFrames(input: {
   history?: VoiceSeedTurn[];
   settings?: VoiceSessionSettings;
   speechSettings?: SpeechVoiceLiveSettings;
+  echoReference?: SpeechEchoReference | null;
 }): string[] {
   const sessionFrame =
     input.providerId === "speech_voice_live"
-      ? speechSessionUpdate(input.model, input.speechSettings)
+      ? speechSessionUpdate(input.model, input.speechSettings, input.echoReference ?? null)
       : sessionUpdate(input.voice, input.settings);
   return [sessionFrame, ...seedFrames(input.history ?? [])];
 }
@@ -785,6 +847,16 @@ interface LiveSession {
   // The catalog transcription option this session's setup frame chose, or null
   // for the managed model's own default (or Azure OpenAI).
   transcriptionOption: SpeechTranscriptionOption | null;
+  // Live-Reference AEC (preview): the catalog contract this session asked the
+  // relay for, or null. The avatar's audio then plays through `referenceBus`,
+  // which feeds the speakers and the capture worklet's reference input.
+  echoReference: SpeechEchoReference | null;
+  avatarAudio: MediaElementAudioSourceNode | null;
+  referenceBus: GainNode | null;
+  // The microphone feeds the capture worklet. With the echo reference it waits
+  // for Azure's session.updated, bounded by echoReferenceTimer.
+  micConnected: boolean;
+  echoReferenceTimer: ReturnType<typeof setTimeout> | null;
 }
 
 // The message shown when the WebSocket fails or closes before ever reaching
@@ -827,6 +899,26 @@ const MIC_TRACK_MUTED_MESSAGE =
 const AUDIO_CONTEXT_SUSPENDED_MESSAGE =
   "Live voice paused because the browser suspended audio processing (often from backgrounding the tab). Reconnect to continue.";
 const AUDIO_CONTEXT_RESUME_GRACE_MS = 4000;
+
+// Live-Reference AEC (preview). A session that can't start it names the way back
+// instead of silently switching to another mode.
+const ECHO_REFERENCE_HINT =
+  "Precise echo cancellation is a preview: set \u201cWhile the avatar talks\u201d to \u201cPause my microphone\u201d in Voice settings and start again.";
+const ECHO_REFERENCE_UNAVAILABLE_MESSAGE = `This browser can't route the avatar's audio for precise echo cancellation. ${ECHO_REFERENCE_HINT}`;
+const ECHO_REFERENCE_UNCONFIRMED_MESSAGE = `Azure didn't confirm the session settings, so live voice stopped. ${ECHO_REFERENCE_HINT}`;
+// How long the microphone waits for Azure's session.updated before giving up.
+export const ECHO_REFERENCE_CONFIRM_TIMEOUT_MS = 15_000;
+// Azure's refusals of a client echo reference configuration.
+const ECHO_REFERENCE_ERROR_CODE_RE = /^(?:invalid_ec_|change_in_ec_)/;
+
+// The hint for a failed echo-reference session: before Azure confirmed the
+// session, or for Azure's own echo-reference refusals afterwards.
+function echoReferenceHint(session: LiveSession, code: string | null): string {
+  if (!session.echoReference) return "";
+  return !session.micConnected || (code !== null && ECHO_REFERENCE_ERROR_CODE_RE.test(code))
+    ? ` ${ECHO_REFERENCE_HINT}`
+    : "";
+}
 
 interface PendingLiveSession {
   ctx: AudioContext | null;
@@ -1134,6 +1226,17 @@ export function useVoiceLive(
     } catch {
       /* ignore */
     }
+    // The avatar's audio route for the client echo reference, if any.
+    try {
+      s.avatarAudio?.disconnect();
+      s.referenceBus?.disconnect();
+    } catch {
+      /* ignore */
+    }
+    if (s.echoReferenceTimer !== null) {
+      clearTimeout(s.echoReferenceTimer);
+      s.echoReferenceTimer = null;
+    }
     for (const t of s.stream.getTracks()) {
       if (typeof t.removeEventListener === "function") {
         if (s.onTrackEnded) t.removeEventListener("ended", s.onTrackEnded);
@@ -1244,10 +1347,14 @@ export function useVoiceLive(
           : null;
       const avatarLiveEdgeSeconds =
         PLAYBACK_BUFFER_MS[settingsRef.current.playbackProfile] / 1000;
+      // Read once per connection, like the other settings.
+      const listening = effectiveAvatarListening(speechSettingsRef.current.avatarListening);
+      let avatarElement: HTMLVideoElement | null = null;
       if (avatarSelection) {
         const env = browserAvatarVideoEnvironment();
         if (env && supportsAvatarVideo(env)) {
           const element = document.createElement("video");
+          avatarElement = element;
           element.playsInline = true;
           element.autoplay = true;
           element.setAttribute("aria-label", `${avatarSelection.label} avatar video`);
@@ -1306,6 +1413,7 @@ export function useVoiceLive(
           audio: microphoneConstraints(
             providerIdRef.current,
             Boolean(pending.avatarPlayer && !pending.avatarPlayer.failed),
+            listening,
           ),
         })
         .catch((error: unknown) => {
@@ -1350,7 +1458,6 @@ export function useVoiceLive(
       await ctx.audioWorklet.addModule(CAPTURE_WORKLET_PATH);
       if (attempt !== attemptRef.current) return;
       const source = ctx.createMediaStreamSource(stream);
-      const worklet = new AudioWorkletNode(ctx, "ai4ia-capture");
 
       // The relay resolves the realtime deployment and (when ?agent= is set) the
       // agent's server-authoritative persona + tool allowlist; the browser only
@@ -1364,12 +1471,45 @@ export function useVoiceLive(
       }
       const avatarPlayer =
         pending.avatarPlayer && !pending.avatarPlayer.failed ? pending.avatarPlayer : null;
+      // Live-Reference AEC (preview): only an avatar session that chose it. The
+      // relay checks the catalog again on every connection.
+      const echoReference =
+        avatarPlayer && avatarElement && listening === "reference" ? speechEchoReference() : null;
+      const worklet = echoReference
+        ? new AudioWorkletNode(ctx, STEREO_CAPTURE_PROCESSOR, {
+            numberOfInputs: 2,
+            numberOfOutputs: 1,
+            outputChannelCount: [1],
+            channelCount: 1,
+            channelCountMode: "explicit",
+            channelInterpretation: "speakers",
+          })
+        : new AudioWorkletNode(ctx, CAPTURE_PROCESSOR);
+      // With the echo reference the avatar's voice plays through this context
+      // instead of straight from its element: one bus feeds the speakers and the
+      // worklet's reference input, so the reference is exactly what the page
+      // plays, rendered in the same quantum as the microphone. The blob-backed
+      // MediaSource is same-origin, so the element's audio is readable.
+      let avatarAudio: MediaElementAudioSourceNode | null = null;
+      let referenceBus: GainNode | null = null;
+      if (echoReference && avatarElement) {
+        try {
+          avatarAudio = ctx.createMediaElementSource(avatarElement);
+        } catch {
+          throw new Error(ECHO_REFERENCE_UNAVAILABLE_MESSAGE);
+        }
+        referenceBus = ctx.createGain();
+        avatarAudio.connect(referenceBus);
+        referenceBus.connect(ctx.destination);
+        referenceBus.connect(worklet, 0, 1);
+      }
       const wsUrl = buildVoiceLiveWebSocketUrl(config.wsUrl, {
         providerId: providerIdRef.current,
         model: modelRef.current,
         region: regionRef.current,
         sessionId: boundSessionId,
         avatar: avatarPlayer && avatarSelection ? avatarSelection.id : null,
+        echoReference: echoReference !== null,
         ...(boundSessionId ? {} : { agent, tools: toolsRef.current }),
       });
       const ws = new WebSocket(wsUrl, subprotocols);
@@ -1395,6 +1535,11 @@ export function useVoiceLive(
         typedReleaseTimer: null,
         micPauseTimer: null,
         transcriptionOption: null,
+        echoReference,
+        avatarAudio,
+        referenceBus,
+        micConnected: false,
+        echoReferenceTimer: null,
       };
       sessionRef.current = session;
       pendingRef.current = null;
@@ -1613,11 +1758,9 @@ export function useVoiceLive(
       // and nothing is dropped or replayed. The pause starts at
       // switch_to_speaking and ends once playback passes the speech the server
       // sent before switch_to_idle, plus an echo tail. Wall-clock bounds end it
-      // even if the player stalls.
-      const pauseFor =
-        avatarPlayer && speechSettingsRef.current.avatarListening !== "listen"
-          ? avatarPlayer
-          : null;
+      // even if the player stalls. Keep listening and the client echo reference
+      // never pause: with the reference, Azure removes the avatar's voice itself.
+      const pauseFor = avatarPlayer && listening === "pause" ? avatarPlayer : null;
       let micPause: "open" | "speaking" | "tail" = "open";
       let micPausedShown = false;
       // The server is streaming the avatar's speech (switch_to_speaking to switch_to_idle).
@@ -1888,6 +2031,18 @@ export function useVoiceLive(
             session.avatarEndReason = typeof msg.reason === "string" ? msg.reason : null;
             break;
           }
+          case "session.updated": {
+            // Live-Reference AEC: Azure has the stereo layout, so the microphone starts.
+            if (session.echoReference && !session.micConnected) {
+              if (session.echoReferenceTimer !== null) {
+                clearTimeout(session.echoReferenceTimer);
+                session.echoReferenceTimer = null;
+              }
+              source.connect(worklet, 0, 0);
+              session.micConnected = true;
+            }
+            break;
+          }
           case "response.audio.delta": {
             // In avatar mode the speech is inside the video: never play PCM too.
             if (avatarPlayerForSession) break;
@@ -2103,7 +2258,9 @@ export function useVoiceLive(
               session.protocolError = protocolError;
             }
             finishSession(
-              avatarErrorMessage(msg.error) ?? formatVoiceProtocolError(session.protocolError),
+              avatarErrorMessage(msg.error) ??
+                formatVoiceProtocolError(session.protocolError) +
+                  echoReferenceHint(session, protocolError.code),
             );
             break;
           }
@@ -2112,17 +2269,27 @@ export function useVoiceLive(
         }
       };
 
+      // Stereo audio doubles the bytes per second, so the bound scales with it.
+      const microphoneBufferLimit = microphoneBufferLimitBytes(
+        echoReference ? echoReference.channels : 1,
+      );
       worklet.port.onmessage = (ev: MessageEvent) => {
         if (ws.readyState !== WebSocket.OPEN) return;
-        const samples = ev.data as Float32Array;
-        // While the avatar is audibly speaking in "pause" mode, the frame keeps
-        // its length but carries silence.
-        const pcm = micPausedNow() ? new Int16Array(samples.length) : floatTo16BitPCM(samples);
+        let pcm: Int16Array;
+        if (session.echoReference) {
+          // Already interleaved PCM16 by the worklet: microphone, then reference.
+          pcm = ev.data as Int16Array;
+        } else {
+          const samples = ev.data as Float32Array;
+          // While the avatar is audibly speaking in "pause" mode, the frame keeps
+          // its length but carries silence.
+          pcm = micPausedNow() ? new Int16Array(samples.length) : floatTo16BitPCM(samples);
+        }
         const frame = JSON.stringify({
           type: "input_audio_buffer.append",
           audio: int16ToBase64(pcm),
         });
-        if (ws.bufferedAmount + frame.length > MAX_MICROPHONE_BUFFERED_BYTES) {
+        if (ws.bufferedAmount + frame.length > microphoneBufferLimit) {
           finishSession(
             "The connection can't keep up with microphone audio. Your microphone was stopped; start a new session to try again.",
             true,
@@ -2152,14 +2319,27 @@ export function useVoiceLive(
             history: historyRef.current,
             settings: settingsRef.current,
             speechSettings: speechSettingsRef.current,
+            echoReference: session.echoReference,
           })) {
           ws.send(frame);
         }
         // Connect the capture graph. The worklet emits silence to the
         // destination (it only forwards mic frames via its port), so wiring it to
         // the destination keeps it in the active render graph without echo.
-        source.connect(worklet);
+        if (!session.echoReference) {
+          source.connect(worklet);
+          session.micConnected = true;
+        }
         worklet.connect(ctx.destination);
+        if (session.echoReference) {
+          // Like Microsoft's Live-Reference AEC sample, stereo audio waits for
+          // Azure to confirm the session: a refused configuration would read it
+          // as mono. Bounded, so a missing confirmation ends the session.
+          session.echoReferenceTimer = setTimeout(() => {
+            session.echoReferenceTimer = null;
+            finishSession(ECHO_REFERENCE_UNCONFIRMED_MESSAGE);
+          }, ECHO_REFERENCE_CONFIRM_TIMEOUT_MS);
+        }
         if (mountedRef.current) setStatus("live");
       };
       ws.onmessage = handleServerEvent;
@@ -2188,20 +2368,16 @@ export function useVoiceLive(
           setStatus("idle");
         }
       }
-      ws.onerror = () =>
-        finishSession(
-          avatarEndMessage(session.avatarEndReason) ??
-            (session.protocolError
-              ? formatVoiceProtocolError(session.protocolError)
-              : formatVoiceCloseError(session.opened)),
-        );
-      ws.onclose = (event) =>
-        finishSession(
-          avatarEndMessage(session.avatarEndReason) ??
-            (session.protocolError
-              ? formatVoiceProtocolError(session.protocolError)
-              : formatVoiceCloseError(session.opened, event)),
-        );
+      // The message for a socket error or close, with the echo-reference hint
+      // when that preview is what failed.
+      const endedMessage = (event?: Pick<CloseEvent, "code" | "reason">): string =>
+        avatarEndMessage(session.avatarEndReason) ??
+        (session.protocolError
+          ? formatVoiceProtocolError(session.protocolError)
+          : formatVoiceCloseError(session.opened, event)) +
+          echoReferenceHint(session, session.protocolError?.code ?? null);
+      ws.onerror = () => finishSession(endedMessage());
+      ws.onclose = (event) => finishSession(endedMessage(event));
     } catch (e) {
       const cancelled =
         attempt !== attemptRef.current ||

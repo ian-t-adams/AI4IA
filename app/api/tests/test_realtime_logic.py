@@ -505,6 +505,176 @@ def test_build_url_supports_fixed_model_target():
     assert url == "wss://h/speech/voice-live/realtime?api-version=2026-04-10&model=gpt-realtime"
 
 
+def test_build_url_adds_the_feature_flag_only_when_asked():
+    base = "https://h/speech/voice-live"
+    # Control: without features the URL is exactly the pinned form above.
+    assert build_upstream_url(base, "2026-04-10", "gpt-realtime", target_param="model") == (
+        "wss://h/speech/voice-live/realtime?api-version=2026-04-10&model=gpt-realtime"
+    )
+    # The documented `&features=name:value` form, colon unescaped.
+    assert build_upstream_url(
+        base, "2026-07-15", "gpt-realtime", target_param="model",
+        features="client_ec_reference:true",
+    ) == (
+        "wss://h/speech/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime"
+        "&features=client_ec_reference:true"
+    )
+    # A value that could add a parameter stays one encoded value.
+    assert build_upstream_url(
+        base, "2026-07-15", "gpt-realtime", target_param="model", features="a&api-key=x",
+    ).endswith("&features=a%26api-key%3Dx")
+
+
+# --------------------------------------------------------------------------- #
+# Live-Reference AEC: the opt-in client echo reference (Speech only)
+# --------------------------------------------------------------------------- #
+
+# The default Speech session.update, byte for byte as the relay sent it before
+# the client echo reference existed (captured from that normalizer).
+DEFAULT_SPEECH_SESSION_FRAME = (
+    '{"type": "session.update", "session": {"voice": {"type": "azure-standard", '
+    '"name": "en-US-Ava:DragonHDLatestNeural", "locale": "en-US"}, '
+    '"input_audio_transcription": {"model": "gpt-4o-transcribe", "language": "en-US"}, '
+    '"turn_detection": {"type": "azure_semantic_vad", "create_response": true, '
+    '"interrupt_response": true, "auto_truncate": false}, "input_audio_format": "pcm16", '
+    '"output_audio_format": "pcm16", "input_audio_sampling_rate": 24000, '
+    '"modalities": ["text", "audio"], "input_audio_noise_reduction": '
+    '{"type": "azure_deep_noise_suppression"}, "input_audio_echo_cancellation": '
+    '{"type": "server_echo_cancellation"}}}'
+)
+# Everything a client might send to choose the reference or the audio layout itself.
+CLIENT_ECHO_FIELDS = {
+    "input_audio_echo_cancellation": {
+        "type": "server_echo_cancellation", "reference_source": "client", "channels": 2,
+    },
+    "parallel_tool_calls": True,
+    "input_audio_format": "g711_ulaw",
+    "input_audio_sampling_rate": 16000,
+}
+
+
+def _speech_provider() -> SpeechVoiceProvider:
+    provider = load_voice_provider_catalog().get("speech_voice_live")
+    assert isinstance(provider, SpeechVoiceProvider)
+    return provider
+
+
+def _speech_resolution(voice_provider_catalog=None):
+    settings = make_settings(
+        env="dev",
+        realtime_enabled=True,
+        speech_voice_live_enabled=True,
+        voice_provider_allowlist="azure_openai,speech_voice_live",
+        speech_voice_live_base_url="https://replacement.azure-api.net/speech/voice-live",
+        speech_voice_live_gateway_api_key="speech-key",
+        realtime_base_url="https://replacement.azure-api.net/openai",
+        realtime_gateway_api_key="realtime-key",
+    )
+    state = SimpleNamespace(
+        catalog=_catalog(),
+        voice_provider_catalog=voice_provider_catalog or load_voice_provider_catalog(),
+    )
+    return state, settings
+
+
+@pytest.mark.parametrize("session", [{}, CLIENT_ECHO_FIELDS])
+def test_default_speech_session_update_is_unchanged_byte_for_byte(session):
+    provider = _speech_provider()
+    frame = json.dumps({"type": "session.update", "session": session})
+    normalized = normalize_speech_client_frame(
+        frame, provider, provider.get_managed_model("gpt-realtime"),
+    )
+    # A client can't choose the reference, the channels or the format itself.
+    assert normalized == DEFAULT_SPEECH_SESSION_FRAME
+
+
+@pytest.mark.parametrize(
+    "echo",
+    [
+        None,
+        {"type": "server_echo_cancellation", "reference_source": "server", "channels": 1},
+        {"type": "server_echo_cancellation", "reference_source": "client", "channels": 1},
+        {"type": "unknown_echo"},
+        "server_echo_cancellation",
+    ],
+)
+def test_echo_reference_session_update_always_carries_the_client_reference(echo):
+    provider = _speech_provider()
+    reference = provider.capabilities.echoCancellation.clientReference
+    assert reference is not None
+    session = {"input_audio_format": "g711_ulaw", "input_audio_sampling_rate": 16000,
+               "parallel_tool_calls": True}
+    if echo is not None:
+        session["input_audio_echo_cancellation"] = echo
+    frame = json.dumps({"type": "session.update", "session": session})
+    normalized = normalize_speech_client_frame(
+        frame, provider, provider.get_managed_model("gpt-realtime"), echo_reference=reference,
+    )
+    assert normalized is not None
+    expected = json.loads(DEFAULT_SPEECH_SESSION_FRAME)
+    # Only these differ from the default frame: they can't change mid-session,
+    # so every session.update repeats them, and tool calls stay sequential.
+    expected["session"]["input_audio_echo_cancellation"] = {
+        "type": "server_echo_cancellation", "reference_source": "client", "channels": 2,
+    }
+    expected["session"]["parallel_tool_calls"] = False
+    assert json.loads(normalized) == expected
+
+
+def test_echo_reference_changes_no_other_client_frame():
+    provider = _speech_provider()
+    managed = provider.get_managed_model("gpt-realtime")
+    reference = provider.capabilities.echoCancellation.clientReference
+    for frame in (
+        '{"type":"input_audio_buffer.append","audio":"AAAA"}',
+        '{"type":"response.create","response":{"instructions":"x","voice":"y"}}',
+        '{"type":"conversation.item.create","item":{"type":"message","role":"user",'
+        '"content":[{"type":"input_text","text":"hi"}]}}',
+        "not json",
+    ):
+        assert normalize_speech_client_frame(
+            frame, provider, managed, echo_reference=reference,
+        ) == normalize_speech_client_frame(frame, provider, managed)
+
+
+def test_apply_echo_reference_switches_only_a_speech_session_to_the_catalog_pair():
+    from ai4ia_api.routers.realtime import apply_echo_reference
+
+    state, settings = _speech_resolution()
+    speech = _resolve_live_voice_provider(
+        state, settings, "speech_voice_live", model="gpt-4.1", region=None,
+    )
+    opted = apply_echo_reference(speech)
+    assert (opted.api_version, opted.features) == ("2026-07-15", "client_ec_reference:true")
+    assert opted.echo_reference is not None and opted.echo_reference.channels == 2
+    # Control: the resolved session itself is unchanged and stays on the pinned version.
+    assert (speech.api_version, speech.features, speech.echo_reference) == (
+        "2026-04-10", None, None,
+    )
+    assert (opted.model_id, opted.target_name, opted.usage_target) == (
+        speech.model_id, speech.target_name, speech.usage_target,
+    )
+    update = '{"type":"session.update","session":{}}'
+    assert "reference_source" in (opted.rewrite_client_frame(update) or "")
+    assert "reference_source" not in (speech.rewrite_client_frame(update) or "")
+
+    openai = _resolve_live_voice_provider(
+        state, settings, "azure_openai", model=None, region=None,
+    )
+    with pytest.raises(LiveVoiceProviderError, match="needs Speech"):
+        apply_echo_reference(openai)
+
+    without = load_voice_provider_catalog().model_copy(deep=True)
+    provider = without.get("speech_voice_live")
+    assert isinstance(provider, SpeechVoiceProvider)
+    provider.capabilities.echoCancellation.clientReference = None
+    state, settings = _speech_resolution(without)
+    with pytest.raises(LiveVoiceProviderError, match="not in the voice catalog"):
+        apply_echo_reference(_resolve_live_voice_provider(
+            state, settings, "speech_voice_live", model=None, region=None,
+        ))
+
+
 # --------------------------------------------------------------------------- #
 # build_upstream_headers
 # --------------------------------------------------------------------------- #
@@ -2057,7 +2227,7 @@ def test_completion_log_and_event_never_carry_the_provider_id_in_any_field(monke
     )
     resolution = SimpleNamespace(
         provider=SimpleNamespace(id="speech_voice_live"), protocol="speech",
-        model_id="gpt-realtime",
+        model_id="gpt-realtime", echo_reference=None,
         usage_target=SimpleNamespace(
             provider="speech_voice_live", deployment=None, target="managed_voice_live",
             region="eastus2", dataZone=None,

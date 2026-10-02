@@ -9,7 +9,10 @@ The infra catalog is the source of truth for both providers:
   carries curated azure-standard built-in Speech voices plus safe capability
   defaults/options. Public-preview MAI voices are listed in
   ``voices.previewOptions``, and reviewed transcription alternatives to each
-  managed model's own default live in ``inputTranscription.options``.
+  managed model's own default live in ``inputTranscription.options``. Its
+  ``echoCancellation.clientReference`` block is the opt-in, preview
+  Live-Reference AEC path: the one api-version and ``features`` flag for which
+  the generated Speech APIM policy lets a session leave the pinned version.
 
 It also owns the ``photoAvatars`` block: the custom photo avatar home region
 (cross-checked against ``infra/models.json``), the undocumented creation
@@ -127,6 +130,17 @@ SPEECH_API_VERSION = "2026-04-10"
 SPEECH_INITIAL_REGION = "eastus2"
 SPEECH_AUDIO_FORMAT = "pcm16"
 SPEECH_SAMPLE_RATE_HZ = 24000
+# Opt-in, preview Live-Reference AEC (client-supplied echo reference), reviewed
+# 2026-10-02 against the Voice Live how-to and the 2026-07-15 API reference:
+# `reference_source: client` with `channels: 2` needs api-version 2026-07-15 and
+# the `client_ec_reference` preview feature flag on the WebSocket URL. Only an
+# opted-in session uses this version; every other one keeps SPEECH_API_VERSION.
+SPEECH_ECHO_REFERENCE = {
+    "preview": True,
+    "apiVersion": "2026-07-15",
+    "features": "client_ec_reference:true",
+    "channels": 2,
+}
 # Curated subset of the Voice Live managed models that Microsoft Learn's region
 # table serves from eastus2 (reviewed 2026-10-02): GPT realtime models on Global
 # Standard, gpt-4.1/gpt-4.1-mini on Standard, the GPT-5.x models on Data Zone
@@ -551,6 +565,32 @@ def _validate_speech_input_transcription(errors: list[str], block: Any) -> None:
     )
 
 
+def _validate_speech_echo_reference(errors: list[str], block: Any) -> None:
+    """The opt-in Live-Reference AEC block must be exactly the reviewed contract.
+
+    Its api-version and feature flag reach the generated APIM policy, so a typo
+    here must fail generation rather than become a gateway branch.
+    """
+    label = "speech_voice_live.capabilities.echoCancellation.clientReference"
+    if not isinstance(block, dict):
+        errors.append(f"{label} must be an object")
+        return
+    _exact_keys(errors, block, allowed=tuple(SPEECH_ECHO_REFERENCE), label=label)
+    _require(
+        errors,
+        block == SPEECH_ECHO_REFERENCE,
+        f"{label} must be {SPEECH_ECHO_REFERENCE!r} (got {block!r})",
+    )
+    # Equality alone accepts 1 for True and 2.0 for 2.
+    _require(errors, block.get("preview") is True, f"{label}.preview must be true")
+    _require(errors, type(block.get("channels")) is int, f"{label}.channels must be an integer")
+    _require(
+        errors,
+        block.get("apiVersion") != SPEECH_API_VERSION,
+        f"{label}.apiVersion must differ from the managed models' pinned apiVersion",
+    )
+
+
 def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> None:
     _require(
         errors,
@@ -760,13 +800,16 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
     _exact_keys(
         errors,
         echo,
-        allowed=("default", "options"),
+        allowed=("default", "options", "clientReference"),
         label="speech_voice_live.capabilities.echoCancellation",
     )
     _require(
         errors,
         tuple(echo.get("options", [])) == ("server_echo_cancellation",),
         "speech_voice_live: echoCancellation.options must contain only server_echo_cancellation",
+    )
+    _validate_speech_echo_reference(
+        errors, echo.get("clientReference") if isinstance(echo, dict) else None
     )
     locale = capabilities.get("locale", {})
     _exact_keys(
@@ -1021,6 +1064,14 @@ def render_ts(catalog: dict[str, Any]) -> str:
 
 
 def render_speech_voice_live_policy(catalog: dict[str, Any]) -> str:
+    """Render the Speech Voice Live onHandshake policy from the catalog.
+
+    Every session connects at the managed models' pinned api-version, except one
+    that names the catalog's exact Live-Reference AEC pair: the echo-reference
+    api-version together with its exact ``features`` flag. Any other ``features``
+    value (or the flag with another version) is refused, so the only flag that
+    can reach Voice Live is the reviewed one, and only with its own version.
+    """
     speech = next(
         provider
         for provider in catalog["providers"]
@@ -1029,6 +1080,9 @@ def render_speech_voice_live_policy(catalog: dict[str, Any]) -> str:
     model_ids = tuple(model["id"] for model in speech["managedModels"])
     default_model_id = speech["defaultManagedModelId"]
     api_version = speech["managedModels"][0]["apiVersion"]
+    echo_reference = speech["capabilities"]["echoCancellation"]["clientReference"]
+    echo_version = echo_reference["apiVersion"]
+    echo_features = echo_reference["features"]
     allowed_expression = " ||\n              ".join(
         f'"{model_id}".Equals(model, StringComparison.Ordinal)'
         for model_id in model_ids
@@ -1042,6 +1096,14 @@ def render_speech_voice_live_policy(catalog: dict[str, Any]) -> str:
         "              );\n"
         "          }"
     )
+    echo_opt_in = (
+        f'context.Request.Url.Query.GetValueOrDefault("features", "") == "{echo_features}" && '
+        f'context.Request.Url.Query.GetValueOrDefault("api-version", "") == "{echo_version}"'
+    )
+    feature_reject_expression = (
+        f'@(context.Request.Url.Query.ContainsKey("features") && !({echo_opt_in}))'
+    )
+    api_version_expression = f'@(({echo_opt_in}) ? "{echo_version}" : "{api_version}")'
     model_expression = (
         "@(String.IsNullOrWhiteSpace("
         'context.Request.Url.Query.GetValueOrDefault("model", "")) '
@@ -1052,11 +1114,18 @@ def render_speech_voice_live_policy(catalog: dict[str, Any]) -> str:
         "<policies>\n"
         "  <inbound>\n"
         "    <base />\n"
-        "    <!-- GENERATED by scripts/gen-voice-provider-catalog.py from the managed-model catalog. -->\n"
+        "    <!-- GENERATED by scripts/gen-voice-provider-catalog.py from the managed-model catalog.\n"
+        "         Only the exact Live-Reference AEC pair (its api-version and features flag) leaves\n"
+        "         the pinned api-version; any other features value is refused. -->\n"
         "    <choose>\n"
         f'      <when condition="{html.escape(reject_expression, quote=True)}">\n'
         "        <return-response>\n"
         '          <set-status code="400" reason="Voice Live model is not in the AI4IA catalog" />\n'
+        "        </return-response>\n"
+        "      </when>\n"
+        f'      <when condition="{html.escape(feature_reject_expression, quote=True)}">\n'
+        "        <return-response>\n"
+        '          <set-status code="400" reason="Voice Live feature is not in the AI4IA catalog" />\n'
         "        </return-response>\n"
         "      </when>\n"
         "    </choose>\n"
@@ -1064,7 +1133,7 @@ def render_speech_voice_live_policy(catalog: dict[str, Any]) -> str:
         f"      <value>{html.escape(model_expression, quote=False)}</value>\n"
         "    </set-query-parameter>\n"
         '    <set-query-parameter name="api-version" exists-action="override">\n'
-        f"      <value>{api_version}</value>\n"
+        f"      <value>{html.escape(api_version_expression, quote=False)}</value>\n"
         "    </set-query-parameter>\n"
         '    <set-query-parameter name="deployment" exists-action="delete" />\n'
         '    <set-query-parameter name="subscription-key" exists-action="delete" />\n'

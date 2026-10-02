@@ -188,6 +188,63 @@ class VoiceProviderCatalogTests(unittest.TestCase):
             "en-US-Ava:DragonHDLatestNeural",
         )
         self.assertFalse(speech["capabilities"]["customVoice"]["allowPersonalVoice"])
+        # The opt-in Live-Reference AEC contract; every managed model stays pinned.
+        self.assertEqual(
+            speech["capabilities"]["echoCancellation"],
+            {
+                "default": "server_echo_cancellation",
+                "options": ["server_echo_cancellation"],
+                "clientReference": {
+                    "preview": True,
+                    "apiVersion": "2026-07-15",
+                    "features": "client_ec_reference:true",
+                    "channels": 2,
+                },
+            },
+        )
+        self.assertEqual(speech["sessionDefaults"]["echoCancellation"], "server_echo_cancellation")
+
+    def test_schema_and_generator_reject_unreviewed_echo_reference(self) -> None:
+        def reference_mutation(change) -> dict:
+            mutated = copy.deepcopy(self.raw)
+            change(mutated["providers"][1]["capabilities"]["echoCancellation"]["clientReference"])
+            return mutated
+
+        def set_field(field: str, value: object):
+            return lambda block: block.__setitem__(field, value)
+
+        mutations = {
+            "pinned version": reference_mutation(set_field("apiVersion", "2026-04-10")),
+            "preview version": reference_mutation(set_field("apiVersion", "2026-06-01-preview")),
+            "flag off": reference_mutation(set_field("features", "client_ec_reference:false")),
+            "extra flag": reference_mutation(
+                set_field("features", "client_ec_reference:true,other:true")
+            ),
+            "mono reference": reference_mutation(set_field("channels", 1)),
+            "not marked preview": reference_mutation(set_field("preview", False)),
+            "endpoint field": reference_mutation(
+                set_field("endpoint", "wss://attacker.example")
+            ),
+            "missing flag": reference_mutation(lambda block: block.pop("features")),
+        }
+        missing = copy.deepcopy(self.raw)
+        del missing["providers"][1]["capabilities"]["echoCancellation"]["clientReference"]
+        mutations["missing block"] = missing
+
+        for label, mutated in mutations.items():
+            with self.subTest(label=label):
+                self.assert_schema_rejects(mutated)
+                self.assert_generator_rejects(mutated)
+
+        # JSON Schema compares numbers by value, so only the generator's type
+        # checks catch these; the accepted catalog is the control.
+        self.gen.build_catalog(self.raw)
+        for label, change in (
+            ("float channels", set_field("channels", 2.0)),
+            ("integer preview", set_field("preview", 1)),
+        ):
+            with self.subTest(label=label):
+                self.assert_generator_rejects(reference_mutation(change))
 
     def test_schema_and_generator_reject_unreviewed_mai_voice_contracts(self) -> None:
         mutations = {}
@@ -430,7 +487,33 @@ class VoiceProviderCatalogTests(unittest.TestCase):
         model_override = (query["model"].findtext("value") or "").strip()
         self.assertIn("String.IsNullOrWhiteSpace", model_override)
         self.assertIn('? "gpt-realtime" :', model_override)
-        self.assertEqual(query["api-version"].findtext("value"), "2026-04-10")
+        echo_pair = (
+            'context.Request.Url.Query.GetValueOrDefault("features", "") == '
+            '"client_ec_reference:true" && '
+            'context.Request.Url.Query.GetValueOrDefault("api-version", "") == "2026-07-15"'
+        )
+        self.assertEqual(
+            query["api-version"].findtext("value"),
+            f'@(({echo_pair}) ? "2026-07-15" : "2026-04-10")',
+        )
+        self.assertNotIn("features", query)
+        feature_branch = inbound.findall("./choose/when")[1]
+        self.assertEqual(
+            feature_branch.attrib["condition"],
+            f'@(context.Request.Url.Query.ContainsKey("features") && !({echo_pair}))',
+        )
+        self.assertEqual(feature_branch.find("./return-response/set-status").attrib["code"], "400")
+        self.assertIsNone(feature_branch.find("./return-response/set-body"))
+        # Catalog-driven: the echo-reference pair comes from the catalog block.
+        moved = copy.deepcopy(catalog)
+        moved["providers"][1]["capabilities"]["echoCancellation"]["clientReference"].update(
+            apiVersion="2099-01-01", features="other_flag:true",
+        )
+        rendered = self.gen.render_speech_voice_live_policy(moved)
+        self.assertIn('== &quot;2099-01-01&quot;', rendered)
+        self.assertIn('? "2099-01-01" : "2026-04-10"', rendered)
+        self.assertIn("other_flag:true", rendered)
+        self.assertNotIn("client_ec_reference", rendered)
         for name in (
             "deployment",
             "subscription-key",

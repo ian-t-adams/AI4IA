@@ -1702,7 +1702,23 @@ a new owner-approved exception.
   **Interrupt** sends at most one stop (`response.cancel` while a response is
   active, else `output_audio_buffer.clear` while the avatar speaks); only that
   cancel's own `response_cancel_not_active`, within its window, is non-fatal.
-  Live-Reference AEC needs API `2026-07-15`; the catalog pins `2026-04-10`.
+  **Keep listening with precise echo cancellation (preview)** is the opt-in
+  Live-Reference AEC path, not a default and never a fallback. The browser asks
+  with `?echoRef=client` (Speech plus avatar only). The relay alone admits it,
+  from `capabilities.echoCancellation.clientReference` in the voice catalog, and
+  refuses any other value, provider or unoffered catalog before connecting. Only
+  that session connects at the reference's `2026-07-15` with its
+  `features=client_ec_reference:true` flag. Every `session.update` is rebuilt
+  with `reference_source: client`, `channels: 2` and `parallel_tool_calls:
+  false` (the tool bridge answers one call at a time). The generated APIM policy
+  passes only that exact version/flag pair and refuses any other `features`.
+  Every other session keeps the pinned `2026-04-10` and its frames byte for
+  byte. The browser routes the avatar video's audio through the capture
+  AudioContext (one bus to the speakers and the stereo worklet's channel 1;
+  channel 0 is the microphone, browser echo cancellation off). It starts the
+  microphone at Azure's `session.updated` (bounded wait) and never pauses it.
+  A refusal ends the session with Azure's error and the way back to **Pause my
+  microphone**; never switch modes mid-session.
 - **Delivery guidance.** Every live session, on both providers and both Speech
   profiles (the `azure_speech_chain` text-to-speech reads a text model's reply
   verbatim), ends its instructions with the relay's versioned voice delivery

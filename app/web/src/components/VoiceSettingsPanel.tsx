@@ -9,11 +9,13 @@ import { useId } from "react";
 
 import {
   AVATAR_LISTENING_MODES,
+  effectiveAvatarListening,
   isAvatarListeningMode,
   PLAYBACK_BUFFER_MS,
   PLAYBACK_PROFILES,
   isSpeechVoiceProvider,
   resolveSpeechTranscriptionOption,
+  speechEchoReference,
   speechTranscriptionOptions,
   transcriptionOptionLabel,
   VAD_TYPES,
@@ -57,11 +59,14 @@ const SPEECH_TURN_DETECTION_LABELS: Record<string, string> = {
 const AVATAR_LISTENING_LABELS: Record<AvatarListeningMode, string> = {
   pause: "Pause my microphone (speakers)",
   listen: "Keep listening (headphones)",
+  reference: "Keep listening with precise echo cancellation (preview)",
 };
 const AVATAR_LISTENING_DESCRIPTIONS: Record<AvatarListeningMode, string> = {
   pause:
     "Your microphone sends silence while the avatar speaks, so it can't hear itself. Use Interrupt to cut in.",
   listen: "Talk over the avatar to interrupt it. Without headphones it may hear itself.",
+  reference:
+    "Talk over the avatar on speakers. This page also sends Azure what it plays, so Azure can remove the avatar's voice from your microphone.",
 };
 
 function managedTranscriptionLabel(model: string): string {
@@ -188,6 +193,16 @@ export function VoiceSettingsPanel({
     (avatarChoices?.length ?? 0) > 0 || avatarId !== null || Boolean(onOpenPhotoAvatars)
   );
   const unavailableAvatar = avatarId !== null && !avatarChoices?.some((choice) => choice.id === avatarId);
+  // The client echo reference is offered only where the server's catalog has it;
+  // a saved choice elsewhere shows (and uses) the default.
+  const echoReferenceOffered = speechEchoReference(speechProvider ?? null) !== null;
+  const listeningModes = AVATAR_LISTENING_MODES.filter(
+    (mode) => mode !== "reference" || echoReferenceOffered,
+  );
+  const avatarListening = effectiveAvatarListening(
+    speechSettings.avatarListening,
+    speechProvider ?? null,
+  );
 
   function patchSettings(patch: Partial<VoiceSessionSettings>) {
     onSettingsChange({ ...settings, ...patch });
@@ -420,7 +435,7 @@ export function VoiceSettingsPanel({
             <select
               id={`${idPrefix}-avatar-listening`}
               aria-describedby={`${idPrefix}-avatar-listening-description`}
-              value={speechSettings.avatarListening}
+              value={avatarListening}
               disabled={locked}
               onChange={(event) => {
                 const mode = event.target.value;
@@ -428,14 +443,14 @@ export function VoiceSettingsPanel({
               }}
               style={CONTROL_STYLE}
             >
-              {AVATAR_LISTENING_MODES.map((mode) => (
+              {listeningModes.map((mode) => (
                 <option key={mode} value={mode}>
                   {AVATAR_LISTENING_LABELS[mode]}
                 </option>
               ))}
             </select>
             <span id={`${idPrefix}-avatar-listening-description`} style={{ maxWidth: 260 }}>
-              {AVATAR_LISTENING_DESCRIPTIONS[speechSettings.avatarListening]}
+              {AVATAR_LISTENING_DESCRIPTIONS[avatarListening]}
             </span>
           </div>
         )}
@@ -574,7 +589,8 @@ export function VoiceSettingsPanel({
                   <span>
                     {speechSettings.locale}; deep noise suppression and echo cancellation.
                     With a photo avatar, your browser is also asked to cancel the
-                    avatar&apos;s voice.
+                    avatar&apos;s voice, unless precise echo cancellation gives Azure
+                    what this page plays instead.
                   </span>
                 </div>
 

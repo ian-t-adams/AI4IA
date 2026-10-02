@@ -164,6 +164,13 @@ that region as "coming soon".
 The voices include 14 public-preview MAI-Voice-2.1 and MAI-Voice-2.1-Flash voices,
 which Microsoft serves from East US 2 and Sweden Central among other regions.
 
+A photo avatar session that opts into precise echo cancellation (preview
+Live-Reference AEC, the catalog's `echoCancellation.clientReference`) connects at
+`2026-07-15` with the `client_ec_reference` preview flag, whichever managed model
+it uses. Every other session stays on `2026-04-10`. Microsoft's references state
+no regional limit for the client reference, but its acceptance on this East US 2
+account is unverified until a live session.
+
 The catalog deliberately leaves out:
 
 - GPT-6 and GPT-6.1 do not appear in Microsoft's Voice Live documentation,

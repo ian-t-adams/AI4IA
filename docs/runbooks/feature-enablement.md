@@ -1134,6 +1134,23 @@ models. A turn that fails to transcribe is flagged in the call bar while the
 session continues. Voice Live usage stays cost-unknown in the usage ledger; no
 Azure retail meter for MAI voices or MAI transcription was published at review.
 
+**Preview Live-Reference AEC for photo avatars.** **Keep listening with precise
+echo cancellation (preview)** is a per-user choice under **While the avatar
+talks**. It has no deployment variable. It is reviewed catalog data:
+`capabilities.echoCancellation.clientReference` in `infra/voice-providers.json`.
+
+- Only an avatar session that chooses it connects at `2026-07-15` with
+  `features=client_ec_reference:true`. The generated Speech APIM policy admits
+  only that exact pair and refuses any other `features` value.
+- The browser sends interleaved stereo microphone and playback audio. Azure
+  strips the reference channel before audio billing.
+- After a deployment, verify it with a signed-in avatar session on speakers:
+  - Choose this mode and confirm the session starts.
+  - Talk over the avatar. It should stop rather than answer itself.
+  - Confirm `voice_live_completion` carries `echoReference: client`.
+- If Azure refuses the version or flag, the session ends with Azure's error and
+  points the user back to **Pause my microphone**. Nothing else changes.
+
 **Enablement status and standing rules.** This provider is **enabled in production**
 (`AI4IA_SPEECH_VOICE_LIVE_ENABLED=true`, with `speech_voice_live` in
 `AI4IA_VOICE_PROVIDER_ALLOWLIST`). The gates below governed that rollout; the ones

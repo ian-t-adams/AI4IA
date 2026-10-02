@@ -346,7 +346,13 @@ export const voiceProviderCatalog = {
           "default": "server_echo_cancellation",
           "options": [
             "server_echo_cancellation"
-          ]
+          ],
+          "clientReference": {
+            "preview": true,
+            "apiVersion": "2026-07-15",
+            "features": "client_ec_reference:true",
+            "channels": 2
+          }
         },
         "interruption": {
           "interruptResponse": true,
