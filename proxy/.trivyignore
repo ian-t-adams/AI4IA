@@ -11,9 +11,3 @@
 # CVE-YYYY-NNNN
 #
 # Wildcards, GHSA aliases, and severity-wide suppressions are prohibited.
-
-# owner: @ian-t-adams
-# expires: 2026-10-31
-# tracking: https://github.com/dotnet/dotnet-docker/issues/7384
-# rationale: No patched release exists; Microsoft has not rebuilt the pinned .NET 10 noble-chiseled runtime (proxy and CompanionApp) with Ubuntu's fixed libssl3t64 3.0.13-0ubuntu3.16 (USN-8847), and the chiseled image has no package manager. Compensating control: the flaw is limited to OpenSSL DTLS handshake retransmission; the runtime's only libssl consumer is the .NET crypto shim, which binds TLS_method and no DTLS symbol, the image ships no msquic or openssl CLI, and neither app uses DTLS, QUIC, HTTP/3 or UDP. Refresh both runtime pins and delete this entry when the rebuilt image ships (AI4IA #552).
-CVE-2026-84782

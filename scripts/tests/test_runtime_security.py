@@ -352,6 +352,8 @@ class ManifestAndWiringTests(unittest.TestCase):
             self.assertNotIn("apt-get", final)
         self.assertEqual(fragments[0], fragments[1])
         self.assertIn('apt-get download "libssl3t64=${version}" "openssl=${version}"', fragments[0])
+        self.assertIn("python3=3.12.3-0ubuntu2.1", fragments[0])
+        self.assertNotIn("cd ", fragments[0])
         self.assertNotIn("--allow-unauthenticated", fragments[0])
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "docker-build.yml").read_text())
         steps = workflow["jobs"]["api"]["steps"]
@@ -367,6 +369,8 @@ class ManifestAndWiringTests(unittest.TestCase):
             )
         quality = (ROOT / ".github" / "workflows" / "quality.yml").read_text()
         self.assertIn("python3 -m unittest scripts.tests.test_runtime_security", quality)
+        ignored = (ROOT / "proxy" / ".trivyignore").read_text()
+        self.assertNotRegex(ignored, r"(?m)^CVE-2026-84782\s*$")
 
     def test_cli_errors_are_explicit(self) -> None:
         result = subprocess.run(

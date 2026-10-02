@@ -10,13 +10,12 @@ WORKDIR /runtime-security
 COPY --from=runtime-base / /runtime-security/base/
 COPY runtime-security.py runtime-security.json ./
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends python3 \
-    && mkdir packages \
-    && version="$(python3 runtime-security.py version)" \
-    && cd packages \
-    && apt-get download "libssl3t64=${version}" "openssl=${version}" \
-    && cd .. \
-    && python3 runtime-security.py prepare --root base --packages packages --output overlay
+    && apt-get install --yes --no-install-recommends python3=3.12.3-0ubuntu2.1
+WORKDIR /runtime-security/packages
+RUN version="$(python3 ../runtime-security.py version)" \
+    && apt-get download "libssl3t64=${version}" "openssl=${version}"
+WORKDIR /runtime-security
+RUN python3 runtime-security.py prepare --root base --packages packages --output overlay
 
 FROM runtime-base AS patched-runtime
 COPY --from=runtime-security /runtime-security/overlay/ /

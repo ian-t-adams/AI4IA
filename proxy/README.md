@@ -52,7 +52,8 @@ image keeps the same .NET runtime, Ubuntu series, shell-less subset, non-root
 user and existing CompanionApp application/key-ring ownership rules. CI checks
 the actual exported files, their hashes and ownership before the unchanged
 HIGH/CRITICAL scans. Source/PR acceptance does not prove production deployment
-or authorize the optional console. Remove this overlay deliberately after
+or authorize the optional console. Adoption also removes the temporary exact-CVE
+exception; byte verification and scans must pass without it. Remove this overlay deliberately after
 verifying a supported patched Microsoft runtime, not by weakening its version
 or integrity checks.
 
