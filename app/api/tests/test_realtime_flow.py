@@ -192,6 +192,27 @@ def test_counts_stay_bounded_however_many_event_types_arrive():
     assert dict(outcome.stats.client_to_upstream.event_counts) == {"input_audio_buffer.append": 300}
 
 
+def test_live_counters_never_store_an_event_name_outside_the_allowlist():
+    # The relay's own counter, not just its frozen output: a client sending many
+    # distinct event names must not grow per-session memory.
+    from ai4ia_api.routers.realtime import _MutableFrameStats
+
+    stats = _MutableFrameStats(flow_events=CLIENT_FLOW_EVENTS)
+    for index in range(300):
+        stats.observe(text=True, event_type=f"browser.event_{index}")
+    assert stats.event_counts == {}
+    # Control: the identical call with an allowlisted name is counted.
+    stats.observe(text=True, event_type="response.cancel")
+    assert stats.event_counts == {"response.cancel": 1}
+
+
+def test_frozen_counts_keep_only_allowlisted_keys_in_allowlist_order():
+    counts = {"browser.invented": 7, "response.cancel": 2, "session.update": 1}
+    assert realtime_flow.ordered_counts(counts, CLIENT_FLOW_EVENTS) == (
+        ("session.update", 1), ("response.cancel", 2),
+    )
+
+
 @pytest.mark.parametrize("with_avatar", [False, True])
 def test_only_response_done_payloads_are_parsed_for_their_outcome(monkeypatch, with_avatar):
     seen: list[str] = []
