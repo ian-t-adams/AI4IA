@@ -334,7 +334,39 @@ describe("inline Voice Live chat", () => {
     await userEvent.type(composer, "Typed while listening{Enter}");
 
     expect(onSend).toHaveBeenCalledWith("Typed while listening");
-    expect(screen.getByText("You can keep typing in this chat.")).toBeInTheDocument();
+    expect(screen.getByText(
+      "Speak into your microphone. Typed messages stay in text chat until the next voice session.",
+    )).toBeInTheDocument();
+  });
+
+  it("visibly explains that typed text is not sent to the listening avatar", async () => {
+    const onSend = vi.fn();
+    const avatar = {
+      element: document.createElement("video"),
+      label: "AI-generated",
+      unsupported: false,
+      failure: null,
+      started: true,
+      speaking: false,
+      idleEndsAt: null,
+      sessionEndsAt: null,
+      playbackBlocked: false,
+      resume: vi.fn(),
+    };
+    controller = makeController({ status: "live", active: true, avatar });
+    const { rerender } = render(<Harness onSend={onSend} />);
+    expect(screen.getByText(
+      "Speak into your microphone to talk to the avatar. Typed messages use text chat and aren't spoken.",
+    )).toBeInTheDocument();
+    await userEvent.type(screen.getByRole("combobox", { name: "Message" }), "Hello{Enter}");
+    expect(onSend).toHaveBeenCalledWith("Hello");
+    controller = makeController({
+      status: "live", active: true, avatar: { ...avatar, element: null, unsupported: true },
+    });
+    rerender(<Harness onSend={onSend} />);
+    expect(screen.getByText(
+      "Speak into your microphone. Typed messages stay in text chat until the next voice session.",
+    )).toBeInTheDocument();
   });
 
   it("stops, persists finalized turns once, removes local duplicates, and returns idle", async () => {
