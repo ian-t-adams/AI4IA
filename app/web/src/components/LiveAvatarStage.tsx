@@ -18,6 +18,7 @@ import {
   useState,
   useSyncExternalStore,
   type CSSProperties,
+  type MouseEvent,
   type RefObject,
 } from "react";
 
@@ -161,12 +162,27 @@ function ActiveLiveAvatarStage({
 }) {
   const mount = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLElement | null>(null);
+  const controlsRef = useRef<HTMLDivElement | null>(null);
   const now = useSyncExternalStore(subscribeClock, readClock, () => 0);
   const element = avatar.element;
   const label = avatar.label.trim() || "AI-generated";
   const [ratio, setRatio] = useState<number | null>(null);
   const fullscreen = useFullscreen(stageRef);
   const mini = variant === "mini";
+  const interruptReply = avatar.interrupt;
+  const onInterrupt = useCallback(
+    (event: MouseEvent<HTMLButtonElement>) => {
+      const hadFocus = event.currentTarget === document.activeElement;
+      interruptReply();
+      if (!hadFocus) return;
+      // The button leaves with the speech; keep keyboard focus among the
+      // controls, never on End session.
+      controlsRef.current
+        ?.querySelector<HTMLButtonElement>("button:not(.live-stage-interrupt):not(.btn-danger)")
+        ?.focus();
+    },
+    [interruptReply],
+  );
 
   useEffect(() => {
     const host = mount.current;
@@ -207,9 +223,28 @@ function ActiveLiveAvatarStage({
   const idleLeft = secondsUntil(idleEndsAt, now);
   const capLeft = secondsUntil(sessionEndsAt, now);
   const showCap = capLeft !== null && capLeft <= CAP_NOTICE_SECONDS;
-  const state = !avatar.started ? "Starting…" : avatar.speaking ? "Speaking" : "Listening";
-  const stateKey = !avatar.started ? "starting" : avatar.speaking ? "speaking" : "listening";
+  // A paused microphone always says so: the avatar can't hear the user until it ends.
+  const talking = avatar.speaking || avatar.micPaused;
+  const state = !avatar.started
+    ? "Starting…"
+    : avatar.micPaused
+      ? "Speaking · mic paused"
+      : avatar.speaking
+        ? "Speaking"
+        : "Listening";
+  const stateKey = !avatar.started ? "starting" : talking ? "speaking" : "listening";
   const frameStyle = { "--video-ar": ratio ?? 1 } as CSSProperties;
+  const interrupt = avatar.started && talking ? (
+    <button
+      type="button"
+      className={mini ? "btn btn-sm btn-primary live-stage-interrupt" : "btn btn-primary live-stage-interrupt"}
+      onClick={onInterrupt}
+      title="Stop the reply so you can talk"
+    >
+      <Icon name="pause" size={mini ? 16 : 18} />
+      <span className="btn-label">Interrupt</span>
+    </button>
+  ) : null;
 
   return (
     <section
@@ -268,7 +303,8 @@ function ActiveLiveAvatarStage({
             session is connected, even when nobody is talking.
           </p>
         )}
-        <div className="live-stage-controls">
+        <div ref={controlsRef} className="live-stage-controls">
+          {interrupt}
           {mini ? (
             onReturn ? (
               <button type="button" className="btn btn-sm" onClick={onReturn}>

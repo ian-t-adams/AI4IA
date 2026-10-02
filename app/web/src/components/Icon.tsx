@@ -93,6 +93,7 @@ const PATHS = {
     </>
   ),
   stop: <rect x="7" y="7" width="10" height="10" rx="1.6" />,
+  pause: <path d="M9 6v12M15 6v12" />,
   send: <path d="M12 19V5.5M6.5 11 12 5.5l5.5 5.5" />,
   attach: <path d="M19.5 11.5 12 19a5 5 0 0 1-7.1-7.1l8.2-8.2a3.4 3.4 0 0 1 4.8 4.8l-8.2 8.2a1.8 1.8 0 0 1-2.6-2.6L14.6 6.6" />,
   expand: <path d="M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5" />,

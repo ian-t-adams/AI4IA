@@ -4,8 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import protocolFixtures from "../../test-fixtures/realtime_protocol.json";
 
 import {
+  avatarPauseTailBoundMs,
+  AVATAR_ECHO_TAIL_SECONDS,
+  AVATAR_SPEAKING_PAUSE_MAX_MS,
+  base64ToInt16,
   microphoneConstraints,
   MAX_MICROPHONE_BUFFERED_BYTES,
+  OWN_CANCEL_RACE_WINDOW_MS,
   PLAYBACK_BUFFER_MS,
   supportsVoiceLive,
   TYPED_RELEASE_MS,
@@ -633,6 +638,119 @@ describe("useVoiceLive lifecycle", () => {
     expect(FakeAudioContext.instances[0].close).toHaveBeenCalledTimes(1);
     expect(FakeWebSocket.instances).toHaveLength(1);
     expect(result.current.active).toBe(false);
+  });
+
+  it("sends the chosen MAI options and explains a failed turn without ending or reconfiguring", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const track = new FakeMediaStreamTrack();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const onError = vi.fn();
+    const speechSettings = {
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      voice: "en-US-Harper:MAI-Voice-2.1-Flash",
+      transcriptionModel: "mai-transcribe-2",
+    };
+    const { result } = renderHook(() =>
+      useVoiceLive(
+        CONFIG, "speech_voice_live", "gpt-4.1", null, "unused", onError,
+        null, [], DEFAULT_VOICE_SETTINGS, speechSettings,
+      ),
+    );
+    act(() => { result.current.start(); });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    const emit = (event: object) =>
+      socket.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
+    act(() => {
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onopen?.();
+    });
+    const setup = JSON.parse(socket.send.mock.calls[0][0] as string);
+    expect(setup.session.input_audio_transcription.model).toBe("mai-transcribe-2");
+    expect(setup.session.voice.name).toBe("en-US-Harper:MAI-Voice-2.1-Flash");
+    socket.send.mockClear();
+
+    act(() => emit({ type: "input_audio_buffer.speech_started", item_id: "user_1" }));
+    expect(result.current.turns).toEqual([expect.objectContaining({ role: "user", pending: true })]);
+    // A line typed mid-utterance waits for that turn to finish.
+    act(() => {
+      expect(result.current.sendText("Typed meanwhile")).toBe(true);
+    });
+    expect(socket.send).not.toHaveBeenCalled();
+
+    act(() =>
+      emit({
+        type: "conversation.item.input_audio_transcription.failed",
+        item_id: "user_1",
+        content_index: 0,
+        error: { type: "server_error", code: "transcription_failed", message: "Unavailable" },
+      }),
+    );
+    expect(result.current.notice).toBe(
+      "MAI Transcribe 2 (preview) couldn't transcribe your last turn: Unavailable " +
+        "(type: server_error; code: transcription_failed). If this continues, choose Model " +
+        "default transcription in Voice settings.",
+    );
+    // The empty pending bubble closes instead of waiting forever ...
+    expect(result.current.turns.map((turn) => [turn.text, turn.pending])).toEqual([
+      ["Typed meanwhile", false],
+    ]);
+    // ... so the queued line goes out now.
+    const sent = socket.send.mock.calls.map(([frame]) => JSON.parse(frame as string));
+    expect(sent.map((frame) => frame.type)).toEqual(["conversation.item.create", "response.create"]);
+    // Nothing falls back to another transcription model, and the session stays up.
+    expect(onError).not.toHaveBeenCalled();
+    expect(result.current.status).toBe("live");
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(track.stop).not.toHaveBeenCalled();
+
+    act(() => {
+      emit({ type: "response.done" });
+      emit({ type: "input_audio_buffer.speech_started", item_id: "user_2" });
+      emit({
+        type: "conversation.item.input_audio_transcription.completed",
+        item_id: "user_2",
+        transcript: "Hello again",
+      });
+    });
+    expect(result.current.notice).toBeNull();
+    expect(result.current.turns.map((turn) => turn.text)).toEqual(["Typed meanwhile", "Hello again"]);
+  });
+
+  it("explains a default transcription failure without naming a preview model", async () => {
+    auth.getToken.mockResolvedValue("token");
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [new FakeMediaStreamTrack()] }),
+      },
+    });
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "speech_voice_live", "gpt-realtime", null, "unused", vi.fn()),
+    );
+    act(() => { result.current.start(); });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => {
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onopen?.();
+    });
+    expect(
+      JSON.parse(socket.send.mock.calls[0][0] as string).session.input_audio_transcription.model,
+    ).toBe("gpt-4o-transcribe");
+    act(() =>
+      socket.onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "conversation.item.input_audio_transcription.failed",
+          error: { message: "Audio too short" },
+        }),
+      })),
+    );
+    expect(result.current.notice).toBe("Your last turn couldn't be transcribed: Audio too short.");
+    expect(result.current.status).toBe("live");
   });
 
   it("admits the exact microphone queue bound and stops rather than dropping or replaying overflow", async () => {
@@ -1785,13 +1903,15 @@ describe("useVoiceLive live photo avatar", () => {
     avatar: LiveAvatarSelection | null,
     onError = vi.fn(),
     speechSettings = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+    onRender: () => void = () => {},
   ) {
-    const hook = renderHook(() =>
-      useVoiceLive(
+    const hook = renderHook(() => {
+      onRender();
+      return useVoiceLive(
         CONFIG, "speech_voice_live", null, null, "ignored", onError, null, [],
         DEFAULT_VOICE_SETTINGS, speechSettings, false, null, avatar,
-      ),
-    );
+      );
+    });
     act(() => {
       hook.result.current.start();
     });
@@ -1968,6 +2088,402 @@ describe("useVoiceLive live photo avatar", () => {
     expect(result.current.avatar?.failure).toBe("stream_invalid");
     expect(onError).toHaveBeenCalledWith(expect.stringMatching(/avatar video couldn't play/));
     expect(result.current.status).toBe("idle");
+  });
+
+  // ------------------------------------------------------------------------
+  // Echo: the avatar must not hear itself, and Interrupt stops it on demand.
+  // ------------------------------------------------------------------------
+
+  const MIC_FRAME_SAMPLES = 2400;
+  const SPEECH_SETTINGS = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS;
+
+  function micFrame() {
+    act(() => {
+      FakeAudioWorkletNode.instances[0].port.onmessage?.(
+        new MessageEvent("message", { data: new Float32Array(MIC_FRAME_SAMPLES).fill(0.25) }),
+      );
+    });
+  }
+
+  function sentAudio(socket: FakeWebSocket): Int16Array[] {
+    return socket.send.mock.calls
+      .map(([frame]) => JSON.parse(frame as string))
+      .filter((event) => event.type === "input_audio_buffer.append")
+      .map((event) => base64ToInt16(event.audio));
+  }
+
+  function lastAudio(socket: FakeWebSocket): Int16Array {
+    const frames = sentAudio(socket);
+    return frames[frames.length - 1];
+  }
+
+  const silent = (pcm: Int16Array) => pcm.every((sample) => sample === 0);
+
+  function stopFrames(socket: FakeWebSocket) {
+    return socket.send.mock.calls
+      .map(([frame]) => JSON.parse(frame as string))
+      .filter((event) => event.type === "response.cancel" || event.type === "output_audio_buffer.clear");
+  }
+
+  // The player's playhead, audibility and marked speech end, as the browser would report them.
+  function controlPlayback({ audible = true }: { audible?: boolean } = {}) {
+    const playback = { time: 0, audible, end: null as number | null };
+    vi.spyOn(AvatarVideoPlayer.prototype, "currentTime", "get").mockImplementation(() => playback.time);
+    vi.spyOn(AvatarVideoPlayer.prototype, "audible", "get").mockImplementation(() => playback.audible);
+    vi.spyOn(AvatarVideoPlayer.prototype, "speechEnd", "get").mockImplementation(() => playback.end);
+    return playback;
+  }
+
+  const SPEECH_CAPTURE = { channelCount: 1, noiseSuppression: false, autoGainControl: false };
+
+  it("asks the browser to cancel all playback echo for an avatar session", async () => {
+    await startSpeech(AVATAR);
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenLastCalledWith({
+      audio: { ...SPEECH_CAPTURE, echoCancellation: "all" },
+    });
+  });
+
+  it.each([
+    ["a voice-only Speech session", null, () => {}],
+    ["a browser without MediaSource", AVATAR, () => Reflect.deleteProperty(window, "MediaSource")],
+    [
+      "an avatar player that can't start",
+      AVATAR,
+      () => {
+        class ThrowingMediaSource {
+          static isTypeSupported() {
+            return true;
+          }
+          constructor() {
+            throw new Error("MediaSource unavailable");
+          }
+        }
+        Object.defineProperty(window, "MediaSource", { configurable: true, value: ThrowingMediaSource });
+      },
+    ],
+  ] as const)("keeps browser echo cancellation off for %s (control)", async (_label, avatar, arrange) => {
+    arrange();
+    await startSpeech(avatar);
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenLastCalledWith({
+      audio: { ...SPEECH_CAPTURE, echoCancellation: false },
+    });
+  });
+
+  it("sends same-length silence while the avatar is audibly speaking, until its speech has played", async () => {
+    const playback = controlPlayback();
+    const mark = vi.spyOn(AvatarVideoPlayer.prototype, "markSpeechEnd");
+    const { result, socket, emit } = await startSpeech(AVATAR);
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(false); // control: the open microphone
+
+    act(() => emit({ type: "session.avatar.switch_to_speaking" }));
+    expect(result.current.avatar?.micPaused).toBe(true);
+    micFrame();
+    expect(lastAudio(socket)).toHaveLength(MIC_FRAME_SAMPLES);
+    expect(silent(lastAudio(socket))).toBe(true);
+
+    // The server is done, but the video still holds the end of the speech.
+    playback.time = 2.5;
+    playback.end = 3;
+    expect(mark).not.toHaveBeenCalled();
+    act(() => emit({ type: "session.avatar.switch_to_idle" }));
+    expect(mark).toHaveBeenCalledTimes(1);
+    expect(result.current.avatar?.speaking).toBe(false);
+    expect(result.current.avatar?.micPaused).toBe(true);
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(true);
+    playback.time = 3 + AVATAR_ECHO_TAIL_SECONDS - 0.01;
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(true);
+    playback.time = 3 + AVATAR_ECHO_TAIL_SECONDS;
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(false);
+    expect(result.current.avatar?.micPaused).toBe(false);
+    // Every frame went out: silence replaced samples, nothing was dropped.
+    expect(sentAudio(socket)).toHaveLength(5);
+  });
+
+  it("renders for a pause's start and end, never for each paused frame", async () => {
+    const playback = controlPlayback();
+    let renders = 0;
+    const { result, socket, emit } = await startSpeech(
+      AVATAR, vi.fn(), SPEECH_SETTINGS, () => {
+        renders += 1;
+      },
+    );
+    act(() => emit({ type: "session.avatar.switch_to_speaking" }));
+    const paused = renders;
+    for (let frame = 0; frame < 5; frame += 1) micFrame();
+    expect(silent(lastAudio(socket))).toBe(true);
+    expect(renders).toBe(paused);
+
+    playback.end = 1;
+    act(() => emit({ type: "session.avatar.switch_to_idle" }));
+    const tail = renders;
+    for (let frame = 0; frame < 5; frame += 1) micFrame();
+    expect(renders).toBe(tail);
+    // Control: the release is a transition, so the stage hears about it.
+    playback.time = 1 + AVATAR_ECHO_TAIL_SECONDS;
+    micFrame();
+    expect(result.current.avatar?.micPaused).toBe(false);
+    expect(renders).toBeGreaterThan(tail);
+  });
+
+  it("never pauses the microphone in Keep listening mode (control)", async () => {
+    controlPlayback();
+    const { result, socket, emit } = await startSpeech(AVATAR, vi.fn(), {
+      ...SPEECH_SETTINGS,
+      avatarListening: "listen",
+    });
+    act(() => emit({ type: "session.avatar.switch_to_speaking" }));
+    expect(result.current.avatar?.speaking).toBe(true);
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(false);
+    expect(result.current.avatar?.micPaused).toBe(false);
+  });
+
+  it("never pauses the microphone in a voice-only session (control)", async () => {
+    const { result, socket, emit } = await startSpeech(null);
+    act(() => emit({ type: "session.avatar.switch_to_speaking" }));
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(false);
+    expect(result.current.avatar).toBeNull();
+  });
+
+  it("keeps the microphone open while the avatar can't be heard", async () => {
+    const playback = controlPlayback({ audible: false });
+    const { result, socket, emit } = await startSpeech(AVATAR);
+    act(() => emit({ type: "session.avatar.switch_to_speaking" }));
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(false);
+    expect(result.current.avatar?.micPaused).toBe(false);
+    playback.audible = true; // the owner chose Play avatar sound
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(true);
+    expect(result.current.avatar?.micPaused).toBe(true);
+  });
+
+  it("releases a pause a stalled player never ends, at the speaking cap and after the tail bound", async () => {
+    controlPlayback(); // the playhead never moves and the speech end never resolves
+    const { result, socket, emit } = await startSpeech(AVATAR);
+    vi.useFakeTimers();
+    try {
+      act(() => emit({ type: "session.avatar.switch_to_speaking" }));
+      act(() => {
+        vi.advanceTimersByTime(AVATAR_SPEAKING_PAUSE_MAX_MS - 1);
+      });
+      micFrame();
+      expect(silent(lastAudio(socket))).toBe(true);
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(result.current.avatar?.micPaused).toBe(false);
+      micFrame();
+      expect(silent(lastAudio(socket))).toBe(false);
+
+      act(() => {
+        emit({ type: "session.avatar.switch_to_speaking" });
+        emit({ type: "session.avatar.switch_to_idle" });
+      });
+      const bound = avatarPauseTailBoundMs(PLAYBACK_BUFFER_MS.balanced / 1000);
+      act(() => {
+        vi.advanceTimersByTime(bound - 1);
+      });
+      micFrame();
+      expect(silent(lastAudio(socket))).toBe(true);
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(result.current.avatar?.micPaused).toBe(false);
+      micFrame();
+      expect(silent(lastAudio(socket))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ends a pause with the session, when the avatar video fails", async () => {
+    controlPlayback();
+    const { result, emit } = await startSpeech(AVATAR);
+    act(() => emit({ type: "session.avatar.switch_to_speaking" }));
+    expect(result.current.avatar?.micPaused).toBe(true);
+    act(() => {
+      FakeAvatarMediaSource.instances[0].open();
+      emit({ type: "response.video.delta", delta: toBase64(mediaFragment(1)) });
+    });
+    expect(result.current.status).toBe("idle");
+    expect(result.current.avatar?.micPaused).toBe(false);
+  });
+
+  it.each([
+    [true, false],
+    [false, true],
+  ])("ends the pause when a barge-in interrupts the reply (interruption %s)", async (interruptResponse, stillPaused) => {
+    controlPlayback();
+    const { result, socket, emit } = await startSpeech(AVATAR, vi.fn(), {
+      ...SPEECH_SETTINGS,
+      interruptResponse,
+    });
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      emit({ type: "session.avatar.switch_to_speaking" });
+      emit({ type: "input_audio_buffer.speech_started", item_id: "u1" });
+    });
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(stillPaused);
+    expect(result.current.avatar?.micPaused).toBe(stillPaused);
+  });
+
+  it("Interrupt cancels a generating reply once, skips buffered speech and reopens the microphone", async () => {
+    controlPlayback();
+    const jump = vi.spyOn(AvatarVideoPlayer.prototype, "jumpToLiveEdge");
+    const { result, socket, emit } = await startSpeech(AVATAR);
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      emit({ type: "session.avatar.switch_to_speaking" });
+    });
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(true);
+    expect(result.current.speaking).toBe(true);
+
+    act(() => result.current.avatar?.interrupt());
+    expect(stopFrames(socket)).toEqual([{ type: "response.cancel" }]);
+    expect(jump).toHaveBeenCalledTimes(1);
+    expect(result.current.avatar?.micPaused).toBe(false);
+    expect(result.current.avatar?.speaking).toBe(false);
+    expect(result.current.speaking).toBe(false);
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(false);
+
+    // A cancellation is already on its way, so a second press adds nothing.
+    act(() => result.current.avatar?.interrupt());
+    expect(stopFrames(socket)).toEqual([{ type: "response.cancel" }]);
+  });
+
+  it("Interrupt clears the avatar's queued speech once the reply has finished generating", async () => {
+    controlPlayback();
+    const { result, socket, emit } = await startSpeech(AVATAR);
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      emit({ type: "session.avatar.switch_to_speaking" });
+      emit({ type: "response.done", response: { id: "r1" } });
+    });
+    act(() => result.current.avatar?.interrupt());
+    expect(stopFrames(socket)).toEqual([{ type: "output_audio_buffer.clear" }]);
+    act(() => result.current.avatar?.interrupt());
+    expect(stopFrames(socket)).toHaveLength(1);
+
+    // Once the server reports the avatar idle, nothing is left to stop upstream.
+    act(() => {
+      emit({ type: "session.avatar.switch_to_idle" });
+      result.current.avatar?.interrupt();
+    });
+    expect(stopFrames(socket)).toHaveLength(1);
+    // The next speech can be stopped again.
+    act(() => {
+      emit({ type: "session.avatar.switch_to_speaking" });
+      result.current.avatar?.interrupt();
+    });
+    expect(stopFrames(socket)).toEqual([
+      { type: "output_audio_buffer.clear" },
+      { type: "output_audio_buffer.clear" },
+    ]);
+  });
+
+  it("Interrupt during the tail skips the rest locally without asking the idle server to stop", async () => {
+    const playback = controlPlayback();
+    const jump = vi.spyOn(AvatarVideoPlayer.prototype, "jumpToLiveEdge");
+    const { result, socket, emit } = await startSpeech(AVATAR);
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      emit({ type: "session.avatar.switch_to_speaking" });
+      emit({ type: "response.done", response: { id: "r1" } });
+    });
+    playback.end = 5;
+    act(() => emit({ type: "session.avatar.switch_to_idle" }));
+    expect(result.current.avatar?.micPaused).toBe(true); // the end of the speech is still playing
+
+    act(() => result.current.avatar?.interrupt());
+    expect(stopFrames(socket)).toEqual([]);
+    expect(jump).toHaveBeenCalledTimes(1);
+    expect(result.current.avatar?.micPaused).toBe(false);
+    micFrame();
+    expect(silent(lastAudio(socket))).toBe(false);
+  });
+
+  it("Interrupt does nothing once the session has ended", async () => {
+    const jump = vi.spyOn(AvatarVideoPlayer.prototype, "jumpToLiveEdge");
+    const { result, socket, emit } = await startSpeech(AVATAR);
+    act(() => emit({ type: "response.created", response: { id: "r1" } }));
+    const interrupt = result.current.avatar?.interrupt;
+    act(() => result.current.stop());
+    act(() => interrupt?.());
+    expect(jump).not.toHaveBeenCalled();
+    expect(stopFrames(socket)).toEqual([]);
+  });
+
+  const CANCEL_NOT_ACTIVE = {
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      code: "response_cancel_not_active",
+      message: "Cancellation failed: no active response found",
+    },
+  };
+
+  it("stays connected through its own cancel's race, once", async () => {
+    const { result, emit, onError } = await startSpeech(AVATAR);
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      result.current.avatar?.interrupt();
+      // The reply finished before Azure read the cancel.
+      emit({ type: "response.done", response: { id: "r1" } });
+      emit(CANCEL_NOT_ACTIVE);
+    });
+    expect(onError).not.toHaveBeenCalled();
+    expect(result.current.status).toBe("live");
+
+    // That allowance is spent: the same refusal again ends the session.
+    act(() => emit(CANCEL_NOT_ACTIVE));
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("code: response_cancel_not_active"));
+    expect(result.current.status).toBe("idle");
+  });
+
+  it("ends the session on that refusal without its own cancel (control)", async () => {
+    const { result, emit, onError } = await startSpeech(AVATAR);
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      emit(CANCEL_NOT_ACTIVE);
+    });
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(result.current.status).toBe("idle");
+  });
+
+  it("ends the session on any other error while its cancel is pending (control)", async () => {
+    const { result, emit, onError } = await startSpeech(AVATAR);
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      result.current.avatar?.interrupt();
+      emit({ type: "error", error: { type: "server_error", code: "server_error", message: "Upstream failed" } });
+    });
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("code: server_error"));
+    expect(result.current.status).toBe("idle");
+  });
+
+  it.each([
+    [OWN_CANCEL_RACE_WINDOW_MS, "live"],
+    [OWN_CANCEL_RACE_WINDOW_MS + 1, "idle"],
+  ] as const)("bounds the race allowance in time (%s ms after the cancel)", async (elapsed, status) => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const { result, emit } = await startSpeech(AVATAR);
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      result.current.avatar?.interrupt();
+    });
+    now.mockReturnValue(1_000_000 + elapsed);
+    act(() => emit(CANCEL_NOT_ACTIVE));
+    expect(result.current.status).toBe(status);
   });
 });
 

@@ -8,10 +8,16 @@
 import { useId } from "react";
 
 import {
+  AVATAR_LISTENING_MODES,
+  isAvatarListeningMode,
   PLAYBACK_BUFFER_MS,
   PLAYBACK_PROFILES,
   isSpeechVoiceProvider,
+  resolveSpeechTranscriptionOption,
+  speechTranscriptionOptions,
+  transcriptionOptionLabel,
   VAD_TYPES,
+  type AvatarListeningMode,
   type PlaybackProfile,
   type SpeechVoiceLiveSettings,
   type VadType,
@@ -27,7 +33,7 @@ import {
   VAD_THRESHOLD_MAX,
   VAD_THRESHOLD_MIN,
 } from "@/lib/voicePreferences";
-import { formatVoiceName } from "@/lib/voiceNames";
+import { formatVoiceName, isPreviewVoice } from "@/lib/voiceNames";
 
 // The sentinel option value for "no explicit pick — follow the default".
 // HTML <select> options can't carry a real null, so "" round-trips to/from it
@@ -38,6 +44,29 @@ const PLAYBACK_PROFILE_LABELS: Record<PlaybackProfile, string> = {
   balanced: "Balanced",
   smooth: "Smooth",
 };
+// Names for the managed models' own transcription defaults.
+const MANAGED_TRANSCRIPTION_LABELS: Record<string, string> = {
+  "gpt-4o-transcribe": "GPT-4o Transcribe",
+  "azure-speech": "Azure Speech",
+};
+// Plain names for Azure's turn detection modes; the catalog value is what is sent.
+const SPEECH_TURN_DETECTION_LABELS: Record<string, string> = {
+  azure_semantic_vad: "Semantic (English)",
+  azure_semantic_vad_multilingual: "Semantic (multilingual)",
+};
+const AVATAR_LISTENING_LABELS: Record<AvatarListeningMode, string> = {
+  pause: "Pause my microphone (speakers)",
+  listen: "Keep listening (headphones)",
+};
+const AVATAR_LISTENING_DESCRIPTIONS: Record<AvatarListeningMode, string> = {
+  pause:
+    "Your microphone sends silence while the avatar speaks, so it can't hear itself. Use Interrupt to cut in.",
+  listen: "Talk over the avatar to interrupt it. Without headphones it may hear itself.",
+};
+
+function managedTranscriptionLabel(model: string): string {
+  return MANAGED_TRANSCRIPTION_LABELS[model] ?? model;
+}
 
 export interface VoiceSettingsModel {
   id: string;
@@ -143,6 +172,16 @@ export function VoiceSettingsPanel({
   const selectedSpeechModel = speechProvider?.managedModels.find(
     (model) => model.id === speechModel,
   );
+  const transcriptionOptions = speechTranscriptionOptions(selectedSpeechModel, speechProvider);
+  const selectedTranscription = resolveSpeechTranscriptionOption(
+    selectedSpeechModel,
+    speechSettings.transcriptionModel,
+    speechProvider,
+  );
+  const defaultTranscriptionLabel = selectedSpeechModel
+    ? managedTranscriptionLabel(selectedSpeechModel.inputTranscription.model)
+    : "";
+  const previewVoiceSelected = isSpeechProvider && isPreviewVoice(voice);
   const turnDetectionOptions: readonly SpeechVoiceLiveSettings["turnDetection"][] =
     speechProvider?.capabilities.turnDetection.options ?? [];
   const showAvatarPicker = isSpeechProvider && (
@@ -207,6 +246,46 @@ export function VoiceSettingsPanel({
                 ))}
               </select>
             </label>
+            {selectedSpeechModel && transcriptionOptions.length > 0 && (
+              <div style={FIELD_STYLE}>
+                <label htmlFor={`${idPrefix}-speech-transcription`}>Transcription</label>
+                <select
+                  id={`${idPrefix}-speech-transcription`}
+                  aria-describedby={
+                    selectedTranscription?.preview
+                      ? `${idPrefix}-speech-transcription-description`
+                      : undefined
+                  }
+                  value={selectedTranscription?.model ?? DEFAULT_OPTION_VALUE}
+                  disabled={locked}
+                  onChange={(event) =>
+                    patchSpeechSettings({
+                      transcriptionModel:
+                        event.target.value === DEFAULT_OPTION_VALUE ? null : event.target.value,
+                    })
+                  }
+                  style={CONTROL_STYLE}
+                >
+                  <option value={DEFAULT_OPTION_VALUE}>
+                    Model default ({defaultTranscriptionLabel})
+                  </option>
+                  {transcriptionOptions.map((option) => (
+                    <option key={option.model} value={option.model}>
+                      {transcriptionOptionLabel(option)}
+                    </option>
+                  ))}
+                </select>
+                {selectedTranscription?.preview && (
+                  <span
+                    id={`${idPrefix}-speech-transcription-description`}
+                    style={{ maxWidth: 260 }}
+                  >
+                    Preview, no SLA, and not yet confirmed in this region. If Azure refuses it,
+                    Voice Live shows the error instead of switching models.
+                  </span>
+                )}
+              </div>
+            )}
             {selectedSpeechModel && (
               <div
                 style={{
@@ -224,10 +303,9 @@ export function VoiceSettingsPanel({
                     ? "Native audio"
                     : "Azure Speech chain"}
                   {" · "}
-                  {selectedSpeechModel.inputTranscription.model ===
-                  "gpt-4o-transcribe"
-                    ? "GPT-4o Transcribe"
-                    : "Azure Speech"}
+                  {selectedTranscription
+                    ? transcriptionOptionLabel(selectedTranscription)
+                    : defaultTranscriptionLabel}
                   {" · "}
                   {selectedSpeechModel.initialRegion}
                 </strong>
@@ -270,10 +348,11 @@ export function VoiceSettingsPanel({
           </div>
         )}
 
-        <label style={FIELD_STYLE} htmlFor={`${idPrefix}-voice`}>
-          Voice
+        <div style={FIELD_STYLE}>
+          <label htmlFor={`${idPrefix}-voice`}>Voice</label>
           <select
             id={`${idPrefix}-voice`}
+            aria-describedby={previewVoiceSelected ? `${idPrefix}-voice-description` : undefined}
             value={voice}
             disabled={locked}
             onChange={(e) => onVoiceChange(e.target.value)}
@@ -285,7 +364,12 @@ export function VoiceSettingsPanel({
               </option>
             ))}
           </select>
-        </label>
+          {previewVoiceSelected && (
+            <span id={`${idPrefix}-voice-description`} style={{ maxWidth: 260 }}>
+              Preview voice, no SLA, and not yet tested with photo avatars.
+            </span>
+          )}
+        </div>
 
         {(showAvatarPicker || onOpenPhotoAvatars) && (
           <div style={FIELD_STYLE}>
@@ -327,6 +411,32 @@ export function VoiceSettingsPanel({
                 Choose avatar
               </button>
             ) : null}
+          </div>
+        )}
+
+        {showAvatarPicker && avatarVideoSupported && (
+          <div style={FIELD_STYLE}>
+            <label htmlFor={`${idPrefix}-avatar-listening`}>While the avatar talks</label>
+            <select
+              id={`${idPrefix}-avatar-listening`}
+              aria-describedby={`${idPrefix}-avatar-listening-description`}
+              value={speechSettings.avatarListening}
+              disabled={locked}
+              onChange={(event) => {
+                const mode = event.target.value;
+                if (isAvatarListeningMode(mode)) patchSpeechSettings({ avatarListening: mode });
+              }}
+              style={CONTROL_STYLE}
+            >
+              {AVATAR_LISTENING_MODES.map((mode) => (
+                <option key={mode} value={mode}>
+                  {AVATAR_LISTENING_LABELS[mode]}
+                </option>
+              ))}
+            </select>
+            <span id={`${idPrefix}-avatar-listening-description`} style={{ maxWidth: 260 }}>
+              {AVATAR_LISTENING_DESCRIPTIONS[speechSettings.avatarListening]}
+            </span>
           </div>
         )}
 
@@ -433,10 +543,11 @@ export function VoiceSettingsPanel({
                   </label>
                 )}
 
-                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-speech-turn`}>
-                  Turn detection
+                <div style={FIELD_STYLE}>
+                  <label htmlFor={`${idPrefix}-speech-turn`}>Turn detection</label>
                   <select
                     id={`${idPrefix}-speech-turn`}
+                    aria-describedby={`${idPrefix}-speech-turn-description`}
                     value={speechSettings.turnDetection}
                     disabled={locked || turnDetectionOptions.length === 0}
                     onChange={(e) =>
@@ -448,17 +559,22 @@ export function VoiceSettingsPanel({
                   >
                     {turnDetectionOptions.map((value: SpeechVoiceLiveSettings["turnDetection"]) => (
                       <option key={value} value={value}>
-                        {value}
+                        {SPEECH_TURN_DETECTION_LABELS[value] ?? value}
                       </option>
                     ))}
                   </select>
-                </label>
+                  <span id={`${idPrefix}-speech-turn-description`} style={{ maxWidth: 240 }}>
+                    How Azure tells that you have finished speaking.
+                  </span>
+                </div>
 
                 <div style={{ ...FIELD_STYLE, maxWidth: 260 }}>
                   <span>Input processing</span>
                   <strong style={{ color: "var(--fg)" }}>Managed by Azure Speech</strong>
                   <span>
                     {speechSettings.locale}; deep noise suppression and echo cancellation.
+                    With a photo avatar, your browser is also asked to cancel the
+                    avatar&apos;s voice.
                   </span>
                 </div>
 
@@ -481,28 +597,29 @@ export function VoiceSettingsPanel({
                       patchSpeechSettings({ interruptResponse: e.target.checked })
                     }
                   />
-                  Interrupt response on barge-in
+                  Stop the reply when I start talking
                 </label>
 
-                <label
-                  style={{
-                    ...FIELD_STYLE,
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 6,
-                    alignSelf: "flex-end",
-                  }}
-                  htmlFor={`${idPrefix}-speech-truncate`}
-                >
-                  <input
-                    id={`${idPrefix}-speech-truncate`}
-                    type="checkbox"
-                    checked={speechSettings.autoTruncate}
-                    disabled={locked}
-                    onChange={(e) => patchSpeechSettings({ autoTruncate: e.target.checked })}
-                  />
-                  Auto truncate on barge-in
-                </label>
+                <div style={{ ...FIELD_STYLE, maxWidth: 260, alignSelf: "flex-end" }}>
+                  <label
+                    style={{ display: "flex", alignItems: "center", gap: 6 }}
+                    htmlFor={`${idPrefix}-speech-truncate`}
+                  >
+                    <input
+                      id={`${idPrefix}-speech-truncate`}
+                      type="checkbox"
+                      aria-describedby={`${idPrefix}-speech-truncate-description`}
+                      checked={speechSettings.autoTruncate}
+                      disabled={locked}
+                      onChange={(e) => patchSpeechSettings({ autoTruncate: e.target.checked })}
+                    />
+                    Let Azure trim interrupted replies
+                  </label>
+                  <span id={`${idPrefix}-speech-truncate-description`}>
+                    Keeps only the part you heard in the conversation. When off, the browser
+                    trims voice-only replies itself.
+                  </span>
+                </div>
               </>
             ) : (
               <>

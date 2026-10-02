@@ -202,7 +202,13 @@ describe("VoiceSettingsPanel", () => {
     expect(screen.queryByRole("combobox", { name: "Locale" })).toBeNull();
     const model = screen.getByRole("combobox", { name: "Speech model" });
     expect(within(model).getAllByRole("option")).toHaveLength(6);
-    expect(screen.queryByRole("combobox", { name: "Transcription" })).toBeNull();
+    const transcription = screen.getByRole("combobox", { name: "Transcription" });
+    expect(within(transcription).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Model default (GPT-4o Transcribe)",
+      "MAI Transcribe 2 (preview)",
+    ]);
+    expect(transcription).toHaveValue("");
+    expect(transcription).not.toHaveAttribute("aria-describedby");
     expect(screen.getByText(/Native audio · GPT-4o Transcribe · eastus2/)).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Turn detection" })).toBeInTheDocument();
     expect(screen.getByText("Managed by Azure Speech")).toBeInTheDocument();
@@ -218,6 +224,9 @@ describe("VoiceSettingsPanel", () => {
     });
 
     expect(screen.getByText(/Azure Speech chain · Azure Speech · eastus2/)).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("combobox", { name: "Transcription" })).getAllByRole("option")[0],
+    ).toHaveTextContent("Model default (Azure Speech)");
     expect(screen.getByText(/GPT-4.1 response model paired/)).toBeInTheDocument();
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Speech model" }),
@@ -225,6 +234,135 @@ describe("VoiceSettingsPanel", () => {
     );
     expect(onSpeechModelChange).toHaveBeenCalledWith("gpt-5.1");
     expect(onModelChange).not.toHaveBeenCalled();
+  });
+
+  it("chooses MAI transcription as a labelled preview and returns to the model default", async () => {
+    const { user, rerender, onSpeechSettingsChange, onSettingsChange } = setup({
+      provider: "speech_voice_live",
+      activeProvider: voiceProviderCatalog.providers[1],
+      voice: voiceProviderCatalog.providers[1].capabilities.voices.default,
+      speechModel: "gpt-4.1",
+    });
+    const transcription = screen.getByRole("combobox", { name: "Transcription" });
+    await user.selectOptions(transcription, "mai-transcribe-2");
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      transcriptionModel: "mai-transcribe-2",
+    });
+    expect(onSettingsChange).not.toHaveBeenCalled();
+
+    const chosen = { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, transcriptionModel: "mai-transcribe-2" };
+    rerender({ speechSettings: chosen });
+    expect(transcription).toHaveValue("mai-transcribe-2");
+    expect(transcription).toHaveAccessibleDescription(
+      /Preview, no SLA, and not yet confirmed in this region\. If Azure refuses it, Voice Live shows the error instead of switching models\./,
+    );
+    expect(
+      screen.getByText(/Azure Speech chain · MAI Transcribe 2 \(preview\) · eastus2/),
+    ).toBeInTheDocument();
+
+    await user.selectOptions(transcription, "");
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...chosen,
+      transcriptionModel: null,
+    });
+    rerender({ speechSettings: chosen, locked: true });
+    expect(transcription).toBeDisabled();
+  });
+
+  it("shows the model default for a saved transcription the catalog no longer offers", () => {
+    setup({
+      provider: "speech_voice_live",
+      activeProvider: voiceProviderCatalog.providers[1],
+      voice: voiceProviderCatalog.providers[1].capabilities.voices.default,
+      speechSettings: { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, transcriptionModel: "mai-transcribe" },
+    });
+    expect(screen.getByRole("combobox", { name: "Transcription" })).toHaveValue("");
+    expect(screen.getByText(/Native audio · GPT-4o Transcribe · eastus2/)).toBeInTheDocument();
+  });
+
+  it("offers no transcription choice when the server's catalog has none", () => {
+    const speech = voiceProviderCatalog.providers[1];
+    setup({
+      provider: "speech_voice_live",
+      activeProvider: {
+        ...speech,
+        capabilities: { ...speech.capabilities, inputTranscription: undefined },
+      } as unknown as typeof speech,
+      voice: speech.capabilities.voices.default,
+    });
+    expect(screen.queryByRole("combobox", { name: "Transcription" })).toBeNull();
+    expect(screen.getByText(/Native audio · GPT-4o Transcribe · eastus2/)).toBeInTheDocument();
+  });
+
+  it("labels MAI voices as preview and explains the pick", async () => {
+    const speech = voiceProviderCatalog.providers[1];
+    const { user, rerender, onVoiceChange } = setup({
+      provider: "speech_voice_live",
+      activeProvider: speech,
+      voice: speech.capabilities.voices.default,
+    });
+    const select = screen.getByRole("combobox", { name: "Voice" });
+    const labels = within(select).getAllByRole("option").map((o) => o.textContent);
+    expect(labels).toHaveLength(20);
+    expect(labels[0]).toBe("Ava (en-US, Dragon HD)");
+    expect(labels).toContain("Harper (en-US, MAI Voice 2.1 Flash, preview)");
+    expect(labels).toContain("Harper (en-US, MAI Voice 2.1, preview)");
+    expect(labels.filter((label) => label?.endsWith(", preview)"))).toHaveLength(14);
+    expect(select).not.toHaveAttribute("aria-describedby");
+
+    await user.selectOptions(select, "en-US-Harper:MAI-Voice-2.1-Flash");
+    expect(onVoiceChange).toHaveBeenCalledWith("en-US-Harper:MAI-Voice-2.1-Flash");
+    rerender({ voice: "en-US-Harper:MAI-Voice-2.1-Flash" });
+    expect(select).toHaveAccessibleDescription(
+      "Preview voice, no SLA, and not yet tested with photo avatars.",
+    );
+    rerender({ voice: "en-US-AndrewNeural" });
+    expect(select).not.toHaveAttribute("aria-describedby");
+  });
+
+  it("names Speech turn detection and interruption in plain words, sending the same values", async () => {
+    const { user, onSpeechSettingsChange } = setup({
+      provider: "speech_voice_live",
+      activeProvider: voiceProviderCatalog.providers[1],
+      voice: voiceProviderCatalog.providers[1].capabilities.voices.default,
+    });
+    const turn = screen.getByRole("combobox", { name: "Turn detection" });
+    expect(
+      within(turn)
+        .getAllByRole<HTMLOptionElement>("option")
+        .map((option) => [option.textContent, option.value]),
+    ).toEqual([
+      ["Semantic (English)", "azure_semantic_vad"],
+      ["Semantic (multilingual)", "azure_semantic_vad_multilingual"],
+    ]);
+    expect(turn).toHaveAccessibleDescription("How Azure tells that you have finished speaking.");
+    await user.selectOptions(turn, "Semantic (multilingual)");
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      turnDetection: "azure_semantic_vad_multilingual",
+    });
+
+    const stopReply = screen.getByRole("checkbox", { name: "Stop the reply when I start talking" });
+    expect(stopReply).toBeChecked();
+    await user.click(stopReply);
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      interruptResponse: false,
+    });
+
+    const trim = screen.getByRole("checkbox", { name: "Let Azure trim interrupted replies" });
+    expect(trim).not.toBeChecked();
+    expect(trim).toHaveAccessibleDescription(
+      "Keeps only the part you heard in the conversation. When off, the browser trims voice-only replies itself.",
+    );
+    await user.click(trim);
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      autoTruncate: true,
+    });
+    expect(screen.queryByText(/barge-in/)).toBeNull();
+    expect(screen.getByText(/asked to cancel the avatar's voice/)).toBeInTheDocument();
   });
 
   it("edits Speech temperature without changing Azure OpenAI settings", async () => {
@@ -357,5 +495,45 @@ describe("VoiceSettingsPanel live avatar picker", () => {
     expect(onOpenPhotoAvatars).toHaveBeenCalledTimes(1);
     rerender({ locked: true });
     expect(screen.getByRole("button", { name: "Choose avatar" })).toBeDisabled();
+  });
+
+  it("offers what the microphone does while the avatar talks, with the avatar settings", async () => {
+    const { user, rerender, onSpeechSettingsChange } = setup({
+      ...speech, avatarChoices: CHOICES, avatarId: CHOICES[0].id, onAvatarChange: vi.fn(),
+    });
+    const listening = screen.getByRole("combobox", { name: "While the avatar talks" });
+    expect(within(listening).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "Pause my microphone (speakers)",
+      "Keep listening (headphones)",
+    ]);
+    expect(listening).toHaveValue("pause");
+    expect(listening).toHaveAccessibleDescription(
+      "Your microphone sends silence while the avatar speaks, so it can't hear itself. Use Interrupt to cut in.",
+    );
+    await user.selectOptions(listening, "Keep listening (headphones)");
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      avatarListening: "listen",
+    });
+
+    rerender({ speechSettings: { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, avatarListening: "listen" } });
+    expect(listening).toHaveValue("listen");
+    expect(listening).toHaveAccessibleDescription(
+      "Talk over the avatar to interrupt it. Without headphones it may hear itself.",
+    );
+    rerender({ locked: true });
+    expect(listening).toBeDisabled();
+  });
+
+  it.each([
+    ["the Azure OpenAI provider", { avatarChoices: CHOICES, onOpenPhotoAvatars: vi.fn() }],
+    ["no avatar to pick", { ...speech, avatarChoices: [] }],
+    [
+      "a browser that can't play avatar video",
+      { ...speech, avatarChoices: CHOICES, avatarId: CHOICES[0].id, avatarVideoSupported: false },
+    ],
+  ])("leaves the listening choice out for %s", (_label, overrides) => {
+    setup(overrides);
+    expect(screen.queryByRole("combobox", { name: "While the avatar talks" })).toBeNull();
   });
 });

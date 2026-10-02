@@ -686,6 +686,10 @@ avatar byte stays on the existing governed path: browser → FastAPI
   `{"type":"photo-avatar","model":<catalog base model>,"character":<provider id>,"customized":true,"output_protocol":"websocket"}`
   into every rebuilt `session.update`, after Speech normalization and the
   tool/persona bridge, with the normalizer's catalog voice.
+  - That voice may be one of the catalog's public-preview MAI voices. Microsoft's
+    documentation neither confirms nor excludes MAI voices with photo avatars, so
+    the pairing is allowed but unverified. An upstream refusal ends the session
+    with Azure's error; the relay never substitutes another voice.
   - No client avatar field survives, including `video`, a background `image_url`
     and `output_audit_audio`.
   - Neither does any client provider id.
@@ -797,7 +801,7 @@ avatar byte stays on the existing governed path: browser → FastAPI
     still refuses to request avatar media it cannot play.
   - **Stage.** `app/web/src/components/LiveAvatarStage.tsx` keeps the
     `AI-generated` label visible, counts down the idle and session limits, and
-    offers **End session**.
+    offers **Interrupt** while the avatar talks and **End session** throughout.
     - The frame keeps the video's own aspect ratio and grows with the
       conversation area: beside the transcript on wide screens, above it on
       narrow ones, or across the whole area in **Focus view** (with captions).
@@ -811,10 +815,45 @@ avatar byte stays on the existing governed path: browser → FastAPI
     - The countdowns are `role="timer"`, which isn't announced. A separate status
       region speaks once when a warning appears and once about ten seconds before
       the end.
-  - **Barge-in.** Barge-in relies on server VAD `interrupt_response` and jumps the
-    player to the live edge, only when the reply is actually interrupted. With
-    **Interrupt response** off, the avatar keeps talking. There is no manual
-    truncate, because avatar mode has no PCM timeline.
+  - **Echo.** Speech's default server echo cancellation uses the service's own
+    audio as its reference and assumes the client plays it as soon as it arrives;
+    playback more than about two seconds late degrades it. The avatar speaks from
+    its video after the relay, AAC decoding and the player's live-edge lag, so on
+    speakers the microphone fed the avatar's voice back, semantic VAD took it for
+    a barge-in, and the avatar cut itself off or answered its own words.
+    - Avatar sessions ask the browser for `echoCancellation: "all"`, which covers
+      everything the system plays, media elements included. Noise suppression and
+      gain control stay off. Voice-only Speech and Azure OpenAI capture are
+      unchanged. Engines without the mode read it as `true`.
+    - **While the avatar talks** is a browser-only Speech setting. With the
+      default, **Pause my microphone (speakers)**, every microphone frame is sent
+      as silence of the same length from `session.avatar.switch_to_speaking`
+      until playback passes the media pushed before `switch_to_idle`, plus a
+      0.4 second echo tail. The server's audio timeline stays continuous, and
+      nothing is dropped or replayed. A paused element (blocked autoplay) can't
+      echo, so it pauses nothing.
+    - Two wall-clock bounds release a stalled player: the relay's five-minute
+      speaking hold, and, after `switch_to_idle`, the player's lag allowance plus
+      the tail. The stage and the call bar read **Speaking · mic paused**.
+      **Keep listening (headphones)** never pauses.
+    - Live-Reference AEC, where the client sends what it played as a second
+      channel, needs API version `2026-07-15`. AI4IA pins `2026-04-10`, so it
+      remains a follow-up.
+  - **Interrupt and barge-in.**
+    - The stage's **Interrupt** sends at most one stop event: `response.cancel`
+      while a response is generating, otherwise `output_audio_buffer.clear`
+      while the server reports the avatar speaking, because `response.done`
+      arrives before the avatar finishes. It skips the buffered video and
+      reopens the microphone.
+    - Its cancel can reach Azure just after the reply finished. That one
+      `response_cancel_not_active`, within ten seconds of the cancel, keeps the
+      session. Without that cancel, and for every other error, the session
+      still ends.
+    - Voice barge-in relies on server VAD `interrupt_response` and jumps the
+      player to the live edge, ending any microphone pause, only when the reply
+      is actually interrupted. With **Stop the reply when I start talking** off,
+      the avatar keeps talking. There is no manual truncate, because avatar mode
+      has no PCM timeline.
 - **Tests.** Paired and mutation-proven, in `app/api/tests/test_realtime_logic.py`,
   `app/api/tests/test_realtime_api.py` (with layer 1's real service) and
   `app/api/tests/test_realtime_staged_api.py`, plus vitest tests on synthetic
@@ -825,7 +864,9 @@ avatar byte stays on the existing governed path: browser → FastAPI
 - **Live evidence and remaining limits.** The 2026-09-26 enablement checks
   confirmed a billed avatar session and idle termination through AI4IA's own
   relay/APIM path. Server-VAD barge-in with spoken input and echo cancellation
-  through the video element's speaker remain separate live acceptance checks.
+  through the video element's speaker remain separate live acceptance checks,
+  as do each browser's cancellation of media-element playback, how closely
+  `switch_to_idle` tracks the video, and **Interrupt** against a live session.
   Source/UI tests do not refresh that production evidence or activate a new
   environment.
 

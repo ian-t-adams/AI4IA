@@ -516,6 +516,28 @@ def _speech_simple_option(
     return default
 
 
+def _speech_input_transcription(
+    provider: SpeechVoiceProvider,
+    managed_model: VoiceProviderManagedModel,
+    session: dict[str, Any],
+    locale: str,
+) -> dict[str, Any]:
+    """The managed model's transcription default, or a catalog option it supports.
+
+    Any other requested model (an unreviewed name, the floating ``mai-transcribe``
+    alias, or an option for another profile) keeps the default, like every other
+    Speech session field. An upstream refusal of an accepted option reaches the
+    browser unchanged: the relay never retries with a different model.
+    """
+    allowed = provider.input_transcription_models(managed_model)
+    selected = allowed[0]
+    raw = session.get("input_audio_transcription")
+    candidate = raw.get("model") if isinstance(raw, dict) else None
+    if isinstance(candidate, str) and candidate.strip() in allowed:
+        selected = candidate.strip()
+    return {"model": selected, "language": locale}
+
+
 def normalize_speech_client_frame(
     frame: str,
     provider: SpeechVoiceProvider,
@@ -553,10 +575,9 @@ def normalize_speech_client_frame(
     locale = _speech_locale(provider, session)
     normalized: dict[str, Any] = {
         "voice": _speech_session_voice(provider, session, locale),
-        "input_audio_transcription": {
-            "model": selected_model.inputTranscription.model,
-            "language": locale,
-        },
+        "input_audio_transcription": _speech_input_transcription(
+            provider, selected_model, session, locale
+        ),
         "turn_detection": _speech_turn_detection(provider, session),
         "input_audio_format": selected_model.audioFormat,
         "output_audio_format": selected_model.audioFormat,

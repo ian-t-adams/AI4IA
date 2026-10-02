@@ -327,6 +327,60 @@ describe("AvatarVideoPlayer", () => {
     expect(video.currentTime).toBeCloseTo(5.35);
   });
 
+  it("marks the end of the speech pushed so far, waiting for fragments still queued", () => {
+    const { player, source, video } = openPlayer({ maxLagSeconds: 60 });
+    player.push(toBase64(initSegment()));
+    const buffer = source.buffers[0];
+    buffer.finish();
+    video.currentTime = 1;
+    player.push(toBase64(mediaFragment(1))); // in flight
+    player.push(toBase64(mediaFragment(2))); // queued
+    buffer.ranges = [[0, 4]];
+    player.markSpeechEnd();
+    expect(player.speechEnd).toBeNull();
+    buffer.ranges = [[0, 5]];
+    buffer.finish();
+    expect(player.speechEnd).toBeNull(); // fragment 2 is not appended yet
+    buffer.ranges = [[0, 6]];
+    buffer.finish();
+    expect(player.speechEnd).toBe(6);
+    // Later media (idle video) never moves the mark.
+    player.push(toBase64(mediaFragment(3)));
+    buffer.ranges = [[0, 7]];
+    buffer.finish();
+    expect(player.speechEnd).toBe(6);
+    // Control: with nothing queued, a new mark resolves at once.
+    player.markSpeechEnd();
+    expect(player.speechEnd).toBe(7);
+  });
+
+  it("marks the playhead as the end when nothing is buffered", () => {
+    const { player, video } = openPlayer();
+    video.currentTime = 2;
+    expect(player.speechEnd).toBeNull();
+    player.markSpeechEnd();
+    expect(player.speechEnd).toBe(2);
+  });
+
+  it("reports the playhead, and is audible only while playing and working", () => {
+    const { player, video } = openPlayer();
+    video.currentTime = 3.2;
+    expect(player.currentTime).toBe(3.2);
+    video.paused = true;
+    expect(player.audible).toBe(false);
+    video.paused = false;
+    expect(player.audible).toBe(true);
+    player.push(toBase64(mediaFragment(1))); // media before an init segment fails the player
+    expect(player.failed).toBe("stream_invalid");
+    expect(player.audible).toBe(false);
+
+    const working = openPlayer();
+    working.video.paused = false;
+    expect(working.player.audible).toBe(true);
+    working.player.destroy();
+    expect(working.player.audible).toBe(false);
+  });
+
   it("refuses an unsupported codec, a non-init stream and an oversized delta", () => {
     const video = new FakeVideo();
     const unsupported = environment((type) => type === AVATAR_FALLBACK_MIME);

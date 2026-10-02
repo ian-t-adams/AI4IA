@@ -22,6 +22,7 @@ import { getApiAccessToken, isEntraEnabled } from "./auth";
 import {
   AvatarVideoPlayer,
   browserAvatarVideoEnvironment,
+  DEFAULT_MAX_LAG_SECONDS,
   hardenAvatarVideoElement,
   supportsAvatarVideo,
   type AvatarVideoFailure,
@@ -91,6 +92,8 @@ export type { VoiceProvider, VoiceProviderId };
 export const DEFAULT_VOICE_PROVIDER = DEFAULT_VOICE_PROVIDER_ID;
 export type SpeechVoiceProvider = Extract<VoiceProvider, { id: "speech_voice_live" }>;
 export type SpeechManagedModel = SpeechVoiceProvider["managedModels"][number];
+export type SpeechTranscriptionOption =
+  SpeechVoiceProvider["capabilities"]["inputTranscription"]["options"][number];
 
 const SPEECH_PROVIDER = voiceProviderCatalog.providers.find(
   (provider): provider is SpeechVoiceProvider => provider.id === "speech_voice_live",
@@ -170,6 +173,48 @@ export const DEFAULT_SPEECH_TURN_DETECTION = "azure_semantic_vad";
 export const DEFAULT_SPEECH_NOISE_SUPPRESSION = "azure_deep_noise_suppression";
 export const DEFAULT_SPEECH_ECHO_CANCELLATION = "server_echo_cancellation";
 
+// What the microphone does while a photo avatar speaks. The avatar's voice plays
+// from its video, later than Azure's server echo cancellation assumes, so on
+// speakers the avatar can hear itself. "pause" sends silence of the same length
+// while the avatar is audibly speaking; "listen" keeps the microphone open, for
+// headphones. Browser-only: it never reaches the relay.
+export const AVATAR_LISTENING_MODES = ["pause", "listen"] as const;
+export type AvatarListeningMode = (typeof AVATAR_LISTENING_MODES)[number];
+export const DEFAULT_AVATAR_LISTENING_MODE: AvatarListeningMode = "pause";
+
+export function isAvatarListeningMode(value: unknown): value is AvatarListeningMode {
+  return (
+    typeof value === "string" &&
+    (AVATAR_LISTENING_MODES as readonly string[]).includes(value)
+  );
+}
+
+// Echo can still reach the microphone this long after the avatar's last audible word.
+export const AVATAR_ECHO_TAIL_SECONDS = 0.4;
+// The relay holds a speaking avatar's idle countdown for at most five minutes
+// (SPEAKING_HOLD_MAX_SECONDS); a microphone pause never outlasts it either.
+export const AVATAR_SPEAKING_PAUSE_MAX_MS = 5 * 60 * 1000;
+const AVATAR_PAUSE_RELEASE_SLACK_MS = 500;
+
+/**
+ * The longest the microphone pause may last after `switch_to_idle`: the
+ * player's lag bound, its live edge and the echo tail, plus slack. The video
+ * normally passes the end of the speech well before this; a stalled player
+ * can't hold the microphone past it.
+ */
+export function avatarPauseTailBoundMs(liveEdgeSeconds: number): number {
+  return (
+    Math.round((DEFAULT_MAX_LAG_SECONDS + liveEdgeSeconds + AVATAR_ECHO_TAIL_SECONDS) * 1000) +
+    AVATAR_PAUSE_RELEASE_SLACK_MS
+  );
+}
+
+// Interrupt's response.cancel can reach Azure just after the reply finished,
+// which it answers with this error. Within this window of our own cancel that
+// error ends nothing; outside it, it is fatal like every other error.
+export const CANCEL_NOT_ACTIVE_CODE = "response_cancel_not_active";
+export const OWN_CANCEL_RACE_WINDOW_MS = 10_000;
+
 export interface SpeechVoiceLiveSettings {
   temperature: number | null;
   voice: string;
@@ -177,6 +222,11 @@ export interface SpeechVoiceLiveSettings {
   turnDetection: "azure_semantic_vad" | "azure_semantic_vad_multilingual";
   interruptResponse: boolean;
   autoTruncate: boolean;
+  // A catalog transcription option chosen instead of the managed model's own
+  // default, or null for that default. The relay re-checks it every session.
+  transcriptionModel: string | null;
+  // Browser-only: what the microphone does while a photo avatar speaks.
+  avatarListening: AvatarListeningMode;
 }
 
 export const DEFAULT_SPEECH_VOICE_LIVE_SETTINGS: SpeechVoiceLiveSettings = {
@@ -186,6 +236,8 @@ export const DEFAULT_SPEECH_VOICE_LIVE_SETTINGS: SpeechVoiceLiveSettings = {
   turnDetection: DEFAULT_SPEECH_TURN_DETECTION,
   interruptResponse: true,
   autoTruncate: false,
+  transcriptionModel: null,
+  avatarListening: DEFAULT_AVATAR_LISTENING_MODE,
 };
 
 export type LiveTurnRole = "user" | "assistant";
@@ -225,6 +277,9 @@ export interface VoiceLiveController {
   // The live photo avatar for the current (or last) session, or null when the
   // session is voice only.
   avatar: LiveAvatarView | null;
+  // A non-fatal problem in the current session the user should know about
+  // (for example, a turn the transcription model couldn't transcribe), or null.
+  notice: string | null;
   start: () => void;
   toggle: () => void;
   stop: () => void;
@@ -259,6 +314,11 @@ export interface LiveAvatarView {
   // Autoplay with sound was blocked; `resume` retries from a user gesture.
   playbackBlocked: boolean;
   resume: () => void;
+  // "pause" listening: the microphone is sending silence because the avatar is
+  // audibly speaking, so it can't hear itself.
+  micPaused: boolean;
+  // Stops the avatar's reply and reopens the microphone (the stage's Interrupt).
+  interrupt: () => void;
 }
 
 // --- PCM <-> base64 helpers (pure; exported for unit tests) ---
@@ -317,16 +377,26 @@ export function supportsVoiceLive(): boolean {
   );
 }
 
+// W3C mediacapture-main EchoCancellationModeEnum. "all" asks the browser to
+// cancel everything the system plays, media elements included; `true` leaves
+// the scope to the browser (at least WebRTC audio). Engines without the enum
+// read the string as `true`, and as a basic constraint it can't over-constrain.
+export type EchoCancellationMode = "all" | "remote-only";
+const AVATAR_ECHO_CANCELLATION: EchoCancellationMode = "all";
+
 export function microphoneConstraints(
   providerId: VoiceProviderId,
+  avatar = false,
 ): MediaTrackConstraints {
   if (providerId === "speech_voice_live") {
     // Speech Voice Live applies server-side deep noise suppression and echo
     // cancellation. Running browser DSP first produces the robotic/pumping
-    // artifacts associated with two independent processors in series.
+    // artifacts associated with two independent processors in series. A photo
+    // avatar's voice plays from its video, later than the server's echo
+    // reference assumes, so avatar sessions also ask the browser to cancel it.
     return {
       channelCount: 1,
-      echoCancellation: false,
+      echoCancellation: avatar ? AVATAR_ECHO_CANCELLATION : false,
       noiseSuppression: false,
       autoGainControl: false,
     };
@@ -406,6 +476,40 @@ export function resolveSpeechManagedModel(
     provider.managedModels.find((model) => model.id === provider.defaultManagedModelId) ??
     provider.managedModels[0]
   );
+}
+
+// The catalog transcription options a session on ``managedModel`` may use in
+// place of the model's own default: only those listing its profile. The relay
+// applies the same rule, so this only decides what the browser offers.
+export function speechTranscriptionOptions(
+  managedModel: SpeechManagedModel | undefined,
+  provider: SpeechVoiceProvider | undefined = SPEECH_PROVIDER,
+): readonly SpeechTranscriptionOption[] {
+  if (!provider || !managedModel) return [];
+  // Optional: a provider served by an older API has no such capability.
+  return (
+    provider.capabilities.inputTranscription?.options.filter((option) =>
+      (option.profiles as readonly string[]).includes(managedModel.profile),
+    ) ?? []
+  );
+}
+
+export function resolveSpeechTranscriptionOption(
+  managedModel: SpeechManagedModel | undefined,
+  selected: string | null | undefined,
+  provider: SpeechVoiceProvider | undefined = SPEECH_PROVIDER,
+): SpeechTranscriptionOption | undefined {
+  if (!selected) return undefined;
+  return speechTranscriptionOptions(managedModel, provider).find(
+    (option) => option.model === selected,
+  );
+}
+
+// "MAI Transcribe 2 (preview)": the catalog's own name plus its release stage.
+export function transcriptionOptionLabel(
+  option: Pick<SpeechTranscriptionOption, "displayName" | "preview">,
+): string {
+  return option.preview ? `${option.displayName} (preview)` : option.displayName;
 }
 
 export function isVadType(value: string): value is VadType {
@@ -495,6 +599,11 @@ export function speechSessionUpdate(
   const echoCancellation =
     provider?.capabilities.echoCancellation?.default ??
     DEFAULT_SPEECH_ECHO_CANCELLATION;
+  const transcriptionOption = resolveSpeechTranscriptionOption(
+    managedModel,
+    settings.transcriptionModel,
+    provider,
+  );
   const session: Record<string, unknown> = {
     voice: {
       type: provider?.capabilities.voices.kind ?? "azure-standard",
@@ -503,6 +612,7 @@ export function speechSessionUpdate(
     },
     input_audio_transcription: {
       model:
+        transcriptionOption?.model ??
         managedModel?.inputTranscription.model ??
         (managedModel?.profile === "azure_speech_chain"
           ? "azure-speech"
@@ -670,6 +780,11 @@ interface LiveSession {
   sendText?: (text: string) => boolean;
   // Releases queued typed lines if the server never answers the user's speech.
   typedReleaseTimer: ReturnType<typeof setTimeout> | null;
+  // Releases a microphone pause the avatar's player failed to end on time.
+  micPauseTimer: ReturnType<typeof setTimeout> | null;
+  // The catalog transcription option this session's setup frame chose, or null
+  // for the managed model's own default (or Azure OpenAI).
+  transcriptionOption: SpeechTranscriptionOption | null;
 }
 
 // The message shown when the WebSocket fails or closes before ever reaching
@@ -846,6 +961,29 @@ export function formatVoiceProtocolError(error: SafeProtocolError): string {
   return `${error.message.slice(0, MAX_SAFE_ERROR_CHARS - suffix.length)}${suffix}`;
 }
 
+/**
+ * Explains a ``conversation.item.input_audio_transcription.failed`` event. The
+ * session stays connected (a native-audio model may still answer), but that
+ * turn has no transcript, and nothing switches to another model on its behalf.
+ * ``option`` is the catalog transcription option the session chose, if any.
+ */
+export function transcriptionFailureNotice(
+  error: unknown,
+  option: Pick<SpeechTranscriptionOption, "displayName" | "preview"> | null = null,
+): string {
+  const lead = option
+    ? `${transcriptionOptionLabel(option)} couldn't transcribe your last turn: `
+    : "Your last turn couldn't be transcribed: ";
+  const advice = option
+    ? " If this continues, choose Model default transcription in Voice settings."
+    : "";
+  // The upstream detail yields room first, so the guidance is never cut off.
+  const room = Math.max(0, MAX_SAFE_ERROR_CHARS - lead.length - advice.length - 1);
+  let detail = formatVoiceProtocolError(parseVoiceProtocolError(error)).slice(0, room);
+  if (!/[.!?]$/.test(detail)) detail += ".";
+  return `${lead}${detail}${advice}`;
+}
+
 export function formatVoiceCloseError(
   opened: boolean,
   event?: Pick<CloseEvent, "code" | "reason"> | null,
@@ -895,6 +1033,7 @@ export function useVoiceLive(
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [avatarView, setAvatarView] = useState<LiveAvatarView | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const sessionRef = useRef<LiveSession | null>(null);
   const pendingRef = useRef<PendingLiveSession | null>(null);
@@ -1017,6 +1156,14 @@ export function useVoiceLive(
       clearTimeout(s.typedReleaseTimer);
       s.typedReleaseTimer = null;
     }
+    if (s.micPauseTimer !== null) {
+      clearTimeout(s.micPauseTimer);
+      s.micPauseTimer = null;
+    }
+    // A microphone pause belongs to its session; the ended session's view drops it.
+    if (s.avatarPlayer && mountedRef.current) {
+      setAvatarView((prev) => (prev?.micPaused ? { ...prev, micPaused: false } : prev));
+    }
     // Detach before close() so our own shutdown never re-enters this session
     // via a self-triggered "closed" statechange notification.
     s.ctx.onstatechange = null;
@@ -1061,6 +1208,7 @@ export function useVoiceLive(
     setListening(false);
     setSpeaking(false);
     setAvatarView(null);
+    setNotice(null);
     const pending: PendingLiveSession = {
       ctx: null,
       stream: null,
@@ -1079,7 +1227,10 @@ export function useVoiceLive(
       });
     };
     // Set once the session exists; the player may fail before that.
-    const avatarEvents: { onFailure?: (reason: AvatarVideoFailure) => void } = {};
+    const avatarEvents: {
+      onFailure?: (reason: AvatarVideoFailure) => void;
+      interrupt?: () => void;
+    } = {};
     try {
       // A photo avatar (Speech Voice Live only) is attached and primed here,
       // inside the start gesture, so its video element may play sound later.
@@ -1091,6 +1242,8 @@ export function useVoiceLive(
         isPhotoAvatarId(avatarRef.current.id)
           ? avatarRef.current
           : null;
+      const avatarLiveEdgeSeconds =
+        PLAYBACK_BUFFER_MS[settingsRef.current.playbackProfile] / 1000;
       if (avatarSelection) {
         const env = browserAvatarVideoEnvironment();
         if (env && supportsAvatarVideo(env)) {
@@ -1102,7 +1255,7 @@ export function useVoiceLive(
           element.style.cssText = "display:block;width:100%;height:100%";
           hardenAvatarVideoElement(element);
           const player = new AvatarVideoPlayer(element, env, {
-            liveEdgeSeconds: PLAYBACK_BUFFER_MS[settingsRef.current.playbackProfile] / 1000,
+            liveEdgeSeconds: avatarLiveEdgeSeconds,
             onFailure: (reason) => {
               patchAvatar({ failure: reason });
               avatarEvents.onFailure?.(reason);
@@ -1125,6 +1278,8 @@ export function useVoiceLive(
               player.resume();
               patchAvatar({ playbackBlocked: false });
             },
+            micPaused: false,
+            interrupt: () => avatarEvents.interrupt?.(),
           });
           player.prime();
         } else {
@@ -1139,6 +1294,8 @@ export function useVoiceLive(
             sessionEndsAt: null,
             playbackBlocked: false,
             resume: () => {},
+            micPaused: false,
+            interrupt: () => {},
           });
         }
       }
@@ -1146,7 +1303,10 @@ export function useVoiceLive(
       // still directly attributable to the microphone button's user gesture.
       const streamPromise = navigator.mediaDevices
         .getUserMedia({
-          audio: microphoneConstraints(providerIdRef.current),
+          audio: microphoneConstraints(
+            providerIdRef.current,
+            Boolean(pending.avatarPlayer && !pending.avatarPlayer.failed),
+          ),
         })
         .catch((error: unknown) => {
           if (attempt === attemptRef.current) {
@@ -1233,10 +1393,11 @@ export function useVoiceLive(
         avatarPlayer,
         avatarEndReason: null,
         typedReleaseTimer: null,
+        micPauseTimer: null,
+        transcriptionOption: null,
       };
       sessionRef.current = session;
       pendingRef.current = null;
-      avatarEvents.onFailure = () => finishSession(AVATAR_VIDEO_FAILED_MESSAGE);
 
       // The mic track can die out from under an otherwise-healthy socket
       // (permission revoked mid-call, device unplugged, another app taking
@@ -1443,6 +1604,90 @@ export function useVoiceLive(
         return true;
       };
 
+      // --- the microphone while a photo avatar speaks (AvatarListeningMode) ---
+      // Azure's server echo cancellation assumes reply audio plays as soon as it
+      // arrives, but the avatar speaks from its video later than that, so on
+      // speakers it can hear itself and barge in on its own reply. In "pause"
+      // mode each microphone frame becomes silence of the same length while the
+      // avatar is audibly speaking: the server's audio timeline stays continuous,
+      // and nothing is dropped or replayed. The pause starts at
+      // switch_to_speaking and ends once playback passes the speech the server
+      // sent before switch_to_idle, plus an echo tail. Wall-clock bounds end it
+      // even if the player stalls.
+      const pauseFor =
+        avatarPlayer && speechSettingsRef.current.avatarListening !== "listen"
+          ? avatarPlayer
+          : null;
+      let micPause: "open" | "speaking" | "tail" = "open";
+      let micPausedShown = false;
+      // The server is streaming the avatar's speech (switch_to_speaking to switch_to_idle).
+      let avatarSpeakingUpstream = false;
+      let outputClearRequested = false;
+      // Until when Interrupt's own response.cancel may still meet a finished reply.
+      let ownCancelRaceUntil = Number.NEGATIVE_INFINITY;
+      const showMicPaused = (paused: boolean) => {
+        if (paused === micPausedShown) return;
+        micPausedShown = paused;
+        patchAvatar({ micPaused: paused });
+      };
+      const releaseMicPause = () => {
+        micPause = "open";
+        if (session.micPauseTimer !== null) {
+          clearTimeout(session.micPauseTimer);
+          session.micPauseTimer = null;
+        }
+        showMicPaused(false);
+      };
+      const boundMicPause = (ms: number) => {
+        if (session.micPauseTimer !== null) clearTimeout(session.micPauseTimer);
+        session.micPauseTimer = setTimeout(() => {
+          session.micPauseTimer = null;
+          if (!session.cleaned) releaseMicPause();
+        }, ms);
+      };
+      // Whether the next microphone frame is silence. It runs for every frame
+      // without rendering; only a change reaches the stage. A player failure
+      // ends the session, which ends any pause with it.
+      const micPausedNow = (): boolean => {
+        if (micPause === "open" || !pauseFor) return false;
+        if (micPause === "tail") {
+          const end = pauseFor.speechEnd;
+          if (end !== null && pauseFor.currentTime >= end + AVATAR_ECHO_TAIL_SECONDS) {
+            releaseMicPause();
+            return false;
+          }
+        }
+        // A paused element (blocked autoplay) can't echo, so the microphone stays open.
+        const paused = pauseFor.audible;
+        showMicPaused(paused);
+        return paused;
+      };
+      // The stage's Interrupt. At most one upstream stop: response.cancel while
+      // the reply is still generating (that also stops the avatar), otherwise
+      // output_audio_buffer.clear while the server is still streaming the
+      // avatar's speech, because response.done arrives before the avatar
+      // finishes. Either way the buffered video is skipped and the microphone
+      // reopens.
+      const interrupt = () => {
+        if (session.cleaned || !avatarPlayer) return;
+        if (!cancellationRequested && ws.readyState === WebSocket.OPEN) {
+          if (activeResponseId) {
+            cancellationRequested = true;
+            ownCancelRaceUntil = Date.now() + OWN_CANCEL_RACE_WINDOW_MS;
+            ws.send(JSON.stringify({ type: "response.cancel" }));
+          } else if (avatarSpeakingUpstream && !outputClearRequested) {
+            outputClearRequested = true;
+            ws.send(JSON.stringify({ type: "output_audio_buffer.clear" }));
+          }
+        }
+        avatarPlayer.jumpToLiveEdge();
+        releaseMicPause();
+        if (mountedRef.current) setSpeaking(false);
+        patchAvatar({ speaking: false });
+      };
+      avatarEvents.interrupt = interrupt;
+      avatarEvents.onFailure = () => finishSession(AVATAR_VIDEO_FAILED_MESSAGE);
+
       // --- live timeline state (per session; closed over by the event handler) ---
       // The id of the user turn awaiting its transcription, and of the assistant
       // turn currently open (it spans one exchange: it accumulates the spoken
@@ -1589,12 +1834,34 @@ export function useVoiceLive(
             }
             break;
           }
-          case "session.avatar.switch_to_speaking":
+          case "session.avatar.switch_to_speaking": {
+            if (!avatarPlayerForSession) break;
+            avatarSpeakingUpstream = true;
+            outputClearRequested = false;
+            if (mountedRef.current) {
+              setSpeaking(true);
+              patchAvatar({ speaking: true });
+            }
+            if (pauseFor) {
+              micPause = "speaking";
+              boundMicPause(AVATAR_SPEAKING_PAUSE_MAX_MS);
+              micPausedNow();
+            }
+            break;
+          }
           case "session.avatar.switch_to_idle": {
-            if (avatarPlayerForSession && mountedRef.current) {
-              const talking = type === "session.avatar.switch_to_speaking";
-              setSpeaking(talking);
-              patchAvatar({ speaking: talking });
+            if (!avatarPlayerForSession) break;
+            avatarSpeakingUpstream = false;
+            if (mountedRef.current) {
+              setSpeaking(false);
+              patchAvatar({ speaking: false });
+            }
+            if (micPause === "speaking") {
+              // The video still holds the end of the speech: stay paused until it plays.
+              micPause = "tail";
+              avatarPlayerForSession.markSpeechEnd();
+              boundMicPause(avatarPauseTailBoundMs(avatarLiveEdgeSeconds));
+              micPausedNow();
             }
             break;
           }
@@ -1694,6 +1961,8 @@ export function useVoiceLive(
             const t = typeof msg.transcript === "string" ? msg.transcript : "";
             const trimmed = t.trim();
             if (mountedRef.current) {
+              // A later transcript supersedes an earlier failure notice.
+              if (trimmed) setNotice(null);
               if (trimmed) setUserTranscript((p) => (p ? `${p} ` : "") + trimmed);
               // Resolve the pending user bubble created on speech start, or push a
               // completed one if none is open. Empty transcripts drop the bubble.
@@ -1712,6 +1981,20 @@ export function useVoiceLive(
                   tool: "",
                 });
               }
+            }
+            userTurnId = null;
+            flushTyped();
+            break;
+          }
+          case "conversation.item.input_audio_transcription.failed": {
+            // This turn has no transcript. Close its pending bubble rather than
+            // leave it (and any queued typed lines) waiting, and say so. The
+            // session stays up: a native-audio model may still answer, and no
+            // other transcription model is tried in its place.
+            const failure = transcriptionFailureNotice(msg.error, session.transcriptionOption);
+            if (mountedRef.current) {
+              if (userTurnId) dropTurn(userTurnId);
+              setNotice(failure);
             }
             userTurnId = null;
             flushTyped();
@@ -1762,7 +2045,11 @@ export function useVoiceLive(
           case "input_audio_buffer.speech_started": {
             // Skip whatever speech the avatar had buffered, but only when the
             // reply is actually interrupted; otherwise the avatar keeps talking.
-            if (bargeIn()) avatarPlayerForSession?.jumpToLiveEdge();
+            // Skipped speech can't echo, so a microphone pause ends with it.
+            if (bargeIn() && avatarPlayerForSession) {
+              avatarPlayerForSession.jumpToLiveEdge();
+              releaseMicPause();
+            }
             // A new user turn supersedes the last tool hint, closes the assistant
             // turn, and stops playback/indicators.
             if (mountedRef.current) {
@@ -1800,8 +2087,20 @@ export function useVoiceLive(
             break;
           }
           case "error": {
+            const protocolError = parseVoiceProtocolError(msg.error);
+            // Interrupt's own response.cancel can reach Azure just after the reply
+            // finished. That one refusal ends nothing, so the session stays up;
+            // the same error without a recent cancel of ours, and every other
+            // error, still ends the session.
+            if (
+              protocolError.code === CANCEL_NOT_ACTIVE_CODE &&
+              Date.now() <= ownCancelRaceUntil
+            ) {
+              ownCancelRaceUntil = Number.NEGATIVE_INFINITY;
+              break;
+            }
             if (!session.protocolError) {
-              session.protocolError = parseVoiceProtocolError(msg.error);
+              session.protocolError = protocolError;
             }
             finishSession(
               avatarErrorMessage(msg.error) ?? formatVoiceProtocolError(session.protocolError),
@@ -1816,7 +2115,9 @@ export function useVoiceLive(
       worklet.port.onmessage = (ev: MessageEvent) => {
         if (ws.readyState !== WebSocket.OPEN) return;
         const samples = ev.data as Float32Array;
-        const pcm = floatTo16BitPCM(samples);
+        // While the avatar is audibly speaking in "pause" mode, the frame keeps
+        // its length but carries silence.
+        const pcm = micPausedNow() ? new Int16Array(samples.length) : floatTo16BitPCM(samples);
         const frame = JSON.stringify({
           type: "input_audio_buffer.append",
           audio: int16ToBase64(pcm),
@@ -1834,6 +2135,15 @@ export function useVoiceLive(
       ws.onopen = () => {
         if (sessionRef.current !== session || session.cleaned) return;
         session.opened = true;
+        // Read from the same refs as the setup frame below, so a failure notice
+        // names the transcription model this session actually asked for.
+        session.transcriptionOption =
+          providerIdRef.current === "speech_voice_live"
+            ? resolveSpeechTranscriptionOption(
+                resolveSpeechManagedModel(modelRef.current),
+                speechSettingsRef.current.transcriptionModel,
+              ) ?? null
+            : null;
         for (const frame of
           buildInitialVoiceFrames({
             providerId: providerIdRef.current,
@@ -1952,6 +2262,7 @@ export function useVoiceLive(
     listening,
     speaking,
     avatar: avatarView,
+    notice,
     start,
     toggle,
     stop,

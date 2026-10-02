@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  AVATAR_LISTENING_MODES,
+  avatarPauseTailBoundMs,
   DEFAULT_VOICE,
   DEFAULT_VOICE_SETTINGS,
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
@@ -14,8 +16,12 @@ import {
   isVadType,
   realtimeModels,
   resolveAuthorizedVoiceProviders,
+  resolveSpeechTranscriptionOption,
   sessionUpdate,
   speechSessionUpdate,
+  speechTranscriptionOptions,
+  transcriptionFailureNotice,
+  transcriptionOptionLabel,
   type VoiceSessionSettings,
 } from "./voiceLive";
 import { voiceProviderCatalog } from "./data/voice_provider_catalog";
@@ -39,6 +45,26 @@ describe("voice audio transport", () => {
       noiseSuppression: false,
       autoGainControl: false,
     });
+  });
+
+  it("asks the browser to cancel all playback echo only for a Speech avatar session", () => {
+    expect(microphoneConstraints("speech_voice_live", true)).toEqual({
+      channelCount: 1,
+      echoCancellation: "all",
+      noiseSuppression: false,
+      autoGainControl: false,
+    });
+    // Azure OpenAI keeps its browser DSP whatever the flag says.
+    expect(microphoneConstraints("azure_openai", true)).toEqual({
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+    });
+  });
+
+  it("bounds the microphone pause after the avatar's speech by its lag, live edge and echo tail", () => {
+    expect(avatarPauseTailBoundMs(PLAYBACK_BUFFER_MS.balanced / 1000)).toBe(2520);
+    expect(avatarPauseTailBoundMs(PLAYBACK_BUFFER_MS.smooth / 1000)).toBe(2580);
   });
 
   it("keeps every playback profile within a conversational latency budget", () => {
@@ -241,6 +267,19 @@ describe("speechSessionUpdate", () => {
     });
   });
 
+  it("never sends the browser-only avatar listening mode", () => {
+    expect(DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.avatarListening).toBe("pause");
+    const reference = speechSessionUpdate("gpt-realtime", DEFAULT_SPEECH_VOICE_LIVE_SETTINGS);
+    for (const avatarListening of AVATAR_LISTENING_MODES) {
+      const frame = speechSessionUpdate("gpt-realtime", {
+        ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+        avatarListening,
+      });
+      expect(frame).toBe(reference);
+      expect(frame).not.toContain("avatarListening");
+    }
+  });
+
   it("reconstructs stale settings from catalog defaults and clamps temperature", () => {
     const parsed = JSON.parse(
       speechSessionUpdate("not-a-managed-model", {
@@ -282,6 +321,122 @@ describe("speechSessionUpdate", () => {
       );
     },
   );
+
+  it.each(voiceProviderCatalog.providers[1].managedModels)(
+    "sends the selected MAI transcription and voice for $id",
+    (model) => {
+      const session = JSON.parse(
+        speechSessionUpdate(model.id, {
+          ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+          voice: "en-US-Harper:MAI-Voice-2.1-Flash",
+          transcriptionModel: "mai-transcribe-2",
+        }),
+      ).session;
+      expect(session.input_audio_transcription).toEqual({
+        model: "mai-transcribe-2",
+        language: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.locale,
+      });
+      expect(session.voice).toEqual({
+        type: "azure-standard",
+        name: "en-US-Harper:MAI-Voice-2.1-Flash",
+        locale: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.locale,
+      });
+    },
+  );
+
+  it.each(["mai-transcribe", "MAI-Transcribe-2", "whisper-1", "azure-speech", "gpt-4o-transcribe"])(
+    "keeps the model default instead of the unoffered transcription %s",
+    (requested) => {
+      for (const model of voiceProviderCatalog.providers[1].managedModels) {
+        const transcription = JSON.parse(
+          speechSessionUpdate(model.id, {
+            ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+            transcriptionModel: requested,
+          }),
+        ).session.input_audio_transcription.model;
+        expect(transcription).toBe(model.inputTranscription.model);
+      }
+    },
+  );
+});
+
+describe("Speech transcription options", () => {
+  const speech = voiceProviderCatalog.providers[1];
+  const native = speech.managedModels.find((model) => model.id === "gpt-realtime");
+  const chain = speech.managedModels.find((model) => model.id === "gpt-4.1");
+
+  it("offers the catalog option to every profile it lists, with a preview label", () => {
+    for (const model of speech.managedModels) {
+      expect(speechTranscriptionOptions(model).map((option) => option.model)).toEqual([
+        "mai-transcribe-2",
+      ]);
+    }
+    const option = resolveSpeechTranscriptionOption(native, "mai-transcribe-2");
+    expect(option && transcriptionOptionLabel(option)).toBe("MAI Transcribe 2 (preview)");
+    expect(resolveSpeechTranscriptionOption(native, null)).toBeUndefined();
+    expect(resolveSpeechTranscriptionOption(native, "mai-transcribe")).toBeUndefined();
+  });
+
+  it("limits an option to the profiles it lists", () => {
+    const chainOnly = {
+      ...speech,
+      capabilities: {
+        ...speech.capabilities,
+        inputTranscription: {
+          options: [
+            { ...speech.capabilities.inputTranscription.options[0], profiles: ["azure_speech_chain"] },
+          ],
+        },
+      },
+    } as unknown as typeof speech;
+    expect(speechTranscriptionOptions(native, chainOnly)).toEqual([]);
+    expect(resolveSpeechTranscriptionOption(native, "mai-transcribe-2", chainOnly)).toBeUndefined();
+    expect(resolveSpeechTranscriptionOption(chain, "mai-transcribe-2", chainOnly)?.model).toBe(
+      "mai-transcribe-2",
+    );
+    const olderApi = {
+      ...speech,
+      capabilities: { ...speech.capabilities, inputTranscription: undefined },
+    } as unknown as typeof speech;
+    expect(speechTranscriptionOptions(chain, olderApi)).toEqual([]);
+  });
+});
+
+describe("transcriptionFailureNotice", () => {
+  const error = {
+    type: "server_error",
+    code: "transcription_failed",
+    message: "Transcription unavailable token=supersecret",
+  };
+
+  it("names the chosen preview option and how to go back to the default", () => {
+    expect(
+      transcriptionFailureNotice(error, { displayName: "MAI Transcribe 2", preview: true }),
+    ).toBe(
+      "MAI Transcribe 2 (preview) couldn't transcribe your last turn: Transcription unavailable " +
+        "token=[REDACTED] (type: server_error; code: transcription_failed). If this continues, " +
+        "choose Model default transcription in Voice settings.",
+    );
+  });
+
+  it("explains a default model's failure without suggesting a switch", () => {
+    expect(transcriptionFailureNotice(error)).toBe(
+      "Your last turn couldn't be transcribed: Transcription unavailable token=[REDACTED] " +
+        "(type: server_error; code: transcription_failed).",
+    );
+    expect(transcriptionFailureNotice(undefined)).toBe(
+      "Your last turn couldn't be transcribed: Live voice reported an error.",
+    );
+  });
+
+  it("stays within the safe error bound without cutting the guidance", () => {
+    const long = transcriptionFailureNotice(
+      { message: "x".repeat(2_000), code: "c".repeat(200) },
+      { displayName: "MAI Transcribe 2", preview: true },
+    );
+    expect(long.length).toBeLessThanOrEqual(512);
+    expect(long.endsWith("choose Model default transcription in Voice settings.")).toBe(true);
+  });
 });
 
 describe("buildVoiceLiveWebSocketUrl", () => {

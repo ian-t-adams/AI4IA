@@ -18,6 +18,7 @@ import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   DEFAULT_SPEECH_MODEL_ID,
   DEFAULT_VOICE_PROVIDER,
+  isAvatarListeningMode,
   isRealtimeVoice,
   isPlaybackProfile,
   isSpeechVoiceProvider,
@@ -240,6 +241,13 @@ export function normalizeSpeechVoiceLiveSettings(
     typeof r.autoTruncate === "boolean"
       ? r.autoTruncate
       : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.autoTruncate;
+  const transcriptionModel =
+    typeof r.transcriptionModel === "string" && r.transcriptionModel.trim().length > 0
+      ? r.transcriptionModel.trim()
+      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.transcriptionModel;
+  const avatarListening = isAvatarListeningMode(r.avatarListening)
+    ? r.avatarListening
+    : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.avatarListening;
   return {
     temperature,
     voice,
@@ -247,6 +255,8 @@ export function normalizeSpeechVoiceLiveSettings(
     turnDetection,
     interruptResponse,
     autoTruncate,
+    transcriptionModel,
+    avatarListening,
   };
 }
 
@@ -267,6 +277,11 @@ function sanitizeSpeechPreferences(
     speechProvider?.capabilities.locale?.options ?? [normalized.locale];
   const turnDetections: readonly SpeechVoiceLiveSettings["turnDetection"][] =
     speechProvider?.capabilities.turnDetection.options ?? [normalized.turnDetection];
+  // Any catalog option is kept here; whether it suits the selected managed
+  // model is decided when the session is built (and again by the relay). An
+  // older API that predates the field offers none.
+  const transcriptionModels: readonly string[] =
+    speechProvider?.capabilities.inputTranscription?.options.map((option) => option.model) ?? [];
   return {
     ...normalized,
     voice:
@@ -283,6 +298,12 @@ function sanitizeSpeechPreferences(
       turnDetections.includes(normalized.turnDetection) && speechProvider
         ? normalized.turnDetection
         : speechProvider?.capabilities.turnDetection.default ?? normalized.turnDetection,
+    transcriptionModel: !speechProvider
+      ? normalized.transcriptionModel
+      : normalized.transcriptionModel !== null &&
+          transcriptionModels.includes(normalized.transcriptionModel)
+        ? normalized.transcriptionModel
+        : null,
   };
 }
 
