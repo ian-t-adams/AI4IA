@@ -1623,8 +1623,8 @@ export function useVoiceLive(
       // The server is streaming the avatar's speech (switch_to_speaking to switch_to_idle).
       let avatarSpeakingUpstream = false;
       let outputClearRequested = false;
-      // Epoch ms of Interrupt's own response.cancel, until its outcome is known.
-      let ownCancelSentAt: number | null = null;
+      // Until when Interrupt's own response.cancel may still meet a finished reply.
+      let ownCancelRaceUntil = Number.NEGATIVE_INFINITY;
       const showMicPaused = (paused: boolean) => {
         if (paused === micPausedShown) return;
         micPausedShown = paused;
@@ -1673,7 +1673,7 @@ export function useVoiceLive(
         if (!cancellationRequested && ws.readyState === WebSocket.OPEN) {
           if (activeResponseId) {
             cancellationRequested = true;
-            ownCancelSentAt = Date.now();
+            ownCancelRaceUntil = Date.now() + OWN_CANCEL_RACE_WINDOW_MS;
             ws.send(JSON.stringify({ type: "response.cancel" }));
           } else if (avatarSpeakingUpstream && !outputClearRequested) {
             outputClearRequested = true;
@@ -2095,10 +2095,9 @@ export function useVoiceLive(
             // error, still ends the session.
             if (
               protocolError.code === CANCEL_NOT_ACTIVE_CODE &&
-              ownCancelSentAt !== null &&
-              Date.now() - ownCancelSentAt <= OWN_CANCEL_RACE_WINDOW_MS
+              Date.now() <= ownCancelRaceUntil
             ) {
-              ownCancelSentAt = null;
+              ownCancelRaceUntil = Number.NEGATIVE_INFINITY;
               break;
             }
             if (!session.protocolError) {
