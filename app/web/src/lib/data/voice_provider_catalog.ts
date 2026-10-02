@@ -110,6 +110,48 @@ export const voiceProviderCatalog = {
           "sampleRateHz": 24000
         },
         {
+          "id": "gpt-realtime-1.5",
+          "displayName": "GPT Realtime 1.5",
+          "description": "Native-audio realtime 1.5 model with GPT-4o transcription.",
+          "profile": "native_audio",
+          "inputTranscription": {
+            "provider": "openai",
+            "model": "gpt-4o-transcribe"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        },
+        {
+          "id": "gpt-realtime-2.1",
+          "displayName": "GPT Realtime 2.1",
+          "description": "Native-audio realtime 2.1 model with GPT-4o transcription.",
+          "profile": "native_audio",
+          "inputTranscription": {
+            "provider": "openai",
+            "model": "gpt-4o-transcribe"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        },
+        {
+          "id": "gpt-realtime-2.1-mini",
+          "displayName": "GPT Realtime 2.1 Mini",
+          "description": "Lower-cost native-audio realtime 2.1 model with GPT-4o transcription.",
+          "profile": "native_audio",
+          "inputTranscription": {
+            "provider": "openai",
+            "model": "gpt-4o-transcribe"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        },
+        {
           "id": "gpt-4.1",
           "displayName": "GPT-4.1",
           "description": "GPT-4.1 response model paired with the Azure Speech chain.",
@@ -155,6 +197,62 @@ export const voiceProviderCatalog = {
           "id": "gpt-5.1",
           "displayName": "GPT-5.1",
           "description": "GPT-5.1 response model paired with the Azure Speech chain.",
+          "profile": "azure_speech_chain",
+          "inputTranscription": {
+            "provider": "azure_speech",
+            "model": "azure-speech"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        },
+        {
+          "id": "gpt-5.2",
+          "displayName": "GPT-5.2",
+          "description": "GPT-5.2 response model paired with the Azure Speech chain.",
+          "profile": "azure_speech_chain",
+          "inputTranscription": {
+            "provider": "azure_speech",
+            "model": "azure-speech"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        },
+        {
+          "id": "gpt-5.4",
+          "displayName": "GPT-5.4",
+          "description": "GPT-5.4 response model paired with the Azure Speech chain.",
+          "profile": "azure_speech_chain",
+          "inputTranscription": {
+            "provider": "azure_speech",
+            "model": "azure-speech"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "displayName": "GPT-5.6 Terra",
+          "description": "GPT-5.6 Terra response model paired with the Azure Speech chain.",
+          "profile": "azure_speech_chain",
+          "inputTranscription": {
+            "provider": "azure_speech",
+            "model": "azure-speech"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "displayName": "GPT-5.6 Luna",
+          "description": "GPT-5.6 Luna response model paired with the Azure Speech chain.",
           "profile": "azure_speech_chain",
           "inputTranscription": {
             "provider": "azure_speech",

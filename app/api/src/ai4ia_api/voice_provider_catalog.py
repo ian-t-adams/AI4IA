@@ -15,10 +15,17 @@ EXPECTED_PROVIDER_IDS = (AZURE_OPENAI_PROVIDER_ID, SPEECH_VOICE_LIVE_PROVIDER_ID
 EXPECTED_SPEECH_MANAGED_MODEL_IDS = (
     "gpt-realtime",
     "gpt-realtime-mini",
+    "gpt-realtime-1.5",
+    "gpt-realtime-2.1",
+    "gpt-realtime-2.1-mini",
     "gpt-4.1",
     "gpt-4.1-mini",
     "gpt-5-mini",
     "gpt-5.1",
+    "gpt-5.2",
+    "gpt-5.4",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
 )
 DEFAULT_VOICE_PROVIDER_ID = AZURE_OPENAI_PROVIDER_ID
 
@@ -203,13 +210,28 @@ class _VoiceProviderManagedModelBase(BaseModel):
 
 
 class VoiceProviderNativeAudioManagedModel(_VoiceProviderManagedModelBase):
-    id: Literal["gpt-realtime", "gpt-realtime-mini"]
+    id: Literal[
+        "gpt-realtime",
+        "gpt-realtime-mini",
+        "gpt-realtime-1.5",
+        "gpt-realtime-2.1",
+        "gpt-realtime-2.1-mini",
+    ]
     profile: Literal["native_audio"]
     inputTranscription: VoiceProviderOpenAIManagedTranscription
 
 
 class VoiceProviderAzureSpeechChainManagedModel(_VoiceProviderManagedModelBase):
-    id: Literal["gpt-4.1", "gpt-4.1-mini", "gpt-5-mini", "gpt-5.1"]
+    id: Literal[
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "gpt-5-mini",
+        "gpt-5.1",
+        "gpt-5.2",
+        "gpt-5.4",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ]
     profile: Literal["azure_speech_chain"]
     inputTranscription: VoiceProviderAzureSpeechManagedTranscription
 

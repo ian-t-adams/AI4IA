@@ -131,7 +131,7 @@ the container — those names are *outputs*, not knobs you set.
 | Voice Live tools | `AI4IA_VOICE_LIVE_TOOLS_ENABLED` | `voiceLiveToolsEnabled` | `AI4IA_REALTIME_TOOLS_ENABLED`, `VOICE_LIVE_TOOLS_ENABLED` | Profile default `true`; requires Voice Live. |
 | Stage GA Realtime | `AI4IA_REALTIME_GA_ENABLED` | `realtimeGaEnabled` | `AI4IA_REALTIME_GA_ENABLED`, `AI4IA_REALTIME_GA_BASE_URL`, `AI4IA_REALTIME_GA_GATEWAY_API_KEY` | Default `false` in Bicep and the profile. Requires Voice Live; provisions a separate WebSocket API/key on the existing APIM. Does not select GA. |
 | Realtime protocol selection | `AI4IA_REALTIME_PROTOCOL` | `realtimeProtocol` | `AI4IA_REALTIME_PROTOCOL` | Default `preview`. Server-only; `ga` requires the staging gate and complete GA URL/key configuration. Speech Voice Live is unaffected. Approval and live canaries are required before any cutover. |
-| Speech Voice Live (second voice provider) | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. The six managed models and default are catalog-controlled. **Template default OFF** in both Bicep and `infra/main.parameters.json`; the default allowlist is only `azure_openai`. |
+| Speech Voice Live (second voice provider) | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. The managed models and their default are catalog-controlled. **Template default OFF** in both Bicep and `infra/main.parameters.json`; the default allowlist is only `azure_openai`. |
 | Voice provider allowlist / default | n/a (server-authoritative) | `voiceProviderAllowlist`, `voiceDefaultProvider` | `AI4IA_VOICE_PROVIDER_ALLOWLIST` (default `azure_openai`), `AI4IA_VOICE_DEFAULT_PROVIDER` (default `azure_openai`) | Allowlist must always include `azure_openai`; default provider must be an allowlist member. The browser may only select an advertised, allowlisted provider. |
 | Data residency | API-only setting; not mapped through azd/CI | n/a (API setting) | `AI4IA_DATA_RESIDENCY` (default `global`) | `global` \| `zonal` \| `us` \| `eu`. Restricts model routing by processing boundary. The available model set depends on the current catalog, not a fixed count; see [Data residency](#data-residency). |
 | Document library / Content Understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `documentUnderstandingEnabled` | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`, `DOCUMENT_LIBRARY_ENABLED` | Profile default `true`. Outside local, requires Cosmos, Blob, CU, configured Search and a catalog-resolved embedding deployment. Preprovision requires `searchEnabled=true`. CU endpoint defaults to the primary Foundry endpoint unless overridden. |
@@ -416,7 +416,8 @@ exact reconciles only warn, so do not re-enable it. There is no automatic date
 cutoff. The September 23 subscription evidence offers
 only RT2 `2026-05-06`; its verified successor is the distinct `gpt-realtime-2.1`.
 Realtime 1.5, 2.1 and 2.1-mini are GA-only, each eastus2 GlobalStandard baseline
-10 without maximum/pool assumptions, not new defaults or Speech managed models.
+10 without maximum/pool assumptions, not new defaults. Speech Voice Live's
+same-named managed models are Microsoft-hosted and never use these deployments.
 The two 2.1 entries pin `2026-07-07`; this does not upgrade or alias RT2.
 Unavailable saved choices require an explicit replacement and never rewrite
 stored conversations. See the
@@ -457,10 +458,12 @@ server-authoritative default). It routes
 - The account, region, and API version remain fixed: the initial existing
   `eastus2` AIServices account at stable `2026-04-10` — the same account already
   used as a Foundry model backend, not a new resource. The managed-model selector
-  accepts only the six catalog entries documented in the
+  accepts only the catalog entries documented in the
   [region matrix](region-capability-matrix.md#speech-voice-live-managed-model-catalog).
   Native-audio models default to `gpt-4o-transcribe`; GPT text response models use
-  the Azure Speech chain and default to `azure-speech` transcription. A user may
+  the Azure Speech chain and default to `azure-speech` transcription. The newer
+  native-audio models' pairing is not yet confirmed by Microsoft's reference; the
+  region matrix records that gap. A user may
   choose the catalog's `mai-transcribe-2` (MAI Transcribe 2, public preview, pinned
   rather than the floating `mai-transcribe` alias) instead. The relay accepts only
   catalog options listed for the session's managed-model profile, and an upstream

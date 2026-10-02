@@ -476,10 +476,17 @@ def test_live_speech_provider_uses_fixed_upstream_and_normalizes_session():
     [
         "gpt-realtime",
         "gpt-realtime-mini",
+        "gpt-realtime-1.5",
+        "gpt-realtime-2.1",
+        "gpt-realtime-2.1-mini",
         "gpt-4.1",
         "gpt-4.1-mini",
         "gpt-5-mini",
         "gpt-5.1",
+        "gpt-5.2",
+        "gpt-5.4",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
     ],
 )
 def test_live_speech_selected_model_controls_url_and_metering(model_id):
@@ -525,6 +532,13 @@ def test_live_speech_selected_model_controls_url_and_metering(model_id):
         "model=gpt-4.1-preview",
         "model=gpt-realtime&region=westus",
         "model=gpt-realtime&region=EastUS2",
+        "model=gpt-6",
+        "model=gpt-6.1",
+        "model=gpt-5.5",
+        "model=gpt-5.4-mini",
+        "model=azure-realtime",
+        "model=gpt-realtime-2.1-datazone",
+        "model=gpt-realtime-2.1&region=swedencentral",
     ],
 )
 def test_live_speech_rejects_nonmatching_model_or_region(query):
@@ -734,10 +748,17 @@ def test_live_config_exposes_safe_provider_catalog():
         assert [model["id"] for model in providers["speech_voice_live"]["managedModels"]] == [
             "gpt-realtime",
             "gpt-realtime-mini",
+            "gpt-realtime-1.5",
+            "gpt-realtime-2.1",
+            "gpt-realtime-2.1-mini",
             "gpt-4.1",
             "gpt-4.1-mini",
             "gpt-5-mini",
             "gpt-5.1",
+            "gpt-5.2",
+            "gpt-5.4",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
         ]
         assert providers["speech_voice_live"]["capabilities"]["voices"]["kind"] == "azure-standard"
         speech_capabilities = providers["speech_voice_live"]["capabilities"]

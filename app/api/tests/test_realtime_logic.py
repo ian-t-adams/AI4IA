@@ -270,10 +270,17 @@ def test_resolve_no_realtime_models_available():
     [
         ("gpt-realtime", "native_audio", "openai", "gpt-4o-transcribe"),
         ("gpt-realtime-mini", "native_audio", "openai", "gpt-4o-transcribe"),
+        ("gpt-realtime-1.5", "native_audio", "openai", "gpt-4o-transcribe"),
+        ("gpt-realtime-2.1", "native_audio", "openai", "gpt-4o-transcribe"),
+        ("gpt-realtime-2.1-mini", "native_audio", "openai", "gpt-4o-transcribe"),
         ("gpt-4.1", "azure_speech_chain", "azure_speech", "azure-speech"),
         ("gpt-4.1-mini", "azure_speech_chain", "azure_speech", "azure-speech"),
         ("gpt-5-mini", "azure_speech_chain", "azure_speech", "azure-speech"),
         ("gpt-5.1", "azure_speech_chain", "azure_speech", "azure-speech"),
+        ("gpt-5.2", "azure_speech_chain", "azure_speech", "azure-speech"),
+        ("gpt-5.4", "azure_speech_chain", "azure_speech", "azure-speech"),
+        ("gpt-5.6-terra", "azure_speech_chain", "azure_speech", "azure-speech"),
+        ("gpt-5.6-luna", "azure_speech_chain", "azure_speech", "azure-speech"),
     ],
 )
 def test_resolve_speech_provider_uses_managed_catalog_model(
@@ -347,6 +354,17 @@ def test_resolve_speech_provider_absent_model_uses_catalog_default():
         "gpt-realtime-preview",
         "gpt-4.1-preview",
         "arbitrary",
+        "gpt-6",
+        "gpt-6.1",
+        "gpt-5.5",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "azure-realtime",
+        "gpt-realtime-2.1-datazone",
+        "gpt-realtime-2",
+        "GPT-REALTIME-2.1",
+        "gpt-5.6",
+        "gpt-5.6-Terra",
     ],
 )
 def test_resolve_speech_provider_rejects_non_catalog_model_exactly(model_id):
@@ -527,10 +545,17 @@ def _speech_provider():
     [
         ("gpt-realtime", "gpt-4o-transcribe"),
         ("gpt-realtime-mini", "gpt-4o-transcribe"),
+        ("gpt-realtime-1.5", "gpt-4o-transcribe"),
+        ("gpt-realtime-2.1", "gpt-4o-transcribe"),
+        ("gpt-realtime-2.1-mini", "gpt-4o-transcribe"),
         ("gpt-4.1", "azure-speech"),
         ("gpt-4.1-mini", "azure-speech"),
         ("gpt-5-mini", "azure-speech"),
         ("gpt-5.1", "azure-speech"),
+        ("gpt-5.2", "azure-speech"),
+        ("gpt-5.4", "azure-speech"),
+        ("gpt-5.6-terra", "azure-speech"),
+        ("gpt-5.6-luna", "azure-speech"),
     ],
 )
 def test_normalize_speech_session_uses_selected_model_profile(

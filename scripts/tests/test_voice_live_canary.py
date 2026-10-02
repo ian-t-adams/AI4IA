@@ -43,11 +43,19 @@ FIRST_SEED = {
 SPEECH_PAIRS = {
     "gpt-realtime": "gpt-4o-transcribe",
     "gpt-realtime-mini": "gpt-4o-transcribe",
+    "gpt-realtime-1.5": "gpt-4o-transcribe",
+    "gpt-realtime-2.1": "gpt-4o-transcribe",
+    "gpt-realtime-2.1-mini": "gpt-4o-transcribe",
     "gpt-4.1": "azure-speech",
     "gpt-4.1-mini": "azure-speech",
     "gpt-5-mini": "azure-speech",
     "gpt-5.1": "azure-speech",
+    "gpt-5.2": "azure-speech",
+    "gpt-5.4": "azure-speech",
+    "gpt-5.6-terra": "azure-speech",
+    "gpt-5.6-luna": "azure-speech",
 }
+VOICE_PROVIDERS = ROOT / "infra" / "voice-providers.json"
 
 
 class VoiceLiveCanaryTests(unittest.TestCase):
@@ -70,7 +78,8 @@ class VoiceLiveCanaryTests(unittest.TestCase):
         self.assertEqual(frames[0], AZURE_UPDATE)
         self.assertEqual(json.loads(frames[1]), FIRST_SEED)
 
-    def test_all_six_speech_pairs_have_exact_session_and_seed_shapes(self) -> None:
+    def test_every_speech_pair_has_exact_session_and_seed_shapes(self) -> None:
+        self.assertEqual(canary.SPEECH_MODEL_TRANSCRIPTION, SPEECH_PAIRS)
         for model, transcription in SPEECH_PAIRS.items():
             with self.subTest(model=model):
                 url = canary.build_canary_url(
@@ -151,6 +160,40 @@ class VoiceLiveCanaryTests(unittest.TestCase):
                 provider="speech_voice_live",
                 model="arbitrary-model",
             )
+
+    def test_speech_pairs_match_the_managed_model_catalog(self) -> None:
+        raw = json.loads(VOICE_PROVIDERS.read_text(encoding="utf-8"))
+        speech = next(
+            provider for provider in raw["providers"] if provider["id"] == "speech_voice_live"
+        )
+        self.assertEqual(
+            {
+                model["id"]: model["inputTranscription"]["model"]
+                for model in speech["managedModels"]
+            },
+            canary.SPEECH_MODEL_TRANSCRIPTION,
+        )
+
+    def test_unsupported_or_byom_speech_models_are_rejected_before_network(self) -> None:
+        for model in (
+            "gpt-6",
+            "gpt-6.1",
+            "gpt-5.5",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "azure-realtime",
+            "gpt-realtime-2.1-datazone",
+            "gpt-realtime-2",
+        ):
+            with self.subTest(model=model):
+                with self.assertRaises(canary.CanaryInputError):
+                    canary.build_initial_frames("speech_voice_live", model)
+                with self.assertRaises(canary.CanaryInputError):
+                    canary.build_canary_url(
+                        "wss://api.example.test/api/voice/live",
+                        provider="speech_voice_live",
+                        model=model,
+                    )
 
     def test_event_order_requires_created_then_updated_and_all_history_acks(self) -> None:
         expected_ids = canary.expected_history_item_ids()

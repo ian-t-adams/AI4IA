@@ -127,6 +127,15 @@ SPEECH_API_VERSION = "2026-04-10"
 SPEECH_INITIAL_REGION = "eastus2"
 SPEECH_AUDIO_FORMAT = "pcm16"
 SPEECH_SAMPLE_RATE_HZ = 24000
+# Curated subset of the Voice Live managed models that Microsoft Learn's region
+# table serves from eastus2 (reviewed 2026-10-02): GPT realtime models on Global
+# Standard, gpt-4.1/gpt-4.1-mini on Standard, the GPT-5.x models on Data Zone
+# Standard. No model here needs an api-version newer than 2026-04-10. The newer
+# realtime models keep the GPT realtime family's OpenAI transcription default:
+# the pinned reference names only gpt-realtime and gpt-realtime-mini for OpenAI
+# transcribers, so their pairing is unverified until a live session accepts it.
+# GPT-6/6.1 are not Voice Live models; gpt-5.5 and gpt-5.4-mini/nano are
+# bring-your-own-model only, and azure-realtime needs its own voice type.
 SPEECH_MANAGED_MODEL_SPECS = (
     (
         "gpt-realtime",
@@ -140,6 +149,30 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "gpt-realtime-mini",
         "GPT Realtime Mini",
         "Lower-cost native-audio realtime model with GPT-4o transcription.",
+        "native_audio",
+        "openai",
+        "gpt-4o-transcribe",
+    ),
+    (
+        "gpt-realtime-1.5",
+        "GPT Realtime 1.5",
+        "Native-audio realtime 1.5 model with GPT-4o transcription.",
+        "native_audio",
+        "openai",
+        "gpt-4o-transcribe",
+    ),
+    (
+        "gpt-realtime-2.1",
+        "GPT Realtime 2.1",
+        "Native-audio realtime 2.1 model with GPT-4o transcription.",
+        "native_audio",
+        "openai",
+        "gpt-4o-transcribe",
+    ),
+    (
+        "gpt-realtime-2.1-mini",
+        "GPT Realtime 2.1 Mini",
+        "Lower-cost native-audio realtime 2.1 model with GPT-4o transcription.",
         "native_audio",
         "openai",
         "gpt-4o-transcribe",
@@ -172,6 +205,38 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "gpt-5.1",
         "GPT-5.1",
         "GPT-5.1 response model paired with the Azure Speech chain.",
+        "azure_speech_chain",
+        "azure_speech",
+        "azure-speech",
+    ),
+    (
+        "gpt-5.2",
+        "GPT-5.2",
+        "GPT-5.2 response model paired with the Azure Speech chain.",
+        "azure_speech_chain",
+        "azure_speech",
+        "azure-speech",
+    ),
+    (
+        "gpt-5.4",
+        "GPT-5.4",
+        "GPT-5.4 response model paired with the Azure Speech chain.",
+        "azure_speech_chain",
+        "azure_speech",
+        "azure-speech",
+    ),
+    (
+        "gpt-5.6-terra",
+        "GPT-5.6 Terra",
+        "GPT-5.6 Terra response model paired with the Azure Speech chain.",
+        "azure_speech_chain",
+        "azure_speech",
+        "azure-speech",
+    ),
+    (
+        "gpt-5.6-luna",
+        "GPT-5.6 Luna",
+        "GPT-5.6 Luna response model paired with the Azure Speech chain.",
         "azure_speech_chain",
         "azure_speech",
         "azure-speech",

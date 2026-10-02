@@ -9,10 +9,17 @@
               !(
               &quot;gpt-realtime&quot;.Equals(model, StringComparison.Ordinal) ||
               &quot;gpt-realtime-mini&quot;.Equals(model, StringComparison.Ordinal) ||
+              &quot;gpt-realtime-1.5&quot;.Equals(model, StringComparison.Ordinal) ||
+              &quot;gpt-realtime-2.1&quot;.Equals(model, StringComparison.Ordinal) ||
+              &quot;gpt-realtime-2.1-mini&quot;.Equals(model, StringComparison.Ordinal) ||
               &quot;gpt-4.1&quot;.Equals(model, StringComparison.Ordinal) ||
               &quot;gpt-4.1-mini&quot;.Equals(model, StringComparison.Ordinal) ||
               &quot;gpt-5-mini&quot;.Equals(model, StringComparison.Ordinal) ||
-              &quot;gpt-5.1&quot;.Equals(model, StringComparison.Ordinal)
+              &quot;gpt-5.1&quot;.Equals(model, StringComparison.Ordinal) ||
+              &quot;gpt-5.2&quot;.Equals(model, StringComparison.Ordinal) ||
+              &quot;gpt-5.4&quot;.Equals(model, StringComparison.Ordinal) ||
+              &quot;gpt-5.6-terra&quot;.Equals(model, StringComparison.Ordinal) ||
+              &quot;gpt-5.6-luna&quot;.Equals(model, StringComparison.Ordinal)
               );
           }">
         <return-response>

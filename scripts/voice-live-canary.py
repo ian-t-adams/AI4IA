@@ -48,10 +48,17 @@ DEFAULT_AZURE_OPENAI_SESSION_UPDATE = (
 SPEECH_MODEL_TRANSCRIPTION = {
     "gpt-realtime": "gpt-4o-transcribe",
     "gpt-realtime-mini": "gpt-4o-transcribe",
+    "gpt-realtime-1.5": "gpt-4o-transcribe",
+    "gpt-realtime-2.1": "gpt-4o-transcribe",
+    "gpt-realtime-2.1-mini": "gpt-4o-transcribe",
     "gpt-4.1": "azure-speech",
     "gpt-4.1-mini": "azure-speech",
     "gpt-5-mini": "azure-speech",
     "gpt-5.1": "azure-speech",
+    "gpt-5.2": "azure-speech",
+    "gpt-5.4": "azure-speech",
+    "gpt-5.6-terra": "azure-speech",
+    "gpt-5.6-luna": "azure-speech",
 }
 
 SYNTHETIC_HISTORY = (
@@ -227,7 +234,7 @@ def build_canary_url(
         if selected_region is not None:
             raise CanaryInputError("Region is allowed only for azure_openai.")
         if selected_model not in SPEECH_MODEL_TRANSCRIPTION:
-            raise CanaryInputError("Speech model is not in the approved six-model allowlist.")
+            raise CanaryInputError("Speech model is not in the approved managed-model allowlist.")
 
     query: list[tuple[str, str]] = [
         ("provider", provider),
@@ -246,7 +253,7 @@ def build_canary_url(
 def speech_session_update(model: str) -> str:
     transcription = SPEECH_MODEL_TRANSCRIPTION.get(model)
     if transcription is None:
-        raise CanaryInputError("Speech model is not in the approved six-model allowlist.")
+        raise CanaryInputError("Speech model is not in the approved managed-model allowlist.")
     return compact_json(
         {
             "type": "session.update",

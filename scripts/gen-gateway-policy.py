@@ -1105,10 +1105,17 @@ def validate_speech_voice_live_policy(policy: str, source: str) -> None:
     model_ids = (
         "gpt-realtime",
         "gpt-realtime-mini",
+        "gpt-realtime-1.5",
+        "gpt-realtime-2.1",
+        "gpt-realtime-2.1-mini",
         "gpt-4.1",
         "gpt-4.1-mini",
         "gpt-5-mini",
         "gpt-5.1",
+        "gpt-5.2",
+        "gpt-5.4",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
     )
     model_override = fixed_params.get("model", "")
     if (

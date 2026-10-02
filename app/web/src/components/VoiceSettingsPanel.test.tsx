@@ -201,7 +201,22 @@ describe("VoiceSettingsPanel", () => {
     });
     expect(screen.queryByRole("combobox", { name: "Locale" })).toBeNull();
     const model = screen.getByRole("combobox", { name: "Speech model" });
-    expect(within(model).getAllByRole("option")).toHaveLength(6);
+    expect(within(model).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "GPT Realtime",
+      "GPT Realtime Mini",
+      "GPT Realtime 1.5",
+      "GPT Realtime 2.1",
+      "GPT Realtime 2.1 Mini",
+      "GPT-4.1",
+      "GPT-4.1 Mini",
+      "GPT-5 Mini",
+      "GPT-5.1",
+      "GPT-5.2",
+      "GPT-5.4",
+      "GPT-5.6 Terra",
+      "GPT-5.6 Luna",
+    ]);
+    expect(model).toHaveValue("gpt-realtime");
     const transcription = screen.getByRole("combobox", { name: "Transcription" });
     expect(within(transcription).getAllByRole("option").map((o) => o.textContent)).toEqual([
       "Model default (GPT-4o Transcribe)",
@@ -235,6 +250,36 @@ describe("VoiceSettingsPanel", () => {
     expect(onSpeechModelChange).toHaveBeenCalledWith("gpt-5.1");
     expect(onModelChange).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["gpt-realtime-1.5", "Native audio · GPT-4o Transcribe · eastus2", "GPT-4o Transcribe"],
+    ["gpt-realtime-2.1", "Native audio · GPT-4o Transcribe · eastus2", "GPT-4o Transcribe"],
+    ["gpt-realtime-2.1-mini", "Native audio · GPT-4o Transcribe · eastus2", "GPT-4o Transcribe"],
+    ["gpt-5.2", "Azure Speech chain · Azure Speech · eastus2", "Azure Speech"],
+    ["gpt-5.4", "Azure Speech chain · Azure Speech · eastus2", "Azure Speech"],
+    ["gpt-5.6-terra", "Azure Speech chain · Azure Speech · eastus2", "Azure Speech"],
+    ["gpt-5.6-luna", "Azure Speech chain · Azure Speech · eastus2", "Azure Speech"],
+  ])(
+    "offers the newer Speech model %s with its catalog profile and the MAI option",
+    async (modelId, summary, defaultTranscription) => {
+      const { user, onSpeechModelChange } = setup({
+        provider: "speech_voice_live",
+        activeProvider: voiceProviderCatalog.providers[1],
+        voice: voiceProviderCatalog.providers[1].capabilities.voices.default,
+        speechModel: modelId,
+      });
+      const model = screen.getByRole("combobox", { name: "Speech model" });
+      expect(model).toHaveValue(modelId);
+      expect(screen.getByText(summary)).toBeInTheDocument();
+      const transcription = screen.getByRole("combobox", { name: "Transcription" });
+      expect(within(transcription).getAllByRole("option").map((o) => o.textContent)).toEqual([
+        `Model default (${defaultTranscription})`,
+        "MAI Transcribe 2 (preview)",
+      ]);
+      await user.selectOptions(model, "gpt-realtime");
+      expect(onSpeechModelChange).toHaveBeenCalledWith("gpt-realtime");
+    },
+  );
 
   it("chooses MAI transcription as a labelled preview and returns to the model default", async () => {
     const { user, rerender, onSpeechSettingsChange, onSettingsChange } = setup({

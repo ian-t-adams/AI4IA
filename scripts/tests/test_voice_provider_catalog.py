@@ -21,10 +21,39 @@ PHOTO_AVATAR_POLICY = REPO_ROOT / "infra" / "policies" / "photo-avatars.xml"
 EXPECTED_MODELS = (
     ("gpt-realtime", "native_audio", "openai", "gpt-4o-transcribe"),
     ("gpt-realtime-mini", "native_audio", "openai", "gpt-4o-transcribe"),
+    ("gpt-realtime-1.5", "native_audio", "openai", "gpt-4o-transcribe"),
+    ("gpt-realtime-2.1", "native_audio", "openai", "gpt-4o-transcribe"),
+    ("gpt-realtime-2.1-mini", "native_audio", "openai", "gpt-4o-transcribe"),
     ("gpt-4.1", "azure_speech_chain", "azure_speech", "azure-speech"),
     ("gpt-4.1-mini", "azure_speech_chain", "azure_speech", "azure-speech"),
     ("gpt-5-mini", "azure_speech_chain", "azure_speech", "azure-speech"),
     ("gpt-5.1", "azure_speech_chain", "azure_speech", "azure-speech"),
+    ("gpt-5.2", "azure_speech_chain", "azure_speech", "azure-speech"),
+    ("gpt-5.4", "azure_speech_chain", "azure_speech", "azure-speech"),
+    ("gpt-5.6-terra", "azure_speech_chain", "azure_speech", "azure-speech"),
+    ("gpt-5.6-luna", "azure_speech_chain", "azure_speech", "azure-speech"),
+)
+ADDED_MODEL_IDS = (
+    "gpt-realtime-1.5",
+    "gpt-realtime-2.1",
+    "gpt-realtime-2.1-mini",
+    "gpt-5.2",
+    "gpt-5.4",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+)
+# Names the catalog must not accept: GPT-6/6.1 are not Voice Live models,
+# gpt-5.5 and gpt-5.4-mini/nano are bring-your-own-model only, azure-realtime
+# needs its own voice type, and Data Zone variants are separately named models.
+UNSUPPORTED_MODEL_IDS = (
+    "gpt-6",
+    "gpt-6.1",
+    "gpt-5.5",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "azure-realtime",
+    "gpt-realtime-2.1-datazone",
+    "gpt-realtime-2",
 )
 SPEECH_GA_VOICES = [
     "en-US-Ava:DragonHDLatestNeural",
@@ -315,6 +344,55 @@ class VoiceProviderCatalogTests(unittest.TestCase):
             with self.subTest(label=label):
                 self.assert_schema_rejects(mutated)
                 self.assert_generator_rejects(mutated)
+
+    def _model_index(self, model_id: str) -> int:
+        ids = [model["id"] for model in self.speech["managedModels"]]
+        self.assertIn(model_id, ids)
+        return ids.index(model_id)
+
+    def test_schema_and_generator_reject_unsupported_ids_in_added_positions(self) -> None:
+        for model_id in ADDED_MODEL_IDS:
+            index = self._model_index(model_id)
+            for unsupported in UNSUPPORTED_MODEL_IDS:
+                with self.subTest(position=model_id, replacement=unsupported):
+                    mutated = copy.deepcopy(self.raw)
+                    mutated["providers"][1]["managedModels"][index]["id"] = unsupported
+                    self.assert_schema_rejects(mutated)
+                    self.assert_generator_rejects(mutated)
+
+    def test_schema_and_generator_pin_each_added_model_contract(self) -> None:
+        jsonschema.validate(self.raw, self.schema)
+        self.gen.build_catalog(self.raw)
+        transcription = {
+            "native_audio": {"provider": "openai", "model": "gpt-4o-transcribe"},
+            "azure_speech_chain": {"provider": "azure_speech", "model": "azure-speech"},
+        }
+        other_profile = {
+            "native_audio": "azure_speech_chain",
+            "azure_speech_chain": "native_audio",
+        }
+        for model_id in ADDED_MODEL_IDS:
+            index = self._model_index(model_id)
+            profile = self.speech["managedModels"][index]["profile"]
+            swapped = other_profile[profile]
+            changes = {
+                "other profile's transcription": lambda m, s=swapped: m.update(
+                    {"inputTranscription": copy.deepcopy(transcription[s])}
+                ),
+                "other profile": lambda m, s=swapped: m.update({"profile": s}),
+                "other profile and its transcription": lambda m, s=swapped: m.update(
+                    {"profile": s, "inputTranscription": copy.deepcopy(transcription[s])}
+                ),
+                "newer api version": lambda m: m.update({"apiVersion": "2026-07-15"}),
+                "other region": lambda m: m.update({"initialRegion": "swedencentral"}),
+                "missing transcription": lambda m: m.pop("inputTranscription"),
+            }
+            for label, change in changes.items():
+                with self.subTest(model=model_id, label=label):
+                    mutated = copy.deepcopy(self.raw)
+                    change(mutated["providers"][1]["managedModels"][index])
+                    self.assert_schema_rejects(mutated)
+                    self.assert_generator_rejects(mutated)
 
     def test_generator_rejects_custom_voice(self) -> None:
         mutated = copy.deepcopy(self.raw)
