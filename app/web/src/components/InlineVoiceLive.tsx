@@ -648,8 +648,12 @@ export function useInlineVoiceLive({
 
 export function InlineVoiceLiveStatus({
   voice,
+  onRetry,
 }: {
   voice: InlineVoiceLiveState;
+  // Starts a new session after a failed one; callers pass their gated start so
+  // a retry is refused for the same reasons as any other start.
+  onRetry?: () => void;
 }) {
   if (!voice.enabled) return null;
 
@@ -684,7 +688,7 @@ export function InlineVoiceLiveStatus({
       )}
       <span className="voice-call-actions">
         {voice.error && !voice.active && !voice.persistenceError && (
-          <button type="button" className="btn btn-sm" onClick={voice.start}>
+          <button type="button" className="btn btn-sm" onClick={onRetry ?? voice.start}>
             Retry
           </button>
         )}

@@ -1,3 +1,8 @@
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { webBuildId } from "./build-id.mjs";
+
 // Baseline security response headers applied to every route.
 //
 // The Content-Security-Policy is NOT set here: it is now issued per-request by
@@ -29,6 +34,12 @@ const securityHeaders = [
 const nextConfig = {
   output: "standalone",
   reactStrictMode: true,
+  // One build identifier, inlined at build time into the client bundle and the
+  // public `/build-id` route alike (see build-id.mjs). A tab compares the two to
+  // offer a reload after a newer build is deployed; runtime env can't change it.
+  env: {
+    AI4IA_WEB_BUILD_ID: webBuildId(dirname(fileURLToPath(import.meta.url))),
+  },
   // No next/image is used in this app (all image render sites use a plain
   // <img> with eslint-disable-next-line @next/next/no-img-element). Setting
   // unoptimized:true disables the built-in image optimizer so that sharp is

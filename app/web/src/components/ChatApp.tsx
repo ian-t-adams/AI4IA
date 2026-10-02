@@ -104,7 +104,9 @@ import {
   UNKNOWN_STREAM_OUTCOME,
 } from "@/lib/sessionMutation";
 import { performBoundUpload } from "@/lib/uploadSession";
+import { reloadPage, useStaleWebBuild } from "@/lib/webBuild";
 import { ChatHeader } from "./ChatHeader";
+import { StaleBuildBanner } from "./StaleBuildBanner";
 import { WorkspacePage } from "./WorkspacePage";
 import { useWorkspacePanels } from "./useWorkspacePanels";
 import { VIEW_TITLES, type WorkspaceView } from "@/lib/workspaceView";
@@ -198,6 +200,11 @@ function subscribeAvatarVideoSupport(): () => void {
 // off mid-reply, so navigation waits for the user to end it.
 const LIVE_SESSION_LOCK_REASON =
   "End the live voice session before switching conversations. Its transcript is saved to this conversation when it ends.";
+
+// Voice behavior lives in client code, so a tab running an older build than the
+// one deployed asks for a reload before it starts a new live session.
+const STALE_BUILD_VOICE_REASON =
+  "A new version of AI4IA is available. Reload the page before starting a voice session.";
 
 export function ChatApp() {
   const owner = useCurrentOwner();
@@ -2214,14 +2221,18 @@ export function ChatApp() {
             ?? (!selectedLiveAvatar
               ? "This avatar is no longer ready or available. Choose another avatar or Voice only."
               : null));
+  // A newer deployed web build blocks new live sessions (any provider, with or
+  // without an avatar) until the page is reloaded; a running session continues.
+  const staleBuild = useStaleWebBuild();
+  const voiceStartBlockedReason = staleBuild ? STALE_BUILD_VOICE_REASON : avatarStartBlockedReason;
   const startVoice = inlineVoice.start;
   const startInlineVoice = useCallback(() => {
-    if (avatarStartBlockedReason) {
-      setError(avatarStartBlockedReason);
+    if (voiceStartBlockedReason) {
+      setError(voiceStartBlockedReason);
       return;
     }
     startVoice();
-  }, [avatarStartBlockedReason, startVoice]);
+  }, [voiceStartBlockedReason, startVoice]);
   const usePhotoAvatarInVoice = useCallback((avatar: PhotoAvatar) => {
     if (!owner.isCurrent()) return;
     if (avatarVoiceUseDisabledReason || !photoAvatarsEnabled || !avatar.usable || avatar.status !== "ready") {
@@ -2276,6 +2287,31 @@ export function ChatApp() {
     window.addEventListener("beforeunload", warnBeforeUnload);
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
   }, [voiceExitLocked]);
+  // The new-version banner never reloads by itself. Its Reload waits while a
+  // reload would end a live call, drop an unsaved transcript, cut off a reply or
+  // abandon an upload, and confirms before clearing an unsent message.
+  const reloadBlockedReason = inlineVoice.active
+    ? "Reload after your voice session ends."
+    : inlineVoice.saving || voiceExitLocked || inlineVoice.persistenceError
+      ? "Reload after the voice transcript is saved."
+      : streaming
+        ? "Reload when the reply finishes."
+        : uploading
+          ? "Reload when your uploads finish."
+          : null;
+  const composerDraftRef = useRef(false);
+  const onComposerDraftChange = useCallback((hasDraft: boolean) => {
+    composerDraftRef.current = hasDraft;
+  }, []);
+  const reloadForNewVersion = useCallback(() => {
+    if (
+      composerDraftRef.current &&
+      !window.confirm("Reload now? The message you haven't sent will be cleared.")
+    ) {
+      return;
+    }
+    reloadPage();
+  }, []);
   const discardVoicePersistence = inlineVoice.discardPersistence;
   const prepareSignOut = useCallback((): boolean => {
     const consequences: string[] = [];
@@ -3348,6 +3384,9 @@ export function ChatApp() {
         }
         style={{ minWidth: 0 }}
       >
+        {staleBuild ? (
+          <StaleBuildBanner blockedReason={reloadBlockedReason} onReload={reloadForNewVersion} />
+        ) : null}
         <div className="app-view" hidden={view !== "chat"}>
           <ChatHeader
             title={
@@ -3428,7 +3467,7 @@ export function ChatApp() {
                       key={owner.key}
                       avatar={selectedLiveAvatar}
                       voice={voicePrefsResolved.speech.voice}
-                      disabledReason={avatarStartBlockedReason}
+                      disabledReason={voiceStartBlockedReason}
                       locked={voiceSelectionLocked}
                       focusRequest={liveAvatarFocusRequest}
                       onStart={startInlineVoice}
@@ -3489,7 +3528,7 @@ export function ChatApp() {
                     compact
                     avatar={selectedLiveAvatar}
                     voice={voicePrefsResolved.speech.voice}
-                    disabledReason={avatarStartBlockedReason}
+                    disabledReason={voiceStartBlockedReason}
                     locked={voiceSelectionLocked}
                     focusRequest={liveAvatarFocusRequest}
                     onStart={startInlineVoice}
@@ -3498,7 +3537,9 @@ export function ChatApp() {
                     onToggleSize={() => setLobbyCompact(false)}
                   />
                 ) : null}
-                {showCallBar ? <InlineVoiceLiveStatus voice={inlineVoice} /> : null}
+                {showCallBar ? (
+                  <InlineVoiceLiveStatus voice={inlineVoice} onRetry={startInlineVoice} />
+                ) : null}
             <ToolApprovalPanel
               prompts={toolApprovals}
               busy={streaming}
@@ -3538,6 +3579,7 @@ export function ChatApp() {
               onRemoveLibraryDocument={removeLibraryDocument}
               onError={setError}
               prefill={composerPrefill}
+              onDraftChange={onComposerDraftChange}
               live={composerLive}
               voiceLive={
                 voiceLiveEnabled
@@ -3549,7 +3591,7 @@ export function ChatApp() {
                       saving: inlineVoice.saving,
                       saveBlocked: Boolean(inlineVoice.persistenceError),
                       retrying: Boolean(inlineVoice.error),
-                      startBlockedReason: avatarStartBlockedReason,
+                      startBlockedReason: voiceStartBlockedReason,
                       start: startInlineVoice,
                       stop: inlineVoice.stop,
                     }

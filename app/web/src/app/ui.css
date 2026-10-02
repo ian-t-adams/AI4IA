@@ -535,8 +535,10 @@
   }
 }
 
-/* After an accepted deletion: a slim status line above the conversation. */
-.deletion-notice {
+/* After an accepted deletion, or when a newer web build is serving: a slim
+   status line above the conversation. */
+.deletion-notice,
+.build-notice {
   display: flex;
   flex: 0 0 auto;
   flex-wrap: wrap;
@@ -548,27 +550,32 @@
   font-size: var(--text-sm);
 }
 
-.deletion-notice-text {
+.deletion-notice-text,
+.build-notice-text {
   flex: 1 1 320px;
   min-width: 0;
 }
 
-.deletion-notice p {
+.deletion-notice p,
+.build-notice p {
   margin: 0;
 }
 
-.deletion-notice p[role="status"] {
+.deletion-notice p[role="status"],
+.build-notice p[role="status"] {
   color: var(--info);
   font-weight: 600;
 }
 
-.deletion-notice p + p {
+.deletion-notice p + p,
+.build-notice p + p {
   margin-top: 2px;
   color: var(--fg-muted);
   font-size: var(--text-xs);
 }
 
-.deletion-notice-actions {
+.deletion-notice-actions,
+.build-notice-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
