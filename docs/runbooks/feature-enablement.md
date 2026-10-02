@@ -1645,6 +1645,18 @@ photoAvatarLiveIdleTimeoutSeconds=120    # optional; 30-900, live avatar session
   policy, the `photo-avatar-project` named value and an API-scoped subscription;
 - the `Host-photoavatars` proxy host holding that subscription's key.
 
+Live use additionally requires both `AI4IA_VOICE_LIVE_ENABLED=true` and
+`AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` in the approved environment. The main
+template already wires the relay and browser voice control to the same root
+flag, and the photo avatar settings to the API. The gallery reads the
+authenticated API config; there is no browser-only avatar enablement switch.
+Keep the source avatar default off rather than replacing an operator's approved
+environment settings with a new global default.
+
+For an existing deployment, apply these settings through the
+[routine release workflow](deployment.md). A standalone `azd provision` is not
+an application release and can leave a placeholder image serving.
+
 No role assignment is added: APIM's system identity already has Cognitive
 Services User on every regional account. Outside local, startup refuses unless
 Entra, Cosmos, durable HTTPS Blob and usage metering are configured, and unless
@@ -1693,9 +1705,11 @@ the outcome:
 4. Delete the avatar, and confirm the record, the Blob preview and the provider
    avatar are all gone.
 5. Confirm the usage ledger holds one known $2 estimate for the create.
-6. **Live avatar (Phase 2).** This needs Speech Voice Live enabled. In the Speech
-   voice settings, pick the ready avatar and start a signed-in session against
-   the direct API Container App socket.
+6. **Live avatar (Phase 2).** This needs Speech Voice Live enabled. In the gallery,
+   choose **Use in Voice Live** on a ready avatar, then **Start talking** in chat.
+   Selection must switch to Azure Speech without opening the microphone or a
+   billed session. The start action opens the existing API Container App socket,
+   whose relay reaches the separately scoped APIM Voice Live API.
    - The avatar must appear and speak within a few seconds, with the
      `AI-generated` label visible.
    - The `voice_live_completion` log must show `avatar.confirmed=true` and no
@@ -1732,6 +1746,15 @@ delete them with 409 `avatar_home_changed`. Delete every avatar before the chang
 if you can. Otherwise, removing each one is an operator data change: delete the
 provider avatar in the previous home account, then its preview Blob and its record
 and ledger entry in the owner's partition, and record the change.
+
+**Model refresh and cleanup.** Updating the HTTP model catalog does not change
+the avatar's home account or add models to Speech's curated managed subset.
+Retiring an old model deployment is a separate, exact-resource operation: do not
+remove the shared Foundry account/project, the avatar APIM API, Cosmos records or
+Blob previews as part of freeing model quota. Removing or disabling catalog
+rows is not proof of physical deletion; ARM Incremental retains resources no
+longer declared by the template. The existing realtime protocol/cutover approval
+and the [staged GA procedure](#staged-ga-realtime) still apply.
 
 **Degradation and rollback.**
 
