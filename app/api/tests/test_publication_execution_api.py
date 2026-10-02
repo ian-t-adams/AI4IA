@@ -9,6 +9,7 @@ import httpx
 import jwt
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from ai4ia_api.catalog import load_catalog
 from ai4ia_api.gateway.client import ModelGatewayClient
@@ -272,6 +273,29 @@ def test_published_voice_rechecks_frames_and_keeps_server_source_receipt(publish
     assert event["executionReceipt"]["runtime"]["publication"]["source"] == source
     assert event["executionReceipt"]["runtime"]["publication"]["effectiveSubsetDigest"]
     assert event["executionReceipt"]["usage"]["known"] is False
+    # The reviewed persona was bound first; the receipt names its source and the
+    # delivery guidance version the relay appended, never the guidance text.
+    assert event["executionReceipt"]["runtime"]["instructionSource"] == "agent"
+    assert "voice_delivery_guidance_v1" in event["executionReceipt"]["notes"]
+    assert "Voice delivery:" not in json.dumps(event["executionReceipt"])
+
+    # Control: a session that never connected claims no delivered guidance.
+    state.realtime_connector = FakeRealtimeConnector(fail=True)
+    with client.websocket_connect(
+        f"/api/voice/live?session={sid}&model={model}",
+        headers={"origin": "http://localhost:3000"},
+        subprotocols=[BEARER_SUBPROTOCOL, consumer["Authorization"].split(" ", 1)[1]],
+    ) as ws:
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_text()
+    receipts = [
+        message["executionReceipt"]
+        for message in client.get(f"/api/sessions/{sid}/messages", headers=consumer).json()
+        if message.get("executionReceipt")
+    ]
+    assert len(receipts) == 2
+    assert "voice_not_started" in receipts[-1]["notes"]
+    assert "voice_delivery_guidance_v1" not in receipts[-1]["notes"]
 
 
 def test_explicit_empty_document_scope_records_supported_optional_narrowing(published_api):

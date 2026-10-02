@@ -41,6 +41,7 @@ from ai4ia_api.realtime_avatar import (
     unavailable_error,
 )
 from ai4ia_api.usage.pricing import PricingBook, load_pricing
+from ai4ia_api.voice_delivery import VOICE_DELIVERY_GUIDANCE_VERSION, compose_voice_instructions
 from ai4ia_api.routers.realtime import (
     BEARER_SUBPROTOCOL,
     DEV_SUBPROTOCOL,
@@ -1530,7 +1531,12 @@ def test_build_session_bridge_agent_scopes_tools_and_persona():
             agent_name="analyst",
         )
     )
-    assert bridge.instructions == "ANALYST"
+    # Persona first and unchanged, then the server-owned voice delivery guidance.
+    assert bridge.instructions == compose_voice_instructions("ANALYST", avatar=False)
+    assert bridge.instructions.startswith("ANALYST\n\nVoice delivery:")
+    assert bridge.instructions_authoritative is True
+    assert bridge.instruction_source == "agent"
+    assert bridge.delivery_guidance == VOICE_DELIVERY_GUIDANCE_VERSION
     # Scoped to the agent's allowlist: calculator only, NOT get_current_time.
     assert {t["name"] for t in bridge.tools} == {"calculator"}
 
@@ -1546,7 +1552,7 @@ def test_build_session_bridge_agent_persona_without_tools_when_tools_disabled():
             agent_name="coder",
         )
     )
-    assert bridge.instructions == "CODER"
+    assert bridge.instructions == compose_voice_instructions("CODER", avatar=False)
     assert bridge.tools == []  # persona-only when realtime tools are off
 
 
@@ -1561,7 +1567,8 @@ def test_build_session_bridge_unknown_agent_falls_back_to_generic():
             agent_name="nope",
         )
     )
-    assert bridge.instructions is None
+    assert bridge.instructions == compose_voice_instructions(None, avatar=False)
+    assert bridge.instruction_source == "default"
     assert {t["name"] for t in bridge.tools} >= {"calculator", "get_current_time"}
 
 
@@ -1576,7 +1583,7 @@ def test_build_session_bridge_disabled_agent_falls_back_to_generic():
             agent_name="off",
         )
     )
-    assert bridge.instructions is None
+    assert bridge.instructions == compose_voice_instructions(None, avatar=False)
     assert {t["name"] for t in bridge.tools} >= {"get_current_time"}
 
 
@@ -1591,7 +1598,8 @@ def test_build_session_bridge_no_agent_is_generic():
             agent_name=None,
         )
     )
-    assert bridge.instructions is None
+    assert bridge.instructions == compose_voice_instructions(None, avatar=False)
+    assert bridge.instructions_authoritative is True
     assert {t["name"] for t in bridge.tools} >= {"calculator", "get_current_time"}
 
 
@@ -1606,7 +1614,8 @@ def test_build_session_bridge_store_error_falls_back_to_generic():
             agent_name="analyst",
         )
     )
-    assert bridge.instructions is None  # fail OPEN to the generic assistant
+    # Fail OPEN to the generic assistant, which still gets the delivery guidance.
+    assert bridge.instructions == compose_voice_instructions(None, avatar=False)
     assert bridge.tools  # builtins still offered
 
 

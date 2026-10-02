@@ -87,6 +87,7 @@ export function Composer({
   voiceLive,
   live,
   prefill,
+  onDraftChange,
 }: {
   disabled: boolean;
   streaming: boolean;
@@ -107,6 +108,9 @@ export function Composer({
   onRemoveLibraryDocument?: (id: string) => void;
   onError?: (message: string) => void;
   prefill?: { id: number; text: string } | null;
+  // Told whether the box holds a message that hasn't been sent, so the app can
+  // warn before a reload would clear it.
+  onDraftChange?: (hasDraft: boolean) => void;
   // Inline Voice Live controller. Unlike dictation, this starts/stops the
   // realtime conversation without leaving or covering the chat.
   voiceLive?: {
@@ -146,6 +150,11 @@ export function Composer({
   // Caret position to restore after a programmatic value change (insertion).
   const pendingCaret = useRef<number | null>(null);
   const appliedPrefillId = useRef<number | null>(null);
+
+  const hasDraft = text.trim().length > 0;
+  useEffect(() => {
+    onDraftChange?.(hasDraft);
+  }, [hasDraft, onDraftChange]);
 
   useEffect(() => {
     if (!prefill || appliedPrefillId.current === prefill.id) return;

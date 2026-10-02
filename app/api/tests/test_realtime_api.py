@@ -30,6 +30,7 @@ from ai4ia_api.routers.realtime import (
     UpstreamMessage,
 )
 from ai4ia_api.usage.pricing import PricingBook
+from ai4ia_api.voice_delivery import compose_voice_instructions
 from tests.conftest import make_settings
 from tests.test_photo_avatar_live import OTHER_RECORD_ID as AVATAR_OTHER_RECORD_ID
 from tests.test_photo_avatar_live import PROVIDER_ID as AVATAR_PROVIDER_ID
@@ -37,6 +38,9 @@ from tests.test_photo_avatar_live import RECORD_ID as AVATAR_RECORD_ID
 from tests.test_photo_avatar_live import Rig as AvatarRig
 
 ADMIN = {"X-Dev-User": "alice"}
+# Every live session's instructions end with the server-owned delivery guidance;
+# a session with no persona or saved instructions gets the guidance alone.
+GENERIC_VOICE = compose_voice_instructions(None, avatar=False)
 
 
 def _origin(value: str = "http://localhost:3000") -> dict[str, str]:
@@ -361,7 +365,7 @@ def test_live_relay_pumps_both_directions(client):
         "/api/voice/live", subprotocols=[DEV_SUBPROTOCOL, "liveuser"], headers=_origin()
     ) as ws:
         ws.send_text('{"type":"session.update"}')
-        assert ws.receive_text() == 'echo:{"type":"session.update"}'
+        configured = json.loads(ws.receive_text().removeprefix("echo:"))
         ws.send_bytes(b"\x01\x02pcm")
         assert ws.receive_bytes() == b"echo:\x01\x02pcm"
 
@@ -370,7 +374,9 @@ def test_live_relay_pumps_both_directions(client):
     opened = connector.connects[0]
     assert opened["url"].startswith("wss://realtime-gateway.test/openai/realtime")
     assert "deployment=" in opened["url"]
-    assert connector.upstream.sent_text == ['{"type":"session.update"}']
+    # The session.update gains only the server-owned instructions; audio is untouched.
+    assert configured == {"type": "session.update", "session": {"instructions": GENERIC_VOICE}}
+    assert [json.loads(frame) for frame in connector.upstream.sent_text] == [configured]
     assert connector.upstream.sent_bytes == [b"\x01\x02pcm"]
     assert connector.upstream.closed is True
 
@@ -562,10 +568,11 @@ def test_live_speech_reconstructs_response_create_before_forwarding():
                 )
             )
             assert json.loads(ws.receive_text().removeprefix("echo:")) == {
-                "type": "response.create"
+                "type": "response.create", "response": {"instructions": GENERIC_VOICE},
             }
+        # Only the relay's own instructions survive: no client voice or tools.
         assert [json.loads(frame) for frame in connector.upstream.sent_text] == [
-            {"type": "response.create"}
+            {"type": "response.create", "response": {"instructions": GENERIC_VOICE}}
         ]
     finally:
         c.__exit__(None, None, None)
@@ -1198,8 +1205,9 @@ def test_live_tool_call_executed_and_returned_upstream():
 
 
 def test_live_tools_disabled_does_not_inject_or_execute():
-    # realtime_enabled but tools OFF -> relay stays a transparent pump: the
-    # session.update is forwarded byte-for-byte and no tool frames are injected.
+    # realtime_enabled but tools OFF -> no tool is advertised or executed: the
+    # session.update keeps the client's fields and gains only the server-owned
+    # instructions, and no tool frames are injected.
     import json
 
     c = _client(realtime_enabled=True)
@@ -1216,16 +1224,18 @@ def test_live_tools_disabled_does_not_inject_or_execute():
             )
 
         sent = connector.upstream.sent_text
-        # ...but the relay neither rewrote the session.update nor replied to the call.
-        assert sent == ['{"type":"session.update","session":{"voice":"verse"}}']
+        # ...but the relay advertised no tools and did not reply to the call.
+        assert [json.loads(frame) for frame in sent] == [
+            {"type": "session.update", "session": {"voice": "verse", "instructions": GENERIC_VOICE}}
+        ]
     finally:
         c.__exit__(None, None, None)
 
 
 def test_live_tools_flag_on_but_no_opt_in_stays_passthrough():
     # The server flag is ON, but the browser did NOT opt in (?tools= absent). The
-    # per-session opt-in defaults OFF, so the relay stays a transparent pump: the
-    # session.update is forwarded byte-for-byte and no tool frames are injected.
+    # per-session opt-in defaults OFF, so no tool is advertised and no tool frames
+    # are injected; only the server-owned instructions are added.
     # This is the default-OFF safety guarantee for tools in voice.
     import json
 
@@ -1242,7 +1252,9 @@ def test_live_tools_flag_on_but_no_opt_in_stays_passthrough():
             )
 
         sent = connector.upstream.sent_text
-        assert sent == ['{"type":"session.update","session":{"voice":"verse"}}']
+        assert [json.loads(frame) for frame in sent] == [
+            {"type": "session.update", "session": {"voice": "verse", "instructions": GENERIC_VOICE}}
+        ]
     finally:
         c.__exit__(None, None, None)
 
@@ -1305,7 +1317,7 @@ def test_live_agent_persona_only_when_tools_disabled():
 
 def test_live_unknown_agent_falls_back_to_generic_passthrough():
     # An unknown ?agent= must not break the session: it falls back to the generic
-    # assistant, and with tools off the relay stays a byte-for-byte pump.
+    # assistant, whose session.update carries only the delivery guidance.
     c = _client(realtime_enabled=True)
     try:
         connector = FakeRealtimeConnector()
@@ -1316,9 +1328,11 @@ def test_live_unknown_agent_falls_back_to_generic_passthrough():
             headers=_origin(),
         ) as ws:
             ws.send_text('{"type":"session.update"}')
-            assert ws.receive_text() == 'echo:{"type":"session.update"}'
+            ws.receive_text()
 
-        assert connector.upstream.sent_text == ['{"type":"session.update"}']
+        assert [json.loads(frame) for frame in connector.upstream.sent_text] == [
+            {"type": "session.update", "session": {"instructions": GENERIC_VOICE}}
+        ]
     finally:
         c.__exit__(None, None, None)
 

@@ -21,9 +21,10 @@ this relay:
 The event protocol itself stays client-driven (the relay is a mostly-transparent
 pump): the browser sends ``session.update`` / ``input_audio_buffer.append`` and
 receives ``response.audio.delta`` etc. The relay owns only the connection,
-governance, metering, and — when the session is bound to an agent (``?agent=``) —
-the server-authoritative persona instructions + tool allowlist injected into the
-client's ``session.update``. It never drives the turn-by-turn conversation shape.
+governance, metering, and the server-authoritative instructions injected into the
+client's ``session.update``: the bound persona or saved conversation instructions
+(when there are any) followed by the versioned voice delivery guidance, plus the
+tool allowlist. It never drives the turn-by-turn conversation shape.
 """
 from __future__ import annotations
 
@@ -36,7 +37,7 @@ import logging
 import re
 import time
 import unicodedata
-from collections.abc import AsyncIterator, Awaitable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -62,6 +63,7 @@ from ..realtime_canary import (
     SETUP_INPUT, SETUP_MAX_SECONDS, RealtimeSetup, RealtimeSetupRejected,
     current_realtime_setup, realtime_setup_scope,
 )
+from .. import realtime_flow as _flow
 from ..realtime_protocol import (
     RealtimeProtocol,
     rewrite_ga_upstream_frame,
@@ -90,7 +92,10 @@ from ..publishing.models import PublicationError
 from ..publishing.refs import AssetVersionRef
 from ..receipts import (
     ReceiptAvatarCost, ReceiptAvatarEvidence, ReceiptRuntime, ReceiptToolCall, build_receipt,
-    enforce_receipt_budget, json_payload, safe_tool_label,
+    enforce_receipt_budget, json_payload, safe_tool_label, text_payload,
+)
+from ..voice_delivery import (
+    VOICE_DELIVERY_GUIDANCE_VERSION, VOICE_DELIVERY_RECEIPT_NOTE, compose_voice_instructions,
 )
 from ..voice_provider_catalog import (
     AZURE_OPENAI_PROVIDER_ID,
@@ -875,9 +880,10 @@ class AiohttpRealtimeConnector:
 # When the session is bound to an agent (``?agent=``) the same session.update
 # rewrite also sets the server-authoritative persona ``instructions`` (so a voice
 # turn carries the same persona as a chat @mention, and the browser can't spoof a
-# different one). Every other frame (audio, transcripts, all other events) is
-# forwarded verbatim, and with no tools and no agent persona the bridge is an
-# inert pass-through so the relay's byte-for-byte transparent-pump behavior is preserved.
+# different one). Every live session's instructions end with the server-owned
+# voice delivery guidance (``voice_delivery``), so the relay always owns them.
+# Every other frame (audio, transcripts, all other events) is forwarded
+# verbatim; only session.update and response.create configuration is rewritten.
 # --------------------------------------------------------------------------- #
 
 SESSION_UPDATE_TYPE = "session.update"
@@ -1040,6 +1046,12 @@ class ToolBridge:
     instructions: str | None = None
     instructions_authoritative: bool = False
     source_version: AssetVersionRef | None = None
+    # Evidence about the bound instructions, never the text itself: where the
+    # persona/session part came from (as chat receipts name it), its digest, and
+    # the delivery guidance version the relay appended.
+    instruction_source: str | None = None
+    instruction_sha256: str | None = None
+    delivery_guidance: str | None = None
     calls: list[ReceiptToolCall] = field(default_factory=list)
     call_count: int = 0
 
@@ -1187,6 +1199,18 @@ async def resolve_live_agent(state, user, agent_name: str) -> AgentSpec | None:
     return spec
 
 
+def _bind_voice_instructions(
+    bridge: ToolBridge, base: str | None, *, source: str, avatar: bool,
+) -> ToolBridge:
+    """Make ``base`` plus the delivery guidance the session's only instructions."""
+    bridge.instructions = compose_voice_instructions(base, avatar=avatar)
+    bridge.instructions_authoritative = True
+    bridge.instruction_source = source
+    bridge.instruction_sha256 = text_payload(base).sha256
+    bridge.delivery_guidance = VOICE_DELIVERY_GUIDANCE_VERSION
+    return bridge
+
+
 async def build_session_bridge(
     state,
     settings: Settings,
@@ -1196,6 +1220,7 @@ async def build_session_bridge(
     agent_name: str | None,
     session=None,
     tools_requested: bool = True,
+    avatar: bool = False,
 ) -> ToolBridge:
     """Build the relay bridge for a live session, agent-aware when ``agent_name`` is set.
 
@@ -1204,7 +1229,11 @@ async def build_session_bridge(
     session instructions and the advertised tools are scoped to the agent's own
     allowlist (so a voice turn has the SAME persona + tools as a chat @mention).
     Otherwise the session falls back to the generic assistant with every authorized
-    builtin — the original transparent-pump behavior.
+    builtin.
+
+    Every path ends its instructions with the versioned voice delivery guidance
+    (``avatar`` adds that the user sees an animated avatar), and the relay owns
+    the instructions outright: a browser-supplied value is always replaced.
 
     Session-bound connections use the session's validated effective tool selection
     as the opt-in. The legacy query-bound agent path still honors ``tools_requested``.
@@ -1218,12 +1247,12 @@ async def build_session_bridge(
             settings,
             correlation_id,
             tool_names=policy.voice_tools,
-            instructions=policy.instructions,
             tools_requested=True,
         )
-        bridge.instructions_authoritative = True
         bridge.source_version = policy.agent.sourceVersion if policy.agent is not None else None
-        return bridge
+        return _bind_voice_instructions(
+            bridge, policy.instructions, source=policy.instruction_source, avatar=avatar,
+        )
     if agent_name:
         spec = await resolve_live_agent(state, user, agent_name)
         if spec is not None:
@@ -1232,14 +1261,16 @@ async def build_session_bridge(
                 settings,
                 correlation_id,
                 tool_names=spec.tools,
-                instructions=spec.systemPrompt,
                 tools_requested=tools_requested,
             )
             bridge.source_version = spec.sourceVersion
-            return bridge
-    return build_tool_bridge(
+            return _bind_voice_instructions(
+                bridge, spec.systemPrompt, source="agent", avatar=avatar,
+            )
+    bridge = build_tool_bridge(
         state, settings, correlation_id, tools_requested=tools_requested
     )
+    return _bind_voice_instructions(bridge, None, source="default", avatar=avatar)
 
 
 # --------------------------------------------------------------------------- #
@@ -1276,6 +1307,8 @@ class RelayFrameStats:
     first_monotonic: float | None = None
     last_monotonic: float | None = None
     event_types: tuple[str, ...] = ()
+    # Allowlisted conversation-flow events (realtime_flow), non-zero only.
+    event_counts: tuple[tuple[str, int], ...] = ()
 
     def as_log_dict(self) -> dict[str, object]:
         return {
@@ -1284,6 +1317,7 @@ class RelayFrameStats:
             "firstMonotonic": self.first_monotonic,
             "lastMonotonic": self.last_monotonic,
             "eventTypes": list(self.event_types),
+            "eventCounts": dict(self.event_counts),
         }
 
 
@@ -1291,11 +1325,14 @@ class RelayFrameStats:
 class RelayStats:
     client_to_upstream: RelayFrameStats = field(default_factory=RelayFrameStats)
     upstream_to_client: RelayFrameStats = field(default_factory=RelayFrameStats)
+    # How each response.done ended (realtime_flow.RESPONSE_OUTCOMES), non-zero only.
+    response_outcomes: tuple[tuple[str, int], ...] = ()
 
     def as_log_dict(self) -> dict[str, object]:
         return {
             "clientToUpstream": self.client_to_upstream.as_log_dict(),
             "upstreamToClient": self.upstream_to_client.as_log_dict(),
+            "responseOutcomes": dict(self.response_outcomes),
         }
 
 
@@ -1368,11 +1405,14 @@ class RelayOutcome:
 
 @dataclass(slots=True)
 class _MutableFrameStats:
+    # The direction's allowlisted flow events; other event types are not counted.
+    flow_events: Mapping[str, str] = field(default_factory=dict)
     text_frames: int = 0
     binary_frames: int = 0
     first_monotonic: float | None = None
     last_monotonic: float | None = None
     event_types: list[str] = field(default_factory=list)
+    event_counts: dict[str, int] = field(default_factory=dict)
 
     def observe(self, *, text: bool, event_type: str | None = None) -> None:
         now = time.monotonic()
@@ -1383,6 +1423,8 @@ class _MutableFrameStats:
             self.text_frames += 1
             if event_type is not None and len(self.event_types) < 32:
                 self.event_types.append(event_type)
+            if event_type is not None and event_type in self.flow_events:
+                self.event_counts[event_type] = self.event_counts.get(event_type, 0) + 1
         else:
             self.binary_frames += 1
 
@@ -1393,6 +1435,7 @@ class _MutableFrameStats:
             first_monotonic=self.first_monotonic,
             last_monotonic=self.last_monotonic,
             event_types=tuple(self.event_types),
+            event_counts=_flow.ordered_counts(self.event_counts, self.flow_events),
         )
 
 
@@ -1409,10 +1452,20 @@ class _RelayTermination:
 @dataclass(slots=True)
 class _RelayState:
     stopped: anyio.Event
-    client_stats: _MutableFrameStats = field(default_factory=_MutableFrameStats)
-    upstream_stats: _MutableFrameStats = field(default_factory=_MutableFrameStats)
+    client_stats: _MutableFrameStats = field(
+        default_factory=lambda: _MutableFrameStats(flow_events=_flow.CLIENT_FLOW_EVENTS)
+    )
+    upstream_stats: _MutableFrameStats = field(
+        default_factory=lambda: _MutableFrameStats(flow_events=_flow.UPSTREAM_FLOW_EVENTS)
+    )
+    response_outcomes: dict[str, int] = field(default_factory=dict)
     protocol_error: ProtocolErrorMetadata | None = None
     termination: _RelayTermination | None = None
+
+    def observe_response_done(self, frame: str) -> None:
+        """Count how one ``response.done`` ended; the label set is fixed."""
+        label = _flow.response_outcome(frame)
+        self.response_outcomes[label] = self.response_outcomes.get(label, 0) + 1
 
     def stop(self, termination: _RelayTermination) -> None:
         if self.termination is None:
@@ -1441,6 +1494,9 @@ class _RelayState:
             stats=RelayStats(
                 client_to_upstream=self.client_stats.freeze(),
                 upstream_to_client=self.upstream_stats.freeze(),
+                response_outcomes=_flow.ordered_counts(
+                    self.response_outcomes, _flow.RESPONSE_OUTCOMES,
+                ),
             ),
         )
 
@@ -1744,6 +1800,8 @@ async def _pump_upstream_to_client(
                             decision.inspect, include_protocol_error=True
                         )
                         state.upstream_stats.observe(text=True, event_type=event_type)
+                        if event_type == _flow.RESPONSE_DONE_TYPE:
+                            state.observe_response_done(decision.inspect)
                         if protocol_error is not None and state.protocol_error is None:
                             state.protocol_error = protocol_error
                 else:
@@ -1751,6 +1809,8 @@ async def _pump_upstream_to_client(
                         msg.text, include_protocol_error=True
                     )
                     state.upstream_stats.observe(text=True, event_type=event_type)
+                    if event_type == _flow.RESPONSE_DONE_TYPE:
+                        state.observe_response_done(msg.text)
                     if protocol_error is not None and state.protocol_error is None:
                         state.protocol_error = protocol_error
                     outbound = (
@@ -2057,6 +2117,7 @@ def _emit_relay_completion(
     usage_error: tuple[str | None, str | None] | None,
     avatar: LiveAvatarSession | None = None,
     avatar_usage_error: tuple[str | None, str | None] | None = None,
+    delivery_guidance: str | None = None,
 ) -> None:
     target = resolution.usage_target
     payload: dict[str, object] = {
@@ -2073,6 +2134,7 @@ def _emit_relay_completion(
         },
         "model": resolution.model_id,
         "outcome": outcome.status,
+        "deliveryGuidance": delivery_guidance,
         "metadata": outcome.metadata.as_log_dict(),
         "stats": outcome.stats.as_log_dict(),
     }
@@ -2125,6 +2187,14 @@ def _emit_relay_completion(
         "upstreamTextFrames": outcome.stats.upstream_to_client.text_frames,
         "upstreamBinaryFrames": outcome.stats.upstream_to_client.binary_frames,
         "durationMs": duration_ms,
+        "deliveryGuidance": delivery_guidance,
+        # Allowlisted flow counts and response outcomes as flat numbers; a key
+        # absent from an event that carries flowVersion means zero.
+        **_flow.event_properties(
+            outcome.stats.client_to_upstream.event_counts,
+            outcome.stats.upstream_to_client.event_counts,
+            outcome.stats.response_outcomes,
+        ),
     }
     if avatar is not None and avatar_evidence is not None:
         attributes.update({
@@ -2165,6 +2235,7 @@ async def _finalize_relay(
     resolution: LiveVoiceProviderResolution,
     outcome: RelayOutcome,
     avatar: LiveAvatarSession | None = None,
+    delivery_guidance: str | None = None,
 ) -> None:
     usage_error: tuple[str | None, str | None] | None = None
     cancelled_exc_class = anyio.get_cancelled_exc_class()
@@ -2231,6 +2302,7 @@ async def _finalize_relay(
         usage_error=usage_error,
         avatar=avatar,
         avatar_usage_error=avatar_usage_error,
+        delivery_guidance=delivery_guidance,
     )
     ended = avatar.ended_event() if avatar is not None else None
     if ended is not None:
@@ -2239,6 +2311,11 @@ async def _finalize_relay(
         except (RuntimeError, WebSocketDisconnect):
             pass
     await _deny(websocket, _relay_close_code(outcome))
+
+
+def _delivery_guidance_notes(bridge: ToolBridge) -> list[str]:
+    """The receipt marker for the delivery guidance the relay actually bound."""
+    return [VOICE_DELIVERY_RECEIPT_NOTE] if bridge.delivery_guidance is not None else []
 
 
 async def _record_avatar_receipt(
@@ -2280,6 +2357,8 @@ async def _record_avatar_receipt(
         runtime=ReceiptRuntime(
             modelId=resolution.model_id, api=resolution.protocol,
             region=resolution.usage_target.region, agent=session.agentName,
+            instructionSource=bridge.instruction_source,
+            instructionSha256=bridge.instruction_sha256,
         ),
         correlation_id=correlation_id,
         calls=bridge.calls,
@@ -2292,7 +2371,7 @@ async def _record_avatar_receipt(
         partial=outcome.status != "complete",
         notes=[
             "voice_usage_not_recorded", "voice_model_parameters_not_recorded",
-            "avatar_media_not_recorded",
+            "avatar_media_not_recorded", *_delivery_guidance_notes(bridge),
         ],
     )
     receipt.toolCallCount = bridge.call_count
@@ -2490,13 +2569,15 @@ async def voice_live(websocket: WebSocket) -> None:
         avatar = opened
     # Agent-aware live voice: when the browser names an agent (?agent=), bind that
     # agent's persona + tool allowlist into the session (server-authoritative). The
-    # ?tools= opt-in gates tool advertisement per session (default OFF).
+    # ?tools= opt-in gates tool advertisement per session (default OFF). Every
+    # session's instructions end with the server-owned voice delivery guidance.
     try:
         bridge = await build_session_bridge(
             state, settings, correlation_id, user=user,
             agent_name=None if session is not None else websocket.query_params.get("agent"),
             session=session,
             tools_requested=parse_tools_opt_in(websocket.query_params.get("tools")),
+            avatar=avatar is not None,
         )
     except (PublicationError, PolicyError):
         await _deny(websocket, WS_POLICY_VIOLATION, security_reason="publication_unavailable")
@@ -2630,6 +2711,7 @@ async def voice_live(websocket: WebSocket) -> None:
             resolution=provider_resolution,
             outcome=outcome,
             avatar=avatar,
+            delivery_guidance=bridge.delivery_guidance,
         )
         if avatar is not None and session is not None and publication is None and connected:
             await _record_avatar_receipt(
@@ -2640,6 +2722,8 @@ async def voice_live(websocket: WebSocket) -> None:
             runtime = ReceiptRuntime(
                 modelId=provider_resolution.model_id, deployment=provider_resolution.target_name,
                 api=provider_resolution.protocol, agent=session.agentName,
+                instructionSource=bridge.instruction_source,
+                instructionSha256=bridge.instruction_sha256,
                 publication=publication_evidence(),
             )
             receipt = build_receipt(
@@ -2650,7 +2734,7 @@ async def voice_live(websocket: WebSocket) -> None:
                 partial=outcome.status != "complete",
                 notes=[
                     "voice_usage_not_recorded", "voice_model_parameters_not_recorded",
-                    *(["voice_not_started"] if not connected else []),
+                    *(_delivery_guidance_notes(bridge) if connected else ["voice_not_started"]),
                 ],
             )
             receipt.toolCallCount = bridge.call_count

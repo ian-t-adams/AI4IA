@@ -14,6 +14,7 @@ from ai4ia_api.realtime_protocol import RealtimeProtocol
 from ai4ia_api.routers.realtime import DEV_SUBPROTOCOL, UpstreamMessage
 from tests.test_realtime_api import (
     ADMIN,
+    GENERIC_VOICE,
     FakeRealtimeConnector,
     FakeUsageService,
     ScriptedRealtimeConnector,
@@ -41,6 +42,8 @@ GA_SETTINGS = {
     "realtime_ga_base_url": "https://realtime-gateway.test/openai/v1",
     "realtime_ga_gateway_api_key": "ga-realtime-key",
 }
+# Client events whose configuration object carries relay-owned instructions.
+CONFIGURED_FIELD = {"session.update": "session", "response.create": "response"}
 
 
 @pytest.fixture(params=list(RealtimeProtocol), ids=lambda protocol: protocol.value)
@@ -82,8 +85,13 @@ def test_real_relay_translates_browser_frames_and_owns_the_handshake(protocol_cl
             expected = deepcopy(case["ga"] if protocol == RealtimeProtocol.ga else case["application"])
             if protocol == RealtimeProtocol.ga and expected["type"] == "session.update":
                 expected["session"]["model"] = deployment
+            # The relay owns session and per-response instructions under both
+            # protocols: the shared fixtures plus the server's delivery guidance.
+            configured = CONFIGURED_FIELD.get(expected["type"])
+            if configured is not None:
+                expected[configured]["instructions"] = GENERIC_VOICE
             assert json.loads(forwarded) == expected
-            if protocol == RealtimeProtocol.preview:
+            if protocol == RealtimeProtocol.preview and configured is None:
                 assert forwarded == frame
         ws.send_bytes(b"\x00\x01")
         assert ws.receive_bytes() == b"echo:\x00\x01"
@@ -443,7 +451,10 @@ def test_ga_invalid_config_after_an_accepted_frame_is_not_replayed_or_downgraded
             assert exc.value.code == 1011
             assert len(connector.upstream.sent_text) == 1
         else:
-            assert ws.receive_text() == f"echo:{invalid}"
+            forwarded = json.loads(ws.receive_text().removeprefix("echo:"))
+            assert forwarded == {"type": "session.update", "session": {
+                "audio": {"output": {"voice": "alloy"}}, "instructions": GENERIC_VOICE,
+            }}
     assert len(connector.connects) == len(usage.calls) == 1
     assert connector.upstream.closed
 
