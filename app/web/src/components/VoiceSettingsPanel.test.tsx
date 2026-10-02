@@ -324,16 +324,38 @@ describe("VoiceSettingsPanel live avatar picker", () => {
     expect(screen.queryByRole("combobox", { name: "Avatar" })).toBeNull();
   });
 
-  it("never shows a stale pick and explains an unsupported browser", () => {
+  it("explains an unavailable saved avatar instead of displaying voice only", () => {
     const { rerender } = setup({
       ...speech, avatarChoices: CHOICES, avatarId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       onAvatarChange: vi.fn(),
     });
     const picker = screen.getByRole("combobox", { name: "Avatar" });
-    expect(picker).toHaveValue("");
+    expect(picker).toHaveValue("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(picker).toHaveAttribute("aria-invalid", "true");
+    expect(picker).toHaveAccessibleDescription(/unavailable/);
     rerender({ ...speech, avatarChoices: CHOICES, avatarId: CHOICES[0].id, avatarVideoSupported: false });
     expect(picker).toBeDisabled();
     expect(picker).toHaveValue("");
     expect(picker).toHaveAccessibleDescription(/can't play avatar video/);
+  });
+
+  it("offers the gallery before Azure Speech or an avatar has been selected", async () => {
+    const onOpenPhotoAvatars = vi.fn();
+    const { user } = setup({ onOpenPhotoAvatars });
+    expect(screen.getByText(/Photo avatars use Azure Speech/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Choose avatar" }));
+    expect(onOpenPhotoAvatars).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the gallery reachable for Speech when no avatar is usable yet", async () => {
+    const onOpenPhotoAvatars = vi.fn();
+    const { user, rerender } = setup({
+      ...speech, avatarChoices: [], onAvatarChange: vi.fn(), onOpenPhotoAvatars,
+    });
+    expect(screen.getByRole("combobox", { name: "Avatar" })).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Choose avatar" }));
+    expect(onOpenPhotoAvatars).toHaveBeenCalledTimes(1);
+    rerender({ locked: true });
+    expect(screen.getByRole("button", { name: "Choose avatar" })).toBeDisabled();
   });
 });

@@ -674,8 +674,10 @@ export function InlineVoiceLiveStatus({
       </strong>
       {!error && voice.agentLabel && <span>with {voice.agentLabel}</span>}
       {!error && voice.active && (
-        <span title="Typed messages stay in this chat and are included the next time Voice Live connects.">
-          You can keep typing in this chat.
+        <span>
+          {voice.avatar && !voice.avatar.unsupported
+            ? "Speak into your microphone to talk to the avatar. Typed messages use text chat and aren't spoken."
+            : "Speak into your microphone. Typed messages stay in text chat until the next voice session."}
         </span>
       )}
       {voice.error && !voice.active && !voice.persistenceError && (

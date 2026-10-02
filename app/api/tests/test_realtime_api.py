@@ -1776,14 +1776,15 @@ def test_live_avatar_admission_runs_first_on_its_own_surface(monkeypatch, refuse
 @pytest.mark.parametrize("revoke", [True, False])
 def test_live_avatar_use_is_rechecked_on_every_upstream_send(monkeypatch, revoke):
     revoked = {"on": False}
-    real_require = realtime_module.require_policy
+    real_require = realtime_module.require_policies
 
-    async def guarded(request, **kwargs):
-        if request.operation == "avatar.use" and revoked["on"]:
-            raise PolicyError(PolicyDecision("deny", "policy_denied"))
-        await real_require(request, **kwargs)
+    async def guarded(requests, **kwargs):
+        for request in requests:
+            if request.operation == "avatar.use" and revoked["on"]:
+                raise PolicyError(PolicyDecision("deny", "policy_denied"))
+        await real_require(requests, **kwargs)
 
-    monkeypatch.setattr(realtime_module, "require_policy", guarded)
+    monkeypatch.setattr(realtime_module, "require_policies", guarded)
     append = '{"type":"input_audio_buffer.append","audio":"AAA="}'
     c, rig = _avatar_client()
     try:
@@ -1864,16 +1865,17 @@ def test_live_avatar_watchdog_rechecks_avatar_use_while_the_client_is_silent(mon
     monkeypatch.setattr(realtime_avatar, "POLICY_RECHECK_SECONDS", 0.05)
     checks = {"avatar_use": 0}
     revoked = {"on": False}
-    real_require = realtime_module.require_policy
+    real_require = realtime_module.require_policies
 
-    async def guarded(request, **kwargs):
-        if request.operation == "avatar.use":
-            checks["avatar_use"] += 1
-            if revoked["on"]:
-                raise PolicyError(PolicyDecision("deny", "policy_denied"))
-        await real_require(request, **kwargs)
+    async def guarded(requests, **kwargs):
+        for request in requests:
+            if request.operation == "avatar.use":
+                checks["avatar_use"] += 1
+                if revoked["on"]:
+                    raise PolicyError(PolicyDecision("deny", "policy_denied"))
+        await real_require(requests, **kwargs)
 
-    monkeypatch.setattr(realtime_module, "require_policy", guarded)
+    monkeypatch.setattr(realtime_module, "require_policies", guarded)
     append = '{"type":"input_audio_buffer.append","audio":"AAA="}'
     c, rig = _avatar_client()
     try:

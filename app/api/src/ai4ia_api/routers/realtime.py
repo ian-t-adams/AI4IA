@@ -40,7 +40,7 @@ from collections.abc import AsyncIterator, Awaitable, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol
 from urllib.parse import quote
 
 import aiohttp
@@ -81,9 +81,10 @@ from ..realtime_avatar import (
 from ..photo_avatars.live import mark_live_avatar_verification_failed
 from ..sessions.repository import SessionNotFoundError
 from ..sessions.models import Message, MessageRole, MessageSource, MessageStatus
-from ..policy.context import bind_authenticated, clear_policy_context, require_policy
-from ..policy.dispatch import authorize_dispatch
-from ..policy.models import PolicyError, PolicyRequest
+from ..policy.context import (
+    bind_authenticated, clear_policy_context, current_binding, require_policies,
+)
+from ..policy.models import EffectivePolicy, PolicyDecision, PolicyError, PolicyRequest
 from ..publishing.execution import bind_execution, prepare_execution, publication_evidence
 from ..publishing.models import PublicationError
 from ..publishing.refs import AssetVersionRef
@@ -104,6 +105,9 @@ from ..voice_provider_catalog import (
 from ..usage.models import (
     PHOTO_AVATAR_LIVE_TARGET, PHOTO_AVATAR_PROVIDER, TokenUsage, UsageStatus, UsageTarget,
 )
+
+if TYPE_CHECKING:
+    from ..policy.service import PolicyService
 
 logger = logging.getLogger(__name__)
 
@@ -1494,6 +1498,37 @@ _voice_policy: ContextVar[Callable[[], Awaitable[None]] | None] = ContextVar(
     "voice_model_policy", default=None,
 )
 
+async def _check_voice_frame_policy(
+    resolution: LiveVoiceProviderResolution,
+    policy_service: PolicyService | None,
+    *,
+    avatar: bool,
+) -> None:
+    requests: list[PolicyRequest] = []
+    if resolution.deployment is not None:
+        requests.append(PolicyRequest(
+            "model.invoke", model_id=resolution.model_id,
+            deployment=resolution.deployment,
+        ))
+    else:
+        requests.append(PolicyRequest("tool.invoke", tool_name="unscoped_service"))
+    if avatar:
+        requests.append(PolicyRequest("avatar.use"))
+
+    def validate(actor: EffectivePolicy) -> None:
+        if resolution.deployment is not None:
+            return
+        binding = current_binding()
+        if binding is None:
+            raise PolicyError(PolicyDecision("unavailable", "reauthentication_required"))
+        profile = binding.restricted_profile or binding.service.restricted_profile(actor.owner_id)
+        if profile is not None and profile != "realtime-setup-canary":
+            raise PolicyError(PolicyDecision("deny", "canary_policy_incompatible"))
+        if "models" in actor.domains or "zones" in actor.domains:
+            raise PolicyError(PolicyDecision("unavailable", "policy_surface_unsupported"))
+
+    await require_policies(requests, service=policy_service, validate=validate)
+
 
 async def _send_upstream(
     upstream: UpstreamConnection,
@@ -2472,19 +2507,9 @@ async def voice_live(websocket: WebSocket) -> None:
             return
 
     async def check_voice_policy() -> None:
-        if provider_resolution.deployment is not None:
-            await require_policy(PolicyRequest(
-                "model.invoke", model_id=provider_resolution.model_id,
-                deployment=provider_resolution.deployment,
-            ))
-        else:
-            await authorize_dispatch(
-                "realtime", deployment=None,
-                required=bool(policy_service is not None and policy_service.enabled),
-            )
-        if avatar is not None:
-            # A revoked avatar.use stops the next send, not only the next session.
-            await require_policy(PolicyRequest("avatar.use"))
+        await _check_voice_frame_policy(
+            provider_resolution, policy_service, avatar=avatar is not None,
+        )
 
     _voice_policy.set(check_voice_policy)
 

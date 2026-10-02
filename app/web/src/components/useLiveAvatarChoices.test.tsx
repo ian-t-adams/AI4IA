@@ -99,4 +99,62 @@ describe("useLiveAvatarChoices", () => {
     renderHook(() => useLiveAvatarChoices(null, true));
     expect(mocks.getPhotoAvatarConfig).not.toHaveBeenCalled();
   });
+
+  it("invalidates the previous snapshot while refreshing the same owner's avatars", async () => {
+    const { result, rerender } = renderHook(
+      ({ refresh }) => useLiveAvatarChoices("owner-1", true, refresh),
+      { initialProps: { refresh: 0 } },
+    );
+    await waitFor(() => expect(result.current.avatars).toEqual([READY]));
+    let finish!: (avatars: PhotoAvatar[]) => void;
+    mocks.listPhotoAvatars.mockImplementationOnce(() =>
+      new Promise<PhotoAvatar[]>((resolve) => { finish = resolve; }),
+    );
+    rerender({ refresh: 1 });
+    expect(result.current.loading).toBe(true);
+    expect(result.current.avatars).toEqual([]);
+    await waitFor(() => expect(mocks.listPhotoAvatars).toHaveBeenCalledTimes(2));
+    finish([GENERATING]);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.avatars).toEqual([]);
+  });
+
+  it("surfaces a failed refresh and recovers only after a successful read", async () => {
+    const { result, rerender } = renderHook(
+      ({ refresh }) => useLiveAvatarChoices("owner-1", true, refresh),
+      { initialProps: { refresh: 0 } },
+    );
+    await waitFor(() => expect(result.current.avatars).toEqual([READY]));
+    mocks.listPhotoAvatars.mockRejectedValueOnce(new Error("offline"));
+    rerender({ refresh: 1 });
+    await waitFor(() => expect(result.current.error).toBeTruthy());
+    expect(result.current.loading).toBe(false);
+    expect(result.current.avatars).toEqual([]);
+    rerender({ refresh: 2 });
+    await waitFor(() => expect(result.current.avatars).toEqual([READY]));
+    expect(result.current.error).toBeNull();
+  });
+
+  it("does not show another owner's avatars or accept an abandoned owner's response", async () => {
+    const other = avatar("dd".repeat(16), { displayName: "Other owner's host" });
+    const { result, rerender } = renderHook(
+      ({ owner }) => useLiveAvatarChoices(owner, true),
+      { initialProps: { owner: "owner-1" } },
+    );
+    await waitFor(() => expect(result.current.avatars).toEqual([READY]));
+    let finish!: (avatars: PhotoAvatar[]) => void;
+    mocks.listPhotoAvatars.mockImplementationOnce(() =>
+      new Promise<PhotoAvatar[]>((resolve) => { finish = resolve; }),
+    );
+    rerender({ owner: "owner-2" });
+    expect(result.current.avatars).toEqual([]);
+    expect(result.current.loading).toBe(true);
+    await waitFor(() => expect(mocks.listPhotoAvatars).toHaveBeenCalledTimes(2));
+    rerender({ owner: "owner-3" });
+    await waitFor(() => expect(mocks.listPhotoAvatars).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(result.current.avatars).toEqual([READY]));
+    finish([other]);
+    await Promise.resolve();
+    expect(result.current.avatars).toEqual([READY]);
+  });
 });
