@@ -117,21 +117,63 @@ capabilities, and stable `2026-04-10` API contract. Azure OpenAI remains the
 default provider; enabling Speech requires its own allowlist, APIM API/key,
 and managed-identity access.
 
-| Managed model | Response path | Default input transcription |
-| --- | --- | --- |
-| `gpt-realtime` (default) | Native audio | `gpt-4o-transcribe` |
-| `gpt-realtime-mini` | Native audio | `gpt-4o-transcribe` |
-| `gpt-4.1` | Azure Speech chain | `azure-speech` |
-| `gpt-4.1-mini` | Azure Speech chain | `azure-speech` |
-| `gpt-5-mini` | Azure Speech chain | `azure-speech` |
-| `gpt-5.1` | Azure Speech chain | `azure-speech` |
+| Managed model | Response path | Default input transcription | East US 2 deployment type | Voice Live tier |
+| --- | --- | --- | --- | --- |
+| `gpt-realtime` (default) | Native audio | `gpt-4o-transcribe` | Global standard | Pro |
+| `gpt-realtime-mini` | Native audio | `gpt-4o-transcribe` | Global standard | Standard |
+| `gpt-realtime-1.5` | Native audio | `gpt-4o-transcribe` | Global standard | Pro |
+| `gpt-realtime-2.1` | Native audio | `gpt-4o-transcribe` | Global standard | Pro |
+| `gpt-realtime-2.1-mini` | Native audio | `gpt-4o-transcribe` | Global standard | Standard |
+| `gpt-4.1` | Azure Speech chain | `azure-speech` | Standard | Pro |
+| `gpt-4.1-mini` | Azure Speech chain | `azure-speech` | Standard | Standard |
+| `gpt-5-mini` | Azure Speech chain | `azure-speech` | Data zone standard | Standard |
+| `gpt-5.1` | Azure Speech chain | `azure-speech` | Data zone standard | Pro |
+| `gpt-5.2` | Azure Speech chain | `azure-speech` | Data zone standard | Pro |
+| `gpt-5.4` | Azure Speech chain | `azure-speech` | Data zone standard | Pro |
+| `gpt-5.6-terra` | Azure Speech chain | `azure-speech` | Data zone standard | Pro |
+| `gpt-5.6-luna` | Azure Speech chain | `azure-speech` | Data zone standard | Standard |
+
+The deployment types and tiers are Microsoft's
+[Voice Live region](https://learn.microsoft.com/azure/ai-services/speech-service/regions?tabs=voice-live#regions)
+and [pricing](https://learn.microsoft.com/azure/ai-services/speech-service/voice-live#pricing)
+tables, reviewed 2026-10-02. Global standard may process prompts and responses
+in any geography where Microsoft deploys the model; Data zone standard keeps
+that processing within the United States. The tier sets Microsoft's rate for the
+model, and AI4IA still records Voice Live usage as cost-unknown. None of these
+models needs an API version newer than `2026-04-10`. Microsoft documents no
+per-model API-version behavior, though, so the seven models added on 2026-10-02
+stay unverified until a signed-in session or the
+[authenticated canary](runbooks/deployment.md#4-apim-policy-changes-and-gateway-canaries)
+accepts each one.
+
+The newer realtime models keep the GPT realtime family's `gpt-4o-transcribe`
+default, with one documented gap. The pinned `2026-04-10` reference names only
+`gpt-realtime` and `gpt-realtime-mini` for OpenAI transcription models, and it
+assigns `azure-speech` and MAI Transcribe to "all other models". It does not name
+`gpt-realtime-1.5`, `gpt-realtime-2.1` or `gpt-realtime-2.1-mini` at all.
+Microsoft's own Voice Agent sample does pair a
+[managed `gpt-realtime-2.1` with an OpenAI transcriber](https://github.com/Azure-Samples/Cognitive-Speech-TTS/blob/1024096230897e0811ed778265ca1c90ddcbcb21/VoiceAgent/samples/example1_finance_with_handoff/agent.realtime.json).
+If Azure still refuses the pairing, the session ends with Azure's error, and the
+fix is a catalog change, never a silent fallback.
 
 Every managed model may instead use the selectable `mai-transcribe-2` (MAI
 Transcribe 2, public preview), which the pinned `2026-04-10` reference lists for
-both response paths. Microsoft has not yet confirmed it in East US 2: the
-standalone MAI-Transcribe-2-Streaming product lists that region as "coming soon".
+`gpt-realtime`, `gpt-realtime-mini` and every other model. Microsoft has not yet
+confirmed it in East US 2: the standalone MAI-Transcribe-2-Streaming product lists
+that region as "coming soon".
 The voices include 14 public-preview MAI-Voice-2.1 and MAI-Voice-2.1-Flash voices,
 which Microsoft serves from East US 2 and Sweden Central among other regions.
+
+The catalog deliberately leaves out:
+
+- GPT-6 and GPT-6.1 do not appear in Microsoft's Voice Live documentation,
+  either as managed models or as tested bring-your-own models.
+- `gpt-5.5`, `gpt-5.4-mini` and `gpt-5.4-nano` are supported only as
+  bring-your-own models. That needs a Foundry deployment and a separate
+  connection design.
+- `azure-realtime` needs its own `azure-realtime-native` voices, which the curated
+  `azure-standard` voice list does not carry.
+- The `-datazone` realtime variants are separately named models.
 
 A Speech-managed model name is not a promise that an identically named normal
 chat deployment exists. Extending Speech to another region is a separate

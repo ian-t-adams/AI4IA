@@ -2071,15 +2071,53 @@ class GatewayPolicyTests(unittest.TestCase):
         for model_id in (
             "gpt-realtime",
             "gpt-realtime-mini",
+            "gpt-realtime-1.5",
+            "gpt-realtime-2.1",
+            "gpt-realtime-2.1-mini",
             "gpt-4.1",
             "gpt-4.1-mini",
             "gpt-5-mini",
             "gpt-5.1",
+            "gpt-5.2",
+            "gpt-5.4",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
         ):
             self.assertIn(f"&quot;{model_id}&quot;.Equals(model", policy)
         self.assertNotIn("<set-body>", policy)
         gateway_generator.validate_policy_expressions(policy, "speech-voice-live.xml")
         gateway_generator.validate_speech_voice_live_policy(policy, "speech-voice-live.xml")
+
+    def test_speech_voice_live_policy_allowlist_must_equal_the_managed_catalog(
+        self,
+    ) -> None:
+        policy = (ROOT / "infra/policies/speech-voice-live.xml").read_text(
+            encoding="utf-8"
+        )
+        gateway_generator.validate_speech_voice_live_policy(policy, "speech-voice-live.xml")
+
+        def clause(model_id: str) -> str:
+            return f"&quot;{model_id}&quot;.Equals(model, StringComparison.Ordinal) ||"
+
+        mutations = {}
+        for model_id in ("gpt-realtime-2.1", "gpt-5.4", "gpt-5.6-terra"):
+            self.assertIn(clause(model_id), policy)
+            mutations[f"missing {model_id}"] = policy.replace(clause(model_id), "", 1)
+        for unsupported in ("gpt-6", "gpt-6.1", "gpt-5.5", "azure-realtime"):
+            mutations[f"extra {unsupported}"] = policy.replace(
+                clause("gpt-realtime"),
+                f"{clause('gpt-realtime')}\n              {clause(unsupported)}",
+                1,
+            )
+        for label, mutated in mutations.items():
+            with self.subTest(label=label):
+                self.assertNotEqual(mutated, policy)
+                with self.assertRaisesRegex(
+                    ValueError, "must allow exactly the managed-model catalog"
+                ):
+                    gateway_generator.validate_speech_voice_live_policy(
+                        mutated, "speech-voice-live.xml"
+                    )
 
     def test_speech_voice_live_policy_rejects_missing_selector_or_credential_strip(
         self,

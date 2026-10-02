@@ -844,7 +844,7 @@ Claude integration from current main.
 | `gpt-realtime-1.5` / `2026-02-23` | Added only in the old model's eastus2 footprint, GlobalStandard baseline 10. `requiredRealtimeProtocol=ga`; no unverified maximum, pool, additional region or production-profile values. The maximum profile uses the existing portable-baseline fallback, not a new quota assertion. |
 | `gpt-realtime-2.1` and `gpt-realtime-2.1-mini` / `2026-07-07` | Two additional GA-only choices, each eastus2 GlobalStandard baseline 10 with no maximum, pool, extra region or production-profile values. Full 2.1 is the subscription-verified successor to RT2, not an in-place version upgrade. |
 | `gpt-4o-mini-tts` / `2025-12-15` | Already deployed and structurally validated by #492. Preserve the same eastus2 name, SKU, baseline 10, maximum 600 and pool metadata; no additional upgrade, overlap deployment or capacity change. |
-| Existing `gpt-realtime`, `gpt-realtime-mini`, `tts-hd` | Unchanged models, versions, footprints and defaults. Speech Voice Live keeps its independent supported managed-model subset; it does not acquire Realtime 1.5, 2.1 or 2.1-mini. |
+| Existing `gpt-realtime`, `gpt-realtime-mini`, `tts-hd` | Unchanged models, versions, footprints and defaults. Speech Voice Live keeps its independent managed-model subset. Its own Microsoft-hosted `gpt-realtime-1.5`, `gpt-realtime-2.1` and `gpt-realtime-2.1-mini` entries, added 2026-10-02, never use these deployments or their GA gate. |
 
 **RT2 owner decision, 2026-09-23:** preserve user choice rather than runtime-disable
 the existing deployment from a public reference date. The authoritative
@@ -1094,10 +1094,16 @@ Speech Voice Live routes `Browser -> FastAPI /api/voice/live -> a second,
 separately scoped APIM WebSocket API (/speech/voice-live/realtime) on the same
 shared active Basic v2 APIM -> the existing eastus2 AIServices account`. It never
 traverses SimpleL7Proxy and never adds a new APIM service or Foundry account. The
-stable `2026-04-10` catalog allows native-audio `gpt-realtime` (the default) and
-`gpt-realtime-mini` with `gpt-4o-transcribe`, plus `gpt-4.1`, `gpt-4.1-mini`,
-`gpt-5-mini`, and `gpt-5.1` through the Azure Speech chain with `azure-speech`
-transcription. All are initially `eastus2`; only curated
+stable `2026-04-10` catalog allows native-audio `gpt-realtime` (the default),
+`gpt-realtime-mini`, `gpt-realtime-1.5`, `gpt-realtime-2.1` and
+`gpt-realtime-2.1-mini` with `gpt-4o-transcribe`. It also allows `gpt-4.1`,
+`gpt-4.1-mini`, `gpt-5-mini`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.6-terra` and
+`gpt-5.6-luna` through the Azure Speech chain with `azure-speech` transcription.
+The [region matrix](../region-capability-matrix.md#speech-voice-live-managed-model-catalog)
+records each model's deployment type and tier, the models it omits, and the
+unconfirmed transcription pairing of the newer realtime models. Run the
+authenticated Speech canary for each model added on 2026-10-02 after it deploys.
+All are initially `eastus2`; only curated
 `azure-standard` built-in voices/capabilities from the generated voice provider
 catalog are offered, and no custom endpoint, lexicon, or personal voice is
 accepted. The shared APIM managed identity additionally needs **Cognitive

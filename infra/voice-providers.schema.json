@@ -278,8 +278,8 @@
         },
         "managedModels": {
           "type": "array",
-          "minItems": 6,
-          "maxItems": 6,
+          "minItems": 13,
+          "maxItems": 13,
           "additionalItems": false,
           "items": [
             {
@@ -299,6 +299,36 @@
                 },
                 {
                   "$ref": "#/definitions/gptRealtimeMiniModel"
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/speechManagedModel"
+                },
+                {
+                  "$ref": "#/definitions/gptRealtime15Model"
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/speechManagedModel"
+                },
+                {
+                  "$ref": "#/definitions/gptRealtime21Model"
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/speechManagedModel"
+                },
+                {
+                  "$ref": "#/definitions/gptRealtime21MiniModel"
                 }
               ]
             },
@@ -339,6 +369,46 @@
                 },
                 {
                   "$ref": "#/definitions/gpt51Model"
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/speechManagedModel"
+                },
+                {
+                  "$ref": "#/definitions/gpt52Model"
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/speechManagedModel"
+                },
+                {
+                  "$ref": "#/definitions/gpt54Model"
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/speechManagedModel"
+                },
+                {
+                  "$ref": "#/definitions/gpt56TerraModel"
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/speechManagedModel"
+                },
+                {
+                  "$ref": "#/definitions/gpt56LunaModel"
                 }
               ]
             }
@@ -404,10 +474,17 @@
           "enum": [
             "gpt-realtime",
             "gpt-realtime-mini",
+            "gpt-realtime-1.5",
+            "gpt-realtime-2.1",
+            "gpt-realtime-2.1-mini",
             "gpt-4.1",
             "gpt-4.1-mini",
             "gpt-5-mini",
-            "gpt-5.1"
+            "gpt-5.1",
+            "gpt-5.2",
+            "gpt-5.4",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna"
           ]
         },
         "displayName": {
@@ -488,6 +565,45 @@
         }
       }
     },
+    "gptRealtime15Model": {
+      "properties": {
+        "id": {
+          "const": "gpt-realtime-1.5"
+        },
+        "profile": {
+          "const": "native_audio"
+        },
+        "inputTranscription": {
+          "$ref": "#/definitions/openAiTranscription"
+        }
+      }
+    },
+    "gptRealtime21Model": {
+      "properties": {
+        "id": {
+          "const": "gpt-realtime-2.1"
+        },
+        "profile": {
+          "const": "native_audio"
+        },
+        "inputTranscription": {
+          "$ref": "#/definitions/openAiTranscription"
+        }
+      }
+    },
+    "gptRealtime21MiniModel": {
+      "properties": {
+        "id": {
+          "const": "gpt-realtime-2.1-mini"
+        },
+        "profile": {
+          "const": "native_audio"
+        },
+        "inputTranscription": {
+          "$ref": "#/definitions/openAiTranscription"
+        }
+      }
+    },
     "gpt41Model": {
       "properties": {
         "id": {
@@ -531,6 +647,58 @@
       "properties": {
         "id": {
           "const": "gpt-5.1"
+        },
+        "profile": {
+          "const": "azure_speech_chain"
+        },
+        "inputTranscription": {
+          "$ref": "#/definitions/azureSpeechTranscription"
+        }
+      }
+    },
+    "gpt52Model": {
+      "properties": {
+        "id": {
+          "const": "gpt-5.2"
+        },
+        "profile": {
+          "const": "azure_speech_chain"
+        },
+        "inputTranscription": {
+          "$ref": "#/definitions/azureSpeechTranscription"
+        }
+      }
+    },
+    "gpt54Model": {
+      "properties": {
+        "id": {
+          "const": "gpt-5.4"
+        },
+        "profile": {
+          "const": "azure_speech_chain"
+        },
+        "inputTranscription": {
+          "$ref": "#/definitions/azureSpeechTranscription"
+        }
+      }
+    },
+    "gpt56TerraModel": {
+      "properties": {
+        "id": {
+          "const": "gpt-5.6-terra"
+        },
+        "profile": {
+          "const": "azure_speech_chain"
+        },
+        "inputTranscription": {
+          "$ref": "#/definitions/azureSpeechTranscription"
+        }
+      }
+    },
+    "gpt56LunaModel": {
+      "properties": {
+        "id": {
+          "const": "gpt-5.6-luna"
         },
         "profile": {
           "const": "azure_speech_chain"

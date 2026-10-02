@@ -80,10 +80,17 @@ def test_packaged_catalog_marks_exactly_the_mai_voices_preview_and_keeps_default
     assert defaults == {
         "gpt-realtime": "gpt-4o-transcribe",
         "gpt-realtime-mini": "gpt-4o-transcribe",
+        "gpt-realtime-1.5": "gpt-4o-transcribe",
+        "gpt-realtime-2.1": "gpt-4o-transcribe",
+        "gpt-realtime-2.1-mini": "gpt-4o-transcribe",
         "gpt-4.1": "azure-speech",
         "gpt-4.1-mini": "azure-speech",
         "gpt-5-mini": "azure-speech",
         "gpt-5.1": "azure-speech",
+        "gpt-5.2": "azure-speech",
+        "gpt-5.4": "azure-speech",
+        "gpt-5.6-terra": "azure-speech",
+        "gpt-5.6-luna": "azure-speech",
     }
 
 
@@ -136,6 +143,61 @@ def test_runtime_catalog_rejects_unreviewed_voice_and_transcription_shapes(label
     SpeechVoiceProvider.model_validate(_mutated(lambda raw: None))
     with pytest.raises(ValidationError):
         SpeechVoiceProvider.model_validate(_mutated(change))
+
+
+ADDED_MODEL_IDS = (
+    "gpt-realtime-1.5",
+    "gpt-realtime-2.1",
+    "gpt-realtime-2.1-mini",
+    "gpt-5.2",
+    "gpt-5.4",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+)
+_TRANSCRIPTION = {
+    "native_audio": {"provider": "openai", "model": "gpt-4o-transcribe"},
+    "azure_speech_chain": {"provider": "azure_speech", "model": "azure-speech"},
+}
+_OTHER_PROFILE = {"native_audio": "azure_speech_chain", "azure_speech_chain": "native_audio"}
+
+
+def _set_model(model_id: str, change):
+    def mutate(raw: dict) -> None:
+        model = next(entry for entry in raw["managedModels"] if entry["id"] == model_id)
+        change(model)
+
+    return mutate
+
+
+@pytest.mark.parametrize("model_id", ADDED_MODEL_IDS)
+@pytest.mark.parametrize(
+    "replacement",
+    ["gpt-6", "gpt-6.1", "gpt-5.5", "gpt-5.4-mini", "azure-realtime", "gpt-realtime-2.1-datazone"],
+)
+def test_runtime_catalog_refuses_unsupported_ids_in_added_positions(model_id, replacement):
+    SpeechVoiceProvider.model_validate(_mutated(lambda raw: None))
+    with pytest.raises(ValidationError):
+        SpeechVoiceProvider.model_validate(
+            _mutated(_set_model(model_id, lambda model: model.update({"id": replacement})))
+        )
+
+
+@pytest.mark.parametrize("model_id", ADDED_MODEL_IDS)
+def test_runtime_catalog_binds_each_added_model_to_its_profile(model_id):
+    provider = _provider()
+    managed = provider.get_managed_model(model_id)
+    assert managed is not None
+    other = _OTHER_PROFILE[managed.profile]
+    assert managed.inputTranscription.model_dump() == _TRANSCRIPTION[managed.profile]
+    for change in (
+        lambda model: model.update({"inputTranscription": dict(_TRANSCRIPTION[other])}),
+        lambda model: model.update(
+            {"profile": other, "inputTranscription": dict(_TRANSCRIPTION[other])}
+        ),
+        lambda model: model.update({"apiVersion": "2026-07-15"}),
+    ):
+        with pytest.raises(ValidationError):
+            SpeechVoiceProvider.model_validate(_mutated(_set_model(model_id, change)))
 
 
 @pytest.mark.parametrize("model_id", EXPECTED_SPEECH_MANAGED_MODEL_IDS)

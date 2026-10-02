@@ -1577,7 +1577,9 @@ by #492; do not repeat them as unfinished work.
 additions from preview advertisement and execution. Keep this and
 `runtimeEnabled` in publication/source comparisons; a saved unavailable model
 choice must fail explicitly, not alias another model. Speech's curated managed
-subset does not inherit these additions. The older `gpt-realtime-mini` version
+subset does not inherit these additions or their GA gate: its own Voice
+Live-managed `gpt-realtime-1.5`, `gpt-realtime-2.1` and `gpt-realtime-2.1-mini`
+never use these deployments. The older `gpt-realtime-mini` version
 observation is report-only; do not change its `2025-12-15` catalog pin.
 Actor category reductions intersect these runtime/protocol gates, including on
 fresh and cached bindings. An entirely unrunnable catalog must not turn a failed

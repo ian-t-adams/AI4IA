@@ -364,28 +364,55 @@ def test_ga_tts_uses_the_existing_proxy_speech_path_and_admission(cap):
         asyncio.run(http.aclose())
 
 
+@pytest.mark.parametrize("protocol", ["preview", "ga"])
 @pytest.mark.parametrize("model_id", GA_MODELS)
-def test_ga_replacement_does_not_expand_speech_managed_models(model_id):
+def test_same_named_speech_models_stay_independent_of_ga_deployments(model_id, protocol):
+    # Speech Voice Live hosts its own managed models. A same-named Speech entry
+    # never uses the GA deployment, its protocol gate, route or gateway key, and
+    # Azure OpenAI still refuses the GA-only deployment under preview.
     provider = load_voice_provider_catalog().get("speech_voice_live")
     assert provider.defaultManagedModelId == "gpt-realtime"
-    assert provider.get_managed_model(model_id) is None
-    c = _speech_client(realtime_protocol="ga", **GA_SETTINGS)
+    managed = provider.get_managed_model(model_id)
+    assert managed is not None and managed.profile == "native_audio"
+    c = _speech_client(realtime_protocol=protocol, **GA_SETTINGS)
     try:
-        with pytest.raises(WebSocketDisconnect):
-            with c.websocket_connect(
-                f"/api/voice/live?provider=speech_voice_live&model={model_id}",
-                headers=_origin(), subprotocols=[DEV_SUBPROTOCOL, "alice"],
-            ):
-                pass
-        assert c.app.state.realtime_connector.connects == []
+        deployment = c.app.state.catalog.resolve_deployment(model_id).deploymentName
+        connector = c.app.state.realtime_connector
         with c.websocket_connect(
-            "/api/voice/live?provider=speech_voice_live&model=gpt-realtime",
+            f"/api/voice/live?provider=speech_voice_live&model={model_id}",
             headers=_origin(), subprotocols=[DEV_SUBPROTOCOL, "alice"],
         ) as ws:
             frame = {"type": "input_audio_buffer.append", "audio": "AAA="}
             ws.send_text(json.dumps(frame))
             assert json.loads(ws.receive_text().removeprefix("echo:")) == frame
-        assert len(c.app.state.realtime_connector.connects) == 1
+        assert len(connector.connects) == 1
+        upstream = connector.connects[0]
+        assert upstream["url"] == (
+            "wss://speech-gateway.test/speech/voice-live/realtime"
+            f"?api-version=2026-04-10&model={model_id}"
+        )
+        assert deployment not in upstream["url"]
+        assert upstream["headers"]["Ocp-Apim-Subscription-Key"] == "speech-key"
+
+        openai_query = f"/api/voice/live?provider=azure_openai&model={model_id}"
+        if protocol == "preview":
+            with pytest.raises(WebSocketDisconnect) as denied:
+                with c.websocket_connect(
+                    openai_query, headers=_origin(), subprotocols=[DEV_SUBPROTOCOL, "alice"],
+                ):
+                    pass
+            assert denied.value.code == 1008
+            assert "requires the GA protocol" in denied.value.reason
+            assert len(connector.connects) == 1
+        else:
+            _echo(c, query=f"?provider=azure_openai&model={model_id}", user="alice")
+            assert len(connector.connects) == 2
+            assert connector.connects[1]["url"].startswith(
+                "wss://realtime-gateway.test/openai/v1/realtime?"
+            )
+            assert connector.connects[1]["headers"]["Ocp-Apim-Subscription-Key"] == (
+                "ga-realtime-key"
+            )
     finally:
         c.__exit__(None, None, None)
 
