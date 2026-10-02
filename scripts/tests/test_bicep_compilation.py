@@ -402,6 +402,33 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             self.assertIn(name, env)
         self.assertIn("variables('photoAvatarEnv')", api["variables"]["apiEnv"])
 
+    def test_photo_avatar_live_browser_and_relay_share_the_root_voice_gate(self) -> None:
+        api = self.template["resources"]["api"]["properties"]
+        web = self.template["resources"]["web"]["properties"]
+        self.assertEqual(
+            api["parameters"]["realtimeEnabled"]["value"], "[parameters('voiceLiveEnabled')]",
+        )
+        self.assertEqual(
+            web["parameters"]["voiceLiveEnabled"]["value"], "[parameters('voiceLiveEnabled')]",
+        )
+        self.assertEqual(
+            api["parameters"]["speechVoiceLiveEnabled"]["value"],
+            "[parameters('speechVoiceLiveEnabled')]",
+        )
+        self.assertEqual(
+            web["parameters"]["apiPublicUrl"]["value"], web["parameters"]["apiBaseUrl"]["value"],
+        )
+        frontend = web["template"]
+        ready = frontend["variables"]["voiceLiveReady"]
+        self.assertIn("parameters('voiceLiveEnabled')", ready)
+        self.assertIn("parameters('apiPublicUrl')", ready)
+        self.assertIn("VOICE_LIVE_ENABLED", frontend["variables"]["voiceLiveEnv"])
+        self.assertNotIn("photoAvatarsEnabled", frontend["parameters"])
+        self.assertNotIn("AI4IA_PHOTO_AVATARS_ENABLED", json.dumps(frontend["variables"]))
+        self.assertIn(
+            "AI4IA_PHOTO_AVATARS_ENABLED", api["template"]["variables"]["photoAvatarEnv"],
+        )
+
     def _companion(self) -> tuple[dict, dict[str, list[dict]]]:
         module = self.template["resources"]["companion"]
         resources = module["properties"]["template"]["resources"]
