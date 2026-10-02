@@ -91,6 +91,8 @@ export interface InlineVoiceLiveState {
   statusLabel: string;
   agentLabel: string;
   error: string | null;
+  // A non-fatal problem in the live session (the connection stays up), or null.
+  notice: string | null;
   persistenceError: string | null;
   // True while there are finalized-but-unsaved voice turns (or a save is in
   // flight / failed) that would be lost by navigating away. False for a live
@@ -623,6 +625,7 @@ export function useInlineVoiceLive({
     statusLabel: saving ? "Saving voice transcript" : labelFor(phase),
     agentLabel,
     error: connectionError,
+    notice: live.notice,
     persistenceError,
     hasUnsavedTurns,
     exitLocked: hasUnsavedTurns,
@@ -665,10 +668,11 @@ export function InlineVoiceLiveStatus({
       </strong>
       {!error && voice.agentLabel && <span>with {voice.agentLabel}</span>}
       {!error && voice.active && (
-        <span className="voice-call-hint">
-          {avatarLive
-            ? "Speak or type to talk to the avatar. It answers out loud."
-            : "Speak, or type a message: the live voice answers out loud."}
+        <span className="voice-call-hint" data-tone={voice.notice ? "warn" : undefined}>
+          {voice.notice ??
+            (avatarLive
+              ? "Speak or type to talk to the avatar. It answers out loud."
+              : "Speak, or type a message: the live voice answers out loud.")}
         </span>
       )}
       <span className="voice-call-actions">

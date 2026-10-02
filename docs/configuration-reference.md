@@ -459,12 +459,18 @@ server-authoritative default). It routes
   used as a Foundry model backend, not a new resource. The managed-model selector
   accepts only the six catalog entries documented in the
   [region matrix](region-capability-matrix.md#speech-voice-live-managed-model-catalog).
-  Native-audio models use `gpt-4o-transcribe`; GPT text response models use the
-  Azure Speech chain and `azure-speech` transcription. Voice/locale/VAD/noise/echo
-  capabilities come from the generated voice provider catalog
-  (`infra/voice-providers.json`); only curated
-  `azure-standard` built-in voices are offered and no custom endpoint, lexicon, or
-  personal voice value is ever accepted.
+  Native-audio models default to `gpt-4o-transcribe`; GPT text response models use
+  the Azure Speech chain and default to `azure-speech` transcription. A user may
+  choose the catalog's `mai-transcribe-2` (MAI Transcribe 2, public preview, pinned
+  rather than the floating `mai-transcribe` alias) instead. The relay accepts only
+  catalog options listed for the session's managed-model profile, and an upstream
+  refusal reaches the browser as an error, never a switch to another model.
+  Voice/locale/VAD/noise/echo capabilities come from the generated voice provider
+  catalog (`infra/voice-providers.json`); only curated `azure-standard` built-in
+  voices are offered, including the public-preview MAI-Voice-2.1 and
+  MAI-Voice-2.1-Flash voices that `voices.previewOptions` marks, and no custom
+  endpoint, lexicon, or personal voice value is ever accepted. No setting gates the
+  preview options; they ship with the catalog.
 - The shared active APIM's system-assigned managed identity authenticates to that
   account using a managed-identity audience set by the **deployment-only** Bicep
   parameter `speechVoiceLiveManagedIdentityAudience` (default `https://ai.azure.com`,

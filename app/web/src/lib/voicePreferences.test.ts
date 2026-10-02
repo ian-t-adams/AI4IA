@@ -3,11 +3,13 @@ import {
   DEFAULT_VOICE_PREFERENCES,
   hasStoredVoicePreferences,
   loadVoicePreferences,
+  normalizeSpeechVoiceLiveSettings,
   normalizeVoicePreferences,
   normalizeVoiceSessionSettings,
   resolveEffectiveAgent,
   resolveEffectiveModel,
   resolveEffectiveVoiceProvider,
+  sanitizeVoicePreferencesForProviders,
   saveVoicePreferences,
   VOICE_PREFERENCES_STORAGE_NAME,
   V2_VOICE_PREFERENCES_STORAGE_NAME,
@@ -17,7 +19,9 @@ import {
 import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   DEFAULT_VOICE_SETTINGS,
+  type VoiceProvider,
 } from "./voiceLive";
+import { voiceProviderCatalog } from "./data/voice_provider_catalog";
 
 function fakeStorage(initial: Record<string, string> = {}): PreferencesStorage & {
   data: Record<string, string>;
@@ -147,6 +151,70 @@ describe("normalizeVoicePreferences", () => {
 
   it("ignores malformed JSON top-level shape without throwing", () => {
     expect(() => normalizeVoicePreferences([1, 2, 3])).not.toThrow();
+  });
+});
+
+describe("Speech transcription and preview voice preferences", () => {
+  const providers = [...voiceProviderCatalog.providers] as VoiceProvider[];
+  const sanitize = (speech: Record<string, unknown>, available = providers) =>
+    sanitizeVoicePreferencesForProviders(
+      { ...DEFAULT_VOICE_PREFERENCES, provider: "speech_voice_live", speech: speech as never },
+      available,
+      new Set(["gpt-realtime"]),
+      "gpt-realtime",
+      false,
+      "azure_openai",
+      true,
+    ).speech;
+
+  it("defaults to the managed model's own transcription", () => {
+    expect(DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.transcriptionModel).toBeNull();
+    expect(normalizeSpeechVoiceLiveSettings({}).transcriptionModel).toBeNull();
+    for (const bad of ["", "   ", 7, null, {}, ["mai-transcribe-2"]]) {
+      expect(normalizeSpeechVoiceLiveSettings({ transcriptionModel: bad }).transcriptionModel)
+        .toBeNull();
+    }
+    expect(
+      normalizeSpeechVoiceLiveSettings({ transcriptionModel: " mai-transcribe-2 " })
+        .transcriptionModel,
+    ).toBe("mai-transcribe-2");
+  });
+
+  it("keeps only a transcription option the server's catalog offers", () => {
+    const speech = { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS };
+    expect(sanitize({ ...speech, transcriptionModel: "mai-transcribe-2" }).transcriptionModel)
+      .toBe("mai-transcribe-2");
+    for (const unoffered of ["mai-transcribe", "whisper-1", "azure-speech", "gpt-4o-transcribe"]) {
+      expect(sanitize({ ...speech, transcriptionModel: unoffered }).transcriptionModel).toBeNull();
+    }
+    // An older API that predates the capability offers no alternatives.
+    const [openai, speechProvider] = providers;
+    const olderSpeech = {
+      ...speechProvider,
+      capabilities: { ...speechProvider.capabilities, inputTranscription: undefined },
+    } as unknown as VoiceProvider;
+    expect(
+      sanitize({ ...speech, transcriptionModel: "mai-transcribe-2" }, [openai, olderSpeech])
+        .transcriptionModel,
+    ).toBeNull();
+    // While the server offers no Speech provider at all, the stored pick is kept
+    // (like the voice), so it resumes when Speech returns.
+    const withoutSpeech = sanitize(
+      { ...speech, voice: "en-US-Harper:MAI-Voice-2.1", transcriptionModel: "mai-transcribe-2" },
+      [openai],
+    );
+    expect(withoutSpeech.transcriptionModel).toBe("mai-transcribe-2");
+    expect(withoutSpeech.voice).toBe("en-US-Harper:MAI-Voice-2.1");
+  });
+
+  it("keeps a catalog MAI voice and replaces an unreviewed one with the default", () => {
+    const speech = { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS };
+    expect(sanitize({ ...speech, voice: "en-US-Harper:MAI-Voice-2.1-Flash" }).voice).toBe(
+      "en-US-Harper:MAI-Voice-2.1-Flash",
+    );
+    expect(sanitize({ ...speech, voice: "en-US-Harper:MAI-Voice-2-Flash" }).voice).toBe(
+      DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.voice,
+    );
   });
 });
 

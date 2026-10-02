@@ -37,6 +37,21 @@ class VoiceProviderVoices(BaseModel):
     options: list[str]
 
 
+class SpeechVoiceProviderVoices(VoiceProviderVoices):
+    # Public-preview voices (no SLA), labelled as such by the browser.
+    previewOptions: list[str]
+
+    @model_validator(mode="after")
+    def validate_preview_options(self) -> "SpeechVoiceProviderVoices":
+        if len(set(self.previewOptions)) != len(self.previewOptions):
+            raise ValueError("Speech preview voices must be unique.")
+        if not set(self.previewOptions) <= set(self.options):
+            raise ValueError("Speech preview voices must be catalog voice options.")
+        if self.default in self.previewOptions:
+            raise ValueError("The default Speech voice must not be a preview voice.")
+        return self
+
+
 class VoiceProviderInputTranscription(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -85,10 +100,38 @@ class AzureOpenAIVoiceProviderCapabilities(BaseModel):
     customVoice: VoiceProviderCustomVoice
 
 
+SpeechManagedModelProfile: TypeAlias = Literal["native_audio", "azure_speech_chain"]
+
+
+class SpeechInputTranscriptionOption(BaseModel):
+    """A reviewed alternative to a managed model's own transcription default."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: Literal["mai-transcribe-2"]
+    displayName: str
+    preview: bool
+    profiles: list[SpeechManagedModelProfile] = Field(min_length=1)
+
+
+class SpeechVoiceProviderInputTranscription(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    options: list[SpeechInputTranscriptionOption]
+
+    @model_validator(mode="after")
+    def validate_unique_models(self) -> "SpeechVoiceProviderInputTranscription":
+        models = [option.model for option in self.options]
+        if len(set(models)) != len(models):
+            raise ValueError("Speech transcription options must be unique.")
+        return self
+
+
 class SpeechVoiceProviderCapabilities(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    voices: VoiceProviderVoices
+    voices: SpeechVoiceProviderVoices
+    inputTranscription: SpeechVoiceProviderInputTranscription
     turnDetection: VoiceProviderTurnDetection
     noiseSuppression: VoiceProviderSimpleOptions
     echoCancellation: VoiceProviderSimpleOptions
@@ -250,6 +293,23 @@ class SpeechVoiceProvider(_VoiceProviderBase):
 
     def get_managed_model(self, model_id: str) -> VoiceProviderManagedModel | None:
         return next((model for model in self.managedModels if model.id == model_id), None)
+
+    def input_transcription_models(
+        self, managed_model: VoiceProviderManagedModel
+    ) -> tuple[str, ...]:
+        """The transcription models a session on ``managed_model`` may use.
+
+        The managed model's own default comes first; reviewed catalog options
+        follow only when they support that model's profile.
+        """
+        return (
+            managed_model.inputTranscription.model,
+            *(
+                option.model
+                for option in self.capabilities.inputTranscription.options
+                if managed_model.profile in option.profiles
+            ),
+        )
 
     def public_view(self) -> SpeechVoiceProviderPublic:
         return SpeechVoiceProviderPublic.model_validate(

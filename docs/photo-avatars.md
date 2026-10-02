@@ -686,6 +686,10 @@ avatar byte stays on the existing governed path: browser → FastAPI
   `{"type":"photo-avatar","model":<catalog base model>,"character":<provider id>,"customized":true,"output_protocol":"websocket"}`
   into every rebuilt `session.update`, after Speech normalization and the
   tool/persona bridge, with the normalizer's catalog voice.
+  - That voice may be one of the catalog's public-preview MAI voices. Microsoft's
+    documentation neither confirms nor excludes MAI voices with photo avatars, so
+    the pairing is allowed but unverified. An upstream refusal ends the session
+    with Azure's error; the relay never substitutes another voice.
   - No client avatar field survives, including `video`, a background `image_url`
     and `output_audit_audio`.
   - Neither does any client provider id.

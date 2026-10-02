@@ -91,6 +91,8 @@ export type { VoiceProvider, VoiceProviderId };
 export const DEFAULT_VOICE_PROVIDER = DEFAULT_VOICE_PROVIDER_ID;
 export type SpeechVoiceProvider = Extract<VoiceProvider, { id: "speech_voice_live" }>;
 export type SpeechManagedModel = SpeechVoiceProvider["managedModels"][number];
+export type SpeechTranscriptionOption =
+  SpeechVoiceProvider["capabilities"]["inputTranscription"]["options"][number];
 
 const SPEECH_PROVIDER = voiceProviderCatalog.providers.find(
   (provider): provider is SpeechVoiceProvider => provider.id === "speech_voice_live",
@@ -177,6 +179,9 @@ export interface SpeechVoiceLiveSettings {
   turnDetection: "azure_semantic_vad" | "azure_semantic_vad_multilingual";
   interruptResponse: boolean;
   autoTruncate: boolean;
+  // A catalog transcription option chosen instead of the managed model's own
+  // default, or null for that default. The relay re-checks it every session.
+  transcriptionModel: string | null;
 }
 
 export const DEFAULT_SPEECH_VOICE_LIVE_SETTINGS: SpeechVoiceLiveSettings = {
@@ -186,6 +191,7 @@ export const DEFAULT_SPEECH_VOICE_LIVE_SETTINGS: SpeechVoiceLiveSettings = {
   turnDetection: DEFAULT_SPEECH_TURN_DETECTION,
   interruptResponse: true,
   autoTruncate: false,
+  transcriptionModel: null,
 };
 
 export type LiveTurnRole = "user" | "assistant";
@@ -225,6 +231,9 @@ export interface VoiceLiveController {
   // The live photo avatar for the current (or last) session, or null when the
   // session is voice only.
   avatar: LiveAvatarView | null;
+  // A non-fatal problem in the current session the user should know about
+  // (for example, a turn the transcription model couldn't transcribe), or null.
+  notice: string | null;
   start: () => void;
   toggle: () => void;
   stop: () => void;
@@ -408,6 +417,40 @@ export function resolveSpeechManagedModel(
   );
 }
 
+// The catalog transcription options a session on ``managedModel`` may use in
+// place of the model's own default: only those listing its profile. The relay
+// applies the same rule, so this only decides what the browser offers.
+export function speechTranscriptionOptions(
+  managedModel: SpeechManagedModel | undefined,
+  provider: SpeechVoiceProvider | undefined = SPEECH_PROVIDER,
+): readonly SpeechTranscriptionOption[] {
+  if (!provider || !managedModel) return [];
+  // Optional: a provider served by an older API has no such capability.
+  return (
+    provider.capabilities.inputTranscription?.options.filter((option) =>
+      (option.profiles as readonly string[]).includes(managedModel.profile),
+    ) ?? []
+  );
+}
+
+export function resolveSpeechTranscriptionOption(
+  managedModel: SpeechManagedModel | undefined,
+  selected: string | null | undefined,
+  provider: SpeechVoiceProvider | undefined = SPEECH_PROVIDER,
+): SpeechTranscriptionOption | undefined {
+  if (!selected) return undefined;
+  return speechTranscriptionOptions(managedModel, provider).find(
+    (option) => option.model === selected,
+  );
+}
+
+// "MAI Transcribe 2 (preview)": the catalog's own name plus its release stage.
+export function transcriptionOptionLabel(
+  option: Pick<SpeechTranscriptionOption, "displayName" | "preview">,
+): string {
+  return option.preview ? `${option.displayName} (preview)` : option.displayName;
+}
+
 export function isVadType(value: string): value is VadType {
   return (VAD_TYPES as readonly string[]).includes(value);
 }
@@ -495,6 +538,11 @@ export function speechSessionUpdate(
   const echoCancellation =
     provider?.capabilities.echoCancellation?.default ??
     DEFAULT_SPEECH_ECHO_CANCELLATION;
+  const transcriptionOption = resolveSpeechTranscriptionOption(
+    managedModel,
+    settings.transcriptionModel,
+    provider,
+  );
   const session: Record<string, unknown> = {
     voice: {
       type: provider?.capabilities.voices.kind ?? "azure-standard",
@@ -503,6 +551,7 @@ export function speechSessionUpdate(
     },
     input_audio_transcription: {
       model:
+        transcriptionOption?.model ??
         managedModel?.inputTranscription.model ??
         (managedModel?.profile === "azure_speech_chain"
           ? "azure-speech"
@@ -670,6 +719,9 @@ interface LiveSession {
   sendText?: (text: string) => boolean;
   // Releases queued typed lines if the server never answers the user's speech.
   typedReleaseTimer: ReturnType<typeof setTimeout> | null;
+  // The catalog transcription option this session's setup frame chose, or null
+  // for the managed model's own default (or Azure OpenAI).
+  transcriptionOption: SpeechTranscriptionOption | null;
 }
 
 // The message shown when the WebSocket fails or closes before ever reaching
@@ -846,6 +898,29 @@ export function formatVoiceProtocolError(error: SafeProtocolError): string {
   return `${error.message.slice(0, MAX_SAFE_ERROR_CHARS - suffix.length)}${suffix}`;
 }
 
+/**
+ * Explains a ``conversation.item.input_audio_transcription.failed`` event. The
+ * session stays connected (a native-audio model may still answer), but that
+ * turn has no transcript, and nothing switches to another model on its behalf.
+ * ``option`` is the catalog transcription option the session chose, if any.
+ */
+export function transcriptionFailureNotice(
+  error: unknown,
+  option: Pick<SpeechTranscriptionOption, "displayName" | "preview"> | null = null,
+): string {
+  const lead = option
+    ? `${transcriptionOptionLabel(option)} couldn't transcribe your last turn: `
+    : "Your last turn couldn't be transcribed: ";
+  const advice = option
+    ? " If this continues, choose Model default transcription in Voice settings."
+    : "";
+  // The upstream detail yields room first, so the guidance is never cut off.
+  const room = Math.max(0, MAX_SAFE_ERROR_CHARS - lead.length - advice.length - 1);
+  let detail = formatVoiceProtocolError(parseVoiceProtocolError(error)).slice(0, room);
+  if (!/[.!?]$/.test(detail)) detail += ".";
+  return `${lead}${detail}${advice}`;
+}
+
 export function formatVoiceCloseError(
   opened: boolean,
   event?: Pick<CloseEvent, "code" | "reason"> | null,
@@ -895,6 +970,7 @@ export function useVoiceLive(
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [avatarView, setAvatarView] = useState<LiveAvatarView | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const sessionRef = useRef<LiveSession | null>(null);
   const pendingRef = useRef<PendingLiveSession | null>(null);
@@ -1061,6 +1137,7 @@ export function useVoiceLive(
     setListening(false);
     setSpeaking(false);
     setAvatarView(null);
+    setNotice(null);
     const pending: PendingLiveSession = {
       ctx: null,
       stream: null,
@@ -1233,6 +1310,7 @@ export function useVoiceLive(
         avatarPlayer,
         avatarEndReason: null,
         typedReleaseTimer: null,
+        transcriptionOption: null,
       };
       sessionRef.current = session;
       pendingRef.current = null;
@@ -1694,6 +1772,8 @@ export function useVoiceLive(
             const t = typeof msg.transcript === "string" ? msg.transcript : "";
             const trimmed = t.trim();
             if (mountedRef.current) {
+              // A later transcript supersedes an earlier failure notice.
+              if (trimmed) setNotice(null);
               if (trimmed) setUserTranscript((p) => (p ? `${p} ` : "") + trimmed);
               // Resolve the pending user bubble created on speech start, or push a
               // completed one if none is open. Empty transcripts drop the bubble.
@@ -1712,6 +1792,20 @@ export function useVoiceLive(
                   tool: "",
                 });
               }
+            }
+            userTurnId = null;
+            flushTyped();
+            break;
+          }
+          case "conversation.item.input_audio_transcription.failed": {
+            // This turn has no transcript. Close its pending bubble rather than
+            // leave it (and any queued typed lines) waiting, and say so. The
+            // session stays up: a native-audio model may still answer, and no
+            // other transcription model is tried in its place.
+            const failure = transcriptionFailureNotice(msg.error, session.transcriptionOption);
+            if (mountedRef.current) {
+              if (userTurnId) dropTurn(userTurnId);
+              setNotice(failure);
             }
             userTurnId = null;
             flushTyped();
@@ -1834,6 +1928,15 @@ export function useVoiceLive(
       ws.onopen = () => {
         if (sessionRef.current !== session || session.cleaned) return;
         session.opened = true;
+        // Read from the same refs as the setup frame below, so a failure notice
+        // names the transcription model this session actually asked for.
+        session.transcriptionOption =
+          providerIdRef.current === "speech_voice_live"
+            ? resolveSpeechTranscriptionOption(
+                resolveSpeechManagedModel(modelRef.current),
+                speechSettingsRef.current.transcriptionModel,
+              ) ?? null
+            : null;
         for (const frame of
           buildInitialVoiceFrames({
             providerId: providerIdRef.current,
@@ -1952,6 +2055,7 @@ export function useVoiceLive(
     listening,
     speaking,
     avatar: avatarView,
+    notice,
     start,
     toggle,
     stop,

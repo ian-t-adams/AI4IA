@@ -83,6 +83,7 @@ function makeController(
     listening: false,
     speaking: false,
     avatar: null,
+    notice: null,
     start: mocks.start,
     stop: mocks.stop,
     toggle: mocks.toggle,
@@ -379,6 +380,35 @@ describe("inline Voice Live chat", () => {
     expect(sendText).toHaveBeenCalledExactlyOnceWith("Too late");
     expect(onSend).not.toHaveBeenCalled();
     expect(composer).toHaveValue("Too late");
+  });
+
+  it("shows a live session notice in the call bar without ending the session", () => {
+    const notice =
+      "MAI Transcribe 2 (preview) couldn't transcribe your last turn: Unavailable. " +
+      "If this continues, choose Model default transcription in Voice settings.";
+    controller = makeController({ status: "live", active: true, notice });
+    const { rerender } = render(<Harness />);
+    const hint = screen.getByText(notice);
+    expect(hint).toHaveAttribute("data-tone", "warn");
+    expect(hint).toHaveClass("voice-call-hint");
+    expect(
+      screen.queryByText("Speak, or type a message: the live voice answers out loud."),
+    ).toBeNull();
+    // The session stays live: no error tone, and it can still be ended.
+    expect(document.querySelector(".voice-call-bar")).not.toHaveAttribute("data-tone");
+    expect(screen.getByRole("button", { name: "End voice session" })).toBeInTheDocument();
+
+    controller = makeController({ status: "live", active: true });
+    rerender(<Harness />);
+    expect(screen.queryByText(notice)).toBeNull();
+    expect(
+      screen.getByText("Speak, or type a message: the live voice answers out loud."),
+    ).not.toHaveAttribute("data-tone");
+
+    // A notice from an ended session is not left in the call bar.
+    controller = makeController({ status: "idle", active: false, notice });
+    rerender(<Harness />);
+    expect(screen.queryByText(notice)).toBeNull();
   });
 
   it("offers no send target before a session starts", async () => {

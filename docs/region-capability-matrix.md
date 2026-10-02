@@ -117,7 +117,7 @@ capabilities, and stable `2026-04-10` API contract. Azure OpenAI remains the
 default provider; enabling Speech requires its own allowlist, APIM API/key,
 and managed-identity access.
 
-| Managed model | Response path | Input transcription |
+| Managed model | Response path | Default input transcription |
 | --- | --- | --- |
 | `gpt-realtime` (default) | Native audio | `gpt-4o-transcribe` |
 | `gpt-realtime-mini` | Native audio | `gpt-4o-transcribe` |
@@ -125,6 +125,13 @@ and managed-identity access.
 | `gpt-4.1-mini` | Azure Speech chain | `azure-speech` |
 | `gpt-5-mini` | Azure Speech chain | `azure-speech` |
 | `gpt-5.1` | Azure Speech chain | `azure-speech` |
+
+Every managed model may instead use the selectable `mai-transcribe-2` (MAI
+Transcribe 2, public preview), which the pinned `2026-04-10` reference lists for
+both response paths. Microsoft has not yet confirmed it in East US 2: the
+standalone MAI-Transcribe-2-Streaming product lists that region as "coming soon".
+The voices include 14 public-preview MAI-Voice-2.1 and MAI-Voice-2.1-Flash voices,
+which Microsoft serves from East US 2 and Sweden Central among other regions.
 
 A Speech-managed model name is not a promise that an identically named normal
 chat deployment exists. Extending Speech to another region is a separate

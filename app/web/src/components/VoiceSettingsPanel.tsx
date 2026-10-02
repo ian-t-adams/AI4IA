@@ -11,6 +11,9 @@ import {
   PLAYBACK_BUFFER_MS,
   PLAYBACK_PROFILES,
   isSpeechVoiceProvider,
+  resolveSpeechTranscriptionOption,
+  speechTranscriptionOptions,
+  transcriptionOptionLabel,
   VAD_TYPES,
   type PlaybackProfile,
   type SpeechVoiceLiveSettings,
@@ -27,7 +30,7 @@ import {
   VAD_THRESHOLD_MAX,
   VAD_THRESHOLD_MIN,
 } from "@/lib/voicePreferences";
-import { formatVoiceName } from "@/lib/voiceNames";
+import { formatVoiceName, isPreviewVoice } from "@/lib/voiceNames";
 
 // The sentinel option value for "no explicit pick — follow the default".
 // HTML <select> options can't carry a real null, so "" round-trips to/from it
@@ -38,6 +41,15 @@ const PLAYBACK_PROFILE_LABELS: Record<PlaybackProfile, string> = {
   balanced: "Balanced",
   smooth: "Smooth",
 };
+// Names for the managed models' own transcription defaults.
+const MANAGED_TRANSCRIPTION_LABELS: Record<string, string> = {
+  "gpt-4o-transcribe": "GPT-4o Transcribe",
+  "azure-speech": "Azure Speech",
+};
+
+function managedTranscriptionLabel(model: string): string {
+  return MANAGED_TRANSCRIPTION_LABELS[model] ?? model;
+}
 
 export interface VoiceSettingsModel {
   id: string;
@@ -143,6 +155,16 @@ export function VoiceSettingsPanel({
   const selectedSpeechModel = speechProvider?.managedModels.find(
     (model) => model.id === speechModel,
   );
+  const transcriptionOptions = speechTranscriptionOptions(selectedSpeechModel, speechProvider);
+  const selectedTranscription = resolveSpeechTranscriptionOption(
+    selectedSpeechModel,
+    speechSettings.transcriptionModel,
+    speechProvider,
+  );
+  const defaultTranscriptionLabel = selectedSpeechModel
+    ? managedTranscriptionLabel(selectedSpeechModel.inputTranscription.model)
+    : "";
+  const previewVoiceSelected = isSpeechProvider && isPreviewVoice(voice);
   const turnDetectionOptions: readonly SpeechVoiceLiveSettings["turnDetection"][] =
     speechProvider?.capabilities.turnDetection.options ?? [];
   const showAvatarPicker = isSpeechProvider && (
@@ -207,6 +229,46 @@ export function VoiceSettingsPanel({
                 ))}
               </select>
             </label>
+            {selectedSpeechModel && transcriptionOptions.length > 0 && (
+              <div style={FIELD_STYLE}>
+                <label htmlFor={`${idPrefix}-speech-transcription`}>Transcription</label>
+                <select
+                  id={`${idPrefix}-speech-transcription`}
+                  aria-describedby={
+                    selectedTranscription?.preview
+                      ? `${idPrefix}-speech-transcription-description`
+                      : undefined
+                  }
+                  value={selectedTranscription?.model ?? DEFAULT_OPTION_VALUE}
+                  disabled={locked}
+                  onChange={(event) =>
+                    patchSpeechSettings({
+                      transcriptionModel:
+                        event.target.value === DEFAULT_OPTION_VALUE ? null : event.target.value,
+                    })
+                  }
+                  style={CONTROL_STYLE}
+                >
+                  <option value={DEFAULT_OPTION_VALUE}>
+                    Model default ({defaultTranscriptionLabel})
+                  </option>
+                  {transcriptionOptions.map((option) => (
+                    <option key={option.model} value={option.model}>
+                      {transcriptionOptionLabel(option)}
+                    </option>
+                  ))}
+                </select>
+                {selectedTranscription?.preview && (
+                  <span
+                    id={`${idPrefix}-speech-transcription-description`}
+                    style={{ maxWidth: 260 }}
+                  >
+                    Preview, no SLA, and not yet confirmed in this region. If Azure refuses it,
+                    Voice Live shows the error instead of switching models.
+                  </span>
+                )}
+              </div>
+            )}
             {selectedSpeechModel && (
               <div
                 style={{
@@ -224,10 +286,9 @@ export function VoiceSettingsPanel({
                     ? "Native audio"
                     : "Azure Speech chain"}
                   {" · "}
-                  {selectedSpeechModel.inputTranscription.model ===
-                  "gpt-4o-transcribe"
-                    ? "GPT-4o Transcribe"
-                    : "Azure Speech"}
+                  {selectedTranscription
+                    ? transcriptionOptionLabel(selectedTranscription)
+                    : defaultTranscriptionLabel}
                   {" · "}
                   {selectedSpeechModel.initialRegion}
                 </strong>
@@ -270,10 +331,11 @@ export function VoiceSettingsPanel({
           </div>
         )}
 
-        <label style={FIELD_STYLE} htmlFor={`${idPrefix}-voice`}>
-          Voice
+        <div style={FIELD_STYLE}>
+          <label htmlFor={`${idPrefix}-voice`}>Voice</label>
           <select
             id={`${idPrefix}-voice`}
+            aria-describedby={previewVoiceSelected ? `${idPrefix}-voice-description` : undefined}
             value={voice}
             disabled={locked}
             onChange={(e) => onVoiceChange(e.target.value)}
@@ -285,7 +347,12 @@ export function VoiceSettingsPanel({
               </option>
             ))}
           </select>
-        </label>
+          {previewVoiceSelected && (
+            <span id={`${idPrefix}-voice-description`} style={{ maxWidth: 260 }}>
+              Preview voice, no SLA, and not yet tested with photo avatars.
+            </span>
+          )}
+        </div>
 
         {(showAvatarPicker || onOpenPhotoAvatars) && (
           <div style={FIELD_STYLE}>
