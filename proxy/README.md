@@ -29,6 +29,33 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
   `SimpleL7Proxy/Dockerfile`, sample deployment, scratch file, and build helper remain
   provenance-tracked but are excluded from AI4IA's Docker build context and are never built.
 
+### Bounded OpenSSL security overlay
+
+The pinned .NET 10 noble-chiseled runtime predates Ubuntu's
+[USN-8847-1](https://ubuntu.com/security/notices/USN-8847-1). Until a reviewed
+Microsoft rebuild replaces it, both AI4IA Dockerfiles apply the same build-only
+overlay from the exact Ubuntu OpenSSL `3.0.13-0ubuntu3.16` packages.
+`runtime-security.json` records the package and selected-file SHA-256 hashes for
+amd64, arm64 and arm/v7; `runtime-security.py` verifies those artifacts, their
+architecture and the original `3.0.13-0ubuntu3.15` package identity before
+producing any output.
+
+APT retains its signed-repository authentication. The helper does not install
+the downloaded packages or run their maintainer scripts. It copies only the
+already-present `libcrypto`, `libssl`, legacy module and copyright file, together
+with the two packages' authentic control records. The copyright symlink and all
+unrelated package records remain unchanged. Updating metadata without replacing
+all three libraries cannot pass final-image verification.
+
+Python, APT, package archives and the helper stay in the build stage. The final
+image keeps the same .NET runtime, Ubuntu series, shell-less subset, non-root
+user and existing CompanionApp application/key-ring ownership rules. CI checks
+the actual exported files, their hashes and ownership before the unchanged
+HIGH/CRITICAL scans. Source/PR acceptance does not prove production deployment
+or authorize the optional console. Remove this overlay deliberately after
+verifying a supported patched Microsoft runtime, not by weakening its version
+or integrity checks.
+
 ### Intentional source deviation
 
 Twenty-four upstream files carry AI4IA security, correctness, dependency, or

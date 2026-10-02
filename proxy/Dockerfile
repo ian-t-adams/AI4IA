@@ -2,7 +2,26 @@
 # b0066b0e53f89abb5e84cfeacda2fdcaca8b081e; the file-level provenance is in
 # proxy/upstream-provenance.json. Refresh these OCI manifest-list digests with:
 # docker buildx imagetools inspect <tag> --format '{{json .Manifest.Digest}}'
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c AS build-env
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c AS sdk
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:9651fa59abcdf177c30392cb44a820605ca5d618429ab37acbf6e7c644510b02 AS runtime-base
+
+FROM sdk AS runtime-security
+WORKDIR /runtime-security
+COPY --from=runtime-base / /runtime-security/base/
+COPY runtime-security.py runtime-security.json ./
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends python3 \
+    && mkdir packages \
+    && version="$(python3 runtime-security.py version)" \
+    && cd packages \
+    && apt-get download "libssl3t64=${version}" "openssl=${version}" \
+    && cd .. \
+    && python3 runtime-security.py prepare --root base --packages packages --output overlay
+
+FROM runtime-base AS patched-runtime
+COPY --from=runtime-security /runtime-security/overlay/ /
+
+FROM sdk AS build-env
 WORKDIR /app
 
 # Copy restore inputs first so the locked restore is cached independently of source changes.
@@ -25,7 +44,7 @@ COPY SimpleL7Proxy/ ./SimpleL7Proxy/
 WORKDIR /app/SimpleL7Proxy
 RUN dotnet publish -c Release -o /app/out --no-restore
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:9651fa59abcdf177c30392cb44a820605ca5d618429ab37acbf6e7c644510b02
+FROM patched-runtime AS runtime
 WORKDIR /app
 COPY --from=build-env /app/out .
 # Default per-user policy + Entra App-ID allowlist (overridable via App Config).
