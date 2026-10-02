@@ -5,6 +5,7 @@ import protocolFixtures from "../../test-fixtures/realtime_protocol.json";
 
 import {
   microphoneConstraints,
+  MAX_MICROPHONE_BUFFERED_BYTES,
   PLAYBACK_BUFFER_MS,
   supportsVoiceLive,
   useVoiceLive,
@@ -94,9 +95,14 @@ class FakeAudioBufferSource {
 }
 
 class FakeAudioWorkletNode {
+  static instances: FakeAudioWorkletNode[] = [];
   port = { onmessage: null as ((event: MessageEvent) => void) | null };
   connect = vi.fn();
   disconnect = vi.fn();
+
+  constructor() {
+    FakeAudioWorkletNode.instances.push(this);
+  }
 }
 
 // A minimal MediaStreamTrack double with real (not stubbed) addEventListener/
@@ -142,6 +148,7 @@ class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
 
   readyState = FakeWebSocket.CONNECTING;
+  bufferedAmount = 0;
   binaryType = "";
   onopen: (() => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
@@ -169,6 +176,7 @@ const CONFIG = {
 
 beforeEach(() => {
   FakeAudioContext.instances = [];
+  FakeAudioWorkletNode.instances = [];
   FakeWebSocket.instances = [];
   Object.defineProperty(window, "AudioContext", {
     configurable: true,
@@ -597,6 +605,75 @@ describe("useVoiceLive lifecycle", () => {
       );
       expect(onError.mock.calls[0][0].length).toBeLessThanOrEqual(512);
     });
+
+  it("explains a keepalive timeout and releases the microphone without reconnecting", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const track = new FakeMediaStreamTrack();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "speech_voice_live", "gpt-realtime", null, "Fixture voice", onError),
+    );
+    act(() => { result.current.start(); });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => {
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onopen?.();
+      socket.onclose?.({ code: 1011, reason: "keepalive ping timeout" });
+    });
+    expect(onError).toHaveBeenCalledExactlyOnceWith(
+      "The live voice connection stopped responding. Your microphone was stopped; start a new session to try again.",
+    );
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(result.current.active).toBe(false);
+  });
+
+  it("admits the exact microphone queue bound and stops rather than dropping or replaying overflow", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const track = new FakeMediaStreamTrack();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "speech_voice_live", "gpt-realtime", null, "Fixture voice", onError),
+    );
+    act(() => { result.current.start(); });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => {
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onopen?.();
+    });
+    socket.send.mockClear();
+    const worklet = FakeAudioWorkletNode.instances[0];
+    const input = new MessageEvent("message", { data: new Float32Array(2400) });
+    act(() => { worklet.port.onmessage?.(input); });
+    const frame = socket.send.mock.calls[0][0] as string;
+    expect(JSON.parse(frame).type).toBe("input_audio_buffer.append");
+    expect(onError).not.toHaveBeenCalled();
+    socket.bufferedAmount = MAX_MICROPHONE_BUFFERED_BYTES - frame.length;
+    act(() => { worklet.port.onmessage?.(input); });
+    expect(socket.send).toHaveBeenCalledTimes(2);
+    socket.bufferedAmount += 1;
+    act(() => { worklet.port.onmessage?.(input); });
+    expect(socket.send).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(
+      "The connection can't keep up with microphone audio. Your microphone was stopped; start a new session to try again.",
+    );
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(socket.close).toHaveBeenCalledTimes(1);
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(result.current.status).toBe("idle");
+  });
   it("does not report a spurious error when the user stops a live session cleanly", async () => {
     auth.getToken.mockResolvedValue("token");
     Object.defineProperty(navigator, "mediaDevices", {

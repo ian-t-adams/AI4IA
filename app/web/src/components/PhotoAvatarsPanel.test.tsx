@@ -266,6 +266,65 @@ describe("availability", () => {
   });
 });
 
+describe("using an avatar in Voice Live", () => {
+  it("offers a usable ready avatar without starting a session or creating another avatar", async () => {
+    const onUse = vi.fn();
+    const onClose = vi.fn();
+    render(<PhotoAvatarsPanel onClose={onClose} onUse={onUse} />);
+    const use = await screen.findByRole("button", { name: "Use Host A in Voice Live" });
+    expect(use).toBeEnabled();
+    expect(screen.getByText(/then choose Start talking/)).toBeInTheDocument();
+    expect(onUse).not.toHaveBeenCalled();
+    await userEvent.click(use);
+    expect(onUse).toHaveBeenCalledExactlyOnceWith(READY_A);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(calls("POST", LIST)).toHaveLength(0);
+  });
+
+  it("keeps pending and re-verifying avatars out of live use", async () => {
+    const onUse = vi.fn();
+    on("GET", LIST, () => json({ avatars: [READY_A, PENDING, REVERIFYING] }));
+    render(<PhotoAvatarsPanel onClose={vi.fn()} onUse={onUse} />);
+    expect(await screen.findByRole("button", { name: "Use Host A in Voice Live" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Use Pending host in Voice Live" })).toBeNull();
+    const paused = screen.getByRole("button", { name: "Use Checked host in Voice Live" });
+    expect(paused).toBeDisabled();
+    await userEvent.click(paused);
+    expect(onUse).not.toHaveBeenCalled();
+  });
+
+  it("explains a disabled voice action instead of hiding the way to use a ready avatar", async () => {
+    const onUse = vi.fn();
+    const reason = "End the current voice session before choosing an avatar.";
+    render(<PhotoAvatarsPanel onClose={vi.fn()} onUse={onUse} useDisabledReason={reason} />);
+    const use = await screen.findByRole("button", { name: "Use Host A in Voice Live" });
+    expect(use).toBeDisabled();
+    expect(use).toHaveAccessibleDescription(reason);
+    await userEvent.click(use);
+    expect(onUse).not.toHaveBeenCalled();
+  });
+
+  it("does not offer live use when availability cannot be confirmed", async () => {
+    const onUse = vi.fn();
+    on("GET", CONFIG_PATH, () => json({ detail: "Availability is unknown." }, 503));
+    render(<PhotoAvatarsPanel onClose={vi.fn()} onUse={onUse} />);
+    const use = await screen.findByRole("button", { name: "Use Host A in Voice Live" });
+    expect(use).toBeDisabled();
+    expect(use).toHaveAccessibleDescription(/availability couldn't be checked/i);
+    await userEvent.click(use);
+    expect(onUse).not.toHaveBeenCalled();
+  });
+
+  it("still offers live use when only the creation limit is full", async () => {
+    on("GET", CONFIG_PATH, () => json({
+      ...CONFIG, canCreate: false, limits: { ...CONFIG.limits!, avatarCount: 5 },
+    }));
+    render(<PhotoAvatarsPanel onClose={vi.fn()} onUse={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "Use Host A in Voice Live" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "New avatar" })).toBeDisabled();
+  });
+});
+
 describe("creating an avatar", () => {
   it("keeps Create disabled until every statement is attested, then sends the server's version", async () => {
     const user = userEvent.setup();

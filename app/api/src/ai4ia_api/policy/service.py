@@ -429,6 +429,12 @@ class PolicyService:
         if policy.binding is not self._binding:
             return PolicyDecision("unavailable", "policy_unavailable")
         current = await self._resolve(policy.owner_id, policy.user)
+        return await self._authorize_current(current, request)
+
+    async def _authorize_current(
+        self, current: EffectivePolicy, request: PolicyRequest,
+    ) -> PolicyDecision:
+        """Evaluate a freshly resolved snapshot within one authorization call."""
         decision = self.decide(current, request)
         if not decision.allowed or not self.enabled:
             return decision

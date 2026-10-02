@@ -1649,6 +1649,26 @@ a new owner-approved exception.
   fails the avatar rather than dropping a fragment. An unsupported browser stays
   voice only before connecting. The `AI-generated` disclosure label stays visible
   for the whole session.
+- **Gallery handoff.** **Use in Voice Live** selects the owner's ready, usable
+  record and Azure Speech; only **Start talking** or the microphone starts the
+  session. Invalidate cached choices while a gallery refresh is pending. Failed
+  reads and unavailable saved avatars must not silently start voice-only; keep an
+  explicit **Voice only** recovery and never block Stop for a live connection.
+  Gallery use and settings edits stay locked during a connection or transcript
+  save. This is UI posture, not a second grant or a reason to weaken the relay.
+- **Model cleanup.** An HTTP model addition is not a Speech managed-model
+  offering. Retiring a model deployment does not authorize removing the shared
+  avatar home account/project or user records/previews. Keep the existing
+  Bicep/API gates and the separately approved realtime cutover/removal procedure.
+- **Frame responsiveness.** One serialized voice frame resolves the current
+  owner once for all of its voice/avatar scopes; the next frame resolves again.
+  This is not a cached grant. Preserve post-await identity/configuration,
+  budgets and publication fences. Native Ping/Pong controls must reproduce the
+  repeated-read backlog and keep paced audio live with the guard intact; do not
+  disable heartbeats or broaden authority to hide a keepalive timeout.
+  Bound the browser microphone queue and stop explicitly on overflow, never
+  silently drop or replay audio. Typed HTTP/SSE chat remains separate from live
+  speech, and that distinction must be visible rather than only a tooltip.
 
 ## Group policy and publication source contract
 

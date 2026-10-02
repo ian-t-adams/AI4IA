@@ -37,6 +37,8 @@ import { isPhotoAvatarId } from "./photoAvatars";
 
 // Azure realtime speaks 24 kHz mono PCM16 in both directions.
 export const PCM_SAMPLE_RATE = 24000;
+// Roughly two seconds of base64 PCM16. Never queue increasingly stale microphone audio.
+export const MAX_MICROPHONE_BUFFERED_BYTES = 128 * 1024;
 export const PLAYBACK_PROFILES = ["fast", "balanced", "smooth"] as const;
 export type PlaybackProfile = (typeof PLAYBACK_PROFILES)[number];
 export const DEFAULT_PLAYBACK_PROFILE: PlaybackProfile = "balanced";
@@ -837,6 +839,9 @@ export function formatVoiceCloseError(
   opened: boolean,
   event?: Pick<CloseEvent, "code" | "reason"> | null,
 ): string {
+  if (opened && event?.code === 1011 && event.reason.trim().toLowerCase() === "keepalive ping timeout") {
+    return "The live voice connection stopped responding. Your microphone was stopped; start a new session to try again.";
+  }
   const base = opened ? LIVE_CONNECTION_ERROR_MESSAGE : GATEWAY_UNAVAILABLE_MESSAGE;
   const reason = sanitizeVoiceErrorValue(event?.reason);
   const details = [
@@ -1713,12 +1718,18 @@ export function useVoiceLive(
         if (ws.readyState !== WebSocket.OPEN) return;
         const samples = ev.data as Float32Array;
         const pcm = floatTo16BitPCM(samples);
-        ws.send(
-          JSON.stringify({
-            type: "input_audio_buffer.append",
-            audio: int16ToBase64(pcm),
-          }),
-        );
+        const frame = JSON.stringify({
+          type: "input_audio_buffer.append",
+          audio: int16ToBase64(pcm),
+        });
+        if (ws.bufferedAmount + frame.length > MAX_MICROPHONE_BUFFERED_BYTES) {
+          finishSession(
+            "The connection can't keep up with microphone audio. Your microphone was stopped; start a new session to try again.",
+            true,
+          );
+          return;
+        }
+        ws.send(frame);
       };
 
       ws.onopen = () => {
