@@ -17,6 +17,7 @@ import {
 } from "react";
 import * as api from "@/lib/api";
 import { supportsAvatarVideo } from "@/lib/avatarVideo";
+import type { PhotoAvatar } from "@/lib/photoAvatars";
 import { inspectedSessionConsent, unverifiedSessionConsent, type SessionConsentView, type ToolConsentInspection } from "@/lib/toolConsent";
 import type {
   ActivityStep,
@@ -64,6 +65,7 @@ import {
 import { LibraryPanel } from "./LibraryPanel";
 import { ImageEditDialog } from "./ImageEditDialog";
 import { PhotoAvatarsPanel } from "./PhotoAvatarsPanel";
+import { PhotoAvatarVoiceCard } from "./PhotoAvatarVoiceCard";
 import { usePhotoAvatarsEnabled } from "./usePhotoAvatarsEnabled";
 import { useLiveAvatarChoices } from "./useLiveAvatarChoices";
 import { LiveAvatarStage } from "./LiveAvatarStage";
@@ -246,6 +248,7 @@ export function ChatApp() {
   const photoAvatarsEnabled = usePhotoAvatarsEnabled(owner.key);
   // Closing the gallery refreshes the avatars live voice may offer.
   const [liveAvatarRefresh, setLiveAvatarRefresh] = useState(0);
+  const [liveAvatarFocusRequest, setLiveAvatarFocusRequest] = useState(0);
   const closePhotoAvatarGallery = useCallback(() => {
     closePhotoAvatars();
     setLiveAvatarRefresh((count) => count + 1);
@@ -2025,10 +2028,12 @@ export function ChatApp() {
     supportsAvatarVideo,
     () => false,
   );
+  const requestedLiveAvatarId =
+    voicePrefs.provider === "speech_voice_live" ? voicePrefs.speechAvatarId : null;
   const selectedLiveAvatar =
     voicePrefsResolved.provider === "speech_voice_live"
       ? liveAvatarChoices.avatars.find(
-          (candidate) => candidate.id === voicePrefsResolved.speechAvatarId,
+          (candidate) => candidate.id === requestedLiveAvatarId,
         ) ?? null
       : null;
   const selectedLiveAvatarId = selectedLiveAvatar?.id ?? null;
@@ -2068,6 +2073,52 @@ export function ChatApp() {
   // would actually be lost — an open mic with no exchanges yet never blocks a
   // switch (see useInlineVoiceLive.hasUnsavedTurns).
   const voiceExitLocked = inlineVoice.exitLocked;
+  const voiceSelectionLocked = inlineVoice.active || inlineVoice.saving || voiceExitLocked;
+  const avatarVoiceUseDisabledReason = !speechVoiceOffered
+    ? "Live avatars need Azure Speech Voice Live, which isn't available in this deployment."
+    : !inlineVoice.supported
+      ? "Live voice isn't supported in this browser."
+      : !avatarVideoSupported
+        ? "This browser can't play avatar video. Choose Voice only to continue without an avatar."
+        : inlineVoice.active
+          ? "End the current voice session before choosing an avatar."
+          : inlineVoice.saving || voiceExitLocked || inlineVoice.persistenceError
+            ? "Finish saving the voice transcript before choosing an avatar. Use Retry saving or Stop waiting below."
+            : null;
+  const avatarStartBlockedReason = requestedLiveAvatarId === null
+    ? null
+    : !photoAvatarsEnabled
+      ? "Photo avatars are unavailable for this account."
+      : avatarVoiceUseDisabledReason
+        ?? (liveAvatarChoices.loading
+          ? "Checking your avatar before starting..."
+          : liveAvatarChoices.error
+            ?? (!selectedLiveAvatar
+              ? "This avatar is no longer ready or available. Choose another avatar or Voice only."
+              : null));
+  const startVoice = inlineVoice.start;
+  const startInlineVoice = useCallback(() => {
+    if (avatarStartBlockedReason) {
+      setError(avatarStartBlockedReason);
+      return;
+    }
+    startVoice();
+  }, [avatarStartBlockedReason, startVoice]);
+  const usePhotoAvatarInVoice = useCallback((avatar: PhotoAvatar) => {
+    if (!owner.isCurrent()) return;
+    if (avatarVoiceUseDisabledReason || !photoAvatarsEnabled || !avatar.usable || avatar.status !== "ready") {
+      setError(avatarVoiceUseDisabledReason ?? "This avatar isn't available for live use.");
+      return;
+    }
+    updateVoicePrefs({
+      ...voicePrefsResolved, provider: "speech_voice_live", speechAvatarId: avatar.id,
+    });
+    setLiveAvatarFocusRequest((count) => count + 1);
+    closePhotoAvatarGallery();
+  }, [
+    avatarVoiceUseDisabledReason, closePhotoAvatarGallery, owner,
+    photoAvatarsEnabled, updateVoicePrefs, voicePrefsResolved,
+  ]);
   // Sidebar navigation is hard-disabled (not just soft-gated like the upload
   // lock) while streaming or while voice data is unsaved, so a plain
   // `disabled` attribute leaves users with no idea why the button won't
@@ -2212,10 +2263,11 @@ export function ChatApp() {
               id: candidate.id,
               displayName: candidate.displayName,
             })),
-            avatarId: selectedLiveAvatarId,
+            avatarId: requestedLiveAvatarId,
             onAvatarChange: (nextAvatar: string | null) =>
               updateVoicePrefs({ ...voicePrefsResolved, speechAvatarId: nextAvatar }),
             avatarVideoSupported,
+            onOpenPhotoAvatars: photoAvatarsEnabled ? openPhotoAvatars : undefined,
             onReset: () =>
               updateVoicePrefs(
                 voicePrefsResolved.provider === "speech_voice_live"
@@ -2249,8 +2301,10 @@ export function ChatApp() {
       voiceToolsAvailable,
       voiceProviderConfig?.openaiRealtimeProtocol,
       liveAvatarChoices.avatars,
-      selectedLiveAvatarId,
+      requestedLiveAvatarId,
       avatarVideoSupported,
+      photoAvatarsEnabled,
+      openPhotoAvatars,
     ],
   );
 
@@ -3146,6 +3200,19 @@ export function ChatApp() {
           active={inlineVoice.active}
           onEnd={inlineVoice.stop}
         />
+        {requestedLiveAvatarId !== null && !inlineVoice.active ? (
+          <PhotoAvatarVoiceCard
+            key={owner.key}
+            avatar={selectedLiveAvatar}
+            voice={voicePrefsResolved.speech.voice}
+            disabledReason={avatarStartBlockedReason}
+            locked={voiceSelectionLocked}
+            focusRequest={liveAvatarFocusRequest}
+            onStart={startInlineVoice}
+            onChoose={openPhotoAvatars}
+            onClear={() => updateVoicePrefs({ ...voicePrefsResolved, speechAvatarId: null })}
+          />
+        ) : null}
         <InlineVoiceLiveStatus voice={inlineVoice} />
         <ToolApprovalPanel
           prompts={toolApprovals}
@@ -3196,7 +3263,8 @@ export function ChatApp() {
                   saving: inlineVoice.saving,
                   saveBlocked: Boolean(inlineVoice.persistenceError),
                   retrying: Boolean(inlineVoice.error),
-                  start: inlineVoice.start,
+                  startBlockedReason: avatarStartBlockedReason,
+                  start: startInlineVoice,
                   stop: inlineVoice.stop,
                 }
               : undefined
@@ -3275,7 +3343,7 @@ export function ChatApp() {
           libraryEnabled={libraryEnabled}
           attachmentCapabilities={attachmentCapabilities}
           voiceSettings={voiceSettingsProps}
-          voiceLocked={voiceExitLocked}
+          voiceLocked={voiceSelectionLocked}
           collapsed={rightIsCollapsed}
           onToggle={toggleRightPanel}
         />
@@ -3332,7 +3400,12 @@ export function ChatApp() {
       ) : null}
       {photoAvatarsOpen && photoAvatarsEnabled && owner.key !== null && (
         // Keyed by owner so an account switch never shows another owner's avatars.
-        <PhotoAvatarsPanel key={owner.key} onClose={closePhotoAvatarGallery} />
+        <PhotoAvatarsPanel
+          key={owner.key}
+          onClose={closePhotoAvatarGallery}
+          onUse={usePhotoAvatarInVoice}
+          useDisabledReason={avatarVoiceUseDisabledReason}
+        />
       )}
       {citationTarget && libraryEnabled && (
         <MediaPlayer

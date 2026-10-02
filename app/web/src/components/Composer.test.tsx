@@ -281,6 +281,38 @@ describe("Composer", () => {
     ).toBeDisabled();
   });
 
+  it("blocks an unresolved avatar start without ever blocking Stop, and enables start after resolution", async () => {
+    const voiceLive = {
+      active: false,
+      supported: true,
+      connecting: false,
+      ending: false,
+      saving: false,
+      saveBlocked: false,
+      retrying: false,
+      startBlockedReason: "Checking your avatar before starting...",
+      start: vi.fn(),
+      stop: vi.fn(),
+    };
+    const { user, rerender } = setup({ voiceLive });
+    const start = screen.getByRole("button", { name: "Start live voice conversation" });
+    expect(start).toBeDisabled();
+    expect(start).toHaveAccessibleDescription(voiceLive.startBlockedReason);
+    await user.click(start);
+    expect(voiceLive.start).not.toHaveBeenCalled();
+
+    rerender({ voiceLive: { ...voiceLive, active: true } });
+    const stop = screen.getByRole("button", { name: "Stop live voice conversation" });
+    expect(stop).toBeEnabled();
+    await user.click(stop);
+    expect(voiceLive.stop).toHaveBeenCalledTimes(1);
+
+    rerender({ voiceLive: { ...voiceLive, startBlockedReason: null } });
+    expect(screen.getByRole("button", { name: "Start live voice conversation" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Start live voice conversation" }));
+    expect(voiceLive.start).toHaveBeenCalledTimes(1);
+  });
+
   it("uploads multiple selected files sequentially", async () => {
       let releaseFirst!: () => void;
       const first = new Promise<void>((resolve) => {
