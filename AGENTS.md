@@ -1092,6 +1092,9 @@ issue. If completion requires a deployment, keep the issue open until that
 rollout is evidenced. Use N/A when a PR has no related issue; do not invent one
 just to satisfy the template.
 
+Use neutral `Refs #...` wording for an open follow-up. A closing keyword next
+to an issue number can auto-close it even inside a negated sentence.
+
 Treat implementation, deployment, and issue closure as separate states. Review
 independently green dependency updates independently, and close superseded bot
 PRs only after their replacement has actually merged. A plan or passing local

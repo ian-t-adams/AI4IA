@@ -46,6 +46,7 @@ def elf(architecture: str, label: str) -> bytes:
 def archive(
     files: dict[str, bytes], *, links: dict[str, str] | None = None,
     modes: dict[str, int] | None = None, owners: dict[str, int] | None = None,
+    groups: dict[str, int] | None = None,
 ) -> bytes:
     result = io.BytesIO()
     with tarfile.open(fileobj=result, mode="w") as tar:
@@ -54,7 +55,7 @@ def archive(
             member.size = len(payload)
             member.mode = (modes or {}).get(filename, 0o644)
             member.uid = (owners or {}).get(filename, 0)
-            member.gid = 0
+            member.gid = (groups or {}).get(filename, 0)
             tar.addfile(member, io.BytesIO(payload))
         for filename, target in (links or {}).items():
             member = tarfile.TarInfo(filename)
@@ -270,7 +271,10 @@ class FinalImageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(Path(directory))
             selected = next(name for name in fixture.payloads if name.endswith("libssl.so.3"))
-            for kwargs in ({"modes": {selected: 0o666}}, {"owners": {selected: 1654}}):
+            for kwargs in (
+                {"modes": {selected: 0o666}}, {"owners": {selected: 1654}},
+                {"groups": {selected: 1654}},
+            ):
                 with self.assertRaises(patcher.PatchError):
                     fixture.verify(**kwargs)
                 self.assertEqual(fixture.verify(), "amd64")
@@ -312,6 +316,26 @@ class FinalImageTests(unittest.TestCase):
 
 
 class ManifestAndWiringTests(unittest.TestCase):
+    def test_file_bound_reads_one_extra_byte_and_rejects_overflow_without_truncation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bounded.bin"
+            for size in (63, 64, 65):
+                path.write_bytes(b"x" * size)
+                if size <= 64:
+                    self.assertEqual(patcher.read_file(path, 64), b"x" * size)
+                else:
+                    with self.assertRaises(patcher.PatchError):
+                        patcher.read_file(path, 64)
+                path.write_bytes(b"x" * 64)
+                self.assertEqual(patcher.read_file(path, 64), b"x" * 64)
+            stream = io.BytesIO(b"x" * 65)
+            with mock.patch.object(Path, "open", return_value=stream), mock.patch.object(
+                stream, "read", wraps=stream.read,
+            ) as read:
+                with self.assertRaises(patcher.PatchError):
+                    patcher.read_file(path, 64)
+                read.assert_called_once_with(65)
+
     def test_committed_manifest_is_complete_and_malformed_variants_refuse(self) -> None:
         manifest = patcher.Manifest.load(MANIFEST)
         self.assertEqual(set(manifest.architectures), set(patcher.ARCHITECTURES))

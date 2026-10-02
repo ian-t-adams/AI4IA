@@ -27,6 +27,7 @@ ARCHITECTURES = {
     "armhf": ("arm-linux-gnueabihf", 1, 40),
 }
 MAX_STATUS_BYTES = 128 * 1024
+MAX_MANIFEST_BYTES = 16 * 1024
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_PACKAGE_BYTES = 4 * 1024 * 1024
 MAX_PACKAGE_TAR_BYTES = 16 * 1024 * 1024
@@ -40,6 +41,14 @@ class PatchError(ValueError):
 
 def digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def read_file(path: Path, limit: int) -> bytes:
+    with path.open("rb") as stream:
+        raw = stream.read(limit + 1)
+    if len(raw) > limit:
+        raise PatchError("Input file exceeds its byte bound.")
+    return raw
 
 
 def object_fields(value: object, expected: set[str]) -> dict[str, object]:
@@ -86,9 +95,7 @@ class Manifest:
 
     @classmethod
     def load(cls, path: Path) -> Manifest:
-        raw = path.read_bytes()
-        if len(raw) > 16 * 1024:
-            raise PatchError("Manifest is too large.")
+        raw = read_file(path, MAX_MANIFEST_BYTES)
         data = object_fields(json.loads(raw, object_pairs_hook=unique_object), {
             "schemaVersion", "source", "sourceVersion", "version", "architectures",
         })
@@ -233,7 +240,7 @@ def load_package(
 ) -> tuple[str, dict[str, bytes]]:
     if path.is_symlink() or not path.is_file() or path.stat().st_size != pin.size:
         raise PatchError("Package file is missing or has the wrong size.")
-    raw = path.read_bytes()
+    raw = read_file(path, pin.size)
     if digest(raw) != pin.sha256:
         raise PatchError("Package checksum mismatch.")
     control = dpkg_output(["--field", str(path)], MAX_STATUS_BYTES).decode("utf-8").strip("\n")
@@ -288,7 +295,7 @@ def prepare(root: Path, packages: Path, output: Path, manifest: Manifest) -> str
     root = root.resolve(strict=True)
     if output.resolve() == root or root in output.resolve().parents:
         raise PatchError("The overlay must not modify its input runtime.")
-    raw_status = base_file(root, STATUS_PATH).read_bytes()
+    raw_status = read_file(base_file(root, STATUS_PATH), MAX_STATUS_BYTES)
     records = status_records(raw_status)
     architecture = selected_architecture(records, manifest, manifest.source_version)
     link = root / COPYRIGHT_LINK
@@ -312,7 +319,7 @@ def prepare(root: Path, packages: Path, output: Path, manifest: Manifest) -> str
         payloads.update(files)
     for filename, payload in payloads.items():
         original = base_file(root, filename)
-        if filename != COPYRIGHT_PATH and digest(original.read_bytes()) == digest(payload):
+        if filename != COPYRIGHT_PATH and digest(read_file(original, MAX_FILE_BYTES)) == digest(payload):
             raise PatchError("The original library is already patched but its metadata disagrees.")
     replacement = "\n\n".join(
         controls.get(fields["Package"], paragraph) for paragraph, fields in records
