@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import { apiErrorDetail } from "@/lib/api";
+import { Icon } from "./Icon";
 
 export function EditableSessionTitle({
   title,
@@ -169,6 +170,7 @@ export function EditableSessionTitle({
         className="editable-session-title-trigger"
         aria-disabled={disabled || undefined}
         aria-describedby={disabled && disabledReasonId ? disabledReasonId : undefined}
+        title={disabled ? undefined : "Rename (F2)"}
         onClick={() => {
           if (disabled) return;
           begin();
@@ -181,7 +183,8 @@ export function EditableSessionTitle({
           }
         }}
       >
-        Rename
+        <Icon name="pencil" size={16} />
+        <span className="visually-hidden">Rename</span>
       </button>
       <span className="visually-hidden" role="status" aria-live="polite">
         {status}

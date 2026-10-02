@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { useState, type ReactElement } from "react";
+import { type ReactElement, useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -422,14 +422,28 @@ describe("ConversationInspector", () => {
         removeEventListener: vi.fn(),
       })),
     );
+    // The opener lives outside the inspector (the conversation header), so
+    // the inspector is told where focus goes back to.
     function Harness() {
       const [collapsed, setCollapsed] = useState(true);
+      const openerRef = useRef<HTMLElement | null>(null);
       return (
         <>
+          {collapsed ? (
+            <button
+              ref={(element) => {
+                if (element) openerRef.current = element;
+              }}
+              type="button"
+              aria-label="Open conversation inspector"
+              onClick={() => setCollapsed(false)}
+            />
+          ) : null}
           <ConversationInspector
             {...props()}
             collapsed={collapsed}
             onToggle={() => setCollapsed((value) => !value)}
+            openerRef={openerRef}
           />
           {!collapsed ? (
             <button

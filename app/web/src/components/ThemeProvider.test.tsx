@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { SettingsPanel } from "./SettingsPanel";
+import { AppearanceSettings } from "./SettingsPanel";
 import { ThemeProvider } from "./ThemeProvider";
 
 function setSystemDark(matches: boolean) {
@@ -37,7 +37,7 @@ describe("ThemeProvider accent handling", () => {
     setSystemDark(true);
     render(
       <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
+        <AppearanceSettings />
       </ThemeProvider>,
     );
 
@@ -51,7 +51,7 @@ describe("ThemeProvider accent handling", () => {
       localStorage.setItem("ai4ia-theme", JSON.stringify({ theme: savedTheme }));
       render(
         <ThemeProvider>
-          <SettingsPanel onClose={() => {}} />
+          <AppearanceSettings />
         </ThemeProvider>,
       );
 
@@ -79,7 +79,7 @@ describe("ThemeProvider accent handling", () => {
     // cannot satisfy both, so "no choice" must mean "no inline override".
     render(
       <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
+        <AppearanceSettings />
       </ThemeProvider>,
     );
     expect(inlineVar("--accent")).toBe("");
@@ -91,7 +91,7 @@ describe("ThemeProvider accent handling", () => {
     const user = userEvent.setup();
     render(
       <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
+        <AppearanceSettings />
       </ThemeProvider>,
     );
 
@@ -109,7 +109,7 @@ describe("ThemeProvider accent handling", () => {
     const user = userEvent.setup();
     render(
       <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
+        <AppearanceSettings />
       </ThemeProvider>,
     );
 
@@ -126,7 +126,7 @@ describe("ThemeProvider accent handling", () => {
     const user = userEvent.setup();
     render(
       <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
+        <AppearanceSettings />
       </ThemeProvider>,
     );
 
@@ -150,7 +150,7 @@ describe("ThemeProvider accent handling", () => {
     );
     render(
       <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
+        <AppearanceSettings />
       </ThemeProvider>,
     );
     expect(inlineVar("--accent")).toBe("");
@@ -163,7 +163,7 @@ describe("ThemeProvider accent handling", () => {
     );
     render(
       <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
+        <AppearanceSettings />
       </ThemeProvider>,
     );
     expect(inlineVar("--accent")).toBe("#15803d");
@@ -179,7 +179,7 @@ describe("ThemeProvider accent handling", () => {
     );
     render(
       <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
+        <AppearanceSettings />
       </ThemeProvider>,
     );
     expect(inlineVar("--accent")).toBe("");
@@ -189,7 +189,7 @@ describe("ThemeProvider accent handling", () => {
     const user = userEvent.setup();
     render(
       <ThemeProvider>
-        <SettingsPanel onClose={() => {}} />
+        <AppearanceSettings />
       </ThemeProvider>,
     );
 

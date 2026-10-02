@@ -8,6 +8,7 @@ import {
   MAX_MICROPHONE_BUFFERED_BYTES,
   PLAYBACK_BUFFER_MS,
   supportsVoiceLive,
+  TYPED_RELEASE_MS,
   useVoiceLive,
 } from "./voiceLive";
 import {
@@ -1967,5 +1968,183 @@ describe("useVoiceLive live photo avatar", () => {
     expect(result.current.avatar?.failure).toBe("stream_invalid");
     expect(onError).toHaveBeenCalledWith(expect.stringMatching(/avatar video couldn't play/));
     expect(result.current.status).toBe("idle");
+  });
+});
+
+describe("useVoiceLive typed input", () => {
+  async function startLive() {
+    auth.getToken.mockResolvedValue("token");
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
+      },
+    });
+    const hook = renderHook(() =>
+      useVoiceLive(CONFIG, "azure_openai", "gpt-realtime", "eastus2", "alloy", vi.fn()),
+    );
+    act(() => {
+      hook.result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    const emit = (event: object) =>
+      socket.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
+    const open = () =>
+      act(() => {
+        socket.readyState = FakeWebSocket.OPEN;
+        socket.onopen?.();
+      });
+    return { ...hook, socket, emit, open };
+  }
+
+  // Only the frames typing produces: typed user items and response triggers.
+  function typedFrames(socket: FakeWebSocket, from = 0) {
+    return socket.send.mock.calls
+      .slice(from)
+      .map(([frame]) => JSON.parse(frame as string))
+      .filter(
+        (event) =>
+          event.type === "response.create" ||
+          (event.type === "conversation.item.create" &&
+            event.item?.content?.[0]?.type === "input_text"),
+      );
+  }
+
+  const item = (text: string) => ({
+    type: "conversation.item.create",
+    item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+  });
+
+  it("sends a typed line as a user item and a bare response trigger when nothing is in flight", async () => {
+    const { result, socket, open } = await startLive();
+    let accepted = true;
+    act(() => {
+      accepted = result.current.sendText("Before the socket opens");
+    });
+    expect(accepted).toBe(false);
+
+    open();
+    const opened = socket.send.mock.calls.length;
+    act(() => {
+      accepted = result.current.sendText("  What's in my deployment?  ");
+    });
+    expect(accepted).toBe(true);
+    // No session configuration rides along: the relay owns model, voice and tools.
+    expect(typedFrames(socket, opened)).toEqual([
+      item("What's in my deployment?"),
+      { type: "response.create" },
+    ]);
+    expect(result.current.turns).toContainEqual(
+      expect.objectContaining({ role: "user", text: "What's in my deployment?", pending: false }),
+    );
+
+    act(() => {
+      accepted = result.current.sendText("   ");
+    });
+    expect(accepted).toBe(false);
+    expect(typedFrames(socket, opened)).toHaveLength(2);
+  });
+
+  it("holds typed lines while a reply is in flight and sends them as one exchange once it finishes", async () => {
+    const { result, socket, emit, open } = await startLive();
+    open();
+    const opened = socket.send.mock.calls.length;
+    act(() => {
+      emit({ type: "response.created", response: { id: "resp_1" } });
+      result.current.sendText("First");
+      result.current.sendText("Second");
+    });
+    // Upstream refuses a second response.create while one is active, and that
+    // refusal ends the session, so nothing may go out yet.
+    expect(typedFrames(socket, opened)).toEqual([]);
+    expect(result.current.turns.filter((turn) => turn.role === "user").map((turn) => turn.text)).toEqual([
+      "First",
+      "Second",
+    ]);
+
+    act(() => emit({ type: "response.done", response: { id: "resp_1" } }));
+    expect(typedFrames(socket, opened)).toEqual([
+      item("First"),
+      item("Second"),
+      { type: "response.create" },
+    ]);
+    act(() => emit({ type: "response.created", response: { id: "resp_2" } }));
+    expect(typedFrames(socket, opened)).toHaveLength(3);
+  });
+
+  it("waits for the server's own reply to the user's speech before sending typed lines", async () => {
+    const { result, socket, emit, open } = await startLive();
+    open();
+    const opened = socket.send.mock.calls.length;
+    act(() => {
+      emit({ type: "input_audio_buffer.speech_started", item_id: "user_1" });
+      result.current.sendText("Typed mid-sentence");
+    });
+    expect(typedFrames(socket, opened)).toEqual([]);
+
+    act(() => {
+      emit({ type: "input_audio_buffer.speech_stopped", item_id: "user_1" });
+      emit({
+        type: "conversation.item.input_audio_transcription.completed",
+        item_id: "user_1",
+        transcript: "Spoken words",
+      });
+    });
+    // Server VAD is about to answer the speech itself.
+    expect(typedFrames(socket, opened)).toEqual([]);
+    act(() => emit({ type: "response.created", response: { id: "resp_1" } }));
+    expect(typedFrames(socket, opened)).toEqual([]);
+    act(() => emit({ type: "response.done", response: { id: "resp_1" } }));
+    expect(typedFrames(socket, opened)).toEqual([
+      item("Typed mid-sentence"),
+      { type: "response.create" },
+    ]);
+  });
+
+  it("releases typed lines after a bounded wait when no reply to the user's speech arrives", async () => {
+    const { result, socket, emit, open } = await startLive();
+    open();
+    const opened = socket.send.mock.calls.length;
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        emit({ type: "input_audio_buffer.speech_started", item_id: "user_1" });
+        emit({ type: "input_audio_buffer.speech_stopped", item_id: "user_1" });
+        emit({
+          type: "conversation.item.input_audio_transcription.completed",
+          item_id: "user_1",
+          transcript: "Hmm",
+        });
+        result.current.sendText("Are you there?");
+      });
+      act(() => {
+        vi.advanceTimersByTime(TYPED_RELEASE_MS - 1);
+      });
+      expect(typedFrames(socket, opened)).toEqual([]);
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(typedFrames(socket, opened)).toEqual([
+        item("Are you there?"),
+        { type: "response.create" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses typed text once the session has ended", async () => {
+    const { result, socket, open } = await startLive();
+    open();
+    act(() => {
+      result.current.stop();
+    });
+    let accepted = true;
+    act(() => {
+      accepted = result.current.sendText("Too late");
+    });
+    expect(accepted).toBe(false);
+    expect(typedFrames(socket)).toEqual([]);
   });
 });

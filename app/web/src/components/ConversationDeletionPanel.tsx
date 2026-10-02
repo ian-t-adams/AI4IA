@@ -38,14 +38,16 @@ export function ConversationDeletionNotice({ status, onOpen, onDismiss }: {
   status: DeletionStatus; onOpen: () => void; onDismiss: () => void;
 }) {
   return (
-    <div style={{ padding: "10px max(16px, 6%)", borderBottom: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
-      <p role="status" style={{ margin: "0 0 8px", color: "var(--info)", fontSize: "0.9em" }}>
-        Conversation removed from chats. <DeletionProgress status={status} />
-      </p>
-      <p style={{ ...mutedStyle, marginBottom: 8 }}>Last observed: <Timestamp value={status.updatedAt} />. Open deletion status for current progress.</p>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-        <button type="button" style={buttonStyle} onClick={onOpen}>View deletion status</button>
-        <button type="button" style={buttonStyle} onClick={onDismiss} aria-label="Dismiss deletion notice">Dismiss</button>
+    <div className="deletion-notice">
+      <div className="deletion-notice-text">
+        <p role="status">
+          Conversation removed from chats. <DeletionProgress status={status} />
+        </p>
+        <p>Last observed: <Timestamp value={status.updatedAt} />. Open deletion status for current progress.</p>
+      </div>
+      <div className="deletion-notice-actions">
+        <button type="button" className="btn btn-sm" onClick={onOpen}>View deletion status</button>
+        <button type="button" className="btn btn-sm btn-ghost" onClick={onDismiss} aria-label="Dismiss deletion notice">Dismiss</button>
       </div>
     </div>
   );

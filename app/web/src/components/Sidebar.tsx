@@ -1,17 +1,40 @@
 "use client";
 
-import { useId } from "react";
-import type { RefObject } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent, RefObject } from "react";
+import type { DeletionFeedback } from "@/lib/conversationDeletion";
 import type { Session } from "@/lib/types";
+import type { WorkspaceView } from "@/lib/workspaceView";
 import { DOCS_INDEX_URL, STATUS_URL } from "@/lib/docs";
+import { groupConversations, matchesConversationQuery } from "@/lib/conversationGroups";
 import { AdminLink } from "./AdminLink";
-import { UserMenu } from "./UserMenu";
-import { useMediaQuery } from "./useMediaQuery";
-import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 import { EditableSessionTitle } from "./EditableSessionTitle";
+import { Icon, type IconName } from "./Icon";
+import { UserMenu } from "./UserMenu";
+import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 import { WorkflowApprovalInboxEntry } from "./WorkflowApprovalInbox";
 
+// The left navigation owns conversations and true destinations. Expanded, it
+// shows New chat, the destinations, searchable conversations and one compact
+// utility/account area; collapsed, it is an icon rail; as a drawer (narrow
+// screens) it is a labelled modal dialog that traps focus and returns it.
+export type SidebarMode = "expanded" | "collapsed" | "drawer";
+
+interface Destination {
+  view: WorkspaceView;
+  label: string;
+  icon: IconName;
+  // Destinations that can move the conversation (running a workflow, editing
+  // an image into the active chat) follow the same navigation lock as
+  // switching conversations.
+  lockable: boolean;
+}
+
+// Show the search field once the list is long enough to need one.
+const SEARCH_THRESHOLD = 6;
+
 export function Sidebar({
+  mode = "expanded",
   sessions,
   activeId,
   onSelect,
@@ -19,17 +42,22 @@ export function Sidebar({
   onDelete,
   onRename,
   deletingIds,
+  deletionFeedback,
+  onDismissDeletionFeedback,
+  view = "chat",
+  onNavigate,
+  libraryAvailable = false,
+  photoAvatarsAvailable = false,
   onOpenDeletionStatus,
-  onOpenSettings,
-  onOpenStudio,
-  onOpenLibrary,
-  onOpenPhotoAvatars,
   onBeforeSignOut,
   onCollapse,
+  onExpand,
+  expandLabel = "Expand sidebar",
   openerRef,
   disabled = false,
   disabledReason,
 }: {
+  mode?: SidebarMode;
   sessions: Session[];
   activeId: string | null;
   onSelect: (id: string) => void;
@@ -37,357 +65,503 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => Promise<void>;
   deletingIds?: ReadonlySet<string>;
-  onOpenDeletionStatus: () => void;
-  onOpenSettings: () => void;
-  onOpenStudio: () => void;
-  onOpenLibrary?: () => void;
+  /** The outcome of a deletion that didn't complete, shown on its row. */
+  deletionFeedback?: ReadonlyMap<string, DeletionFeedback>;
+  onDismissDeletionFeedback?: (id: string) => void;
+  view?: WorkspaceView;
+  onNavigate?: (view: WorkspaceView) => void;
+  /** Present only while the deployment offers the document library. */
+  libraryAvailable?: boolean;
   /** Present only while the server reports photo avatars enabled. */
-  onOpenPhotoAvatars?: () => void;
+  photoAvatarsAvailable?: boolean;
+  onOpenDeletionStatus: () => void;
   onBeforeSignOut?: () => boolean | void;
   onCollapse?: () => void;
+  onExpand?: () => void;
+  expandLabel?: string;
   openerRef?: RefObject<HTMLElement | null>;
   disabled?: boolean;
-  /** Tooltip shown on disabled controls, explaining why and how to recover. */
+  /** Shown while navigation is locked, explaining why and how to recover. */
   disabledReason?: string;
 }) {
-  const mobileDrawer = useMediaQuery("(max-width: 720px)") && Boolean(onCollapse);
-  const drawerFocusRef = useModalFocus<HTMLElement>(mobileDrawer, openerRef);
-  const onDrawerKeyDown = useModalKeyDown<HTMLElement>(onCollapse ?? (() => {}), mobileDrawer);
-  // Shared id for the visible lock-reason hint below, referenced via
-  // aria-describedby by every control this component soft-disables so
-  // screen reader users get the same recovery guidance sighted users see
-  // from disabledReason, not just a native title tooltip (which is neither
-  // reliably announced nor keyboard-reachable).
+  const drawer = mode === "drawer";
+  const drawerFocusRef = useModalFocus<HTMLElement>(drawer, openerRef);
+  const onDrawerKeyDown = useModalKeyDown<HTMLElement>(onCollapse ?? (() => {}), drawer);
+  // Every soft-disabled control points at the visible lock reason, so screen
+  // reader users hear the same recovery guidance sighted users read.
   const lockHintId = useId();
+  const headingId = useId();
   const describedBy = disabled && disabledReason ? lockHintId : undefined;
+  const [query, setQuery] = useState("");
+
+  // Deleting asks on the row itself: one proportionate, keyboard-reachable
+  // confirmation, never a native dialog (a browser can silently suppress
+  // those, which makes Delete do nothing).
+  const rowIdBase = useId();
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const deleteButtons = useRef(new Map<string, HTMLButtonElement>());
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const removalFocus = useRef<{ id: string; index: number } | null>(null);
+  const confirming = confirmingId !== null && sessions.some((session) => session.id === confirmingId)
+    ? confirmingId
+    : null;
+  useEffect(() => {
+    if (confirming) cancelRef.current?.focus();
+  }, [confirming]);
+  useEffect(() => {
+    // A deleted row takes its focused control with it: hand focus to the
+    // conversation now in its place, or New chat, rather than the page.
+    const pending = removalFocus.current;
+    if (!pending || sessions.some((session) => session.id === pending.id)) return;
+    removalFocus.current = null;
+    const container = scrollRef.current;
+    const active = document.activeElement;
+    if (!container || (active && active !== document.body && container.contains(active))) return;
+    const titles = container.querySelectorAll<HTMLElement>(".conversation-row .editable-session-title-text");
+    const next = titles[Math.min(pending.index, titles.length - 1)]
+      ?? container.querySelector<HTMLElement>(".sidebar-new-chat");
+    next?.focus();
+  }, [sessions]);
+
+  const deletionBlocked = (id: string) => deletionFeedback?.get(id)?.blocksRemoval === true;
+  const startDeletion = (id: string) => {
+    if (disabled || deletingIds?.has(id) || deletionBlocked(id)) return;
+    setConfirmingId((current) => (current === id ? null : id));
+  };
+  const cancelDeletion = (id: string) => {
+    setConfirmingId(null);
+    deleteButtons.current.get(id)?.focus();
+  };
+  const confirmDeletion = (id: string, index: number) => {
+    setConfirmingId(null);
+    if (disabled) return;
+    removalFocus.current = { id, index };
+    deleteButtons.current.get(id)?.focus();
+    onDelete(id);
+  };
+  const onConfirmKeyDown = (event: KeyboardEvent<HTMLDivElement>, id: string) => {
+    if (event.key !== "Escape") return;
+    // Cancel the question, not the drawer around it.
+    event.preventDefault();
+    event.stopPropagation();
+    cancelDeletion(id);
+  };
+
+  const destinations: Destination[] = [
+    ...(libraryAvailable
+      ? [{ view: "library" as const, label: "Document library", icon: "library" as const, lockable: true }]
+      : []),
+    ...(photoAvatarsAvailable
+      ? [{ view: "avatars" as const, label: "Photo avatars", icon: "avatar" as const, lockable: false }]
+      : []),
+    { view: "studio", label: "Agents & workflows", icon: "studio", lockable: true },
+  ];
+
+  const visible = useMemo(
+    () => sessions.filter((session) => matchesConversationQuery(session.title, query)),
+    [query, sessions],
+  );
+  const groups = useMemo(() => groupConversations(visible), [visible]);
+
+  const go = (destination: Destination) => {
+    if (disabled && destination.lockable) return;
+    onNavigate?.(destination.view);
+  };
+
+  const newChat = () => {
+    if (disabled) return;
+    onNewChat();
+  };
+
+  if (mode === "collapsed") {
+    return (
+      <nav
+        className="app-sidebar"
+        data-mode="collapsed"
+        aria-label="Chat sessions"
+        style={{ overflow: "hidden" }}
+      >
+        <div className="sidebar-head">
+          {/* eslint-disable-next-line @next/next/no-img-element -- small static brand mark */}
+          <img src="/ai4ia-mark.png" alt="" aria-hidden="true" width={28} height={28} style={{ borderRadius: 6 }} />
+          <button
+            ref={(element) => {
+              if (element && openerRef) openerRef.current = element;
+            }}
+            type="button"
+            className="icon-btn"
+            onClick={onExpand}
+            aria-label={expandLabel}
+            title={expandLabel}
+          >
+            <Icon name="panel-left" />
+          </button>
+        </div>
+        <div className="sidebar-rail">
+          {disabled && disabledReason ? (
+            <p id={lockHintId} role="status" className="visually-hidden">
+              {disabledReason}
+            </p>
+          ) : null}
+          <ul className="sidebar-rail-group" aria-label="Destinations">
+            <li>
+              <button
+                type="button"
+                className="icon-btn rail-new-chat"
+                onClick={newChat}
+                aria-disabled={disabled || undefined}
+                aria-describedby={describedBy}
+                aria-label="New chat"
+                title="New chat"
+              >
+                <Icon name="plus" />
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => onNavigate?.("chat")}
+                aria-current={view === "chat" ? "page" : undefined}
+                aria-label="Conversation"
+                title="Conversation"
+              >
+                <Icon name="chat" />
+              </button>
+            </li>
+            {destinations.map((destination) => (
+              <li key={destination.view}>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => go(destination)}
+                  aria-current={view === destination.view ? "page" : undefined}
+                  aria-disabled={(disabled && destination.lockable) || undefined}
+                  aria-describedby={destination.lockable ? describedBy : undefined}
+                  aria-label={destination.label}
+                  title={destination.label}
+                >
+                  <Icon name={destination.icon} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="sidebar-rail-spacer" />
+          <ul className="sidebar-rail-group" aria-label="Utilities and account">
+            <li>
+              <WorkflowApprovalInboxEntry disabled={disabled} compact />
+            </li>
+            <li>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => onNavigate?.("settings")}
+                aria-current={view === "settings" ? "page" : undefined}
+                aria-label="Settings"
+                title="Settings"
+              >
+                <Icon name="settings" />
+              </button>
+            </li>
+            <li className="rail-optional">
+              <a
+                className="icon-btn"
+                href={DOCS_INDEX_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Documentation (opens in new tab)"
+                title="Documentation"
+              >
+                <Icon name="docs" />
+              </a>
+            </li>
+            <li className="rail-optional">
+              <a
+                className="icon-btn"
+                href={STATUS_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Status (opens in new tab)"
+                title="Deployment status"
+              >
+                <Icon name="status" />
+              </a>
+            </li>
+            <li>
+              <AdminLink disabled={disabled} disabledReasonId={describedBy} compact />
+            </li>
+          </ul>
+        </div>
+      </nav>
+    );
+  }
+
   return (
     <nav
       ref={drawerFocusRef}
       onKeyDown={onDrawerKeyDown}
-      className="session-sidebar"
-      role={mobileDrawer ? "dialog" : "navigation"}
-      aria-modal={mobileDrawer ? true : undefined}
+      className="app-sidebar"
+      data-mode={mode}
+      role={drawer ? "dialog" : "navigation"}
+      aria-modal={drawer ? true : undefined}
       aria-label="Chat sessions"
-      style={{
-        width: 280,
-        maxWidth: "100vw",
-        flexShrink: 0,
-        background: "var(--bg-sidebar)",
-        color: "var(--sidebar-fg)",
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        maxHeight: "100dvh",
-        minHeight: 0,
-        overflow: "hidden",
-      }}
+      style={{ overflow: "hidden" }}
     >
-      <div style={{ padding: 16, display: "flex", alignItems: "center", gap: 10 }}>
-        {/* eslint-disable-next-line @next/next/no-img-element -- small static brand mark; next/image adds no value here */}
-        <img
-          src="/ai4ia-mark.png"
-          alt=""
-          aria-hidden="true"
-          width={28}
-          height={28}
-          style={{ borderRadius: 6, flexShrink: 0, display: "block" }}
-        />
-        <span style={{ fontWeight: 700, fontSize: "1.1em", letterSpacing: 0.5 }}>
+      <div className="sidebar-head">
+        <span className="sidebar-brand">
+          {/* eslint-disable-next-line @next/next/no-img-element -- small static brand mark */}
+          <img src="/ai4ia-mark.png" alt="" aria-hidden="true" width={28} height={28} />
           AI4IA
         </span>
-        {onCollapse && (
+        {onCollapse ? (
           <button
+            type="button"
+            className="icon-btn"
             onClick={onCollapse}
             aria-label="Collapse sidebar"
-            title="Collapse sidebar"
-            style={{
-              marginLeft: "auto",
-              border: "none",
-              background: "transparent",
-              color: "var(--sidebar-muted)",
-              cursor: "pointer",
-              fontSize: "1.1em",
-              lineHeight: 1,
-              padding: 4,
-            }}
+            title={drawer ? "Close" : "Collapse sidebar"}
           >
-            «
+            <Icon name={drawer ? "close" : "panel-left"} />
           </button>
-        )}
+        ) : null}
       </div>
       <div
+        ref={scrollRef}
         className="sidebar-scroll"
         data-testid="sidebar-scroll"
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          overflowX: "hidden",
-        }}
+        style={{ minHeight: 0, overflowY: "auto", overflowX: "hidden" }}
       >
-      <div style={{ padding: "0 12px 12px" }}>
-        {disabled && disabledReason && (
-          <p
-            id={lockHintId}
-            role="status"
-            style={{
-              margin: "0 0 10px",
-              padding: "8px 10px",
-              borderRadius: 8,
-              background: "rgba(255,255,255,0.08)",
-              color: "var(--sidebar-fg)",
-              fontSize: "0.85em",
-              lineHeight: 1.4,
-            }}
-          >
+        {disabled && disabledReason ? (
+          <p id={lockHintId} role="status" className="sidebar-lock">
             {disabledReason}
           </p>
-        )}
+        ) : null}
         <button
-          onClick={() => {
-            if (disabled) return;
-            onNewChat();
-          }}
+          type="button"
+          className="btn btn-primary sidebar-new-chat"
+          onClick={newChat}
           aria-disabled={disabled || undefined}
           aria-describedby={describedBy}
-          style={{
-            width: "100%",
-            padding: "10px 14px",
-            borderRadius: 10,
-            border: "1px solid var(--border)",
-            background: "var(--accent)",
-            color: "var(--accent-fg)",
-            fontWeight: 600,
-            opacity: disabled ? 0.5 : 1,
-            cursor: disabled ? "not-allowed" : "pointer",
-          }}
         >
-          + New chat
+          <Icon name="plus" size={18} />
+          New chat
         </button>
-      </div>
-      <ul
-        style={{
-          listStyle: "none",
-          margin: 0,
-          padding: "0 8px",
-          overflowY: "visible",
-          flex: "0 0 auto",
-          minHeight: 0,
-        }}
-      >
-        {sessions.length === 0 && (
-          <li style={{ padding: 12, color: "var(--sidebar-muted)", fontSize: "0.9em" }}>
-            No conversations yet.
-          </li>
-        )}
-        {sessions.map((s) => {
-          const active = s.id === activeId;
-          const deleting = deletingIds?.has(s.id) ?? false;
-          return (
-            <li key={s.id} style={{ display: "flex", alignItems: "center" }}>
-              <div
-                className="session-row-main"
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  margin: "2px 0",
-                  borderRadius: 8,
-                  background: active ? "rgba(255,255,255,0.12)" : "transparent",
-                }}
-              >
-                <EditableSessionTitle
-                  title={s.title || "Untitled"}
-                  onSave={(title) => onRename(s.id, title)}
-                  onOpen={() => onSelect(s.id)}
-                  current={active}
-                  disabled={disabled}
-                  disabledReasonId={lockHintId}
-                  compact
-                />
-              </div>
+        <ul className="sidebar-nav" aria-label="Destinations">
+          {destinations.map((destination) => (
+            <li key={destination.view}>
               <button
-                onClick={() => {
-                  if (disabled || deleting) return;
-                  onDelete(s.id);
-                }}
-                disabled={deleting}
-                aria-disabled={disabled || deleting || undefined}
-                aria-busy={deleting || undefined}
-                aria-label={`Delete ${s.title || "conversation"}`}
-                aria-describedby={describedBy}
-                title={disabled ? undefined : "Delete"}
-                style={{
-                  border: "none",
-                  background: "transparent",
-                  color: "var(--sidebar-muted)",
-                  padding: "6px 8px",
-                  opacity: disabled ? 0.5 : 1,
-                  cursor: disabled ? "not-allowed" : "pointer",
-                }}
+                type="button"
+                className="sidebar-link"
+                onClick={() => go(destination)}
+                aria-current={view === destination.view ? "page" : undefined}
+                aria-disabled={(disabled && destination.lockable) || undefined}
+                aria-describedby={destination.lockable ? describedBy : undefined}
               >
-                ✕
+                <Icon name={destination.icon} />
+                <span>{destination.label}</span>
               </button>
             </li>
-          );
-        })}
-      </ul>
-      <div className="sidebar-utility-region">
+          ))}
+        </ul>
+        <section className="sidebar-conversations" aria-labelledby={headingId}>
+          <h2 className="sidebar-section-title" id={headingId}>
+            Conversations
+          </h2>
+          {sessions.length >= SEARCH_THRESHOLD || query ? (
+            <div className="sidebar-search">
+              <Icon name="search" size={16} />
+              <input
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search conversations"
+                aria-label="Search conversations"
+              />
+            </div>
+          ) : null}
+          {sessions.length === 0 ? (
+            <p className="conversation-empty">No conversations yet.</p>
+          ) : groups.length === 0 ? (
+            <p className="conversation-empty" role="status">
+              No conversations match “{query.trim()}”.
+            </p>
+          ) : (
+            groups.map((group) => (
+              <div key={group.title ?? "all"}>
+                {group.title ? (
+                  <h3 className="conversation-group-title">{group.title}</h3>
+                ) : null}
+                <ul className="conversation-group">
+                  {group.items.map((session) => {
+                    const current = session.id === activeId && view === "chat";
+                    const deleting = deletingIds?.has(session.id) ?? false;
+                    const title = session.title || "Untitled";
+                    const feedback = deletionFeedback?.get(session.id);
+                    const blocked = feedback?.blocksRemoval === true;
+                    const asking = confirming === session.id;
+                    const rowIndex = visible.indexOf(session);
+                    const rowKey = `${rowIdBase}-${rowIndex}`;
+                    const feedbackId = `${rowKey}-outcome`;
+                    return (
+                      <li key={session.id} className="conversation-item">
+                        <div
+                          className="conversation-row"
+                          data-current={current || undefined}
+                          data-attention={asking || (feedback && !feedback.dismissed) || undefined}
+                        >
+                          <EditableSessionTitle
+                            title={title}
+                            onSave={(next) => onRename(session.id, next)}
+                            onOpen={() => onSelect(session.id)}
+                            current={session.id === activeId}
+                            disabled={disabled}
+                            disabledReasonId={lockHintId}
+                            compact
+                          />
+                          <button
+                            ref={(element) => {
+                              if (element) deleteButtons.current.set(session.id, element);
+                              else deleteButtons.current.delete(session.id);
+                            }}
+                            type="button"
+                            className="conversation-delete"
+                            onClick={() => startDeletion(session.id)}
+                            disabled={deleting}
+                            aria-disabled={disabled || deleting || blocked || undefined}
+                            aria-busy={deleting || undefined}
+                            aria-expanded={asking}
+                            aria-label={`Delete ${session.title || "conversation"}`}
+                            aria-describedby={describedBy ?? (blocked ? feedbackId : undefined)}
+                            title={disabled || blocked ? undefined : "Delete"}
+                          >
+                            <Icon name="trash" size={16} />
+                          </button>
+                        </div>
+                        {asking ? (
+                          <div
+                            className="conversation-confirm"
+                            role="group"
+                            aria-labelledby={`${rowKey}-ask`}
+                            aria-describedby={`${rowKey}-scope`}
+                            onKeyDown={(event) => onConfirmKeyDown(event, session.id)}
+                          >
+                            <p id={`${rowKey}-ask`} className="conversation-confirm-title">
+                              Delete “{title}”?
+                            </p>
+                            <p id={`${rowKey}-scope`}>
+                              It leaves your chats and its messages are queued for cleanup, which may
+                              stay pending. Backups, library documents, memories and generated media
+                              aren&apos;t erased.
+                            </p>
+                            <div className="conversation-confirm-actions">
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-danger"
+                                onClick={() => confirmDeletion(session.id, rowIndex)}
+                              >
+                                Delete
+                              </button>
+                              <button
+                                ref={cancelRef}
+                                type="button"
+                                className="btn btn-sm"
+                                onClick={() => cancelDeletion(session.id)}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                        {feedback && !feedback.dismissed ? (
+                          <div className="conversation-feedback" data-kind={feedback.kind}>
+                            <p id={feedbackId} role="alert">
+                              {feedback.message}
+                            </p>
+                            <div className="conversation-confirm-actions">
+                              {feedback.retryable ? (
+                                <button
+                                  type="button"
+                                  className="btn btn-sm"
+                                  disabled={deleting}
+                                  aria-disabled={disabled || undefined}
+                                  aria-describedby={describedBy}
+                                  onClick={() => {
+                                    if (disabled || deleting) return;
+                                    removalFocus.current = { id: session.id, index: rowIndex };
+                                    onDelete(session.id);
+                                  }}
+                                >
+                                  Try again
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-ghost"
+                                onClick={() => {
+                                  onDismissDeletionFeedback?.(session.id);
+                                  deleteButtons.current.get(session.id)?.focus();
+                                }}
+                                aria-label={`Dismiss the message about ${title}`}
+                              >
+                                Dismiss
+                              </button>
+                            </div>
+                          </div>
+                        ) : feedback?.dismissed && blocked ? (
+                          <span id={feedbackId} className="visually-hidden">
+                            {feedback.message}
+                          </span>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))
+          )}
+          <button type="button" className="sidebar-quiet-action" onClick={onOpenDeletionStatus}>
+            Deletion status
+          </button>
+        </section>
+      </div>
+      <div className="sidebar-footer" aria-label="Utilities and account" role="group">
         <WorkflowApprovalInboxEntry disabled={disabled} />
         <button
           type="button"
-          className="sidebar-utility-action"
-          onClick={onOpenDeletionStatus}
-          style={{
-            width: "100%",
-            padding: "8px 12px",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            background: "transparent",
-            color: "var(--sidebar-fg)",
-          }}
+          className="sidebar-link"
+          onClick={() => onNavigate?.("settings")}
+          aria-current={view === "settings" ? "page" : undefined}
         >
-          Deletion status
+          <Icon name="settings" />
+          <span>Settings</span>
         </button>
-        <button
-          className="sidebar-utility-action"
-          onClick={() => {
-            if (disabled) return;
-            onOpenStudio();
-          }}
-          aria-disabled={disabled || undefined}
-          aria-describedby={describedBy}
-          style={{
-            width: "100%",
-            padding: "8px 12px",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            background: "transparent",
-            color: "var(--sidebar-fg)",
-            cursor: disabled ? "not-allowed" : "pointer",
-          }}
-        >
-          🛠 Agents &amp; workflows
-        </button>
-        {onOpenLibrary && (
-          <button
-            className="sidebar-utility-action"
-            onClick={() => {
-              if (disabled) return;
-              onOpenLibrary();
-            }}
-            aria-disabled={disabled || undefined}
-            aria-describedby={describedBy}
-            style={{
-              width: "100%",
-              padding: "8px 12px",
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              background: "transparent",
-              color: "var(--sidebar-fg)",
-              cursor: disabled ? "not-allowed" : "pointer",
-            }}
-          >
-            📚 Document library
-          </button>
-        )}
-        {onOpenPhotoAvatars && (
-          <button
-            type="button"
-            className="sidebar-utility-action"
-            onClick={onOpenPhotoAvatars}
-            style={{
-              width: "100%",
-              padding: "8px 12px",
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              background: "transparent",
-              color: "var(--sidebar-fg)",
-            }}
-          >
-            <span aria-hidden="true">👤</span> Photo avatars
-          </button>
-        )}
-        <button
-          className="sidebar-utility-action"
-          onClick={onOpenSettings}
-          title="Theme, text size, accessibility, and media generation options"
-          style={{
-            width: "100%",
-            padding: "8px 12px",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            background: "transparent",
-            color: "var(--sidebar-fg)",
-          }}
-        >
-          ⚙ Appearance &amp; accessibility
-        </button>
-        <div
-          className="sidebar-utility-links"
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-            marginTop: 8,
-          }}
-        >
+        <div className="sidebar-footer-row">
           <a
-            className="sidebar-utility-action"
+            className="sidebar-link"
             href={DOCS_INDEX_URL}
             target="_blank"
             rel="noopener noreferrer"
             aria-label="Documentation (opens in new tab)"
             title="Browse the AI4IA documentation hub"
-            style={{
-              textAlign: "center",
-              padding: "8px 12px",
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              color: "var(--sidebar-fg)",
-              textDecoration: "none",
-              fontSize: "0.9em",
-            }}
           >
-            📖 Docs
+            <Icon name="docs" />
+            <span>Docs</span>
           </a>
           <a
-            className="sidebar-utility-action"
+            className="sidebar-link"
             href={STATUS_URL}
             target="_blank"
             rel="noopener noreferrer"
             aria-label="Status (opens in new tab)"
             title="Live deployment health and service status"
-            style={{
-              textAlign: "center",
-              padding: "8px 12px",
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              color: "var(--sidebar-fg)",
-              textDecoration: "none",
-              fontSize: "0.9em",
-            }}
           >
-            📡 Status
+            <Icon name="status" />
+            <span>Status</span>
           </a>
         </div>
-        <div
-          aria-label="Account and administration"
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-            color: "var(--sidebar-fg)",
-            ["--fg" as string]: "var(--sidebar-fg)",
-            ["--fg-muted" as string]: "var(--sidebar-muted)",
-            ["--bg-elevated" as string]: "transparent",
-          }}
-        >
-          <AdminLink disabled={disabled} disabledReasonId={lockHintId} />
-          <UserMenu onBeforeSignOut={onBeforeSignOut} />
-        </div>
-      </div>
+        <AdminLink disabled={disabled} disabledReasonId={describedBy} />
+        <UserMenu onBeforeSignOut={onBeforeSignOut} />
       </div>
     </nav>
   );

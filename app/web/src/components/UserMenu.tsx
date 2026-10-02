@@ -7,6 +7,7 @@
 import { useMsal } from "@azure/msal-react";
 
 import { isEntraEnabled } from "@/lib/auth";
+import { Icon } from "./Icon";
 
 function EntraUserMenu({
   onBeforeSignOut,
@@ -38,7 +39,7 @@ function EntraUserMenu({
         className="sidebar-utility-action"
         onClick={signOut}
       >
-        <span aria-hidden="true">↪</span>
+        <Icon name="sign-out" />
         <span>Sign out</span>
       </button>
     </div>

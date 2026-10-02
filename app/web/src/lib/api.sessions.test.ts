@@ -38,8 +38,19 @@ describe("conversation deletion API", () => {
   it("surfaces migration_required's string detail without a fallback DELETE", async () => {
     const detail = "This conversation requires approved migration before deletion.";
     fetchMock.mockResolvedValue(json({ detail, code: "migration_required" }, 409));
-    await expect(deleteSession("legacy")).rejects.toMatchObject({ status: 409, detail, message: `409: ${detail}` });
+    await expect(deleteSession("legacy")).rejects.toMatchObject({
+      status: 409, detail, code: "migration_required", message: `409: ${detail}`,
+    });
     expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/sessions/legacy", { method: "DELETE" });
+  });
+
+  it("keeps an error without a string code uncoded", async () => {
+    fetchMock.mockResolvedValueOnce(json({ detail: "Busy" }, 409))
+      .mockResolvedValueOnce(json({ detail: "Odd", code: 7 }, 409))
+      .mockResolvedValueOnce(new Response("not json", { status: 502, statusText: "Bad Gateway" }));
+    await expect(deleteSession("a")).rejects.toMatchObject({ status: 409, detail: "Busy", code: null });
+    await expect(deleteSession("a")).rejects.toMatchObject({ status: 409, detail: "Odd", code: null });
+    await expect(deleteSession("a")).rejects.toMatchObject({ status: 502, detail: "Bad Gateway", code: null });
   });
 
   it("reads one owner-scoped page at a time without caching or following its cursor automatically", async () => {

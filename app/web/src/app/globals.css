@@ -44,6 +44,43 @@
   --warn: #7a5200;
   --focus-ring: #1d4ed8;
   --radius: 12px;
+  /* Surfaces for interaction states, overlays and the live stage. Every theme
+     defines these; they never carry text contrast on their own. */
+  --bg-hover: #eef1f5;
+  --bg-active: #e3e8ef;
+  --bg-subtle: #f1f3f6;
+  --sidebar-hover: #1c2431;
+  --sidebar-active: #263043;
+  --scrim: rgba(15, 20, 28, 0.48);
+  --stage-bg: #0b0f16;
+  --stage-fg: #f3f5f8;
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
+  --shadow-2: 0 8px 24px rgba(16, 24, 40, 0.12);
+  --shadow-3: 0 24px 64px rgba(16, 24, 40, 0.24);
+
+  /* Layout and type scale shared by every theme. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius-sm: 8px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --rail-width: 76px;
+  --list-width: 288px;
+  --inspector-width: 380px;
+  --header-height: 56px;
+  --reading-width: 800px;
+  --duration: 160ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .skip-link {
@@ -91,6 +128,17 @@
      --accent's orange (hue 27). */
   --warn: #ffe066;
   --focus-ring: #93b4ff;
+  --bg-hover: #1b222c;
+  --bg-active: #232c38;
+  --bg-subtle: #11161d;
+  --sidebar-hover: #151b24;
+  --sidebar-active: #1e2733;
+  --scrim: rgba(0, 0, 0, 0.6);
+  --stage-bg: #05070a;
+  --stage-fg: #f3f5f8;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 24px 64px rgba(0, 0, 0, 0.6);
 }
 
 /* High-contrast accessibility theme (WCAG AAA-leaning, no subtle greys).
@@ -123,6 +171,19 @@
      brand/interactive element in the theme that has the fewest other cues. */
   --warn: #ffb700;
   --focus-ring: #ffff00;
+  /* High contrast never relies on a tinted surface: state is carried by the
+     outline every interactive element already draws in this theme. */
+  --bg-hover: #000000;
+  --bg-active: #000000;
+  --bg-subtle: #000000;
+  --sidebar-hover: #000000;
+  --sidebar-active: #000000;
+  --scrim: rgba(0, 0, 0, 0.85);
+  --stage-bg: #000000;
+  --stage-fg: #ffffff;
+  --shadow-1: none;
+  --shadow-2: none;
+  --shadow-3: none;
 }
 
 * {
@@ -166,10 +227,6 @@ button {
 
 button:disabled {
   cursor: not-allowed;
-}
-
-.chat-header {
-  min-height: 52px;
 }
 
 .editable-session-title {
@@ -236,66 +293,6 @@ button:disabled {
   padding: 7px 9px;
 }
 
-.session-row-main {
-  overflow: hidden;
-}
-
-.sidebar-utility-region {
-  margin-top: auto;
-  padding: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.sidebar-utility-links {
-  margin-top: 0 !important;
-}
-
-.sidebar-utility-action {
-  width: 100%;
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--sidebar-fg);
-  padding: 8px 12px;
-  text-align: left !important;
-  text-decoration: none;
-  font-size: 0.9rem !important;
-  line-height: 1.25;
-}
-
-.sidebar-utility-action:hover:not(:disabled):not([aria-disabled="true"]),
-.sidebar-utility-action:focus-visible {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.sidebar-utility-action[aria-disabled="true"],
-.sidebar-utility-action:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-.sidebar-account {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.sidebar-account-label {
-  overflow: hidden;
-  color: var(--sidebar-muted);
-  padding: 2px 4px 0;
-  font-size: 0.8rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .conversation-inspector {
   width: 360px;
   min-width: 0;
@@ -312,14 +309,6 @@ button:disabled {
   display: contents;
 }
 
-.conversation-inspector.collapsed {
-  width: 44px;
-  flex-basis: 44px;
-  align-items: center;
-  padding-top: 18px;
-}
-
-.conversation-inspector.collapsed button,
 .inspector-header > button {
   border: 0;
   background: transparent;
@@ -538,65 +527,6 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-elevated);
-}
-
-.composer-shell {
-  min-width: 0;
-}
-
-.composer-row {
-  display: grid !important;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
-  align-items: end !important;
-  min-width: 0;
-}
-
-.composer-textarea {
-  grid-column: 3;
-  width: 100%;
-  min-width: 0;
-  min-height: 64px;
-  max-height: calc(12em + 24px);
-  overflow-y: hidden;
-  resize: none;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg);
-  color: var(--fg);
-  padding: 12px 14px;
-  line-height: 1.5;
-}
-
-.composer-icon-button,
-.composer-submit-button {
-  min-width: 44px;
-  min-height: 44px !important;
-  align-self: end !important;
-}
-
-.composer-attach-button {
-  grid-column: 1;
-}
-
-.composer-voice-button {
-  grid-column: 2;
-}
-
-.composer-submit-button {
-  grid-column: 4;
-}
-
-.composer-attach-button,
-.composer-voice-button,
-.composer-textarea,
-.composer-submit-button {
-  grid-row: 1;
-}
-
-.composer-row > .inspector-error,
-.composer-row > .inspector-empty,
-.composer-row > .upload-status-list {
-  grid-column: 1 / -1;
 }
 
 .inspector-list,
@@ -1062,90 +992,6 @@ button:disabled {
   padding: 10px 12px;
   font-size: 0.82rem;
   line-height: 1.45;
-}
-
-.drawer-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: calc(var(--z-drawer) - 1);
-  border: 0;
-  border-radius: 0;
-  background: rgba(0, 0, 0, 0.42);
-  padding: 0;
-}
-
-@media (max-width: 1050px) {
-  .conversation-inspector:not(.collapsed) {
-    position: fixed;
-    inset: 0 0 0 auto;
-    z-index: var(--z-drawer);
-    width: min(380px, 92vw);
-    box-shadow: -18px 0 48px rgba(0, 0, 0, 0.28);
-  }
-}
-
-@media (max-width: 720px) {
-  .sidebar-collapsed-trigger {
-    position: fixed;
-    left: 8px;
-    top: 60px;
-    z-index: var(--z-dropdown);
-    width: 44px !important;
-    height: 44px;
-    border: 1px solid var(--border);
-    border-radius: 9px;
-    padding: 0 !important;
-  }
-
-  .sidebar-collapsed-trigger img {
-    display: none !important;
-  }
-
-  .session-sidebar {
-    position: fixed;
-    inset: 0 auto 0 0;
-    z-index: var(--z-drawer);
-    width: min(280px, 88vw) !important;
-    box-shadow: 18px 0 48px rgba(0, 0, 0, 0.28);
-  }
-
-  .conversation-inspector.collapsed {
-    position: fixed;
-    right: 8px;
-    top: 60px;
-    z-index: var(--z-dropdown);
-    height: 44px;
-    border: 1px solid var(--border);
-    border-radius: 9px;
-    padding: 0;
-  }
-
-  .chat-header {
-    padding-inline: 12px !important;
-  }
-
-  .composer-shell {
-    padding-inline: 12px !important;
-  }
-
-  .composer-row {
-    grid-template-columns: auto auto minmax(0, 1fr);
-  }
-
-  .composer-textarea {
-    grid-column: 1 / -1;
-    grid-row: 1;
-  }
-
-  .composer-attach-button,
-  .composer-voice-button,
-  .composer-submit-button {
-    grid-row: 2;
-  }
-
-  .composer-submit-button {
-    grid-column: 3;
-  }
 }
 
 textarea,
@@ -2479,52 +2325,6 @@ select {
 .photo-avatar-form-actions button:disabled,
 .photo-avatar-actions button:disabled,
 .photo-avatar-toolbar button:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.photo-avatar-voice-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  margin: 8px max(16px, 6%) 0;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
-}
-
-.photo-avatar-voice-portrait {
-  position: relative;
-  flex: 0 0 auto;
-  width: clamp(72px, 16vw, 112px);
-  aspect-ratio: 1;
-  overflow: hidden;
-  border-radius: 8px;
-  background: var(--bg-sidebar);
-}
-
-.photo-avatar-voice-body {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
-.photo-avatar-voice-body h3 {
-  margin: 0;
-  font-size: 0.95rem;
-}
-
-.photo-avatar-voice-body p {
-  margin: 0;
-  color: var(--fg-muted);
-  font-size: 0.8rem;
-  overflow-wrap: anywhere;
-}
-
-.photo-avatar-voice-card button:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }

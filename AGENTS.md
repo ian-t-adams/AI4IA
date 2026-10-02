@@ -1651,7 +1651,10 @@ a new owner-approved exception.
   MediaSource player appends strictly in order through its bounded queue, and
   fails the avatar rather than dropping a fragment. An unsupported browser stays
   voice only before connecting. The `AI-generated` disclosure label stays visible
-  for the whole session.
+  for the whole session at every stage size: nothing (the state badge, the unmute
+  overlay, captions) may cover it. **Full screen** enlarges the whole stage, label
+  included; the video element itself never enters full screen or
+  picture-in-picture.
 - **Gallery handoff.** **Use in Voice Live** selects the owner's ready, usable
   record and Azure Speech; only **Start talking** or the microphone starts the
   session. Invalidate cached choices while a gallery refresh is pending. Failed
@@ -1670,8 +1673,16 @@ a new owner-approved exception.
   repeated-read backlog and keep paced audio live with the guard intact; do not
   disable heartbeats or broaden authority to hide a keepalive timeout.
   Bound the browser microphone queue and stop explicitly on overflow, never
-  silently drop or replay audio. Typed HTTP/SSE chat remains separate from live
-  speech, and that distinction must be visible rather than only a tooltip.
+  silently drop or replay audio.
+- **Typed input.** While a session is connected, the composer's visible
+  **Send to** switch defaults to the live session. A typed line uses the frames
+  the relay already governs for seeded history: a user `input_text` item plus a
+  configuration-free `response.create`, so it carries no new authority. Upstream
+  refuses a second `response.create` while one is active, and that refusal ends
+  the session, so the browser queues lines while a response is active, while the
+  user is speaking, and until the server's reply to that speech starts (released
+  after `TYPED_RELEASE_MS` if none does). **Text chat** on the same switch is the
+  only route to typed HTTP/SSE chat during a session; never send a line both ways.
 
 ## Group policy and publication source contract
 

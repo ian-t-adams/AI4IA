@@ -378,6 +378,15 @@ reads status; **Resume cleanup** explicitly requests work. Nothing polls a
 destructive endpoint, and there is no autonomous recovery worker in this slice.
 After a crash, the durable record is still discoverable; the owner resumes it.
 
+The web app asks for deletion on the conversation's sidebar row rather than in a
+native browser dialog, which a browser can suppress silently. An outcome that is
+not an accepted status stays on that row and the conversation stays listed:
+`migration_required` holds the row's delete action for the rest of the page
+session, `deletion_disabled` reports the pause, and `deletion_unavailable` or a
+lost response offers **Try again**. Try again repeats the same owner `DELETE`, so
+it returns the retained status instead of starting a second deletion. The client
+never retries by itself and never treats a refusal as removal.
+
 Each pass processes at most 25 records per child surface and 25 Blob objects.
 CAS loops have three attempts; a pass has a 20-second execution budget, plus at
 most five seconds to persist retryable failure evidence. A

@@ -5,3 +5,14 @@
 // unit tests are unaffected; the matchers are only exercised by the jsdom
 // component tests (marked with `// @vitest-environment jsdom`).
 import "@testing-library/jest-dom/vitest";
+
+// Workspace pages (library, avatars, studio, settings) live in the URL hash.
+// Reset it after every test so one test's page never becomes the next test's
+// starting view.
+import { afterEach } from "vitest";
+
+afterEach(() => {
+  if (typeof window !== "undefined" && window.location.hash) {
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  }
+});

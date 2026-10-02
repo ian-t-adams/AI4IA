@@ -39,6 +39,9 @@ import { isPhotoAvatarId } from "./photoAvatars";
 export const PCM_SAMPLE_RATE = 24000;
 // Roughly two seconds of base64 PCM16. Never queue increasingly stale microphone audio.
 export const MAX_MICROPHONE_BUFFERED_BYTES = 128 * 1024;
+// How long typed lines wait for the server's own reply to the user's speech
+// before they are sent anyway.
+export const TYPED_RELEASE_MS = 4000;
 export const PLAYBACK_PROFILES = ["fast", "balanced", "smooth"] as const;
 export type PlaybackProfile = (typeof PLAYBACK_PROFILES)[number];
 export const DEFAULT_PLAYBACK_PROFILE: PlaybackProfile = "balanced";
@@ -225,6 +228,9 @@ export interface VoiceLiveController {
   start: () => void;
   toggle: () => void;
   stop: () => void;
+  // Sends a typed line into the live session, where the live voice answers it
+  // out loud. Returns false when no live session can take it.
+  sendText: (text: string) => boolean;
 }
 
 // The owned photo avatar the user picked for Speech Voice Live. Only the
@@ -659,6 +665,11 @@ interface LiveSession {
   avatarPlayer: AvatarVideoPlayer | null;
   // Why the relay ended an avatar session on purpose (idle or time limit).
   avatarEndReason: string | null;
+  // Sends a typed line into this live session (see start()); false when the
+  // session can't take it right now.
+  sendText?: (text: string) => boolean;
+  // Releases queued typed lines if the server never answers the user's speech.
+  typedReleaseTimer: ReturnType<typeof setTimeout> | null;
 }
 
 // The message shown when the WebSocket fails or closes before ever reaching
@@ -1002,6 +1013,10 @@ export function useVoiceLive(
       clearTimeout(s.suspendRecoveryTimer);
       s.suspendRecoveryTimer = null;
     }
+    if (s.typedReleaseTimer !== null) {
+      clearTimeout(s.typedReleaseTimer);
+      s.typedReleaseTimer = null;
+    }
     // Detach before close() so our own shutdown never re-enters this session
     // via a self-triggered "closed" statechange notification.
     s.ctx.onstatechange = null;
@@ -1083,8 +1098,8 @@ export function useVoiceLive(
           element.playsInline = true;
           element.autoplay = true;
           element.setAttribute("aria-label", `${avatarSelection.label} avatar video`);
-          element.style.cssText =
-            "display:block;width:100%;height:100%;object-fit:cover;background:var(--bg-sidebar)";
+          // Framing (fit or fill) belongs to the stage's stylesheet.
+          element.style.cssText = "display:block;width:100%;height:100%";
           hardenAvatarVideoElement(element);
           const player = new AvatarVideoPlayer(element, env, {
             liveEdgeSeconds: PLAYBACK_BUFFER_MS[settingsRef.current.playbackProfile] / 1000,
@@ -1217,6 +1232,7 @@ export function useVoiceLive(
         suspendRecoveryTimer: null,
         avatarPlayer,
         avatarEndReason: null,
+        typedReleaseTimer: null,
       };
       sessionRef.current = session;
       pendingRef.current = null;
@@ -1466,6 +1482,75 @@ export function useVoiceLive(
         return id;
       };
 
+      // --- typed input into this live session ---
+      // A typed line is a user input_text item plus a configuration-free
+      // response.create: the same frames the relay already governs for the
+      // seeded chat history, so it carries no new authority. Upstream refuses a
+      // second response.create while one is active (and that refusal ends the
+      // session), so lines wait while a reply is in progress, while the user is
+      // mid-utterance, and between the end of their speech and the server's own
+      // reply to it; they are sent together once the reply finishes.
+      let typedQueue: string[] = [];
+      let serverReplyPending = false;
+      const releaseTyped = () => {
+        if (session.typedReleaseTimer !== null) {
+          clearTimeout(session.typedReleaseTimer);
+          session.typedReleaseTimer = null;
+        }
+      };
+      const flushTyped = () => {
+        if (
+          typedQueue.length === 0 ||
+          session.cleaned ||
+          ws.readyState !== WebSocket.OPEN ||
+          activeResponseId !== null ||
+          serverReplyPending ||
+          userTurnId !== null
+        ) {
+          return;
+        }
+        const lines = typedQueue;
+        typedQueue = [];
+        // The reply to these lines opens its own assistant turn after them.
+        if (assistantTurnId) {
+          const id = assistantTurnId;
+          patchTurn(id, (t) => ({ ...t, streaming: false }));
+          assistantTurnId = null;
+        }
+        for (const line of lines) {
+          ws.send(
+            JSON.stringify({
+              type: "conversation.item.create",
+              item: {
+                type: "message",
+                role: "user",
+                content: [{ type: "input_text", text: line }],
+              },
+            }),
+          );
+        }
+        ws.send(JSON.stringify({ type: "response.create" }));
+        serverReplyPending = true;
+      };
+      session.sendText = (text: string): boolean => {
+        const line = text.trim();
+        if (!line || session.cleaned || !session.opened || ws.readyState !== WebSocket.OPEN) {
+          return false;
+        }
+        pushTurn({
+          id: nextTurnId(),
+          role: "user",
+          text: line,
+          streaming: false,
+          pending: false,
+          createdAt: new Date().toISOString(),
+          tool: "",
+        });
+        typedQueue.push(line);
+        flushTyped();
+        return true;
+      };
+
       const handleServerEvent = (ev: MessageEvent) => {
         if (session.cleaned || typeof ev.data !== "string") return;
         let msg: {
@@ -1629,10 +1714,13 @@ export function useVoiceLive(
               }
             }
             userTurnId = null;
+            flushTyped();
             break;
           }
           case "response.created": {
             cancellationRequested = false;
+            serverReplyPending = false;
+            releaseTyped();
             responseAudioStartTime = null;
             responseAudioDurationMs = 0;
             responsePlaybackGapMs = 0;
@@ -1667,6 +1755,8 @@ export function useVoiceLive(
             responseAudioDurationMs = 0;
             responsePlaybackGapMs = 0;
             cancellationRequested = false;
+            // Lines typed during the reply go out now, as one new exchange.
+            flushTyped();
             break;
           }
           case "input_audio_buffer.speech_started": {
@@ -1698,6 +1788,15 @@ export function useVoiceLive(
           }
           case "input_audio_buffer.speech_stopped": {
             if (mountedRef.current) setListening(false);
+            // Server VAD answers the speech itself; hold typed lines until that
+            // reply starts, with a bounded release in case it never does.
+            serverReplyPending = true;
+            releaseTyped();
+            session.typedReleaseTimer = setTimeout(() => {
+              session.typedReleaseTimer = null;
+              serverReplyPending = false;
+              flushTyped();
+            }, TYPED_RELEASE_MS);
             break;
           }
           case "error": {
@@ -1837,6 +1936,11 @@ export function useVoiceLive(
     else void start();
   }, [status, start, stop]);
 
+  const sendText = useCallback(
+    (text: string) => sessionRef.current?.sendText?.(text) ?? false,
+    [],
+  );
+
   return {
     status,
     active: status === "live" || status === "connecting",
@@ -1851,5 +1955,6 @@ export function useVoiceLive(
     start,
     toggle,
     stop,
+    sendText,
   };
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
 import * as api from "@/lib/api";
 import {
@@ -159,6 +159,8 @@ export function ConversationInspector({
   voiceLocked,
   collapsed,
   onToggle,
+  openerRef,
+  focusRequest = 0,
 }: {
   sessionId: string | null;
   refreshKey: number;
@@ -191,6 +193,10 @@ export function ConversationInspector({
   voiceLocked: boolean;
   collapsed: boolean;
   onToggle: () => void;
+  /** The control that opens the inspector; focus returns to it on close. */
+  openerRef?: RefObject<HTMLElement | null>;
+  /** Incremented to bring the Setup group's Model section into view. */
+  focusRequest?: number;
 }) {
   const [group, setGroup] = useState<Group>("setup");
   const [openSections, setOpenSections] =
@@ -238,10 +244,10 @@ export function ConversationInspector({
   const memoryConfirmRef = useRef<HTMLButtonElement>(null);
   const memoryTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const previousMemoryConfirmRef = useRef<string | null>(null);
-  const drawerOpenerRef = useRef<HTMLButtonElement>(null);
   const drawerReturnFocusRef = useRef<HTMLElement | null>(null);
-  const drawer = useMediaQuery("(max-width: 1050px)") && !collapsed;
-  const drawerFocusRef = useModalFocus<HTMLElement>(drawer, drawerReturnFocusRef);
+  // Matches the shell's compact breakpoint (useWorkspacePanels COMPACT_QUERY).
+  const drawer = useMediaQuery("(max-width: 1099px)") && !collapsed;
+  const drawerFocusRef = useModalFocus<HTMLElement>(drawer, openerRef ?? drawerReturnFocusRef);
   const onDrawerKeyDown = useModalKeyDown<HTMLElement>(onToggle, drawer);
 
   useEffect(() => setPromptDraft(systemPrompt), [systemPrompt]);
@@ -375,6 +381,17 @@ export function ConversationInspector({
       setPhases((current) => ({ ...current, memory: "error" }));
     }
   }, [markResourceReady]);
+
+  // The header's model chip asks for the model controls: show and focus them.
+  useEffect(() => {
+    if (focusRequest <= 0) return;
+    setGroup("setup");
+    setOpenSections((current) => ({ ...current, setup: "model" }));
+    const frame = requestAnimationFrame(() =>
+      document.getElementById("inspector-section-model")?.focus(),
+    );
+    return () => cancelAnimationFrame(frame);
+  }, [focusRequest]);
 
   useEffect(() => {
     if (!memoryTarget) return;
@@ -632,26 +649,7 @@ export function ConversationInspector({
     return agents.find((agent) => agent.name === draftDefaults.agentName)?.description || null;
   }, [agents, draftDefaults.agentName, sessionId, snapshot]);
 
-  if (collapsed) {
-    return (
-      <aside className="conversation-inspector collapsed" aria-label="Conversation inspector">
-        <button
-          ref={(element) => {
-            drawerOpenerRef.current = element;
-            if (element) drawerReturnFocusRef.current = element;
-          }}
-          type="button"
-          onClick={() => {
-            drawerReturnFocusRef.current = drawerOpenerRef.current;
-            onToggle();
-          }}
-          aria-label="Open conversation inspector"
-        >
-          ‹
-        </button>
-      </aside>
-    );
-  }
+  if (collapsed) return null;
 
   return (
     <aside

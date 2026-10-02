@@ -85,4 +85,34 @@ describe("PhotoAvatarVoiceCard", () => {
     rerender({ focusRequest: 1 });
     expect(heading).toHaveFocus();
   });
+
+  it("minimizes to a slim bar that shows no likeness yet keeps the cost note and actions", async () => {
+    const onToggleSize = vi.fn();
+    const { user, rerender, onStart } = setup({
+      onToggleSize,
+      voice: "en-US-Ava:DragonHDLatestNeural",
+    });
+    const stage = screen.getByRole("region", { name: "Avatar voice" });
+    expect(within(stage).getByText("Azure Speech · Ava (en-US, Dragon HD)")).toBeInTheDocument();
+    await user.click(within(stage).getByRole("button", { name: "Minimize the avatar stage" }));
+    expect(onToggleSize).toHaveBeenCalledTimes(1);
+
+    rerender({ compact: true });
+    const bar = screen.getByRole("region", { name: "Avatar voice" });
+    // A likeness never appears without its label, so the slim bar shows none.
+    expect(within(bar).queryByText("AI-generated")).toBeNull();
+    expect(bar.querySelector("img")).toBeNull();
+    expect(within(bar).getByText(/Ava \(en-US, Dragon HD\)/)).toBeInTheDocument();
+    expect(within(bar).getByText(/billed while the session/)).toBeInTheDocument();
+    await user.click(within(bar).getByRole("button", { name: "Start talking" }));
+    expect(onStart).toHaveBeenCalledTimes(1);
+    await user.click(within(bar).getByRole("button", { name: "Show the avatar stage" }));
+    expect(onToggleSize).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers no size control when the caller cannot resize the stage", () => {
+    setup();
+    expect(screen.queryByRole("button", { name: "Minimize the avatar stage" })).toBeNull();
+  });
 });
+

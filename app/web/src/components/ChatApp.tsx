@@ -43,9 +43,10 @@ import {
 } from "@/lib/library";
 import { Sidebar } from "./Sidebar";
 import { ConversationDeletionNotice, ConversationDeletionPanel } from "./ConversationDeletionPanel";
+import { deletionFeedbackFor, type DeletionFeedback } from "@/lib/conversationDeletion";
 import { useCurrentOwner, type CurrentOwner } from "./MemoryPreferenceProvider";
 import { ConversationInspector } from "./ConversationInspector";
-import { SettingsPanel } from "./SettingsPanel";
+import { SettingsPage } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
 import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
@@ -68,9 +69,9 @@ import { PhotoAvatarsPanel } from "./PhotoAvatarsPanel";
 import { PhotoAvatarVoiceCard } from "./PhotoAvatarVoiceCard";
 import { usePhotoAvatarsEnabled } from "./usePhotoAvatarsEnabled";
 import { useLiveAvatarChoices } from "./useLiveAvatarChoices";
-import { LiveAvatarStage } from "./LiveAvatarStage";
+import { LiveAvatarStage, type StageFit } from "./LiveAvatarStage";
 import { MediaPlayer } from "./MediaPlayer";
-import { MessageList, type DisplayMessage } from "./MessageList";
+import { MessageList, type DisplayMessage, type EmptyAction } from "./MessageList";
 import type { CitationTarget } from "./Markdown";
 import { Composer, type UploadItem } from "./Composer";
 import { SessionToolConsentBanner } from "./ToolConsentControls";
@@ -93,8 +94,10 @@ import {
   UNKNOWN_STREAM_OUTCOME,
 } from "@/lib/sessionMutation";
 import { performBoundUpload } from "@/lib/uploadSession";
-import { EditableSessionTitle } from "./EditableSessionTitle";
+import { ChatHeader } from "./ChatHeader";
+import { WorkspacePage } from "./WorkspacePage";
 import { useWorkspacePanels } from "./useWorkspacePanels";
+import { VIEW_TITLES, type WorkspaceView } from "@/lib/workspaceView";
 
 // Bounds how long ANY caller of ensureSession -- not just whichever one
 // started the request -- will wait on a single pending session creation
@@ -181,6 +184,11 @@ function subscribeAvatarVideoSupport(): () => void {
   return () => {};
 }
 
+// While a live voice call is connected, leaving the conversation would cut it
+// off mid-reply, so navigation waits for the user to end it.
+const LIVE_SESSION_LOCK_REASON =
+  "End the live voice session before switching conversations. Its transcript is saved to this conversation when it ends.";
+
 export function ChatApp() {
   const owner = useCurrentOwner();
   const deletionOwnerRef = useRef(owner);
@@ -198,6 +206,22 @@ export function ChatApp() {
   const [deleting, setDeleting] = useState<{
     owner: CurrentOwner; ids: ReadonlySet<string>;
   } | null>(null);
+  // Why a deletion didn't complete, kept on its row until it's resolved.
+  const [deletionFeedback, setDeletionFeedback] = useState<{
+    owner: CurrentOwner; byId: ReadonlyMap<string, DeletionFeedback>;
+  } | null>(null);
+  const updateDeletionFeedback = useCallback(
+    (forOwner: CurrentOwner, id: string, next: (current?: DeletionFeedback) => DeletionFeedback | null) => {
+      setDeletionFeedback((current) => {
+        const byId = new Map(current?.owner === forOwner ? current.byId : []);
+        const value = next(byId.get(id));
+        if (value) byId.set(id, value);
+        else byId.delete(id);
+        return { owner: forOwner, byId };
+      });
+    },
+    [],
+  );
   const deletionRequestsRef = useRef(new Map<string, symbol>());
   const deletionNoticeRequestRef = useRef<symbol | null>(null);
   const deletionPanelOpen = deletionView?.owner === owner;
@@ -217,27 +241,20 @@ export function ChatApp() {
     updatePreferences: updateVoicePrefs,
   } = usePersistedVoicePreferences();
   const {
-    settingsOpen,
-    studioOpen,
-    libraryOpen,
-    photoAvatarsOpen,
-    openSettings,
-    closeSettings,
-    openStudio,
-    closeStudio,
-    openLibrary,
-    closeLibrary,
-    openPhotoAvatars,
-    closePhotoAvatars,
-    mobileSidebar,
-    drawerInspector,
-    mobileSidebarOpen,
-    mobileInspectorOpen,
-    leftIsCollapsed,
-    rightIsCollapsed,
+    view,
+    navigate,
+    phone,
+    compact,
+    sidebarMode,
+    sidebarDrawerOpen,
+    inspectorDrawerOpen,
+    inspectorOpen,
     toggleLeftPanel,
     toggleRightPanel,
+    openInspector,
   } = useWorkspacePanels();
+  const openAvatarsPage = useCallback(() => navigate("avatars"), [navigate]);
+  const openLibraryPage = useCallback(() => navigate("library"), [navigate]);
   // The document library. When on, the Composer paperclip routes
   // uploads through the per-user library CU-ingest pipeline instead of the
   // session-scoped local-extract path, so the doc is parsed, surfaced to the
@@ -249,10 +266,14 @@ export function ChatApp() {
   // Closing the gallery refreshes the avatars live voice may offer.
   const [liveAvatarRefresh, setLiveAvatarRefresh] = useState(0);
   const [liveAvatarFocusRequest, setLiveAvatarFocusRequest] = useState(0);
-  const closePhotoAvatarGallery = useCallback(() => {
-    closePhotoAvatars();
-    setLiveAvatarRefresh((count) => count + 1);
-  }, [closePhotoAvatars]);
+  const closePhotoAvatarGallery = useCallback(() => navigate("chat"), [navigate]);
+  const previousViewRef = useRef<WorkspaceView>(view);
+  useEffect(() => {
+    if (previousViewRef.current === "avatars" && view !== "avatars") {
+      setLiveAvatarRefresh((count) => count + 1);
+    }
+    previousViewRef.current = view;
+  }, [view]);
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -307,7 +328,10 @@ export function ChatApp() {
     id: number;
     text: string;
   } | null>(null);
-  const composerPrefillIdRef = useRef(0);
+  // Each request gets a new id, so the composer applies it exactly once.
+  const startImagePrompt = useCallback(() => {
+    setComposerPrefill((current) => ({ id: (current?.id ?? 0) + 1, text: "/generate_image " }));
+  }, []);
   const [voiceProviderConfig, setVoiceProviderConfig] =
     useState<VoiceLiveProviderCatalogResponse | null>(null);
 
@@ -558,7 +582,6 @@ export function ChatApp() {
   const voiceStopRef = useRef<() => void>(() => {});
   const discardDeletedVoiceRef = useRef<(sessionId: string) => void>(() => {});
   const mountedRef = useRef(true);
-  const sidebarOpenerRef = useRef<HTMLButtonElement>(null);
   const sidebarReturnFocusRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     sessionIdRef.current = activeId;
@@ -816,7 +839,9 @@ export function ChatApp() {
       if (streamingRef.current) return;
       if (voiceNavigationLockedRef.current) {
         setError(
-          "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar to continue.",
+          voiceActiveRef.current
+            ? LIVE_SESSION_LOCK_REASON
+            : "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar to continue.",
         );
         return;
       }
@@ -1014,7 +1039,8 @@ export function ChatApp() {
       discardDeletedVoiceRef.current(id);
     }
     if (status) setDeletionNotice({ owner, status });
-  }, [owner, resetConversationView]);
+    updateDeletionFeedback(owner, id, () => null);
+  }, [owner, resetConversationView, updateDeletionFeedback]);
 
   const refreshAgents = useCallback(async () => {
     try {
@@ -1026,10 +1052,10 @@ export function ChatApp() {
 
   const openWorkflowRun = useCallback(
     (sessionId: string) => {
-      closeStudio();
+      navigate("chat");
       void selectSession(sessionId);
     },
-    [closeStudio, selectSession],
+    [navigate, selectSession],
   );
 
   const requestSessionDeletion = useCallback(
@@ -1106,18 +1132,27 @@ export function ChatApp() {
       setError("Wait for active attachments to finish before deleting this conversation.");
       return;
     }
-    const title = sessions.find((item) => item.id === id)?.title || "this conversation";
-    if (!window.confirm(
-      `Remove "${title}" from chats and request cleanup of its conversation content and inline originals? Cleanup may remain pending; check Deletion status for resumable requests. This does not erase backups, library documents, memories, or generated media.`,
-    )) return;
+    // The sidebar row has already asked; a Try again resumes that same intent.
     const generation = signOutGenerationRef.current;
+    updateDeletionFeedback(owner, id, () => null);
     try {
       await requestSessionDeletion(id, true);
     } catch (reason) {
       if (owner.isCurrent() && deletionOwnerRef.current === owner
-        && signOutGenerationRef.current === generation) setError(api.apiErrorDetail(reason));
+        && signOutGenerationRef.current === generation) {
+        // Built here, not inside the updater: a closure over the catch binding
+        // makes the React Compiler skip this whole component (and its lint).
+        const feedback = deletionFeedbackFor(reason);
+        updateDeletionFeedback(owner, id, () => feedback);
+      }
     }
-  }, [owner, requestSessionDeletion, sessions]);
+  }, [owner, requestSessionDeletion, updateDeletionFeedback]);
+  const dismissDeletionFeedback = useCallback((id: string) => {
+    // A refusal that still blocks the row keeps its words as the row's
+    // accessible explanation; anything else is simply cleared.
+    updateDeletionFeedback(owner, id, (current) =>
+      current?.blocksRemoval ? { ...current, dismissed: true } : null);
+  }, [owner, updateDeletionFeedback]);
 
   const renameSession = useCallback(async (id: string, title: string) => {
     const updated = await api.updateSession(id, { title });
@@ -2131,7 +2166,9 @@ export function ChatApp() {
   const sidebarDisabledReason = streaming
     ? "Wait for the current reply to finish generating."
     : voiceExitLocked
-      ? "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar below."
+      ? inlineVoice.active
+        ? LIVE_SESSION_LOCK_REASON
+        : "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar below."
       : undefined;
   const headerLockReasonId = useId();
   const deletedVoiceSessionId = inlineVoice.boundSessionId;
@@ -2176,6 +2213,7 @@ export function ChatApp() {
     setDeletionView(null);
     setDeletionNotice(null);
     setDeleting(null);
+    setDeletionFeedback(null);
     const pendingCreation = creatingRef.current;
     creatingRef.current = null;
     pendingCreation?.controller.abort();
@@ -2267,7 +2305,7 @@ export function ChatApp() {
             onAvatarChange: (nextAvatar: string | null) =>
               updateVoicePrefs({ ...voicePrefsResolved, speechAvatarId: nextAvatar }),
             avatarVideoSupported,
-            onOpenPhotoAvatars: photoAvatarsEnabled ? openPhotoAvatars : undefined,
+            onOpenPhotoAvatars: photoAvatarsEnabled ? openAvatarsPage : undefined,
             onReset: () =>
               updateVoicePrefs(
                 voicePrefsResolved.provider === "speech_voice_live"
@@ -2304,7 +2342,7 @@ export function ChatApp() {
       requestedLiveAvatarId,
       avatarVideoSupported,
       photoAvatarsEnabled,
-      openPhotoAvatars,
+      openAvatarsPage,
     ],
   );
 
@@ -2982,9 +3020,195 @@ export function ChatApp() {
     activeId,
   ]);
 
+  // --- Shell: pages, drawers and the conversation stage -------------------
+  const inspectorOpenerRef = useRef<HTMLElement | null>(null);
+  const pageHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const [inspectorFocusRequest, setInspectorFocusRequest] = useState(0);
+  // Set when the user brings the inspector back during a live avatar session
+  // (see the stage below); every session starts without it.
+  const [inspectorKeptForLive, setInspectorKeptForLive] = useState(false);
+  const openModelSettings = useCallback(() => {
+    setInspectorKeptForLive(true);
+    openInspector();
+    setInspectorFocusRequest((count) => count + 1);
+  }, [openInspector]);
+  const openSidebarDrawer = useCallback(() => toggleLeftPanel(), [toggleLeftPanel]);
+  const selectFromSidebar = useCallback(
+    (id: string) => {
+      navigate("chat");
+      void selectSession(id);
+    },
+    [navigate, selectSession],
+  );
+  const newChatFromSidebar = useCallback(() => {
+    navigate("chat");
+    newChat();
+  }, [navigate, newChat]);
+  const modelLabel =
+    models.find((model) => model.id === selectedModel)?.displayName ?? selectedModel ?? null;
+
+  // A destination page takes focus on its heading when it opens, so keyboard
+  // and screen-reader users land on what changed.
+  const announcedViewRef = useRef<WorkspaceView>(view);
+  useEffect(() => {
+    if (announcedViewRef.current === view) return;
+    announcedViewRef.current = view;
+    if (view === "chat") return;
+    const frame = requestAnimationFrame(() => pageHeadingRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [view]);
+
+  // The avatar stage: the chosen avatar's portrait before a session (the
+  // lobby), the live video during one. Voice-only sessions keep the compact
+  // call bar instead, so the transcript keeps the space.
+  const liveAvatarOnStage = Boolean(
+    inlineVoice.active &&
+      inlineVoice.avatar &&
+      !inlineVoice.avatar.unsupported &&
+      inlineVoice.avatar.element,
+  );
+  const lobbyVisible = requestedLiveAvatarId !== null && !inlineVoice.active;
+  const [lobbyCompact, setLobbyCompactState] = useState(false);
+  useEffect(() => {
+    try {
+      // Client-only read after hydration, like the other layout preferences.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLobbyCompactState(localStorage.getItem("ai4ia.lobbyCompact") === "1");
+    } catch {
+      // Storage unavailable: keep the stage.
+    }
+  }, []);
+  const setLobbyCompact = useCallback((next: boolean) => {
+    setLobbyCompactState(next);
+    try {
+      localStorage.setItem("ai4ia.lobbyCompact", next ? "1" : "0");
+    } catch {
+      // The current page still honours the choice.
+    }
+  }, []);
+  useEffect(() => {
+    // Choosing an avatar ("Use in Voice Live") puts it back on the stage.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (liveAvatarFocusRequest > 0) setLobbyCompact(false);
+  }, [liveAvatarFocusRequest, setLobbyCompact]);
+  const lobbyOnStage = lobbyVisible && !lobbyCompact;
+  const stageKind: "avatar" | null = liveAvatarOnStage || lobbyOnStage ? "avatar" : null;
+
+  // A live avatar needs the room: on wide screens the docked inspector steps
+  // aside while a session is on stage (the saved preference is untouched) and
+  // comes back when it ends, or as soon as the user reopens it. Derived during
+  // render, so the first frame of a session already has the space.
+  const [liveStageWasOn, setLiveStageWasOn] = useState(liveAvatarOnStage);
+  if (liveStageWasOn !== liveAvatarOnStage) {
+    setLiveStageWasOn(liveAvatarOnStage);
+    setInspectorKeptForLive(false);
+  }
+  const inspectorYielded = liveAvatarOnStage && !compact && !inspectorKeptForLive;
+  const inspectorShown = inspectorOpen && !inspectorYielded;
+  const toggleInspector = useCallback(() => {
+    if (inspectorYielded) {
+      setInspectorKeptForLive(true);
+      if (!inspectorOpen) openInspector();
+    } else {
+      toggleRightPanel();
+    }
+  }, [inspectorOpen, inspectorYielded, openInspector, toggleRightPanel]);
+  const revealInspector = useCallback(() => {
+    setInspectorKeptForLive(true);
+    openInspector();
+  }, [openInspector]);
+  const [stageFocused, setStageFocused] = useState(false);
+  const [stageFit, setStageFit] = useState<StageFit>("fit");
+  useEffect(() => {
+    // Focus view belongs to one live session; the next one starts beside the transcript.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!liveAvatarOnStage) setStageFocused(false);
+  }, [liveAvatarOnStage]);
+
+  // While live, typed lines go to the live session unless the user switches
+  // back to text chat; every new session starts on the live target.
+  const [liveTarget, setLiveTarget] = useState<"live" | "chat">("live");
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (inlineVoice.active) setLiveTarget("live");
+  }, [inlineVoice.active]);
+  const sendToLiveSession = inlineVoice.sendText;
+  const composerLive = useMemo(
+    () =>
+      inlineVoice.active
+        ? {
+            target: liveTarget,
+            onTargetChange: setLiveTarget,
+            avatarName: liveAvatarOnStage ? selectedLiveAvatar?.displayName ?? null : null,
+            onSend: sendToLiveSession,
+          }
+        : undefined,
+    [inlineVoice.active, liveTarget, liveAvatarOnStage, selectedLiveAvatar, sendToLiveSession],
+  );
+  const liveCaption = useMemo(() => {
+    for (let index = inlineVoice.messages.length - 1; index >= 0; index -= 1) {
+      const message = inlineVoice.messages[index];
+      const text = message.role === "assistant" ? message.content.trim() : "";
+      if (text) return text.length > 240 ? `…${text.slice(-240)}` : text;
+    }
+    return null;
+  }, [inlineVoice.messages]);
+  const showCallBar =
+    inlineVoice.enabled &&
+    (inlineVoice.phase !== "idle" ||
+      inlineVoice.saving ||
+      Boolean(inlineVoice.error) ||
+      Boolean(inlineVoice.persistenceError) ||
+      !inlineVoice.supported);
+
+  // Shortcuts into the capabilities a new conversation can use.
+  const imageGenerationOffered =
+    imageOptions?.enabled !== false && (imageOptions?.models.length ?? 0) > 0;
+  const emptyActions = useMemo<EmptyAction[]>(() => {
+    const actions: EmptyAction[] = [];
+    if (attachmentCapabilities) {
+      actions.push({
+        label: "Attach a document",
+        icon: "attach",
+        onClick: () => document.querySelector<HTMLButtonElement>(".composer-attach-button")?.click(),
+      });
+    }
+    if (voiceLiveEnabled && inlineVoice.supported && requestedLiveAvatarId === null) {
+      actions.push({ label: "Talk live", icon: "mic", onClick: startInlineVoice });
+    }
+    if (photoAvatarsEnabled && requestedLiveAvatarId === null) {
+      actions.push({ label: "Talk with an avatar", icon: "avatar", onClick: openAvatarsPage });
+    }
+    if (imageGenerationOffered) {
+      actions.push({ label: "Create an image", icon: "image", onClick: startImagePrompt });
+    }
+    return actions;
+  }, [
+    attachmentCapabilities,
+    imageGenerationOffered,
+    inlineVoice.supported,
+    openAvatarsPage,
+    photoAvatarsEnabled,
+    requestedLiveAvatarId,
+    startImagePrompt,
+    startInlineVoice,
+    voiceLiveEnabled,
+  ]);
+
+  const pageDescription =
+    view === "library"
+      ? "Upload documents once, then ground any conversation in them with citations back to the source."
+      : view === "avatars"
+        ? "Create AI-generated presenters, then talk with them live in a conversation."
+        : view === "studio"
+          ? "Build agents, chain them into workflows and connect custom tools."
+          : view === "settings"
+            ? "Personal preferences, data housekeeping and help."
+            : undefined;
+
   return (
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
-      {!leftIsCollapsed && mobileSidebar ? (
+    <div className="app-shell">
+      {sidebarDrawerOpen ? (
         <button
           type="button"
           className="drawer-backdrop"
@@ -2994,140 +3218,72 @@ export function ChatApp() {
       ) : null}
       <div
         className="sidebar-slot"
-        inert={mobileInspectorOpen || deletionPanelOpen ? true : undefined}
-        aria-hidden={mobileInspectorOpen || deletionPanelOpen ? true : undefined}
+        inert={inspectorDrawerOpen || deletionPanelOpen ? true : undefined}
+        aria-hidden={inspectorDrawerOpen || deletionPanelOpen ? true : undefined}
       >
-        {leftIsCollapsed ? (
-          <div
-          className="sidebar-collapsed-trigger"
-          aria-label="Chat sessions (collapsed)"
-          style={{
-            width: 48,
-            flexShrink: 0,
-            background: "var(--bg-sidebar)",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            paddingTop: 16,
-            gap: 12,
-          }}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element -- small static brand mark */}
-          <img
-            src="/ai4ia-mark.png"
-            alt=""
-            aria-hidden="true"
-            width={28}
-            height={28}
-            style={{ borderRadius: 6, display: "block" }}
-          />
-          <button
-            ref={(element) => {
-              sidebarOpenerRef.current = element;
-              if (element) sidebarReturnFocusRef.current = element;
-            }}
-            onClick={() => {
-              sidebarReturnFocusRef.current = sidebarOpenerRef.current;
-              toggleLeftPanel();
-            }}
-            aria-label={
-              mobileSidebar ? "Open conversation sidebar" : "Expand sidebar"
-            }
-            title={mobileSidebar ? "Open conversations" : "Expand sidebar"}
-            style={{
-              border: "none",
-              background: "transparent",
-              color: "var(--sidebar-muted)",
-              cursor: "pointer",
-              fontSize: "1.1em",
-              lineHeight: 1,
-              padding: 4,
-            }}
-          >
-            »
-          </button>
-          </div>
-        ) : (
+        {sidebarMode !== "hidden" ? (
           <Sidebar
-          sessions={sessions}
-          activeId={activeId}
-          onSelect={selectSession}
-          onNewChat={newChat}
-          onDelete={deleteSession}
-          onRename={renameSession}
-          deletingIds={deleting?.owner === owner ? deleting.ids : undefined}
-          onOpenDeletionStatus={() => setDeletionView({ owner, sessionId: null })}
-          onOpenSettings={openSettings}
-          onOpenStudio={openStudio}
-          onOpenLibrary={libraryEnabled ? openLibrary : undefined}
-          onOpenPhotoAvatars={photoAvatarsEnabled ? openPhotoAvatars : undefined}
-          onBeforeSignOut={prepareSignOut}
-          onCollapse={toggleLeftPanel}
-          openerRef={sidebarReturnFocusRef}
-          disabled={streaming || voiceExitLocked}
-          disabledReason={sidebarDisabledReason}
+            mode={sidebarMode}
+            sessions={sessions}
+            activeId={activeId}
+            onSelect={selectFromSidebar}
+            onNewChat={newChatFromSidebar}
+            onDelete={deleteSession}
+            onRename={renameSession}
+            deletingIds={deleting?.owner === owner ? deleting.ids : undefined}
+            deletionFeedback={deletionFeedback?.owner === owner ? deletionFeedback.byId : undefined}
+            onDismissDeletionFeedback={dismissDeletionFeedback}
+            view={view}
+            onNavigate={navigate}
+            libraryAvailable={libraryEnabled}
+            photoAvatarsAvailable={photoAvatarsEnabled}
+            onOpenDeletionStatus={() => setDeletionView({ owner, sessionId: null })}
+            onBeforeSignOut={prepareSignOut}
+            onCollapse={toggleLeftPanel}
+            onExpand={toggleLeftPanel}
+            expandLabel={compact ? "Open conversation sidebar" : "Expand sidebar"}
+            openerRef={sidebarReturnFocusRef}
+            disabled={streaming || voiceExitLocked}
+            disabledReason={sidebarDisabledReason}
           />
-        )}
+        ) : null}
       </div>
 
       <main
         id="main"
+        className="app-main"
         inert={
-          mobileSidebarOpen || mobileInspectorOpen || deletionPanelOpen
+          sidebarDrawerOpen || inspectorDrawerOpen || deletionPanelOpen
             ? true
             : undefined
         }
         aria-hidden={
-          mobileSidebarOpen || mobileInspectorOpen || deletionPanelOpen
+          sidebarDrawerOpen || inspectorDrawerOpen || deletionPanelOpen
             ? true
             : undefined
         }
-        style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}
+        style={{ minWidth: 0 }}
       >
-        <header
-          className="chat-header"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 16,
-            padding: "12px max(16px, 6%)",
-            borderBottom: "1px solid var(--border)",
-            background: "var(--bg-elevated)",
-          }}
-        >
-          {activeId ? (
-            <>
-              <EditableSessionTitle
-                title={
-                  sessions.find((session) => session.id === activeId)?.title ??
-                  "Untitled"
-                }
-                onSave={(title) => renameSession(activeId, title)}
-                disabled={streaming || voiceExitLocked}
-                disabledReasonId={headerLockReasonId}
-              />
-              {(streaming || voiceExitLocked) && sidebarDisabledReason && (
-                <span
-                  id={headerLockReasonId}
-                  role="status"
-                  className="visually-hidden"
-                >
-                  {sidebarDisabledReason}
-                </span>
-              )}
-            </>
-          ) : (
-            <strong>New conversation</strong>
-          )}
-          <div
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-            style={{ marginLeft: "auto", fontSize: "0.8em", color: "var(--fg-muted)" }}
-          >
-            {streaming ? "Generating…" : "Ready"}
-          </div>
-        </header>
+        <div className="app-view" hidden={view !== "chat"}>
+          <ChatHeader
+            title={
+              activeId
+                ? sessions.find((session) => session.id === activeId)?.title ?? "Untitled"
+                : null
+            }
+            onRename={activeId ? (title) => renameSession(activeId, title) : undefined}
+            locked={streaming || voiceExitLocked}
+            lockReason={sidebarDisabledReason}
+            lockReasonId={headerLockReasonId}
+            modelLabel={modelLabel}
+            onOpenModel={openModelSettings}
+            streaming={streaming}
+            onOpenSidebar={phone ? openSidebarDrawer : undefined}
+            sidebarButtonRef={sidebarReturnFocusRef}
+            inspectorOpen={inspectorShown}
+            onOpenInspector={toggleInspector}
+            inspectorButtonRef={inspectorOpenerRef}
+          />
 
         {deletionNotice?.owner === owner && (
           <ConversationDeletionNotice
@@ -3136,6 +3292,7 @@ export function ChatApp() {
             onDismiss={() => setDeletionNotice(null)}
           />
         )}
+
 
         {error && (
           <div
@@ -3160,119 +3317,227 @@ export function ChatApp() {
           </div>
         )}
 
-        {activeId && activeToolConsent ? (
-          <SessionToolConsentBanner
-            key={activeId}
-            sessionId={activeId}
-            consent={activeToolConsent}
-            available={currentConsentView.available}
-            active={currentConsentView.active}
-            status={currentConsentView.status}
-            onUpdated={onToolConsentUpdated}
-            onVerificationInvalidated={invalidateConsentVerification}
-            onRefresh={refreshConsentVerification}
-          />
+
+          <div className="chat-canvas-frame">
+            <div
+              className="chat-canvas"
+              data-stage={stageKind ?? undefined}
+              data-focus={stageFocused && stageKind ? "true" : undefined}
+            >
+              {stageKind ? (
+                <div className="chat-stage-region">
+                  {liveAvatarOnStage && view === "chat" ? (
+                    <LiveAvatarStage
+                      avatar={inlineVoice.avatar}
+                      active={inlineVoice.active}
+                      onEnd={inlineVoice.stop}
+                      fit={stageFit}
+                      onFitChange={setStageFit}
+                      focused={stageFocused}
+                      onToggleFocus={() => setStageFocused((current) => !current)}
+                      captions={liveCaption}
+                    />
+                  ) : lobbyOnStage ? (
+                    <PhotoAvatarVoiceCard
+                      key={owner.key}
+                      avatar={selectedLiveAvatar}
+                      voice={voicePrefsResolved.speech.voice}
+                      disabledReason={avatarStartBlockedReason}
+                      locked={voiceSelectionLocked}
+                      focusRequest={liveAvatarFocusRequest}
+                      onStart={startInlineVoice}
+                      onChoose={openAvatarsPage}
+                      onClear={() => updateVoicePrefs({ ...voicePrefsResolved, speechAvatarId: null })}
+                      onToggleSize={() => setLobbyCompact(true)}
+                    />
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="chat-thread">
+            {activeId && activeToolConsent ? (
+              <SessionToolConsentBanner
+                key={activeId}
+                sessionId={activeId}
+                consent={activeToolConsent}
+                available={currentConsentView.available}
+                active={currentConsentView.active}
+                status={currentConsentView.status}
+                onUpdated={onToolConsentUpdated}
+                onVerificationInvalidated={invalidateConsentVerification}
+                onRefresh={refreshConsentVerification}
+              />
+            ) : null}
+            <MessageList
+              messages={displayMessages}
+              conversationId={activeId}
+              onError={setError}
+              onCitation={libraryEnabled ? handleCitation : undefined}
+              onInspectMemory={(memoryId) => {
+                setMemoryTarget((current) => ({
+                  sessionId: activeId, memoryId, request: (current?.request ?? 0) + 1,
+                }));
+                revealInspector();
+              }}
+              emptyActions={emptyActions}
+              onEditImage={
+                imageEditingAvailable && activeId
+                  ? (attachment) =>
+                      setImageEditTarget({
+                        sessionId: activeId,
+                        source: { kind: "generated", id: attachment.id },
+                        label: attachment.prompt?.trim() || "Generated image",
+                      })
+                  : undefined
+              }
+            />
+                {inlineVoice.active && inlineVoice.avatar?.unsupported ? (
+                  <LiveAvatarStage
+                    avatar={inlineVoice.avatar}
+                    active={inlineVoice.active}
+                    onEnd={inlineVoice.stop}
+                  />
+                ) : null}
+                {lobbyVisible && lobbyCompact ? (
+                  <PhotoAvatarVoiceCard
+                    key={owner.key}
+                    compact
+                    avatar={selectedLiveAvatar}
+                    voice={voicePrefsResolved.speech.voice}
+                    disabledReason={avatarStartBlockedReason}
+                    locked={voiceSelectionLocked}
+                    focusRequest={liveAvatarFocusRequest}
+                    onStart={startInlineVoice}
+                    onChoose={openAvatarsPage}
+                    onClear={() => updateVoicePrefs({ ...voicePrefsResolved, speechAvatarId: null })}
+                    onToggleSize={() => setLobbyCompact(false)}
+                  />
+                ) : null}
+                {showCallBar ? <InlineVoiceLiveStatus voice={inlineVoice} /> : null}
+            <ToolApprovalPanel
+              prompts={toolApprovals}
+              busy={streaming}
+              onApprove={(prompt) => {
+                void send(
+                  `Approved: run ${prompt.label} with exactly the arguments I was shown.`,
+                  [{ requestId: prompt.id, grant: prompt.grant }],
+                );
+              }}
+              onDeny={(prompt) => {
+                // Denial is the absence of a grant: drop it and never send it. No
+                // server round trip means no failure mode and nothing to hang on.
+                setToolApprovals((previous) =>
+                  previous.filter((item) => item.id !== prompt.id),
+                );
+              }}
+            />
+            <Composer
+              disabled={streaming || sessionLoading || !selectedModel}
+              streaming={streaming}
+              agents={agents}
+              documents={documents}
+              libraryDocuments={libraryDocs}
+              uploading={uploading}
+              capabilities={attachmentCapabilities}
+              capabilitiesError={attachmentCapabilitiesError}
+              uploads={uploads.filter(
+                (upload) => upload.sessionId === activeId,
+              )}
+              onSend={send}
+              onStop={stop}
+              onUpload={uploadDocument}
+              onRetryUpload={retryUpload}
+              onDismissUpload={dismissUpload}
+              onRetryCapabilities={() => void loadAttachmentCapabilities()}
+              onRemoveDocument={removeDocument}
+              onRemoveLibraryDocument={removeLibraryDocument}
+              onError={setError}
+              prefill={composerPrefill}
+              live={composerLive}
+              voiceLive={
+                voiceLiveEnabled
+                  ? {
+                      active: inlineVoice.active,
+                      supported: inlineVoice.supported,
+                      connecting: inlineVoice.phase === "connecting",
+                      ending: inlineVoice.phase === "ending",
+                      saving: inlineVoice.saving,
+                      saveBlocked: Boolean(inlineVoice.persistenceError),
+                      retrying: Boolean(inlineVoice.error),
+                      startBlockedReason: avatarStartBlockedReason,
+                      start: startInlineVoice,
+                      stop: inlineVoice.stop,
+                    }
+                  : undefined
+              }
+            />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {view !== "chat" ? (
+          <WorkspacePage
+            id={`page-heading-${view}`}
+            title={VIEW_TITLES[view]}
+            description={pageDescription}
+            onOpenSidebar={phone ? openSidebarDrawer : undefined}
+            sidebarButtonRef={sidebarReturnFocusRef}
+            headingRef={pageHeadingRef}
+          >
+            {view === "studio" ? (
+              <StudioPanel
+                variant="page"
+                models={models}
+                agents={agents}
+                runModel={selectedModel}
+                customToolsEnabled={customToolsEnabled}
+                onAgentsChanged={refreshAgents}
+                onRun={openWorkflowRun}
+                onClose={() => navigate("chat")}
+              />
+            ) : view === "library" ? (
+              libraryEnabled ? (
+                <LibraryPanel
+                  variant="page"
+                  onClose={() => navigate("chat")}
+                  onEditImage={
+                    imageEditingAvailable && activeId
+                      ? (doc) => {
+                          navigate("chat");
+                          setImageEditTarget({
+                            sessionId: activeId,
+                            source: { kind: "library", id: doc.id },
+                            label: doc.filename,
+                          });
+                        }
+                      : undefined
+                  }
+                  editImageScope={activeLibraryScope}
+                />
+              ) : (
+                <p className="inspector-empty">The document library isn&apos;t enabled in this deployment.</p>
+              )
+            ) : view === "avatars" ? (
+              photoAvatarsEnabled && owner.key !== null ? (
+                // Keyed by owner so an account switch never shows another owner's avatars.
+                <PhotoAvatarsPanel
+                  key={owner.key}
+                  variant="page"
+                  onClose={closePhotoAvatarGallery}
+                  onUse={usePhotoAvatarInVoice}
+                  useDisabledReason={avatarVoiceUseDisabledReason}
+                />
+              ) : (
+                <p className="inspector-empty">Photo avatars aren&apos;t available for this account.</p>
+              )
+            ) : (
+              <SettingsPage onOpenDeletionStatus={() => setDeletionView({ owner, sessionId: null })} />
+            )}
+          </WorkspacePage>
         ) : null}
-        <MessageList
-          messages={displayMessages}
-          conversationId={activeId}
-          onError={setError}
-          onCitation={libraryEnabled ? handleCitation : undefined}
-          onInspectMemory={(memoryId) => {
-            setMemoryTarget((current) => ({
-              sessionId: activeId, memoryId, request: (current?.request ?? 0) + 1,
-            }));
-            if (rightIsCollapsed) toggleRightPanel();
-          }}
-          onEditImage={
-            imageEditingAvailable && activeId
-              ? (attachment) =>
-                  setImageEditTarget({
-                    sessionId: activeId,
-                    source: { kind: "generated", id: attachment.id },
-                    label: attachment.prompt?.trim() || "Generated image",
-                  })
-              : undefined
-          }
-        />
-        <LiveAvatarStage
-          avatar={inlineVoice.avatar}
-          active={inlineVoice.active}
-          onEnd={inlineVoice.stop}
-        />
-        {requestedLiveAvatarId !== null && !inlineVoice.active ? (
-          <PhotoAvatarVoiceCard
-            key={owner.key}
-            avatar={selectedLiveAvatar}
-            voice={voicePrefsResolved.speech.voice}
-            disabledReason={avatarStartBlockedReason}
-            locked={voiceSelectionLocked}
-            focusRequest={liveAvatarFocusRequest}
-            onStart={startInlineVoice}
-            onChoose={openPhotoAvatars}
-            onClear={() => updateVoicePrefs({ ...voicePrefsResolved, speechAvatarId: null })}
-          />
-        ) : null}
-        <InlineVoiceLiveStatus voice={inlineVoice} />
-        <ToolApprovalPanel
-          prompts={toolApprovals}
-          busy={streaming}
-          onApprove={(prompt) => {
-            void send(
-              `Approved: run ${prompt.label} with exactly the arguments I was shown.`,
-              [{ requestId: prompt.id, grant: prompt.grant }],
-            );
-          }}
-          onDeny={(prompt) => {
-            // Denial is the absence of a grant: drop it and never send it. No
-            // server round trip means no failure mode and nothing to hang on.
-            setToolApprovals((previous) =>
-              previous.filter((item) => item.id !== prompt.id),
-            );
-          }}
-        />
-        <Composer
-          disabled={streaming || sessionLoading || !selectedModel}
-          streaming={streaming}
-          agents={agents}
-          documents={documents}
-          libraryDocuments={libraryDocs}
-          uploading={uploading}
-          capabilities={attachmentCapabilities}
-          capabilitiesError={attachmentCapabilitiesError}
-          uploads={uploads.filter(
-            (upload) => upload.sessionId === activeId,
-          )}
-          onSend={send}
-          onStop={stop}
-          onUpload={uploadDocument}
-          onRetryUpload={retryUpload}
-          onDismissUpload={dismissUpload}
-          onRetryCapabilities={() => void loadAttachmentCapabilities()}
-          onRemoveDocument={removeDocument}
-          onRemoveLibraryDocument={removeLibraryDocument}
-          onError={setError}
-          prefill={composerPrefill}
-          voiceLive={
-            voiceLiveEnabled
-              ? {
-                  active: inlineVoice.active,
-                  supported: inlineVoice.supported,
-                  connecting: inlineVoice.phase === "connecting",
-                  ending: inlineVoice.phase === "ending",
-                  saving: inlineVoice.saving,
-                  saveBlocked: Boolean(inlineVoice.persistenceError),
-                  retrying: Boolean(inlineVoice.error),
-                  startBlockedReason: avatarStartBlockedReason,
-                  start: startInlineVoice,
-                  stop: inlineVoice.stop,
-                }
-              : undefined
-          }
-        />
       </main>
 
-      {!rightIsCollapsed && drawerInspector ? (
+      {inspectorDrawerOpen && view === "chat" ? (
         <button
           type="button"
           className="drawer-backdrop inspector-backdrop"
@@ -3282,72 +3547,82 @@ export function ChatApp() {
       ) : null}
       <div
         className="inspector-slot"
-        inert={mobileSidebarOpen || deletionPanelOpen ? true : undefined}
-        aria-hidden={mobileSidebarOpen || deletionPanelOpen ? true : undefined}
+        inert={sidebarDrawerOpen || deletionPanelOpen ? true : undefined}
+        aria-hidden={sidebarDrawerOpen || deletionPanelOpen ? true : undefined}
       >
-        <ConversationInspector
-          key={activeId ?? "new-conversation"}
-          sessionId={activeId}
-          sessionToolConsent={activeToolConsent}
-          consentVerification={currentConsentView}
-          onToolConsentUpdated={onToolConsentUpdated}
-          onToolConsentSnapshot={onToolConsentSnapshot}
-          refreshKey={inspectorVersion}
-          memoryTarget={memoryTarget?.sessionId === activeId ? memoryTarget : undefined}
-          models={models}
-          agents={agents}
-          selectedModel={selectedModel}
-          onModelChange={changeModel}
-          params={params}
-          onParamsChange={setParams}
-          systemPrompt={systemPrompt}
-          onSystemPromptChange={(value) => {
-            systemPromptMutationGenerationRef.current += 1;
-            setSystemPrompt(value);
-          }}
-          onSystemPromptDraftChange={() => {
-            systemPromptMutationGenerationRef.current += 1;
-          }}
-          draftDefaults={draftDefaults}
-          onDraftDefaultsChange={setDraftDefaults}
-          onSessionUpdated={(updated) => {
-            if (updated.id !== sessionIdRef.current) return;
-            invalidateConsentVerification();
-            // Generic settings responses cannot write consent. In particular,
-            // an older PATCH must not restore a grant revoked while it ran.
-            sessionListGenerationRef.current += 1;
-            setSessions((current) =>
-              current.map((session) => (session.id === updated.id ? { ...updated, toolConsent: session.toolConsent } : session)),
-            );
-            if (updated.model && updated.model !== selectedModel) {
-              modelMutationGenerationsRef.current.set(
-                updated.id,
-                (modelMutationGenerationsRef.current.get(updated.id) ?? 0) + 1,
-              );
-            }
-            persistedModelsRef.current.set(updated.id, updated.model);
-            if ((updated.systemPrompt ?? "") !== systemPrompt) {
+        {view === "chat" ? (
+          <ConversationInspector
+            key={activeId ?? "new-conversation"}
+            sessionId={activeId}
+            sessionToolConsent={activeToolConsent}
+            consentVerification={currentConsentView}
+            onToolConsentUpdated={onToolConsentUpdated}
+            onToolConsentSnapshot={onToolConsentSnapshot}
+            refreshKey={inspectorVersion}
+            memoryTarget={memoryTarget?.sessionId === activeId ? memoryTarget : undefined}
+            models={models}
+            agents={agents}
+            selectedModel={selectedModel}
+            onModelChange={changeModel}
+            params={params}
+            onParamsChange={setParams}
+            systemPrompt={systemPrompt}
+            onSystemPromptChange={(value) => {
               systemPromptMutationGenerationRef.current += 1;
-            }
-            setSystemPrompt(updated.systemPrompt ?? "");
-            if (updated.model) setSelectedModel(updated.model);
-          }}
-          onStartImagePrompt={() => {
-            composerPrefillIdRef.current += 1;
-            setComposerPrefill({
-              id: composerPrefillIdRef.current,
-              text: "/generate_image ",
-            });
-          }}
-          onOpenLibrary={libraryEnabled ? openLibrary : undefined}
-          libraryEnabled={libraryEnabled}
-          attachmentCapabilities={attachmentCapabilities}
-          voiceSettings={voiceSettingsProps}
-          voiceLocked={voiceSelectionLocked}
-          collapsed={rightIsCollapsed}
-          onToggle={toggleRightPanel}
-        />
+              setSystemPrompt(value);
+            }}
+            onSystemPromptDraftChange={() => {
+              systemPromptMutationGenerationRef.current += 1;
+            }}
+            draftDefaults={draftDefaults}
+            onDraftDefaultsChange={setDraftDefaults}
+            onSessionUpdated={(updated) => {
+              if (updated.id !== sessionIdRef.current) return;
+              invalidateConsentVerification();
+              // Generic settings responses cannot write consent. In particular,
+              // an older PATCH must not restore a grant revoked while it ran.
+              sessionListGenerationRef.current += 1;
+              setSessions((current) =>
+                current.map((session) => (session.id === updated.id ? { ...updated, toolConsent: session.toolConsent } : session)),
+              );
+              if (updated.model && updated.model !== selectedModel) {
+                modelMutationGenerationsRef.current.set(
+                  updated.id,
+                  (modelMutationGenerationsRef.current.get(updated.id) ?? 0) + 1,
+                );
+              }
+              persistedModelsRef.current.set(updated.id, updated.model);
+              if ((updated.systemPrompt ?? "") !== systemPrompt) {
+                systemPromptMutationGenerationRef.current += 1;
+              }
+              setSystemPrompt(updated.systemPrompt ?? "");
+              if (updated.model) setSelectedModel(updated.model);
+            }}
+            onStartImagePrompt={startImagePrompt}
+            onOpenLibrary={libraryEnabled ? openLibraryPage : undefined}
+            libraryEnabled={libraryEnabled}
+            attachmentCapabilities={attachmentCapabilities}
+            voiceSettings={voiceSettingsProps}
+            voiceLocked={voiceSelectionLocked}
+            collapsed={!inspectorShown}
+            onToggle={toggleInspector}
+            openerRef={inspectorOpenerRef}
+            focusRequest={inspectorFocusRequest}
+          />
+        ) : null}
       </div>
+
+      {liveAvatarOnStage && view !== "chat" ? (
+        <div className="live-mini">
+          <LiveAvatarStage
+            variant="mini"
+            avatar={inlineVoice.avatar}
+            active={inlineVoice.active}
+            onEnd={inlineVoice.stop}
+            onReturn={() => navigate("chat")}
+          />
+        </div>
+      ) : null}
 
       <ConversationDeletionPanel
         open={deletionPanelOpen}
@@ -3356,38 +3631,6 @@ export function ChatApp() {
         onClose={() => setDeletionView(null)}
         onDiscardSession={(id) => requestSessionDeletion(id, false)}
       />
-      {settingsOpen && (
-        <SettingsPanel onClose={closeSettings} />
-      )}
-      {studioOpen && (
-        <StudioPanel
-          models={models}
-          agents={agents}
-          runModel={selectedModel}
-          customToolsEnabled={customToolsEnabled}
-          onAgentsChanged={refreshAgents}
-          onRun={openWorkflowRun}
-          onClose={closeStudio}
-        />
-      )}
-      {libraryOpen && libraryEnabled && (
-        <LibraryPanel
-          onClose={closeLibrary}
-          onEditImage={
-            imageEditingAvailable && activeId
-              ? (doc) => {
-                  closeLibrary();
-                  setImageEditTarget({
-                    sessionId: activeId,
-                    source: { kind: "library", id: doc.id },
-                    label: doc.filename,
-                  });
-                }
-              : undefined
-          }
-          editImageScope={activeLibraryScope}
-        />
-      )}
       {imageEditTarget && imageOptions?.editingEnabled ? (
         <ImageEditDialog
           sessionId={imageEditTarget.sessionId}
@@ -3398,15 +3641,6 @@ export function ChatApp() {
           onEdited={handleImageEdited}
         />
       ) : null}
-      {photoAvatarsOpen && photoAvatarsEnabled && owner.key !== null && (
-        // Keyed by owner so an account switch never shows another owner's avatars.
-        <PhotoAvatarsPanel
-          key={owner.key}
-          onClose={closePhotoAvatarGallery}
-          onUse={usePhotoAvatarInVoice}
-          useDisabledReason={avatarVoiceUseDisabledReason}
-        />
-      )}
       {citationTarget && libraryEnabled && (
         <MediaPlayer
           doc={citationTarget.doc}
