@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { LiveAvatarView } from "@/lib/voiceLive";
@@ -23,6 +23,8 @@ function view(overrides: Partial<LiveAvatarView> = {}): LiveAvatarView {
     sessionEndsAt: null,
     playbackBlocked: false,
     resume: vi.fn(),
+    micPaused: false,
+    interrupt: vi.fn(),
     ...overrides,
   };
 }
@@ -98,5 +100,73 @@ describe("LiveAvatarStage", () => {
     expect(avatar.resume).toHaveBeenCalledTimes(1);
     rerender(<LiveAvatarStage avatar={view({ element: null, unsupported: true })} active onEnd={vi.fn()} />);
     expect(screen.getByRole("status")).toHaveTextContent("voice only");
+  });
+
+  it("offers Interrupt only while the avatar talks and says when the microphone is paused", async () => {
+    const interrupt = vi.fn();
+    const stage = (overrides: Partial<LiveAvatarView>) => (
+      <LiveAvatarStage avatar={view({ interrupt, ...overrides })} active onEnd={vi.fn()} />
+    );
+    const { rerender } = render(stage({ speaking: true }));
+    expect(screen.getByText("Speaking")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Interrupt" }));
+    expect(interrupt).toHaveBeenCalledTimes(1);
+
+    // The end of the speech is still playing after the server reports idle.
+    rerender(stage({ speaking: false, micPaused: true }));
+    expect(screen.getByText("Speaking · mic paused")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Interrupt" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Live avatar" })).toHaveAttribute("data-state", "speaking");
+    expect(screen.getByText("AI-generated")).toBeInTheDocument();
+
+    rerender(stage({}));
+    expect(screen.getByText("Listening")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Interrupt" })).toBeNull();
+    rerender(stage({ started: false, speaking: true }));
+    expect(screen.queryByRole("button", { name: "Interrupt" })).toBeNull();
+  });
+
+  it("offers Interrupt in the mini player as well", async () => {
+    const interrupt = vi.fn();
+    render(
+      <LiveAvatarStage
+        variant="mini"
+        avatar={view({ speaking: true, interrupt })}
+        active
+        onEnd={vi.fn()}
+        onReturn={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Interrupt" }));
+    expect(interrupt).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps keyboard focus among the stage controls after Interrupt, never on End session", async () => {
+    const user = userEvent.setup();
+    const interrupt = vi.fn();
+    const { rerender } = render(
+      <LiveAvatarStage avatar={view({ speaking: true, interrupt })} active onEnd={vi.fn()} onFitChange={vi.fn()} />,
+    );
+    screen.getByRole("button", { name: "Interrupt" }).focus();
+    await user.keyboard("{Enter}");
+    expect(interrupt).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Fill frame" })).toHaveFocus();
+
+    // Control: with End session as the only other control, focus never lands on it.
+    rerender(<LiveAvatarStage avatar={view({ speaking: true, interrupt })} active onEnd={vi.fn()} />);
+    screen.getByRole("button", { name: "Interrupt" }).focus();
+    await user.keyboard("{Enter}");
+    expect(interrupt).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("button", { name: "End session" })).not.toHaveFocus();
+  });
+
+  it("moves no focus for an Interrupt that didn't have it", () => {
+    const interrupt = vi.fn();
+    render(
+      <LiveAvatarStage avatar={view({ speaking: true, interrupt })} active onEnd={vi.fn()} onFitChange={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Interrupt" }));
+    expect(interrupt).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Fill frame" })).not.toHaveFocus();
   });
 });

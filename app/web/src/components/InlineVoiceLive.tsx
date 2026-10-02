@@ -542,6 +542,9 @@ export function useInlineVoiceLive({
     live.speaking,
     live.turns,
   );
+  // The stage's state badge steps aside on small frames, so the call bar also
+  // says when the microphone is paused for the avatar's speech.
+  const micPaused = live.active && Boolean(live.avatar?.micPaused);
   const agentLabel = agent
     ? agents.find((candidate) => candidate.name === agent)?.displayName ?? agent
     : "";
@@ -622,7 +625,11 @@ export function useInlineVoiceLive({
     active: live.active,
     saving,
     phase,
-    statusLabel: saving ? "Saving voice transcript" : labelFor(phase),
+    statusLabel: saving
+      ? "Saving voice transcript"
+      : micPaused
+        ? "Speaking · mic paused"
+        : labelFor(phase),
     agentLabel,
     error: connectionError,
     notice: live.notice,
