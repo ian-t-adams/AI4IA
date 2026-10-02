@@ -115,6 +115,7 @@ export function Composer({
     saving: boolean;
     saveBlocked: boolean;
     retrying: boolean;
+    startBlockedReason?: string | null;
     start: () => void;
     stop: () => void;
   };
@@ -771,7 +772,7 @@ export function Composer({
             onClick={voiceLive.active ? voiceLive.stop : voiceLive.start}
             disabled={
               !voiceLive.supported ||
-              (!voiceLive.active && (voiceLive.saving || voiceLive.saveBlocked))
+              (!voiceLive.active && (voiceLive.saving || voiceLive.saveBlocked || Boolean(voiceLive.startBlockedReason)))
             }
             aria-pressed={voiceLive.active}
             aria-busy={
@@ -797,9 +798,10 @@ export function Composer({
                 ? "Live voice isn't supported in this browser"
                 : voiceLive.active
                   ? "Stop Voice Live"
-                  : voiceLive.saveBlocked
-                    ? "Save the previous Voice Live transcript before starting again"
-                    : "Start Voice Live in this chat"
+                  : voiceLive.startBlockedReason
+                    ?? (voiceLive.saveBlocked
+                      ? "Save the previous Voice Live transcript before starting again"
+                      : "Start Voice Live in this chat")
             }
             style={{
               alignSelf: "stretch",
@@ -813,7 +815,7 @@ export function Composer({
               lineHeight: 1,
               cursor:
                 !voiceLive.supported ||
-                (!voiceLive.active && (voiceLive.saving || voiceLive.saveBlocked))
+                (!voiceLive.active && (voiceLive.saving || voiceLive.saveBlocked || Boolean(voiceLive.startBlockedReason)))
                   ? "not-allowed"
                   : "pointer",
               opacity: voiceLive.supported ? 1 : 0.45,

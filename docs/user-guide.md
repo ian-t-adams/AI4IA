@@ -295,17 +295,35 @@ be deleted from the gallery; ask an operator to remove it.
 
 ### Talking with your avatar
 
-With Azure Speech selected in **Setup > Voice**, the **Avatar** list offers your
-ready avatars. Pick one, then start Voice Live: the avatar appears above the
-composer and speaks the replies, labelled **AI-generated** for the whole session.
-Choose **None (voice only)** to go back to audio.
+In **Photo avatars**, choose **Use in Voice Live** on a ready avatar. This selects
+Azure Speech and returns to the chat, where your avatar has a **Start talking**
+button above the composer. Selection alone does not open the microphone or start
+billing. Choose **Start talking** (or the chat microphone) to speak with it using
+the current conversation's instructions and agent. Its live video speaks the
+replies, labelled **AI-generated** for the whole session.
+
+Speak into your microphone to talk with the live avatar. **Send** and Enter still
+use the conversation's separate text-chat model; those typed replies are not
+spoken by the avatar. Typed history is included when the next voice session
+connects. The voice status bar explains this distinction while connected.
+
+**Choose avatar** reopens the gallery; **Voice only** removes the avatar without
+changing the Speech voice. You can also use **Setup > Voice > Choose avatar**, or
+pick a ready avatar from the **Avatar** list with Azure Speech selected.
+Unavailable avatars and failed availability checks are explained explicitly;
+they never silently start an audio-only session.
 
 Avatar time is billed per second while the session is connected, even when nobody
 is talking, so a session ends on its own after a stretch of silence (a countdown
 warns you first) or at its time limit. **End session** stops it at once. Speaking
-over the avatar interrupts it. If your browser can't play the avatar video, the
-list is disabled and Voice Live stays voice only. Headphones help the avatar not
-hear itself.
+over the avatar interrupts it. If your browser can't play the avatar video, live
+avatar use is disabled with an explanation. Choose **Voice only** to continue
+without video. Headphones help the avatar not hear itself.
+
+If the connection stops responding, the client stops its microphone rather than
+queueing increasingly stale audio. A keepalive timeout is a connection failure,
+not a successful avatar response. Start a new session only after the connection
+has recovered; accepted audio is not replayed automatically.
 
 ## Memory
 
@@ -472,7 +490,7 @@ still apply and modality coverage remains incomplete.
 | Voice settings seem unchanged | Stop and reconnect; settings affect the next connection |
 | Speech is not offered | The operator's provider allowlist and Speech feature gate |
 | Photo avatars are missing | They are off by default and need Microsoft's Limited Access approval |
-| No **Avatar** list in voice settings | Azure Speech must be the provider, and you need at least one ready avatar that isn't re-verifying |
+| Can't use an avatar | Choose **Use in Voice Live** in the gallery. The avatar must be ready and verified, Azure Speech Voice Live must be available, and the browser must support avatar video. End an active session or finish saving its transcript before choosing another avatar |
 | An avatar session ended by itself | It ends after a stretch of silence or at its time limit; start Voice Live again |
 | Search or another tool fails | Its visible error/approval state; an enabled gate does not prove upstream entitlement |
 | An admin panel is unavailable | Resource wiring, API identity permissions, and source freshness |
