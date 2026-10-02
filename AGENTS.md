@@ -84,8 +84,12 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    Copy each operation's options for every batch attempt: the Cosmos SDK consumes
    conditional options during serialization, so reusing them drops child CAS.
    Never expire unresolved Blob upload intents or infer completion from an empty
-   scan. New deletion work is default-off and owner-resumed, never an automatic
-   sweep; existing-record enrollment and rollout need separate approval. See
+   scan. New deletion work is default-off and owner-initiated: an owner's Delete
+   runs at most six bounded passes for that conversation in that page, never an
+   automatic sweep or a resumption after reload. An unmarked pre-rollout record
+   takes its owner's 204 best-effort delete, never enrollment; any marker fails
+   closed and v1 never falls back. Existing-record enrollment and rollout need
+   separate approval. See
    `docs/runbooks/conversation-deletion.md` before changing this contract.
 5. **Tools re-check at execution time.** Tool execution must re-validate scopes,
    approvals, target hosts, and SSRF/public-HTTPS rules when a call runs, not only

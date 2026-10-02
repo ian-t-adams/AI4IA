@@ -507,19 +507,20 @@ class CosmosSessionRepository(CosmosDeletionMixin):
     async def delete_session(self, user_id: str, session_id: str) -> None:
         """Legacy best-effort cascade, available only for unversioned records.
 
-        This does NOT prove completeness against late writers. The opt-in v1
-        protocol uses begin_deletion and same-partition transactional fences;
-        a parent-only CAS plus delayed scans would not close this legacy race.
-        Enrollment of old records requires separately approved migration.
+        Records created before resumable deletion was enabled have no protocol
+        marker. Their owner can delete them this way whether or not the flag is
+        on (at the owner's request, 2026-10-02); they are never enrolled. This
+        does NOT prove completeness against late writers. The v1 protocol uses
+        begin_deletion and same-partition transactional fences; a parent-only
+        CAS plus delayed scans would not close this legacy race.
         """
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
         raw = await self._read_session_raw(user_id, session_id)
         if "deletionProtocol" in raw or "kind" in raw:
-            # Pausing the feature must never erase retained coordination state.
+            # Pausing the feature must never erase retained coordination state,
+            # and a v1 record never falls back to this unverified path.
             raise DeletionDisabledError()
-        if self._deletion_enabled:
-            raise DeletionMigrationRequiredError()
         await self._owned_session(user_id, session_id)
         # Delete child messages first (partition = sessionId).
         query = "SELECT c.id FROM c WHERE c.sessionId = @sid"

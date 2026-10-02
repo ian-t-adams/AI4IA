@@ -229,8 +229,8 @@ class InMemorySessionRepository:
             session = await self._owned_session(user_id, session_id)
             if session.deletionProtocol == 1:
                 raise DeletionDisabledError()
-            if self._deletion_enabled:
-                raise DeletionMigrationRequiredError()
+            # An unversioned (pre-rollout) record takes the legacy cascade even
+            # while resumable deletion is enabled; it is never enrolled.
             self._sessions.pop(session_id, None)
             self._messages.pop(session_id, None)
             self._documents.pop(session_id, None)

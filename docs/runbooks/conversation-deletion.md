@@ -32,9 +32,15 @@ records, migrate data or start a background reconciler.
 
 With the flag disabled, unversioned conversations retain the existing 204
 best-effort delete behavior. That legacy cascade is **not** verified against
-concurrent late writers. When the flag is enabled, unversioned records return
-409 `migration_required`, without starting cleanup. They are never silently
-enrolled or routed to legacy deletion under the new contract.
+concurrent late writers. When the flag is enabled, an unversioned (pre-rollout)
+record is still never enrolled in the protocol: at the owner's request
+(2026-10-02), its owner's `DELETE` takes that same 204 best-effort cascade
+instead of being refused with 409 `migration_required`. Such a record has no
+generation or fences, so a write racing the delete can leave an orphaned child
+record that no longer appears anywhere, and no deletion status is retained for
+it. Only a record with neither a `kind` nor a `deletionProtocol` takes this path:
+any marker, including a malformed or unknown one, fails closed with 503
+`deletion_unavailable`, and a v1 record never falls back to it.
 
 Only newly created conversations get protocol version 1, a unique generation,
 and typed fences. Existing canonical partition keys remain unchanged:
@@ -254,6 +260,10 @@ Before any pre-existing-record cleanup, the operator must still:
    No legacy enrollment implementation is provided here; the existing rollout
    approval scope remains `new_sessions_only`.
 
+An owner's 204 best-effort delete of their own unversioned conversation (see
+[Default-off and new conversations only](#default-off-and-new-conversations-only))
+is neither enrollment nor migration, and it doesn't satisfy any step above.
+
 The source assessment removes a missing dry-run capability. It does not authorize
 live collection, activation, existing-record migration, or closure of #435.
 
@@ -367,25 +377,41 @@ mechanism or stronger storage fencing needs a separate design and live approval.
 
 | Operation | Contract |
 |---|---|
-| `DELETE /api/sessions/{id}` | Enabled v1: persist intent and return 202/pending; repeat requests return retained status. Already verified can return 200. Disabled legacy: 204 best effort. |
+| `DELETE /api/sessions/{id}` | Enabled v1: persist intent and return 202/pending; repeat requests return retained status. Already verified can return 200. Unversioned, with the flag on or off: 204 best effort, with no retained status. |
 | `GET /api/sessions/deletions` | Owner-only status pages; `hasMore` and `nextCursor` identify additional pages. No cleanup side effects. |
 | `GET /api/sessions/initializations` | Read-only owner recovery observations for interrupted creation, with opaque pagination. Not evidence of completion. |
 | `GET /api/sessions/{id}/deletion` | Owner-only last recorded status, including unresolved uploads. Read-only. |
 | `POST /api/sessions/{id}/deletion/reconcile` | Explicitly resume one bounded pass; 202 for pending/retryable work, 200 for scoped verified cleanup. |
 
 The sidebar's deletion status surface can be reopened after a reload. Refresh
-reads status; **Resume cleanup** explicitly requests work. Nothing polls a
-destructive endpoint, and there is no autonomous recovery worker in this slice.
-After a crash, the durable record is still discoverable; the owner resumes it.
+reads status; **Resume cleanup** explicitly requests one pass. Nothing polls a
+destructive endpoint on a timer, and there is no autonomous recovery worker in
+this slice. After a crash, the durable record is still discoverable; the owner
+resumes it.
+
+The owner's own **Delete** continues into cleanup in the same page. When the API
+accepts a v1 deletion that isn't verified yet, the client requests at most six
+reconcile passes for that one conversation, one at a time. It stops at verified
+cleanup; at a recorded retry reason, because something has to change first; at a
+pass that made no progress (its attempt count didn't advance, as when another
+caller holds the lease); or at a lost or malformed response, which it reports
+instead of retrying. It never runs for another conversation, and a reload or
+sign-out ends it: nothing resumes it later. The notice then reads **Conversation
+deleted.** for verified cleanup or a 204 (best effort, not verified), or says
+cleanup didn't finish and offers **Finish cleanup**, which runs the same bounded
+passes only when the owner chooses it, and **View deletion status**. Discarding
+an incomplete creation from the status panel doesn't start passes.
 
 The web app asks for deletion on the conversation's sidebar row rather than in a
 native browser dialog, which a browser can suppress silently. An outcome that is
-not an accepted status stays on that row and the conversation stays listed:
-`migration_required` holds the row's delete action for the rest of the page
-session, `deletion_disabled` reports the pause, and `deletion_unavailable` or a
-lost response offers **Try again**. Try again repeats the same owner `DELETE`, so
-it returns the retained status instead of starting a second deletion. The client
-never retries by itself and never treats a refusal as removal.
+not an accepted status stays on that row and the conversation stays listed: a
+404 holds the row's delete action for the rest of the page session,
+`deletion_disabled` reports the pause, and `deletion_unavailable`, a lost
+response, or `migration_required` from an API that predates the owner's
+best-effort delete of unversioned conversations offers **Try again**. Try again
+repeats the same owner `DELETE`, so it returns the retained status instead of
+starting a second deletion. The client never retries a `DELETE` by itself and
+never treats a refusal as removal.
 
 Each pass processes at most 25 records per child surface and 25 Blob objects.
 CAS loops have three attempts; a pass has a 20-second execution budget, plus at
@@ -440,7 +466,9 @@ observed unresolved intent. Cleanup failure preserves any earlier turn failure
 and prevents successful command/release evidence without changing rollback
 policy. The shared synthetic fixture is checked against actual API responses;
 offline success authorizes neither production activation nor existing-record
-enrollment. Enabled legacy records still return 409 `migration_required`.
+enrollment. With the flag enabled, an unversioned record's owner `DELETE` now
+returns that 204 best-effort result; canary conversations are newly created v1
+records, so their strict verification is unchanged.
 
 ## Rollback and remaining acceptance
 

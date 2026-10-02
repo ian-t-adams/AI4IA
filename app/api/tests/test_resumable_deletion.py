@@ -561,21 +561,56 @@ async def test_bad_child_owner_blocks_cleanup_without_deleting_the_row():
     await verified(ConversationDeletionService(state.repo(), None), "u1", "s1")
 
 
-async def test_legacy_requires_migration_when_enabled_and_v1_never_falls_back():
+async def test_legacy_is_never_enrolled_but_its_owner_can_delete_it_and_v1_never_falls_back():
     state = CosmosState()
     legacy = state.repo(enabled=False)
     await legacy.create_session(Session(id="legacy", userId="u1"))
+    await legacy.add_message("u1", message("legacy", item_id="m1"))
+    await legacy.add_document("u1", Document(
+        id="d1", sessionId="legacy", userId="u1", filename="a.txt", text="a",
+    ))
+    enabled = state.repo()
+    # Never enrolled: the verified protocol still refuses an unversioned record.
     with pytest.raises(DeletionMigrationRequiredError):
-        await state.repo().begin_deletion("u1", "legacy")
-    with pytest.raises(DeletionMigrationRequiredError):
-        await state.repo().delete_session("u1", "legacy")
-    await legacy.delete_session("u1", "legacy")
-    await state.repo().create_session(Session(id="v1", userId="u1"))
-    with pytest.raises(DeletionDisabledError):
-        await legacy.delete_session("u1", "v1")
-    await state.repo().begin_deletion("u1", "v1")
+        await enabled.begin_deletion("u1", "legacy")
+    with pytest.raises(SessionNotFoundError):
+        await enabled.delete_session("u2", "legacy")
+    assert ("u1", "legacy") in state.sessions.items
+    # Its owner's delete takes the legacy best-effort cascade, flag on.
+    await enabled.delete_session("u1", "legacy")
+    with pytest.raises(SessionNotFoundError):
+        await enabled.get_session("u1", "legacy")
+    assert not [key for key in state.messages.items if key[0] == "legacy"]
+    assert not [key for key in state.documents.items if key[0] == "legacy"]
+    with pytest.raises(SessionNotFoundError):
+        await enabled.get_deletion_status("u1", "legacy")
+    # A v1 conversation never falls back to it, whether or not the flag is on.
+    await enabled.create_session(Session(id="v1", userId="u1"))
+    for repository in (legacy, enabled):
+        with pytest.raises(DeletionDisabledError):
+            await repository.delete_session("u1", "v1")
+    await enabled.begin_deletion("u1", "v1")
     with pytest.raises(SessionNotFoundError):
         await legacy.get_session("u1", "v1")
+
+
+@pytest.mark.parametrize("marker", [
+    {"deletionProtocol": 2}, {"deletionProtocol": "1"}, {"deletionProtocol": None},
+    {"kind": "session_v2"}, {"kind": None},
+])
+async def test_ambiguous_protocol_metadata_never_takes_the_legacy_delete(marker):
+    state = CosmosState()
+    await state.repo(enabled=False).create_session(Session(id="s1", userId="u1"))
+    raw = copy.deepcopy(state.sessions.items[("u1", "s1")])
+    state.sessions._put(raw | marker)
+    before = state.snapshot()
+    for enabled in (True, False):
+        with pytest.raises(DeletionDisabledError):
+            await state.repo(enabled=enabled).delete_session("u1", "s1")
+    # The verified protocol refuses it too, so the API can't fall back.
+    with pytest.raises(DeletionIntegrityError):
+        await state.repo().begin_deletion("u1", "s1")
+    assert state.snapshot() == before
 
 
 async def test_status_reads_have_no_cleanup_or_write_side_effects():

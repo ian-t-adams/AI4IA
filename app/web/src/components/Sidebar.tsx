@@ -450,9 +450,9 @@ export function Sidebar({
                               Delete “{title}”?
                             </p>
                             <p id={`${rowKey}-scope`}>
-                              It leaves your chats and its messages are queued for cleanup, which may
-                              stay pending. Backups, library documents, memories and generated media
-                              aren&apos;t erased.
+                              Its messages and attachments are deleted. Your library documents,
+                              memories and generated media are kept, and backups follow their own
+                              retention.
                             </p>
                             <div className="conversation-confirm-actions">
                               <button
