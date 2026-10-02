@@ -512,18 +512,19 @@ deleting canonical data is a different operation.
 
 To delete a conversation, choose the bin icon on its sidebar row and confirm on
 the row. The icon is always shown on the open conversation; on other rows, hover
-over it or tab to it. The conversation leaves your list and its messages are
-queued for cleanup; **Deletion status** in the sidebar shows the last observed
-progress. If the app can't confirm what happened, the row says so and offers
-**Try again**, which checks the same request and won't delete twice. When your
-deployment uses resumable deletion, conversations created before it was turned on
-can't be deleted from the app yet: the row explains this, nothing is removed, and
-an administrator must approve a migration first.
+over it or tab to it. The conversation leaves your list and the app cleans up its
+messages and attachments right away, then tells you when it's done. If cleanup
+doesn't finish, the notice says so and offers **Finish cleanup**; **Deletion
+status** in the sidebar lists unfinished deletions. If the app can't confirm what
+happened, the row says so and offers **Try again**, which checks the same request
+and won't delete twice. Conversations created before resumable deletion was
+turned on are deleted the older, best-effort way.
 
 Conversation deletion is not transactional erasure across all stores: an
-already-authorized concurrent write can leave an orphaned child record. A
-durable cleanup/reconciliation design is still needed; do not treat a successful
-delete response as a physical-erasure guarantee.
+already-authorized concurrent write can leave an orphaned child record, which is
+most likely for those older conversations because they have no write fences.
+Library documents, memories, generated media and backups follow their own
+retention; do not treat a successful delete as a physical-erasure guarantee.
 
 A model's region or data-zone selection concerns inference routing, not where
 your conversation and documents are stored. Global deployments are not
@@ -542,7 +543,7 @@ still apply and modality coverage remains incomplete.
 | A control is missing | Deployment availability and the selected model's capabilities |
 | A document is absent from context | Ready state, access, explicit selection, and the turn's context budget |
 | A memory edit conflicts | Reload the latest record before retrying |
-| A conversation won't delete | Read the message on its sidebar row. An older conversation may need an administrator-approved migration; for an unconfirmed result, choose **Try again** |
+| A conversation won't delete | Read the message on its sidebar row. For an unconfirmed result, choose **Try again**; if cleanup didn't finish, choose **Finish cleanup** or open **Deletion status** |
 | Voice fails before connecting | Microphone permission, sign-in, API URL, and allowed Origin |
 | Voice settings seem unchanged | Stop and reconnect; settings affect the next connection |
 | Speech is not offered | The operator's provider allowlist and Speech feature gate |

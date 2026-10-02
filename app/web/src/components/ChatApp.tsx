@@ -43,7 +43,17 @@ import {
 } from "@/lib/library";
 import { Sidebar } from "./Sidebar";
 import { ConversationDeletionNotice, ConversationDeletionPanel } from "./ConversationDeletionPanel";
-import { deletionFeedbackFor, type DeletionFeedback } from "@/lib/conversationDeletion";
+import {
+  CLEANUP_PASSES,
+  CLEANUP_UNCONFIRMED,
+  acceptedNoticePhase,
+  cleanupProblem,
+  deletionFeedbackFor,
+  isDeletionStatusFor,
+  shouldContinueCleanup,
+  type DeletionFeedback,
+  type DeletionNoticePhase,
+} from "@/lib/conversationDeletion";
 import { useCurrentOwner, type CurrentOwner } from "./MemoryPreferenceProvider";
 import { ConversationInspector } from "./ConversationInspector";
 import { SettingsPage } from "./SettingsPanel";
@@ -201,8 +211,19 @@ export function ChatApp() {
     owner: CurrentOwner; sessionId: string | null;
   } | null>(null);
   const [deletionNotice, setDeletionNotice] = useState<{
-    owner: CurrentOwner; status: DeletionStatus;
+    owner: CurrentOwner; sessionId: string; phase: DeletionNoticePhase;
+    status?: DeletionStatus; problem?: string;
   } | null>(null);
+  const updateDeletionNotice = useCallback(
+    (forOwner: CurrentOwner, id: string, phase: DeletionNoticePhase, status?: DeletionStatus, problem?: string) => {
+      // Only the notice about this conversation changes; a newer deletion's
+      // notice is never overwritten by an older one's cleanup.
+      setDeletionNotice((current) => current?.owner === forOwner && current.sessionId === id
+        ? { owner: forOwner, sessionId: id, phase, status, problem }
+        : current);
+    },
+    [],
+  );
   const [deleting, setDeleting] = useState<{
     owner: CurrentOwner; ids: ReadonlySet<string>;
   } | null>(null);
@@ -223,13 +244,15 @@ export function ChatApp() {
     [],
   );
   const deletionRequestsRef = useRef(new Map<string, symbol>());
+  const cleanupRunsRef = useRef(new Map<string, symbol>());
   const deletionNoticeRequestRef = useRef<symbol | null>(null);
   const deletionPanelOpen = deletionView?.owner === owner;
   useLayoutEffect(() => {
     deletionOwnerRef.current = owner;
     removedSessionIdsRef.current.clear();
     const requests = deletionRequestsRef.current;
-    return () => { requests.clear(); };
+    const cleanups = cleanupRunsRef.current;
+    return () => { requests.clear(); cleanups.clear(); };
   }, [owner]);
   const voiceLiveConfig = useVoiceLiveConfig();
   const libraryConfig = useLibraryConfig();
@@ -1017,7 +1040,9 @@ export function ChatApp() {
     resetConversationView();
   }, [resetConversationView]);
 
-  const applyAcceptedDeletion = useCallback((id: string, status?: DeletionStatus) => {
+  const applyAcceptedDeletion = useCallback((
+    id: string, notice?: { phase: DeletionNoticePhase; status?: DeletionStatus },
+  ) => {
     if (!mountedRef.current || !owner.isCurrent() || deletionOwnerRef.current !== owner) return;
     removedSessionIdsRef.current.add(id);
     sessionListGenerationRef.current += 1;
@@ -1038,7 +1063,7 @@ export function ChatApp() {
       setStreamingSources(null);
       discardDeletedVoiceRef.current(id);
     }
-    if (status) setDeletionNotice({ owner, status });
+    if (notice) setDeletionNotice({ owner, sessionId: id, ...notice });
     updateDeletionFeedback(owner, id, () => null);
   }, [owner, resetConversationView, updateDeletionFeedback]);
 
@@ -1081,8 +1106,14 @@ export function ChatApp() {
         if ((!refreshList && !status) || (status && status.sessionId !== id)) {
           throw new Error("The server did not confirm deletion status for this conversation.");
         }
+        // The owner's own Delete goes on to clean the conversation up (see
+        // continueCleanup); a discard from the status panel doesn't.
+        const continues = refreshList && status !== undefined && status.state !== "cleanup_verified";
         applyAcceptedDeletion(
-          id, deletionNoticeRequestRef.current === request ? status : undefined,
+          id,
+          deletionNoticeRequestRef.current === request
+            ? { status, phase: continues ? "cleaning" : acceptedNoticePhase(status) }
+            : undefined,
         );
         if (!refreshList) return status;
         const refreshGeneration = sessionListGenerationRef.current;
@@ -1116,6 +1147,55 @@ export function ChatApp() {
     [applyAcceptedDeletion, filterRemovedSessions, owner],
   );
 
+  // Bounded cleanup of one conversation its owner just deleted: a few passes of
+  // the existing owner-scoped reconcile, stopping when it's verified, needs
+  // something to change first, makes no progress, or can't be confirmed. It
+  // never runs on its own: only the owner's Delete or Finish cleanup starts it.
+  const continueCleanup = useCallback(async (id: string, from?: DeletionStatus) => {
+    if (cleanupRunsRef.current.has(id) || !owner.isCurrent() || deletionOwnerRef.current !== owner) {
+      return;
+    }
+    const run = Symbol();
+    const generation = signOutGenerationRef.current;
+    cleanupRunsRef.current.set(id, run);
+    const isCurrent = () => mountedRef.current && owner.isCurrent()
+      && deletionOwnerRef.current === owner
+      && signOutGenerationRef.current === generation
+      && cleanupRunsRef.current.get(id) === run;
+    updateDeletionNotice(owner, id, "cleaning", from);
+    let last = from;
+    let failure: string | undefined;
+    let stale = false;
+    try {
+      for (let pass = 0; pass < CLEANUP_PASSES; pass += 1) {
+        const status: unknown = await api.reconcileSessionDeletion(id);
+        if (!isCurrent()) {
+          stale = true;
+          break;
+        }
+        if (!isDeletionStatusFor(status, id)) {
+          failure = CLEANUP_UNCONFIRMED;
+          break;
+        }
+        const progressed = !last || status.attempts > last.attempts;
+        last = status;
+        if (!progressed || !shouldContinueCleanup(status)) break;
+      }
+    } catch {
+      // A lost or refused pass is reported, never retried automatically.
+      stale = !isCurrent();
+      failure = CLEANUP_UNCONFIRMED;
+    }
+    const current = !stale && isCurrent();
+    if (cleanupRunsRef.current.get(id) === run) cleanupRunsRef.current.delete(id);
+    if (!current) return;
+    if (last?.state === "cleanup_verified") {
+      updateDeletionNotice(owner, id, "deleted", last);
+    } else {
+      updateDeletionNotice(owner, id, "incomplete", last, cleanupProblem(last, failure));
+    }
+  }, [owner, updateDeletionNotice]);
+
   const deleteSession = useCallback(async (id: string) => {
     if (deletionRequestsRef.current.has(id) || !owner.isCurrent()) return;
     if (streamingRef.current) {
@@ -1135,8 +1215,9 @@ export function ChatApp() {
     // The sidebar row has already asked; a Try again resumes that same intent.
     const generation = signOutGenerationRef.current;
     updateDeletionFeedback(owner, id, () => null);
+    let accepted: DeletionStatus | undefined;
     try {
-      await requestSessionDeletion(id, true);
+      accepted = await requestSessionDeletion(id, true);
     } catch (reason) {
       if (owner.isCurrent() && deletionOwnerRef.current === owner
         && signOutGenerationRef.current === generation) {
@@ -1145,8 +1226,10 @@ export function ChatApp() {
         const feedback = deletionFeedbackFor(reason);
         updateDeletionFeedback(owner, id, () => feedback);
       }
+      return;
     }
-  }, [owner, requestSessionDeletion, updateDeletionFeedback]);
+    if (accepted && accepted.state !== "cleanup_verified") await continueCleanup(id, accepted);
+  }, [continueCleanup, owner, requestSessionDeletion, updateDeletionFeedback]);
   const dismissDeletionFeedback = useCallback((id: string) => {
     // A refusal that still blocks the row keeps its words as the row's
     // accessible explanation; anything else is simply cleared.
@@ -2210,6 +2293,7 @@ export function ChatApp() {
     }
     signOutGenerationRef.current += 1;
     deletionRequestsRef.current.clear();
+    cleanupRunsRef.current.clear();
     setDeletionView(null);
     setDeletionNotice(null);
     setDeleting(null);
@@ -3287,8 +3371,10 @@ export function ChatApp() {
 
         {deletionNotice?.owner === owner && (
           <ConversationDeletionNotice
-            status={deletionNotice.status}
-            onOpen={() => setDeletionView({ owner, sessionId: deletionNotice.status.sessionId })}
+            phase={deletionNotice.phase}
+            problem={deletionNotice.problem}
+            onFinish={() => void continueCleanup(deletionNotice.sessionId, deletionNotice.status)}
+            onOpen={() => setDeletionView({ owner, sessionId: deletionNotice.sessionId })}
             onDismiss={() => setDeletionNotice(null)}
           />
         )}

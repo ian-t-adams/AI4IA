@@ -1,15 +1,24 @@
 import { describe, expect, it } from "vitest";
 
 import { ApiError } from "./api";
-import { deletionFeedbackFor } from "./conversationDeletion";
+import {
+  CLEANUP_UNCONFIRMED,
+  acceptedNoticePhase,
+  cleanupProblem,
+  deletionFeedbackFor,
+  isDeletionStatusFor,
+  shouldContinueCleanup,
+} from "./conversationDeletion";
+import { PENDING_DELETION, VERIFIED_DELETION } from "./deletionTestFixtures";
 
 describe("deletionFeedbackFor", () => {
-  it("holds a conversation that needs an approved migration, without a retry", () => {
+  it("explains an older server's refusal plainly and lets the owner try again", () => {
     const feedback = deletionFeedbackFor(
       new ApiError(409, "This conversation requires an approved deletion migration.", "migration_required"),
     );
-    expect(feedback).toMatchObject({ kind: "migration_required", retryable: false, blocksRemoval: true });
-    expect(feedback.message).toMatch(/administrator approves its migration\. Nothing was removed\.$/);
+    expect(feedback).toMatchObject({ kind: "migration_required", retryable: true, blocksRemoval: false });
+    expect(feedback.message).toBe("This older conversation couldn't be deleted yet. Nothing was removed.");
+    expect(feedback.message).not.toMatch(/migration|resumable|administrator/i);
   });
 
   it("tells a paused deployment apart from a refusal of this conversation", () => {
@@ -58,3 +67,38 @@ describe("deletionFeedbackFor", () => {
     );
   });
 });
+
+describe("cleanup after an accepted deletion", () => {
+  it("recognizes only a well-formed status for the exact conversation", () => {
+    expect(isDeletionStatusFor({ ...PENDING_DELETION }, PENDING_DELETION.sessionId)).toBe(true);
+    expect(isDeletionStatusFor({ ...PENDING_DELETION }, "another")).toBe(false);
+    expect(isDeletionStatusFor({ ...PENDING_DELETION, state: "done" }, PENDING_DELETION.sessionId)).toBe(false);
+    expect(isDeletionStatusFor({ ...PENDING_DELETION, attempts: "1" }, PENDING_DELETION.sessionId)).toBe(false);
+    for (const value of [undefined, null, "pending", 7]) {
+      expect(isDeletionStatusFor(value, PENDING_DELETION.sessionId)).toBe(false);
+    }
+  });
+
+  it("continues only while more work can run without anything changing first", () => {
+    expect(shouldContinueCleanup(PENDING_DELETION)).toBe(true);
+    expect(shouldContinueCleanup({ ...PENDING_DELETION, retryReason: "uploads_unresolved" })).toBe(false);
+    expect(shouldContinueCleanup({ ...PENDING_DELETION, state: "retryable", retryReason: "cleanup_timeout" })).toBe(false);
+    expect(shouldContinueCleanup(VERIFIED_DELETION)).toBe(false);
+  });
+
+  it("calls a best-effort or verified deletion done, and anything else unfinished", () => {
+    expect(acceptedNoticePhase(undefined)).toBe("deleted");
+    expect(acceptedNoticePhase(VERIFIED_DELETION)).toBe("deleted");
+    expect(acceptedNoticePhase(PENDING_DELETION)).toBe("incomplete");
+    expect(acceptedNoticePhase({ ...PENDING_DELETION, state: "retryable" })).toBe("incomplete");
+  });
+
+  it("explains an unfinished cleanup in plain words", () => {
+    expect(cleanupProblem(PENDING_DELETION)).toBe("There's more to clean up.");
+    expect(cleanupProblem({ ...PENDING_DELETION, state: "retryable", retryReason: "storage_unavailable" }))
+      .toBe("Storage was unavailable.");
+    expect(cleanupProblem(PENDING_DELETION, CLEANUP_UNCONFIRMED)).toBe(CLEANUP_UNCONFIRMED);
+    expect(cleanupProblem(undefined)).toBe("There's more to clean up.");
+  });
+});
+

@@ -73,8 +73,9 @@ describe("SettingsPage", () => {
     const user = userEvent.setup();
     const onOpen = renderPage();
     const data = screen.getByRole("region", { name: "Data & privacy" });
-    expect(data).toHaveTextContent("That alone doesn't mean its stored data has been erased.");
-    expect(data).toHaveTextContent("It is not proof of erasure, there is no automatic cleanup");
+    expect(data).toHaveTextContent("Delete a conversation from its row in the sidebar.");
+    expect(data).toHaveTextContent("cleans up its messages and attachments right away");
+    expect(data).toHaveTextContent("backups follow their own retention");
     expect(data).not.toHaveTextContent(/permanently erased|automatically deleted/i);
 
     await user.click(within(data).getByRole("button", { name: "Deletion status" }));

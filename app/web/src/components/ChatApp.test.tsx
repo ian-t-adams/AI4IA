@@ -22,6 +22,7 @@ import type { LibraryDocument } from "@/lib/library";
 import type { DeletionStatus, Session, ToolCatalogItem, ToolConsentStatus } from "@/lib/types";
 import { ApiError } from "@/lib/api";
 import { PENDING_DELETION, VERIFIED_DELETION } from "@/lib/deletionTestFixtures";
+import { CLEANUP_PASSES } from "@/lib/conversationDeletion";
 import {
   makeChatSession,
   makeInspectorSnapshot,
@@ -603,7 +604,7 @@ describe("ChatApp session state reliability", () => {
     await user.click(await screen.findByRole("button", { name: "Delete Session A" }));
 
     const question = screen.getByRole("group", { name: "Delete “Session A”?" });
-    expect(question).toHaveAccessibleDescription(/queued for cleanup.*may stay pending.*aren't erased/);
+    expect(question).toHaveAccessibleDescription(/messages and attachments are deleted.*backups follow their own retention/);
     await user.click(within(question).getByRole("button", { name: "Cancel" }));
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(mocks.deleteSession).not.toHaveBeenCalled();
@@ -659,61 +660,158 @@ describe("ChatApp session state reliability", () => {
     expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
   });
 
-  it.each(["pending", "retryable", "cleanup_verified"] as const)("presents an accepted %s deletion as status, not failure, with a route to its exact record", async (state) => {
-    const status: DeletionStatus = { ...(state === "cleanup_verified" ? VERIFIED_DELETION : PENDING_DELETION), state, sessionId: "A" };
-    mocks.deleteSession.mockResolvedValue(status);
-    mocks.getSessionDeletion.mockResolvedValue(status);
+  it.each(["pending", "retryable"] as const)("finishes cleaning up right after an accepted %s deletion and says when it's done", async (state) => {
+    mocks.deleteSession.mockResolvedValue({ ...PENDING_DELETION, state, sessionId: "A" });
+    mocks.reconcileSessionDeletion.mockResolvedValue({ ...VERIFIED_DELETION, sessionId: "A" });
     const user = userEvent.setup();
     render(<ChatApp />);
     await user.click(await screen.findByRole("button", { name: "Session A" }));
     await confirmDeletion(user, "Session A");
-    const notice = await screen.findByText(/Conversation removed from chats\./);
+    const notice = await screen.findByText("Conversation deleted.");
     expect(notice).toHaveAttribute("role", "status");
-    expect(notice).toHaveTextContent(state === "cleanup_verified" ? "Cleanup last verified" : state === "retryable" ? "Retry needed" : "Cleanup pending");
+    expect(mocks.reconcileSessionDeletion).toHaveBeenCalledExactlyOnceWith("A");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Finish cleanup" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Session B" })).toBeInTheDocument();
     expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "draft");
     expect(mocks.listSessionDeletions).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the server already verified it", { ...VERIFIED_DELETION, sessionId: "A" }],
+    ["it predates resumable deletion (204)", undefined],
+  ] as const)("says a deletion is done without any cleanup request when %s", async (_label, accepted) => {
+    mocks.deleteSession.mockResolvedValue(accepted);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await confirmDeletion(user, "Session A");
+    expect(await screen.findByText("Conversation deleted.")).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
+    expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
+  });
+
+  it("stops after a bounded number of passes and lets the owner finish the rest", async () => {
+    let attempts = 1;
+    mocks.deleteSession.mockResolvedValue({ ...PENDING_DELETION, sessionId: "A" });
+    mocks.reconcileSessionDeletion.mockImplementation(async (sessionId: string) => {
+      attempts += 1;
+      return { ...PENDING_DELETION, sessionId, attempts };
+    });
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await confirmDeletion(user, "Session A");
+    expect(await screen.findByText(/cleaning up its messages didn't finish/)).toBeInTheDocument();
+    expect(screen.getByText("There's more to clean up.")).toBeInTheDocument();
+    expect(mocks.reconcileSessionDeletion).toHaveBeenCalledTimes(CLEANUP_PASSES);
+    expect(mocks.reconcileSessionDeletion.mock.calls.every(([id]) => id === "A")).toBe(true);
+    mocks.reconcileSessionDeletion.mockResolvedValueOnce({ ...VERIFIED_DELETION, sessionId: "A", attempts: 99 });
+    await user.click(screen.getByRole("button", { name: "Finish cleanup" }));
+    expect(await screen.findByText("Conversation deleted.")).toBeInTheDocument();
+    expect(mocks.reconcileSessionDeletion).toHaveBeenCalledTimes(CLEANUP_PASSES + 1);
+  });
+
+  it.each([
+    ["no progress", (sessionId: string) => Promise.resolve({ ...PENDING_DELETION, sessionId }), "There's more to clean up."],
+    ["a retryable pass", (sessionId: string) => Promise.resolve({
+      ...PENDING_DELETION, sessionId, state: "retryable", retryReason: "storage_unavailable", attempts: 2,
+    }), "Storage was unavailable."],
+    ["an unconfirmed pass", () => Promise.reject(new TypeError("Failed to fetch")), "We couldn't confirm how far it got."],
+    ["a malformed reply", () => Promise.resolve({ state: "cleanup_verified" }), "We couldn't confirm how far it got."],
+  ] as const)("stops after %s without retrying on its own", async (_label, reply, problem) => {
+    mocks.deleteSession.mockResolvedValue({ ...PENDING_DELETION, sessionId: "A" });
+    mocks.reconcileSessionDeletion.mockImplementation(reply);
+    mocks.getSessionDeletion.mockResolvedValue({ ...PENDING_DELETION, sessionId: "A" });
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await confirmDeletion(user, "Session A");
+    expect(await screen.findByText(problem)).toBeInTheDocument();
+    expect(screen.getByText(/cleaning up its messages didn't finish/)).toHaveAttribute("role", "status");
+    expect(mocks.reconcileSessionDeletion).toHaveBeenCalledExactlyOnceWith("A");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // Reading its status never runs cleanup.
     await user.click(screen.getByRole("button", { name: "View deletion status" }));
     await screen.findByRole("heading", { name: "Conversation A" });
     expect(mocks.getSessionDeletion).toHaveBeenCalledExactlyOnceWith("A");
-    expect(mocks.listSessionDeletions).not.toHaveBeenCalled();
-    expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "All deletion requests" }));
-    await screen.findByRole("heading", { name: "Conversation removed/session" });
-    expect(mocks.listSessionDeletions).toHaveBeenCalledTimes(1);
+    expect(mocks.reconcileSessionDeletion).toHaveBeenCalledTimes(1);
   });
 
-  it("explains a conversation that needs an approved migration on its row and holds it", async () => {
+  it("stops cleaning up a deletion once its owner signs out", async () => {
+    const pass = deferredDeletion<DeletionStatus>();
+    mocks.deleteSession.mockResolvedValue({ ...PENDING_DELETION, sessionId: "A" });
+    mocks.reconcileSessionDeletion.mockReturnValueOnce(pass.promise);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await confirmDeletion(user, "Session A");
+    await waitFor(() => expect(mocks.reconcileSessionDeletion).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("Deleting the conversation…")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(mocks.logout).toHaveBeenCalledTimes(1);
+    await act(async () => pass.resolve({ ...PENDING_DELETION, sessionId: "A", attempts: 2 }));
+    expect(mocks.reconcileSessionDeletion).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Conversation deleted|didn't finish/)).toBeNull();
+  });
+
+  it("never lets an older conversation's cleanup replace a newer deletion's notice", async () => {
+    const pass = deferredDeletion<DeletionStatus>();
+    mocks.deleteSession.mockImplementation(async (id: string) => id === "A"
+      ? { ...PENDING_DELETION, sessionId: "A" } : { ...VERIFIED_DELETION, sessionId: id });
+    mocks.reconcileSessionDeletion.mockReturnValueOnce(pass.promise);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await confirmDeletion(user, "Session A");
+    await screen.findByText("Deleting the conversation…");
+    await confirmDeletion(user, "Session B");
+    expect(await screen.findByText("Conversation deleted.")).toBeInTheDocument();
+    await act(async () => pass.resolve({ ...PENDING_DELETION, sessionId: "A" }));
+    expect(screen.getByText("Conversation deleted.")).toBeInTheDocument();
+    expect(screen.queryByText(/didn't finish/)).toBeNull();
+    expect(mocks.reconcileSessionDeletion).toHaveBeenCalledExactlyOnceWith("A");
+  });
+
+  it("lets the owner try again when an older server refuses an older conversation", async () => {
     const detail = "This conversation requires an approved deletion migration; no cleanup was started.";
-    mocks.deleteSession.mockRejectedValue(new ApiError(409, detail, "migration_required"));
+    mocks.deleteSession
+      .mockRejectedValueOnce(new ApiError(409, detail, "migration_required"))
+      .mockResolvedValueOnce(undefined);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await confirmDeletion(user, "Session A");
+    const outcome = await screen.findByRole("alert");
+    expect(outcome).toHaveTextContent("This older conversation couldn't be deleted yet. Nothing was removed.");
+    expect(outcome).not.toHaveTextContent(/migration|resumable|administrator/i);
+    expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "A");
+    expect(screen.getByRole("button", { name: "Delete Session A" })).not.toHaveAttribute("aria-disabled");
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("Conversation deleted.")).toBeInTheDocument();
+    expect(mocks.deleteSession.mock.calls).toEqual([["A"], ["A"]]);
+    expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
+    expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
+  });
+
+  it("holds a conversation the server can't find, with the reason as its description", async () => {
+    mocks.deleteSession.mockRejectedValue(new ApiError(404, "Session not found"));
     const user = userEvent.setup();
     render(<ChatApp />);
     await user.click(await screen.findByRole("button", { name: "Session A" }));
     const reads = mocks.listSessions.mock.calls.length;
     await confirmDeletion(user, "Session A");
     const outcome = await screen.findByRole("alert");
-    expect(outcome).toHaveTextContent(
-      /older than resumable deletion.*administrator approves its migration\. Nothing was removed\./,
-    );
+    expect(outcome).toHaveTextContent(/couldn't be found/);
     const trash = screen.getByRole("button", { name: "Delete Session A" });
     expect(outcome.closest(".conversation-item")).toContainElement(trash);
-    expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "A");
     expect(trash).toHaveAttribute("aria-disabled", "true");
     expect(trash).toHaveAccessibleDescription(outcome.textContent!);
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
     // The row can't ask again, so the refusal can't loop.
     await user.click(trash);
     expect(screen.queryByRole("group", { name: /Delete “Session A”/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "View deletion status" })).not.toBeInTheDocument();
     expect(mocks.deleteSession).toHaveBeenCalledExactlyOnceWith("A");
     expect(mocks.listSessions).toHaveBeenCalledTimes(reads);
-    expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
-    // Dismissing the message keeps the row's explanation and its hold.
     await user.click(screen.getByRole("button", { name: "Dismiss the message about Session A" }));
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(trash).toHaveAccessibleDescription(/older than resumable deletion/);
+    expect(trash).toHaveAccessibleDescription(/couldn't be found/);
     expect(trash).toHaveAttribute("aria-disabled", "true");
   });
 
@@ -779,7 +877,7 @@ describe("ChatApp session state reliability", () => {
       ? inspection.promise : Promise.resolve(makeInspectorSnapshot(id)));
     mocks.listSessions.mockReturnValueOnce(old.promise).mockResolvedValue([{ ...session("B"), title: "Newer Session B" }]);
     await confirmDeletion(user, "Session A");
-    await screen.findByRole("button", { name: "View deletion status" });
+    await screen.findByText("Deleting the conversation…");
     if (newer) {
       await user.click(screen.getByRole("button", { name: "Session B" }));
       await screen.findByText("Newer Session B", { selector: ".chat-header .editable-session-title-text" });
@@ -796,7 +894,7 @@ describe("ChatApp session state reliability", () => {
     expect(screen.queryByRole("button", { name: "Delete Session A" })).not.toBeInTheDocument();
     if (fails && !newer) expect(screen.getByRole("alert")).toHaveTextContent("Deletion refresh failed");
     else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByText(/Conversation removed from chats\./, { selector: '[role="status"]' })).toHaveTextContent("Cleanup pending");
+    expect(await screen.findByText(/cleaning up its messages didn't finish/)).toHaveAttribute("role", "status");
   });
 
   it("does not publish a pending deletion or start its list refresh after sign-out", async () => {
@@ -923,6 +1021,9 @@ describe("ChatApp session state reliability", () => {
     }]));
     if (accepted) {
       expect(screen.queryByText("Late private transcript")).not.toBeInTheDocument();
+      // A discard from the panel says where cleanup stands; it doesn't run it.
+      expect(screen.getByText(/cleaning up its messages didn't finish/)).toHaveAttribute("role", "status");
+      expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
       expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "draft");
     } else {
       expect(await screen.findByText("Late private transcript")).toBeInTheDocument();

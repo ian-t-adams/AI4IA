@@ -15,6 +15,8 @@ from ai4ia_api.library.blob_store import AzureBlobStore, InMemoryBlobStore
 from ai4ia_api.main import create_app
 from ai4ia_api.sessions.deletion_service import ConversationDeletionService
 from ai4ia_api.sessions.deletion_models import FENCE_ID
+from ai4ia_api.sessions.cosmos_repo import CosmosSessionRepository
+from ai4ia_api.sessions.models import Session
 from tests.conftest import make_settings
 from tests.cosmos_deletion_fake import CosmosState
 
@@ -71,19 +73,85 @@ def test_accepted_intent_denies_normal_access_and_status_is_owner_scoped():
         assert client.delete(f"/api/sessions/{sid}").status_code == 200
 
 
-def test_flag_off_keeps_legacy_204_but_enabled_legacy_explicitly_requires_migration():
+@pytest.mark.parametrize("enabled", [False, True])
+def test_owner_deletes_a_pre_rollout_conversation_best_effort_with_or_without_the_flag(
+    enabled, monkeypatch
+):
+    # Owner decision (2026-10-02): a conversation created before resumable
+    # deletion was enabled is deleted with the legacy best-effort cascade on its
+    # owner's request. It is never enrolled and keeps no status record.
     app = create_app(make_settings())
     with TestClient(app) as client:
-        sid = new_session(client)["id"]
-        app.state.settings.session_deletion_enabled = True
-        app.state.session_repo._deletion_enabled = True
-        response = client.delete(f"/api/sessions/{sid}")
-        assert response.status_code == 409 and response.json()["code"] == "migration_required"
-        assert client.get(f"/api/sessions/{sid}").status_code == 200
-        app.state.settings.session_deletion_enabled = False
-        app.state.session_repo._deletion_enabled = False
+        session = new_session(client)
+        sid, uid = session["id"], session["userId"]
+        turn = {"turns": [{"role": "user", "text": "hello"}]}
+        assert client.post(f"/api/sessions/{sid}/voice-turns", json=turn).status_code == 201
+        app.state.settings.session_deletion_enabled = enabled
+        app.state.session_repo._deletion_enabled = enabled
+        purged = []
+
+        async def record_purge(user_id, session_id):
+            purged.append((user_id, session_id))
+            return 0
+
+        monkeypatch.setattr(app.state.inline_attachment_store, "delete_session", record_purge)
+        # Another user can't delete it.
+        other = client.delete(f"/api/sessions/{sid}", headers={"X-Dev-User": "someone-else"})
+        assert other.status_code == 404
+        assert client.get(f"/api/sessions/{sid}").status_code == 200 and purged == []
+
         response = client.delete(f"/api/sessions/{sid}")
         assert response.status_code == 204 and response.content == b""
+        assert purged == [(uid, sid)]
+        for suffix in ("", "/messages", "/documents"):
+            assert client.get(f"/api/sessions/{sid}{suffix}").status_code == 404
+        assert client.get("/api/sessions").json() == []
+        assert sid not in app.state.session_repo._messages
+        # Best effort only: no resumable record claims verified cleanup.
+        assert client.get(f"/api/sessions/{sid}/deletion").status_code == 404
+        assert client.get("/api/sessions/deletions").json()["items"] == []
+        assert client.delete(f"/api/sessions/{sid}").status_code == 404
+
+
+def test_enabled_flag_keeps_new_conversations_on_the_verified_protocol(monkeypatch):
+    # Control for the test above: only the conversation's protocol differs.
+    app = create_app(make_settings(session_deletion_enabled=True))
+    with TestClient(app) as client:
+        sid = new_session(client)["id"]
+        purged = []
+
+        async def record_purge(user_id, session_id):
+            purged.append((user_id, session_id))
+            return 0
+
+        monkeypatch.setattr(app.state.inline_attachment_store, "delete_session", record_purge)
+        response = client.delete(f"/api/sessions/{sid}")
+        assert response.status_code == 202 and response.json()["state"] == "pending"
+        assert purged == []
+        assert client.get(f"/api/sessions/{sid}/deletion").json()["state"] == "pending"
+
+
+@pytest.mark.parametrize("marker", [None, {"deletionProtocol": 2}, {"kind": "session_v2"}])
+def test_cosmos_api_falls_back_to_legacy_delete_only_for_an_unmarked_record(marker):
+    state = CosmosState()
+    for container in (state.sessions, state.messages, state.documents):
+        container.now = datetime.now(timezone.utc)
+    app = create_app(make_settings(session_deletion_enabled=True))
+    with TestClient(app) as client:
+        app.state.session_repo = state.repo()
+        uid = new_session(client)["userId"]
+        doc = CosmosSessionRepository._to_doc(Session(id="older", userId=uid, title="Older"))
+        state.sessions._put(doc | (marker or {}))
+        before = copy.deepcopy(state.sessions.items[(uid, "older")])
+        response = client.delete("/api/sessions/older")
+        if marker is None:
+            assert response.status_code == 204 and response.content == b""
+            assert (uid, "older") not in state.sessions.items
+        else:
+            # Damaged or unknown protocol metadata fails closed: nothing removed.
+            assert response.status_code == 503
+            assert response.json()["code"] == "deletion_unavailable"
+            assert state.sessions.items[(uid, "older")] == before
 
 
 def test_pausing_gate_never_uses_legacy_hard_delete_for_v1():

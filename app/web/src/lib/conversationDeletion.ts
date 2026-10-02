@@ -1,13 +1,16 @@
-// What a failed conversation deletion means for the person who asked for it.
-// The API owns the outcome; this only turns its public error into an
-// explanation and the recovery that is actually safe:
+// What a conversation deletion means for the person who asked for it. The API
+// owns every outcome; this turns its public responses into plain words and the
+// recovery that is actually safe:
 // - `retryable`: offer Try again. It re-sends the same DELETE, which resumes the
 //   existing owner-scoped request (the API returns the current status for a
 //   conversation it already accepted) rather than starting a second one.
 // - `blocksRemoval`: retrying can't succeed in this page session, so the row's
 //   delete action stays unavailable with this explanation.
-// Nothing here implies that a conversation was erased, or that it wasn't.
+// A refusal never implies anything was erased. "Deleted" is said only for a
+// verified status or the API's 204 (its best-effort delete of an older
+// conversation); neither covers backups.
 import { ApiError } from "./api";
+import type { DeletionStatus } from "./types";
 
 export type DeletionFeedbackKind =
   | "migration_required"
@@ -38,12 +41,12 @@ const UNKNOWN: DeletionFeedback = {
 export function deletionFeedbackFor(reason: unknown): DeletionFeedback {
   if (!(reason instanceof ApiError)) return UNKNOWN;
   if (reason.code === "migration_required") {
+    // Only a server that predates deleting older conversations says this.
     return {
       kind: "migration_required",
-      message:
-        "This conversation is older than resumable deletion, so it can't be deleted until an administrator approves its migration. Nothing was removed.",
-      retryable: false,
-      blocksRemoval: true,
+      message: "This older conversation couldn't be deleted yet. Nothing was removed.",
+      retryable: true,
+      blocksRemoval: false,
     };
   }
   if (reason.code === "deletion_disabled") {
@@ -90,4 +93,49 @@ export function deletionFeedbackFor(reason: unknown): DeletionFeedback {
     };
   }
   return UNKNOWN;
+}
+
+// After an accepted deletion, the owner's Delete also asks the server to clean
+// the conversation up: a few bounded passes of the existing owner-scoped
+// reconcile, for that one conversation, in that one page session. Nothing runs
+// it later on its own, after a reload, or for any other conversation.
+export const CLEANUP_PASSES = 6;
+
+export type DeletionNoticePhase = "cleaning" | "deleted" | "incomplete";
+
+export function isDeletionStatusFor(value: unknown, sessionId: string): value is DeletionStatus {
+  return typeof value === "object" && value !== null
+    && "sessionId" in value && value.sessionId === sessionId
+    && "state" in value
+    && (value.state === "pending" || value.state === "retryable" || value.state === "cleanup_verified")
+    && "attempts" in value && typeof value.attempts === "number";
+}
+
+/** Whether another pass can make progress without anything changing first. */
+export function shouldContinueCleanup(status: DeletionStatus): boolean {
+  return status.state === "pending" && status.retryReason === null;
+}
+
+/** What the notice says right after the server accepts a deletion. */
+export function acceptedNoticePhase(status: DeletionStatus | undefined): DeletionNoticePhase {
+  // No status (204) is the best-effort delete of an older conversation.
+  return !status || status.state === "cleanup_verified" ? "deleted" : "incomplete";
+}
+
+const CLEANUP_REASONS: Record<NonNullable<DeletionStatus["retryReason"]>, string> = {
+  storage_unavailable: "Storage was unavailable.",
+  cleanup_timeout: "It ran out of time.",
+  concurrent_change: "Something changed while it ran.",
+  integrity_mismatch:
+    "Its records didn't match, so it stopped safely. Contact your administrator if this keeps happening.",
+  uploads_unresolved: "A file upload to it hasn't finished yet.",
+  artifact_store_required: "File storage isn't set up for it. Contact your administrator.",
+};
+
+export const CLEANUP_UNCONFIRMED = "We couldn't confirm how far it got.";
+
+export function cleanupProblem(status: DeletionStatus | undefined, failure?: string): string {
+  if (failure) return failure;
+  if (status?.retryReason) return CLEANUP_REASONS[status.retryReason];
+  return "There's more to clean up.";
 }

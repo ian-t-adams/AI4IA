@@ -709,9 +709,12 @@ minimal retained coordination records, unresolved-upload recovery limits, and
 single-write-region/no-TTL startup checks. The template creates no approval record
 and merging source starts no reconciler.
 
-The enabled mode refuses unversioned conversations with `migration_required`.
-Only conversations created under the new protocol participate. Owners explicitly
-resume bounded cleanup; opening status or refreshing it never runs cleanup.
+The enabled mode never enrolls unversioned conversations: their owner's delete
+is the existing 204 best-effort cascade, with no retained status, and any
+protocol marker fails closed. Only conversations created under the new protocol
+participate. An owner's Delete runs at most six bounded cleanup passes for that
+conversation in that page; otherwise owners explicitly resume cleanup, and
+opening or refreshing status never runs it.
 Disabling the gate pauses new protocol work but does not remove v1 access/write
 guards, tombstones or fences. Rolling back to binaries that ignore the protocol
 is unsafe once v1 data exists. Existing-record migration, production retention

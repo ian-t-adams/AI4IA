@@ -361,7 +361,7 @@ describe("responsive sidebar", () => {
       const question = screen.getByRole("group", { name: "Delete “Session A”?" });
       expect(trash).toHaveAttribute("aria-expanded", "true");
       expect(question).toHaveAccessibleDescription(
-        /leaves your chats.*queued for cleanup.*may stay pending.*aren't erased/,
+        /messages and attachments are deleted.*library documents, memories and generated media are kept.*backups follow their own retention/,
       );
       // The safe choice has focus; nothing has been requested yet.
       expect(within(question).getByRole("button", { name: "Cancel" })).toHaveFocus();
@@ -438,8 +438,8 @@ describe("responsive sidebar", () => {
 
     it("holds a row whose deletion can't succeed, with the reason as its description", async () => {
       const refusal: DeletionFeedback = {
-        kind: "migration_required",
-        message: "This conversation is older than resumable deletion. Nothing was removed.",
+        kind: "not_found",
+        message: "This conversation couldn't be found. Reload to refresh the list.",
         retryable: false,
         blocksRemoval: true,
       };

@@ -61,7 +61,7 @@ describe("owner-resumed conversation deletion", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Open deletion status" }));
     const resume = await screen.findByRole("button", { name: "Resume cleanup for removed/session" });
-    expect(screen.getByText(/There is no automatic cleanup/)).toBeInTheDocument();
+    expect(screen.getByText(/Opening or refreshing this panel only reads status/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Refresh status" }));
     await waitFor(() => expect(resume).toBeEnabled());
     expect(fetchMock).toHaveBeenCalledTimes(2);

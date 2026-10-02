@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { apiErrorDetail, deleteSession, getSessionDeletion, listSessionDeletions, reconcileSessionDeletion } from "@/lib/api";
+import type { DeletionNoticePhase } from "@/lib/conversationDeletion";
 import type { DeletionPage, DeletionStatus } from "@/lib/types";
 import { useCurrentOwner } from "./MemoryPreferenceProvider";
 import { ModalShell } from "./ModalShell";
@@ -34,19 +35,34 @@ function DeletionProgress({ status }: { status: DeletionStatus }) {
   return <>{status.state === "retryable" ? "Retry needed" : "Cleanup pending"}.</>;
 }
 
-export function ConversationDeletionNotice({ status, onOpen, onDismiss }: {
-  status: DeletionStatus; onOpen: () => void; onDismiss: () => void;
+// After the owner deletes a conversation: one plain line while it's being
+// deleted, then whether it finished. Only an unfinished cleanup offers actions.
+export function ConversationDeletionNotice({ phase, problem, onFinish, onOpen, onDismiss }: {
+  phase: DeletionNoticePhase;
+  problem?: string;
+  onFinish: () => void;
+  onOpen: () => void;
+  onDismiss: () => void;
 }) {
   return (
-    <div className="deletion-notice">
+    <div className="deletion-notice" data-phase={phase}>
       <div className="deletion-notice-text">
-        <p role="status">
-          Conversation removed from chats. <DeletionProgress status={status} />
+        <p role="status" aria-busy={phase === "cleaning" || undefined}>
+          {phase === "cleaning"
+            ? "Deleting the conversation\u2026"
+            : phase === "deleted"
+              ? "Conversation deleted."
+              : "Removed from your chats, but cleaning up its messages didn't finish."}
         </p>
-        <p>Last observed: <Timestamp value={status.updatedAt} />. Open deletion status for current progress.</p>
+        {phase === "incomplete" && problem ? <p>{problem}</p> : null}
       </div>
       <div className="deletion-notice-actions">
-        <button type="button" className="btn btn-sm" onClick={onOpen}>View deletion status</button>
+        {phase === "incomplete" ? (
+          <>
+            <button type="button" className="btn btn-sm" onClick={onFinish}>Finish cleanup</button>
+            <button type="button" className="btn btn-sm" onClick={onOpen}>View deletion status</button>
+          </>
+        ) : null}
         <button type="button" className="btn btn-sm btn-ghost" onClick={onDismiss} aria-label="Dismiss deletion notice">Dismiss</button>
       </div>
     </div>
@@ -303,7 +319,7 @@ export function ConversationDeletionPanel({ open = true, sessionId = null, onSho
   return (
     <ModalShell ariaLabel="Conversation deletion status" title="Deletion status" closeLabel="Close deletion status" onClose={() => { activeRef.current = false; onClose(); }}>
       <p style={mutedStyle}>Deletion requests below are for conversations removed from chats. Status is last observed progress, not proof of physical erasure.</p>
-      <p style={mutedStyle}>There is no automatic cleanup. Resume cleanup requests one bounded pass; opening or refreshing this panel only reads status. Closing it does not undo a request already sent.</p>
+      <p style={mutedStyle}>Deleting a conversation cleans it up right away. For one that didn&apos;t finish, Resume cleanup requests one more bounded pass. Opening or refreshing this panel only reads status, and closing it does not undo a request already sent.</p>
       <details>
         <summary tabIndex={0} style={{ minHeight: 44, padding: "10px 0", cursor: "pointer" }}>What this status covers</summary>
         <p style={mutedStyle}>Verification covers conversation content and inline originals only. It does not cover backups, provider sandboxes, library documents, memories, or generated and processed media. Minimal deletion records and write fences are retained indefinitely.</p>

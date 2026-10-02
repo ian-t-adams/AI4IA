@@ -40,6 +40,7 @@ from ..sessions.repository import (
 )
 from ..sessions.deletion_models import (
     DeletionDisabledError,
+    DeletionMigrationRequiredError,
     DeletionPage,
     DeletionStatus,
     InitializationPage,
@@ -557,13 +558,23 @@ async def delete_session(
     response: Response,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> DeletionStatus | Response:
+    repo = _repo(request)
     if request.app.state.settings.session_deletion_enabled:
-        result = await _repo(request).begin_deletion(user.internal_user_id, session_id)
-        response.headers["Cache-Control"] = "no-store"
-        if result.state == "cleanup_verified":
-            response.status_code = status.HTTP_200_OK
-        return result
-    await _repo(request).delete_session(user.internal_user_id, session_id)
+        try:
+            result = await repo.begin_deletion(user.internal_user_id, session_id)
+        except DeletionMigrationRequiredError:
+            # Created before resumable deletion was enabled, so it carries no
+            # protocol marker. At the owner's request (2026-10-02), its owner can
+            # still delete it with the best-effort cascade every conversation had
+            # before the rollout. It is never enrolled, keeps no status record,
+            # and is not verified against a concurrent late writer.
+            pass
+        else:
+            response.headers["Cache-Control"] = "no-store"
+            if result.state == "cleanup_verified":
+                response.status_code = status.HTTP_200_OK
+            return result
+    await repo.delete_session(user.internal_user_id, session_id)
     # Best-effort purge of any inline-attachment original bytes retained for this
     # session (inline code-interpreter feature). The store no-ops when nothing was
     # retained and never raises, so it can't break the delete.
