@@ -799,6 +799,39 @@ def test_live_speech_echo_reference_opt_in_owns_the_version_flag_and_echo_block(
         c.__exit__(None, None, None)
 
 
+def _speech_managed_model_ids() -> list[str]:
+    provider = load_voice_provider_catalog().get("speech_voice_live")
+    assert isinstance(provider, SpeechVoiceProvider)
+    return [model.id for model in provider.managedModels]
+
+
+@pytest.mark.parametrize("model_id", _speech_managed_model_ids())
+def test_live_echo_reference_leaves_the_pinned_version_only_when_a_session_asks(model_id):
+    urls: dict[bool, str] = {}
+    for opted_in in (False, True):
+        c = _speech_client()
+        try:
+            connector = ScriptedRealtimeConnector(
+                [UpstreamMessage("close", close_code=1000, source_event="CLOSE")]
+            )
+            c.app.state.realtime_connector = connector
+            with c.websocket_connect(
+                f"/api/voice/live?provider=speech_voice_live&model={model_id}"
+                + ("&echoRef=client" if opted_in else ""),
+                subprotocols=[DEV_SUBPROTOCOL, "echouser"], headers=_origin(),
+            ) as ws:
+                with pytest.raises(WebSocketDisconnect):
+                    ws.receive_text()
+            urls[opted_in] = connector.connects[0]["url"]
+        finally:
+            c.__exit__(None, None, None)
+    base = "wss://speech-gateway.test/speech/voice-live/realtime"
+    assert urls[False] == f"{base}?api-version=2026-04-10&model={model_id}"
+    assert urls[True] == (
+        f"{base}?api-version=2026-07-15&model={model_id}&features=client_ec_reference:true"
+    )
+
+
 def test_live_speech_echo_reference_changes_nothing_else_in_the_session():
     frames: dict[bool, dict] = {}
     for opted_in in (False, True):

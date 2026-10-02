@@ -106,4 +106,27 @@ public sealed class SpeechVoiceLiveApimTests
             Decide($"?api-version={EchoVersion}&model=attacker&features={EchoFlag}"));
         Assert.AreEqual(new Decision(ModelRefusal, null, null), Decide("?model=GPT-REALTIME"));
     }
+
+    // Every managed model the catalog lists, read from the source catalog: none
+    // leaves the pinned version unless its handshake carries the exact pair.
+    [TestMethod]
+    public void EveryManagedModelStaysPinnedUnlessItsSessionOptsIn()
+    {
+        string catalog = File.ReadAllText(Path.GetFullPath(Path.Combine(
+            Path.GetDirectoryName(SourceFile())!, "..", "..", "infra", "voice-providers.json")));
+        using var document = System.Text.Json.JsonDocument.Parse(catalog);
+        var speech = document.RootElement.GetProperty("providers").EnumerateArray()
+            .Single(p => p.GetProperty("id").GetString() == "speech_voice_live");
+        string[] models = speech.GetProperty("managedModels").EnumerateArray()
+            .Select(m => m.GetProperty("id").GetString()!).ToArray();
+        Assert.IsTrue(models.Length >= 6, "The catalog's managed models must be read.");
+        foreach (string model in models)
+        {
+            Assert.AreEqual(new Decision(null, Pinned, model), Decide($"?api-version={Pinned}&model={model}"), model);
+            Assert.AreEqual(new Decision(null, Pinned, model), Decide($"?api-version={EchoVersion}&model={model}"), model);
+            Assert.AreEqual(
+                new Decision(null, EchoVersion, model),
+                Decide($"?api-version={EchoVersion}&model={model}&features={EchoFlag}"), model);
+        }
+    }
 }
