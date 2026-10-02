@@ -483,6 +483,13 @@ docker buildx build --file proxy/CompanionApp.Dockerfile --load proxy
 The proxy's NuGet restore runs in locked mode, and the final image is blocked on
 HIGH/CRITICAL findings under the exact-CVE `proxy/.trivyignore` policy. The
 CompanionApp image shares that context, those pinned bases and that policy. Its
+build-only OpenSSL overlay is shared with the proxy: exact signed-repository
+packages and selected-file hashes in `proxy/runtime-security.json`, with only
+the existing chiseled slice and authentic package metadata copied into runtime.
+`runtime-security.py verify` checks actual exported bytes before each final-image
+scan. Keep build tools out of runtime; metadata-only version changes cannot pass.
+Remove the overlay only after a reviewed patched upstream base is evidenced.
+The CompanionApp's
 runtime smoke test requires the served Blazor script as JavaScript, with a missing-
 script control. The job also exports the image's filesystem and runs
 `scripts/check-image-ownership.py`: the application tree must be root-owned and
@@ -741,6 +748,7 @@ python3 -m unittest scripts.tests.test_dependabot_config
 python3 -m unittest scripts.tests.test_lockfile_provenance      # uv.lock must resolve from public PyPI
 python3 -m unittest scripts.tests.test_proxy_provenance         # vendored hashes and AI4IA patch list
 python3 -m unittest scripts.tests.test_proxy_delivery_contracts # probe suppression and final-image evidence
+python3 -m unittest scripts.tests.test_runtime_security         # exact chiseled overlay and final-image byte proof
 python3 -m unittest scripts.tests.test_post_deploy_verify       # capture/verify/rollback with Azure stubbed
 python3 -m unittest scripts.tests.test_azure_cli_safety         # az exit/subscription assertions, typed purge approvals
 python3 -m unittest scripts.tests.test_teardown_data_loss_gate
@@ -1083,6 +1091,9 @@ scope; otherwise use `Refs #...` and record delivered and remaining work on the
 issue. If completion requires a deployment, keep the issue open until that
 rollout is evidenced. Use N/A when a PR has no related issue; do not invent one
 just to satisfy the template.
+
+Use neutral `Refs #...` wording for an open follow-up. A closing keyword next
+to an issue number can auto-close it even inside a negated sentence.
 
 Treat implementation, deployment, and issue closure as separate states. Review
 independently green dependency updates independently, and close superseded bot
