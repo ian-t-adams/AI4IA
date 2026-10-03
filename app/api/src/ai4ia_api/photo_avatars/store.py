@@ -202,15 +202,19 @@ class PhotoAvatarStore:
         return ledger
 
     async def reserve(
-        self, record: PhotoAvatarRecord, *, max_avatars: int, max_per_day: int, now: datetime,
+        self, record: PhotoAvatarRecord, *, max_avatars: int, max_per_day: int | None, now: datetime,
     ) -> None:
-        """Atomically check both limits, count the creation and create the record."""
+        """Atomically check the limits, count the creation and create the record.
+
+        ``max_per_day=None`` applies no rolling daily cap (an unrestricted admin);
+        the creation is still counted in the same batch.
+        """
         for _ in range(MAX_CAS_ATTEMPTS):
             ledger, snapshot = await self._ledger(record.userId)
             recent = ledger.recent(now)
             if len(ledger.active) >= max_avatars:
                 raise LimitReached("max_avatars")
-            if len(recent) >= max_per_day:
+            if max_per_day is not None and len(recent) >= max_per_day:
                 reopen = next_creation_at(ledger, now, max_per_day)
                 raise LimitReached("daily", _seconds_until(reopen, now) if reopen else None)
             updated = ledger.model_copy(update={

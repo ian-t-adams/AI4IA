@@ -8,6 +8,7 @@ from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..sessions.models import MAX_LIBRARY_DOCUMENTS_PER_SESSION
 from .documents import MAX_DOCS_PER_SESSION, MAX_UPLOAD_BYTES
+from .library import document_retention_cap
 
 router = APIRouter(prefix="/api/attachments", tags=["attachments"])
 
@@ -34,7 +35,7 @@ class AttachmentCapabilities(BaseModel):
 @router.get("/capabilities", response_model=AttachmentCapabilities)
 async def attachment_capabilities(
     request: Request,
-    _user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> AttachmentCapabilities:
     library_enabled = getattr(request.app.state, "document_library", None) is not None
     if library_enabled:
@@ -42,7 +43,7 @@ async def attachment_capabilities(
         return AttachmentCapabilities(
             ingestPath="library",
             maxBytes=settings.document_max_upload_bytes,
-            maxPerUserDocuments=settings.document_max_per_user,
+            maxPerUserDocuments=document_retention_cap(settings, user),
             maxPerSessionDocuments=MAX_LIBRARY_DOCUMENTS_PER_SESSION,
             extensions=[*_TEXT_EXTENSIONS, *_LIBRARY_MEDIA_EXTENSIONS],
             mimeTypes=["text/*", "application/pdf", "image/*", "audio/*", "video/*"],

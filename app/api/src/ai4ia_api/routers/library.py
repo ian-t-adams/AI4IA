@@ -33,6 +33,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
+from ..auth.identity import admin_is_unrestricted
+from ..config import Settings
 from ..entitlements.service import EntitlementService
 from ..logging_setup import emit_custom_event
 from ..memory.telemetry import emit_memory_operation
@@ -336,6 +338,17 @@ async def _block_disabled(request: Request, user_id: str) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=decision.reason)
 
 
+def document_retention_cap(settings: Settings, user: AuthenticatedUser) -> int:
+    """The most documents ``user`` may keep in the library; 0 means no cap.
+
+    An unrestricted admin skips the per-user cap. Upload size, chunk and
+    context bounds are technical limits and still apply to everyone.
+    """
+    if admin_is_unrestricted(user, settings):
+        return 0
+    return settings.document_max_per_user
+
+
 async def _accessible_document(
     request: Request, user: AuthenticatedUser, document_id: str
 ) -> UserDocument:
@@ -422,7 +435,7 @@ async def library_summary(
             for document in docs[: max(0, min(recent, 20))]
         ],
         maxUploadBytes=settings.document_max_upload_bytes,
-        maxDocuments=settings.document_max_per_user,
+        maxDocuments=document_retention_cap(settings, user),
     )
 
 
@@ -476,15 +489,16 @@ async def upload_document(
         except ValueError:
             pass
 
-    # Per-user retention cap (0 = unlimited).
-    if settings.document_max_per_user > 0:
+    # Per-user retention cap (0 = unlimited; an unrestricted admin has none).
+    max_documents = document_retention_cap(settings, user)
+    if max_documents > 0:
         existing = await repo.list_documents(uid)
-        if len(existing) >= settings.document_max_per_user:
+        if len(existing) >= max_documents:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
                     "Your library is at the maximum of "
-                    f"{settings.document_max_per_user} documents. "
+                    f"{max_documents} documents. "
                     "Remove one before adding another."
                 ),
             )

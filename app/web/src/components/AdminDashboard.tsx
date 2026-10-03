@@ -34,6 +34,7 @@ import {
   type AgentUsageBucket,
   type DayUsageBucket,
   type DimensionBucket,
+  type EntitlementView,
   type ModelUsageBucket,
   type OfficialMcpHealthReport,
   type OperationalMetricsReport,
@@ -49,6 +50,7 @@ import {
   dimensionShare,
   entitlementLabel,
   errorLabel,
+  fetchMyEntitlement,
   fetchOverview,
   fetchResources,
   fetchUsageSummary,
@@ -761,6 +763,8 @@ export function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<DashboardData>(EMPTY);
+  // The admin's own effective limits; best effort, hidden when unreadable.
+  const [myLimits, setMyLimits] = useState<EntitlementView | null>(null);
   const loadGenerationRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
   const identifyPreference = useSyncExternalStore(
@@ -785,6 +789,19 @@ export function AdminDashboard() {
       cancelled = true;
     };
   }, [accessAttempt]);
+
+  useEffect(() => {
+    if (phase !== "ready") return;
+    const controller = new AbortController();
+    fetchMyEntitlement(controller.signal)
+      .then((limits) => {
+        if (!controller.signal.aborted) setMyLimits(limits);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setMyLimits(null);
+      });
+    return () => controller.abort();
+  }, [phase]);
 
   const setIdentifyPreference = useCallback((identify: boolean) => {
     try {
@@ -968,6 +985,11 @@ export function AdminDashboard() {
           ← Chat
         </Link>
       </div>
+      {myLimits ? (
+        <p style={{ ...muted, margin: "0 0 16px" }}>
+          Your usage limits: {entitlementLabel(myLimits)}
+        </p>
+      ) : null}
 
       {error ? (
         <div role="alert" style={{ ...card, borderColor: "var(--danger)", marginBottom: 16, color: "var(--danger)" }}>

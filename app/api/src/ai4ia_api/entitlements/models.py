@@ -34,6 +34,11 @@ MINUTE_SECONDS = 60
 DAY_SECONDS = 24 * 60 * 60
 MONTH_SECONDS = 30 * DAY_SECONDS
 
+#: Sentinel owner of the effective policy an unrestricted admin resolves to (see
+#: ``auth.identity.admin_is_unrestricted``). Never stored; internal user ids are
+#: hashes, so it cannot collide with a real owner.
+ADMIN_ENTITLEMENT_ID = "__admin__"
+
 #: What a caller is about to spend. ``chat`` is every token-priced model turn
 #: (the historical behaviour, and the default so the twelve existing call sites
 #: are unchanged). ``compute`` is a direct Code Interpreter sandbox execution,
@@ -97,6 +102,15 @@ class Entitlement(EntitlementLimits):
     @classmethod
     def unlimited(cls, user_id: str = "") -> "Entitlement":
         return cls(id=user_id, userId=user_id)
+
+    @classmethod
+    def unrestricted_admin(cls) -> "Entitlement":
+        """Unlimited and never disabled, whatever the default or an override says."""
+        return cls(id=ADMIN_ENTITLEMENT_ID, userId=ADMIN_ENTITLEMENT_ID)
+
+    @property
+    def is_unrestricted_admin(self) -> bool:
+        return self.userId == ADMIN_ENTITLEMENT_ID
 
 
 # A per-turn decision. Internal (never serialized to a client as-is); the router

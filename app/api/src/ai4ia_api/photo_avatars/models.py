@@ -194,6 +194,11 @@ class PhotoAvatarLimits(_Contract):
     nextCreationAt: datetime | None = None
     promptMaxChars: int
     displayNameMaxChars: int = DISPLAY_NAME_MAX_CHARS
+    # The caller is an unrestricted admin: the per-user caps don't apply.
+    # ``maxAvatars`` is then the gallery's listing bound, a technical limit that
+    # keeps every record listable and deletable; ``maxCreationsPerDay`` is the
+    # configured cap, reported but not enforced, and ``nextCreationAt`` is null.
+    unlimited: bool = False
 
 
 class PhotoAvatarAttributeOptions(_Contract):
@@ -241,7 +246,7 @@ class PhotoAvatarConfig(_Contract):
     enabled: bool
     available: bool
     reason: AvailabilityReason
-    # Available and under both limits.
+    # Available and under both limits (an unrestricted admin: under the listing bound).
     canCreate: bool
     limits: PhotoAvatarLimits | None = None
     attributes: PhotoAvatarAttributeOptions | None = None

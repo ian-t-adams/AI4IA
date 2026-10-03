@@ -175,6 +175,14 @@ describe("entitlementLabel", () => {
     const unlimited = { isUnlimited: true, disabled: false } as EntitlementView;
     expect(entitlementLabel(unlimited)).toBe("Unlimited");
   });
+  it("names an unrestricted admin, and only an unlimited admin view", () => {
+    const admin = { source: "admin", isUnlimited: true, disabled: false } as EntitlementView;
+    expect(entitlementLabel(admin)).toBe("Unlimited (admin)");
+    // Controls: the same unlimited view from another source, and an admin
+    // source that a group restriction narrowed, keep their ordinary labels.
+    expect(entitlementLabel({ ...admin, source: "policy" })).toBe("Unlimited");
+    expect(entitlementLabel({ ...admin, isUnlimited: false, tokensPerDay: 5000 })).toBe("5K tok/day");
+  });
   it("summarizes the configured limits compactly", () => {
     const ent = {
       isUnlimited: false,

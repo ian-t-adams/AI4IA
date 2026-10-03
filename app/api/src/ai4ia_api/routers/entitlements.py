@@ -8,7 +8,11 @@
   REPLACE: any limit omitted from the body becomes unlimited for that dimension.
 
 The default (no-override) policy ships unlimited, so ``GET /api/entitlement``
-returns ``isUnlimited: true`` for everyone until an admin sets a limit.
+returns ``isUnlimited: true`` for everyone until an admin sets a limit. An
+unrestricted admin (``auth.identity.admin_is_unrestricted``) reads
+``source: "admin"`` and ``isUnlimited: true`` whatever the default or an override
+says; the admin endpoints below still show and manage the stored overrides,
+including an admin's own.
 """
 from __future__ import annotations
 
@@ -30,10 +34,12 @@ admin_router = APIRouter(prefix="/api/admin/entitlements", tags=["entitlements-a
 
 class EntitlementView(BaseModel):
     """A user-facing projection of an effective entitlement (hides the internal
-    default sentinel id; adds ``source`` and ``isUnlimited``)."""
+    default and admin sentinel ids; adds ``source`` and ``isUnlimited``)."""
 
     userId: str
-    source: str  # "override" | "default"
+    # "override" | "default" | "policy" | "admin". "admin" means an unrestricted
+    # admin: per-user caps don't apply to the caller's own usage.
+    source: str
     isUnlimited: bool
     disabled: bool = False
     requestsPerMinute: int | None = None
@@ -50,9 +56,14 @@ class EntitlementView(BaseModel):
     def of(cls, user_id: str, ent: Entitlement) -> "EntitlementView":
         # Override docs carry the real userId; the default sentinel does not.
         is_override = ent.userId == user_id
+        # A group restriction composed onto an admin's base is policy, not admin.
+        source = (
+            "admin" if ent.is_unrestricted_admin and ent.is_unlimited
+            else "override" if is_override else "default"
+        )
         return cls(
             userId=user_id,
-            source="override" if is_override else "default",
+            source=source,
             isUnlimited=ent.is_unlimited,
             disabled=ent.disabled,
             requestsPerMinute=ent.requestsPerMinute,
@@ -83,7 +94,8 @@ async def get_my_entitlement(
         if effective.limits_unavailable or effective.spend_invalid:
             raise PolicyError(PolicyDecision("unavailable", "policy_unavailable"))
         view = EntitlementView.of(user.internal_user_id, effective.limits)
-        view.source = "policy"
+        if view.source != "admin":
+            view.source = "policy"
         return view
     return EntitlementView.of(user.internal_user_id, await svc.get_effective(user.internal_user_id))
 
@@ -102,7 +114,8 @@ async def get_user_entitlement(
     request: Request,
     _admin: AuthenticatedUser = Depends(require_admin),
 ) -> EntitlementView:
-    ent = await _service(request).get_effective(user_id)
+    # The stored policy, even for the admin's own id: management shows what is set.
+    ent = await _service(request).get_effective(user_id, exempt_admin=False)
     return EntitlementView.of(user_id, ent)
 
 

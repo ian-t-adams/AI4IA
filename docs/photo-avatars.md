@@ -474,6 +474,9 @@ estimate recorded at dispatch, never repriced), `usable`, `reported`, `createdAt
 applies the same check again when a create runs. `/config` also returns the limits
 and current usage, attribute options, the attestation text, the disclosure label,
 the per-avatar price estimate, and the report reasons with Microsoft's report link.
+For an unrestricted admin, `limits.unlimited` is true: the per-user caps don't
+apply, `maxAvatars` is the gallery's 200-record listing bound,
+`maxCreationsPerDay` is reported but not enforced, and `nextCreationAt` is null.
 
 A `PhotoAvatar` also carries `needsReverification`. It is set when a live session
 reported that the avatar failed verification, and `usable` stays false until a
@@ -549,6 +552,15 @@ later status read re-verifies the avatar.
   current record ids and the rolling creation and report times. A create is
   reserved in the same Cosmos batch as its ledger update, so the limits hold under
   concurrent requests.
+  - An unrestricted admin (`auth.identity.admin_is_unrestricted`: an
+    `AI4IA_ADMIN_SUBJECTS` or `admin` app-role principal on trustworthy auth)
+    skips both per-user caps. Their creation is still reserved and counted in the
+    same batch and metered once. The gallery's 200-record listing bound still
+    applies, so every record stays listable and deletable.
+  - Nothing else changes for an admin: the capability check, the Limited Access
+    terms, the attestation, the AI-generated disclosure, cost evidence and the
+    provider's own refusals, such as an avatar limit on the resource, are recorded
+    as they are for anyone.
 - **Pilot access.** A group-policy `avatars` domain with two actions: `create`,
   which is consumption, and `use`. Owner reads, status, deletion and reports need
   no grant. A `zones` restriction makes creation `policy_unavailable`: zones
@@ -621,7 +633,8 @@ Limited Access approval.
   confirmed. The ticks belong to the attestation `version` they were given for, so a
   refresh that brings new wording clears them. The request sends that `version`. The
   form shows the per-avatar estimate, or "unknown" when there is no price, and the
-  current limits.
+  current limits. An unrestricted admin sees **Unlimited (admin)** with their current
+  counts instead, and is stopped only at the gallery's listing bound.
 - **Unknown create outcomes.** A create is never repeated automatically. A 4xx, or
   a 5xx with one of the codes the service raises before anything reaches the
   provider, is a definite refusal. Anything else leaves the outcome unknown: a
@@ -749,9 +762,13 @@ avatar byte stays on the existing governed path: browser → FastAPI
 - **Idle and session caps.** Avatar time bills while idle, so:
   - every avatar session is capped by the smaller of
     `realtime_max_session_seconds` and `AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION`
-    (default 10);
+    (default 10). An unrestricted admin skips that per-user minute cap: only a
+    positive `realtime_max_session_seconds` caps their session, and without one the
+    relay announces `max_session_seconds: 0` (no cap);
   - it ends after `AI4IA_PHOTO_AVATAR_LIVE_IDLE_TIMEOUT_SECONDS` (default 120)
-    without conversation. Microphone audio, idle video and output stop events
+    without conversation, for everyone, admins included: an idle avatar still
+    bills at about $0.60 a minute, and the same watchdog re-runs the `avatar.use`
+    check. Microphone audio, idle video and output stop events
     (`response.cancel`, `conversation.item.truncate`, `input_audio_buffer.clear`,
     `output_audio_buffer.clear`) never count as conversation. The stop events skip
     the per-send grant check, so they can't keep a revoked session alive either.
@@ -1063,7 +1080,9 @@ records the operator cleanup until one does.
   Fail-closed capability checks and graceful degradation handle that.
 - **Idle cost and bandwidth.** Avatar video streams at about 566 kbps, and bills,
   for the whole connected session, idle included. The idle timeout, the
-  per-session cap, admission and the explicit end control bound it. No
+  per-session cap, admission and the explicit end control bound it; an
+  unrestricted admin's session has no per-session cap unless
+  `realtime_max_session_seconds` is set, so the idle timeout is what ends it. No
   cross-replica cap limits concurrent avatar sessions per user.
 - **Browser support.** The player needs `MediaSource` and the stream's H.264 and
   AAC codecs. iPhone Safari exposes only `ManagedMediaSource`, which the player
